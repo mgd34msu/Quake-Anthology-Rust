@@ -367,12 +367,10 @@ pub struct Q2Players {
 }
 
 /// Obituary override function.
-pub type Q2PlayerObituaryOverride =
-    fn(ActorId, &mut Q2GameServices, Option<ActorId>) -> Option<String>;
+pub type Q2PlayerObituaryOverride = fn(ActorId, &mut Q2GameServices, Option<ActorId>) -> Option<String>;
 
 /// Build-view override function.
-pub type Q2PlayerBuildViewOverride =
-    fn(ActorId, &mut Q2GameServices, i32, bool) -> Q2PlayerView;
+pub type Q2PlayerBuildViewOverride = fn(ActorId, &mut Q2GameServices, i32, bool) -> Q2PlayerView;
 
 /// Damage-feedback override function.
 pub type Q2PlayerDamageFeedbackOverride = fn(ActorId, &mut Q2GameServices, i32) -> (i32, i32);

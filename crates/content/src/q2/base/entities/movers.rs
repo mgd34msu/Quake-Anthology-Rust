@@ -5,23 +5,22 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, dot3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, scale3, sub3, vec3, Vec3};
 
+use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::checkpoint::restore_q2_actor;
 use crate::q2::foundation::fields::{integer_field, number_field};
 use crate::q2::foundation::host::{
-    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
-    Q2SoundLoop, Q2Use,
+    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Use,
 };
 use crate::q2::foundation::motion::{
-    LinearMotionScope, Q2LinearMotionCheckpoint, base_linear_motion_callbacks,
-    capture_linear_motion, linear_move_destination, linear_move_to, restore_linear_motion,
+    base_linear_motion_callbacks, capture_linear_motion, linear_move_destination, linear_move_to,
+    restore_linear_motion, LinearMotionScope, Q2LinearMotionCheckpoint,
 };
 use crate::q2::foundation::scenery::kill_q2_box;
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::{CombatState, DeathReaction, TouchContact};
-use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 
 use super::types::Q2BaseEntityHooks;
 
@@ -140,11 +139,7 @@ fn emit_loop(actor: ActorId, game: &mut Q2GameServices, path: &str, start: bool)
         volume: 1.0,
         attenuation: 3.0,
         reliable: false,
-        loop_: if start {
-            Q2SoundLoop::Start
-        } else {
-            Q2SoundLoop::Stop
-        },
+        loop_: if start { Q2SoundLoop::Start } else { Q2SoundLoop::Stop },
         loop_owner: None,
     }));
 }
@@ -281,13 +276,7 @@ fn door_secret_done(actor: ActorId, game: &mut Q2GameServices) {
 /// Secret-door move home (`door_secret_move6`).
 fn door_secret_move6(actor: ActorId, game: &mut Q2GameServices) {
     let home = secret_state(game, &actor).home;
-    linear_move_to(
-        game,
-        LinearMotionScope::Base,
-        actor,
-        home,
-        door_secret_done as _,
-    );
+    linear_move_to(game, LinearMotionScope::Base, actor, home, door_secret_done as _);
 }
 
 /// Secret-door return pause (`door_secret_move5`).
@@ -298,13 +287,7 @@ fn door_secret_move5(actor: ActorId, game: &mut Q2GameServices) {
 /// Secret-door return (`door_secret_move4`).
 fn door_secret_move4(actor: ActorId, game: &mut Q2GameServices) {
     let first = secret_state(game, &actor).first;
-    linear_move_to(
-        game,
-        LinearMotionScope::Base,
-        actor,
-        first,
-        door_secret_move5 as _,
-    );
+    linear_move_to(game, LinearMotionScope::Base, actor, first, door_secret_move5 as _);
 }
 
 /// Secret-door opened (`door_secret_move3`).
@@ -319,13 +302,7 @@ fn door_secret_move3(actor: ActorId, game: &mut Q2GameServices) {
 /// Secret-door second slide (`door_secret_move2`).
 fn door_secret_move2(actor: ActorId, game: &mut Q2GameServices) {
     let second = secret_state(game, &actor).second;
-    linear_move_to(
-        game,
-        LinearMotionScope::Base,
-        actor,
-        second,
-        door_secret_move3 as _,
-    );
+    linear_move_to(game, LinearMotionScope::Base, actor, second, door_secret_move3 as _);
 }
 
 /// Secret-door pause (`door_secret_move1`).
@@ -453,13 +430,7 @@ fn plat_go_down(actor: ActorId, game: &mut Q2GameServices) {
         entry.bottom
     };
     platform_sound(actor.clone(), game, true);
-    linear_move_to(
-        game,
-        LinearMotionScope::Base,
-        actor,
-        bottom,
-        plat_hit_bottom as _,
-    );
+    linear_move_to(game, LinearMotionScope::Base, actor, bottom, plat_hit_bottom as _);
 }
 
 /// Platform go up (`plat_go_up`).
@@ -474,13 +445,7 @@ fn plat_go_up(actor: ActorId, game: &mut Q2GameServices) {
         entry.top
     };
     platform_sound(actor.clone(), game, true);
-    linear_move_to(
-        game,
-        LinearMotionScope::Base,
-        actor,
-        top,
-        plat_hit_top as _,
-    );
+    linear_move_to(game, LinearMotionScope::Base, actor, top, plat_hit_top as _);
 }
 
 /// Spawn a platform (`spawnPlatform`).
@@ -493,21 +458,9 @@ fn spawn_platform(actor: ActorId, game: &mut Q2GameServices) {
     game.set_motion_kind(actor.clone(), Q2MotionKind::Push);
     {
         let entity = game.require_entity_mut(&actor);
-        entity.speed = if entity.speed == 0.0 {
-            20.0
-        } else {
-            entity.speed * 0.1
-        };
-        entity.accel = if entity.accel == 0.0 {
-            5.0
-        } else {
-            entity.accel * 0.1
-        };
-        entity.decel = if entity.decel == 0.0 {
-            5.0
-        } else {
-            entity.decel * 0.1
-        };
+        entity.speed = if entity.speed == 0.0 { 20.0 } else { entity.speed * 0.1 };
+        entity.accel = if entity.accel == 0.0 { 5.0 } else { entity.accel * 0.1 };
+        entity.decel = if entity.decel == 0.0 { 5.0 } else { entity.decel * 0.1 };
         if entity.damage == 0.0 {
             entity.damage = 2.0;
         }
@@ -516,7 +469,11 @@ fn spawn_platform(actor: ActorId, game: &mut Q2GameServices) {
     let spawn = game.require_entity(&actor).spawn.clone();
     let lip = {
         let lip = number_field(&spawn, "lip", 0.0);
-        if lip == 0.0 { 8.0 } else { lip }
+        if lip == 0.0 {
+            8.0
+        } else {
+            lip
+        }
     };
     let height = {
         let height = number_field(&spawn, "height", 0.0);
@@ -716,12 +673,7 @@ fn trigger_elevator_use(
 }
 
 /// Conveyor use (`conveyorUse`).
-fn func_conveyor_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn func_conveyor_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity_mut(&actor);
     if entity.spawnflags & 1 != 0 {
         entity.speed = 0.0;
@@ -736,12 +688,7 @@ fn func_conveyor_use(
 }
 
 /// Killbox use (`killboxUse`).
-fn func_killbox_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn func_killbox_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     kill_q2_box(game, actor);
 }
 
@@ -785,12 +732,7 @@ fn func_object_release(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Object use (`objectUse`).
-fn func_object_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn func_object_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.require_entity_mut(&actor).visible = true;
     game.require_entity_mut(&actor).use_ = None;
     game.set_solid(actor.clone(), Q2Solid::Brush);
@@ -818,14 +760,10 @@ pub fn mover_callbacks() -> Q2CallbackDefinitions {
     callbacks
         .think
         .insert("trigger_elevator_init", trigger_elevator_init as _);
-    callbacks
-        .think
-        .insert("func_object_release", func_object_release as _);
+    callbacks.think.insert("func_object_release", func_object_release as _);
     callbacks.use_.insert("plat_use", plat_use as _);
     callbacks.use_.insert("door_secret_use", door_secret_use as _);
-    callbacks
-        .use_
-        .insert("trigger_elevator_use", trigger_elevator_use as _);
+    callbacks.use_.insert("trigger_elevator_use", trigger_elevator_use as _);
     callbacks.use_.insert("func_conveyor_use", func_conveyor_use as _);
     callbacks.use_.insert("func_killbox_use", func_killbox_use as _);
     callbacks.use_.insert("func_object_use", func_object_use as _);
@@ -854,10 +792,7 @@ pub fn capture_movers(game: &mut Q2GameServices) -> Q2BaseMoversCheckpoint {
             });
         }
         if let Some(state) = game.base_entities.secrets.get(&actor).copied() {
-            secrets.push(Q2SecretEntry {
-                actor: saved,
-                state,
-            });
+            secrets.push(Q2SecretEntry { actor: saved, state });
         }
     }
     let linear = capture_linear_motion(game, LinearMotionScope::Base);
@@ -906,10 +841,7 @@ pub fn mover_traversal(game: &mut Q2GameServices, actor: &ActorId) -> Option<Q2P
         && !entity.targetname.is_empty()
         && destination.is_none()
         && entity.think.is_none();
-    Some(Q2PlatformTraversal {
-        locked,
-        destination,
-    })
+    Some(Q2PlatformTraversal { locked, destination })
 }
 
 /// Spawn a base mover entity (`Q2BaseMoverEntities[spawn]`).

@@ -5,71 +5,120 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::super::common::{
-    blocked_check_platform, chainfist, check_gib, monster_flash, reacts_to_pain,
-    rerelease_random,
+    blocked_check_platform, chainfist, check_gib, monster_flash, reacts_to_pain, rerelease_random,
 };
-use super::super::spawn_placement::{
-    check_rerelease_ground_spawn_point, find_rerelease_spawn_point,
-};
+use super::super::spawn_placement::{check_rerelease_ground_spawn_point, find_rerelease_spawn_point};
 use super::super::tables::medic::{medic_frame, medic_moves};
 use crate::contract::{ArmorState, InventoryEntry, PoweredProtectionState, RegularArmorState};
 use crate::q2::base::monsters::common::{monster_shot, move_handler};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{
-    Q2BeamEvent, Q2GameServices, Q2MonsterBeam, Q2MotionKind, Q2PresentationEvent,
-    Q2Solid, Q2TraceRequest,
+    Q2BeamEvent, Q2GameServices, Q2MonsterBeam, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, corpse, finish_dodge, health, monster_solid_mask, project_flash,
-    set_duck, target_distance, visible,
+    angles_vectors, corpse, finish_dodge, health, monster_solid_mask, project_flash, set_duck, target_distance, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::perception::{
-    default_check_attack, found_target, hunt_target,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::perception::{default_check_attack, found_target, hunt_target};
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, MonsterPowerArmor,
-    MonsterSpawner, Q2MonsterDefinition, record_at,
+    record_at, MonsterAttackState, MonsterContext, MonsterHandler, MonsterPowerArmor, MonsterSpawner,
+    Q2MonsterDefinition,
 };
 use crate::q2::foundation::monsters::{monster_definition, respawn_monster};
 use crate::q2::missionpacks::monsters::combat::{cleanup_rogue_heal_target, rogue_heal_effects};
 use crate::q2::missionpacks::monsters::medic::pick_rogue_coop_target;
-use crate::q2::missionpacks::monsters::power_armor::{
-    PowerArmorKind, monster_power_armor,
-};
+use crate::q2::missionpacks::monsters::power_armor::{monster_power_armor, PowerArmorKind};
 use crate::q2::missionpacks::monsters::rogue_common::{monster_mass, source_trace_world};
 use crate::q2::missionpacks::monsters::spawn::{check_rogue_spawn_point, create_rogue_monster};
 use crate::q2::missionpacks::monsters::state::rogue_state;
 use crate::q2::missionpacks::monsters::types::mission_weapons;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit};
 
 /// Cable offsets (`cableOffsets`).
 const CABLE_OFFSETS: [Vec3; 10] = [
-    Vec3 { x: 45.0, y: -9.2, z: 15.5 },
-    Vec3 { x: 48.4, y: -9.7, z: 15.2 },
-    Vec3 { x: 47.8, y: -9.8, z: 15.8 },
-    Vec3 { x: 47.3, y: -9.3, z: 14.3 },
-    Vec3 { x: 45.4, y: -10.1, z: 13.1 },
-    Vec3 { x: 41.9, y: -12.7, z: 12.0 },
-    Vec3 { x: 37.8, y: -15.8, z: 11.2 },
-    Vec3 { x: 34.3, y: -18.4, z: 10.7 },
-    Vec3 { x: 32.7, y: -19.7, z: 10.4 },
-    Vec3 { x: 32.7, y: -19.7, z: 10.4 },
+    Vec3 {
+        x: 45.0,
+        y: -9.2,
+        z: 15.5,
+    },
+    Vec3 {
+        x: 48.4,
+        y: -9.7,
+        z: 15.2,
+    },
+    Vec3 {
+        x: 47.8,
+        y: -9.8,
+        z: 15.8,
+    },
+    Vec3 {
+        x: 47.3,
+        y: -9.3,
+        z: 14.3,
+    },
+    Vec3 {
+        x: 45.4,
+        y: -10.1,
+        z: 13.1,
+    },
+    Vec3 {
+        x: 41.9,
+        y: -12.7,
+        z: 12.0,
+    },
+    Vec3 {
+        x: 37.8,
+        y: -15.8,
+        z: 11.2,
+    },
+    Vec3 {
+        x: 34.3,
+        y: -18.4,
+        z: 10.7,
+    },
+    Vec3 {
+        x: 32.7,
+        y: -19.7,
+        z: 10.4,
+    },
+    Vec3 {
+        x: 32.7,
+        y: -19.7,
+        z: 10.4,
+    },
 ];
 
 /// Reinforcement positions (`reinforcementPositions`).
 const REINFORCEMENT_POSITIONS: [Vec3; 5] = [
-    Vec3 { x: 80.0, y: 0.0, z: 0.0 },
-    Vec3 { x: 40.0, y: 60.0, z: 0.0 },
-    Vec3 { x: 40.0, y: -60.0, z: 0.0 },
-    Vec3 { x: 0.0, y: 80.0, z: 0.0 },
-    Vec3 { x: 0.0, y: -80.0, z: 0.0 },
+    Vec3 {
+        x: 80.0,
+        y: 0.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 40.0,
+        y: 60.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 40.0,
+        y: -60.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 0.0,
+        y: 80.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 0.0,
+        y: -80.0,
+        z: 0.0,
+    },
 ];
 
 /// Default reinforcements (`defaultReinforcements`).
@@ -92,7 +141,10 @@ struct Reinforcement {
 
 /// Parse medic reinforcements (`rereleaseMedicReinforcements`).
 pub fn rerelease_medic_reinforcements(fields: &BTreeMap<String, String>) -> Vec<MedicReinforcement> {
-    let value = fields.get("reinforcements").map(String::as_str).unwrap_or(DEFAULT_REINFORCEMENTS);
+    let value = fields
+        .get("reinforcements")
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_REINFORCEMENTS);
     if value.is_empty() {
         return Vec::new();
     }
@@ -243,7 +295,10 @@ fn medic_sound(context: &mut MonsterContext, normal: &str, commander: &str, chan
 fn medic_restore_enemy(context: &mut MonsterContext) -> bool {
     let actor = context.actor().clone();
     let old_enemy = context.state().old_enemy.clone();
-    if old_enemy.as_ref().is_some_and(|old| health(&mut *context.game, Some(old)) > 0.0) {
+    if old_enemy
+        .as_ref()
+        .is_some_and(|old| health(&mut *context.game, Some(old)) > 0.0)
+    {
         context.game.require_entity_mut(&actor).enemy = old_enemy;
         hunt_target(context);
     } else {
@@ -339,12 +394,13 @@ fn medic_find_dead(context: &mut MonsterContext) -> Option<ActorId> {
         let Some(target) = target else {
             continue;
         };
-        let good_guy = context.game.monsters.states.get(&candidate).is_some_and(|state| state.good_guy);
-        if candidate == actor
-            || target.server_flags & 4 == 0
-            || good_guy
-            || target.classname.starts_with("player")
-        {
+        let good_guy = context
+            .game
+            .monsters
+            .states
+            .get(&candidate)
+            .is_some_and(|state| state.good_guy);
+        if candidate == actor || target.server_flags & 4 == 0 || good_guy || target.classname.starts_with("player") {
             continue;
         }
         let rogue = rogue_state(&mut *context.game, &candidate);
@@ -353,9 +409,17 @@ fn medic_find_dead(context: &mut MonsterContext) -> Option<ActorId> {
             continue;
         }
         if let Some(healer) = healer {
-            let healing = context.game.entity(&healer).is_some_and(|healer| healer.server_flags & 4 != 0)
+            let healing = context
+                .game
+                .entity(&healer)
+                .is_some_and(|healer| healer.server_flags & 4 != 0)
                 && health(&mut *context.game, Some(&healer)) > 0.0
-                && context.game.monsters.states.get(&healer).is_some_and(|state| state.medic);
+                && context
+                    .game
+                    .monsters
+                    .states
+                    .get(&healer)
+                    .is_some_and(|state| state.medic);
             if healing {
                 continue;
             }
@@ -434,8 +498,7 @@ fn rerelease_medic_attack(context: &mut MonsterContext) {
     let random = context.game.host.random();
     let commander = monster_mass(context) > 400.0;
     let state = context.state();
-    let (medic, slots, used, attack_state) =
-        (state.medic, state.monster_slots, state.monster_used, state.attack_state);
+    let (medic, slots, used, attack_state) = (state.medic, state.monster_slots, state.monster_used, state.attack_state);
     if medic {
         context.set_move(
             if commander && random > 0.8 && slots > used {
@@ -448,9 +511,7 @@ fn rerelease_medic_attack(context: &mut MonsterContext) {
         return;
     }
     context.set_move(
-        if attack_state == MonsterAttackState::Blind
-            || commander && random > 0.2 && !melee_range && slots > used
-        {
+        if attack_state == MonsterAttackState::Blind || commander && random > 0.2 && !melee_range && slots > used {
             "medic_move_callReinforcements"
         } else {
             "medic_move_attackBlaster"
@@ -503,9 +564,7 @@ fn medic_cable(context: &mut MonsterContext) {
         mask: 3,
         exclude: Vec::new(),
     });
-    if trace.fraction != 1.0
-        && !matches!(&trace.hit, TraceHit::Actor { actor: hit } if hit == &target)
-    {
+    if trace.fraction != 1.0 && !matches!(&trace.hit, TraceHit::Actor { actor: hit } if hit == &target) {
         if source_trace_world(&mut *context.game, &trace) {
             if rogue_state(&mut *context.game, &actor).medic_tries > 1 {
                 return medic_abort(context, true, false, true);
@@ -601,8 +660,10 @@ fn medic_cable(context: &mut MonsterContext) {
             .as_ref()
             .map(|state| state.initial_power_armor)
             .unwrap_or_default();
-        let max_power_armor_power =
-            previous.as_ref().map(|state| state.max_power_armor_power).unwrap_or(0.0);
+        let max_power_armor_power = previous
+            .as_ref()
+            .map(|state| state.max_power_armor_power)
+            .unwrap_or(0.0);
         let base_health = previous.as_ref().map(|state| state.base_health).unwrap_or(max_health);
         let health_scaling = previous.as_ref().map(|state| state.health_scaling).unwrap_or(1.0);
         respawn_monster(&mut *context.game, target.clone());
@@ -762,14 +823,12 @@ fn medic_each_spawn(
         }
         let point = project_flash(context, position, None);
         let scale = context.game.require_entity(&actor).scale;
-        let start = vec3(point.x, point.y, point.z + if behind { 10.0 } else { 10.0 * scale as f32 });
-        let spawn = find_rerelease_spawn_point(
-            &mut *context.game,
-            start,
-            reinforcement.bounds,
-            32.0,
-            true,
+        let start = vec3(
+            point.x,
+            point.y,
+            point.z + if behind { 10.0 } else { 10.0 * scale as f32 },
         );
+        let spawn = find_rerelease_spawn_point(&mut *context.game, start, reinforcement.bounds, 32.0, true);
         if let Some(spawn) = spawn {
             if visit(context, spawn, reinforcement) {
                 break;
@@ -834,7 +893,11 @@ fn medic_fire_blaster(context: &mut MonsterContext) {
     let commander = monster_mass(context) > 400.0;
     let blaster = frame == medic_frame::ATTACK9 || frame == medic_frame::ATTACK12;
     let flash = if blaster {
-        if commander { 146 } else { 60 }
+        if commander {
+            146
+        } else {
+            60
+        }
     } else {
         (if commander { 277 } else { 265 }) + frame - medic_frame::ATTACK19
     };
@@ -849,9 +912,10 @@ fn medic_fire_blaster(context: &mut MonsterContext) {
         0
     };
     let enemy = context.entity().enemy.clone();
-    let tesla = enemy.as_ref().and_then(|enemy| context.game.entity(enemy)).is_some_and(|target| {
-        target.classname == "tesla_mine"
-    });
+    let tesla = enemy
+        .as_ref()
+        .and_then(|enemy| context.game.entity(enemy))
+        .is_some_and(|target| target.classname == "tesla_mine");
     let damage = if tesla {
         3.0
     } else if blaster {
@@ -882,7 +946,9 @@ fn medic_fire_blaster(context: &mut MonsterContext) {
 /// Start spawn (`medic_start_spawn`).
 fn medic_start_spawn(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    context.game.sound(&actor, "medic_commander/monsterspawn1.wav", 1, 1.0, 1.0);
+    context
+        .game
+        .sound(&actor, "medic_commander/monsterspawn1.wav", 1, 1.0, 1.0);
     context.state_mut().next_frame = medic_frame::ATTACK48;
 }
 
@@ -906,43 +972,24 @@ fn medic_determine_spawn(context: &mut MonsterContext) {
         if available.is_empty() {
             break;
         }
-        let index = *record_at(&available, rerelease_random(context).integer_max(available.len() as i32) as usize);
+        let index = *record_at(
+            &available,
+            rerelease_random(context).integer_max(available.len() as i32) as usize,
+        );
         chosen.push(index as i32);
         remaining -= record_at(&list, index).strength;
     }
     rogue_state(&mut *context.game, &actor).chosen_reinforcements = chosen;
     let mut success = false;
-    medic_each_spawn(
-        context,
-        false,
-        true,
-        |context, point, reinforcement| {
-            success = check_rerelease_ground_spawn_point(
-                &mut *context.game,
-                point,
-                reinforcement.bounds,
-                256.0,
-                -1.0,
-            );
-            success
-        },
-    );
+    medic_each_spawn(context, false, true, |context, point, reinforcement| {
+        success = check_rerelease_ground_spawn_point(&mut *context.game, point, reinforcement.bounds, 256.0, -1.0);
+        success
+    });
     if !success {
-        medic_each_spawn(
-            context,
-            true,
-            true,
-            |context, point, reinforcement| {
-                success = check_rerelease_ground_spawn_point(
-                    &mut *context.game,
-                    point,
-                    reinforcement.bounds,
-                    256.0,
-                    -1.0,
-                );
-                success
-            },
-        );
+        medic_each_spawn(context, true, true, |context, point, reinforcement| {
+            success = check_rerelease_ground_spawn_point(&mut *context.game, point, reinforcement.bounds, 256.0, -1.0);
+            success
+        });
         if success {
             context.state_mut().manual_steering = true;
             let yaw = medic_angle_mod(f64::from(context.game.body_of(actor.clone()).angles.y)) + 180.0;
@@ -967,28 +1014,17 @@ fn medic_spawngrows(context: &mut MonsterContext) {
         context.state_mut().manual_steering = false;
     }
     let mut success = false;
-    medic_each_spawn(
-        context,
-        false,
-        false,
-        |context, point, reinforcement| {
-            if check_rerelease_ground_spawn_point(
-                &mut *context.game,
-                point,
-                reinforcement.bounds,
-                256.0,
-                -1.0,
-            ) {
-                success = true;
-                medic_spawn_grow(
-                    context,
-                    add3(point, add3(reinforcement.bounds.min, reinforcement.bounds.max)),
-                    f64::from(length3(sub3(reinforcement.bounds.max, reinforcement.bounds.min))) * 0.5,
-                );
-            }
-            false
-        },
-    );
+    medic_each_spawn(context, false, false, |context, point, reinforcement| {
+        if check_rerelease_ground_spawn_point(&mut *context.game, point, reinforcement.bounds, 256.0, -1.0) {
+            success = true;
+            medic_spawn_grow(
+                context,
+                add3(point, add3(reinforcement.bounds.min, reinforcement.bounds.max)),
+                f64::from(length3(sub3(reinforcement.bounds.max, reinforcement.bounds.min))) * 0.5,
+            );
+        }
+        false
+    });
     if !success {
         context.state_mut().next_frame = medic_frame::ATTACK53;
     }
@@ -1095,8 +1131,7 @@ fn rerelease_medic_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     let actor = context.actor().clone();
     let commander = monster_mass(context) > 400.0;
     finish_dodge(context);
-    let bloodied = health(&mut *context.game, Some(&actor))
-        < context.game.require_entity(&actor).max_health / 2.0;
+    let bloodied = health(&mut *context.game, Some(&actor)) < context.game.require_entity(&actor).max_health / 2.0;
     let skin = context.game.require_entity(&actor).skin;
     context.game.require_entity_mut(&actor).skin = (skin & !1) | i32::from(bloodied);
     if context.game.host.now() < context.state().pain_time {
@@ -1342,8 +1377,12 @@ pub fn create_rerelease_medic_definitions() -> Vec<Q2MonsterDefinition> {
     );
     definition.idle = Some(MonsterHandler::Callback(rerelease_medic_idle));
     let mut source_callbacks = Q2CallbackDefinitions::default();
-    source_callbacks.think.insert("rerelease.medic.spawngrow_think", spawn_grow_think);
-    source_callbacks.think.insert("rerelease.medic.SpawnGro_laser_think", spawn_grow_laser_think);
+    source_callbacks
+        .think
+        .insert("rerelease.medic.spawngrow_think", spawn_grow_think);
+    source_callbacks
+        .think
+        .insert("rerelease.medic.SpawnGro_laser_think", spawn_grow_laser_think);
     definition.source_callbacks = Some(source_callbacks);
     definition.sight = Some(MonsterHandler::Callback(medic_sight));
     definition.search = Some(MonsterHandler::Callback(medic_search));
@@ -1358,35 +1397,17 @@ pub fn create_rerelease_medic_definitions() -> Vec<Q2MonsterDefinition> {
         ("medic_run", MonsterHandler::Callback(rerelease_medic_run)),
         ("medic_dead", MonsterHandler::Callback(medic_dead)),
         ("medic_shrink", MonsterHandler::Callback(medic_shrink)),
-        (
-            "medic_quick_attack",
-            MonsterHandler::Callback(medic_quick_attack),
-        ),
-        (
-            "monster_done_dodge",
-            MonsterHandler::Callback(finish_dodge),
-        ),
+        ("medic_quick_attack", MonsterHandler::Callback(medic_quick_attack)),
+        ("monster_done_dodge", MonsterHandler::Callback(finish_dodge)),
         ("medic_hook_launch", MonsterHandler::Callback(medic_hook_launch)),
-        (
-            "medic_hook_retract",
-            MonsterHandler::Callback(medic_hook_retract),
-        ),
+        ("medic_hook_retract", MonsterHandler::Callback(medic_hook_retract)),
         ("medic_cable_attack", MonsterHandler::Callback(medic_cable)),
         ("medic_continue", MonsterHandler::Callback(medic_continue)),
-        (
-            "medic_fire_blaster",
-            MonsterHandler::Callback(medic_fire_blaster),
-        ),
+        ("medic_fire_blaster", MonsterHandler::Callback(medic_fire_blaster)),
         ("medic_start_spawn", MonsterHandler::Callback(medic_start_spawn)),
-        (
-            "medic_determine_spawn",
-            MonsterHandler::Callback(medic_determine_spawn),
-        ),
+        ("medic_determine_spawn", MonsterHandler::Callback(medic_determine_spawn)),
         ("medic_spawngrows", MonsterHandler::Callback(medic_spawngrows)),
-        (
-            "medic_finish_spawn",
-            MonsterHandler::Callback(medic_finish_spawn),
-        ),
+        ("medic_finish_spawn", MonsterHandler::Callback(medic_finish_spawn)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);
     }

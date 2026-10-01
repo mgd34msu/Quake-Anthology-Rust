@@ -4,12 +4,14 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds, Vec3};
 
-use super::power_armor::{PowerArmorKind, monster_power_armor, restore_monster_power_armor};
+use super::power_armor::{monster_power_armor, restore_monster_power_armor, PowerArmorKind};
 use super::tables::xatrix_gladb::gladb_moves;
 use super::types::mission_weapons;
-use crate::q2::base::monsters::common::{begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler};
+use crate::q2::base::monsters::common::{
+    begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler,
+};
 use crate::q2::foundation::monsters::ai::{enemy_eye, project_flash, target_distance};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
@@ -94,13 +96,7 @@ fn gladb_melee(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let side = context.game.body_of(actor.clone()).bounds.min.x;
     let damage = 20.0 + (context.game.random() * 5.0).floor();
-    let hit = fire_hit(
-        actor.clone(),
-        &mut *context.game,
-        vec3(80.0, side, -4.0),
-        damage,
-        300.0,
-    );
+    let hit = fire_hit(actor.clone(), &mut *context.game, vec3(80.0, side, -4.0), damage, 300.0);
     context.game.sound(
         &actor,
         if hit {
@@ -131,8 +127,16 @@ pub fn create_gladb_definition() -> Q2MonsterDefinition {
         -175.0,
         350.0,
         Bounds {
-            min: Vec3 { x: -32.0, y: -32.0, z: -24.0 },
-            max: Vec3 { x: 32.0, y: 32.0, z: 64.0 },
+            min: Vec3 {
+                x: -32.0,
+                y: -32.0,
+                z: -24.0,
+            },
+            max: Vec3 {
+                x: 32.0,
+                y: 32.0,
+                z: 64.0,
+            },
         },
         1.0,
         "gladb_move_stand",
@@ -151,10 +155,7 @@ pub fn create_gladb_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(gladb_initialize));
     definition.restore = Some(MonsterHandler::Callback(restore_monster_power_armor));
     definition.callbacks = HashMap::from([
-        (
-            "gladb_run".to_string(),
-            MonsterHandler::Callback(gladb_run),
-        ),
+        ("gladb_run".to_string(), MonsterHandler::Callback(gladb_run)),
         (
             "gladb_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
@@ -163,15 +164,9 @@ pub fn create_gladb_definition() -> Q2MonsterDefinition {
             "gladb_cleaver_swing".to_string(),
             sound_handler("gladiator/melee1.wav", 1, 1.0),
         ),
-        (
-            "GladbMelee".to_string(),
-            MonsterHandler::Callback(gladb_melee),
-        ),
+        ("GladbMelee".to_string(), MonsterHandler::Callback(gladb_melee)),
         ("gladbGun".to_string(), MonsterHandler::Callback(gladb_fire)),
-        (
-            "gladbGun_check".to_string(),
-            MonsterHandler::Callback(gladb_gun_check),
-        ),
+        ("gladbGun_check".to_string(), MonsterHandler::Callback(gladb_gun_check)),
     ]);
     definition
 }

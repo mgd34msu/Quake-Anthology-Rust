@@ -49,10 +49,7 @@ fn store(ops: &NumericOps, value: f64) -> f64 {
 }
 
 fn dot(ops: &NumericOps, a: &MovementVector, b: &MovementVector) -> f64 {
-    ops.add(
-        ops.add(ops.mul(a[0], b[0]), ops.mul(a[1], b[1])),
-        ops.mul(a[2], b[2]),
-    )
+    ops.add(ops.add(ops.mul(a[0], b[0]), ops.mul(a[1], b[1])), ops.mul(a[2], b[2]))
 }
 
 /// Free a stuck monster origin (`G_FixStuckObject_Generic`).
@@ -167,8 +164,7 @@ pub fn fix_stuck_object(
     }
     if good_positions.len() > 1 {
         let sortable = good_positions.len() - 1;
-        good_positions[..sortable]
-            .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+        good_positions[..sortable].sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
     }
     *origin = good_positions[0].1;
     StuckResult::Fixed

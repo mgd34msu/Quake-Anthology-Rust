@@ -3069,1157 +3069,4609 @@ pub struct SoldierFrames {
 }
 impl SoldierFrames {
     /// Build a table for an edition.
-    pub fn new(classic: bool) -> Self { Self { classic } }
+    pub fn new(classic: bool) -> Self {
+        Self { classic }
+    }
     /// Frame `attak101`.
-    pub fn attak101(&self) -> i32 { if self.classic { classic_soldier::ATTAK101 } else { rerelease_soldier::ATTAK101 } }
+    pub fn attak101(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK101
+        } else {
+            rerelease_soldier::ATTAK101
+        }
+    }
     /// Frame `attak102`.
-    pub fn attak102(&self) -> i32 { if self.classic { classic_soldier::ATTAK102 } else { rerelease_soldier::ATTAK102 } }
+    pub fn attak102(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK102
+        } else {
+            rerelease_soldier::ATTAK102
+        }
+    }
     /// Frame `attak103`.
-    pub fn attak103(&self) -> i32 { if self.classic { classic_soldier::ATTAK103 } else { rerelease_soldier::ATTAK103 } }
+    pub fn attak103(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK103
+        } else {
+            rerelease_soldier::ATTAK103
+        }
+    }
     /// Frame `attak104`.
-    pub fn attak104(&self) -> i32 { if self.classic { classic_soldier::ATTAK104 } else { rerelease_soldier::ATTAK104 } }
+    pub fn attak104(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK104
+        } else {
+            rerelease_soldier::ATTAK104
+        }
+    }
     /// Frame `attak105`.
-    pub fn attak105(&self) -> i32 { if self.classic { classic_soldier::ATTAK105 } else { rerelease_soldier::ATTAK105 } }
+    pub fn attak105(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK105
+        } else {
+            rerelease_soldier::ATTAK105
+        }
+    }
     /// Frame `attak106`.
-    pub fn attak106(&self) -> i32 { if self.classic { classic_soldier::ATTAK106 } else { rerelease_soldier::ATTAK106 } }
+    pub fn attak106(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK106
+        } else {
+            rerelease_soldier::ATTAK106
+        }
+    }
     /// Frame `attak107`.
-    pub fn attak107(&self) -> i32 { if self.classic { classic_soldier::ATTAK107 } else { rerelease_soldier::ATTAK107 } }
+    pub fn attak107(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK107
+        } else {
+            rerelease_soldier::ATTAK107
+        }
+    }
     /// Frame `attak108`.
-    pub fn attak108(&self) -> i32 { if self.classic { classic_soldier::ATTAK108 } else { rerelease_soldier::ATTAK108 } }
+    pub fn attak108(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK108
+        } else {
+            rerelease_soldier::ATTAK108
+        }
+    }
     /// Frame `attak109`.
-    pub fn attak109(&self) -> i32 { if self.classic { classic_soldier::ATTAK109 } else { rerelease_soldier::ATTAK109 } }
+    pub fn attak109(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK109
+        } else {
+            rerelease_soldier::ATTAK109
+        }
+    }
     /// Frame `attak110`.
-    pub fn attak110(&self) -> i32 { if self.classic { classic_soldier::ATTAK110 } else { rerelease_soldier::ATTAK110 } }
+    pub fn attak110(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK110
+        } else {
+            rerelease_soldier::ATTAK110
+        }
+    }
     /// Frame `attak111`.
-    pub fn attak111(&self) -> i32 { if self.classic { classic_soldier::ATTAK111 } else { rerelease_soldier::ATTAK111 } }
+    pub fn attak111(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK111
+        } else {
+            rerelease_soldier::ATTAK111
+        }
+    }
     /// Frame `attak112`.
-    pub fn attak112(&self) -> i32 { if self.classic { classic_soldier::ATTAK112 } else { rerelease_soldier::ATTAK112 } }
+    pub fn attak112(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK112
+        } else {
+            rerelease_soldier::ATTAK112
+        }
+    }
     /// Frame `attak201`.
-    pub fn attak201(&self) -> i32 { if self.classic { classic_soldier::ATTAK201 } else { rerelease_soldier::ATTAK201 } }
+    pub fn attak201(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK201
+        } else {
+            rerelease_soldier::ATTAK201
+        }
+    }
     /// Frame `attak202`.
-    pub fn attak202(&self) -> i32 { if self.classic { classic_soldier::ATTAK202 } else { rerelease_soldier::ATTAK202 } }
+    pub fn attak202(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK202
+        } else {
+            rerelease_soldier::ATTAK202
+        }
+    }
     /// Frame `attak203`.
-    pub fn attak203(&self) -> i32 { if self.classic { classic_soldier::ATTAK203 } else { rerelease_soldier::ATTAK203 } }
+    pub fn attak203(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK203
+        } else {
+            rerelease_soldier::ATTAK203
+        }
+    }
     /// Frame `attak204`.
-    pub fn attak204(&self) -> i32 { if self.classic { classic_soldier::ATTAK204 } else { rerelease_soldier::ATTAK204 } }
+    pub fn attak204(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK204
+        } else {
+            rerelease_soldier::ATTAK204
+        }
+    }
     /// Frame `attak205`.
-    pub fn attak205(&self) -> i32 { if self.classic { classic_soldier::ATTAK205 } else { rerelease_soldier::ATTAK205 } }
+    pub fn attak205(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK205
+        } else {
+            rerelease_soldier::ATTAK205
+        }
+    }
     /// Frame `attak206`.
-    pub fn attak206(&self) -> i32 { if self.classic { classic_soldier::ATTAK206 } else { rerelease_soldier::ATTAK206 } }
+    pub fn attak206(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK206
+        } else {
+            rerelease_soldier::ATTAK206
+        }
+    }
     /// Frame `attak207`.
-    pub fn attak207(&self) -> i32 { if self.classic { classic_soldier::ATTAK207 } else { rerelease_soldier::ATTAK207 } }
+    pub fn attak207(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK207
+        } else {
+            rerelease_soldier::ATTAK207
+        }
+    }
     /// Frame `attak208`.
-    pub fn attak208(&self) -> i32 { if self.classic { classic_soldier::ATTAK208 } else { rerelease_soldier::ATTAK208 } }
+    pub fn attak208(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK208
+        } else {
+            rerelease_soldier::ATTAK208
+        }
+    }
     /// Frame `attak209`.
-    pub fn attak209(&self) -> i32 { if self.classic { classic_soldier::ATTAK209 } else { rerelease_soldier::ATTAK209 } }
+    pub fn attak209(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK209
+        } else {
+            rerelease_soldier::ATTAK209
+        }
+    }
     /// Frame `attak210`.
-    pub fn attak210(&self) -> i32 { if self.classic { classic_soldier::ATTAK210 } else { rerelease_soldier::ATTAK210 } }
+    pub fn attak210(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK210
+        } else {
+            rerelease_soldier::ATTAK210
+        }
+    }
     /// Frame `attak211`.
-    pub fn attak211(&self) -> i32 { if self.classic { classic_soldier::ATTAK211 } else { rerelease_soldier::ATTAK211 } }
+    pub fn attak211(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK211
+        } else {
+            rerelease_soldier::ATTAK211
+        }
+    }
     /// Frame `attak212`.
-    pub fn attak212(&self) -> i32 { if self.classic { classic_soldier::ATTAK212 } else { rerelease_soldier::ATTAK212 } }
+    pub fn attak212(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK212
+        } else {
+            rerelease_soldier::ATTAK212
+        }
+    }
     /// Frame `attak213`.
-    pub fn attak213(&self) -> i32 { if self.classic { classic_soldier::ATTAK213 } else { rerelease_soldier::ATTAK213 } }
+    pub fn attak213(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK213
+        } else {
+            rerelease_soldier::ATTAK213
+        }
+    }
     /// Frame `attak214`.
-    pub fn attak214(&self) -> i32 { if self.classic { classic_soldier::ATTAK214 } else { rerelease_soldier::ATTAK214 } }
+    pub fn attak214(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK214
+        } else {
+            rerelease_soldier::ATTAK214
+        }
+    }
     /// Frame `attak215`.
-    pub fn attak215(&self) -> i32 { if self.classic { classic_soldier::ATTAK215 } else { rerelease_soldier::ATTAK215 } }
+    pub fn attak215(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK215
+        } else {
+            rerelease_soldier::ATTAK215
+        }
+    }
     /// Frame `attak216`.
-    pub fn attak216(&self) -> i32 { if self.classic { classic_soldier::ATTAK216 } else { rerelease_soldier::ATTAK216 } }
+    pub fn attak216(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK216
+        } else {
+            rerelease_soldier::ATTAK216
+        }
+    }
     /// Frame `attak217`.
-    pub fn attak217(&self) -> i32 { if self.classic { classic_soldier::ATTAK217 } else { rerelease_soldier::ATTAK217 } }
+    pub fn attak217(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK217
+        } else {
+            rerelease_soldier::ATTAK217
+        }
+    }
     /// Frame `attak218`.
-    pub fn attak218(&self) -> i32 { if self.classic { classic_soldier::ATTAK218 } else { rerelease_soldier::ATTAK218 } }
+    pub fn attak218(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK218
+        } else {
+            rerelease_soldier::ATTAK218
+        }
+    }
     /// Frame `attak301`.
-    pub fn attak301(&self) -> i32 { if self.classic { classic_soldier::ATTAK301 } else { rerelease_soldier::ATTAK301 } }
+    pub fn attak301(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK301
+        } else {
+            rerelease_soldier::ATTAK301
+        }
+    }
     /// Frame `attak302`.
-    pub fn attak302(&self) -> i32 { if self.classic { classic_soldier::ATTAK302 } else { rerelease_soldier::ATTAK302 } }
+    pub fn attak302(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK302
+        } else {
+            rerelease_soldier::ATTAK302
+        }
+    }
     /// Frame `attak303`.
-    pub fn attak303(&self) -> i32 { if self.classic { classic_soldier::ATTAK303 } else { rerelease_soldier::ATTAK303 } }
+    pub fn attak303(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK303
+        } else {
+            rerelease_soldier::ATTAK303
+        }
+    }
     /// Frame `attak304`.
-    pub fn attak304(&self) -> i32 { if self.classic { classic_soldier::ATTAK304 } else { rerelease_soldier::ATTAK304 } }
+    pub fn attak304(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK304
+        } else {
+            rerelease_soldier::ATTAK304
+        }
+    }
     /// Frame `attak305`.
-    pub fn attak305(&self) -> i32 { if self.classic { classic_soldier::ATTAK305 } else { rerelease_soldier::ATTAK305 } }
+    pub fn attak305(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK305
+        } else {
+            rerelease_soldier::ATTAK305
+        }
+    }
     /// Frame `attak306`.
-    pub fn attak306(&self) -> i32 { if self.classic { classic_soldier::ATTAK306 } else { rerelease_soldier::ATTAK306 } }
+    pub fn attak306(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK306
+        } else {
+            rerelease_soldier::ATTAK306
+        }
+    }
     /// Frame `attak307`.
-    pub fn attak307(&self) -> i32 { if self.classic { classic_soldier::ATTAK307 } else { rerelease_soldier::ATTAK307 } }
+    pub fn attak307(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK307
+        } else {
+            rerelease_soldier::ATTAK307
+        }
+    }
     /// Frame `attak308`.
-    pub fn attak308(&self) -> i32 { if self.classic { classic_soldier::ATTAK308 } else { rerelease_soldier::ATTAK308 } }
+    pub fn attak308(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK308
+        } else {
+            rerelease_soldier::ATTAK308
+        }
+    }
     /// Frame `attak309`.
-    pub fn attak309(&self) -> i32 { if self.classic { classic_soldier::ATTAK309 } else { rerelease_soldier::ATTAK309 } }
+    pub fn attak309(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK309
+        } else {
+            rerelease_soldier::ATTAK309
+        }
+    }
     /// Frame `attak401`.
-    pub fn attak401(&self) -> i32 { if self.classic { classic_soldier::ATTAK401 } else { rerelease_soldier::ATTAK401 } }
+    pub fn attak401(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK401
+        } else {
+            rerelease_soldier::ATTAK401
+        }
+    }
     /// Frame `attak402`.
-    pub fn attak402(&self) -> i32 { if self.classic { classic_soldier::ATTAK402 } else { rerelease_soldier::ATTAK402 } }
+    pub fn attak402(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK402
+        } else {
+            rerelease_soldier::ATTAK402
+        }
+    }
     /// Frame `attak403`.
-    pub fn attak403(&self) -> i32 { if self.classic { classic_soldier::ATTAK403 } else { rerelease_soldier::ATTAK403 } }
+    pub fn attak403(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK403
+        } else {
+            rerelease_soldier::ATTAK403
+        }
+    }
     /// Frame `attak404`.
-    pub fn attak404(&self) -> i32 { if self.classic { classic_soldier::ATTAK404 } else { rerelease_soldier::ATTAK404 } }
+    pub fn attak404(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK404
+        } else {
+            rerelease_soldier::ATTAK404
+        }
+    }
     /// Frame `attak405`.
-    pub fn attak405(&self) -> i32 { if self.classic { classic_soldier::ATTAK405 } else { rerelease_soldier::ATTAK405 } }
+    pub fn attak405(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK405
+        } else {
+            rerelease_soldier::ATTAK405
+        }
+    }
     /// Frame `attak406`.
-    pub fn attak406(&self) -> i32 { if self.classic { classic_soldier::ATTAK406 } else { rerelease_soldier::ATTAK406 } }
+    pub fn attak406(&self) -> i32 {
+        if self.classic {
+            classic_soldier::ATTAK406
+        } else {
+            rerelease_soldier::ATTAK406
+        }
+    }
     /// Frame `attak501`.
-    pub fn attak501(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak501") } else { rerelease_soldier::ATTAK501 } }
+    pub fn attak501(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak501")
+        } else {
+            rerelease_soldier::ATTAK501
+        }
+    }
     /// Frame `attak502`.
-    pub fn attak502(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak502") } else { rerelease_soldier::ATTAK502 } }
+    pub fn attak502(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak502")
+        } else {
+            rerelease_soldier::ATTAK502
+        }
+    }
     /// Frame `attak503`.
-    pub fn attak503(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak503") } else { rerelease_soldier::ATTAK503 } }
+    pub fn attak503(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak503")
+        } else {
+            rerelease_soldier::ATTAK503
+        }
+    }
     /// Frame `attak504`.
-    pub fn attak504(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak504") } else { rerelease_soldier::ATTAK504 } }
+    pub fn attak504(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak504")
+        } else {
+            rerelease_soldier::ATTAK504
+        }
+    }
     /// Frame `attak505`.
-    pub fn attak505(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak505") } else { rerelease_soldier::ATTAK505 } }
+    pub fn attak505(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak505")
+        } else {
+            rerelease_soldier::ATTAK505
+        }
+    }
     /// Frame `attak506`.
-    pub fn attak506(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak506") } else { rerelease_soldier::ATTAK506 } }
+    pub fn attak506(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak506")
+        } else {
+            rerelease_soldier::ATTAK506
+        }
+    }
     /// Frame `attak507`.
-    pub fn attak507(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak507") } else { rerelease_soldier::ATTAK507 } }
+    pub fn attak507(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak507")
+        } else {
+            rerelease_soldier::ATTAK507
+        }
+    }
     /// Frame `attak508`.
-    pub fn attak508(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame attak508") } else { rerelease_soldier::ATTAK508 } }
+    pub fn attak508(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame attak508")
+        } else {
+            rerelease_soldier::ATTAK508
+        }
+    }
     /// Frame `death101`.
-    pub fn death101(&self) -> i32 { if self.classic { classic_soldier::DEATH101 } else { rerelease_soldier::DEATH101 } }
+    pub fn death101(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH101
+        } else {
+            rerelease_soldier::DEATH101
+        }
+    }
     /// Frame `death102`.
-    pub fn death102(&self) -> i32 { if self.classic { classic_soldier::DEATH102 } else { rerelease_soldier::DEATH102 } }
+    pub fn death102(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH102
+        } else {
+            rerelease_soldier::DEATH102
+        }
+    }
     /// Frame `death103`.
-    pub fn death103(&self) -> i32 { if self.classic { classic_soldier::DEATH103 } else { rerelease_soldier::DEATH103 } }
+    pub fn death103(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH103
+        } else {
+            rerelease_soldier::DEATH103
+        }
+    }
     /// Frame `death104`.
-    pub fn death104(&self) -> i32 { if self.classic { classic_soldier::DEATH104 } else { rerelease_soldier::DEATH104 } }
+    pub fn death104(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH104
+        } else {
+            rerelease_soldier::DEATH104
+        }
+    }
     /// Frame `death105`.
-    pub fn death105(&self) -> i32 { if self.classic { classic_soldier::DEATH105 } else { rerelease_soldier::DEATH105 } }
+    pub fn death105(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH105
+        } else {
+            rerelease_soldier::DEATH105
+        }
+    }
     /// Frame `death106`.
-    pub fn death106(&self) -> i32 { if self.classic { classic_soldier::DEATH106 } else { rerelease_soldier::DEATH106 } }
+    pub fn death106(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH106
+        } else {
+            rerelease_soldier::DEATH106
+        }
+    }
     /// Frame `death107`.
-    pub fn death107(&self) -> i32 { if self.classic { classic_soldier::DEATH107 } else { rerelease_soldier::DEATH107 } }
+    pub fn death107(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH107
+        } else {
+            rerelease_soldier::DEATH107
+        }
+    }
     /// Frame `death108`.
-    pub fn death108(&self) -> i32 { if self.classic { classic_soldier::DEATH108 } else { rerelease_soldier::DEATH108 } }
+    pub fn death108(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH108
+        } else {
+            rerelease_soldier::DEATH108
+        }
+    }
     /// Frame `death109`.
-    pub fn death109(&self) -> i32 { if self.classic { classic_soldier::DEATH109 } else { rerelease_soldier::DEATH109 } }
+    pub fn death109(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH109
+        } else {
+            rerelease_soldier::DEATH109
+        }
+    }
     /// Frame `death110`.
-    pub fn death110(&self) -> i32 { if self.classic { classic_soldier::DEATH110 } else { rerelease_soldier::DEATH110 } }
+    pub fn death110(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH110
+        } else {
+            rerelease_soldier::DEATH110
+        }
+    }
     /// Frame `death111`.
-    pub fn death111(&self) -> i32 { if self.classic { classic_soldier::DEATH111 } else { rerelease_soldier::DEATH111 } }
+    pub fn death111(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH111
+        } else {
+            rerelease_soldier::DEATH111
+        }
+    }
     /// Frame `death112`.
-    pub fn death112(&self) -> i32 { if self.classic { classic_soldier::DEATH112 } else { rerelease_soldier::DEATH112 } }
+    pub fn death112(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH112
+        } else {
+            rerelease_soldier::DEATH112
+        }
+    }
     /// Frame `death113`.
-    pub fn death113(&self) -> i32 { if self.classic { classic_soldier::DEATH113 } else { rerelease_soldier::DEATH113 } }
+    pub fn death113(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH113
+        } else {
+            rerelease_soldier::DEATH113
+        }
+    }
     /// Frame `death114`.
-    pub fn death114(&self) -> i32 { if self.classic { classic_soldier::DEATH114 } else { rerelease_soldier::DEATH114 } }
+    pub fn death114(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH114
+        } else {
+            rerelease_soldier::DEATH114
+        }
+    }
     /// Frame `death115`.
-    pub fn death115(&self) -> i32 { if self.classic { classic_soldier::DEATH115 } else { rerelease_soldier::DEATH115 } }
+    pub fn death115(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH115
+        } else {
+            rerelease_soldier::DEATH115
+        }
+    }
     /// Frame `death116`.
-    pub fn death116(&self) -> i32 { if self.classic { classic_soldier::DEATH116 } else { rerelease_soldier::DEATH116 } }
+    pub fn death116(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH116
+        } else {
+            rerelease_soldier::DEATH116
+        }
+    }
     /// Frame `death117`.
-    pub fn death117(&self) -> i32 { if self.classic { classic_soldier::DEATH117 } else { rerelease_soldier::DEATH117 } }
+    pub fn death117(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH117
+        } else {
+            rerelease_soldier::DEATH117
+        }
+    }
     /// Frame `death118`.
-    pub fn death118(&self) -> i32 { if self.classic { classic_soldier::DEATH118 } else { rerelease_soldier::DEATH118 } }
+    pub fn death118(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH118
+        } else {
+            rerelease_soldier::DEATH118
+        }
+    }
     /// Frame `death119`.
-    pub fn death119(&self) -> i32 { if self.classic { classic_soldier::DEATH119 } else { rerelease_soldier::DEATH119 } }
+    pub fn death119(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH119
+        } else {
+            rerelease_soldier::DEATH119
+        }
+    }
     /// Frame `death120`.
-    pub fn death120(&self) -> i32 { if self.classic { classic_soldier::DEATH120 } else { rerelease_soldier::DEATH120 } }
+    pub fn death120(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH120
+        } else {
+            rerelease_soldier::DEATH120
+        }
+    }
     /// Frame `death121`.
-    pub fn death121(&self) -> i32 { if self.classic { classic_soldier::DEATH121 } else { rerelease_soldier::DEATH121 } }
+    pub fn death121(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH121
+        } else {
+            rerelease_soldier::DEATH121
+        }
+    }
     /// Frame `death122`.
-    pub fn death122(&self) -> i32 { if self.classic { classic_soldier::DEATH122 } else { rerelease_soldier::DEATH122 } }
+    pub fn death122(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH122
+        } else {
+            rerelease_soldier::DEATH122
+        }
+    }
     /// Frame `death123`.
-    pub fn death123(&self) -> i32 { if self.classic { classic_soldier::DEATH123 } else { rerelease_soldier::DEATH123 } }
+    pub fn death123(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH123
+        } else {
+            rerelease_soldier::DEATH123
+        }
+    }
     /// Frame `death124`.
-    pub fn death124(&self) -> i32 { if self.classic { classic_soldier::DEATH124 } else { rerelease_soldier::DEATH124 } }
+    pub fn death124(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH124
+        } else {
+            rerelease_soldier::DEATH124
+        }
+    }
     /// Frame `death125`.
-    pub fn death125(&self) -> i32 { if self.classic { classic_soldier::DEATH125 } else { rerelease_soldier::DEATH125 } }
+    pub fn death125(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH125
+        } else {
+            rerelease_soldier::DEATH125
+        }
+    }
     /// Frame `death126`.
-    pub fn death126(&self) -> i32 { if self.classic { classic_soldier::DEATH126 } else { rerelease_soldier::DEATH126 } }
+    pub fn death126(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH126
+        } else {
+            rerelease_soldier::DEATH126
+        }
+    }
     /// Frame `death127`.
-    pub fn death127(&self) -> i32 { if self.classic { classic_soldier::DEATH127 } else { rerelease_soldier::DEATH127 } }
+    pub fn death127(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH127
+        } else {
+            rerelease_soldier::DEATH127
+        }
+    }
     /// Frame `death128`.
-    pub fn death128(&self) -> i32 { if self.classic { classic_soldier::DEATH128 } else { rerelease_soldier::DEATH128 } }
+    pub fn death128(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH128
+        } else {
+            rerelease_soldier::DEATH128
+        }
+    }
     /// Frame `death129`.
-    pub fn death129(&self) -> i32 { if self.classic { classic_soldier::DEATH129 } else { rerelease_soldier::DEATH129 } }
+    pub fn death129(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH129
+        } else {
+            rerelease_soldier::DEATH129
+        }
+    }
     /// Frame `death130`.
-    pub fn death130(&self) -> i32 { if self.classic { classic_soldier::DEATH130 } else { rerelease_soldier::DEATH130 } }
+    pub fn death130(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH130
+        } else {
+            rerelease_soldier::DEATH130
+        }
+    }
     /// Frame `death131`.
-    pub fn death131(&self) -> i32 { if self.classic { classic_soldier::DEATH131 } else { rerelease_soldier::DEATH131 } }
+    pub fn death131(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH131
+        } else {
+            rerelease_soldier::DEATH131
+        }
+    }
     /// Frame `death132`.
-    pub fn death132(&self) -> i32 { if self.classic { classic_soldier::DEATH132 } else { rerelease_soldier::DEATH132 } }
+    pub fn death132(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH132
+        } else {
+            rerelease_soldier::DEATH132
+        }
+    }
     /// Frame `death133`.
-    pub fn death133(&self) -> i32 { if self.classic { classic_soldier::DEATH133 } else { rerelease_soldier::DEATH133 } }
+    pub fn death133(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH133
+        } else {
+            rerelease_soldier::DEATH133
+        }
+    }
     /// Frame `death134`.
-    pub fn death134(&self) -> i32 { if self.classic { classic_soldier::DEATH134 } else { rerelease_soldier::DEATH134 } }
+    pub fn death134(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH134
+        } else {
+            rerelease_soldier::DEATH134
+        }
+    }
     /// Frame `death135`.
-    pub fn death135(&self) -> i32 { if self.classic { classic_soldier::DEATH135 } else { rerelease_soldier::DEATH135 } }
+    pub fn death135(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH135
+        } else {
+            rerelease_soldier::DEATH135
+        }
+    }
     /// Frame `death136`.
-    pub fn death136(&self) -> i32 { if self.classic { classic_soldier::DEATH136 } else { rerelease_soldier::DEATH136 } }
+    pub fn death136(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH136
+        } else {
+            rerelease_soldier::DEATH136
+        }
+    }
     /// Frame `death201`.
-    pub fn death201(&self) -> i32 { if self.classic { classic_soldier::DEATH201 } else { rerelease_soldier::DEATH201 } }
+    pub fn death201(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH201
+        } else {
+            rerelease_soldier::DEATH201
+        }
+    }
     /// Frame `death202`.
-    pub fn death202(&self) -> i32 { if self.classic { classic_soldier::DEATH202 } else { rerelease_soldier::DEATH202 } }
+    pub fn death202(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH202
+        } else {
+            rerelease_soldier::DEATH202
+        }
+    }
     /// Frame `death203`.
-    pub fn death203(&self) -> i32 { if self.classic { classic_soldier::DEATH203 } else { rerelease_soldier::DEATH203 } }
+    pub fn death203(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH203
+        } else {
+            rerelease_soldier::DEATH203
+        }
+    }
     /// Frame `death204`.
-    pub fn death204(&self) -> i32 { if self.classic { classic_soldier::DEATH204 } else { rerelease_soldier::DEATH204 } }
+    pub fn death204(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH204
+        } else {
+            rerelease_soldier::DEATH204
+        }
+    }
     /// Frame `death205`.
-    pub fn death205(&self) -> i32 { if self.classic { classic_soldier::DEATH205 } else { rerelease_soldier::DEATH205 } }
+    pub fn death205(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH205
+        } else {
+            rerelease_soldier::DEATH205
+        }
+    }
     /// Frame `death206`.
-    pub fn death206(&self) -> i32 { if self.classic { classic_soldier::DEATH206 } else { rerelease_soldier::DEATH206 } }
+    pub fn death206(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH206
+        } else {
+            rerelease_soldier::DEATH206
+        }
+    }
     /// Frame `death207`.
-    pub fn death207(&self) -> i32 { if self.classic { classic_soldier::DEATH207 } else { rerelease_soldier::DEATH207 } }
+    pub fn death207(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH207
+        } else {
+            rerelease_soldier::DEATH207
+        }
+    }
     /// Frame `death208`.
-    pub fn death208(&self) -> i32 { if self.classic { classic_soldier::DEATH208 } else { rerelease_soldier::DEATH208 } }
+    pub fn death208(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH208
+        } else {
+            rerelease_soldier::DEATH208
+        }
+    }
     /// Frame `death209`.
-    pub fn death209(&self) -> i32 { if self.classic { classic_soldier::DEATH209 } else { rerelease_soldier::DEATH209 } }
+    pub fn death209(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH209
+        } else {
+            rerelease_soldier::DEATH209
+        }
+    }
     /// Frame `death210`.
-    pub fn death210(&self) -> i32 { if self.classic { classic_soldier::DEATH210 } else { rerelease_soldier::DEATH210 } }
+    pub fn death210(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH210
+        } else {
+            rerelease_soldier::DEATH210
+        }
+    }
     /// Frame `death211`.
-    pub fn death211(&self) -> i32 { if self.classic { classic_soldier::DEATH211 } else { rerelease_soldier::DEATH211 } }
+    pub fn death211(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH211
+        } else {
+            rerelease_soldier::DEATH211
+        }
+    }
     /// Frame `death212`.
-    pub fn death212(&self) -> i32 { if self.classic { classic_soldier::DEATH212 } else { rerelease_soldier::DEATH212 } }
+    pub fn death212(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH212
+        } else {
+            rerelease_soldier::DEATH212
+        }
+    }
     /// Frame `death213`.
-    pub fn death213(&self) -> i32 { if self.classic { classic_soldier::DEATH213 } else { rerelease_soldier::DEATH213 } }
+    pub fn death213(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH213
+        } else {
+            rerelease_soldier::DEATH213
+        }
+    }
     /// Frame `death214`.
-    pub fn death214(&self) -> i32 { if self.classic { classic_soldier::DEATH214 } else { rerelease_soldier::DEATH214 } }
+    pub fn death214(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH214
+        } else {
+            rerelease_soldier::DEATH214
+        }
+    }
     /// Frame `death215`.
-    pub fn death215(&self) -> i32 { if self.classic { classic_soldier::DEATH215 } else { rerelease_soldier::DEATH215 } }
+    pub fn death215(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH215
+        } else {
+            rerelease_soldier::DEATH215
+        }
+    }
     /// Frame `death216`.
-    pub fn death216(&self) -> i32 { if self.classic { classic_soldier::DEATH216 } else { rerelease_soldier::DEATH216 } }
+    pub fn death216(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH216
+        } else {
+            rerelease_soldier::DEATH216
+        }
+    }
     /// Frame `death217`.
-    pub fn death217(&self) -> i32 { if self.classic { classic_soldier::DEATH217 } else { rerelease_soldier::DEATH217 } }
+    pub fn death217(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH217
+        } else {
+            rerelease_soldier::DEATH217
+        }
+    }
     /// Frame `death218`.
-    pub fn death218(&self) -> i32 { if self.classic { classic_soldier::DEATH218 } else { rerelease_soldier::DEATH218 } }
+    pub fn death218(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH218
+        } else {
+            rerelease_soldier::DEATH218
+        }
+    }
     /// Frame `death219`.
-    pub fn death219(&self) -> i32 { if self.classic { classic_soldier::DEATH219 } else { rerelease_soldier::DEATH219 } }
+    pub fn death219(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH219
+        } else {
+            rerelease_soldier::DEATH219
+        }
+    }
     /// Frame `death220`.
-    pub fn death220(&self) -> i32 { if self.classic { classic_soldier::DEATH220 } else { rerelease_soldier::DEATH220 } }
+    pub fn death220(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH220
+        } else {
+            rerelease_soldier::DEATH220
+        }
+    }
     /// Frame `death221`.
-    pub fn death221(&self) -> i32 { if self.classic { classic_soldier::DEATH221 } else { rerelease_soldier::DEATH221 } }
+    pub fn death221(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH221
+        } else {
+            rerelease_soldier::DEATH221
+        }
+    }
     /// Frame `death222`.
-    pub fn death222(&self) -> i32 { if self.classic { classic_soldier::DEATH222 } else { rerelease_soldier::DEATH222 } }
+    pub fn death222(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH222
+        } else {
+            rerelease_soldier::DEATH222
+        }
+    }
     /// Frame `death223`.
-    pub fn death223(&self) -> i32 { if self.classic { classic_soldier::DEATH223 } else { rerelease_soldier::DEATH223 } }
+    pub fn death223(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH223
+        } else {
+            rerelease_soldier::DEATH223
+        }
+    }
     /// Frame `death224`.
-    pub fn death224(&self) -> i32 { if self.classic { classic_soldier::DEATH224 } else { rerelease_soldier::DEATH224 } }
+    pub fn death224(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH224
+        } else {
+            rerelease_soldier::DEATH224
+        }
+    }
     /// Frame `death225`.
-    pub fn death225(&self) -> i32 { if self.classic { classic_soldier::DEATH225 } else { rerelease_soldier::DEATH225 } }
+    pub fn death225(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH225
+        } else {
+            rerelease_soldier::DEATH225
+        }
+    }
     /// Frame `death226`.
-    pub fn death226(&self) -> i32 { if self.classic { classic_soldier::DEATH226 } else { rerelease_soldier::DEATH226 } }
+    pub fn death226(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH226
+        } else {
+            rerelease_soldier::DEATH226
+        }
+    }
     /// Frame `death227`.
-    pub fn death227(&self) -> i32 { if self.classic { classic_soldier::DEATH227 } else { rerelease_soldier::DEATH227 } }
+    pub fn death227(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH227
+        } else {
+            rerelease_soldier::DEATH227
+        }
+    }
     /// Frame `death228`.
-    pub fn death228(&self) -> i32 { if self.classic { classic_soldier::DEATH228 } else { rerelease_soldier::DEATH228 } }
+    pub fn death228(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH228
+        } else {
+            rerelease_soldier::DEATH228
+        }
+    }
     /// Frame `death229`.
-    pub fn death229(&self) -> i32 { if self.classic { classic_soldier::DEATH229 } else { rerelease_soldier::DEATH229 } }
+    pub fn death229(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH229
+        } else {
+            rerelease_soldier::DEATH229
+        }
+    }
     /// Frame `death230`.
-    pub fn death230(&self) -> i32 { if self.classic { classic_soldier::DEATH230 } else { rerelease_soldier::DEATH230 } }
+    pub fn death230(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH230
+        } else {
+            rerelease_soldier::DEATH230
+        }
+    }
     /// Frame `death231`.
-    pub fn death231(&self) -> i32 { if self.classic { classic_soldier::DEATH231 } else { rerelease_soldier::DEATH231 } }
+    pub fn death231(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH231
+        } else {
+            rerelease_soldier::DEATH231
+        }
+    }
     /// Frame `death232`.
-    pub fn death232(&self) -> i32 { if self.classic { classic_soldier::DEATH232 } else { rerelease_soldier::DEATH232 } }
+    pub fn death232(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH232
+        } else {
+            rerelease_soldier::DEATH232
+        }
+    }
     /// Frame `death233`.
-    pub fn death233(&self) -> i32 { if self.classic { classic_soldier::DEATH233 } else { rerelease_soldier::DEATH233 } }
+    pub fn death233(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH233
+        } else {
+            rerelease_soldier::DEATH233
+        }
+    }
     /// Frame `death234`.
-    pub fn death234(&self) -> i32 { if self.classic { classic_soldier::DEATH234 } else { rerelease_soldier::DEATH234 } }
+    pub fn death234(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH234
+        } else {
+            rerelease_soldier::DEATH234
+        }
+    }
     /// Frame `death235`.
-    pub fn death235(&self) -> i32 { if self.classic { classic_soldier::DEATH235 } else { rerelease_soldier::DEATH235 } }
+    pub fn death235(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH235
+        } else {
+            rerelease_soldier::DEATH235
+        }
+    }
     /// Frame `death301`.
-    pub fn death301(&self) -> i32 { if self.classic { classic_soldier::DEATH301 } else { rerelease_soldier::DEATH301 } }
+    pub fn death301(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH301
+        } else {
+            rerelease_soldier::DEATH301
+        }
+    }
     /// Frame `death302`.
-    pub fn death302(&self) -> i32 { if self.classic { classic_soldier::DEATH302 } else { rerelease_soldier::DEATH302 } }
+    pub fn death302(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH302
+        } else {
+            rerelease_soldier::DEATH302
+        }
+    }
     /// Frame `death303`.
-    pub fn death303(&self) -> i32 { if self.classic { classic_soldier::DEATH303 } else { rerelease_soldier::DEATH303 } }
+    pub fn death303(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH303
+        } else {
+            rerelease_soldier::DEATH303
+        }
+    }
     /// Frame `death304`.
-    pub fn death304(&self) -> i32 { if self.classic { classic_soldier::DEATH304 } else { rerelease_soldier::DEATH304 } }
+    pub fn death304(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH304
+        } else {
+            rerelease_soldier::DEATH304
+        }
+    }
     /// Frame `death305`.
-    pub fn death305(&self) -> i32 { if self.classic { classic_soldier::DEATH305 } else { rerelease_soldier::DEATH305 } }
+    pub fn death305(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH305
+        } else {
+            rerelease_soldier::DEATH305
+        }
+    }
     /// Frame `death306`.
-    pub fn death306(&self) -> i32 { if self.classic { classic_soldier::DEATH306 } else { rerelease_soldier::DEATH306 } }
+    pub fn death306(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH306
+        } else {
+            rerelease_soldier::DEATH306
+        }
+    }
     /// Frame `death307`.
-    pub fn death307(&self) -> i32 { if self.classic { classic_soldier::DEATH307 } else { rerelease_soldier::DEATH307 } }
+    pub fn death307(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH307
+        } else {
+            rerelease_soldier::DEATH307
+        }
+    }
     /// Frame `death308`.
-    pub fn death308(&self) -> i32 { if self.classic { classic_soldier::DEATH308 } else { rerelease_soldier::DEATH308 } }
+    pub fn death308(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH308
+        } else {
+            rerelease_soldier::DEATH308
+        }
+    }
     /// Frame `death309`.
-    pub fn death309(&self) -> i32 { if self.classic { classic_soldier::DEATH309 } else { rerelease_soldier::DEATH309 } }
+    pub fn death309(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH309
+        } else {
+            rerelease_soldier::DEATH309
+        }
+    }
     /// Frame `death310`.
-    pub fn death310(&self) -> i32 { if self.classic { classic_soldier::DEATH310 } else { rerelease_soldier::DEATH310 } }
+    pub fn death310(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH310
+        } else {
+            rerelease_soldier::DEATH310
+        }
+    }
     /// Frame `death311`.
-    pub fn death311(&self) -> i32 { if self.classic { classic_soldier::DEATH311 } else { rerelease_soldier::DEATH311 } }
+    pub fn death311(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH311
+        } else {
+            rerelease_soldier::DEATH311
+        }
+    }
     /// Frame `death312`.
-    pub fn death312(&self) -> i32 { if self.classic { classic_soldier::DEATH312 } else { rerelease_soldier::DEATH312 } }
+    pub fn death312(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH312
+        } else {
+            rerelease_soldier::DEATH312
+        }
+    }
     /// Frame `death313`.
-    pub fn death313(&self) -> i32 { if self.classic { classic_soldier::DEATH313 } else { rerelease_soldier::DEATH313 } }
+    pub fn death313(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH313
+        } else {
+            rerelease_soldier::DEATH313
+        }
+    }
     /// Frame `death314`.
-    pub fn death314(&self) -> i32 { if self.classic { classic_soldier::DEATH314 } else { rerelease_soldier::DEATH314 } }
+    pub fn death314(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH314
+        } else {
+            rerelease_soldier::DEATH314
+        }
+    }
     /// Frame `death315`.
-    pub fn death315(&self) -> i32 { if self.classic { classic_soldier::DEATH315 } else { rerelease_soldier::DEATH315 } }
+    pub fn death315(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH315
+        } else {
+            rerelease_soldier::DEATH315
+        }
+    }
     /// Frame `death316`.
-    pub fn death316(&self) -> i32 { if self.classic { classic_soldier::DEATH316 } else { rerelease_soldier::DEATH316 } }
+    pub fn death316(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH316
+        } else {
+            rerelease_soldier::DEATH316
+        }
+    }
     /// Frame `death317`.
-    pub fn death317(&self) -> i32 { if self.classic { classic_soldier::DEATH317 } else { rerelease_soldier::DEATH317 } }
+    pub fn death317(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH317
+        } else {
+            rerelease_soldier::DEATH317
+        }
+    }
     /// Frame `death318`.
-    pub fn death318(&self) -> i32 { if self.classic { classic_soldier::DEATH318 } else { rerelease_soldier::DEATH318 } }
+    pub fn death318(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH318
+        } else {
+            rerelease_soldier::DEATH318
+        }
+    }
     /// Frame `death319`.
-    pub fn death319(&self) -> i32 { if self.classic { classic_soldier::DEATH319 } else { rerelease_soldier::DEATH319 } }
+    pub fn death319(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH319
+        } else {
+            rerelease_soldier::DEATH319
+        }
+    }
     /// Frame `death320`.
-    pub fn death320(&self) -> i32 { if self.classic { classic_soldier::DEATH320 } else { rerelease_soldier::DEATH320 } }
+    pub fn death320(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH320
+        } else {
+            rerelease_soldier::DEATH320
+        }
+    }
     /// Frame `death321`.
-    pub fn death321(&self) -> i32 { if self.classic { classic_soldier::DEATH321 } else { rerelease_soldier::DEATH321 } }
+    pub fn death321(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH321
+        } else {
+            rerelease_soldier::DEATH321
+        }
+    }
     /// Frame `death322`.
-    pub fn death322(&self) -> i32 { if self.classic { classic_soldier::DEATH322 } else { rerelease_soldier::DEATH322 } }
+    pub fn death322(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH322
+        } else {
+            rerelease_soldier::DEATH322
+        }
+    }
     /// Frame `death323`.
-    pub fn death323(&self) -> i32 { if self.classic { classic_soldier::DEATH323 } else { rerelease_soldier::DEATH323 } }
+    pub fn death323(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH323
+        } else {
+            rerelease_soldier::DEATH323
+        }
+    }
     /// Frame `death324`.
-    pub fn death324(&self) -> i32 { if self.classic { classic_soldier::DEATH324 } else { rerelease_soldier::DEATH324 } }
+    pub fn death324(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH324
+        } else {
+            rerelease_soldier::DEATH324
+        }
+    }
     /// Frame `death325`.
-    pub fn death325(&self) -> i32 { if self.classic { classic_soldier::DEATH325 } else { rerelease_soldier::DEATH325 } }
+    pub fn death325(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH325
+        } else {
+            rerelease_soldier::DEATH325
+        }
+    }
     /// Frame `death326`.
-    pub fn death326(&self) -> i32 { if self.classic { classic_soldier::DEATH326 } else { rerelease_soldier::DEATH326 } }
+    pub fn death326(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH326
+        } else {
+            rerelease_soldier::DEATH326
+        }
+    }
     /// Frame `death327`.
-    pub fn death327(&self) -> i32 { if self.classic { classic_soldier::DEATH327 } else { rerelease_soldier::DEATH327 } }
+    pub fn death327(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH327
+        } else {
+            rerelease_soldier::DEATH327
+        }
+    }
     /// Frame `death328`.
-    pub fn death328(&self) -> i32 { if self.classic { classic_soldier::DEATH328 } else { rerelease_soldier::DEATH328 } }
+    pub fn death328(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH328
+        } else {
+            rerelease_soldier::DEATH328
+        }
+    }
     /// Frame `death329`.
-    pub fn death329(&self) -> i32 { if self.classic { classic_soldier::DEATH329 } else { rerelease_soldier::DEATH329 } }
+    pub fn death329(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH329
+        } else {
+            rerelease_soldier::DEATH329
+        }
+    }
     /// Frame `death330`.
-    pub fn death330(&self) -> i32 { if self.classic { classic_soldier::DEATH330 } else { rerelease_soldier::DEATH330 } }
+    pub fn death330(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH330
+        } else {
+            rerelease_soldier::DEATH330
+        }
+    }
     /// Frame `death331`.
-    pub fn death331(&self) -> i32 { if self.classic { classic_soldier::DEATH331 } else { rerelease_soldier::DEATH331 } }
+    pub fn death331(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH331
+        } else {
+            rerelease_soldier::DEATH331
+        }
+    }
     /// Frame `death332`.
-    pub fn death332(&self) -> i32 { if self.classic { classic_soldier::DEATH332 } else { rerelease_soldier::DEATH332 } }
+    pub fn death332(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH332
+        } else {
+            rerelease_soldier::DEATH332
+        }
+    }
     /// Frame `death333`.
-    pub fn death333(&self) -> i32 { if self.classic { classic_soldier::DEATH333 } else { rerelease_soldier::DEATH333 } }
+    pub fn death333(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH333
+        } else {
+            rerelease_soldier::DEATH333
+        }
+    }
     /// Frame `death334`.
-    pub fn death334(&self) -> i32 { if self.classic { classic_soldier::DEATH334 } else { rerelease_soldier::DEATH334 } }
+    pub fn death334(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH334
+        } else {
+            rerelease_soldier::DEATH334
+        }
+    }
     /// Frame `death335`.
-    pub fn death335(&self) -> i32 { if self.classic { classic_soldier::DEATH335 } else { rerelease_soldier::DEATH335 } }
+    pub fn death335(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH335
+        } else {
+            rerelease_soldier::DEATH335
+        }
+    }
     /// Frame `death336`.
-    pub fn death336(&self) -> i32 { if self.classic { classic_soldier::DEATH336 } else { rerelease_soldier::DEATH336 } }
+    pub fn death336(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH336
+        } else {
+            rerelease_soldier::DEATH336
+        }
+    }
     /// Frame `death337`.
-    pub fn death337(&self) -> i32 { if self.classic { classic_soldier::DEATH337 } else { rerelease_soldier::DEATH337 } }
+    pub fn death337(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH337
+        } else {
+            rerelease_soldier::DEATH337
+        }
+    }
     /// Frame `death338`.
-    pub fn death338(&self) -> i32 { if self.classic { classic_soldier::DEATH338 } else { rerelease_soldier::DEATH338 } }
+    pub fn death338(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH338
+        } else {
+            rerelease_soldier::DEATH338
+        }
+    }
     /// Frame `death339`.
-    pub fn death339(&self) -> i32 { if self.classic { classic_soldier::DEATH339 } else { rerelease_soldier::DEATH339 } }
+    pub fn death339(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH339
+        } else {
+            rerelease_soldier::DEATH339
+        }
+    }
     /// Frame `death340`.
-    pub fn death340(&self) -> i32 { if self.classic { classic_soldier::DEATH340 } else { rerelease_soldier::DEATH340 } }
+    pub fn death340(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH340
+        } else {
+            rerelease_soldier::DEATH340
+        }
+    }
     /// Frame `death341`.
-    pub fn death341(&self) -> i32 { if self.classic { classic_soldier::DEATH341 } else { rerelease_soldier::DEATH341 } }
+    pub fn death341(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH341
+        } else {
+            rerelease_soldier::DEATH341
+        }
+    }
     /// Frame `death342`.
-    pub fn death342(&self) -> i32 { if self.classic { classic_soldier::DEATH342 } else { rerelease_soldier::DEATH342 } }
+    pub fn death342(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH342
+        } else {
+            rerelease_soldier::DEATH342
+        }
+    }
     /// Frame `death343`.
-    pub fn death343(&self) -> i32 { if self.classic { classic_soldier::DEATH343 } else { rerelease_soldier::DEATH343 } }
+    pub fn death343(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH343
+        } else {
+            rerelease_soldier::DEATH343
+        }
+    }
     /// Frame `death344`.
-    pub fn death344(&self) -> i32 { if self.classic { classic_soldier::DEATH344 } else { rerelease_soldier::DEATH344 } }
+    pub fn death344(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH344
+        } else {
+            rerelease_soldier::DEATH344
+        }
+    }
     /// Frame `death345`.
-    pub fn death345(&self) -> i32 { if self.classic { classic_soldier::DEATH345 } else { rerelease_soldier::DEATH345 } }
+    pub fn death345(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH345
+        } else {
+            rerelease_soldier::DEATH345
+        }
+    }
     /// Frame `death401`.
-    pub fn death401(&self) -> i32 { if self.classic { classic_soldier::DEATH401 } else { rerelease_soldier::DEATH401 } }
+    pub fn death401(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH401
+        } else {
+            rerelease_soldier::DEATH401
+        }
+    }
     /// Frame `death402`.
-    pub fn death402(&self) -> i32 { if self.classic { classic_soldier::DEATH402 } else { rerelease_soldier::DEATH402 } }
+    pub fn death402(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH402
+        } else {
+            rerelease_soldier::DEATH402
+        }
+    }
     /// Frame `death403`.
-    pub fn death403(&self) -> i32 { if self.classic { classic_soldier::DEATH403 } else { rerelease_soldier::DEATH403 } }
+    pub fn death403(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH403
+        } else {
+            rerelease_soldier::DEATH403
+        }
+    }
     /// Frame `death404`.
-    pub fn death404(&self) -> i32 { if self.classic { classic_soldier::DEATH404 } else { rerelease_soldier::DEATH404 } }
+    pub fn death404(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH404
+        } else {
+            rerelease_soldier::DEATH404
+        }
+    }
     /// Frame `death405`.
-    pub fn death405(&self) -> i32 { if self.classic { classic_soldier::DEATH405 } else { rerelease_soldier::DEATH405 } }
+    pub fn death405(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH405
+        } else {
+            rerelease_soldier::DEATH405
+        }
+    }
     /// Frame `death406`.
-    pub fn death406(&self) -> i32 { if self.classic { classic_soldier::DEATH406 } else { rerelease_soldier::DEATH406 } }
+    pub fn death406(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH406
+        } else {
+            rerelease_soldier::DEATH406
+        }
+    }
     /// Frame `death407`.
-    pub fn death407(&self) -> i32 { if self.classic { classic_soldier::DEATH407 } else { rerelease_soldier::DEATH407 } }
+    pub fn death407(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH407
+        } else {
+            rerelease_soldier::DEATH407
+        }
+    }
     /// Frame `death408`.
-    pub fn death408(&self) -> i32 { if self.classic { classic_soldier::DEATH408 } else { rerelease_soldier::DEATH408 } }
+    pub fn death408(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH408
+        } else {
+            rerelease_soldier::DEATH408
+        }
+    }
     /// Frame `death409`.
-    pub fn death409(&self) -> i32 { if self.classic { classic_soldier::DEATH409 } else { rerelease_soldier::DEATH409 } }
+    pub fn death409(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH409
+        } else {
+            rerelease_soldier::DEATH409
+        }
+    }
     /// Frame `death410`.
-    pub fn death410(&self) -> i32 { if self.classic { classic_soldier::DEATH410 } else { rerelease_soldier::DEATH410 } }
+    pub fn death410(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH410
+        } else {
+            rerelease_soldier::DEATH410
+        }
+    }
     /// Frame `death411`.
-    pub fn death411(&self) -> i32 { if self.classic { classic_soldier::DEATH411 } else { rerelease_soldier::DEATH411 } }
+    pub fn death411(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH411
+        } else {
+            rerelease_soldier::DEATH411
+        }
+    }
     /// Frame `death412`.
-    pub fn death412(&self) -> i32 { if self.classic { classic_soldier::DEATH412 } else { rerelease_soldier::DEATH412 } }
+    pub fn death412(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH412
+        } else {
+            rerelease_soldier::DEATH412
+        }
+    }
     /// Frame `death413`.
-    pub fn death413(&self) -> i32 { if self.classic { classic_soldier::DEATH413 } else { rerelease_soldier::DEATH413 } }
+    pub fn death413(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH413
+        } else {
+            rerelease_soldier::DEATH413
+        }
+    }
     /// Frame `death414`.
-    pub fn death414(&self) -> i32 { if self.classic { classic_soldier::DEATH414 } else { rerelease_soldier::DEATH414 } }
+    pub fn death414(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH414
+        } else {
+            rerelease_soldier::DEATH414
+        }
+    }
     /// Frame `death415`.
-    pub fn death415(&self) -> i32 { if self.classic { classic_soldier::DEATH415 } else { rerelease_soldier::DEATH415 } }
+    pub fn death415(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH415
+        } else {
+            rerelease_soldier::DEATH415
+        }
+    }
     /// Frame `death416`.
-    pub fn death416(&self) -> i32 { if self.classic { classic_soldier::DEATH416 } else { rerelease_soldier::DEATH416 } }
+    pub fn death416(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH416
+        } else {
+            rerelease_soldier::DEATH416
+        }
+    }
     /// Frame `death417`.
-    pub fn death417(&self) -> i32 { if self.classic { classic_soldier::DEATH417 } else { rerelease_soldier::DEATH417 } }
+    pub fn death417(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH417
+        } else {
+            rerelease_soldier::DEATH417
+        }
+    }
     /// Frame `death418`.
-    pub fn death418(&self) -> i32 { if self.classic { classic_soldier::DEATH418 } else { rerelease_soldier::DEATH418 } }
+    pub fn death418(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH418
+        } else {
+            rerelease_soldier::DEATH418
+        }
+    }
     /// Frame `death419`.
-    pub fn death419(&self) -> i32 { if self.classic { classic_soldier::DEATH419 } else { rerelease_soldier::DEATH419 } }
+    pub fn death419(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH419
+        } else {
+            rerelease_soldier::DEATH419
+        }
+    }
     /// Frame `death420`.
-    pub fn death420(&self) -> i32 { if self.classic { classic_soldier::DEATH420 } else { rerelease_soldier::DEATH420 } }
+    pub fn death420(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH420
+        } else {
+            rerelease_soldier::DEATH420
+        }
+    }
     /// Frame `death421`.
-    pub fn death421(&self) -> i32 { if self.classic { classic_soldier::DEATH421 } else { rerelease_soldier::DEATH421 } }
+    pub fn death421(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH421
+        } else {
+            rerelease_soldier::DEATH421
+        }
+    }
     /// Frame `death422`.
-    pub fn death422(&self) -> i32 { if self.classic { classic_soldier::DEATH422 } else { rerelease_soldier::DEATH422 } }
+    pub fn death422(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH422
+        } else {
+            rerelease_soldier::DEATH422
+        }
+    }
     /// Frame `death423`.
-    pub fn death423(&self) -> i32 { if self.classic { classic_soldier::DEATH423 } else { rerelease_soldier::DEATH423 } }
+    pub fn death423(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH423
+        } else {
+            rerelease_soldier::DEATH423
+        }
+    }
     /// Frame `death424`.
-    pub fn death424(&self) -> i32 { if self.classic { classic_soldier::DEATH424 } else { rerelease_soldier::DEATH424 } }
+    pub fn death424(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH424
+        } else {
+            rerelease_soldier::DEATH424
+        }
+    }
     /// Frame `death425`.
-    pub fn death425(&self) -> i32 { if self.classic { classic_soldier::DEATH425 } else { rerelease_soldier::DEATH425 } }
+    pub fn death425(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH425
+        } else {
+            rerelease_soldier::DEATH425
+        }
+    }
     /// Frame `death426`.
-    pub fn death426(&self) -> i32 { if self.classic { classic_soldier::DEATH426 } else { rerelease_soldier::DEATH426 } }
+    pub fn death426(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH426
+        } else {
+            rerelease_soldier::DEATH426
+        }
+    }
     /// Frame `death427`.
-    pub fn death427(&self) -> i32 { if self.classic { classic_soldier::DEATH427 } else { rerelease_soldier::DEATH427 } }
+    pub fn death427(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH427
+        } else {
+            rerelease_soldier::DEATH427
+        }
+    }
     /// Frame `death428`.
-    pub fn death428(&self) -> i32 { if self.classic { classic_soldier::DEATH428 } else { rerelease_soldier::DEATH428 } }
+    pub fn death428(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH428
+        } else {
+            rerelease_soldier::DEATH428
+        }
+    }
     /// Frame `death429`.
-    pub fn death429(&self) -> i32 { if self.classic { classic_soldier::DEATH429 } else { rerelease_soldier::DEATH429 } }
+    pub fn death429(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH429
+        } else {
+            rerelease_soldier::DEATH429
+        }
+    }
     /// Frame `death430`.
-    pub fn death430(&self) -> i32 { if self.classic { classic_soldier::DEATH430 } else { rerelease_soldier::DEATH430 } }
+    pub fn death430(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH430
+        } else {
+            rerelease_soldier::DEATH430
+        }
+    }
     /// Frame `death431`.
-    pub fn death431(&self) -> i32 { if self.classic { classic_soldier::DEATH431 } else { rerelease_soldier::DEATH431 } }
+    pub fn death431(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH431
+        } else {
+            rerelease_soldier::DEATH431
+        }
+    }
     /// Frame `death432`.
-    pub fn death432(&self) -> i32 { if self.classic { classic_soldier::DEATH432 } else { rerelease_soldier::DEATH432 } }
+    pub fn death432(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH432
+        } else {
+            rerelease_soldier::DEATH432
+        }
+    }
     /// Frame `death433`.
-    pub fn death433(&self) -> i32 { if self.classic { classic_soldier::DEATH433 } else { rerelease_soldier::DEATH433 } }
+    pub fn death433(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH433
+        } else {
+            rerelease_soldier::DEATH433
+        }
+    }
     /// Frame `death434`.
-    pub fn death434(&self) -> i32 { if self.classic { classic_soldier::DEATH434 } else { rerelease_soldier::DEATH434 } }
+    pub fn death434(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH434
+        } else {
+            rerelease_soldier::DEATH434
+        }
+    }
     /// Frame `death435`.
-    pub fn death435(&self) -> i32 { if self.classic { classic_soldier::DEATH435 } else { rerelease_soldier::DEATH435 } }
+    pub fn death435(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH435
+        } else {
+            rerelease_soldier::DEATH435
+        }
+    }
     /// Frame `death436`.
-    pub fn death436(&self) -> i32 { if self.classic { classic_soldier::DEATH436 } else { rerelease_soldier::DEATH436 } }
+    pub fn death436(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH436
+        } else {
+            rerelease_soldier::DEATH436
+        }
+    }
     /// Frame `death437`.
-    pub fn death437(&self) -> i32 { if self.classic { classic_soldier::DEATH437 } else { rerelease_soldier::DEATH437 } }
+    pub fn death437(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH437
+        } else {
+            rerelease_soldier::DEATH437
+        }
+    }
     /// Frame `death438`.
-    pub fn death438(&self) -> i32 { if self.classic { classic_soldier::DEATH438 } else { rerelease_soldier::DEATH438 } }
+    pub fn death438(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH438
+        } else {
+            rerelease_soldier::DEATH438
+        }
+    }
     /// Frame `death439`.
-    pub fn death439(&self) -> i32 { if self.classic { classic_soldier::DEATH439 } else { rerelease_soldier::DEATH439 } }
+    pub fn death439(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH439
+        } else {
+            rerelease_soldier::DEATH439
+        }
+    }
     /// Frame `death440`.
-    pub fn death440(&self) -> i32 { if self.classic { classic_soldier::DEATH440 } else { rerelease_soldier::DEATH440 } }
+    pub fn death440(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH440
+        } else {
+            rerelease_soldier::DEATH440
+        }
+    }
     /// Frame `death441`.
-    pub fn death441(&self) -> i32 { if self.classic { classic_soldier::DEATH441 } else { rerelease_soldier::DEATH441 } }
+    pub fn death441(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH441
+        } else {
+            rerelease_soldier::DEATH441
+        }
+    }
     /// Frame `death442`.
-    pub fn death442(&self) -> i32 { if self.classic { classic_soldier::DEATH442 } else { rerelease_soldier::DEATH442 } }
+    pub fn death442(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH442
+        } else {
+            rerelease_soldier::DEATH442
+        }
+    }
     /// Frame `death443`.
-    pub fn death443(&self) -> i32 { if self.classic { classic_soldier::DEATH443 } else { rerelease_soldier::DEATH443 } }
+    pub fn death443(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH443
+        } else {
+            rerelease_soldier::DEATH443
+        }
+    }
     /// Frame `death444`.
-    pub fn death444(&self) -> i32 { if self.classic { classic_soldier::DEATH444 } else { rerelease_soldier::DEATH444 } }
+    pub fn death444(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH444
+        } else {
+            rerelease_soldier::DEATH444
+        }
+    }
     /// Frame `death445`.
-    pub fn death445(&self) -> i32 { if self.classic { classic_soldier::DEATH445 } else { rerelease_soldier::DEATH445 } }
+    pub fn death445(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH445
+        } else {
+            rerelease_soldier::DEATH445
+        }
+    }
     /// Frame `death446`.
-    pub fn death446(&self) -> i32 { if self.classic { classic_soldier::DEATH446 } else { rerelease_soldier::DEATH446 } }
+    pub fn death446(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH446
+        } else {
+            rerelease_soldier::DEATH446
+        }
+    }
     /// Frame `death447`.
-    pub fn death447(&self) -> i32 { if self.classic { classic_soldier::DEATH447 } else { rerelease_soldier::DEATH447 } }
+    pub fn death447(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH447
+        } else {
+            rerelease_soldier::DEATH447
+        }
+    }
     /// Frame `death448`.
-    pub fn death448(&self) -> i32 { if self.classic { classic_soldier::DEATH448 } else { rerelease_soldier::DEATH448 } }
+    pub fn death448(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH448
+        } else {
+            rerelease_soldier::DEATH448
+        }
+    }
     /// Frame `death449`.
-    pub fn death449(&self) -> i32 { if self.classic { classic_soldier::DEATH449 } else { rerelease_soldier::DEATH449 } }
+    pub fn death449(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH449
+        } else {
+            rerelease_soldier::DEATH449
+        }
+    }
     /// Frame `death450`.
-    pub fn death450(&self) -> i32 { if self.classic { classic_soldier::DEATH450 } else { rerelease_soldier::DEATH450 } }
+    pub fn death450(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH450
+        } else {
+            rerelease_soldier::DEATH450
+        }
+    }
     /// Frame `death451`.
-    pub fn death451(&self) -> i32 { if self.classic { classic_soldier::DEATH451 } else { rerelease_soldier::DEATH451 } }
+    pub fn death451(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH451
+        } else {
+            rerelease_soldier::DEATH451
+        }
+    }
     /// Frame `death452`.
-    pub fn death452(&self) -> i32 { if self.classic { classic_soldier::DEATH452 } else { rerelease_soldier::DEATH452 } }
+    pub fn death452(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH452
+        } else {
+            rerelease_soldier::DEATH452
+        }
+    }
     /// Frame `death453`.
-    pub fn death453(&self) -> i32 { if self.classic { classic_soldier::DEATH453 } else { rerelease_soldier::DEATH453 } }
+    pub fn death453(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH453
+        } else {
+            rerelease_soldier::DEATH453
+        }
+    }
     /// Frame `death501`.
-    pub fn death501(&self) -> i32 { if self.classic { classic_soldier::DEATH501 } else { rerelease_soldier::DEATH501 } }
+    pub fn death501(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH501
+        } else {
+            rerelease_soldier::DEATH501
+        }
+    }
     /// Frame `death502`.
-    pub fn death502(&self) -> i32 { if self.classic { classic_soldier::DEATH502 } else { rerelease_soldier::DEATH502 } }
+    pub fn death502(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH502
+        } else {
+            rerelease_soldier::DEATH502
+        }
+    }
     /// Frame `death503`.
-    pub fn death503(&self) -> i32 { if self.classic { classic_soldier::DEATH503 } else { rerelease_soldier::DEATH503 } }
+    pub fn death503(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH503
+        } else {
+            rerelease_soldier::DEATH503
+        }
+    }
     /// Frame `death504`.
-    pub fn death504(&self) -> i32 { if self.classic { classic_soldier::DEATH504 } else { rerelease_soldier::DEATH504 } }
+    pub fn death504(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH504
+        } else {
+            rerelease_soldier::DEATH504
+        }
+    }
     /// Frame `death505`.
-    pub fn death505(&self) -> i32 { if self.classic { classic_soldier::DEATH505 } else { rerelease_soldier::DEATH505 } }
+    pub fn death505(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH505
+        } else {
+            rerelease_soldier::DEATH505
+        }
+    }
     /// Frame `death506`.
-    pub fn death506(&self) -> i32 { if self.classic { classic_soldier::DEATH506 } else { rerelease_soldier::DEATH506 } }
+    pub fn death506(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH506
+        } else {
+            rerelease_soldier::DEATH506
+        }
+    }
     /// Frame `death507`.
-    pub fn death507(&self) -> i32 { if self.classic { classic_soldier::DEATH507 } else { rerelease_soldier::DEATH507 } }
+    pub fn death507(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH507
+        } else {
+            rerelease_soldier::DEATH507
+        }
+    }
     /// Frame `death508`.
-    pub fn death508(&self) -> i32 { if self.classic { classic_soldier::DEATH508 } else { rerelease_soldier::DEATH508 } }
+    pub fn death508(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH508
+        } else {
+            rerelease_soldier::DEATH508
+        }
+    }
     /// Frame `death509`.
-    pub fn death509(&self) -> i32 { if self.classic { classic_soldier::DEATH509 } else { rerelease_soldier::DEATH509 } }
+    pub fn death509(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH509
+        } else {
+            rerelease_soldier::DEATH509
+        }
+    }
     /// Frame `death510`.
-    pub fn death510(&self) -> i32 { if self.classic { classic_soldier::DEATH510 } else { rerelease_soldier::DEATH510 } }
+    pub fn death510(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH510
+        } else {
+            rerelease_soldier::DEATH510
+        }
+    }
     /// Frame `death511`.
-    pub fn death511(&self) -> i32 { if self.classic { classic_soldier::DEATH511 } else { rerelease_soldier::DEATH511 } }
+    pub fn death511(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH511
+        } else {
+            rerelease_soldier::DEATH511
+        }
+    }
     /// Frame `death512`.
-    pub fn death512(&self) -> i32 { if self.classic { classic_soldier::DEATH512 } else { rerelease_soldier::DEATH512 } }
+    pub fn death512(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH512
+        } else {
+            rerelease_soldier::DEATH512
+        }
+    }
     /// Frame `death513`.
-    pub fn death513(&self) -> i32 { if self.classic { classic_soldier::DEATH513 } else { rerelease_soldier::DEATH513 } }
+    pub fn death513(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH513
+        } else {
+            rerelease_soldier::DEATH513
+        }
+    }
     /// Frame `death514`.
-    pub fn death514(&self) -> i32 { if self.classic { classic_soldier::DEATH514 } else { rerelease_soldier::DEATH514 } }
+    pub fn death514(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH514
+        } else {
+            rerelease_soldier::DEATH514
+        }
+    }
     /// Frame `death515`.
-    pub fn death515(&self) -> i32 { if self.classic { classic_soldier::DEATH515 } else { rerelease_soldier::DEATH515 } }
+    pub fn death515(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH515
+        } else {
+            rerelease_soldier::DEATH515
+        }
+    }
     /// Frame `death516`.
-    pub fn death516(&self) -> i32 { if self.classic { classic_soldier::DEATH516 } else { rerelease_soldier::DEATH516 } }
+    pub fn death516(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH516
+        } else {
+            rerelease_soldier::DEATH516
+        }
+    }
     /// Frame `death517`.
-    pub fn death517(&self) -> i32 { if self.classic { classic_soldier::DEATH517 } else { rerelease_soldier::DEATH517 } }
+    pub fn death517(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH517
+        } else {
+            rerelease_soldier::DEATH517
+        }
+    }
     /// Frame `death518`.
-    pub fn death518(&self) -> i32 { if self.classic { classic_soldier::DEATH518 } else { rerelease_soldier::DEATH518 } }
+    pub fn death518(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH518
+        } else {
+            rerelease_soldier::DEATH518
+        }
+    }
     /// Frame `death519`.
-    pub fn death519(&self) -> i32 { if self.classic { classic_soldier::DEATH519 } else { rerelease_soldier::DEATH519 } }
+    pub fn death519(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH519
+        } else {
+            rerelease_soldier::DEATH519
+        }
+    }
     /// Frame `death520`.
-    pub fn death520(&self) -> i32 { if self.classic { classic_soldier::DEATH520 } else { rerelease_soldier::DEATH520 } }
+    pub fn death520(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH520
+        } else {
+            rerelease_soldier::DEATH520
+        }
+    }
     /// Frame `death521`.
-    pub fn death521(&self) -> i32 { if self.classic { classic_soldier::DEATH521 } else { rerelease_soldier::DEATH521 } }
+    pub fn death521(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH521
+        } else {
+            rerelease_soldier::DEATH521
+        }
+    }
     /// Frame `death522`.
-    pub fn death522(&self) -> i32 { if self.classic { classic_soldier::DEATH522 } else { rerelease_soldier::DEATH522 } }
+    pub fn death522(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH522
+        } else {
+            rerelease_soldier::DEATH522
+        }
+    }
     /// Frame `death523`.
-    pub fn death523(&self) -> i32 { if self.classic { classic_soldier::DEATH523 } else { rerelease_soldier::DEATH523 } }
+    pub fn death523(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH523
+        } else {
+            rerelease_soldier::DEATH523
+        }
+    }
     /// Frame `death524`.
-    pub fn death524(&self) -> i32 { if self.classic { classic_soldier::DEATH524 } else { rerelease_soldier::DEATH524 } }
+    pub fn death524(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH524
+        } else {
+            rerelease_soldier::DEATH524
+        }
+    }
     /// Frame `death601`.
-    pub fn death601(&self) -> i32 { if self.classic { classic_soldier::DEATH601 } else { rerelease_soldier::DEATH601 } }
+    pub fn death601(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH601
+        } else {
+            rerelease_soldier::DEATH601
+        }
+    }
     /// Frame `death602`.
-    pub fn death602(&self) -> i32 { if self.classic { classic_soldier::DEATH602 } else { rerelease_soldier::DEATH602 } }
+    pub fn death602(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH602
+        } else {
+            rerelease_soldier::DEATH602
+        }
+    }
     /// Frame `death603`.
-    pub fn death603(&self) -> i32 { if self.classic { classic_soldier::DEATH603 } else { rerelease_soldier::DEATH603 } }
+    pub fn death603(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH603
+        } else {
+            rerelease_soldier::DEATH603
+        }
+    }
     /// Frame `death604`.
-    pub fn death604(&self) -> i32 { if self.classic { classic_soldier::DEATH604 } else { rerelease_soldier::DEATH604 } }
+    pub fn death604(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH604
+        } else {
+            rerelease_soldier::DEATH604
+        }
+    }
     /// Frame `death605`.
-    pub fn death605(&self) -> i32 { if self.classic { classic_soldier::DEATH605 } else { rerelease_soldier::DEATH605 } }
+    pub fn death605(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH605
+        } else {
+            rerelease_soldier::DEATH605
+        }
+    }
     /// Frame `death606`.
-    pub fn death606(&self) -> i32 { if self.classic { classic_soldier::DEATH606 } else { rerelease_soldier::DEATH606 } }
+    pub fn death606(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH606
+        } else {
+            rerelease_soldier::DEATH606
+        }
+    }
     /// Frame `death607`.
-    pub fn death607(&self) -> i32 { if self.classic { classic_soldier::DEATH607 } else { rerelease_soldier::DEATH607 } }
+    pub fn death607(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH607
+        } else {
+            rerelease_soldier::DEATH607
+        }
+    }
     /// Frame `death608`.
-    pub fn death608(&self) -> i32 { if self.classic { classic_soldier::DEATH608 } else { rerelease_soldier::DEATH608 } }
+    pub fn death608(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH608
+        } else {
+            rerelease_soldier::DEATH608
+        }
+    }
     /// Frame `death609`.
-    pub fn death609(&self) -> i32 { if self.classic { classic_soldier::DEATH609 } else { rerelease_soldier::DEATH609 } }
+    pub fn death609(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH609
+        } else {
+            rerelease_soldier::DEATH609
+        }
+    }
     /// Frame `death610`.
-    pub fn death610(&self) -> i32 { if self.classic { classic_soldier::DEATH610 } else { rerelease_soldier::DEATH610 } }
+    pub fn death610(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DEATH610
+        } else {
+            rerelease_soldier::DEATH610
+        }
+    }
     /// Frame `duck01`.
-    pub fn duck01(&self) -> i32 { if self.classic { classic_soldier::DUCK01 } else { rerelease_soldier::DUCK01 } }
+    pub fn duck01(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DUCK01
+        } else {
+            rerelease_soldier::DUCK01
+        }
+    }
     /// Frame `duck02`.
-    pub fn duck02(&self) -> i32 { if self.classic { classic_soldier::DUCK02 } else { rerelease_soldier::DUCK02 } }
+    pub fn duck02(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DUCK02
+        } else {
+            rerelease_soldier::DUCK02
+        }
+    }
     /// Frame `duck03`.
-    pub fn duck03(&self) -> i32 { if self.classic { classic_soldier::DUCK03 } else { rerelease_soldier::DUCK03 } }
+    pub fn duck03(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DUCK03
+        } else {
+            rerelease_soldier::DUCK03
+        }
+    }
     /// Frame `duck04`.
-    pub fn duck04(&self) -> i32 { if self.classic { classic_soldier::DUCK04 } else { rerelease_soldier::DUCK04 } }
+    pub fn duck04(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DUCK04
+        } else {
+            rerelease_soldier::DUCK04
+        }
+    }
     /// Frame `duck05`.
-    pub fn duck05(&self) -> i32 { if self.classic { classic_soldier::DUCK05 } else { rerelease_soldier::DUCK05 } }
+    pub fn duck05(&self) -> i32 {
+        if self.classic {
+            classic_soldier::DUCK05
+        } else {
+            rerelease_soldier::DUCK05
+        }
+    }
     /// Frame `pain101`.
-    pub fn pain101(&self) -> i32 { if self.classic { classic_soldier::PAIN101 } else { rerelease_soldier::PAIN101 } }
+    pub fn pain101(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN101
+        } else {
+            rerelease_soldier::PAIN101
+        }
+    }
     /// Frame `pain102`.
-    pub fn pain102(&self) -> i32 { if self.classic { classic_soldier::PAIN102 } else { rerelease_soldier::PAIN102 } }
+    pub fn pain102(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN102
+        } else {
+            rerelease_soldier::PAIN102
+        }
+    }
     /// Frame `pain103`.
-    pub fn pain103(&self) -> i32 { if self.classic { classic_soldier::PAIN103 } else { rerelease_soldier::PAIN103 } }
+    pub fn pain103(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN103
+        } else {
+            rerelease_soldier::PAIN103
+        }
+    }
     /// Frame `pain104`.
-    pub fn pain104(&self) -> i32 { if self.classic { classic_soldier::PAIN104 } else { rerelease_soldier::PAIN104 } }
+    pub fn pain104(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN104
+        } else {
+            rerelease_soldier::PAIN104
+        }
+    }
     /// Frame `pain105`.
-    pub fn pain105(&self) -> i32 { if self.classic { classic_soldier::PAIN105 } else { rerelease_soldier::PAIN105 } }
+    pub fn pain105(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN105
+        } else {
+            rerelease_soldier::PAIN105
+        }
+    }
     /// Frame `pain201`.
-    pub fn pain201(&self) -> i32 { if self.classic { classic_soldier::PAIN201 } else { rerelease_soldier::PAIN201 } }
+    pub fn pain201(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN201
+        } else {
+            rerelease_soldier::PAIN201
+        }
+    }
     /// Frame `pain202`.
-    pub fn pain202(&self) -> i32 { if self.classic { classic_soldier::PAIN202 } else { rerelease_soldier::PAIN202 } }
+    pub fn pain202(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN202
+        } else {
+            rerelease_soldier::PAIN202
+        }
+    }
     /// Frame `pain203`.
-    pub fn pain203(&self) -> i32 { if self.classic { classic_soldier::PAIN203 } else { rerelease_soldier::PAIN203 } }
+    pub fn pain203(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN203
+        } else {
+            rerelease_soldier::PAIN203
+        }
+    }
     /// Frame `pain204`.
-    pub fn pain204(&self) -> i32 { if self.classic { classic_soldier::PAIN204 } else { rerelease_soldier::PAIN204 } }
+    pub fn pain204(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN204
+        } else {
+            rerelease_soldier::PAIN204
+        }
+    }
     /// Frame `pain205`.
-    pub fn pain205(&self) -> i32 { if self.classic { classic_soldier::PAIN205 } else { rerelease_soldier::PAIN205 } }
+    pub fn pain205(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN205
+        } else {
+            rerelease_soldier::PAIN205
+        }
+    }
     /// Frame `pain206`.
-    pub fn pain206(&self) -> i32 { if self.classic { classic_soldier::PAIN206 } else { rerelease_soldier::PAIN206 } }
+    pub fn pain206(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN206
+        } else {
+            rerelease_soldier::PAIN206
+        }
+    }
     /// Frame `pain207`.
-    pub fn pain207(&self) -> i32 { if self.classic { classic_soldier::PAIN207 } else { rerelease_soldier::PAIN207 } }
+    pub fn pain207(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN207
+        } else {
+            rerelease_soldier::PAIN207
+        }
+    }
     /// Frame `pain301`.
-    pub fn pain301(&self) -> i32 { if self.classic { classic_soldier::PAIN301 } else { rerelease_soldier::PAIN301 } }
+    pub fn pain301(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN301
+        } else {
+            rerelease_soldier::PAIN301
+        }
+    }
     /// Frame `pain302`.
-    pub fn pain302(&self) -> i32 { if self.classic { classic_soldier::PAIN302 } else { rerelease_soldier::PAIN302 } }
+    pub fn pain302(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN302
+        } else {
+            rerelease_soldier::PAIN302
+        }
+    }
     /// Frame `pain303`.
-    pub fn pain303(&self) -> i32 { if self.classic { classic_soldier::PAIN303 } else { rerelease_soldier::PAIN303 } }
+    pub fn pain303(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN303
+        } else {
+            rerelease_soldier::PAIN303
+        }
+    }
     /// Frame `pain304`.
-    pub fn pain304(&self) -> i32 { if self.classic { classic_soldier::PAIN304 } else { rerelease_soldier::PAIN304 } }
+    pub fn pain304(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN304
+        } else {
+            rerelease_soldier::PAIN304
+        }
+    }
     /// Frame `pain305`.
-    pub fn pain305(&self) -> i32 { if self.classic { classic_soldier::PAIN305 } else { rerelease_soldier::PAIN305 } }
+    pub fn pain305(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN305
+        } else {
+            rerelease_soldier::PAIN305
+        }
+    }
     /// Frame `pain306`.
-    pub fn pain306(&self) -> i32 { if self.classic { classic_soldier::PAIN306 } else { rerelease_soldier::PAIN306 } }
+    pub fn pain306(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN306
+        } else {
+            rerelease_soldier::PAIN306
+        }
+    }
     /// Frame `pain307`.
-    pub fn pain307(&self) -> i32 { if self.classic { classic_soldier::PAIN307 } else { rerelease_soldier::PAIN307 } }
+    pub fn pain307(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN307
+        } else {
+            rerelease_soldier::PAIN307
+        }
+    }
     /// Frame `pain308`.
-    pub fn pain308(&self) -> i32 { if self.classic { classic_soldier::PAIN308 } else { rerelease_soldier::PAIN308 } }
+    pub fn pain308(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN308
+        } else {
+            rerelease_soldier::PAIN308
+        }
+    }
     /// Frame `pain309`.
-    pub fn pain309(&self) -> i32 { if self.classic { classic_soldier::PAIN309 } else { rerelease_soldier::PAIN309 } }
+    pub fn pain309(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN309
+        } else {
+            rerelease_soldier::PAIN309
+        }
+    }
     /// Frame `pain310`.
-    pub fn pain310(&self) -> i32 { if self.classic { classic_soldier::PAIN310 } else { rerelease_soldier::PAIN310 } }
+    pub fn pain310(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN310
+        } else {
+            rerelease_soldier::PAIN310
+        }
+    }
     /// Frame `pain311`.
-    pub fn pain311(&self) -> i32 { if self.classic { classic_soldier::PAIN311 } else { rerelease_soldier::PAIN311 } }
+    pub fn pain311(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN311
+        } else {
+            rerelease_soldier::PAIN311
+        }
+    }
     /// Frame `pain312`.
-    pub fn pain312(&self) -> i32 { if self.classic { classic_soldier::PAIN312 } else { rerelease_soldier::PAIN312 } }
+    pub fn pain312(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN312
+        } else {
+            rerelease_soldier::PAIN312
+        }
+    }
     /// Frame `pain313`.
-    pub fn pain313(&self) -> i32 { if self.classic { classic_soldier::PAIN313 } else { rerelease_soldier::PAIN313 } }
+    pub fn pain313(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN313
+        } else {
+            rerelease_soldier::PAIN313
+        }
+    }
     /// Frame `pain314`.
-    pub fn pain314(&self) -> i32 { if self.classic { classic_soldier::PAIN314 } else { rerelease_soldier::PAIN314 } }
+    pub fn pain314(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN314
+        } else {
+            rerelease_soldier::PAIN314
+        }
+    }
     /// Frame `pain315`.
-    pub fn pain315(&self) -> i32 { if self.classic { classic_soldier::PAIN315 } else { rerelease_soldier::PAIN315 } }
+    pub fn pain315(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN315
+        } else {
+            rerelease_soldier::PAIN315
+        }
+    }
     /// Frame `pain316`.
-    pub fn pain316(&self) -> i32 { if self.classic { classic_soldier::PAIN316 } else { rerelease_soldier::PAIN316 } }
+    pub fn pain316(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN316
+        } else {
+            rerelease_soldier::PAIN316
+        }
+    }
     /// Frame `pain317`.
-    pub fn pain317(&self) -> i32 { if self.classic { classic_soldier::PAIN317 } else { rerelease_soldier::PAIN317 } }
+    pub fn pain317(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN317
+        } else {
+            rerelease_soldier::PAIN317
+        }
+    }
     /// Frame `pain318`.
-    pub fn pain318(&self) -> i32 { if self.classic { classic_soldier::PAIN318 } else { rerelease_soldier::PAIN318 } }
+    pub fn pain318(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN318
+        } else {
+            rerelease_soldier::PAIN318
+        }
+    }
     /// Frame `pain401`.
-    pub fn pain401(&self) -> i32 { if self.classic { classic_soldier::PAIN401 } else { rerelease_soldier::PAIN401 } }
+    pub fn pain401(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN401
+        } else {
+            rerelease_soldier::PAIN401
+        }
+    }
     /// Frame `pain402`.
-    pub fn pain402(&self) -> i32 { if self.classic { classic_soldier::PAIN402 } else { rerelease_soldier::PAIN402 } }
+    pub fn pain402(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN402
+        } else {
+            rerelease_soldier::PAIN402
+        }
+    }
     /// Frame `pain403`.
-    pub fn pain403(&self) -> i32 { if self.classic { classic_soldier::PAIN403 } else { rerelease_soldier::PAIN403 } }
+    pub fn pain403(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN403
+        } else {
+            rerelease_soldier::PAIN403
+        }
+    }
     /// Frame `pain404`.
-    pub fn pain404(&self) -> i32 { if self.classic { classic_soldier::PAIN404 } else { rerelease_soldier::PAIN404 } }
+    pub fn pain404(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN404
+        } else {
+            rerelease_soldier::PAIN404
+        }
+    }
     /// Frame `pain405`.
-    pub fn pain405(&self) -> i32 { if self.classic { classic_soldier::PAIN405 } else { rerelease_soldier::PAIN405 } }
+    pub fn pain405(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN405
+        } else {
+            rerelease_soldier::PAIN405
+        }
+    }
     /// Frame `pain406`.
-    pub fn pain406(&self) -> i32 { if self.classic { classic_soldier::PAIN406 } else { rerelease_soldier::PAIN406 } }
+    pub fn pain406(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN406
+        } else {
+            rerelease_soldier::PAIN406
+        }
+    }
     /// Frame `pain407`.
-    pub fn pain407(&self) -> i32 { if self.classic { classic_soldier::PAIN407 } else { rerelease_soldier::PAIN407 } }
+    pub fn pain407(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN407
+        } else {
+            rerelease_soldier::PAIN407
+        }
+    }
     /// Frame `pain408`.
-    pub fn pain408(&self) -> i32 { if self.classic { classic_soldier::PAIN408 } else { rerelease_soldier::PAIN408 } }
+    pub fn pain408(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN408
+        } else {
+            rerelease_soldier::PAIN408
+        }
+    }
     /// Frame `pain409`.
-    pub fn pain409(&self) -> i32 { if self.classic { classic_soldier::PAIN409 } else { rerelease_soldier::PAIN409 } }
+    pub fn pain409(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN409
+        } else {
+            rerelease_soldier::PAIN409
+        }
+    }
     /// Frame `pain410`.
-    pub fn pain410(&self) -> i32 { if self.classic { classic_soldier::PAIN410 } else { rerelease_soldier::PAIN410 } }
+    pub fn pain410(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN410
+        } else {
+            rerelease_soldier::PAIN410
+        }
+    }
     /// Frame `pain411`.
-    pub fn pain411(&self) -> i32 { if self.classic { classic_soldier::PAIN411 } else { rerelease_soldier::PAIN411 } }
+    pub fn pain411(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN411
+        } else {
+            rerelease_soldier::PAIN411
+        }
+    }
     /// Frame `pain412`.
-    pub fn pain412(&self) -> i32 { if self.classic { classic_soldier::PAIN412 } else { rerelease_soldier::PAIN412 } }
+    pub fn pain412(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN412
+        } else {
+            rerelease_soldier::PAIN412
+        }
+    }
     /// Frame `pain413`.
-    pub fn pain413(&self) -> i32 { if self.classic { classic_soldier::PAIN413 } else { rerelease_soldier::PAIN413 } }
+    pub fn pain413(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN413
+        } else {
+            rerelease_soldier::PAIN413
+        }
+    }
     /// Frame `pain414`.
-    pub fn pain414(&self) -> i32 { if self.classic { classic_soldier::PAIN414 } else { rerelease_soldier::PAIN414 } }
+    pub fn pain414(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN414
+        } else {
+            rerelease_soldier::PAIN414
+        }
+    }
     /// Frame `pain415`.
-    pub fn pain415(&self) -> i32 { if self.classic { classic_soldier::PAIN415 } else { rerelease_soldier::PAIN415 } }
+    pub fn pain415(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN415
+        } else {
+            rerelease_soldier::PAIN415
+        }
+    }
     /// Frame `pain416`.
-    pub fn pain416(&self) -> i32 { if self.classic { classic_soldier::PAIN416 } else { rerelease_soldier::PAIN416 } }
+    pub fn pain416(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN416
+        } else {
+            rerelease_soldier::PAIN416
+        }
+    }
     /// Frame `pain417`.
-    pub fn pain417(&self) -> i32 { if self.classic { classic_soldier::PAIN417 } else { rerelease_soldier::PAIN417 } }
+    pub fn pain417(&self) -> i32 {
+        if self.classic {
+            classic_soldier::PAIN417
+        } else {
+            rerelease_soldier::PAIN417
+        }
+    }
     /// Frame `run01`.
-    pub fn run01(&self) -> i32 { if self.classic { classic_soldier::RUN01 } else { rerelease_soldier::RUN01 } }
+    pub fn run01(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN01
+        } else {
+            rerelease_soldier::RUN01
+        }
+    }
     /// Frame `run02`.
-    pub fn run02(&self) -> i32 { if self.classic { classic_soldier::RUN02 } else { rerelease_soldier::RUN02 } }
+    pub fn run02(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN02
+        } else {
+            rerelease_soldier::RUN02
+        }
+    }
     /// Frame `run03`.
-    pub fn run03(&self) -> i32 { if self.classic { classic_soldier::RUN03 } else { rerelease_soldier::RUN03 } }
+    pub fn run03(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN03
+        } else {
+            rerelease_soldier::RUN03
+        }
+    }
     /// Frame `run04`.
-    pub fn run04(&self) -> i32 { if self.classic { classic_soldier::RUN04 } else { rerelease_soldier::RUN04 } }
+    pub fn run04(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN04
+        } else {
+            rerelease_soldier::RUN04
+        }
+    }
     /// Frame `run05`.
-    pub fn run05(&self) -> i32 { if self.classic { classic_soldier::RUN05 } else { rerelease_soldier::RUN05 } }
+    pub fn run05(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN05
+        } else {
+            rerelease_soldier::RUN05
+        }
+    }
     /// Frame `run06`.
-    pub fn run06(&self) -> i32 { if self.classic { classic_soldier::RUN06 } else { rerelease_soldier::RUN06 } }
+    pub fn run06(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN06
+        } else {
+            rerelease_soldier::RUN06
+        }
+    }
     /// Frame `run07`.
-    pub fn run07(&self) -> i32 { if self.classic { classic_soldier::RUN07 } else { rerelease_soldier::RUN07 } }
+    pub fn run07(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN07
+        } else {
+            rerelease_soldier::RUN07
+        }
+    }
     /// Frame `run08`.
-    pub fn run08(&self) -> i32 { if self.classic { classic_soldier::RUN08 } else { rerelease_soldier::RUN08 } }
+    pub fn run08(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN08
+        } else {
+            rerelease_soldier::RUN08
+        }
+    }
     /// Frame `run09`.
-    pub fn run09(&self) -> i32 { if self.classic { classic_soldier::RUN09 } else { rerelease_soldier::RUN09 } }
+    pub fn run09(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN09
+        } else {
+            rerelease_soldier::RUN09
+        }
+    }
     /// Frame `run10`.
-    pub fn run10(&self) -> i32 { if self.classic { classic_soldier::RUN10 } else { rerelease_soldier::RUN10 } }
+    pub fn run10(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN10
+        } else {
+            rerelease_soldier::RUN10
+        }
+    }
     /// Frame `run11`.
-    pub fn run11(&self) -> i32 { if self.classic { classic_soldier::RUN11 } else { rerelease_soldier::RUN11 } }
+    pub fn run11(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN11
+        } else {
+            rerelease_soldier::RUN11
+        }
+    }
     /// Frame `run12`.
-    pub fn run12(&self) -> i32 { if self.classic { classic_soldier::RUN12 } else { rerelease_soldier::RUN12 } }
+    pub fn run12(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUN12
+        } else {
+            rerelease_soldier::RUN12
+        }
+    }
     /// Frame `runs01`.
-    pub fn runs01(&self) -> i32 { if self.classic { classic_soldier::RUNS01 } else { rerelease_soldier::RUNS01 } }
+    pub fn runs01(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS01
+        } else {
+            rerelease_soldier::RUNS01
+        }
+    }
     /// Frame `runs02`.
-    pub fn runs02(&self) -> i32 { if self.classic { classic_soldier::RUNS02 } else { rerelease_soldier::RUNS02 } }
+    pub fn runs02(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS02
+        } else {
+            rerelease_soldier::RUNS02
+        }
+    }
     /// Frame `runs03`.
-    pub fn runs03(&self) -> i32 { if self.classic { classic_soldier::RUNS03 } else { rerelease_soldier::RUNS03 } }
+    pub fn runs03(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS03
+        } else {
+            rerelease_soldier::RUNS03
+        }
+    }
     /// Frame `runs04`.
-    pub fn runs04(&self) -> i32 { if self.classic { classic_soldier::RUNS04 } else { rerelease_soldier::RUNS04 } }
+    pub fn runs04(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS04
+        } else {
+            rerelease_soldier::RUNS04
+        }
+    }
     /// Frame `runs05`.
-    pub fn runs05(&self) -> i32 { if self.classic { classic_soldier::RUNS05 } else { rerelease_soldier::RUNS05 } }
+    pub fn runs05(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS05
+        } else {
+            rerelease_soldier::RUNS05
+        }
+    }
     /// Frame `runs06`.
-    pub fn runs06(&self) -> i32 { if self.classic { classic_soldier::RUNS06 } else { rerelease_soldier::RUNS06 } }
+    pub fn runs06(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS06
+        } else {
+            rerelease_soldier::RUNS06
+        }
+    }
     /// Frame `runs07`.
-    pub fn runs07(&self) -> i32 { if self.classic { classic_soldier::RUNS07 } else { rerelease_soldier::RUNS07 } }
+    pub fn runs07(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS07
+        } else {
+            rerelease_soldier::RUNS07
+        }
+    }
     /// Frame `runs08`.
-    pub fn runs08(&self) -> i32 { if self.classic { classic_soldier::RUNS08 } else { rerelease_soldier::RUNS08 } }
+    pub fn runs08(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS08
+        } else {
+            rerelease_soldier::RUNS08
+        }
+    }
     /// Frame `runs09`.
-    pub fn runs09(&self) -> i32 { if self.classic { classic_soldier::RUNS09 } else { rerelease_soldier::RUNS09 } }
+    pub fn runs09(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS09
+        } else {
+            rerelease_soldier::RUNS09
+        }
+    }
     /// Frame `runs10`.
-    pub fn runs10(&self) -> i32 { if self.classic { classic_soldier::RUNS10 } else { rerelease_soldier::RUNS10 } }
+    pub fn runs10(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS10
+        } else {
+            rerelease_soldier::RUNS10
+        }
+    }
     /// Frame `runs11`.
-    pub fn runs11(&self) -> i32 { if self.classic { classic_soldier::RUNS11 } else { rerelease_soldier::RUNS11 } }
+    pub fn runs11(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS11
+        } else {
+            rerelease_soldier::RUNS11
+        }
+    }
     /// Frame `runs12`.
-    pub fn runs12(&self) -> i32 { if self.classic { classic_soldier::RUNS12 } else { rerelease_soldier::RUNS12 } }
+    pub fn runs12(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS12
+        } else {
+            rerelease_soldier::RUNS12
+        }
+    }
     /// Frame `runs13`.
-    pub fn runs13(&self) -> i32 { if self.classic { classic_soldier::RUNS13 } else { rerelease_soldier::RUNS13 } }
+    pub fn runs13(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS13
+        } else {
+            rerelease_soldier::RUNS13
+        }
+    }
     /// Frame `runs14`.
-    pub fn runs14(&self) -> i32 { if self.classic { classic_soldier::RUNS14 } else { rerelease_soldier::RUNS14 } }
+    pub fn runs14(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS14
+        } else {
+            rerelease_soldier::RUNS14
+        }
+    }
     /// Frame `runs15`.
-    pub fn runs15(&self) -> i32 { if self.classic { classic_soldier::RUNS15 } else { rerelease_soldier::RUNS15 } }
+    pub fn runs15(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS15
+        } else {
+            rerelease_soldier::RUNS15
+        }
+    }
     /// Frame `runs16`.
-    pub fn runs16(&self) -> i32 { if self.classic { classic_soldier::RUNS16 } else { rerelease_soldier::RUNS16 } }
+    pub fn runs16(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS16
+        } else {
+            rerelease_soldier::RUNS16
+        }
+    }
     /// Frame `runs17`.
-    pub fn runs17(&self) -> i32 { if self.classic { classic_soldier::RUNS17 } else { rerelease_soldier::RUNS17 } }
+    pub fn runs17(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS17
+        } else {
+            rerelease_soldier::RUNS17
+        }
+    }
     /// Frame `runs18`.
-    pub fn runs18(&self) -> i32 { if self.classic { classic_soldier::RUNS18 } else { rerelease_soldier::RUNS18 } }
+    pub fn runs18(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNS18
+        } else {
+            rerelease_soldier::RUNS18
+        }
+    }
     /// Frame `runt01`.
-    pub fn runt01(&self) -> i32 { if self.classic { classic_soldier::RUNT01 } else { rerelease_soldier::RUNT01 } }
+    pub fn runt01(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT01
+        } else {
+            rerelease_soldier::RUNT01
+        }
+    }
     /// Frame `runt02`.
-    pub fn runt02(&self) -> i32 { if self.classic { classic_soldier::RUNT02 } else { rerelease_soldier::RUNT02 } }
+    pub fn runt02(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT02
+        } else {
+            rerelease_soldier::RUNT02
+        }
+    }
     /// Frame `runt03`.
-    pub fn runt03(&self) -> i32 { if self.classic { classic_soldier::RUNT03 } else { rerelease_soldier::RUNT03 } }
+    pub fn runt03(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT03
+        } else {
+            rerelease_soldier::RUNT03
+        }
+    }
     /// Frame `runt04`.
-    pub fn runt04(&self) -> i32 { if self.classic { classic_soldier::RUNT04 } else { rerelease_soldier::RUNT04 } }
+    pub fn runt04(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT04
+        } else {
+            rerelease_soldier::RUNT04
+        }
+    }
     /// Frame `runt05`.
-    pub fn runt05(&self) -> i32 { if self.classic { classic_soldier::RUNT05 } else { rerelease_soldier::RUNT05 } }
+    pub fn runt05(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT05
+        } else {
+            rerelease_soldier::RUNT05
+        }
+    }
     /// Frame `runt06`.
-    pub fn runt06(&self) -> i32 { if self.classic { classic_soldier::RUNT06 } else { rerelease_soldier::RUNT06 } }
+    pub fn runt06(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT06
+        } else {
+            rerelease_soldier::RUNT06
+        }
+    }
     /// Frame `runt07`.
-    pub fn runt07(&self) -> i32 { if self.classic { classic_soldier::RUNT07 } else { rerelease_soldier::RUNT07 } }
+    pub fn runt07(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT07
+        } else {
+            rerelease_soldier::RUNT07
+        }
+    }
     /// Frame `runt08`.
-    pub fn runt08(&self) -> i32 { if self.classic { classic_soldier::RUNT08 } else { rerelease_soldier::RUNT08 } }
+    pub fn runt08(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT08
+        } else {
+            rerelease_soldier::RUNT08
+        }
+    }
     /// Frame `runt09`.
-    pub fn runt09(&self) -> i32 { if self.classic { classic_soldier::RUNT09 } else { rerelease_soldier::RUNT09 } }
+    pub fn runt09(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT09
+        } else {
+            rerelease_soldier::RUNT09
+        }
+    }
     /// Frame `runt10`.
-    pub fn runt10(&self) -> i32 { if self.classic { classic_soldier::RUNT10 } else { rerelease_soldier::RUNT10 } }
+    pub fn runt10(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT10
+        } else {
+            rerelease_soldier::RUNT10
+        }
+    }
     /// Frame `runt11`.
-    pub fn runt11(&self) -> i32 { if self.classic { classic_soldier::RUNT11 } else { rerelease_soldier::RUNT11 } }
+    pub fn runt11(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT11
+        } else {
+            rerelease_soldier::RUNT11
+        }
+    }
     /// Frame `runt12`.
-    pub fn runt12(&self) -> i32 { if self.classic { classic_soldier::RUNT12 } else { rerelease_soldier::RUNT12 } }
+    pub fn runt12(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT12
+        } else {
+            rerelease_soldier::RUNT12
+        }
+    }
     /// Frame `runt13`.
-    pub fn runt13(&self) -> i32 { if self.classic { classic_soldier::RUNT13 } else { rerelease_soldier::RUNT13 } }
+    pub fn runt13(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT13
+        } else {
+            rerelease_soldier::RUNT13
+        }
+    }
     /// Frame `runt14`.
-    pub fn runt14(&self) -> i32 { if self.classic { classic_soldier::RUNT14 } else { rerelease_soldier::RUNT14 } }
+    pub fn runt14(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT14
+        } else {
+            rerelease_soldier::RUNT14
+        }
+    }
     /// Frame `runt15`.
-    pub fn runt15(&self) -> i32 { if self.classic { classic_soldier::RUNT15 } else { rerelease_soldier::RUNT15 } }
+    pub fn runt15(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT15
+        } else {
+            rerelease_soldier::RUNT15
+        }
+    }
     /// Frame `runt16`.
-    pub fn runt16(&self) -> i32 { if self.classic { classic_soldier::RUNT16 } else { rerelease_soldier::RUNT16 } }
+    pub fn runt16(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT16
+        } else {
+            rerelease_soldier::RUNT16
+        }
+    }
     /// Frame `runt17`.
-    pub fn runt17(&self) -> i32 { if self.classic { classic_soldier::RUNT17 } else { rerelease_soldier::RUNT17 } }
+    pub fn runt17(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT17
+        } else {
+            rerelease_soldier::RUNT17
+        }
+    }
     /// Frame `runt18`.
-    pub fn runt18(&self) -> i32 { if self.classic { classic_soldier::RUNT18 } else { rerelease_soldier::RUNT18 } }
+    pub fn runt18(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT18
+        } else {
+            rerelease_soldier::RUNT18
+        }
+    }
     /// Frame `runt19`.
-    pub fn runt19(&self) -> i32 { if self.classic { classic_soldier::RUNT19 } else { rerelease_soldier::RUNT19 } }
+    pub fn runt19(&self) -> i32 {
+        if self.classic {
+            classic_soldier::RUNT19
+        } else {
+            rerelease_soldier::RUNT19
+        }
+    }
     /// Frame `stand101`.
-    pub fn stand101(&self) -> i32 { if self.classic { classic_soldier::STAND101 } else { rerelease_soldier::STAND101 } }
+    pub fn stand101(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND101
+        } else {
+            rerelease_soldier::STAND101
+        }
+    }
     /// Frame `stand102`.
-    pub fn stand102(&self) -> i32 { if self.classic { classic_soldier::STAND102 } else { rerelease_soldier::STAND102 } }
+    pub fn stand102(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND102
+        } else {
+            rerelease_soldier::STAND102
+        }
+    }
     /// Frame `stand103`.
-    pub fn stand103(&self) -> i32 { if self.classic { classic_soldier::STAND103 } else { rerelease_soldier::STAND103 } }
+    pub fn stand103(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND103
+        } else {
+            rerelease_soldier::STAND103
+        }
+    }
     /// Frame `stand104`.
-    pub fn stand104(&self) -> i32 { if self.classic { classic_soldier::STAND104 } else { rerelease_soldier::STAND104 } }
+    pub fn stand104(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND104
+        } else {
+            rerelease_soldier::STAND104
+        }
+    }
     /// Frame `stand105`.
-    pub fn stand105(&self) -> i32 { if self.classic { classic_soldier::STAND105 } else { rerelease_soldier::STAND105 } }
+    pub fn stand105(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND105
+        } else {
+            rerelease_soldier::STAND105
+        }
+    }
     /// Frame `stand106`.
-    pub fn stand106(&self) -> i32 { if self.classic { classic_soldier::STAND106 } else { rerelease_soldier::STAND106 } }
+    pub fn stand106(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND106
+        } else {
+            rerelease_soldier::STAND106
+        }
+    }
     /// Frame `stand107`.
-    pub fn stand107(&self) -> i32 { if self.classic { classic_soldier::STAND107 } else { rerelease_soldier::STAND107 } }
+    pub fn stand107(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND107
+        } else {
+            rerelease_soldier::STAND107
+        }
+    }
     /// Frame `stand108`.
-    pub fn stand108(&self) -> i32 { if self.classic { classic_soldier::STAND108 } else { rerelease_soldier::STAND108 } }
+    pub fn stand108(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND108
+        } else {
+            rerelease_soldier::STAND108
+        }
+    }
     /// Frame `stand109`.
-    pub fn stand109(&self) -> i32 { if self.classic { classic_soldier::STAND109 } else { rerelease_soldier::STAND109 } }
+    pub fn stand109(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND109
+        } else {
+            rerelease_soldier::STAND109
+        }
+    }
     /// Frame `stand110`.
-    pub fn stand110(&self) -> i32 { if self.classic { classic_soldier::STAND110 } else { rerelease_soldier::STAND110 } }
+    pub fn stand110(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND110
+        } else {
+            rerelease_soldier::STAND110
+        }
+    }
     /// Frame `stand111`.
-    pub fn stand111(&self) -> i32 { if self.classic { classic_soldier::STAND111 } else { rerelease_soldier::STAND111 } }
+    pub fn stand111(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND111
+        } else {
+            rerelease_soldier::STAND111
+        }
+    }
     /// Frame `stand112`.
-    pub fn stand112(&self) -> i32 { if self.classic { classic_soldier::STAND112 } else { rerelease_soldier::STAND112 } }
+    pub fn stand112(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND112
+        } else {
+            rerelease_soldier::STAND112
+        }
+    }
     /// Frame `stand113`.
-    pub fn stand113(&self) -> i32 { if self.classic { classic_soldier::STAND113 } else { rerelease_soldier::STAND113 } }
+    pub fn stand113(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND113
+        } else {
+            rerelease_soldier::STAND113
+        }
+    }
     /// Frame `stand114`.
-    pub fn stand114(&self) -> i32 { if self.classic { classic_soldier::STAND114 } else { rerelease_soldier::STAND114 } }
+    pub fn stand114(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND114
+        } else {
+            rerelease_soldier::STAND114
+        }
+    }
     /// Frame `stand115`.
-    pub fn stand115(&self) -> i32 { if self.classic { classic_soldier::STAND115 } else { rerelease_soldier::STAND115 } }
+    pub fn stand115(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND115
+        } else {
+            rerelease_soldier::STAND115
+        }
+    }
     /// Frame `stand116`.
-    pub fn stand116(&self) -> i32 { if self.classic { classic_soldier::STAND116 } else { rerelease_soldier::STAND116 } }
+    pub fn stand116(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND116
+        } else {
+            rerelease_soldier::STAND116
+        }
+    }
     /// Frame `stand117`.
-    pub fn stand117(&self) -> i32 { if self.classic { classic_soldier::STAND117 } else { rerelease_soldier::STAND117 } }
+    pub fn stand117(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND117
+        } else {
+            rerelease_soldier::STAND117
+        }
+    }
     /// Frame `stand118`.
-    pub fn stand118(&self) -> i32 { if self.classic { classic_soldier::STAND118 } else { rerelease_soldier::STAND118 } }
+    pub fn stand118(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND118
+        } else {
+            rerelease_soldier::STAND118
+        }
+    }
     /// Frame `stand119`.
-    pub fn stand119(&self) -> i32 { if self.classic { classic_soldier::STAND119 } else { rerelease_soldier::STAND119 } }
+    pub fn stand119(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND119
+        } else {
+            rerelease_soldier::STAND119
+        }
+    }
     /// Frame `stand120`.
-    pub fn stand120(&self) -> i32 { if self.classic { classic_soldier::STAND120 } else { rerelease_soldier::STAND120 } }
+    pub fn stand120(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND120
+        } else {
+            rerelease_soldier::STAND120
+        }
+    }
     /// Frame `stand121`.
-    pub fn stand121(&self) -> i32 { if self.classic { classic_soldier::STAND121 } else { rerelease_soldier::STAND121 } }
+    pub fn stand121(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND121
+        } else {
+            rerelease_soldier::STAND121
+        }
+    }
     /// Frame `stand122`.
-    pub fn stand122(&self) -> i32 { if self.classic { classic_soldier::STAND122 } else { rerelease_soldier::STAND122 } }
+    pub fn stand122(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND122
+        } else {
+            rerelease_soldier::STAND122
+        }
+    }
     /// Frame `stand123`.
-    pub fn stand123(&self) -> i32 { if self.classic { classic_soldier::STAND123 } else { rerelease_soldier::STAND123 } }
+    pub fn stand123(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND123
+        } else {
+            rerelease_soldier::STAND123
+        }
+    }
     /// Frame `stand124`.
-    pub fn stand124(&self) -> i32 { if self.classic { classic_soldier::STAND124 } else { rerelease_soldier::STAND124 } }
+    pub fn stand124(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND124
+        } else {
+            rerelease_soldier::STAND124
+        }
+    }
     /// Frame `stand125`.
-    pub fn stand125(&self) -> i32 { if self.classic { classic_soldier::STAND125 } else { rerelease_soldier::STAND125 } }
+    pub fn stand125(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND125
+        } else {
+            rerelease_soldier::STAND125
+        }
+    }
     /// Frame `stand126`.
-    pub fn stand126(&self) -> i32 { if self.classic { classic_soldier::STAND126 } else { rerelease_soldier::STAND126 } }
+    pub fn stand126(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND126
+        } else {
+            rerelease_soldier::STAND126
+        }
+    }
     /// Frame `stand127`.
-    pub fn stand127(&self) -> i32 { if self.classic { classic_soldier::STAND127 } else { rerelease_soldier::STAND127 } }
+    pub fn stand127(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND127
+        } else {
+            rerelease_soldier::STAND127
+        }
+    }
     /// Frame `stand128`.
-    pub fn stand128(&self) -> i32 { if self.classic { classic_soldier::STAND128 } else { rerelease_soldier::STAND128 } }
+    pub fn stand128(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND128
+        } else {
+            rerelease_soldier::STAND128
+        }
+    }
     /// Frame `stand129`.
-    pub fn stand129(&self) -> i32 { if self.classic { classic_soldier::STAND129 } else { rerelease_soldier::STAND129 } }
+    pub fn stand129(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND129
+        } else {
+            rerelease_soldier::STAND129
+        }
+    }
     /// Frame `stand130`.
-    pub fn stand130(&self) -> i32 { if self.classic { classic_soldier::STAND130 } else { rerelease_soldier::STAND130 } }
+    pub fn stand130(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND130
+        } else {
+            rerelease_soldier::STAND130
+        }
+    }
     /// Frame `stand201`.
-    pub fn stand201(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand201") } else { rerelease_soldier::STAND201 } }
+    pub fn stand201(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand201")
+        } else {
+            rerelease_soldier::STAND201
+        }
+    }
     /// Frame `stand202`.
-    pub fn stand202(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand202") } else { rerelease_soldier::STAND202 } }
+    pub fn stand202(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand202")
+        } else {
+            rerelease_soldier::STAND202
+        }
+    }
     /// Frame `stand203`.
-    pub fn stand203(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand203") } else { rerelease_soldier::STAND203 } }
+    pub fn stand203(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand203")
+        } else {
+            rerelease_soldier::STAND203
+        }
+    }
     /// Frame `stand204`.
-    pub fn stand204(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand204") } else { rerelease_soldier::STAND204 } }
+    pub fn stand204(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand204")
+        } else {
+            rerelease_soldier::STAND204
+        }
+    }
     /// Frame `stand205`.
-    pub fn stand205(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand205") } else { rerelease_soldier::STAND205 } }
+    pub fn stand205(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand205")
+        } else {
+            rerelease_soldier::STAND205
+        }
+    }
     /// Frame `stand206`.
-    pub fn stand206(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand206") } else { rerelease_soldier::STAND206 } }
+    pub fn stand206(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand206")
+        } else {
+            rerelease_soldier::STAND206
+        }
+    }
     /// Frame `stand207`.
-    pub fn stand207(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand207") } else { rerelease_soldier::STAND207 } }
+    pub fn stand207(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand207")
+        } else {
+            rerelease_soldier::STAND207
+        }
+    }
     /// Frame `stand208`.
-    pub fn stand208(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand208") } else { rerelease_soldier::STAND208 } }
+    pub fn stand208(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand208")
+        } else {
+            rerelease_soldier::STAND208
+        }
+    }
     /// Frame `stand209`.
-    pub fn stand209(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand209") } else { rerelease_soldier::STAND209 } }
+    pub fn stand209(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand209")
+        } else {
+            rerelease_soldier::STAND209
+        }
+    }
     /// Frame `stand210`.
-    pub fn stand210(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand210") } else { rerelease_soldier::STAND210 } }
+    pub fn stand210(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand210")
+        } else {
+            rerelease_soldier::STAND210
+        }
+    }
     /// Frame `stand211`.
-    pub fn stand211(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand211") } else { rerelease_soldier::STAND211 } }
+    pub fn stand211(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand211")
+        } else {
+            rerelease_soldier::STAND211
+        }
+    }
     /// Frame `stand212`.
-    pub fn stand212(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand212") } else { rerelease_soldier::STAND212 } }
+    pub fn stand212(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand212")
+        } else {
+            rerelease_soldier::STAND212
+        }
+    }
     /// Frame `stand213`.
-    pub fn stand213(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand213") } else { rerelease_soldier::STAND213 } }
+    pub fn stand213(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand213")
+        } else {
+            rerelease_soldier::STAND213
+        }
+    }
     /// Frame `stand214`.
-    pub fn stand214(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand214") } else { rerelease_soldier::STAND214 } }
+    pub fn stand214(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand214")
+        } else {
+            rerelease_soldier::STAND214
+        }
+    }
     /// Frame `stand215`.
-    pub fn stand215(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand215") } else { rerelease_soldier::STAND215 } }
+    pub fn stand215(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand215")
+        } else {
+            rerelease_soldier::STAND215
+        }
+    }
     /// Frame `stand216`.
-    pub fn stand216(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand216") } else { rerelease_soldier::STAND216 } }
+    pub fn stand216(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand216")
+        } else {
+            rerelease_soldier::STAND216
+        }
+    }
     /// Frame `stand217`.
-    pub fn stand217(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand217") } else { rerelease_soldier::STAND217 } }
+    pub fn stand217(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand217")
+        } else {
+            rerelease_soldier::STAND217
+        }
+    }
     /// Frame `stand218`.
-    pub fn stand218(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand218") } else { rerelease_soldier::STAND218 } }
+    pub fn stand218(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand218")
+        } else {
+            rerelease_soldier::STAND218
+        }
+    }
     /// Frame `stand219`.
-    pub fn stand219(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand219") } else { rerelease_soldier::STAND219 } }
+    pub fn stand219(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand219")
+        } else {
+            rerelease_soldier::STAND219
+        }
+    }
     /// Frame `stand220`.
-    pub fn stand220(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand220") } else { rerelease_soldier::STAND220 } }
+    pub fn stand220(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand220")
+        } else {
+            rerelease_soldier::STAND220
+        }
+    }
     /// Frame `stand221`.
-    pub fn stand221(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand221") } else { rerelease_soldier::STAND221 } }
+    pub fn stand221(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand221")
+        } else {
+            rerelease_soldier::STAND221
+        }
+    }
     /// Frame `stand222`.
-    pub fn stand222(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand222") } else { rerelease_soldier::STAND222 } }
+    pub fn stand222(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand222")
+        } else {
+            rerelease_soldier::STAND222
+        }
+    }
     /// Frame `stand223`.
-    pub fn stand223(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand223") } else { rerelease_soldier::STAND223 } }
+    pub fn stand223(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand223")
+        } else {
+            rerelease_soldier::STAND223
+        }
+    }
     /// Frame `stand224`.
-    pub fn stand224(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand224") } else { rerelease_soldier::STAND224 } }
+    pub fn stand224(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand224")
+        } else {
+            rerelease_soldier::STAND224
+        }
+    }
     /// Frame `stand225`.
-    pub fn stand225(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand225") } else { rerelease_soldier::STAND225 } }
+    pub fn stand225(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand225")
+        } else {
+            rerelease_soldier::STAND225
+        }
+    }
     /// Frame `stand226`.
-    pub fn stand226(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand226") } else { rerelease_soldier::STAND226 } }
+    pub fn stand226(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand226")
+        } else {
+            rerelease_soldier::STAND226
+        }
+    }
     /// Frame `stand227`.
-    pub fn stand227(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand227") } else { rerelease_soldier::STAND227 } }
+    pub fn stand227(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand227")
+        } else {
+            rerelease_soldier::STAND227
+        }
+    }
     /// Frame `stand228`.
-    pub fn stand228(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand228") } else { rerelease_soldier::STAND228 } }
+    pub fn stand228(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand228")
+        } else {
+            rerelease_soldier::STAND228
+        }
+    }
     /// Frame `stand229`.
-    pub fn stand229(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand229") } else { rerelease_soldier::STAND229 } }
+    pub fn stand229(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand229")
+        } else {
+            rerelease_soldier::STAND229
+        }
+    }
     /// Frame `stand230`.
-    pub fn stand230(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand230") } else { rerelease_soldier::STAND230 } }
+    pub fn stand230(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand230")
+        } else {
+            rerelease_soldier::STAND230
+        }
+    }
     /// Frame `stand231`.
-    pub fn stand231(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand231") } else { rerelease_soldier::STAND231 } }
+    pub fn stand231(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand231")
+        } else {
+            rerelease_soldier::STAND231
+        }
+    }
     /// Frame `stand232`.
-    pub fn stand232(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand232") } else { rerelease_soldier::STAND232 } }
+    pub fn stand232(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand232")
+        } else {
+            rerelease_soldier::STAND232
+        }
+    }
     /// Frame `stand233`.
-    pub fn stand233(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand233") } else { rerelease_soldier::STAND233 } }
+    pub fn stand233(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand233")
+        } else {
+            rerelease_soldier::STAND233
+        }
+    }
     /// Frame `stand234`.
-    pub fn stand234(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand234") } else { rerelease_soldier::STAND234 } }
+    pub fn stand234(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand234")
+        } else {
+            rerelease_soldier::STAND234
+        }
+    }
     /// Frame `stand235`.
-    pub fn stand235(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand235") } else { rerelease_soldier::STAND235 } }
+    pub fn stand235(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand235")
+        } else {
+            rerelease_soldier::STAND235
+        }
+    }
     /// Frame `stand236`.
-    pub fn stand236(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand236") } else { rerelease_soldier::STAND236 } }
+    pub fn stand236(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand236")
+        } else {
+            rerelease_soldier::STAND236
+        }
+    }
     /// Frame `stand237`.
-    pub fn stand237(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand237") } else { rerelease_soldier::STAND237 } }
+    pub fn stand237(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand237")
+        } else {
+            rerelease_soldier::STAND237
+        }
+    }
     /// Frame `stand238`.
-    pub fn stand238(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand238") } else { rerelease_soldier::STAND238 } }
+    pub fn stand238(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand238")
+        } else {
+            rerelease_soldier::STAND238
+        }
+    }
     /// Frame `stand239`.
-    pub fn stand239(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand239") } else { rerelease_soldier::STAND239 } }
+    pub fn stand239(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand239")
+        } else {
+            rerelease_soldier::STAND239
+        }
+    }
     /// Frame `stand240`.
-    pub fn stand240(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand240") } else { rerelease_soldier::STAND240 } }
+    pub fn stand240(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand240")
+        } else {
+            rerelease_soldier::STAND240
+        }
+    }
     /// Frame `stand301`.
-    pub fn stand301(&self) -> i32 { if self.classic { classic_soldier::STAND301 } else { rerelease_soldier::STAND301 } }
+    pub fn stand301(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND301
+        } else {
+            rerelease_soldier::STAND301
+        }
+    }
     /// Frame `stand302`.
-    pub fn stand302(&self) -> i32 { if self.classic { classic_soldier::STAND302 } else { rerelease_soldier::STAND302 } }
+    pub fn stand302(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND302
+        } else {
+            rerelease_soldier::STAND302
+        }
+    }
     /// Frame `stand303`.
-    pub fn stand303(&self) -> i32 { if self.classic { classic_soldier::STAND303 } else { rerelease_soldier::STAND303 } }
+    pub fn stand303(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND303
+        } else {
+            rerelease_soldier::STAND303
+        }
+    }
     /// Frame `stand304`.
-    pub fn stand304(&self) -> i32 { if self.classic { classic_soldier::STAND304 } else { rerelease_soldier::STAND304 } }
+    pub fn stand304(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND304
+        } else {
+            rerelease_soldier::STAND304
+        }
+    }
     /// Frame `stand305`.
-    pub fn stand305(&self) -> i32 { if self.classic { classic_soldier::STAND305 } else { rerelease_soldier::STAND305 } }
+    pub fn stand305(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND305
+        } else {
+            rerelease_soldier::STAND305
+        }
+    }
     /// Frame `stand306`.
-    pub fn stand306(&self) -> i32 { if self.classic { classic_soldier::STAND306 } else { rerelease_soldier::STAND306 } }
+    pub fn stand306(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND306
+        } else {
+            rerelease_soldier::STAND306
+        }
+    }
     /// Frame `stand307`.
-    pub fn stand307(&self) -> i32 { if self.classic { classic_soldier::STAND307 } else { rerelease_soldier::STAND307 } }
+    pub fn stand307(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND307
+        } else {
+            rerelease_soldier::STAND307
+        }
+    }
     /// Frame `stand308`.
-    pub fn stand308(&self) -> i32 { if self.classic { classic_soldier::STAND308 } else { rerelease_soldier::STAND308 } }
+    pub fn stand308(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND308
+        } else {
+            rerelease_soldier::STAND308
+        }
+    }
     /// Frame `stand309`.
-    pub fn stand309(&self) -> i32 { if self.classic { classic_soldier::STAND309 } else { rerelease_soldier::STAND309 } }
+    pub fn stand309(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND309
+        } else {
+            rerelease_soldier::STAND309
+        }
+    }
     /// Frame `stand310`.
-    pub fn stand310(&self) -> i32 { if self.classic { classic_soldier::STAND310 } else { rerelease_soldier::STAND310 } }
+    pub fn stand310(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND310
+        } else {
+            rerelease_soldier::STAND310
+        }
+    }
     /// Frame `stand311`.
-    pub fn stand311(&self) -> i32 { if self.classic { classic_soldier::STAND311 } else { rerelease_soldier::STAND311 } }
+    pub fn stand311(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND311
+        } else {
+            rerelease_soldier::STAND311
+        }
+    }
     /// Frame `stand312`.
-    pub fn stand312(&self) -> i32 { if self.classic { classic_soldier::STAND312 } else { rerelease_soldier::STAND312 } }
+    pub fn stand312(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND312
+        } else {
+            rerelease_soldier::STAND312
+        }
+    }
     /// Frame `stand313`.
-    pub fn stand313(&self) -> i32 { if self.classic { classic_soldier::STAND313 } else { rerelease_soldier::STAND313 } }
+    pub fn stand313(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND313
+        } else {
+            rerelease_soldier::STAND313
+        }
+    }
     /// Frame `stand314`.
-    pub fn stand314(&self) -> i32 { if self.classic { classic_soldier::STAND314 } else { rerelease_soldier::STAND314 } }
+    pub fn stand314(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND314
+        } else {
+            rerelease_soldier::STAND314
+        }
+    }
     /// Frame `stand315`.
-    pub fn stand315(&self) -> i32 { if self.classic { classic_soldier::STAND315 } else { rerelease_soldier::STAND315 } }
+    pub fn stand315(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND315
+        } else {
+            rerelease_soldier::STAND315
+        }
+    }
     /// Frame `stand316`.
-    pub fn stand316(&self) -> i32 { if self.classic { classic_soldier::STAND316 } else { rerelease_soldier::STAND316 } }
+    pub fn stand316(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND316
+        } else {
+            rerelease_soldier::STAND316
+        }
+    }
     /// Frame `stand317`.
-    pub fn stand317(&self) -> i32 { if self.classic { classic_soldier::STAND317 } else { rerelease_soldier::STAND317 } }
+    pub fn stand317(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND317
+        } else {
+            rerelease_soldier::STAND317
+        }
+    }
     /// Frame `stand318`.
-    pub fn stand318(&self) -> i32 { if self.classic { classic_soldier::STAND318 } else { rerelease_soldier::STAND318 } }
+    pub fn stand318(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND318
+        } else {
+            rerelease_soldier::STAND318
+        }
+    }
     /// Frame `stand319`.
-    pub fn stand319(&self) -> i32 { if self.classic { classic_soldier::STAND319 } else { rerelease_soldier::STAND319 } }
+    pub fn stand319(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND319
+        } else {
+            rerelease_soldier::STAND319
+        }
+    }
     /// Frame `stand320`.
-    pub fn stand320(&self) -> i32 { if self.classic { classic_soldier::STAND320 } else { rerelease_soldier::STAND320 } }
+    pub fn stand320(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND320
+        } else {
+            rerelease_soldier::STAND320
+        }
+    }
     /// Frame `stand321`.
-    pub fn stand321(&self) -> i32 { if self.classic { classic_soldier::STAND321 } else { rerelease_soldier::STAND321 } }
+    pub fn stand321(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND321
+        } else {
+            rerelease_soldier::STAND321
+        }
+    }
     /// Frame `stand322`.
-    pub fn stand322(&self) -> i32 { if self.classic { classic_soldier::STAND322 } else { rerelease_soldier::STAND322 } }
+    pub fn stand322(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND322
+        } else {
+            rerelease_soldier::STAND322
+        }
+    }
     /// Frame `stand323`.
-    pub fn stand323(&self) -> i32 { if self.classic { classic_soldier::STAND323 } else { rerelease_soldier::STAND323 } }
+    pub fn stand323(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND323
+        } else {
+            rerelease_soldier::STAND323
+        }
+    }
     /// Frame `stand324`.
-    pub fn stand324(&self) -> i32 { if self.classic { classic_soldier::STAND324 } else { rerelease_soldier::STAND324 } }
+    pub fn stand324(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND324
+        } else {
+            rerelease_soldier::STAND324
+        }
+    }
     /// Frame `stand325`.
-    pub fn stand325(&self) -> i32 { if self.classic { classic_soldier::STAND325 } else { rerelease_soldier::STAND325 } }
+    pub fn stand325(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND325
+        } else {
+            rerelease_soldier::STAND325
+        }
+    }
     /// Frame `stand326`.
-    pub fn stand326(&self) -> i32 { if self.classic { classic_soldier::STAND326 } else { rerelease_soldier::STAND326 } }
+    pub fn stand326(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND326
+        } else {
+            rerelease_soldier::STAND326
+        }
+    }
     /// Frame `stand327`.
-    pub fn stand327(&self) -> i32 { if self.classic { classic_soldier::STAND327 } else { rerelease_soldier::STAND327 } }
+    pub fn stand327(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND327
+        } else {
+            rerelease_soldier::STAND327
+        }
+    }
     /// Frame `stand328`.
-    pub fn stand328(&self) -> i32 { if self.classic { classic_soldier::STAND328 } else { rerelease_soldier::STAND328 } }
+    pub fn stand328(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND328
+        } else {
+            rerelease_soldier::STAND328
+        }
+    }
     /// Frame `stand329`.
-    pub fn stand329(&self) -> i32 { if self.classic { classic_soldier::STAND329 } else { rerelease_soldier::STAND329 } }
+    pub fn stand329(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND329
+        } else {
+            rerelease_soldier::STAND329
+        }
+    }
     /// Frame `stand330`.
-    pub fn stand330(&self) -> i32 { if self.classic { classic_soldier::STAND330 } else { rerelease_soldier::STAND330 } }
+    pub fn stand330(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND330
+        } else {
+            rerelease_soldier::STAND330
+        }
+    }
     /// Frame `stand331`.
-    pub fn stand331(&self) -> i32 { if self.classic { classic_soldier::STAND331 } else { rerelease_soldier::STAND331 } }
+    pub fn stand331(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND331
+        } else {
+            rerelease_soldier::STAND331
+        }
+    }
     /// Frame `stand332`.
-    pub fn stand332(&self) -> i32 { if self.classic { classic_soldier::STAND332 } else { rerelease_soldier::STAND332 } }
+    pub fn stand332(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND332
+        } else {
+            rerelease_soldier::STAND332
+        }
+    }
     /// Frame `stand333`.
-    pub fn stand333(&self) -> i32 { if self.classic { classic_soldier::STAND333 } else { rerelease_soldier::STAND333 } }
+    pub fn stand333(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND333
+        } else {
+            rerelease_soldier::STAND333
+        }
+    }
     /// Frame `stand334`.
-    pub fn stand334(&self) -> i32 { if self.classic { classic_soldier::STAND334 } else { rerelease_soldier::STAND334 } }
+    pub fn stand334(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND334
+        } else {
+            rerelease_soldier::STAND334
+        }
+    }
     /// Frame `stand335`.
-    pub fn stand335(&self) -> i32 { if self.classic { classic_soldier::STAND335 } else { rerelease_soldier::STAND335 } }
+    pub fn stand335(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND335
+        } else {
+            rerelease_soldier::STAND335
+        }
+    }
     /// Frame `stand336`.
-    pub fn stand336(&self) -> i32 { if self.classic { classic_soldier::STAND336 } else { rerelease_soldier::STAND336 } }
+    pub fn stand336(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND336
+        } else {
+            rerelease_soldier::STAND336
+        }
+    }
     /// Frame `stand337`.
-    pub fn stand337(&self) -> i32 { if self.classic { classic_soldier::STAND337 } else { rerelease_soldier::STAND337 } }
+    pub fn stand337(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND337
+        } else {
+            rerelease_soldier::STAND337
+        }
+    }
     /// Frame `stand338`.
-    pub fn stand338(&self) -> i32 { if self.classic { classic_soldier::STAND338 } else { rerelease_soldier::STAND338 } }
+    pub fn stand338(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND338
+        } else {
+            rerelease_soldier::STAND338
+        }
+    }
     /// Frame `stand339`.
-    pub fn stand339(&self) -> i32 { if self.classic { classic_soldier::STAND339 } else { rerelease_soldier::STAND339 } }
+    pub fn stand339(&self) -> i32 {
+        if self.classic {
+            classic_soldier::STAND339
+        } else {
+            rerelease_soldier::STAND339
+        }
+    }
     /// Frame `stand401`.
-    pub fn stand401(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand401") } else { rerelease_soldier::STAND401 } }
+    pub fn stand401(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand401")
+        } else {
+            rerelease_soldier::STAND401
+        }
+    }
     /// Frame `stand402`.
-    pub fn stand402(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand402") } else { rerelease_soldier::STAND402 } }
+    pub fn stand402(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand402")
+        } else {
+            rerelease_soldier::STAND402
+        }
+    }
     /// Frame `stand403`.
-    pub fn stand403(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand403") } else { rerelease_soldier::STAND403 } }
+    pub fn stand403(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand403")
+        } else {
+            rerelease_soldier::STAND403
+        }
+    }
     /// Frame `stand404`.
-    pub fn stand404(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand404") } else { rerelease_soldier::STAND404 } }
+    pub fn stand404(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand404")
+        } else {
+            rerelease_soldier::STAND404
+        }
+    }
     /// Frame `stand405`.
-    pub fn stand405(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand405") } else { rerelease_soldier::STAND405 } }
+    pub fn stand405(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand405")
+        } else {
+            rerelease_soldier::STAND405
+        }
+    }
     /// Frame `stand406`.
-    pub fn stand406(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand406") } else { rerelease_soldier::STAND406 } }
+    pub fn stand406(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand406")
+        } else {
+            rerelease_soldier::STAND406
+        }
+    }
     /// Frame `stand407`.
-    pub fn stand407(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand407") } else { rerelease_soldier::STAND407 } }
+    pub fn stand407(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand407")
+        } else {
+            rerelease_soldier::STAND407
+        }
+    }
     /// Frame `stand408`.
-    pub fn stand408(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand408") } else { rerelease_soldier::STAND408 } }
+    pub fn stand408(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand408")
+        } else {
+            rerelease_soldier::STAND408
+        }
+    }
     /// Frame `stand409`.
-    pub fn stand409(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand409") } else { rerelease_soldier::STAND409 } }
+    pub fn stand409(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand409")
+        } else {
+            rerelease_soldier::STAND409
+        }
+    }
     /// Frame `stand410`.
-    pub fn stand410(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand410") } else { rerelease_soldier::STAND410 } }
+    pub fn stand410(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand410")
+        } else {
+            rerelease_soldier::STAND410
+        }
+    }
     /// Frame `stand411`.
-    pub fn stand411(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand411") } else { rerelease_soldier::STAND411 } }
+    pub fn stand411(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand411")
+        } else {
+            rerelease_soldier::STAND411
+        }
+    }
     /// Frame `stand412`.
-    pub fn stand412(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand412") } else { rerelease_soldier::STAND412 } }
+    pub fn stand412(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand412")
+        } else {
+            rerelease_soldier::STAND412
+        }
+    }
     /// Frame `stand413`.
-    pub fn stand413(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand413") } else { rerelease_soldier::STAND413 } }
+    pub fn stand413(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand413")
+        } else {
+            rerelease_soldier::STAND413
+        }
+    }
     /// Frame `stand414`.
-    pub fn stand414(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand414") } else { rerelease_soldier::STAND414 } }
+    pub fn stand414(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand414")
+        } else {
+            rerelease_soldier::STAND414
+        }
+    }
     /// Frame `stand415`.
-    pub fn stand415(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand415") } else { rerelease_soldier::STAND415 } }
+    pub fn stand415(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand415")
+        } else {
+            rerelease_soldier::STAND415
+        }
+    }
     /// Frame `stand416`.
-    pub fn stand416(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand416") } else { rerelease_soldier::STAND416 } }
+    pub fn stand416(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand416")
+        } else {
+            rerelease_soldier::STAND416
+        }
+    }
     /// Frame `stand417`.
-    pub fn stand417(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand417") } else { rerelease_soldier::STAND417 } }
+    pub fn stand417(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand417")
+        } else {
+            rerelease_soldier::STAND417
+        }
+    }
     /// Frame `stand418`.
-    pub fn stand418(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand418") } else { rerelease_soldier::STAND418 } }
+    pub fn stand418(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand418")
+        } else {
+            rerelease_soldier::STAND418
+        }
+    }
     /// Frame `stand419`.
-    pub fn stand419(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand419") } else { rerelease_soldier::STAND419 } }
+    pub fn stand419(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand419")
+        } else {
+            rerelease_soldier::STAND419
+        }
+    }
     /// Frame `stand420`.
-    pub fn stand420(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand420") } else { rerelease_soldier::STAND420 } }
+    pub fn stand420(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand420")
+        } else {
+            rerelease_soldier::STAND420
+        }
+    }
     /// Frame `stand421`.
-    pub fn stand421(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand421") } else { rerelease_soldier::STAND421 } }
+    pub fn stand421(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand421")
+        } else {
+            rerelease_soldier::STAND421
+        }
+    }
     /// Frame `stand422`.
-    pub fn stand422(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand422") } else { rerelease_soldier::STAND422 } }
+    pub fn stand422(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand422")
+        } else {
+            rerelease_soldier::STAND422
+        }
+    }
     /// Frame `stand423`.
-    pub fn stand423(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand423") } else { rerelease_soldier::STAND423 } }
+    pub fn stand423(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand423")
+        } else {
+            rerelease_soldier::STAND423
+        }
+    }
     /// Frame `stand424`.
-    pub fn stand424(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand424") } else { rerelease_soldier::STAND424 } }
+    pub fn stand424(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand424")
+        } else {
+            rerelease_soldier::STAND424
+        }
+    }
     /// Frame `stand425`.
-    pub fn stand425(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand425") } else { rerelease_soldier::STAND425 } }
+    pub fn stand425(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand425")
+        } else {
+            rerelease_soldier::STAND425
+        }
+    }
     /// Frame `stand426`.
-    pub fn stand426(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand426") } else { rerelease_soldier::STAND426 } }
+    pub fn stand426(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand426")
+        } else {
+            rerelease_soldier::STAND426
+        }
+    }
     /// Frame `stand427`.
-    pub fn stand427(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand427") } else { rerelease_soldier::STAND427 } }
+    pub fn stand427(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand427")
+        } else {
+            rerelease_soldier::STAND427
+        }
+    }
     /// Frame `stand428`.
-    pub fn stand428(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand428") } else { rerelease_soldier::STAND428 } }
+    pub fn stand428(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand428")
+        } else {
+            rerelease_soldier::STAND428
+        }
+    }
     /// Frame `stand429`.
-    pub fn stand429(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand429") } else { rerelease_soldier::STAND429 } }
+    pub fn stand429(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand429")
+        } else {
+            rerelease_soldier::STAND429
+        }
+    }
     /// Frame `stand430`.
-    pub fn stand430(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand430") } else { rerelease_soldier::STAND430 } }
+    pub fn stand430(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand430")
+        } else {
+            rerelease_soldier::STAND430
+        }
+    }
     /// Frame `stand431`.
-    pub fn stand431(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand431") } else { rerelease_soldier::STAND431 } }
+    pub fn stand431(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand431")
+        } else {
+            rerelease_soldier::STAND431
+        }
+    }
     /// Frame `stand432`.
-    pub fn stand432(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand432") } else { rerelease_soldier::STAND432 } }
+    pub fn stand432(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand432")
+        } else {
+            rerelease_soldier::STAND432
+        }
+    }
     /// Frame `stand433`.
-    pub fn stand433(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand433") } else { rerelease_soldier::STAND433 } }
+    pub fn stand433(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand433")
+        } else {
+            rerelease_soldier::STAND433
+        }
+    }
     /// Frame `stand434`.
-    pub fn stand434(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand434") } else { rerelease_soldier::STAND434 } }
+    pub fn stand434(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand434")
+        } else {
+            rerelease_soldier::STAND434
+        }
+    }
     /// Frame `stand435`.
-    pub fn stand435(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand435") } else { rerelease_soldier::STAND435 } }
+    pub fn stand435(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand435")
+        } else {
+            rerelease_soldier::STAND435
+        }
+    }
     /// Frame `stand436`.
-    pub fn stand436(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand436") } else { rerelease_soldier::STAND436 } }
+    pub fn stand436(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand436")
+        } else {
+            rerelease_soldier::STAND436
+        }
+    }
     /// Frame `stand437`.
-    pub fn stand437(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand437") } else { rerelease_soldier::STAND437 } }
+    pub fn stand437(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand437")
+        } else {
+            rerelease_soldier::STAND437
+        }
+    }
     /// Frame `stand438`.
-    pub fn stand438(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand438") } else { rerelease_soldier::STAND438 } }
+    pub fn stand438(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand438")
+        } else {
+            rerelease_soldier::STAND438
+        }
+    }
     /// Frame `stand439`.
-    pub fn stand439(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand439") } else { rerelease_soldier::STAND439 } }
+    pub fn stand439(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand439")
+        } else {
+            rerelease_soldier::STAND439
+        }
+    }
     /// Frame `stand440`.
-    pub fn stand440(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand440") } else { rerelease_soldier::STAND440 } }
+    pub fn stand440(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand440")
+        } else {
+            rerelease_soldier::STAND440
+        }
+    }
     /// Frame `stand441`.
-    pub fn stand441(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand441") } else { rerelease_soldier::STAND441 } }
+    pub fn stand441(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand441")
+        } else {
+            rerelease_soldier::STAND441
+        }
+    }
     /// Frame `stand442`.
-    pub fn stand442(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand442") } else { rerelease_soldier::STAND442 } }
+    pub fn stand442(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand442")
+        } else {
+            rerelease_soldier::STAND442
+        }
+    }
     /// Frame `stand443`.
-    pub fn stand443(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand443") } else { rerelease_soldier::STAND443 } }
+    pub fn stand443(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand443")
+        } else {
+            rerelease_soldier::STAND443
+        }
+    }
     /// Frame `stand444`.
-    pub fn stand444(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand444") } else { rerelease_soldier::STAND444 } }
+    pub fn stand444(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand444")
+        } else {
+            rerelease_soldier::STAND444
+        }
+    }
     /// Frame `stand445`.
-    pub fn stand445(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand445") } else { rerelease_soldier::STAND445 } }
+    pub fn stand445(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand445")
+        } else {
+            rerelease_soldier::STAND445
+        }
+    }
     /// Frame `stand446`.
-    pub fn stand446(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand446") } else { rerelease_soldier::STAND446 } }
+    pub fn stand446(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand446")
+        } else {
+            rerelease_soldier::STAND446
+        }
+    }
     /// Frame `stand447`.
-    pub fn stand447(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand447") } else { rerelease_soldier::STAND447 } }
+    pub fn stand447(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand447")
+        } else {
+            rerelease_soldier::STAND447
+        }
+    }
     /// Frame `stand448`.
-    pub fn stand448(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand448") } else { rerelease_soldier::STAND448 } }
+    pub fn stand448(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand448")
+        } else {
+            rerelease_soldier::STAND448
+        }
+    }
     /// Frame `stand449`.
-    pub fn stand449(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand449") } else { rerelease_soldier::STAND449 } }
+    pub fn stand449(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand449")
+        } else {
+            rerelease_soldier::STAND449
+        }
+    }
     /// Frame `stand450`.
-    pub fn stand450(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand450") } else { rerelease_soldier::STAND450 } }
+    pub fn stand450(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand450")
+        } else {
+            rerelease_soldier::STAND450
+        }
+    }
     /// Frame `stand451`.
-    pub fn stand451(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand451") } else { rerelease_soldier::STAND451 } }
+    pub fn stand451(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand451")
+        } else {
+            rerelease_soldier::STAND451
+        }
+    }
     /// Frame `stand452`.
-    pub fn stand452(&self) -> i32 { if self.classic { panic!("Classic has no soldier frame stand452") } else { rerelease_soldier::STAND452 } }
+    pub fn stand452(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no soldier frame stand452")
+        } else {
+            rerelease_soldier::STAND452
+        }
+    }
     /// Frame `walk101`.
-    pub fn walk101(&self) -> i32 { if self.classic { classic_soldier::WALK101 } else { rerelease_soldier::WALK101 } }
+    pub fn walk101(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK101
+        } else {
+            rerelease_soldier::WALK101
+        }
+    }
     /// Frame `walk102`.
-    pub fn walk102(&self) -> i32 { if self.classic { classic_soldier::WALK102 } else { rerelease_soldier::WALK102 } }
+    pub fn walk102(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK102
+        } else {
+            rerelease_soldier::WALK102
+        }
+    }
     /// Frame `walk103`.
-    pub fn walk103(&self) -> i32 { if self.classic { classic_soldier::WALK103 } else { rerelease_soldier::WALK103 } }
+    pub fn walk103(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK103
+        } else {
+            rerelease_soldier::WALK103
+        }
+    }
     /// Frame `walk104`.
-    pub fn walk104(&self) -> i32 { if self.classic { classic_soldier::WALK104 } else { rerelease_soldier::WALK104 } }
+    pub fn walk104(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK104
+        } else {
+            rerelease_soldier::WALK104
+        }
+    }
     /// Frame `walk105`.
-    pub fn walk105(&self) -> i32 { if self.classic { classic_soldier::WALK105 } else { rerelease_soldier::WALK105 } }
+    pub fn walk105(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK105
+        } else {
+            rerelease_soldier::WALK105
+        }
+    }
     /// Frame `walk106`.
-    pub fn walk106(&self) -> i32 { if self.classic { classic_soldier::WALK106 } else { rerelease_soldier::WALK106 } }
+    pub fn walk106(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK106
+        } else {
+            rerelease_soldier::WALK106
+        }
+    }
     /// Frame `walk107`.
-    pub fn walk107(&self) -> i32 { if self.classic { classic_soldier::WALK107 } else { rerelease_soldier::WALK107 } }
+    pub fn walk107(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK107
+        } else {
+            rerelease_soldier::WALK107
+        }
+    }
     /// Frame `walk108`.
-    pub fn walk108(&self) -> i32 { if self.classic { classic_soldier::WALK108 } else { rerelease_soldier::WALK108 } }
+    pub fn walk108(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK108
+        } else {
+            rerelease_soldier::WALK108
+        }
+    }
     /// Frame `walk109`.
-    pub fn walk109(&self) -> i32 { if self.classic { classic_soldier::WALK109 } else { rerelease_soldier::WALK109 } }
+    pub fn walk109(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK109
+        } else {
+            rerelease_soldier::WALK109
+        }
+    }
     /// Frame `walk110`.
-    pub fn walk110(&self) -> i32 { if self.classic { classic_soldier::WALK110 } else { rerelease_soldier::WALK110 } }
+    pub fn walk110(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK110
+        } else {
+            rerelease_soldier::WALK110
+        }
+    }
     /// Frame `walk111`.
-    pub fn walk111(&self) -> i32 { if self.classic { classic_soldier::WALK111 } else { rerelease_soldier::WALK111 } }
+    pub fn walk111(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK111
+        } else {
+            rerelease_soldier::WALK111
+        }
+    }
     /// Frame `walk112`.
-    pub fn walk112(&self) -> i32 { if self.classic { classic_soldier::WALK112 } else { rerelease_soldier::WALK112 } }
+    pub fn walk112(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK112
+        } else {
+            rerelease_soldier::WALK112
+        }
+    }
     /// Frame `walk113`.
-    pub fn walk113(&self) -> i32 { if self.classic { classic_soldier::WALK113 } else { rerelease_soldier::WALK113 } }
+    pub fn walk113(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK113
+        } else {
+            rerelease_soldier::WALK113
+        }
+    }
     /// Frame `walk114`.
-    pub fn walk114(&self) -> i32 { if self.classic { classic_soldier::WALK114 } else { rerelease_soldier::WALK114 } }
+    pub fn walk114(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK114
+        } else {
+            rerelease_soldier::WALK114
+        }
+    }
     /// Frame `walk115`.
-    pub fn walk115(&self) -> i32 { if self.classic { classic_soldier::WALK115 } else { rerelease_soldier::WALK115 } }
+    pub fn walk115(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK115
+        } else {
+            rerelease_soldier::WALK115
+        }
+    }
     /// Frame `walk116`.
-    pub fn walk116(&self) -> i32 { if self.classic { classic_soldier::WALK116 } else { rerelease_soldier::WALK116 } }
+    pub fn walk116(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK116
+        } else {
+            rerelease_soldier::WALK116
+        }
+    }
     /// Frame `walk117`.
-    pub fn walk117(&self) -> i32 { if self.classic { classic_soldier::WALK117 } else { rerelease_soldier::WALK117 } }
+    pub fn walk117(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK117
+        } else {
+            rerelease_soldier::WALK117
+        }
+    }
     /// Frame `walk118`.
-    pub fn walk118(&self) -> i32 { if self.classic { classic_soldier::WALK118 } else { rerelease_soldier::WALK118 } }
+    pub fn walk118(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK118
+        } else {
+            rerelease_soldier::WALK118
+        }
+    }
     /// Frame `walk119`.
-    pub fn walk119(&self) -> i32 { if self.classic { classic_soldier::WALK119 } else { rerelease_soldier::WALK119 } }
+    pub fn walk119(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK119
+        } else {
+            rerelease_soldier::WALK119
+        }
+    }
     /// Frame `walk120`.
-    pub fn walk120(&self) -> i32 { if self.classic { classic_soldier::WALK120 } else { rerelease_soldier::WALK120 } }
+    pub fn walk120(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK120
+        } else {
+            rerelease_soldier::WALK120
+        }
+    }
     /// Frame `walk121`.
-    pub fn walk121(&self) -> i32 { if self.classic { classic_soldier::WALK121 } else { rerelease_soldier::WALK121 } }
+    pub fn walk121(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK121
+        } else {
+            rerelease_soldier::WALK121
+        }
+    }
     /// Frame `walk122`.
-    pub fn walk122(&self) -> i32 { if self.classic { classic_soldier::WALK122 } else { rerelease_soldier::WALK122 } }
+    pub fn walk122(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK122
+        } else {
+            rerelease_soldier::WALK122
+        }
+    }
     /// Frame `walk123`.
-    pub fn walk123(&self) -> i32 { if self.classic { classic_soldier::WALK123 } else { rerelease_soldier::WALK123 } }
+    pub fn walk123(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK123
+        } else {
+            rerelease_soldier::WALK123
+        }
+    }
     /// Frame `walk124`.
-    pub fn walk124(&self) -> i32 { if self.classic { classic_soldier::WALK124 } else { rerelease_soldier::WALK124 } }
+    pub fn walk124(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK124
+        } else {
+            rerelease_soldier::WALK124
+        }
+    }
     /// Frame `walk125`.
-    pub fn walk125(&self) -> i32 { if self.classic { classic_soldier::WALK125 } else { rerelease_soldier::WALK125 } }
+    pub fn walk125(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK125
+        } else {
+            rerelease_soldier::WALK125
+        }
+    }
     /// Frame `walk126`.
-    pub fn walk126(&self) -> i32 { if self.classic { classic_soldier::WALK126 } else { rerelease_soldier::WALK126 } }
+    pub fn walk126(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK126
+        } else {
+            rerelease_soldier::WALK126
+        }
+    }
     /// Frame `walk127`.
-    pub fn walk127(&self) -> i32 { if self.classic { classic_soldier::WALK127 } else { rerelease_soldier::WALK127 } }
+    pub fn walk127(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK127
+        } else {
+            rerelease_soldier::WALK127
+        }
+    }
     /// Frame `walk128`.
-    pub fn walk128(&self) -> i32 { if self.classic { classic_soldier::WALK128 } else { rerelease_soldier::WALK128 } }
+    pub fn walk128(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK128
+        } else {
+            rerelease_soldier::WALK128
+        }
+    }
     /// Frame `walk129`.
-    pub fn walk129(&self) -> i32 { if self.classic { classic_soldier::WALK129 } else { rerelease_soldier::WALK129 } }
+    pub fn walk129(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK129
+        } else {
+            rerelease_soldier::WALK129
+        }
+    }
     /// Frame `walk130`.
-    pub fn walk130(&self) -> i32 { if self.classic { classic_soldier::WALK130 } else { rerelease_soldier::WALK130 } }
+    pub fn walk130(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK130
+        } else {
+            rerelease_soldier::WALK130
+        }
+    }
     /// Frame `walk131`.
-    pub fn walk131(&self) -> i32 { if self.classic { classic_soldier::WALK131 } else { rerelease_soldier::WALK131 } }
+    pub fn walk131(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK131
+        } else {
+            rerelease_soldier::WALK131
+        }
+    }
     /// Frame `walk132`.
-    pub fn walk132(&self) -> i32 { if self.classic { classic_soldier::WALK132 } else { rerelease_soldier::WALK132 } }
+    pub fn walk132(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK132
+        } else {
+            rerelease_soldier::WALK132
+        }
+    }
     /// Frame `walk133`.
-    pub fn walk133(&self) -> i32 { if self.classic { classic_soldier::WALK133 } else { rerelease_soldier::WALK133 } }
+    pub fn walk133(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK133
+        } else {
+            rerelease_soldier::WALK133
+        }
+    }
     /// Frame `walk201`.
-    pub fn walk201(&self) -> i32 { if self.classic { classic_soldier::WALK201 } else { rerelease_soldier::WALK201 } }
+    pub fn walk201(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK201
+        } else {
+            rerelease_soldier::WALK201
+        }
+    }
     /// Frame `walk202`.
-    pub fn walk202(&self) -> i32 { if self.classic { classic_soldier::WALK202 } else { rerelease_soldier::WALK202 } }
+    pub fn walk202(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK202
+        } else {
+            rerelease_soldier::WALK202
+        }
+    }
     /// Frame `walk203`.
-    pub fn walk203(&self) -> i32 { if self.classic { classic_soldier::WALK203 } else { rerelease_soldier::WALK203 } }
+    pub fn walk203(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK203
+        } else {
+            rerelease_soldier::WALK203
+        }
+    }
     /// Frame `walk204`.
-    pub fn walk204(&self) -> i32 { if self.classic { classic_soldier::WALK204 } else { rerelease_soldier::WALK204 } }
+    pub fn walk204(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK204
+        } else {
+            rerelease_soldier::WALK204
+        }
+    }
     /// Frame `walk205`.
-    pub fn walk205(&self) -> i32 { if self.classic { classic_soldier::WALK205 } else { rerelease_soldier::WALK205 } }
+    pub fn walk205(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK205
+        } else {
+            rerelease_soldier::WALK205
+        }
+    }
     /// Frame `walk206`.
-    pub fn walk206(&self) -> i32 { if self.classic { classic_soldier::WALK206 } else { rerelease_soldier::WALK206 } }
+    pub fn walk206(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK206
+        } else {
+            rerelease_soldier::WALK206
+        }
+    }
     /// Frame `walk207`.
-    pub fn walk207(&self) -> i32 { if self.classic { classic_soldier::WALK207 } else { rerelease_soldier::WALK207 } }
+    pub fn walk207(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK207
+        } else {
+            rerelease_soldier::WALK207
+        }
+    }
     /// Frame `walk208`.
-    pub fn walk208(&self) -> i32 { if self.classic { classic_soldier::WALK208 } else { rerelease_soldier::WALK208 } }
+    pub fn walk208(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK208
+        } else {
+            rerelease_soldier::WALK208
+        }
+    }
     /// Frame `walk209`.
-    pub fn walk209(&self) -> i32 { if self.classic { classic_soldier::WALK209 } else { rerelease_soldier::WALK209 } }
+    pub fn walk209(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK209
+        } else {
+            rerelease_soldier::WALK209
+        }
+    }
     /// Frame `walk210`.
-    pub fn walk210(&self) -> i32 { if self.classic { classic_soldier::WALK210 } else { rerelease_soldier::WALK210 } }
+    pub fn walk210(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK210
+        } else {
+            rerelease_soldier::WALK210
+        }
+    }
     /// Frame `walk211`.
-    pub fn walk211(&self) -> i32 { if self.classic { classic_soldier::WALK211 } else { rerelease_soldier::WALK211 } }
+    pub fn walk211(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK211
+        } else {
+            rerelease_soldier::WALK211
+        }
+    }
     /// Frame `walk212`.
-    pub fn walk212(&self) -> i32 { if self.classic { classic_soldier::WALK212 } else { rerelease_soldier::WALK212 } }
+    pub fn walk212(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK212
+        } else {
+            rerelease_soldier::WALK212
+        }
+    }
     /// Frame `walk213`.
-    pub fn walk213(&self) -> i32 { if self.classic { classic_soldier::WALK213 } else { rerelease_soldier::WALK213 } }
+    pub fn walk213(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK213
+        } else {
+            rerelease_soldier::WALK213
+        }
+    }
     /// Frame `walk214`.
-    pub fn walk214(&self) -> i32 { if self.classic { classic_soldier::WALK214 } else { rerelease_soldier::WALK214 } }
+    pub fn walk214(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK214
+        } else {
+            rerelease_soldier::WALK214
+        }
+    }
     /// Frame `walk215`.
-    pub fn walk215(&self) -> i32 { if self.classic { classic_soldier::WALK215 } else { rerelease_soldier::WALK215 } }
+    pub fn walk215(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK215
+        } else {
+            rerelease_soldier::WALK215
+        }
+    }
     /// Frame `walk216`.
-    pub fn walk216(&self) -> i32 { if self.classic { classic_soldier::WALK216 } else { rerelease_soldier::WALK216 } }
+    pub fn walk216(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK216
+        } else {
+            rerelease_soldier::WALK216
+        }
+    }
     /// Frame `walk217`.
-    pub fn walk217(&self) -> i32 { if self.classic { classic_soldier::WALK217 } else { rerelease_soldier::WALK217 } }
+    pub fn walk217(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK217
+        } else {
+            rerelease_soldier::WALK217
+        }
+    }
     /// Frame `walk218`.
-    pub fn walk218(&self) -> i32 { if self.classic { classic_soldier::WALK218 } else { rerelease_soldier::WALK218 } }
+    pub fn walk218(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK218
+        } else {
+            rerelease_soldier::WALK218
+        }
+    }
     /// Frame `walk219`.
-    pub fn walk219(&self) -> i32 { if self.classic { classic_soldier::WALK219 } else { rerelease_soldier::WALK219 } }
+    pub fn walk219(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK219
+        } else {
+            rerelease_soldier::WALK219
+        }
+    }
     /// Frame `walk220`.
-    pub fn walk220(&self) -> i32 { if self.classic { classic_soldier::WALK220 } else { rerelease_soldier::WALK220 } }
+    pub fn walk220(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK220
+        } else {
+            rerelease_soldier::WALK220
+        }
+    }
     /// Frame `walk221`.
-    pub fn walk221(&self) -> i32 { if self.classic { classic_soldier::WALK221 } else { rerelease_soldier::WALK221 } }
+    pub fn walk221(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK221
+        } else {
+            rerelease_soldier::WALK221
+        }
+    }
     /// Frame `walk222`.
-    pub fn walk222(&self) -> i32 { if self.classic { classic_soldier::WALK222 } else { rerelease_soldier::WALK222 } }
+    pub fn walk222(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK222
+        } else {
+            rerelease_soldier::WALK222
+        }
+    }
     /// Frame `walk223`.
-    pub fn walk223(&self) -> i32 { if self.classic { classic_soldier::WALK223 } else { rerelease_soldier::WALK223 } }
+    pub fn walk223(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK223
+        } else {
+            rerelease_soldier::WALK223
+        }
+    }
     /// Frame `walk224`.
-    pub fn walk224(&self) -> i32 { if self.classic { classic_soldier::WALK224 } else { rerelease_soldier::WALK224 } }
+    pub fn walk224(&self) -> i32 {
+        if self.classic {
+            classic_soldier::WALK224
+        } else {
+            rerelease_soldier::WALK224
+        }
+    }
 }
 
 /// Edition-aware infantry frame table (`frames(context)`).
@@ -4230,533 +7682,2119 @@ pub struct InfantryFrames {
 }
 impl InfantryFrames {
     /// Build a table for an edition.
-    pub fn new(classic: bool) -> Self { Self { classic } }
+    pub fn new(classic: bool) -> Self {
+        Self { classic }
+    }
     /// Frame `attak101`.
-    pub fn attak101(&self) -> i32 { if self.classic { classic_infantry::ATTAK101 } else { rerelease_infantry::ATTAK101 } }
+    pub fn attak101(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK101
+        } else {
+            rerelease_infantry::ATTAK101
+        }
+    }
     /// Frame `attak102`.
-    pub fn attak102(&self) -> i32 { if self.classic { classic_infantry::ATTAK102 } else { rerelease_infantry::ATTAK102 } }
+    pub fn attak102(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK102
+        } else {
+            rerelease_infantry::ATTAK102
+        }
+    }
     /// Frame `attak103`.
-    pub fn attak103(&self) -> i32 { if self.classic { classic_infantry::ATTAK103 } else { rerelease_infantry::ATTAK103 } }
+    pub fn attak103(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK103
+        } else {
+            rerelease_infantry::ATTAK103
+        }
+    }
     /// Frame `attak104`.
-    pub fn attak104(&self) -> i32 { if self.classic { classic_infantry::ATTAK104 } else { rerelease_infantry::ATTAK104 } }
+    pub fn attak104(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK104
+        } else {
+            rerelease_infantry::ATTAK104
+        }
+    }
     /// Frame `attak105`.
-    pub fn attak105(&self) -> i32 { if self.classic { classic_infantry::ATTAK105 } else { rerelease_infantry::ATTAK105 } }
+    pub fn attak105(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK105
+        } else {
+            rerelease_infantry::ATTAK105
+        }
+    }
     /// Frame `attak106`.
-    pub fn attak106(&self) -> i32 { if self.classic { classic_infantry::ATTAK106 } else { rerelease_infantry::ATTAK106 } }
+    pub fn attak106(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK106
+        } else {
+            rerelease_infantry::ATTAK106
+        }
+    }
     /// Frame `attak107`.
-    pub fn attak107(&self) -> i32 { if self.classic { classic_infantry::ATTAK107 } else { rerelease_infantry::ATTAK107 } }
+    pub fn attak107(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK107
+        } else {
+            rerelease_infantry::ATTAK107
+        }
+    }
     /// Frame `attak108`.
-    pub fn attak108(&self) -> i32 { if self.classic { classic_infantry::ATTAK108 } else { rerelease_infantry::ATTAK108 } }
+    pub fn attak108(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK108
+        } else {
+            rerelease_infantry::ATTAK108
+        }
+    }
     /// Frame `attak109`.
-    pub fn attak109(&self) -> i32 { if self.classic { classic_infantry::ATTAK109 } else { rerelease_infantry::ATTAK109 } }
+    pub fn attak109(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK109
+        } else {
+            rerelease_infantry::ATTAK109
+        }
+    }
     /// Frame `attak110`.
-    pub fn attak110(&self) -> i32 { if self.classic { classic_infantry::ATTAK110 } else { rerelease_infantry::ATTAK110 } }
+    pub fn attak110(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK110
+        } else {
+            rerelease_infantry::ATTAK110
+        }
+    }
     /// Frame `attak111`.
-    pub fn attak111(&self) -> i32 { if self.classic { classic_infantry::ATTAK111 } else { rerelease_infantry::ATTAK111 } }
+    pub fn attak111(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK111
+        } else {
+            rerelease_infantry::ATTAK111
+        }
+    }
     /// Frame `attak112`.
-    pub fn attak112(&self) -> i32 { if self.classic { classic_infantry::ATTAK112 } else { rerelease_infantry::ATTAK112 } }
+    pub fn attak112(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK112
+        } else {
+            rerelease_infantry::ATTAK112
+        }
+    }
     /// Frame `attak113`.
-    pub fn attak113(&self) -> i32 { if self.classic { classic_infantry::ATTAK113 } else { rerelease_infantry::ATTAK113 } }
+    pub fn attak113(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK113
+        } else {
+            rerelease_infantry::ATTAK113
+        }
+    }
     /// Frame `attak114`.
-    pub fn attak114(&self) -> i32 { if self.classic { classic_infantry::ATTAK114 } else { rerelease_infantry::ATTAK114 } }
+    pub fn attak114(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK114
+        } else {
+            rerelease_infantry::ATTAK114
+        }
+    }
     /// Frame `attak115`.
-    pub fn attak115(&self) -> i32 { if self.classic { classic_infantry::ATTAK115 } else { rerelease_infantry::ATTAK115 } }
+    pub fn attak115(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK115
+        } else {
+            rerelease_infantry::ATTAK115
+        }
+    }
     /// Frame `attak201`.
-    pub fn attak201(&self) -> i32 { if self.classic { classic_infantry::ATTAK201 } else { rerelease_infantry::ATTAK201 } }
+    pub fn attak201(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK201
+        } else {
+            rerelease_infantry::ATTAK201
+        }
+    }
     /// Frame `attak202`.
-    pub fn attak202(&self) -> i32 { if self.classic { classic_infantry::ATTAK202 } else { rerelease_infantry::ATTAK202 } }
+    pub fn attak202(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK202
+        } else {
+            rerelease_infantry::ATTAK202
+        }
+    }
     /// Frame `attak203`.
-    pub fn attak203(&self) -> i32 { if self.classic { classic_infantry::ATTAK203 } else { rerelease_infantry::ATTAK203 } }
+    pub fn attak203(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK203
+        } else {
+            rerelease_infantry::ATTAK203
+        }
+    }
     /// Frame `attak204`.
-    pub fn attak204(&self) -> i32 { if self.classic { classic_infantry::ATTAK204 } else { rerelease_infantry::ATTAK204 } }
+    pub fn attak204(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK204
+        } else {
+            rerelease_infantry::ATTAK204
+        }
+    }
     /// Frame `attak205`.
-    pub fn attak205(&self) -> i32 { if self.classic { classic_infantry::ATTAK205 } else { rerelease_infantry::ATTAK205 } }
+    pub fn attak205(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK205
+        } else {
+            rerelease_infantry::ATTAK205
+        }
+    }
     /// Frame `attak206`.
-    pub fn attak206(&self) -> i32 { if self.classic { classic_infantry::ATTAK206 } else { rerelease_infantry::ATTAK206 } }
+    pub fn attak206(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK206
+        } else {
+            rerelease_infantry::ATTAK206
+        }
+    }
     /// Frame `attak207`.
-    pub fn attak207(&self) -> i32 { if self.classic { classic_infantry::ATTAK207 } else { rerelease_infantry::ATTAK207 } }
+    pub fn attak207(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK207
+        } else {
+            rerelease_infantry::ATTAK207
+        }
+    }
     /// Frame `attak208`.
-    pub fn attak208(&self) -> i32 { if self.classic { classic_infantry::ATTAK208 } else { rerelease_infantry::ATTAK208 } }
+    pub fn attak208(&self) -> i32 {
+        if self.classic {
+            classic_infantry::ATTAK208
+        } else {
+            rerelease_infantry::ATTAK208
+        }
+    }
     /// Frame `attak301`.
-    pub fn attak301(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak301") } else { rerelease_infantry::ATTAK301 } }
+    pub fn attak301(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak301")
+        } else {
+            rerelease_infantry::ATTAK301
+        }
+    }
     /// Frame `attak302`.
-    pub fn attak302(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak302") } else { rerelease_infantry::ATTAK302 } }
+    pub fn attak302(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak302")
+        } else {
+            rerelease_infantry::ATTAK302
+        }
+    }
     /// Frame `attak303`.
-    pub fn attak303(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak303") } else { rerelease_infantry::ATTAK303 } }
+    pub fn attak303(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak303")
+        } else {
+            rerelease_infantry::ATTAK303
+        }
+    }
     /// Frame `attak304`.
-    pub fn attak304(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak304") } else { rerelease_infantry::ATTAK304 } }
+    pub fn attak304(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak304")
+        } else {
+            rerelease_infantry::ATTAK304
+        }
+    }
     /// Frame `attak305`.
-    pub fn attak305(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak305") } else { rerelease_infantry::ATTAK305 } }
+    pub fn attak305(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak305")
+        } else {
+            rerelease_infantry::ATTAK305
+        }
+    }
     /// Frame `attak306`.
-    pub fn attak306(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak306") } else { rerelease_infantry::ATTAK306 } }
+    pub fn attak306(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak306")
+        } else {
+            rerelease_infantry::ATTAK306
+        }
+    }
     /// Frame `attak307`.
-    pub fn attak307(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak307") } else { rerelease_infantry::ATTAK307 } }
+    pub fn attak307(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak307")
+        } else {
+            rerelease_infantry::ATTAK307
+        }
+    }
     /// Frame `attak308`.
-    pub fn attak308(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak308") } else { rerelease_infantry::ATTAK308 } }
+    pub fn attak308(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak308")
+        } else {
+            rerelease_infantry::ATTAK308
+        }
+    }
     /// Frame `attak309`.
-    pub fn attak309(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak309") } else { rerelease_infantry::ATTAK309 } }
+    pub fn attak309(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak309")
+        } else {
+            rerelease_infantry::ATTAK309
+        }
+    }
     /// Frame `attak310`.
-    pub fn attak310(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak310") } else { rerelease_infantry::ATTAK310 } }
+    pub fn attak310(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak310")
+        } else {
+            rerelease_infantry::ATTAK310
+        }
+    }
     /// Frame `attak311`.
-    pub fn attak311(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak311") } else { rerelease_infantry::ATTAK311 } }
+    pub fn attak311(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak311")
+        } else {
+            rerelease_infantry::ATTAK311
+        }
+    }
     /// Frame `attak312`.
-    pub fn attak312(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak312") } else { rerelease_infantry::ATTAK312 } }
+    pub fn attak312(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak312")
+        } else {
+            rerelease_infantry::ATTAK312
+        }
+    }
     /// Frame `attak313`.
-    pub fn attak313(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak313") } else { rerelease_infantry::ATTAK313 } }
+    pub fn attak313(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak313")
+        } else {
+            rerelease_infantry::ATTAK313
+        }
+    }
     /// Frame `attak314`.
-    pub fn attak314(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak314") } else { rerelease_infantry::ATTAK314 } }
+    pub fn attak314(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak314")
+        } else {
+            rerelease_infantry::ATTAK314
+        }
+    }
     /// Frame `attak315`.
-    pub fn attak315(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak315") } else { rerelease_infantry::ATTAK315 } }
+    pub fn attak315(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak315")
+        } else {
+            rerelease_infantry::ATTAK315
+        }
+    }
     /// Frame `attak401`.
-    pub fn attak401(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak401") } else { rerelease_infantry::ATTAK401 } }
+    pub fn attak401(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak401")
+        } else {
+            rerelease_infantry::ATTAK401
+        }
+    }
     /// Frame `attak402`.
-    pub fn attak402(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak402") } else { rerelease_infantry::ATTAK402 } }
+    pub fn attak402(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak402")
+        } else {
+            rerelease_infantry::ATTAK402
+        }
+    }
     /// Frame `attak403`.
-    pub fn attak403(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak403") } else { rerelease_infantry::ATTAK403 } }
+    pub fn attak403(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak403")
+        } else {
+            rerelease_infantry::ATTAK403
+        }
+    }
     /// Frame `attak404`.
-    pub fn attak404(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak404") } else { rerelease_infantry::ATTAK404 } }
+    pub fn attak404(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak404")
+        } else {
+            rerelease_infantry::ATTAK404
+        }
+    }
     /// Frame `attak405`.
-    pub fn attak405(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak405") } else { rerelease_infantry::ATTAK405 } }
+    pub fn attak405(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak405")
+        } else {
+            rerelease_infantry::ATTAK405
+        }
+    }
     /// Frame `attak406`.
-    pub fn attak406(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak406") } else { rerelease_infantry::ATTAK406 } }
+    pub fn attak406(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak406")
+        } else {
+            rerelease_infantry::ATTAK406
+        }
+    }
     /// Frame `attak407`.
-    pub fn attak407(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak407") } else { rerelease_infantry::ATTAK407 } }
+    pub fn attak407(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak407")
+        } else {
+            rerelease_infantry::ATTAK407
+        }
+    }
     /// Frame `attak408`.
-    pub fn attak408(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak408") } else { rerelease_infantry::ATTAK408 } }
+    pub fn attak408(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak408")
+        } else {
+            rerelease_infantry::ATTAK408
+        }
+    }
     /// Frame `attak409`.
-    pub fn attak409(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak409") } else { rerelease_infantry::ATTAK409 } }
+    pub fn attak409(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak409")
+        } else {
+            rerelease_infantry::ATTAK409
+        }
+    }
     /// Frame `attak410`.
-    pub fn attak410(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak410") } else { rerelease_infantry::ATTAK410 } }
+    pub fn attak410(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak410")
+        } else {
+            rerelease_infantry::ATTAK410
+        }
+    }
     /// Frame `attak411`.
-    pub fn attak411(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak411") } else { rerelease_infantry::ATTAK411 } }
+    pub fn attak411(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak411")
+        } else {
+            rerelease_infantry::ATTAK411
+        }
+    }
     /// Frame `attak412`.
-    pub fn attak412(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak412") } else { rerelease_infantry::ATTAK412 } }
+    pub fn attak412(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak412")
+        } else {
+            rerelease_infantry::ATTAK412
+        }
+    }
     /// Frame `attak413`.
-    pub fn attak413(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak413") } else { rerelease_infantry::ATTAK413 } }
+    pub fn attak413(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak413")
+        } else {
+            rerelease_infantry::ATTAK413
+        }
+    }
     /// Frame `attak414`.
-    pub fn attak414(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak414") } else { rerelease_infantry::ATTAK414 } }
+    pub fn attak414(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak414")
+        } else {
+            rerelease_infantry::ATTAK414
+        }
+    }
     /// Frame `attak415`.
-    pub fn attak415(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak415") } else { rerelease_infantry::ATTAK415 } }
+    pub fn attak415(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak415")
+        } else {
+            rerelease_infantry::ATTAK415
+        }
+    }
     /// Frame `attak416`.
-    pub fn attak416(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak416") } else { rerelease_infantry::ATTAK416 } }
+    pub fn attak416(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak416")
+        } else {
+            rerelease_infantry::ATTAK416
+        }
+    }
     /// Frame `attak417`.
-    pub fn attak417(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak417") } else { rerelease_infantry::ATTAK417 } }
+    pub fn attak417(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak417")
+        } else {
+            rerelease_infantry::ATTAK417
+        }
+    }
     /// Frame `attak418`.
-    pub fn attak418(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak418") } else { rerelease_infantry::ATTAK418 } }
+    pub fn attak418(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak418")
+        } else {
+            rerelease_infantry::ATTAK418
+        }
+    }
     /// Frame `attak419`.
-    pub fn attak419(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak419") } else { rerelease_infantry::ATTAK419 } }
+    pub fn attak419(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak419")
+        } else {
+            rerelease_infantry::ATTAK419
+        }
+    }
     /// Frame `attak420`.
-    pub fn attak420(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak420") } else { rerelease_infantry::ATTAK420 } }
+    pub fn attak420(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak420")
+        } else {
+            rerelease_infantry::ATTAK420
+        }
+    }
     /// Frame `attak421`.
-    pub fn attak421(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak421") } else { rerelease_infantry::ATTAK421 } }
+    pub fn attak421(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak421")
+        } else {
+            rerelease_infantry::ATTAK421
+        }
+    }
     /// Frame `attak422`.
-    pub fn attak422(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak422") } else { rerelease_infantry::ATTAK422 } }
+    pub fn attak422(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak422")
+        } else {
+            rerelease_infantry::ATTAK422
+        }
+    }
     /// Frame `attak423`.
-    pub fn attak423(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak423") } else { rerelease_infantry::ATTAK423 } }
+    pub fn attak423(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak423")
+        } else {
+            rerelease_infantry::ATTAK423
+        }
+    }
     /// Frame `attak424`.
-    pub fn attak424(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame attak424") } else { rerelease_infantry::ATTAK424 } }
+    pub fn attak424(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame attak424")
+        } else {
+            rerelease_infantry::ATTAK424
+        }
+    }
     /// Frame `block01`.
-    pub fn block01(&self) -> i32 { if self.classic { classic_infantry::BLOCK01 } else { rerelease_infantry::BLOCK01 } }
+    pub fn block01(&self) -> i32 {
+        if self.classic {
+            classic_infantry::BLOCK01
+        } else {
+            rerelease_infantry::BLOCK01
+        }
+    }
     /// Frame `block02`.
-    pub fn block02(&self) -> i32 { if self.classic { classic_infantry::BLOCK02 } else { rerelease_infantry::BLOCK02 } }
+    pub fn block02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::BLOCK02
+        } else {
+            rerelease_infantry::BLOCK02
+        }
+    }
     /// Frame `block03`.
-    pub fn block03(&self) -> i32 { if self.classic { classic_infantry::BLOCK03 } else { rerelease_infantry::BLOCK03 } }
+    pub fn block03(&self) -> i32 {
+        if self.classic {
+            classic_infantry::BLOCK03
+        } else {
+            rerelease_infantry::BLOCK03
+        }
+    }
     /// Frame `block04`.
-    pub fn block04(&self) -> i32 { if self.classic { classic_infantry::BLOCK04 } else { rerelease_infantry::BLOCK04 } }
+    pub fn block04(&self) -> i32 {
+        if self.classic {
+            classic_infantry::BLOCK04
+        } else {
+            rerelease_infantry::BLOCK04
+        }
+    }
     /// Frame `block05`.
-    pub fn block05(&self) -> i32 { if self.classic { classic_infantry::BLOCK05 } else { rerelease_infantry::BLOCK05 } }
+    pub fn block05(&self) -> i32 {
+        if self.classic {
+            classic_infantry::BLOCK05
+        } else {
+            rerelease_infantry::BLOCK05
+        }
+    }
     /// Frame `death101`.
-    pub fn death101(&self) -> i32 { if self.classic { classic_infantry::DEATH101 } else { rerelease_infantry::DEATH101 } }
+    pub fn death101(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH101
+        } else {
+            rerelease_infantry::DEATH101
+        }
+    }
     /// Frame `death102`.
-    pub fn death102(&self) -> i32 { if self.classic { classic_infantry::DEATH102 } else { rerelease_infantry::DEATH102 } }
+    pub fn death102(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH102
+        } else {
+            rerelease_infantry::DEATH102
+        }
+    }
     /// Frame `death103`.
-    pub fn death103(&self) -> i32 { if self.classic { classic_infantry::DEATH103 } else { rerelease_infantry::DEATH103 } }
+    pub fn death103(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH103
+        } else {
+            rerelease_infantry::DEATH103
+        }
+    }
     /// Frame `death104`.
-    pub fn death104(&self) -> i32 { if self.classic { classic_infantry::DEATH104 } else { rerelease_infantry::DEATH104 } }
+    pub fn death104(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH104
+        } else {
+            rerelease_infantry::DEATH104
+        }
+    }
     /// Frame `death105`.
-    pub fn death105(&self) -> i32 { if self.classic { classic_infantry::DEATH105 } else { rerelease_infantry::DEATH105 } }
+    pub fn death105(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH105
+        } else {
+            rerelease_infantry::DEATH105
+        }
+    }
     /// Frame `death106`.
-    pub fn death106(&self) -> i32 { if self.classic { classic_infantry::DEATH106 } else { rerelease_infantry::DEATH106 } }
+    pub fn death106(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH106
+        } else {
+            rerelease_infantry::DEATH106
+        }
+    }
     /// Frame `death107`.
-    pub fn death107(&self) -> i32 { if self.classic { classic_infantry::DEATH107 } else { rerelease_infantry::DEATH107 } }
+    pub fn death107(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH107
+        } else {
+            rerelease_infantry::DEATH107
+        }
+    }
     /// Frame `death108`.
-    pub fn death108(&self) -> i32 { if self.classic { classic_infantry::DEATH108 } else { rerelease_infantry::DEATH108 } }
+    pub fn death108(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH108
+        } else {
+            rerelease_infantry::DEATH108
+        }
+    }
     /// Frame `death109`.
-    pub fn death109(&self) -> i32 { if self.classic { classic_infantry::DEATH109 } else { rerelease_infantry::DEATH109 } }
+    pub fn death109(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH109
+        } else {
+            rerelease_infantry::DEATH109
+        }
+    }
     /// Frame `death110`.
-    pub fn death110(&self) -> i32 { if self.classic { classic_infantry::DEATH110 } else { rerelease_infantry::DEATH110 } }
+    pub fn death110(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH110
+        } else {
+            rerelease_infantry::DEATH110
+        }
+    }
     /// Frame `death111`.
-    pub fn death111(&self) -> i32 { if self.classic { classic_infantry::DEATH111 } else { rerelease_infantry::DEATH111 } }
+    pub fn death111(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH111
+        } else {
+            rerelease_infantry::DEATH111
+        }
+    }
     /// Frame `death112`.
-    pub fn death112(&self) -> i32 { if self.classic { classic_infantry::DEATH112 } else { rerelease_infantry::DEATH112 } }
+    pub fn death112(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH112
+        } else {
+            rerelease_infantry::DEATH112
+        }
+    }
     /// Frame `death113`.
-    pub fn death113(&self) -> i32 { if self.classic { classic_infantry::DEATH113 } else { rerelease_infantry::DEATH113 } }
+    pub fn death113(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH113
+        } else {
+            rerelease_infantry::DEATH113
+        }
+    }
     /// Frame `death114`.
-    pub fn death114(&self) -> i32 { if self.classic { classic_infantry::DEATH114 } else { rerelease_infantry::DEATH114 } }
+    pub fn death114(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH114
+        } else {
+            rerelease_infantry::DEATH114
+        }
+    }
     /// Frame `death115`.
-    pub fn death115(&self) -> i32 { if self.classic { classic_infantry::DEATH115 } else { rerelease_infantry::DEATH115 } }
+    pub fn death115(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH115
+        } else {
+            rerelease_infantry::DEATH115
+        }
+    }
     /// Frame `death116`.
-    pub fn death116(&self) -> i32 { if self.classic { classic_infantry::DEATH116 } else { rerelease_infantry::DEATH116 } }
+    pub fn death116(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH116
+        } else {
+            rerelease_infantry::DEATH116
+        }
+    }
     /// Frame `death117`.
-    pub fn death117(&self) -> i32 { if self.classic { classic_infantry::DEATH117 } else { rerelease_infantry::DEATH117 } }
+    pub fn death117(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH117
+        } else {
+            rerelease_infantry::DEATH117
+        }
+    }
     /// Frame `death118`.
-    pub fn death118(&self) -> i32 { if self.classic { classic_infantry::DEATH118 } else { rerelease_infantry::DEATH118 } }
+    pub fn death118(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH118
+        } else {
+            rerelease_infantry::DEATH118
+        }
+    }
     /// Frame `death119`.
-    pub fn death119(&self) -> i32 { if self.classic { classic_infantry::DEATH119 } else { rerelease_infantry::DEATH119 } }
+    pub fn death119(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH119
+        } else {
+            rerelease_infantry::DEATH119
+        }
+    }
     /// Frame `death120`.
-    pub fn death120(&self) -> i32 { if self.classic { classic_infantry::DEATH120 } else { rerelease_infantry::DEATH120 } }
+    pub fn death120(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH120
+        } else {
+            rerelease_infantry::DEATH120
+        }
+    }
     /// Frame `death201`.
-    pub fn death201(&self) -> i32 { if self.classic { classic_infantry::DEATH201 } else { rerelease_infantry::DEATH201 } }
+    pub fn death201(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH201
+        } else {
+            rerelease_infantry::DEATH201
+        }
+    }
     /// Frame `death202`.
-    pub fn death202(&self) -> i32 { if self.classic { classic_infantry::DEATH202 } else { rerelease_infantry::DEATH202 } }
+    pub fn death202(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH202
+        } else {
+            rerelease_infantry::DEATH202
+        }
+    }
     /// Frame `death203`.
-    pub fn death203(&self) -> i32 { if self.classic { classic_infantry::DEATH203 } else { rerelease_infantry::DEATH203 } }
+    pub fn death203(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH203
+        } else {
+            rerelease_infantry::DEATH203
+        }
+    }
     /// Frame `death204`.
-    pub fn death204(&self) -> i32 { if self.classic { classic_infantry::DEATH204 } else { rerelease_infantry::DEATH204 } }
+    pub fn death204(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH204
+        } else {
+            rerelease_infantry::DEATH204
+        }
+    }
     /// Frame `death205`.
-    pub fn death205(&self) -> i32 { if self.classic { classic_infantry::DEATH205 } else { rerelease_infantry::DEATH205 } }
+    pub fn death205(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH205
+        } else {
+            rerelease_infantry::DEATH205
+        }
+    }
     /// Frame `death206`.
-    pub fn death206(&self) -> i32 { if self.classic { classic_infantry::DEATH206 } else { rerelease_infantry::DEATH206 } }
+    pub fn death206(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH206
+        } else {
+            rerelease_infantry::DEATH206
+        }
+    }
     /// Frame `death207`.
-    pub fn death207(&self) -> i32 { if self.classic { classic_infantry::DEATH207 } else { rerelease_infantry::DEATH207 } }
+    pub fn death207(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH207
+        } else {
+            rerelease_infantry::DEATH207
+        }
+    }
     /// Frame `death208`.
-    pub fn death208(&self) -> i32 { if self.classic { classic_infantry::DEATH208 } else { rerelease_infantry::DEATH208 } }
+    pub fn death208(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH208
+        } else {
+            rerelease_infantry::DEATH208
+        }
+    }
     /// Frame `death209`.
-    pub fn death209(&self) -> i32 { if self.classic { classic_infantry::DEATH209 } else { rerelease_infantry::DEATH209 } }
+    pub fn death209(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH209
+        } else {
+            rerelease_infantry::DEATH209
+        }
+    }
     /// Frame `death210`.
-    pub fn death210(&self) -> i32 { if self.classic { classic_infantry::DEATH210 } else { rerelease_infantry::DEATH210 } }
+    pub fn death210(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH210
+        } else {
+            rerelease_infantry::DEATH210
+        }
+    }
     /// Frame `death211`.
-    pub fn death211(&self) -> i32 { if self.classic { classic_infantry::DEATH211 } else { rerelease_infantry::DEATH211 } }
+    pub fn death211(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH211
+        } else {
+            rerelease_infantry::DEATH211
+        }
+    }
     /// Frame `death212`.
-    pub fn death212(&self) -> i32 { if self.classic { classic_infantry::DEATH212 } else { rerelease_infantry::DEATH212 } }
+    pub fn death212(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH212
+        } else {
+            rerelease_infantry::DEATH212
+        }
+    }
     /// Frame `death213`.
-    pub fn death213(&self) -> i32 { if self.classic { classic_infantry::DEATH213 } else { rerelease_infantry::DEATH213 } }
+    pub fn death213(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH213
+        } else {
+            rerelease_infantry::DEATH213
+        }
+    }
     /// Frame `death214`.
-    pub fn death214(&self) -> i32 { if self.classic { classic_infantry::DEATH214 } else { rerelease_infantry::DEATH214 } }
+    pub fn death214(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH214
+        } else {
+            rerelease_infantry::DEATH214
+        }
+    }
     /// Frame `death215`.
-    pub fn death215(&self) -> i32 { if self.classic { classic_infantry::DEATH215 } else { rerelease_infantry::DEATH215 } }
+    pub fn death215(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH215
+        } else {
+            rerelease_infantry::DEATH215
+        }
+    }
     /// Frame `death216`.
-    pub fn death216(&self) -> i32 { if self.classic { classic_infantry::DEATH216 } else { rerelease_infantry::DEATH216 } }
+    pub fn death216(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH216
+        } else {
+            rerelease_infantry::DEATH216
+        }
+    }
     /// Frame `death217`.
-    pub fn death217(&self) -> i32 { if self.classic { classic_infantry::DEATH217 } else { rerelease_infantry::DEATH217 } }
+    pub fn death217(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH217
+        } else {
+            rerelease_infantry::DEATH217
+        }
+    }
     /// Frame `death218`.
-    pub fn death218(&self) -> i32 { if self.classic { classic_infantry::DEATH218 } else { rerelease_infantry::DEATH218 } }
+    pub fn death218(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH218
+        } else {
+            rerelease_infantry::DEATH218
+        }
+    }
     /// Frame `death219`.
-    pub fn death219(&self) -> i32 { if self.classic { classic_infantry::DEATH219 } else { rerelease_infantry::DEATH219 } }
+    pub fn death219(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH219
+        } else {
+            rerelease_infantry::DEATH219
+        }
+    }
     /// Frame `death220`.
-    pub fn death220(&self) -> i32 { if self.classic { classic_infantry::DEATH220 } else { rerelease_infantry::DEATH220 } }
+    pub fn death220(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH220
+        } else {
+            rerelease_infantry::DEATH220
+        }
+    }
     /// Frame `death221`.
-    pub fn death221(&self) -> i32 { if self.classic { classic_infantry::DEATH221 } else { rerelease_infantry::DEATH221 } }
+    pub fn death221(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH221
+        } else {
+            rerelease_infantry::DEATH221
+        }
+    }
     /// Frame `death222`.
-    pub fn death222(&self) -> i32 { if self.classic { classic_infantry::DEATH222 } else { rerelease_infantry::DEATH222 } }
+    pub fn death222(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH222
+        } else {
+            rerelease_infantry::DEATH222
+        }
+    }
     /// Frame `death223`.
-    pub fn death223(&self) -> i32 { if self.classic { classic_infantry::DEATH223 } else { rerelease_infantry::DEATH223 } }
+    pub fn death223(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH223
+        } else {
+            rerelease_infantry::DEATH223
+        }
+    }
     /// Frame `death224`.
-    pub fn death224(&self) -> i32 { if self.classic { classic_infantry::DEATH224 } else { rerelease_infantry::DEATH224 } }
+    pub fn death224(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH224
+        } else {
+            rerelease_infantry::DEATH224
+        }
+    }
     /// Frame `death225`.
-    pub fn death225(&self) -> i32 { if self.classic { classic_infantry::DEATH225 } else { rerelease_infantry::DEATH225 } }
+    pub fn death225(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH225
+        } else {
+            rerelease_infantry::DEATH225
+        }
+    }
     /// Frame `death301`.
-    pub fn death301(&self) -> i32 { if self.classic { classic_infantry::DEATH301 } else { rerelease_infantry::DEATH301 } }
+    pub fn death301(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH301
+        } else {
+            rerelease_infantry::DEATH301
+        }
+    }
     /// Frame `death302`.
-    pub fn death302(&self) -> i32 { if self.classic { classic_infantry::DEATH302 } else { rerelease_infantry::DEATH302 } }
+    pub fn death302(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH302
+        } else {
+            rerelease_infantry::DEATH302
+        }
+    }
     /// Frame `death303`.
-    pub fn death303(&self) -> i32 { if self.classic { classic_infantry::DEATH303 } else { rerelease_infantry::DEATH303 } }
+    pub fn death303(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH303
+        } else {
+            rerelease_infantry::DEATH303
+        }
+    }
     /// Frame `death304`.
-    pub fn death304(&self) -> i32 { if self.classic { classic_infantry::DEATH304 } else { rerelease_infantry::DEATH304 } }
+    pub fn death304(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH304
+        } else {
+            rerelease_infantry::DEATH304
+        }
+    }
     /// Frame `death305`.
-    pub fn death305(&self) -> i32 { if self.classic { classic_infantry::DEATH305 } else { rerelease_infantry::DEATH305 } }
+    pub fn death305(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH305
+        } else {
+            rerelease_infantry::DEATH305
+        }
+    }
     /// Frame `death306`.
-    pub fn death306(&self) -> i32 { if self.classic { classic_infantry::DEATH306 } else { rerelease_infantry::DEATH306 } }
+    pub fn death306(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH306
+        } else {
+            rerelease_infantry::DEATH306
+        }
+    }
     /// Frame `death307`.
-    pub fn death307(&self) -> i32 { if self.classic { classic_infantry::DEATH307 } else { rerelease_infantry::DEATH307 } }
+    pub fn death307(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH307
+        } else {
+            rerelease_infantry::DEATH307
+        }
+    }
     /// Frame `death308`.
-    pub fn death308(&self) -> i32 { if self.classic { classic_infantry::DEATH308 } else { rerelease_infantry::DEATH308 } }
+    pub fn death308(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH308
+        } else {
+            rerelease_infantry::DEATH308
+        }
+    }
     /// Frame `death309`.
-    pub fn death309(&self) -> i32 { if self.classic { classic_infantry::DEATH309 } else { rerelease_infantry::DEATH309 } }
+    pub fn death309(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DEATH309
+        } else {
+            rerelease_infantry::DEATH309
+        }
+    }
     /// Frame `duck01`.
-    pub fn duck01(&self) -> i32 { if self.classic { classic_infantry::DUCK01 } else { rerelease_infantry::DUCK01 } }
+    pub fn duck01(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DUCK01
+        } else {
+            rerelease_infantry::DUCK01
+        }
+    }
     /// Frame `duck02`.
-    pub fn duck02(&self) -> i32 { if self.classic { classic_infantry::DUCK02 } else { rerelease_infantry::DUCK02 } }
+    pub fn duck02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DUCK02
+        } else {
+            rerelease_infantry::DUCK02
+        }
+    }
     /// Frame `duck03`.
-    pub fn duck03(&self) -> i32 { if self.classic { classic_infantry::DUCK03 } else { rerelease_infantry::DUCK03 } }
+    pub fn duck03(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DUCK03
+        } else {
+            rerelease_infantry::DUCK03
+        }
+    }
     /// Frame `duck04`.
-    pub fn duck04(&self) -> i32 { if self.classic { classic_infantry::DUCK04 } else { rerelease_infantry::DUCK04 } }
+    pub fn duck04(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DUCK04
+        } else {
+            rerelease_infantry::DUCK04
+        }
+    }
     /// Frame `duck05`.
-    pub fn duck05(&self) -> i32 { if self.classic { classic_infantry::DUCK05 } else { rerelease_infantry::DUCK05 } }
+    pub fn duck05(&self) -> i32 {
+        if self.classic {
+            classic_infantry::DUCK05
+        } else {
+            rerelease_infantry::DUCK05
+        }
+    }
     /// Frame `gun02`.
-    pub fn gun02(&self) -> i32 { if self.classic { classic_infantry::GUN02 } else { rerelease_infantry::GUN02 } }
+    pub fn gun02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::GUN02
+        } else {
+            rerelease_infantry::GUN02
+        }
+    }
     /// Frame `jump01`.
-    pub fn jump01(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump01") } else { rerelease_infantry::JUMP01 } }
+    pub fn jump01(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump01")
+        } else {
+            rerelease_infantry::JUMP01
+        }
+    }
     /// Frame `jump02`.
-    pub fn jump02(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump02") } else { rerelease_infantry::JUMP02 } }
+    pub fn jump02(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump02")
+        } else {
+            rerelease_infantry::JUMP02
+        }
+    }
     /// Frame `jump03`.
-    pub fn jump03(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump03") } else { rerelease_infantry::JUMP03 } }
+    pub fn jump03(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump03")
+        } else {
+            rerelease_infantry::JUMP03
+        }
+    }
     /// Frame `jump04`.
-    pub fn jump04(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump04") } else { rerelease_infantry::JUMP04 } }
+    pub fn jump04(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump04")
+        } else {
+            rerelease_infantry::JUMP04
+        }
+    }
     /// Frame `jump05`.
-    pub fn jump05(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump05") } else { rerelease_infantry::JUMP05 } }
+    pub fn jump05(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump05")
+        } else {
+            rerelease_infantry::JUMP05
+        }
+    }
     /// Frame `jump06`.
-    pub fn jump06(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump06") } else { rerelease_infantry::JUMP06 } }
+    pub fn jump06(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump06")
+        } else {
+            rerelease_infantry::JUMP06
+        }
+    }
     /// Frame `jump07`.
-    pub fn jump07(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump07") } else { rerelease_infantry::JUMP07 } }
+    pub fn jump07(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump07")
+        } else {
+            rerelease_infantry::JUMP07
+        }
+    }
     /// Frame `jump08`.
-    pub fn jump08(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump08") } else { rerelease_infantry::JUMP08 } }
+    pub fn jump08(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump08")
+        } else {
+            rerelease_infantry::JUMP08
+        }
+    }
     /// Frame `jump09`.
-    pub fn jump09(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump09") } else { rerelease_infantry::JUMP09 } }
+    pub fn jump09(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump09")
+        } else {
+            rerelease_infantry::JUMP09
+        }
+    }
     /// Frame `jump10`.
-    pub fn jump10(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame jump10") } else { rerelease_infantry::JUMP10 } }
+    pub fn jump10(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame jump10")
+        } else {
+            rerelease_infantry::JUMP10
+        }
+    }
     /// Frame `pain101`.
-    pub fn pain101(&self) -> i32 { if self.classic { classic_infantry::PAIN101 } else { rerelease_infantry::PAIN101 } }
+    pub fn pain101(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN101
+        } else {
+            rerelease_infantry::PAIN101
+        }
+    }
     /// Frame `pain102`.
-    pub fn pain102(&self) -> i32 { if self.classic { classic_infantry::PAIN102 } else { rerelease_infantry::PAIN102 } }
+    pub fn pain102(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN102
+        } else {
+            rerelease_infantry::PAIN102
+        }
+    }
     /// Frame `pain103`.
-    pub fn pain103(&self) -> i32 { if self.classic { classic_infantry::PAIN103 } else { rerelease_infantry::PAIN103 } }
+    pub fn pain103(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN103
+        } else {
+            rerelease_infantry::PAIN103
+        }
+    }
     /// Frame `pain104`.
-    pub fn pain104(&self) -> i32 { if self.classic { classic_infantry::PAIN104 } else { rerelease_infantry::PAIN104 } }
+    pub fn pain104(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN104
+        } else {
+            rerelease_infantry::PAIN104
+        }
+    }
     /// Frame `pain105`.
-    pub fn pain105(&self) -> i32 { if self.classic { classic_infantry::PAIN105 } else { rerelease_infantry::PAIN105 } }
+    pub fn pain105(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN105
+        } else {
+            rerelease_infantry::PAIN105
+        }
+    }
     /// Frame `pain106`.
-    pub fn pain106(&self) -> i32 { if self.classic { classic_infantry::PAIN106 } else { rerelease_infantry::PAIN106 } }
+    pub fn pain106(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN106
+        } else {
+            rerelease_infantry::PAIN106
+        }
+    }
     /// Frame `pain107`.
-    pub fn pain107(&self) -> i32 { if self.classic { classic_infantry::PAIN107 } else { rerelease_infantry::PAIN107 } }
+    pub fn pain107(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN107
+        } else {
+            rerelease_infantry::PAIN107
+        }
+    }
     /// Frame `pain108`.
-    pub fn pain108(&self) -> i32 { if self.classic { classic_infantry::PAIN108 } else { rerelease_infantry::PAIN108 } }
+    pub fn pain108(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN108
+        } else {
+            rerelease_infantry::PAIN108
+        }
+    }
     /// Frame `pain109`.
-    pub fn pain109(&self) -> i32 { if self.classic { classic_infantry::PAIN109 } else { rerelease_infantry::PAIN109 } }
+    pub fn pain109(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN109
+        } else {
+            rerelease_infantry::PAIN109
+        }
+    }
     /// Frame `pain110`.
-    pub fn pain110(&self) -> i32 { if self.classic { classic_infantry::PAIN110 } else { rerelease_infantry::PAIN110 } }
+    pub fn pain110(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN110
+        } else {
+            rerelease_infantry::PAIN110
+        }
+    }
     /// Frame `pain201`.
-    pub fn pain201(&self) -> i32 { if self.classic { classic_infantry::PAIN201 } else { rerelease_infantry::PAIN201 } }
+    pub fn pain201(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN201
+        } else {
+            rerelease_infantry::PAIN201
+        }
+    }
     /// Frame `pain202`.
-    pub fn pain202(&self) -> i32 { if self.classic { classic_infantry::PAIN202 } else { rerelease_infantry::PAIN202 } }
+    pub fn pain202(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN202
+        } else {
+            rerelease_infantry::PAIN202
+        }
+    }
     /// Frame `pain203`.
-    pub fn pain203(&self) -> i32 { if self.classic { classic_infantry::PAIN203 } else { rerelease_infantry::PAIN203 } }
+    pub fn pain203(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN203
+        } else {
+            rerelease_infantry::PAIN203
+        }
+    }
     /// Frame `pain204`.
-    pub fn pain204(&self) -> i32 { if self.classic { classic_infantry::PAIN204 } else { rerelease_infantry::PAIN204 } }
+    pub fn pain204(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN204
+        } else {
+            rerelease_infantry::PAIN204
+        }
+    }
     /// Frame `pain205`.
-    pub fn pain205(&self) -> i32 { if self.classic { classic_infantry::PAIN205 } else { rerelease_infantry::PAIN205 } }
+    pub fn pain205(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN205
+        } else {
+            rerelease_infantry::PAIN205
+        }
+    }
     /// Frame `pain206`.
-    pub fn pain206(&self) -> i32 { if self.classic { classic_infantry::PAIN206 } else { rerelease_infantry::PAIN206 } }
+    pub fn pain206(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN206
+        } else {
+            rerelease_infantry::PAIN206
+        }
+    }
     /// Frame `pain207`.
-    pub fn pain207(&self) -> i32 { if self.classic { classic_infantry::PAIN207 } else { rerelease_infantry::PAIN207 } }
+    pub fn pain207(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN207
+        } else {
+            rerelease_infantry::PAIN207
+        }
+    }
     /// Frame `pain208`.
-    pub fn pain208(&self) -> i32 { if self.classic { classic_infantry::PAIN208 } else { rerelease_infantry::PAIN208 } }
+    pub fn pain208(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN208
+        } else {
+            rerelease_infantry::PAIN208
+        }
+    }
     /// Frame `pain209`.
-    pub fn pain209(&self) -> i32 { if self.classic { classic_infantry::PAIN209 } else { rerelease_infantry::PAIN209 } }
+    pub fn pain209(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN209
+        } else {
+            rerelease_infantry::PAIN209
+        }
+    }
     /// Frame `pain210`.
-    pub fn pain210(&self) -> i32 { if self.classic { classic_infantry::PAIN210 } else { rerelease_infantry::PAIN210 } }
+    pub fn pain210(&self) -> i32 {
+        if self.classic {
+            classic_infantry::PAIN210
+        } else {
+            rerelease_infantry::PAIN210
+        }
+    }
     /// Frame `run01`.
-    pub fn run01(&self) -> i32 { if self.classic { classic_infantry::RUN01 } else { rerelease_infantry::RUN01 } }
+    pub fn run01(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN01
+        } else {
+            rerelease_infantry::RUN01
+        }
+    }
     /// Frame `run02`.
-    pub fn run02(&self) -> i32 { if self.classic { classic_infantry::RUN02 } else { rerelease_infantry::RUN02 } }
+    pub fn run02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN02
+        } else {
+            rerelease_infantry::RUN02
+        }
+    }
     /// Frame `run03`.
-    pub fn run03(&self) -> i32 { if self.classic { classic_infantry::RUN03 } else { rerelease_infantry::RUN03 } }
+    pub fn run03(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN03
+        } else {
+            rerelease_infantry::RUN03
+        }
+    }
     /// Frame `run04`.
-    pub fn run04(&self) -> i32 { if self.classic { classic_infantry::RUN04 } else { rerelease_infantry::RUN04 } }
+    pub fn run04(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN04
+        } else {
+            rerelease_infantry::RUN04
+        }
+    }
     /// Frame `run05`.
-    pub fn run05(&self) -> i32 { if self.classic { classic_infantry::RUN05 } else { rerelease_infantry::RUN05 } }
+    pub fn run05(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN05
+        } else {
+            rerelease_infantry::RUN05
+        }
+    }
     /// Frame `run06`.
-    pub fn run06(&self) -> i32 { if self.classic { classic_infantry::RUN06 } else { rerelease_infantry::RUN06 } }
+    pub fn run06(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN06
+        } else {
+            rerelease_infantry::RUN06
+        }
+    }
     /// Frame `run07`.
-    pub fn run07(&self) -> i32 { if self.classic { classic_infantry::RUN07 } else { rerelease_infantry::RUN07 } }
+    pub fn run07(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN07
+        } else {
+            rerelease_infantry::RUN07
+        }
+    }
     /// Frame `run08`.
-    pub fn run08(&self) -> i32 { if self.classic { classic_infantry::RUN08 } else { rerelease_infantry::RUN08 } }
+    pub fn run08(&self) -> i32 {
+        if self.classic {
+            classic_infantry::RUN08
+        } else {
+            rerelease_infantry::RUN08
+        }
+    }
     /// Frame `run201`.
-    pub fn run201(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run201") } else { rerelease_infantry::RUN201 } }
+    pub fn run201(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run201")
+        } else {
+            rerelease_infantry::RUN201
+        }
+    }
     /// Frame `run202`.
-    pub fn run202(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run202") } else { rerelease_infantry::RUN202 } }
+    pub fn run202(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run202")
+        } else {
+            rerelease_infantry::RUN202
+        }
+    }
     /// Frame `run203`.
-    pub fn run203(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run203") } else { rerelease_infantry::RUN203 } }
+    pub fn run203(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run203")
+        } else {
+            rerelease_infantry::RUN203
+        }
+    }
     /// Frame `run204`.
-    pub fn run204(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run204") } else { rerelease_infantry::RUN204 } }
+    pub fn run204(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run204")
+        } else {
+            rerelease_infantry::RUN204
+        }
+    }
     /// Frame `run205`.
-    pub fn run205(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run205") } else { rerelease_infantry::RUN205 } }
+    pub fn run205(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run205")
+        } else {
+            rerelease_infantry::RUN205
+        }
+    }
     /// Frame `run206`.
-    pub fn run206(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run206") } else { rerelease_infantry::RUN206 } }
+    pub fn run206(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run206")
+        } else {
+            rerelease_infantry::RUN206
+        }
+    }
     /// Frame `run207`.
-    pub fn run207(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run207") } else { rerelease_infantry::RUN207 } }
+    pub fn run207(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run207")
+        } else {
+            rerelease_infantry::RUN207
+        }
+    }
     /// Frame `run208`.
-    pub fn run208(&self) -> i32 { if self.classic { panic!("Classic has no infantry frame run208") } else { rerelease_infantry::RUN208 } }
+    pub fn run208(&self) -> i32 {
+        if self.classic {
+            panic!("Classic has no infantry frame run208")
+        } else {
+            rerelease_infantry::RUN208
+        }
+    }
     /// Frame `stand01`.
-    pub fn stand01(&self) -> i32 { if self.classic { classic_infantry::STAND01 } else { rerelease_infantry::STAND01 } }
+    pub fn stand01(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND01
+        } else {
+            rerelease_infantry::STAND01
+        }
+    }
     /// Frame `stand02`.
-    pub fn stand02(&self) -> i32 { if self.classic { classic_infantry::STAND02 } else { rerelease_infantry::STAND02 } }
+    pub fn stand02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND02
+        } else {
+            rerelease_infantry::STAND02
+        }
+    }
     /// Frame `stand03`.
-    pub fn stand03(&self) -> i32 { if self.classic { classic_infantry::STAND03 } else { rerelease_infantry::STAND03 } }
+    pub fn stand03(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND03
+        } else {
+            rerelease_infantry::STAND03
+        }
+    }
     /// Frame `stand04`.
-    pub fn stand04(&self) -> i32 { if self.classic { classic_infantry::STAND04 } else { rerelease_infantry::STAND04 } }
+    pub fn stand04(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND04
+        } else {
+            rerelease_infantry::STAND04
+        }
+    }
     /// Frame `stand05`.
-    pub fn stand05(&self) -> i32 { if self.classic { classic_infantry::STAND05 } else { rerelease_infantry::STAND05 } }
+    pub fn stand05(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND05
+        } else {
+            rerelease_infantry::STAND05
+        }
+    }
     /// Frame `stand06`.
-    pub fn stand06(&self) -> i32 { if self.classic { classic_infantry::STAND06 } else { rerelease_infantry::STAND06 } }
+    pub fn stand06(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND06
+        } else {
+            rerelease_infantry::STAND06
+        }
+    }
     /// Frame `stand07`.
-    pub fn stand07(&self) -> i32 { if self.classic { classic_infantry::STAND07 } else { rerelease_infantry::STAND07 } }
+    pub fn stand07(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND07
+        } else {
+            rerelease_infantry::STAND07
+        }
+    }
     /// Frame `stand08`.
-    pub fn stand08(&self) -> i32 { if self.classic { classic_infantry::STAND08 } else { rerelease_infantry::STAND08 } }
+    pub fn stand08(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND08
+        } else {
+            rerelease_infantry::STAND08
+        }
+    }
     /// Frame `stand09`.
-    pub fn stand09(&self) -> i32 { if self.classic { classic_infantry::STAND09 } else { rerelease_infantry::STAND09 } }
+    pub fn stand09(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND09
+        } else {
+            rerelease_infantry::STAND09
+        }
+    }
     /// Frame `stand10`.
-    pub fn stand10(&self) -> i32 { if self.classic { classic_infantry::STAND10 } else { rerelease_infantry::STAND10 } }
+    pub fn stand10(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND10
+        } else {
+            rerelease_infantry::STAND10
+        }
+    }
     /// Frame `stand11`.
-    pub fn stand11(&self) -> i32 { if self.classic { classic_infantry::STAND11 } else { rerelease_infantry::STAND11 } }
+    pub fn stand11(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND11
+        } else {
+            rerelease_infantry::STAND11
+        }
+    }
     /// Frame `stand12`.
-    pub fn stand12(&self) -> i32 { if self.classic { classic_infantry::STAND12 } else { rerelease_infantry::STAND12 } }
+    pub fn stand12(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND12
+        } else {
+            rerelease_infantry::STAND12
+        }
+    }
     /// Frame `stand13`.
-    pub fn stand13(&self) -> i32 { if self.classic { classic_infantry::STAND13 } else { rerelease_infantry::STAND13 } }
+    pub fn stand13(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND13
+        } else {
+            rerelease_infantry::STAND13
+        }
+    }
     /// Frame `stand14`.
-    pub fn stand14(&self) -> i32 { if self.classic { classic_infantry::STAND14 } else { rerelease_infantry::STAND14 } }
+    pub fn stand14(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND14
+        } else {
+            rerelease_infantry::STAND14
+        }
+    }
     /// Frame `stand15`.
-    pub fn stand15(&self) -> i32 { if self.classic { classic_infantry::STAND15 } else { rerelease_infantry::STAND15 } }
+    pub fn stand15(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND15
+        } else {
+            rerelease_infantry::STAND15
+        }
+    }
     /// Frame `stand16`.
-    pub fn stand16(&self) -> i32 { if self.classic { classic_infantry::STAND16 } else { rerelease_infantry::STAND16 } }
+    pub fn stand16(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND16
+        } else {
+            rerelease_infantry::STAND16
+        }
+    }
     /// Frame `stand17`.
-    pub fn stand17(&self) -> i32 { if self.classic { classic_infantry::STAND17 } else { rerelease_infantry::STAND17 } }
+    pub fn stand17(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND17
+        } else {
+            rerelease_infantry::STAND17
+        }
+    }
     /// Frame `stand18`.
-    pub fn stand18(&self) -> i32 { if self.classic { classic_infantry::STAND18 } else { rerelease_infantry::STAND18 } }
+    pub fn stand18(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND18
+        } else {
+            rerelease_infantry::STAND18
+        }
+    }
     /// Frame `stand19`.
-    pub fn stand19(&self) -> i32 { if self.classic { classic_infantry::STAND19 } else { rerelease_infantry::STAND19 } }
+    pub fn stand19(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND19
+        } else {
+            rerelease_infantry::STAND19
+        }
+    }
     /// Frame `stand20`.
-    pub fn stand20(&self) -> i32 { if self.classic { classic_infantry::STAND20 } else { rerelease_infantry::STAND20 } }
+    pub fn stand20(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND20
+        } else {
+            rerelease_infantry::STAND20
+        }
+    }
     /// Frame `stand21`.
-    pub fn stand21(&self) -> i32 { if self.classic { classic_infantry::STAND21 } else { rerelease_infantry::STAND21 } }
+    pub fn stand21(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND21
+        } else {
+            rerelease_infantry::STAND21
+        }
+    }
     /// Frame `stand22`.
-    pub fn stand22(&self) -> i32 { if self.classic { classic_infantry::STAND22 } else { rerelease_infantry::STAND22 } }
+    pub fn stand22(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND22
+        } else {
+            rerelease_infantry::STAND22
+        }
+    }
     /// Frame `stand23`.
-    pub fn stand23(&self) -> i32 { if self.classic { classic_infantry::STAND23 } else { rerelease_infantry::STAND23 } }
+    pub fn stand23(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND23
+        } else {
+            rerelease_infantry::STAND23
+        }
+    }
     /// Frame `stand24`.
-    pub fn stand24(&self) -> i32 { if self.classic { classic_infantry::STAND24 } else { rerelease_infantry::STAND24 } }
+    pub fn stand24(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND24
+        } else {
+            rerelease_infantry::STAND24
+        }
+    }
     /// Frame `stand25`.
-    pub fn stand25(&self) -> i32 { if self.classic { classic_infantry::STAND25 } else { rerelease_infantry::STAND25 } }
+    pub fn stand25(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND25
+        } else {
+            rerelease_infantry::STAND25
+        }
+    }
     /// Frame `stand26`.
-    pub fn stand26(&self) -> i32 { if self.classic { classic_infantry::STAND26 } else { rerelease_infantry::STAND26 } }
+    pub fn stand26(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND26
+        } else {
+            rerelease_infantry::STAND26
+        }
+    }
     /// Frame `stand27`.
-    pub fn stand27(&self) -> i32 { if self.classic { classic_infantry::STAND27 } else { rerelease_infantry::STAND27 } }
+    pub fn stand27(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND27
+        } else {
+            rerelease_infantry::STAND27
+        }
+    }
     /// Frame `stand28`.
-    pub fn stand28(&self) -> i32 { if self.classic { classic_infantry::STAND28 } else { rerelease_infantry::STAND28 } }
+    pub fn stand28(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND28
+        } else {
+            rerelease_infantry::STAND28
+        }
+    }
     /// Frame `stand29`.
-    pub fn stand29(&self) -> i32 { if self.classic { classic_infantry::STAND29 } else { rerelease_infantry::STAND29 } }
+    pub fn stand29(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND29
+        } else {
+            rerelease_infantry::STAND29
+        }
+    }
     /// Frame `stand30`.
-    pub fn stand30(&self) -> i32 { if self.classic { classic_infantry::STAND30 } else { rerelease_infantry::STAND30 } }
+    pub fn stand30(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND30
+        } else {
+            rerelease_infantry::STAND30
+        }
+    }
     /// Frame `stand31`.
-    pub fn stand31(&self) -> i32 { if self.classic { classic_infantry::STAND31 } else { rerelease_infantry::STAND31 } }
+    pub fn stand31(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND31
+        } else {
+            rerelease_infantry::STAND31
+        }
+    }
     /// Frame `stand32`.
-    pub fn stand32(&self) -> i32 { if self.classic { classic_infantry::STAND32 } else { rerelease_infantry::STAND32 } }
+    pub fn stand32(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND32
+        } else {
+            rerelease_infantry::STAND32
+        }
+    }
     /// Frame `stand33`.
-    pub fn stand33(&self) -> i32 { if self.classic { classic_infantry::STAND33 } else { rerelease_infantry::STAND33 } }
+    pub fn stand33(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND33
+        } else {
+            rerelease_infantry::STAND33
+        }
+    }
     /// Frame `stand34`.
-    pub fn stand34(&self) -> i32 { if self.classic { classic_infantry::STAND34 } else { rerelease_infantry::STAND34 } }
+    pub fn stand34(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND34
+        } else {
+            rerelease_infantry::STAND34
+        }
+    }
     /// Frame `stand35`.
-    pub fn stand35(&self) -> i32 { if self.classic { classic_infantry::STAND35 } else { rerelease_infantry::STAND35 } }
+    pub fn stand35(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND35
+        } else {
+            rerelease_infantry::STAND35
+        }
+    }
     /// Frame `stand36`.
-    pub fn stand36(&self) -> i32 { if self.classic { classic_infantry::STAND36 } else { rerelease_infantry::STAND36 } }
+    pub fn stand36(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND36
+        } else {
+            rerelease_infantry::STAND36
+        }
+    }
     /// Frame `stand37`.
-    pub fn stand37(&self) -> i32 { if self.classic { classic_infantry::STAND37 } else { rerelease_infantry::STAND37 } }
+    pub fn stand37(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND37
+        } else {
+            rerelease_infantry::STAND37
+        }
+    }
     /// Frame `stand38`.
-    pub fn stand38(&self) -> i32 { if self.classic { classic_infantry::STAND38 } else { rerelease_infantry::STAND38 } }
+    pub fn stand38(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND38
+        } else {
+            rerelease_infantry::STAND38
+        }
+    }
     /// Frame `stand39`.
-    pub fn stand39(&self) -> i32 { if self.classic { classic_infantry::STAND39 } else { rerelease_infantry::STAND39 } }
+    pub fn stand39(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND39
+        } else {
+            rerelease_infantry::STAND39
+        }
+    }
     /// Frame `stand40`.
-    pub fn stand40(&self) -> i32 { if self.classic { classic_infantry::STAND40 } else { rerelease_infantry::STAND40 } }
+    pub fn stand40(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND40
+        } else {
+            rerelease_infantry::STAND40
+        }
+    }
     /// Frame `stand41`.
-    pub fn stand41(&self) -> i32 { if self.classic { classic_infantry::STAND41 } else { rerelease_infantry::STAND41 } }
+    pub fn stand41(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND41
+        } else {
+            rerelease_infantry::STAND41
+        }
+    }
     /// Frame `stand42`.
-    pub fn stand42(&self) -> i32 { if self.classic { classic_infantry::STAND42 } else { rerelease_infantry::STAND42 } }
+    pub fn stand42(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND42
+        } else {
+            rerelease_infantry::STAND42
+        }
+    }
     /// Frame `stand43`.
-    pub fn stand43(&self) -> i32 { if self.classic { classic_infantry::STAND43 } else { rerelease_infantry::STAND43 } }
+    pub fn stand43(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND43
+        } else {
+            rerelease_infantry::STAND43
+        }
+    }
     /// Frame `stand44`.
-    pub fn stand44(&self) -> i32 { if self.classic { classic_infantry::STAND44 } else { rerelease_infantry::STAND44 } }
+    pub fn stand44(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND44
+        } else {
+            rerelease_infantry::STAND44
+        }
+    }
     /// Frame `stand45`.
-    pub fn stand45(&self) -> i32 { if self.classic { classic_infantry::STAND45 } else { rerelease_infantry::STAND45 } }
+    pub fn stand45(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND45
+        } else {
+            rerelease_infantry::STAND45
+        }
+    }
     /// Frame `stand46`.
-    pub fn stand46(&self) -> i32 { if self.classic { classic_infantry::STAND46 } else { rerelease_infantry::STAND46 } }
+    pub fn stand46(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND46
+        } else {
+            rerelease_infantry::STAND46
+        }
+    }
     /// Frame `stand47`.
-    pub fn stand47(&self) -> i32 { if self.classic { classic_infantry::STAND47 } else { rerelease_infantry::STAND47 } }
+    pub fn stand47(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND47
+        } else {
+            rerelease_infantry::STAND47
+        }
+    }
     /// Frame `stand48`.
-    pub fn stand48(&self) -> i32 { if self.classic { classic_infantry::STAND48 } else { rerelease_infantry::STAND48 } }
+    pub fn stand48(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND48
+        } else {
+            rerelease_infantry::STAND48
+        }
+    }
     /// Frame `stand49`.
-    pub fn stand49(&self) -> i32 { if self.classic { classic_infantry::STAND49 } else { rerelease_infantry::STAND49 } }
+    pub fn stand49(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND49
+        } else {
+            rerelease_infantry::STAND49
+        }
+    }
     /// Frame `stand50`.
-    pub fn stand50(&self) -> i32 { if self.classic { classic_infantry::STAND50 } else { rerelease_infantry::STAND50 } }
+    pub fn stand50(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND50
+        } else {
+            rerelease_infantry::STAND50
+        }
+    }
     /// Frame `stand51`.
-    pub fn stand51(&self) -> i32 { if self.classic { classic_infantry::STAND51 } else { rerelease_infantry::STAND51 } }
+    pub fn stand51(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND51
+        } else {
+            rerelease_infantry::STAND51
+        }
+    }
     /// Frame `stand52`.
-    pub fn stand52(&self) -> i32 { if self.classic { classic_infantry::STAND52 } else { rerelease_infantry::STAND52 } }
+    pub fn stand52(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND52
+        } else {
+            rerelease_infantry::STAND52
+        }
+    }
     /// Frame `stand53`.
-    pub fn stand53(&self) -> i32 { if self.classic { classic_infantry::STAND53 } else { rerelease_infantry::STAND53 } }
+    pub fn stand53(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND53
+        } else {
+            rerelease_infantry::STAND53
+        }
+    }
     /// Frame `stand54`.
-    pub fn stand54(&self) -> i32 { if self.classic { classic_infantry::STAND54 } else { rerelease_infantry::STAND54 } }
+    pub fn stand54(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND54
+        } else {
+            rerelease_infantry::STAND54
+        }
+    }
     /// Frame `stand55`.
-    pub fn stand55(&self) -> i32 { if self.classic { classic_infantry::STAND55 } else { rerelease_infantry::STAND55 } }
+    pub fn stand55(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND55
+        } else {
+            rerelease_infantry::STAND55
+        }
+    }
     /// Frame `stand56`.
-    pub fn stand56(&self) -> i32 { if self.classic { classic_infantry::STAND56 } else { rerelease_infantry::STAND56 } }
+    pub fn stand56(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND56
+        } else {
+            rerelease_infantry::STAND56
+        }
+    }
     /// Frame `stand57`.
-    pub fn stand57(&self) -> i32 { if self.classic { classic_infantry::STAND57 } else { rerelease_infantry::STAND57 } }
+    pub fn stand57(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND57
+        } else {
+            rerelease_infantry::STAND57
+        }
+    }
     /// Frame `stand58`.
-    pub fn stand58(&self) -> i32 { if self.classic { classic_infantry::STAND58 } else { rerelease_infantry::STAND58 } }
+    pub fn stand58(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND58
+        } else {
+            rerelease_infantry::STAND58
+        }
+    }
     /// Frame `stand59`.
-    pub fn stand59(&self) -> i32 { if self.classic { classic_infantry::STAND59 } else { rerelease_infantry::STAND59 } }
+    pub fn stand59(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND59
+        } else {
+            rerelease_infantry::STAND59
+        }
+    }
     /// Frame `stand60`.
-    pub fn stand60(&self) -> i32 { if self.classic { classic_infantry::STAND60 } else { rerelease_infantry::STAND60 } }
+    pub fn stand60(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND60
+        } else {
+            rerelease_infantry::STAND60
+        }
+    }
     /// Frame `stand61`.
-    pub fn stand61(&self) -> i32 { if self.classic { classic_infantry::STAND61 } else { rerelease_infantry::STAND61 } }
+    pub fn stand61(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND61
+        } else {
+            rerelease_infantry::STAND61
+        }
+    }
     /// Frame `stand62`.
-    pub fn stand62(&self) -> i32 { if self.classic { classic_infantry::STAND62 } else { rerelease_infantry::STAND62 } }
+    pub fn stand62(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND62
+        } else {
+            rerelease_infantry::STAND62
+        }
+    }
     /// Frame `stand63`.
-    pub fn stand63(&self) -> i32 { if self.classic { classic_infantry::STAND63 } else { rerelease_infantry::STAND63 } }
+    pub fn stand63(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND63
+        } else {
+            rerelease_infantry::STAND63
+        }
+    }
     /// Frame `stand64`.
-    pub fn stand64(&self) -> i32 { if self.classic { classic_infantry::STAND64 } else { rerelease_infantry::STAND64 } }
+    pub fn stand64(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND64
+        } else {
+            rerelease_infantry::STAND64
+        }
+    }
     /// Frame `stand65`.
-    pub fn stand65(&self) -> i32 { if self.classic { classic_infantry::STAND65 } else { rerelease_infantry::STAND65 } }
+    pub fn stand65(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND65
+        } else {
+            rerelease_infantry::STAND65
+        }
+    }
     /// Frame `stand66`.
-    pub fn stand66(&self) -> i32 { if self.classic { classic_infantry::STAND66 } else { rerelease_infantry::STAND66 } }
+    pub fn stand66(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND66
+        } else {
+            rerelease_infantry::STAND66
+        }
+    }
     /// Frame `stand67`.
-    pub fn stand67(&self) -> i32 { if self.classic { classic_infantry::STAND67 } else { rerelease_infantry::STAND67 } }
+    pub fn stand67(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND67
+        } else {
+            rerelease_infantry::STAND67
+        }
+    }
     /// Frame `stand68`.
-    pub fn stand68(&self) -> i32 { if self.classic { classic_infantry::STAND68 } else { rerelease_infantry::STAND68 } }
+    pub fn stand68(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND68
+        } else {
+            rerelease_infantry::STAND68
+        }
+    }
     /// Frame `stand69`.
-    pub fn stand69(&self) -> i32 { if self.classic { classic_infantry::STAND69 } else { rerelease_infantry::STAND69 } }
+    pub fn stand69(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND69
+        } else {
+            rerelease_infantry::STAND69
+        }
+    }
     /// Frame `stand70`.
-    pub fn stand70(&self) -> i32 { if self.classic { classic_infantry::STAND70 } else { rerelease_infantry::STAND70 } }
+    pub fn stand70(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND70
+        } else {
+            rerelease_infantry::STAND70
+        }
+    }
     /// Frame `stand71`.
-    pub fn stand71(&self) -> i32 { if self.classic { classic_infantry::STAND71 } else { rerelease_infantry::STAND71 } }
+    pub fn stand71(&self) -> i32 {
+        if self.classic {
+            classic_infantry::STAND71
+        } else {
+            rerelease_infantry::STAND71
+        }
+    }
     /// Frame `walk01`.
-    pub fn walk01(&self) -> i32 { if self.classic { classic_infantry::WALK01 } else { rerelease_infantry::WALK01 } }
+    pub fn walk01(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK01
+        } else {
+            rerelease_infantry::WALK01
+        }
+    }
     /// Frame `walk02`.
-    pub fn walk02(&self) -> i32 { if self.classic { classic_infantry::WALK02 } else { rerelease_infantry::WALK02 } }
+    pub fn walk02(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK02
+        } else {
+            rerelease_infantry::WALK02
+        }
+    }
     /// Frame `walk03`.
-    pub fn walk03(&self) -> i32 { if self.classic { classic_infantry::WALK03 } else { rerelease_infantry::WALK03 } }
+    pub fn walk03(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK03
+        } else {
+            rerelease_infantry::WALK03
+        }
+    }
     /// Frame `walk04`.
-    pub fn walk04(&self) -> i32 { if self.classic { classic_infantry::WALK04 } else { rerelease_infantry::WALK04 } }
+    pub fn walk04(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK04
+        } else {
+            rerelease_infantry::WALK04
+        }
+    }
     /// Frame `walk05`.
-    pub fn walk05(&self) -> i32 { if self.classic { classic_infantry::WALK05 } else { rerelease_infantry::WALK05 } }
+    pub fn walk05(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK05
+        } else {
+            rerelease_infantry::WALK05
+        }
+    }
     /// Frame `walk06`.
-    pub fn walk06(&self) -> i32 { if self.classic { classic_infantry::WALK06 } else { rerelease_infantry::WALK06 } }
+    pub fn walk06(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK06
+        } else {
+            rerelease_infantry::WALK06
+        }
+    }
     /// Frame `walk07`.
-    pub fn walk07(&self) -> i32 { if self.classic { classic_infantry::WALK07 } else { rerelease_infantry::WALK07 } }
+    pub fn walk07(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK07
+        } else {
+            rerelease_infantry::WALK07
+        }
+    }
     /// Frame `walk08`.
-    pub fn walk08(&self) -> i32 { if self.classic { classic_infantry::WALK08 } else { rerelease_infantry::WALK08 } }
+    pub fn walk08(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK08
+        } else {
+            rerelease_infantry::WALK08
+        }
+    }
     /// Frame `walk09`.
-    pub fn walk09(&self) -> i32 { if self.classic { classic_infantry::WALK09 } else { rerelease_infantry::WALK09 } }
+    pub fn walk09(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK09
+        } else {
+            rerelease_infantry::WALK09
+        }
+    }
     /// Frame `walk10`.
-    pub fn walk10(&self) -> i32 { if self.classic { classic_infantry::WALK10 } else { rerelease_infantry::WALK10 } }
+    pub fn walk10(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK10
+        } else {
+            rerelease_infantry::WALK10
+        }
+    }
     /// Frame `walk11`.
-    pub fn walk11(&self) -> i32 { if self.classic { classic_infantry::WALK11 } else { rerelease_infantry::WALK11 } }
+    pub fn walk11(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK11
+        } else {
+            rerelease_infantry::WALK11
+        }
+    }
     /// Frame `walk12`.
-    pub fn walk12(&self) -> i32 { if self.classic { classic_infantry::WALK12 } else { rerelease_infantry::WALK12 } }
+    pub fn walk12(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK12
+        } else {
+            rerelease_infantry::WALK12
+        }
+    }
     /// Frame `walk13`.
-    pub fn walk13(&self) -> i32 { if self.classic { classic_infantry::WALK13 } else { rerelease_infantry::WALK13 } }
+    pub fn walk13(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK13
+        } else {
+            rerelease_infantry::WALK13
+        }
+    }
     /// Frame `walk14`.
-    pub fn walk14(&self) -> i32 { if self.classic { classic_infantry::WALK14 } else { rerelease_infantry::WALK14 } }
+    pub fn walk14(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK14
+        } else {
+            rerelease_infantry::WALK14
+        }
+    }
     /// Frame `walk15`.
-    pub fn walk15(&self) -> i32 { if self.classic { classic_infantry::WALK15 } else { rerelease_infantry::WALK15 } }
+    pub fn walk15(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK15
+        } else {
+            rerelease_infantry::WALK15
+        }
+    }
     /// Frame `walk16`.
-    pub fn walk16(&self) -> i32 { if self.classic { classic_infantry::WALK16 } else { rerelease_infantry::WALK16 } }
+    pub fn walk16(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK16
+        } else {
+            rerelease_infantry::WALK16
+        }
+    }
     /// Frame `walk17`.
-    pub fn walk17(&self) -> i32 { if self.classic { classic_infantry::WALK17 } else { rerelease_infantry::WALK17 } }
+    pub fn walk17(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK17
+        } else {
+            rerelease_infantry::WALK17
+        }
+    }
     /// Frame `walk18`.
-    pub fn walk18(&self) -> i32 { if self.classic { classic_infantry::WALK18 } else { rerelease_infantry::WALK18 } }
+    pub fn walk18(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK18
+        } else {
+            rerelease_infantry::WALK18
+        }
+    }
     /// Frame `walk19`.
-    pub fn walk19(&self) -> i32 { if self.classic { classic_infantry::WALK19 } else { rerelease_infantry::WALK19 } }
+    pub fn walk19(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK19
+        } else {
+            rerelease_infantry::WALK19
+        }
+    }
     /// Frame `walk20`.
-    pub fn walk20(&self) -> i32 { if self.classic { classic_infantry::WALK20 } else { rerelease_infantry::WALK20 } }
+    pub fn walk20(&self) -> i32 {
+        if self.classic {
+            classic_infantry::WALK20
+        } else {
+            rerelease_infantry::WALK20
+        }
+    }
 }

@@ -22,12 +22,10 @@ pub struct Q2LocalTime {
 }
 
 /// Blaster hook (`Q2Ballistics[fireBlaster]`).
-pub type Q2FireBlasterHook =
-    fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId;
+pub type Q2FireBlasterHook = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId;
 
 /// Rocket hook (`Q2Ballistics[fireRocket]`).
-pub type Q2FireRocketHook =
-    fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId;
+pub type Q2FireRocketHook = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId;
 
 /// Teleport hook (`teleportPlayer`).
 pub type Q2TeleportPlayerHook = fn(ActorId, Vec3, Vec3);

@@ -20,26 +20,46 @@ use crate::q2::support::misc::Q2RereleaseRandomSource;
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 const UP: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 1.0 };
 const FIT_BOUNDS: Bounds = Bounds {
-    min: Vec3 { x: -8.0, y: -8.0, z: -8.0 },
+    min: Vec3 {
+        x: -8.0,
+        y: -8.0,
+        z: -8.0,
+    },
     max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
 };
 const SOLID_MASK: i32 = 1 | 2 | 0x20000;
 const PI: f32 = std::f32::consts::PI;
 
 fn add(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+    Vec3 {
+        x: a.x + b.x,
+        y: a.y + b.y,
+        z: a.z + b.z,
+    }
 }
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+    Vec3 {
+        x: a.x - b.x,
+        y: a.y - b.y,
+        z: a.z - b.z,
+    }
 }
 
 fn scale(a: Vec3, b: f32) -> Vec3 {
-    Vec3 { x: a.x * b, y: a.y * b, z: a.z * b }
+    Vec3 {
+        x: a.x * b,
+        y: a.y * b,
+        z: a.z * b,
+    }
 }
 
 fn scaled(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 { x: a.x * b.x, y: a.y * b.y, z: a.z * b.z }
+    Vec3 {
+        x: a.x * b.x,
+        y: a.y * b.y,
+        z: a.z * b.z,
+    }
 }
 
 fn dot(a: Vec3, b: Vec3) -> f32 {
@@ -61,10 +81,20 @@ fn normal(v: Vec3) -> (Vec3, f32) {
 
 fn yaw(v: Vec3) -> f32 {
     if v.x == 0.0 {
-        return if v.y == 0.0 { 0.0 } else if v.y > 0.0 { 90.0 } else { 270.0 };
+        return if v.y == 0.0 {
+            0.0
+        } else if v.y > 0.0 {
+            90.0
+        } else {
+            270.0
+        };
     }
     let angle = v.y.atan2(v.x) * (180.0 / PI);
-    if angle < 0.0 { angle + 360.0 } else { angle }
+    if angle < 0.0 {
+        angle + 360.0
+    } else {
+        angle
+    }
 }
 
 fn pitch(v: Vec3) -> f32 {
@@ -81,10 +111,7 @@ fn slerp(from: Vec3, to: Vec3, t: f32) -> Vec3 {
     let (a, b) = if !(product.abs() > 0.9995) {
         let angle = product.acos();
         let sine = angle.sin();
-        (
-            ((1.0 - t) * angle).sin() / sine,
-            (t * angle).sin() / sine,
-        )
+        (((1.0 - t) * angle).sin() / sine, (t * angle).sin() / sine)
     } else {
         (1.0 - t, t)
     };
@@ -182,15 +209,17 @@ pub fn steer_alternate_fly(
 ) -> AlternateFlyResult {
     let now = input.now;
     if input.flags & 2 != 0 && input.state.water_level < 3 {
-        return AlternateFlyResult::Steered { velocity: input.body.velocity, pitch: None };
+        return AlternateFlyResult::Steered {
+            velocity: input.body.velocity,
+            pitch: None,
+        };
     }
     let reposition = input.state.fly_position_time <= now
         || input.enemy.is_some() && input.state.fly_pinned && !services.visible_enemy();
     if reposition {
         input.state.fly_pinned = false;
-        let position_time = ((now * 1000.0 + 0.5).floor()
-            + services.random().time_milliseconds(3000, 10000) as f64)
-            / 1000.0;
+        let position_time =
+            ((now * 1000.0 + 0.5).floor() + services.random().time_milliseconds(3000, 10000) as f64) / 1000.0;
         input.state.fly_position_time = position_time;
         let ideal = ideal_hover(input, services);
         input.state.fly_ideal_position = ideal;
@@ -242,7 +271,10 @@ pub fn steer_alternate_fly(
     {
         target
     } else {
-        add(add(target, scale(target_velocity, 0.25)), input.state.fly_ideal_position)
+        add(
+            add(target, scale(target_velocity, 0.25)),
+            input.state.fly_ideal_position,
+        )
     };
     let fit = services.trace(target, wanted_position, Some(FIT_BOUNDS), SOLID_MASK);
     if !fit.all_solid {
@@ -258,25 +290,51 @@ pub fn steer_alternate_fly(
     }
     let obstruction = services.trace(
         input.body.origin,
-        add(input.body.origin, scale(wanted_direction, input.state.fly_acceleration as f32)),
+        add(
+            input.body.origin,
+            scale(wanted_direction, input.state.fly_acceleration as f32),
+        ),
         Some(input.body.bounds),
         SOLID_MASK,
     );
     let angle = input.body.angles.y * ((PI * 2.0) / 360.0);
     let (sine, cosine) = angle.sin_cos();
-    let forward = Vec3 { x: cosine, y: sine, z: -0.0 };
-    let right = Vec3 { x: sine, y: -cosine, z: -0.0 };
+    let forward = Vec3 {
+        x: cosine,
+        y: sine,
+        z: -0.0,
+    };
+    let right = Vec3 {
+        x: sine,
+        y: -cosine,
+        z: -0.0,
+    };
     if obstruction.fraction < f64::from(0.25) {
         let visible_position = |height: f32, end_height: f32, services: &mut dyn AlternateFlyServices| {
-            let start = add(input.body.origin, Vec3 { x: 0.0, y: 0.0, z: height });
+            let start = add(
+                input.body.origin,
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: height,
+                },
+            );
             services.trace(start, wanted_position, None, SOLID_MASK).fraction == 1.0
-                && services.trace(
-                    input.body.origin,
-                    add(input.body.origin, Vec3 { x: 0.0, y: 0.0, z: end_height }),
-                    Some(input.body.bounds),
-                    SOLID_MASK,
-                )
-                .fraction
+                && services
+                    .trace(
+                        input.body.origin,
+                        add(
+                            input.body.origin,
+                            Vec3 {
+                                x: 0.0,
+                                y: 0.0,
+                                z: end_height,
+                            },
+                        ),
+                        Some(input.body.bounds),
+                        SOLID_MASK,
+                    )
+                    .fraction
                     == 1.0
         };
         let bottom_visible = visible_position(
@@ -292,10 +350,14 @@ pub fn steer_alternate_fly(
         if bottom_visible == top_visible {
             let front = add(input.body.origin, scaled(forward, input.body.bounds.max));
             let side = scaled(right, input.body.bounds.max);
-            let left_visible =
-                services.trace(sub(front, side), wanted_position, None, SOLID_MASK).fraction == 1.0;
-            let right_visible =
-                services.trace(add(front, side), wanted_position, None, SOLID_MASK).fraction == 1.0;
+            let left_visible = services
+                .trace(sub(front, side), wanted_position, None, SOLID_MASK)
+                .fraction
+                == 1.0;
+            let right_visible = services
+                .trace(add(front, side), wanted_position, None, SOLID_MASK)
+                .fraction
+                == 1.0;
             wanted_direction = if left_visible != right_visible {
                 if right_visible {
                     add(wanted_direction, right)
@@ -303,7 +365,10 @@ pub fn steer_alternate_fly(
                     sub(wanted_direction, right)
                 }
             } else {
-                obstruction.q2().map(|fields| fields.source_plane.normal).unwrap_or(ZERO)
+                obstruction
+                    .q2()
+                    .map(|fields| fields.source_plane.normal)
+                    .unwrap_or(ZERO)
             };
         } else if top_visible {
             wanted_direction = add(wanted_direction, UP);
@@ -321,7 +386,11 @@ pub fn steer_alternate_fly(
     } else {
         1.0f32.min(0.84 + 0.08 * (current_speed / input.state.fly_speed as f32))
     };
-    let mut final_direction = if nonzero(direction) { direction } else { wanted_direction };
+    let mut final_direction = if nonzero(direction) {
+        direction
+    } else {
+        wanted_direction
+    };
     if nan(final_direction) {
         return AlternateFlyResult::Fallback;
     }
@@ -330,7 +399,11 @@ pub fn steer_alternate_fly(
     let avoid_water = swimming || flying && input.state.water_level < 3;
     let water_ahead = avoid_water
         && services.point_contents(add(input.body.origin, scale(wanted_direction, current_speed))) & 32 != 0;
-    let bad_direction = if swimming { !water_ahead } else { flying && input.state.water_level < 3 && water_ahead };
+    let bad_direction = if swimming {
+        !water_ahead
+    } else {
+        flying && input.state.water_level < 3 && water_ahead
+    };
     if bad_direction && input.state.fly_recovery_time < now {
         input.state.fly_recovery_direction = normal(Vec3 {
             x: services.random().float_range(-1.0, 1.0),
@@ -360,7 +433,11 @@ pub fn steer_alternate_fly(
     if dot(final_direction, wanted_direction) < 0.25 {
         acceleration *= 2.0;
     }
-    let wanted_speed = if input.state.manual_steering { 0.0 } else { input.state.fly_speed as f32 * speed_factor };
+    let wanted_speed = if input.state.manual_steering {
+        0.0
+    } else {
+        input.state.fly_speed as f32 * speed_factor
+    };
     if current_speed > wanted_speed {
         current_speed = wanted_speed.max(current_speed - acceleration);
     } else if current_speed < wanted_speed {
@@ -397,9 +474,11 @@ pub fn alternate_fly_step(context: &mut MonsterContext) -> bool {
     let enemy = enemy_actor
         .as_ref()
         .and_then(|enemy| context.game.host.bodies().read(enemy));
-    let goal = context.entity().goal.clone().and_then(|goal| {
-        context.game.host.bodies().read(&goal).map(|goal_body| goal_body.origin)
-    });
+    let goal = context
+        .entity()
+        .goal
+        .clone()
+        .and_then(|goal| context.game.host.bodies().read(&goal).map(|goal_body| goal_body.origin));
     let flags = context.entity().flags;
     let now = context.game.now();
     let frame_seconds = context.game.host.frame_seconds();
@@ -484,21 +563,27 @@ impl AlternateFlyServices for ContextFlyServices<'_> {
             y: origin.y,
             z: origin.z + self.view_height as f32,
         };
-        let height = self.game.entity(enemy_actor).map(|entity| entity.view_height).unwrap_or(22);
+        let height = self
+            .game
+            .entity(enemy_actor)
+            .map(|entity| entity.view_height)
+            .unwrap_or(22);
         let end = Vec3 {
             x: enemy_body.origin.x,
             y: enemy_body.origin.y,
             z: enemy_body.origin.z + height as f32,
         };
-        self.game.host.trace(&Q2TraceRequest {
-            start,
-            end,
-            bounds: None,
-            ignore: Some(self.actor.clone()),
-            mask: 1 | 8 | 16,
-            exclude: Vec::new(),
-        })
-        .fraction
+        self.game
+            .host
+            .trace(&Q2TraceRequest {
+                start,
+                end,
+                bounds: None,
+                ignore: Some(self.actor.clone()),
+                mask: 1 | 8 | 16,
+                exclude: Vec::new(),
+            })
+            .fraction
             == 1.0
     }
 }

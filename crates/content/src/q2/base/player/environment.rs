@@ -6,12 +6,7 @@ use crate::q2::foundation::host::Q2Mode;
 use super::types::Q2CharacterContext;
 
 /// Apply environment damage (`q2EnvironmentDamage`).
-pub fn q2_environment_damage(
-    context: &mut impl Q2CharacterContext,
-    amount: f64,
-    means: i32,
-    flags: i32,
-) {
+pub fn q2_environment_damage(context: &mut impl Q2CharacterContext, amount: f64, means: i32, flags: i32) {
     context.environment_damage(amount, means, flags);
 }
 
@@ -128,10 +123,7 @@ pub fn q2_world_effects(context: &mut impl Q2CharacterContext) {
         if movement.water_type & 8 != 0 {
             let health = context.combat().map_or(0.0, |combat| combat.health);
             let pain_debounce = context.state_snapshot().pain_debounce;
-            if health > 0.0
-                && pain_debounce <= now
-                && powers.invulnerability_until < now
-            {
+            if health > 0.0 && pain_debounce <= now && powers.invulnerability_until < now {
                 let path = if context.random() < 0.5 {
                     "player/burn2.wav"
                 } else {
@@ -142,12 +134,7 @@ pub fn q2_world_effects(context: &mut impl Q2CharacterContext) {
                     state.pain_debounce = now + 1.0;
                 });
             }
-            q2_environment_damage(
-                context,
-                (if suit { 1.0 } else { 3.0 }) * f64::from(level),
-                19,
-                0,
-            );
+            q2_environment_damage(context, (if suit { 1.0 } else { 3.0 }) * f64::from(level), 19, 0);
         }
         if movement.water_type & 16 != 0 && !suit {
             q2_environment_damage(context, f64::from(level), 18, 0);
@@ -164,10 +151,7 @@ pub fn q2_falling_damage(context: &mut impl Q2CharacterContext) {
     }
     let velocity = context.body().velocity;
     let mut delta: f64;
-    if snapshot.old_velocity.z < 0.0
-        && velocity.z > snapshot.old_velocity.z
-        && !movement.grounded
-    {
+    if snapshot.old_velocity.z < 0.0 && velocity.z > snapshot.old_velocity.z && !movement.grounded {
         delta = f64::from(snapshot.old_velocity.z);
     } else {
         if !movement.grounded {

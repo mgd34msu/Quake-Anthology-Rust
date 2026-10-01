@@ -70,8 +70,7 @@ impl<T: Copy + Eq + Hash> NamedCallbacks<T> {
     }
 
     fn register(&mut self, definitions: &HashMap<&'static str, T>) {
-        let mut names: Vec<(&'static str, T)> =
-            definitions.iter().map(|(name, callback)| (*name, *callback)).collect();
+        let mut names: Vec<(&'static str, T)> = definitions.iter().map(|(name, callback)| (*name, *callback)).collect();
         names.sort_by_key(|(name, _)| *name);
         for (name, callback) in names {
             if let Some(previous) = self.functions.get(name) {

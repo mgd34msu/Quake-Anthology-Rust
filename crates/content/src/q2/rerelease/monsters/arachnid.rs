@@ -2,23 +2,17 @@
 //!
 //! ZeniMax Media, GPL-2.0-or-later.
 
-use qa_core::math::{Bounds, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds};
 
 use super::common::{check_gib, reacts_to_pain};
 use super::tables::arachnid::{arachnid_frame, arachnid_moves};
 use super::tables::flashes::rerelease_flash;
-use crate::q2::base::monsters::common::{
-    finish_corpse_default, move_handler, sound_handler,
-};
+use crate::q2::base::monsters::common::{finish_corpse_default, move_handler, sound_handler};
 use crate::q2::foundation::host::Q2Edition;
-use crate::q2::foundation::monsters::ai::{
-    enemy_body, enemy_eye, project_flash, target_distance,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::ai::{enemy_body, enemy_eye, project_flash, target_distance};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::monster_flash;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
@@ -210,10 +204,7 @@ pub fn arachnid_definition() -> Q2MonsterDefinition {
         ("arachnid_run", MonsterHandler::Callback(arachnid_run)),
         ("arachnid_dead", MonsterHandler::Callback(finish_corpse_default)),
         ("arachnid_footstep", MonsterHandler::Callback(arachnid_footstep)),
-        (
-            "arachnid_melee_charge",
-            sound_handler("gladiator/melee3.wav", 1, 1.0),
-        ),
+        ("arachnid_melee_charge", sound_handler("gladiator/melee3.wav", 1, 1.0)),
         ("arachnid_melee_hit", MonsterHandler::Callback(arachnid_melee_hit)),
         ("arachnid_charge_rail", MonsterHandler::Callback(arachnid_charge_rail)),
         ("arachnid_rail", MonsterHandler::Callback(arachnid_rail)),

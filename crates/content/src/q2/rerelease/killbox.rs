@@ -16,12 +16,7 @@ const PLAYER_CLIP_BIT: i32 = 0x40000000;
 ///
 /// Rerelease KillBox visits the complete linked overlap set and protects
 /// coop teammates.
-pub fn kill_q2_rerelease_box(
-    entity: ActorId,
-    game: &mut Q2GameServices,
-    spawning: bool,
-    exact: bool,
-) -> bool {
+pub fn kill_q2_rerelease_box(entity: ActorId, game: &mut Q2GameServices, spawning: bool, exact: bool) -> bool {
     if game.players.states.get(&entity).is_some_and(|state| state.noclip) {
         return true;
     }
@@ -30,18 +25,30 @@ pub fn kill_q2_rerelease_box(
     let max = add3(body.origin, body.bounds.max);
     let model = game.require_entity(&entity).model.clone();
     let hooks = super::rerelease_hooks(game);
-    let observations: Vec<ActorId> = game.host.actors().observations().into_iter().map(|observation| observation.id).collect();
+    let observations: Vec<ActorId> = game
+        .host
+        .actors()
+        .observations()
+        .into_iter()
+        .map(|observation| observation.id)
+        .collect();
     for actor in observations {
         if actor == entity {
             continue;
         }
         let target = game.entity(&actor).cloned();
         let linked = game.host.bodies().linked(&actor);
-        let damageable = game.host.combat().read(&actor).is_some_and(|combat| combat.can_take_damage);
+        let damageable = game
+            .host
+            .combat()
+            .read(&actor)
+            .is_some_and(|combat| combat.can_take_damage);
         if linked.is_none() || !damageable || target.as_ref().is_some_and(|target| target.solid != Q2Solid::Box) {
             continue;
         }
-        let bounds = linked.map(|linked| linked.absolute_bounds).expect("Q2 rerelease linked body vanished");
+        let bounds = linked
+            .map(|linked| linked.absolute_bounds)
+            .expect("Q2 rerelease linked body vanished");
         if bounds.max.x < min.x
             || bounds.min.x > max.x
             || bounds.max.y < min.y

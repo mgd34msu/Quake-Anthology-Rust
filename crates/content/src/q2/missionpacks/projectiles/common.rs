@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
 use crate::contract::ProjectileRole;
 use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SoundEvent, Q2SoundLoop, Q2Think, Q2TraceRequest,
+    Q2Edition, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2Think, Q2TraceRequest,
 };
 use crate::q2::foundation::weapons::vectors::vector_angles;
 use crate::q2::support::contracts::WeaponBehaviorLaunch;
@@ -146,17 +146,18 @@ pub fn sight(game: &mut Q2GameServices, from: &ActorId, target: &ActorId) -> boo
     let Some(body) = game.host.bodies().read(target) else {
         return false;
     };
-    let eye = game.entity(target).map(|entity| entity.view_height).unwrap_or(
-        if game.host.is_player(target) {
-            22
-        } else {
-            0
-        },
-    );
+    let eye = game
+        .entity(target)
+        .map(|entity| entity.view_height)
+        .unwrap_or(if game.host.is_player(target) { 22 } else { 0 });
     let from_body = game.body_of(from.clone());
     let from_height = game.require_entity(from).view_height;
     let trace = game.host.trace(&Q2TraceRequest {
-        start: vec3(from_body.origin.x, from_body.origin.y, from_body.origin.z + from_height as f32),
+        start: vec3(
+            from_body.origin.x,
+            from_body.origin.y,
+            from_body.origin.z + from_height as f32,
+        ),
         end: vec3(body.origin.x, body.origin.y, body.origin.z + eye as f32),
         bounds: None,
         ignore: Some(from.clone()),

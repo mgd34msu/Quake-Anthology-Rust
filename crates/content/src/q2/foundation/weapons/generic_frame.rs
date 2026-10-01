@@ -68,22 +68,54 @@ pub trait GenericFrameState {
 macro_rules! generic_frame_state {
     ($type:ty) => {
         impl GenericFrameState for $type {
-            fn phase(&self) -> Q2WeaponPhase { self.phase }
-            fn set_phase(&mut self, phase: Q2WeaponPhase) { self.phase = phase; }
-            fn frame(&self) -> i32 { self.frame }
-            fn set_frame(&mut self, frame: i32) { self.frame = frame; }
-            fn latched_attack(&self) -> bool { self.latched_attack }
-            fn set_latched_attack(&mut self, value: bool) { self.latched_attack = value; }
-            fn source_firing(&self) -> bool { self.source_firing }
-            fn set_source_firing(&mut self, value: bool) { self.source_firing = value; }
-            fn think_time(&self) -> f64 { self.think_time }
-            fn set_think_time(&mut self, value: f64) { self.think_time = value; }
-            fn fire_finished(&self) -> f64 { self.fire_finished }
-            fn set_fire_finished(&mut self, value: f64) { self.fire_finished = value; }
-            fn fire_buffered(&self) -> bool { self.fire_buffered }
-            fn set_fire_buffered(&mut self, value: bool) { self.fire_buffered = value; }
-            fn last_firing_time(&self) -> f64 { self.last_firing_time }
-            fn set_last_firing_time(&mut self, value: f64) { self.last_firing_time = value; }
+            fn phase(&self) -> Q2WeaponPhase {
+                self.phase
+            }
+            fn set_phase(&mut self, phase: Q2WeaponPhase) {
+                self.phase = phase;
+            }
+            fn frame(&self) -> i32 {
+                self.frame
+            }
+            fn set_frame(&mut self, frame: i32) {
+                self.frame = frame;
+            }
+            fn latched_attack(&self) -> bool {
+                self.latched_attack
+            }
+            fn set_latched_attack(&mut self, value: bool) {
+                self.latched_attack = value;
+            }
+            fn source_firing(&self) -> bool {
+                self.source_firing
+            }
+            fn set_source_firing(&mut self, value: bool) {
+                self.source_firing = value;
+            }
+            fn think_time(&self) -> f64 {
+                self.think_time
+            }
+            fn set_think_time(&mut self, value: f64) {
+                self.think_time = value;
+            }
+            fn fire_finished(&self) -> f64 {
+                self.fire_finished
+            }
+            fn set_fire_finished(&mut self, value: f64) {
+                self.fire_finished = value;
+            }
+            fn fire_buffered(&self) -> bool {
+                self.fire_buffered
+            }
+            fn set_fire_buffered(&mut self, value: bool) {
+                self.fire_buffered = value;
+            }
+            fn last_firing_time(&self) -> f64 {
+                self.last_firing_time
+            }
+            fn set_last_firing_time(&mut self, value: f64) {
+                self.last_firing_time = value;
+            }
         }
     };
 }
@@ -218,7 +250,7 @@ pub fn step_q2_classic_frame(
             hooks.frame_state().set_frame(idle_first);
         } else {
             let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+            hooks.frame_state().set_frame(frame + 1);
         }
         return;
     }
@@ -249,7 +281,7 @@ pub fn step_q2_classic_frame(
                 return;
             }
             let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+            hooks.frame_state().set_frame(frame + 1);
             return;
         }
     }
@@ -260,7 +292,7 @@ pub fn step_q2_classic_frame(
             hooks.fire(false);
         } else {
             let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+            hooks.frame_state().set_frame(frame + 1);
         }
         if hooks.frame_state().frame() == idle_first + 1 {
             hooks.frame_state().set_phase(Q2WeaponPhase::Ready);
@@ -276,7 +308,11 @@ pub fn step_q2_rerelease_frame(
 ) {
     let now = input.now;
     let idle_first = definition.fire_last + 1;
-    let idle_last = if definition.name == "bfg" { 54 } else { definition.idle_last };
+    let idle_last = if definition.name == "bfg" {
+        54
+    } else {
+        definition.idle_last
+    };
     if hooks.frame_state().phase() == Q2WeaponPhase::Dropping {
         if hooks.frame_state().think_time() <= now {
             if hooks.frame_state().frame() == definition.deactivate_last {
@@ -287,7 +323,7 @@ pub fn step_q2_rerelease_frame(
                 hooks.reverse_animation();
             }
             let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+            hooks.frame_state().set_frame(frame + 1);
             let think = millisecond_sum(now, hooks.animation_time());
             hooks.frame_state().set_think_time(think);
         }
@@ -301,16 +337,22 @@ pub fn step_q2_rerelease_frame(
                 hooks.frame_state().set_phase(Q2WeaponPhase::Ready);
                 hooks.frame_state().set_frame(idle_first);
                 hooks.frame_state().set_fire_buffered(false);
-                let finished = if input.instant_switch { 0.0 } else { millisecond_sum(now, hooks.animation_time()) };
+                let finished = if input.instant_switch {
+                    0.0
+                } else {
+                    millisecond_sum(now, hooks.animation_time())
+                };
                 hooks.frame_state().set_fire_finished(finished);
             } else {
                 let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+                hooks.frame_state().set_frame(frame + 1);
             }
             return;
         }
     }
-    if (input.change_requested || !input.instant_switch && input.holster) && hooks.frame_state().phase() != Q2WeaponPhase::Firing {
+    if (input.change_requested || !input.instant_switch && input.holster)
+        && hooks.frame_state().phase() != Q2WeaponPhase::Firing
+    {
         if input.instant_switch || hooks.frame_state().think_time() <= now {
             hooks.prepare_drop();
             hooks.frame_state().set_phase(Q2WeaponPhase::Dropping);
@@ -328,7 +370,9 @@ pub fn step_q2_rerelease_frame(
         return;
     }
     if hooks.frame_state().phase() == Q2WeaponPhase::Ready {
-        if (hooks.frame_state().fire_buffered() || hooks.frame_state().latched_attack() || input.attack) && hooks.frame_state().fire_finished() <= now {
+        if (hooks.frame_state().fire_buffered() || hooks.frame_state().latched_attack() || input.attack)
+            && hooks.frame_state().fire_finished() <= now
+        {
             hooks.frame_state().set_latched_attack(false);
             hooks.frame_state().set_think_time(now);
             if hooks.ammo() < f64::from(definition.quantity) {
@@ -343,8 +387,7 @@ pub fn step_q2_rerelease_frame(
                 let think_time = hooks.frame_state().think_time();
                 let think = millisecond_sum(
                     think_time,
-                    (if input.weapon_thunk { input.frame_seconds } else { 0.0 })
-                        + hooks.animation_time(),
+                    (if input.weapon_thunk { input.frame_seconds } else { 0.0 }) + hooks.animation_time(),
                 );
                 hooks.frame_state().set_think_time(think);
                 let finished = millisecond_sum(now, hooks.animation_time());
@@ -363,9 +406,10 @@ pub fn step_q2_rerelease_frame(
                 hooks.frame_state().set_frame(idle_first);
                 return;
             }
-            if !definition.pauses.contains(&hooks.frame_state().frame()) || (hooks.random() * 16.0).floor() as i32 == 0 {
+            if !definition.pauses.contains(&hooks.frame_state().frame()) || (hooks.random() * 16.0).floor() as i32 == 0
+            {
                 let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+                hooks.frame_state().set_frame(frame + 1);
             }
             return;
         }
@@ -374,7 +418,7 @@ pub fn step_q2_rerelease_frame(
         hooks.frame_state().set_last_firing_time(millisecond_sum(now, 2.5));
         if !definition.repeating {
             let frame = hooks.frame_state().frame();
-        hooks.frame_state().set_frame(frame + 1);
+            hooks.frame_state().set_frame(frame + 1);
         }
         let finished = millisecond_sum(now, hooks.animation_time());
         hooks.frame_state().set_fire_finished(finished);
@@ -382,7 +426,9 @@ pub fn step_q2_rerelease_frame(
         hooks.frame_state().set_fire_buffered(false);
         if definition.repeating {
             hooks.fire(buffered);
-        } else if definition.fires.contains(&hooks.frame_state().frame()) && !(definition.name == "shotgun" && hooks.frame_state().frame() == 9) {
+        } else if definition.fires.contains(&hooks.frame_state().frame())
+            && !(definition.name == "shotgun" && hooks.frame_state().frame() == 9)
+        {
             hooks.powerup_sound();
             hooks.fire(buffered);
         }
@@ -393,7 +439,11 @@ pub fn step_q2_rerelease_frame(
         let think = millisecond_sum(
             now,
             hooks.animation_time()
-                + (if definition.repeating && input.weapon_thunk { input.frame_seconds } else { 0.0 }),
+                + (if definition.repeating && input.weapon_thunk {
+                    input.frame_seconds
+                } else {
+                    0.0
+                }),
         );
         hooks.frame_state().set_think_time(think);
     }

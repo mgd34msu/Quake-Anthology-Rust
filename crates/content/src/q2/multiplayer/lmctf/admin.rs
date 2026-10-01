@@ -14,7 +14,10 @@ pub fn lmctf_admin_command(game: &mut Q2GameServices, entity: ActorId, name: &st
     let extra = lmctf_player(game, &entity).extra_flags;
     if name == "pausematch" || name == "unpausematch" || name == "pause_match" {
         if name != "pause_match" || extra & 2 != 0 {
-            LmctfMatch { hooks: super::lmctf_hooks(game) }.toggle_pause(game);
+            LmctfMatch {
+                hooks: super::lmctf_hooks(game),
+            }
+            .toggle_pause(game);
         }
         return true;
     }
@@ -52,7 +55,10 @@ pub fn lmctf_admin_command(game: &mut Q2GameServices, entity: ActorId, name: &st
             lmctf_print(game, &format!("{map} is not a map from the maplist.\n"), Some(entity));
         } else {
             lmctf_print(game, "Match countdown beginning.\n", Some(entity.clone()));
-            LmctfMatch { hooks: super::lmctf_hooks(game) }.change_map(game, &map, true);
+            LmctfMatch {
+                hooks: super::lmctf_hooks(game),
+            }
+            .change_map(game, &map, true);
         }
         return true;
     }
@@ -63,12 +69,18 @@ pub fn lmctf_admin_command(game: &mut Q2GameServices, entity: ActorId, name: &st
         lmctf_print(game, "Referee-only command denied.\n", Some(entity));
         return true;
     }
-    let matched = LmctfMatch { hooks: super::lmctf_hooks(game) };
+    let matched = LmctfMatch {
+        hooks: super::lmctf_hooks(game),
+    };
     match name {
         "lock" | "unlock" => {
             game.lmctf.match_state.teams_locked = !game.lmctf.match_state.teams_locked;
             let locked = game.lmctf.match_state.teams_locked;
-            lmctf_print(game, &format!("Teams are now {}locked\n", if locked { "" } else { "un" }), None);
+            lmctf_print(
+                game,
+                &format!("Teams are now {}locked\n", if locked { "" } else { "un" }),
+                None,
+            );
         }
         "startmatch" => {
             if game.lmctf.match_state.phase != LmctfMatchPhase::None {

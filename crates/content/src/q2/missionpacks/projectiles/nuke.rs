@@ -3,20 +3,18 @@
 //! Rogue g_newweap.c / g_combat.c antimatter bomb (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, ProjectileRole, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2Die, Q2GameServices, Q2Think, Q2Touch, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2Die, Q2GameServices, Q2Think, Q2Touch, Q2TraceRequest};
 use crate::q2::foundation::weapons::ballistics::{weapon_player_noise_for_actor, NoiseKind};
 use crate::q2::foundation::weapons::player::weapon_emit;
 use crate::q2::foundation::weapons::types::Q2WeaponEvent;
 use crate::q2::support::contracts::{CombatState, CombatTraitChanges, DeathReaction, TouchContact};
 
+use super::super::types::{Q2MissionPackPlayerEffect, Q2_MISSION_PACK_DAMAGE};
 use super::common::{effect, publish_projectile, velocity};
-use super::super::types::{Q2_MISSION_PACK_DAMAGE, Q2MissionPackPlayerEffect};
 use super::Q2MissionPackProjectiles;
 
 /// Nuke callbacks (merged over the mine callbacks).
@@ -77,12 +75,7 @@ impl Q2MissionPackProjectiles {
         );
         let frame_seconds = game.host.frame_seconds();
         game.schedule(bomb.clone(), frame_seconds, nuke_think as Q2Think);
-        publish_projectile(
-            bomb.clone(),
-            game,
-            "",
-            Some(("q2:ammo_nuke", ProjectileRole::Grenade)),
-        );
+        publish_projectile(bomb.clone(), game, "", Some(("q2:ammo_nuke", ProjectileRole::Grenade)));
         bomb
     }
 
@@ -116,14 +109,13 @@ impl Q2MissionPackProjectiles {
             };
             if !game.host.is_player(&actor)
                 && !game.host.is_monster(&actor)
-                && target.as_ref().is_none_or(|target| !game.require_entity(target).damageable_target)
+                && target
+                    .as_ref()
+                    .is_none_or(|target| !game.require_entity(target).damageable_target)
             {
                 continue;
             }
-            let center = add3(
-                body.origin,
-                scale3(add3(body.bounds.min, body.bounds.max), 0.5),
-            );
+            let center = add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5));
             let distance = f64::from(length3(sub3(origin, center)));
             let points = if distance <= radius {
                 10000.0
@@ -254,7 +246,12 @@ fn nuke_quake(entity: ActorId, game: &mut Q2GameServices) {
         if body.ground.is_none() {
             continue;
         }
-        let mass = game.host.combat().read(&actor).map(|combat| combat.mass).unwrap_or(200.0);
+        let mass = game
+            .host
+            .combat()
+            .read(&actor)
+            .map(|combat| combat.mass)
+            .unwrap_or(200.0);
         let speed = game.require_entity(&entity).speed;
         let shake_x = ((game.host.random() * 2.0 - 1.0) * 150.0) as f32;
         let shake_y = ((game.host.random() * 2.0 - 1.0) * 150.0) as f32;

@@ -2,12 +2,12 @@
 //!
 //! ZeniMax Media, GPL-2.0-or-later.
 
-use qa_core::math::{sub3, vec3, normalize3};
+use qa_core::math::{normalize3, sub3, vec3};
 
 use super::boss::{boss_explode, boss_explode_think};
 use super::common::{
-    blocked_check_platform, calculate_pitch_to_fire, chainfist, check_gib, monster_flash,
-    predict_aim, predicted_direction, reacts_to_pain,
+    blocked_check_platform, calculate_pitch_to_fire, chainfist, check_gib, monster_flash, predict_aim,
+    predicted_direction, reacts_to_pain,
 };
 use super::tables::flashes::rerelease_flash;
 use super::tables::supertank::{supertank_frame, supertank_moves};
@@ -15,22 +15,18 @@ use crate::contract::{InventoryEntry, PoweredProtectionState};
 use crate::q2::base::monsters::supertank::supertank_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
-use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop,
-};
+use crate::q2::foundation::host::{Q2Edition, Q2EffectEvent, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop};
 use crate::q2::foundation::monsters::ai::{
     clear_shot, enemy_body, enemy_eye, health, project_flash, target_distance, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, bind_shared_power_cells,
+    bind_shared_power_cells, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
 use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
 use crate::q2::missionpacks::monsters::types::mission_weapons;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Bind armor (`bindArmor`).
 fn supertank_bind_armor(context: &mut MonsterContext) {
@@ -333,8 +329,7 @@ fn supertank_dead(context: &mut MonsterContext) {
 fn supertank_reattack1(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let timestamp = context.game.require_entity(&actor).timestamp;
-    let again = visible(context, None)
-        && (timestamp >= context.game.host.now() || context.game.random() < 0.3);
+    let again = visible(context, None) && (timestamp >= context.game.host.now() || context.game.random() < 0.3);
     context.set_move(
         if again {
             "supertank_move_attack1"
@@ -363,17 +358,7 @@ fn supertank_machine_gun(context: &mut MonsterContext) {
         return;
     };
     let fire_bullet = context.weapons.fire_bullet;
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        6.0,
-        4.0,
-        900.0,
-        1500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 900.0, 1500.0, 0);
     monster_flash(context, id, start, direction);
 }
 
@@ -416,16 +401,7 @@ fn supertank_rocket(context: &mut MonsterContext) {
         );
     } else {
         let fire_rocket = context.weapons.fire_rocket;
-        fire_rocket(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            50.0,
-            750.0,
-            70.0,
-            50.0,
-        );
+        fire_rocket(actor, &mut *context.game, start, direction, 50.0, 750.0, 70.0, 50.0);
     }
     monster_flash(context, id, start, direction);
 }
@@ -449,16 +425,9 @@ fn supertank_grenade(context: &mut MonsterContext) {
     };
     let mut speed = 500.0;
     while speed < 1000.0 {
-        let Some(direction) = calculate_pitch_to_fire(
-            context,
-            target.point,
-            start,
-            target.direction,
-            speed,
-            2.5,
-            true,
-            false,
-        ) else {
+        let Some(direction) =
+            calculate_pitch_to_fire(context, target.point, start, target.direction, speed, 2.5, true, false)
+        else {
             speed += 100.0;
             continue;
         };
@@ -508,19 +477,10 @@ pub fn create_rerelease_supertank_definitions(is_n64: bool) -> Vec<Q2MonsterDefi
         ("BossExplode", MonsterHandler::Callback(boss_explode)),
         ("BossLoop", MonsterHandler::Callback(supertank_boss_loop)),
         ("supertank_dead", MonsterHandler::Callback(supertank_dead)),
-        (
-            "supertank_reattack1",
-            MonsterHandler::Callback(supertank_reattack1),
-        ),
-        (
-            "supertankMachineGun",
-            MonsterHandler::Callback(supertank_machine_gun),
-        ),
+        ("supertank_reattack1", MonsterHandler::Callback(supertank_reattack1)),
+        ("supertankMachineGun", MonsterHandler::Callback(supertank_machine_gun)),
         ("supertankRocket", MonsterHandler::Callback(supertank_rocket)),
-        (
-            "supertankGrenade",
-            MonsterHandler::Callback(supertank_grenade),
-        ),
+        ("supertankGrenade", MonsterHandler::Callback(supertank_grenade)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);
     }

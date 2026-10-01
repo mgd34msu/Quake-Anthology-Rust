@@ -42,13 +42,13 @@ pub fn parse_q2_start_items(expression: &str) -> Vec<Q2StartItem> {
                 None => (value, 1),
                 Some(index) => (
                     &value[..index],
-                    parse_count(&value[index + 1..]).unwrap_or_else(|| {
-                        panic!("Invalid Q2 starting item: {value}")
-                    }),
+                    parse_count(&value[index + 1..]).unwrap_or_else(|| panic!("Invalid Q2 starting item: {value}")),
                 ),
             };
             if classname.is_empty()
-                || !classname.chars().all(|char| char.is_ascii_alphanumeric() || char == '_')
+                || !classname
+                    .chars()
+                    .all(|char| char.is_ascii_alphanumeric() || char == '_')
             {
                 panic!("Invalid Q2 starting item: {value}");
             }

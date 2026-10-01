@@ -3,7 +3,7 @@
 //! ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use super::super::beam::{fire_monster_beam, free_monster_beam, update_monster_beam};
 use super::super::common::{check_gib, predicted_direction, reacts_to_pain};
@@ -14,27 +14,24 @@ use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{Q2GameServices, Q2MonsterBeam, Q2PresentationEvent, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, corpse, enemy_body, health, project_flash, set_duck,
-    target_distance, vector_angles, visible,
+    angles_vectors, corpse, enemy_body, health, project_flash, set_duck, target_distance, vector_angles, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::missionpacks::monsters::power_armor::{
-    PowerArmorKind, monster_power_armor, restore_monster_power_armor,
+    monster_power_armor, restore_monster_power_armor, PowerArmorKind,
 };
-use crate::q2::missionpacks::monsters::xatrix_variants::{
-    XATRIX_BRAIN_LEFT_EYE, XATRIX_BRAIN_RIGHT_EYE,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit,
-};
+use crate::q2::missionpacks::monsters::xatrix_variants::{XATRIX_BRAIN_LEFT_EYE, XATRIX_BRAIN_RIGHT_EYE};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit};
 
 /// Screen (`screen`).
 fn brain_screen(context: &mut MonsterContext, active: bool) {
     let actor = context.actor().clone();
-    let cells = context.game.host.inventory().count(&actor, &"q2:monster-power".to_string());
+    let cells = context
+        .game
+        .host
+        .inventory()
+        .count(&actor, &"q2:monster-power".to_string());
     let owned = context.game.owned_of(actor);
     let protection = if active {
         PoweredProtectionState::Screen { cells }
@@ -97,19 +94,16 @@ fn brain_hit_left(context: &mut MonsterContext) {
 }
 
 /// Eye update (`eye`).
-fn brain_eye_update(
-    tip: ActorId,
-    game: &mut Q2GameServices,
-    positions: &[Vec3],
-    update: bool,
-) {
+fn brain_eye_update(tip: ActorId, game: &mut Q2GameServices, positions: &[Vec3], update: bool) {
     let owner = game.require_entity(&tip).owner.clone();
     let Some(owner) = owner.filter(|owner| game.monsters.states.contains_key(owner)) else {
         free_monster_beam(tip, game);
         return;
     };
     let frame = game.require_entity(&owner).frame;
-    let index = usize::try_from(frame - brain_frame::WALK101).ok().and_then(|index| positions.get(index));
+    let index = usize::try_from(frame - brain_frame::WALK101)
+        .ok()
+        .and_then(|index| positions.get(index));
     let Some(position) = index else {
         free_monster_beam(tip, game);
         return;
@@ -408,8 +402,16 @@ fn brain_tongue_attack(context: &mut MonsterContext) {
     let start = project_flash(context, vec3(24.0, 0.0, 16.0), None);
     let ends = [
         enemy.origin,
-        vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z + enemy.bounds.max.z - 8.0),
-        vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z + enemy.bounds.min.z + 8.0),
+        vec3(
+            enemy.origin.x,
+            enemy.origin.y,
+            enemy.origin.z + enemy.bounds.max.z - 8.0,
+        ),
+        vec3(
+            enemy.origin.x,
+            enemy.origin.y,
+            enemy.origin.z + enemy.bounds.min.z + 8.0,
+        ),
     ];
     if !ends.iter().any(|end| brain_tongue_allowed(start, *end)) {
         return;
@@ -467,10 +469,7 @@ fn brain_laserbeam(context: &mut MonsterContext) {
 fn brain_laserbeam_reattack(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let enemy = context.entity().enemy.clone();
-    if context.game.random() < 0.5
-        && visible(context, None)
-        && health(&mut *context.game, enemy.as_ref()) > 0.0
-    {
+    if context.game.random() < 0.5 && visible(context, None) && health(&mut *context.game, enemy.as_ref()) > 0.0 {
         context.game.require_entity_mut(&actor).frame = brain_frame::WALK101;
     }
 }
@@ -510,8 +509,12 @@ pub fn create_rerelease_brain_definition() -> Q2MonsterDefinition {
     definition.melee = Some(MonsterHandler::Callback(brain_melee));
     definition.has_ranged_attack = true;
     let mut source_callbacks = Q2CallbackDefinitions::default();
-    source_callbacks.think.insert("rerelease.brain.right_eye_update", brain_right_eye_update);
-    source_callbacks.think.insert("rerelease.brain.left_eye_update", brain_left_eye_update);
+    source_callbacks
+        .think
+        .insert("rerelease.brain.right_eye_update", brain_right_eye_update);
+    source_callbacks
+        .think
+        .insert("rerelease.brain.left_eye_update", brain_left_eye_update);
     source_callbacks.think.insert("beam_think", free_monster_beam);
     definition.source_callbacks = Some(source_callbacks);
     definition.initialize = Some(MonsterHandler::Callback(rerelease_brain_initialize));
@@ -526,18 +529,9 @@ pub fn create_rerelease_brain_definition() -> Q2MonsterDefinition {
         ("brain_hit_right", MonsterHandler::Callback(brain_hit_right)),
         ("brain_hit_left", MonsterHandler::Callback(brain_hit_left)),
         ("brain_chest_open", MonsterHandler::Callback(brain_chest_open)),
-        (
-            "brain_tentacle_attack",
-            MonsterHandler::Callback(brain_tentacle_attack),
-        ),
-        (
-            "brain_chest_closed",
-            MonsterHandler::Callback(brain_chest_closed),
-        ),
-        (
-            "brain_tounge_attack",
-            MonsterHandler::Callback(brain_tongue_attack),
-        ),
+        ("brain_tentacle_attack", MonsterHandler::Callback(brain_tentacle_attack)),
+        ("brain_chest_closed", MonsterHandler::Callback(brain_chest_closed)),
+        ("brain_tounge_attack", MonsterHandler::Callback(brain_tongue_attack)),
         ("brain_laserbeam", MonsterHandler::Callback(brain_laserbeam)),
         (
             "brain_laserbeam_reattack",

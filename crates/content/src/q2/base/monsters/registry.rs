@@ -19,7 +19,7 @@ use super::insane::insane_definition;
 use super::jorg::create_jorg_definition;
 use super::makron::{makron_definition, with_makron_spawn_callbacks};
 use super::medic::create_medic_definition;
-use super::mutant::{MutantSource, create_mutant_definition};
+use super::mutant::{create_mutant_definition, MutantSource};
 use super::parasite::parasite_definition;
 use super::supertank::supertank_definition;
 use super::tank::{tank_commander_definition, tank_definition};

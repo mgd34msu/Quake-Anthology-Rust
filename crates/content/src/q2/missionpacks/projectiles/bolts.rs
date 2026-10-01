@@ -4,28 +4,23 @@
 //! (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::ProjectileRole;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2Think, Q2Touch, Q2TouchProject, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Think, Q2Touch, Q2TouchProject, Q2TraceRequest};
 use crate::q2::foundation::weapons::ballistics::{
     check_dodge, fire_blaster, weapon_player_noise, weapon_player_noise_for_actor, NoiseKind,
 };
 use crate::q2::foundation::weapons::player::weapon_emit;
 use crate::q2::foundation::weapons::types::{Q2WeaponEvent, WeaponBeamEffect};
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
-use crate::q2::support::contracts::{
-    TouchContact, TraceContact, TraceFamily, TraceHit, WeaponTrajectoryUpdate,
-};
+use crate::q2::support::contracts::{TouchContact, TraceContact, TraceFamily, TraceHit, WeaponTrajectoryUpdate};
 
+use super::super::types::{Q2MissionPackPlayerEffect, Q2_MISSION_PACK_DAMAGE};
 use super::common::{
-    effect, explode, free_projectile, projectile, projectile_mask, publish_projectile, sight,
-    velocity,
+    effect, explode, free_projectile, projectile, projectile_mask, publish_projectile, sight, velocity,
 };
-use super::super::types::{Q2_MISSION_PACK_DAMAGE, Q2MissionPackPlayerEffect};
 use super::Q2MissionPackProjectiles;
 
 /// Steering projection (`projectSteering`).
@@ -68,13 +63,9 @@ pub fn bolt_callbacks() -> Q2CallbackDefinitions {
         .insert("tracker_pain_daemon_think", tracker_pain as Q2Think);
     callbacks.touch.insert("ionripper_touch", ion_touch as Q2Touch);
     callbacks.touch.insert("plasma_touch", plasma_touch as Q2Touch);
-    callbacks
-        .touch
-        .insert("flechette_touch", flechette_touch as Q2Touch);
+    callbacks.touch.insert("flechette_touch", flechette_touch as Q2Touch);
     callbacks.touch.insert("blaster2_touch", green_touch as Q2Touch);
-    callbacks
-        .touch
-        .insert("tracker_touch", tracker_touch as Q2Touch);
+    callbacks.touch.insert("tracker_touch", tracker_touch as Q2Touch);
     callbacks
 }
 
@@ -129,15 +120,9 @@ impl Q2MissionPackProjectiles {
         };
         let mut moved = game.body_of(bolt.clone());
         moved.origin = if rerelease {
-            add3(
-                trace.end,
-                plane.map(|plane| plane.normal).unwrap_or_default(),
-            )
+            add3(trace.end, plane.map(|plane| plane.normal).unwrap_or_default())
         } else {
-            add3(
-                moved.origin,
-                scale3(game.require_entity(bolt).movedir, -10.0),
-            )
+            add3(moved.origin, scale3(game.require_entity(bolt).movedir, -10.0))
         };
         game.write_body(bolt.clone(), &moved, true);
         let other = match &trace.hit {
@@ -146,13 +131,16 @@ impl Q2MissionPackProjectiles {
         };
         let surface = if rerelease {
             match &trace.family {
-                TraceFamily::Q2(fields) => fields.surface.as_ref().map(|surface| {
-                    crate::q2::support::contracts::TouchSurface {
-                        name: surface.name.clone(),
-                        native_flags: surface.flags,
-                        native_value: surface.value,
-                    }
-                }),
+                TraceFamily::Q2(fields) => {
+                    fields
+                        .surface
+                        .as_ref()
+                        .map(|surface| crate::q2::support::contracts::TouchSurface {
+                            name: surface.name.clone(),
+                            native_flags: surface.flags,
+                            native_value: surface.value,
+                        })
+                }
                 _ => None,
             }
         } else {
@@ -287,11 +275,7 @@ impl Q2MissionPackProjectiles {
             let rerelease = game.options.edition == Q2Edition::Rerelease;
             game.schedule(
                 rocket.clone(),
-                if rerelease {
-                    game.host.frame_seconds()
-                } else {
-                    0.1
-                },
+                if rerelease { game.host.frame_seconds() } else { 0.1 },
                 if rerelease {
                     heat_think_rerelease as Q2Think
                 } else {
@@ -522,9 +506,7 @@ impl Q2MissionPackProjectiles {
             mask: mask | if underwater { 0 } else { water_mask },
             exclude: Vec::new(),
         });
-        if !matches!(trace.family, TraceFamily::Q1 { .. })
-            && trace_contents(&trace) & water_mask != 0
-        {
+        if !matches!(trace.family, TraceFamily::Q1 { .. }) && trace_contents(&trace) & water_mask != 0 {
             water = true;
             water_start = trace.end;
             if length3(sub3(start, water_start)) != 0.0 {
@@ -555,9 +537,7 @@ impl Q2MissionPackProjectiles {
             _ => Vec3::default(),
         };
         let sky = match &trace.family {
-            TraceFamily::Q2(fields) => {
-                fields.surface.as_ref().map(|surface| surface.flags).unwrap_or(0) & 4 != 0
-            }
+            TraceFamily::Q2(fields) => fields.surface.as_ref().map(|surface| surface.flags).unwrap_or(0) & 4 != 0,
             TraceFamily::Q3 { surface_flags, .. } => surface_flags & 4 != 0,
             TraceFamily::Q1 { .. } => false,
         };
@@ -602,10 +582,7 @@ impl Q2MissionPackProjectiles {
             }
         }
         if water || underwater {
-            let pos = add3(
-                trace.end,
-                scale3(normalize3(sub3(trace.end, water_start)), -2.0),
-            );
+            let pos = add3(trace.end, scale3(normalize3(sub3(trace.end, water_start)), -2.0));
             let water_end = if game.host.point_contents(pos) & 56 != 0 {
                 pos
             } else {
@@ -670,7 +647,14 @@ fn ion_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
     if Some(&contact.other) == game.require_entity(&bolt).owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(bolt);
         return;
     }
@@ -710,7 +694,13 @@ fn heat_think(entity: ActorId, game: &mut Q2GameServices) {
     for actor in game.host.nearby(origin, 1024.0) {
         if Some(&actor) == game.require_entity(&entity).owner.as_ref()
             || !game.host.is_player(&actor)
-            || game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+            || game
+                .host
+                .combat()
+                .read(&actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                <= 0.0
             || !sight(game, &entity, &actor)
         {
             continue;
@@ -756,7 +746,13 @@ fn heat_think_rerelease(entity: ActorId, game: &mut Q2GameServices) {
     for actor in game.host.nearby(origin, 1024.0) {
         if Some(&actor) == game.require_entity(&entity).owner.as_ref()
             || !game.host.is_player(&actor)
-            || game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+            || game
+                .host
+                .combat()
+                .read(&actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                <= 0.0
             || !sight(game, &entity, &actor)
         {
             continue;
@@ -833,7 +829,14 @@ fn plasma_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchContact)
     if Some(&contact.other) == game.require_entity(&bolt).owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(bolt);
         return;
     }
@@ -863,7 +866,16 @@ fn plasma_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchContact)
         let entity = game.require_entity(&bolt);
         (entity.owner.clone(), entity.radius_damage, entity.damage_radius)
     };
-    game.radius_damage(bolt.clone(), owner, radius_damage, Some(contact.other), radius, Q2_MISSION_PACK_DAMAGE.phalanx, 0, Some("q2:weapon_phalanx".to_string()));
+    game.radius_damage(
+        bolt.clone(),
+        owner,
+        radius_damage,
+        Some(contact.other),
+        radius,
+        Q2_MISSION_PACK_DAMAGE.phalanx,
+        0,
+        Some("q2:weapon_phalanx".to_string()),
+    );
     game.host.emit(crate::q2::foundation::host::Q2PresentationEvent::Effect(
         crate::q2::foundation::host::Q2EffectEvent {
             effect: "q2:plasma_explosion".to_string(),
@@ -881,7 +893,14 @@ fn flechette_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchConta
     if Some(&contact.other) == game.require_entity(&bolt).owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(bolt);
         return;
     }
@@ -923,7 +942,14 @@ fn green_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
     if Some(&contact.other) == game.require_entity(&bolt).owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(bolt);
         return;
     }
@@ -957,8 +983,7 @@ fn green_touch(bolt: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
                 continue;
             }
             let center = add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5));
-            let points = damage * if rerelease { 2.0 } else { 3.0 }
-                - 0.5 * f64::from(length3(sub3(center, origin)));
+            let points = damage * if rerelease { 2.0 } else { 3.0 } - 0.5 * f64::from(length3(sub3(center, origin)));
             if points > 0.0 {
                 game.damage(
                     actor,
@@ -1016,7 +1041,13 @@ fn tracker_fly(entity: ActorId, game: &mut Q2GameServices) {
     let target = enemy.as_ref().and_then(|enemy| game.host.bodies().read(enemy));
     let dead = enemy.as_ref().is_none_or(|enemy| {
         !game.host.actors().is_live(enemy)
-            || game.host.combat().read(enemy).map(|combat| combat.health).unwrap_or(0.0) < 1.0
+            || game
+                .host
+                .combat()
+                .read(enemy)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                < 1.0
     });
     if enemy.is_none() || target.is_none() || dead {
         explode(&entity, game, "tracker_explosion");
@@ -1027,7 +1058,16 @@ fn tracker_fly(entity: ActorId, game: &mut Q2GameServices) {
     let min = add3(target.origin, target.bounds.min);
     let max = add3(target.origin, target.bounds.max);
     let destination = if game.host.is_player(&enemy) {
-        add3(target.origin, vec3(0.0, 0.0, game.entity(&enemy).map(|entity| entity.view_height as f32).unwrap_or(22.0)))
+        add3(
+            target.origin,
+            vec3(
+                0.0,
+                0.0,
+                game.entity(&enemy)
+                    .map(|entity| entity.view_height as f32)
+                    .unwrap_or(22.0),
+            ),
+        )
     } else if length3(min) == 0.0 || length3(max) == 0.0 {
         target.origin
     } else {
@@ -1050,11 +1090,18 @@ fn tracker_fly(entity: ActorId, game: &mut Q2GameServices) {
 /// Tracker pain daemon think (`trackerPain`).
 fn tracker_pain(entity: ActorId, game: &mut Q2GameServices) {
     let enemy = game.require_entity(&entity).enemy.clone();
-    let target = enemy.as_ref().and_then(|enemy| game.entity(enemy).map(|entity| entity.actor.id().clone()));
+    let target = enemy
+        .as_ref()
+        .and_then(|enemy| game.entity(enemy).map(|entity| entity.actor.id().clone()));
     let body = enemy.as_ref().and_then(|enemy| game.host.bodies().read(enemy));
     let timestamp = game.require_entity(&entity).timestamp;
     let dead = enemy.as_ref().is_none_or(|enemy| {
-        game.host.combat().read(enemy).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+        game.host
+            .combat()
+            .read(enemy)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            <= 0.0
     });
     if enemy.is_none() || body.is_none() || game.host.now() - timestamp > 0.5 || dead {
         if let Some(target) = target {
@@ -1098,7 +1145,14 @@ fn tracker_pain(entity: ActorId, game: &mut Q2GameServices) {
     if !game.host.actors().is_live(&entity) {
         return;
     }
-    if game.host.combat().read(&enemy).map(|combat| combat.health).unwrap_or(0.0) < 1.0 {
+    if game
+        .host
+        .combat()
+        .read(&enemy)
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        < 1.0
+    {
         let hooks = super::mission_hooks(game);
         let gib = (hooks.monster)(enemy.clone(), game)
             .map(|monster| monster.state().gib_health)
@@ -1135,7 +1189,14 @@ fn tracker_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchConta
     if Some(&contact.other) == game.require_entity(&entity).owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(entity);
         return;
     }
@@ -1143,14 +1204,25 @@ fn tracker_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchConta
     let body = game.body_of(entity.clone());
     if target.is_some_and(|target| target.can_take_damage) {
         let creature = game.host.is_monster(&contact.other) || game.host.is_player(&contact.other);
-        let health = game.host.combat().read(&contact.other).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&contact.other)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         let live = creature && health > 0.0;
         let damage = game.require_entity(&entity).damage;
         game.damage(
             contact.other.clone(),
             entity.clone(),
             game.require_entity(&entity).owner.clone(),
-            if live { 0.0 } else if creature { damage * 4.0 } else { damage },
+            if live {
+                0.0
+            } else if creature {
+                damage * 4.0
+            } else {
+                damage
+            },
             damage * 3.0,
             body.velocity,
             body.origin,
@@ -1175,7 +1247,11 @@ fn tracker_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchConta
             let daemon = game.create("pain daemon", std::collections::BTreeMap::new());
             let damage = game.require_entity(&entity).damage;
             let tracker_rerelease = game.options.edition == Q2Edition::Rerelease;
-            let interval = if tracker_rerelease { 0.1 } else { game.host.frame_seconds() };
+            let interval = if tracker_rerelease {
+                0.1
+            } else {
+                game.host.frame_seconds()
+            };
             let scaled = (damage * interval / 0.5).trunc();
             let now = game.host.now();
             {
@@ -1186,7 +1262,11 @@ fn tracker_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchConta
                 record.timestamp = now;
             }
             let rerelease = game.options.edition == Q2Edition::Rerelease;
-            game.schedule(daemon, if rerelease { 0.0 } else { game.host.frame_seconds() }, tracker_pain as Q2Think);
+            game.schedule(
+                daemon,
+                if rerelease { 0.0 } else { game.host.frame_seconds() },
+                tracker_pain as Q2Think,
+            );
         }
     }
     explode(&entity, game, "tracker_explosion");

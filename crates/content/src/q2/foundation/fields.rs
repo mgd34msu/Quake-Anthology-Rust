@@ -11,18 +11,13 @@ use super::host::{Q2Edition, Q2GameOptions, Q2SpawnFields};
 use crate::q2::support::misc::{parse_q2_token, ParseState};
 
 /// Shared zero vector (donor `zero`).
-pub const ZERO: Vec3 = Vec3 {
-    x: 0.0,
-    y: 0.0,
-    z: 0.0,
-};
+pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
 /// Read a float spawn field (`numberField`).
 pub fn number_field(fields: &Q2SpawnFields, key: &str, fallback: f64) -> f64 {
     match fields.values.get(key) {
         None => fallback,
-        Some(value) => native_atof(value)
-            .unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
+        Some(value) => native_atof(value).unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
     }
 }
 
@@ -30,8 +25,7 @@ pub fn number_field(fields: &Q2SpawnFields, key: &str, fallback: f64) -> f64 {
 pub fn integer_field(fields: &Q2SpawnFields, key: &str, fallback: i32) -> i32 {
     match fields.values.get(key) {
         None => fallback,
-        Some(value) => native_atoi(value)
-            .unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
+        Some(value) => native_atoi(value).unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
     }
 }
 
@@ -180,7 +174,11 @@ pub fn movedir(angles: Vec3) -> Vec3 {
         return Vec3 { x: 0.0, y: 0.0, z: 1.0 };
     }
     if angles.x == 0.0 && angles.y == -2.0 && angles.z == 0.0 {
-        return Vec3 { x: 0.0, y: 0.0, z: -1.0 };
+        return Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
     }
     let yaw = f64::from(angles.y) * std::f64::consts::PI / 180.0;
     let pitch = f64::from(angles.x) * std::f64::consts::PI / 180.0;
@@ -245,12 +243,24 @@ mod tests {
     #[test]
     fn inhibits_spawns_by_skill_and_mode() {
         let easy = fields("monster_soldier", &[("spawnflags", "256")]);
-        assert!(inhibit_q2_spawn(&easy, &options(Q2Mode::Singleplayer, 0, Q2Edition::Classic)));
-        assert!(!inhibit_q2_spawn(&easy, &options(Q2Mode::Singleplayer, 1, Q2Edition::Classic)));
+        assert!(inhibit_q2_spawn(
+            &easy,
+            &options(Q2Mode::Singleplayer, 0, Q2Edition::Classic)
+        ));
+        assert!(!inhibit_q2_spawn(
+            &easy,
+            &options(Q2Mode::Singleplayer, 1, Q2Edition::Classic)
+        ));
         let no_dm = fields("weapon_shotgun", &[("spawnflags", "2048")]);
-        assert!(inhibit_q2_spawn(&no_dm, &options(Q2Mode::Deathmatch, 1, Q2Edition::Classic)));
+        assert!(inhibit_q2_spawn(
+            &no_dm,
+            &options(Q2Mode::Deathmatch, 1, Q2Edition::Classic)
+        ));
         let world = fields("worldspawn", &[("spawnflags", "2048")]);
-        assert!(!inhibit_q2_spawn(&world, &options(Q2Mode::Deathmatch, 1, Q2Edition::Classic)));
+        assert!(!inhibit_q2_spawn(
+            &world,
+            &options(Q2Mode::Deathmatch, 1, Q2Edition::Classic)
+        ));
     }
 
     #[test]
@@ -259,11 +269,12 @@ mod tests {
         assert_eq!(number_field(&field_values, "speed", 0.0), 100.0);
         assert_eq!(number_field(&field_values, "missing", 7.0), 7.0);
         assert_eq!(integer_field(&field_values, "angle", 0), 45);
-        assert_eq!(
-            vector_field(&field_values, "origin"),
-            Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-        );
-        let up = movedir(Vec3 { x: 0.0, y: -1.0, z: 0.0 });
+        assert_eq!(vector_field(&field_values, "origin"), Vec3 { x: 1.0, y: 2.0, z: 3.0 });
+        let up = movedir(Vec3 {
+            x: 0.0,
+            y: -1.0,
+            z: 0.0,
+        });
         assert_eq!(up, Vec3 { x: 0.0, y: 0.0, z: 1.0 });
     }
 }

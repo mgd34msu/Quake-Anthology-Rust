@@ -4,14 +4,13 @@
 //! AI/death runner.
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::checkpoint::{restore_q2_actor, save_q2_actor};
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{
-    Q2Die, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
-    Q2SoundLoop,
+    Q2Die, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
 };
 use crate::q2::foundation::monsters::ai::visible;
 use crate::q2::foundation::monsters::infantry::infantry_stand;
@@ -194,12 +193,7 @@ fn init_brush(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Fire the breach (`fire`).
-fn fire_breach(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    state: Q2BreachState,
-    driver: ActorId,
-) {
+fn fire_breach(actor: ActorId, game: &mut Q2GameServices, state: Q2BreachState, driver: ActorId) {
     let body = game.body_of(actor.clone());
     let axes = angle_vectors(body.angles);
     let start = add3(
@@ -211,16 +205,7 @@ fn fire_breach(
     );
     let damage = (100.0 + game.host.random() * 50.0).trunc();
     let speed = 550.0 + 50.0 * f64::from(game.options.skill);
-    (hooks(game).fire_rocket)(
-        driver,
-        game,
-        start,
-        axes.forward,
-        damage,
-        speed,
-        150.0,
-        damage,
-    );
+    (hooks(game).fire_rocket)(driver, game, start, axes.forward, damage, speed, 150.0, damage);
     game.host.emit(Q2PresentationEvent::Sound(Q2SoundEvent {
         actor: Some(actor),
         origin: start,
@@ -251,19 +236,13 @@ fn turret_breach_think(actor: ActorId, game: &mut Q2GameServices) {
     if yaw < state.yaw_min || yaw > state.yaw_max {
         let min = short_angle((state.yaw_min - yaw).abs()).abs();
         let max = short_angle((state.yaw_max - yaw).abs()).abs();
-        yaw = if min < max {
-            state.yaw_min
-        } else {
-            state.yaw_max
-        };
+        yaw = if min < max { state.yaw_min } else { state.yaw_max };
     }
     let speed = game.require_entity(&actor).speed;
     if let Some(entry) = game.base_entities.breaches.get_mut(&actor) {
         entry.goal = vec3(pitch as f32, yaw as f32, state.goal.z);
     }
-    let clamp = |delta: f64| {
-        short_angle(delta).clamp(-speed * frame, speed * frame) / frame
-    };
+    let clamp = |delta: f64| short_angle(delta).clamp(-speed * frame, speed * frame) / frame;
     let angular = vec3(
         clamp(pitch - normalize_angle(f64::from(body.angles.x))) as f32,
         clamp(yaw - normalize_angle(f64::from(body.angles.y))) as f32,
@@ -274,11 +253,7 @@ fn turret_breach_think(actor: ActorId, game: &mut Q2GameServices) {
     for member in team(game, &actor) {
         {
             let entity = game.require_entity_mut(&member);
-            entity.angular_velocity = vec3(
-                entity.angular_velocity.x,
-                angular.y,
-                entity.angular_velocity.z,
-            );
+            entity.angular_velocity = vec3(entity.angular_velocity.x, angular.y, entity.angular_velocity.z);
         }
         game.set_motion_kind(member, Q2MotionKind::Push);
     }
@@ -300,8 +275,7 @@ fn turret_breach_think(actor: ActorId, game: &mut Q2GameServices) {
         );
         {
             let entity = game.require_entity_mut(&owner);
-            entity.angular_velocity =
-                vec3(angular.x, angular.y, entity.angular_velocity.z);
+            entity.angular_velocity = vec3(angular.x, angular.y, entity.angular_velocity.z);
         }
         let mut moved = game.body_of(owner.clone());
         moved.velocity = scale3(sub3(target, driver_body.origin), (1.0 / frame) as f32);
@@ -364,16 +338,12 @@ fn turret_driver_think(actor: ActorId, game: &mut Q2GameServices) {
     }
     let game = context.game;
     let enemy = game.require_entity(&actor).enemy.clone();
-    let body = enemy
-        .as_ref()
-        .and_then(|enemy| game.host.bodies().read(enemy));
+    let body = enemy.as_ref().and_then(|enemy| game.host.bodies().read(enemy));
     let breach = game.base_entities.breaches.get(&turret).copied();
     let (Some(enemy), Some(enemy_body), Some(_breach)) = (enemy, body, breach) else {
         return;
     };
-    let view_height = game
-        .entity(&enemy)
-        .map_or(22, |entity| entity.view_height);
+    let view_height = game.entity(&enemy).map_or(22, |entity| entity.view_height);
     let turret_origin = game.body_of(turret.clone()).origin;
     let goal = vector_angles(sub3(
         add3(enemy_body.origin, vec3(0.0, 0.0, view_height as f32)),
@@ -404,14 +374,11 @@ fn turret_breach_finish_init(actor: ActorId, game: &mut Q2GameServices) {
     let target = game.require_entity(&actor).target.clone();
     let muzzle = game.pick_target(&target);
     match muzzle {
-        None => game.host.diagnostic(&format!(
-            "turret_breach missing muzzle target {target}"
-        )),
+        None => game
+            .host
+            .diagnostic(&format!("turret_breach missing muzzle target {target}")),
         Some(muzzle) => {
-            let delta = sub3(
-                game.body_of(muzzle.clone()).origin,
-                game.body_of(actor.clone()).origin,
-            );
+            let delta = sub3(game.body_of(muzzle.clone()).origin, game.body_of(actor.clone()).origin);
             if let Some(entry) = game.base_entities.breaches.get_mut(&actor) {
                 entry.muzzle = delta;
             }
@@ -561,10 +528,7 @@ pub fn capture_turrets(game: &mut Q2GameServices) -> Q2TurretsCheckpoint {
             });
         }
     }
-    Q2TurretsCheckpoint {
-        breaches,
-        drivers,
-    }
+    Q2TurretsCheckpoint { breaches, drivers }
 }
 
 /// Restore turrets (`Q2TurretEntities[restore]`).
@@ -588,12 +552,10 @@ pub fn restore_turrets(game: &mut Q2GameServices, checkpoint: &Q2TurretsCheckpoi
         let (true, Some(monster_die)) = (admitted, monster_die) else {
             panic!("Restore Q2 turret drivers after their monster state");
         };
-        let breach = saved.breach.clone().and_then(|breach| {
-            game.host
-                .actors()
-                .resolve_saved(breach)
-                .map(|owned| owned.id().clone())
-        });
+        let breach = saved
+            .breach
+            .clone()
+            .and_then(|breach| game.host.actors().resolve_saved(breach).map(|owned| owned.id().clone()));
         game.base_entities.drivers.insert(
             actor,
             Q2DriverState {

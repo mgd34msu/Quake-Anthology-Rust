@@ -4,15 +4,11 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 
-use super::common::{
-    begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler, standard_gib,
-};
+use super::common::{begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler, standard_gib};
 use super::tables::flipper::flipper_moves;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 /// Pain (`pain`).
@@ -51,14 +47,7 @@ fn flipper_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 
 /// Die (`die`).
 fn flipper_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        2,
-        "models/objects/gibs/sm_meat/tris.md2",
-        1.0,
-    ) {
+    if standard_gib(context, reaction, 2, 2, "models/objects/gibs/sm_meat/tris.md2", 1.0) {
         return;
     }
     begin_death(context, reaction, "flipper/flpdeth1.wav", "flipper_move_death", 2, 4);
@@ -106,14 +95,8 @@ pub fn flipper_definition() -> Q2MonsterDefinition {
     definition.sight = Some(sound_handler("flipper/flpsght1.wav", 2, 1.0));
     definition.pain = Some(flipper_pain);
     definition.callbacks = HashMap::from([
-        (
-            "flipper_run".to_string(),
-            move_handler("flipper_move_run_start"),
-        ),
-        (
-            "flipper_run_loop".to_string(),
-            move_handler("flipper_move_run_loop"),
-        ),
+        ("flipper_run".to_string(), move_handler("flipper_move_run_start")),
+        ("flipper_run_loop".to_string(), move_handler("flipper_move_run_loop")),
         (
             "flipper_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
@@ -122,10 +105,7 @@ pub fn flipper_definition() -> Q2MonsterDefinition {
             "flipper_preattack".to_string(),
             sound_handler("flipper/flpatck1.wav", 1, 1.0),
         ),
-        (
-            "flipper_bite".to_string(),
-            MonsterHandler::Callback(flipper_bite),
-        ),
+        ("flipper_bite".to_string(), MonsterHandler::Callback(flipper_bite)),
     ]);
     definition
 }

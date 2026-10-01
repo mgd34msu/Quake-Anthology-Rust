@@ -7,9 +7,8 @@ use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3};
 
 use super::berserk::slam_radius_damage;
 use super::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    calculate_pitch_to_fire, check_gib, monster_flash, monster_jump_finished,
-    predicted_direction, reacts_to_pain,
+    blocked_check_jump, blocked_check_platform, calculate_pitch_to_fire, check_gib, monster_flash,
+    monster_jump_finished, predicted_direction, reacts_to_pain, JumpNavigation, JumpResult,
 };
 use super::tables::flashes::rerelease_flash;
 use super::tables::guncmdr::{guncmdr_frame as frame, guncmdr_moves};
@@ -18,14 +17,13 @@ use crate::q2::base::monsters::common::{move_handler, sound_handler};
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{Q2Edition, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health,
-    project_flash, set_duck, target_distance, visible,
+    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health, project_flash, set_duck, target_distance,
+    visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-    bind_shared_power_cells,
+    bind_shared_power_cells, MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
 use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
 use crate::q2::missionpacks::monsters::types::mission_weapons;
@@ -65,14 +63,19 @@ fn guncmdr_can_advance(context: &mut MonsterContext) -> bool {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
     let end = add3(body.origin, scale3(angles_vectors(body.angles).forward, 8.0));
-    context.game.host.trace(&Q2TraceRequest {
-        start: body.origin,
-        end,
-        bounds: Some(body.bounds),
-        ignore: Some(actor),
-        mask: 0x2020003,
-        exclude: Vec::new(),
-    }).fraction == 1.0
+    context
+        .game
+        .host
+        .trace(&Q2TraceRequest {
+            start: body.origin,
+            end,
+            bounds: Some(body.bounds),
+            ignore: Some(actor),
+            mask: 0x2020003,
+            exclude: Vec::new(),
+        })
+        .fraction
+        == 1.0
 }
 
 /// Fire chain (`fireChain`).
@@ -105,7 +108,10 @@ fn guncmdr_attack(context: &mut MonsterContext) {
         return;
     }
     if (distance <= 100.0 || context.game.random() < 0.5)
-        && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, rerelease_flash::GUNCMDR_CHAINGUN_1 as usize))
+        && clear_shot(
+            context,
+            muzzle_offset(Q2Edition::Rerelease, rerelease_flash::GUNCMDR_CHAINGUN_1 as usize),
+        )
     {
         context.set_move("guncmdr_move_attack_chain", true);
         return;
@@ -114,8 +120,7 @@ fn guncmdr_attack(context: &mut MonsterContext) {
     let mortar_offset = muzzle_offset(Q2Edition::Rerelease, rerelease_flash::GUNCMDR_GRENADE_MORTAR_1 as usize);
     let front_offset = muzzle_offset(Q2Edition::Rerelease, rerelease_flash::GUNCMDR_GRENADE_FRONT_1 as usize);
     let mortar_start = project_flash(context, mortar_offset, None);
-    if (distance >= 525.0
-        || (body.origin.z + body.bounds.min.z - enemy.origin.z - enemy.bounds.max.z).abs() > 64.0)
+    if (distance >= 525.0 || (body.origin.z + body.bounds.min.z - enemy.origin.z - enemy.bounds.max.z).abs() > 64.0)
         && clear_shot(context, mortar_offset)
         && calculate_pitch_to_fire(context, enemy.origin, mortar_start, aim, 850.0, 2.5, true, false).is_some()
     {
@@ -277,10 +282,7 @@ fn guncmdr_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         context.entity_mut().skin &= !1;
     }
     let current = context.state().current_move.name.clone();
-    if current == "guncmdr_move_jump"
-        || current == "guncmdr_move_jump2"
-        || current == "guncmdr_move_duck_attack"
-    {
+    if current == "guncmdr_move_jump" || current == "guncmdr_move_jump2" || current == "guncmdr_move_duck_attack" {
         return;
     }
     if context.game.host.now() < context.state().pain_time {
@@ -433,9 +435,7 @@ fn guncmdr_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     }
     let body = context.game.body_of(actor.clone());
     let view_height = f64::from(context.entity().view_height);
-    if (f64::from(body.origin.z) + view_height - f64::from(reaction.point.z)).abs() <= 4.0
-        && body.velocity.z < 65.0
-    {
+    if (f64::from(body.origin.z) + view_height - f64::from(reaction.point.z)).abs() <= 4.0 && body.velocity.z < 65.0 {
         context.set_move("guncmdr_move_death5", true);
         let damage = reaction.pain.damage;
         let head = throw_gib(
@@ -450,7 +450,10 @@ fn guncmdr_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             .clone()
             .and_then(|inflictor| context.game.host.bodies().read(&inflictor));
         if let Some(head) = head {
-            let direction = normalize3(sub3(body.origin, inflictor.map(|inflictor| inflictor.origin).unwrap_or(body.origin)));
+            let direction = normalize3(sub3(
+                body.origin,
+                inflictor.map(|inflictor| inflictor.origin).unwrap_or(body.origin),
+            ));
             let angular = context.game.require_entity(&head).angular_velocity;
             context.game.require_entity_mut(&head).angular_velocity = scale3(angular, 0.15);
             let mut moved = context.game.body_of(head.clone());
@@ -475,7 +478,8 @@ fn guncmdr_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         );
     } else {
         let current = context.state().current_move.name.clone();
-        let first = (context.game.random() * if current == "guncmdr_move_pain5" { 1.0 } else { 2.0 }).floor() as i32 == 0;
+        let first =
+            (context.game.random() * if current == "guncmdr_move_pain5" { 1.0 } else { 2.0 }).floor() as i32 == 0;
         context.set_move(
             if first {
                 "guncmdr_move_death4"
@@ -489,10 +493,7 @@ fn guncmdr_die(context: &mut MonsterContext, reaction: &DeathReaction) {
 
 /// Fidget (`guncmdr_fidget`).
 fn guncmdr_fidget(context: &mut MonsterContext) {
-    if !context.state().stand_ground
-        && context.entity().enemy.is_none()
-        && context.game.random() <= 0.05
-    {
+    if !context.state().stand_ground && context.entity().enemy.is_none() && context.game.random() <= 0.05 {
         context.set_move("guncmdr_move_fidget", true);
     }
 }
@@ -552,10 +553,7 @@ fn guncmdr_refire_chain(context: &mut MonsterContext) {
     finish_dodge(context);
     context.state_mut().attack_state = MonsterAttackState::Straight;
     let enemy = context.entity().enemy.clone();
-    if health(&mut *context.game, enemy.as_ref()) > 0.0
-        && visible(context, None)
-        && context.game.random() <= 0.5
-    {
+    if health(&mut *context.game, enemy.as_ref()) > 0.0 && visible(context, None) && context.game.random() <= 0.5 {
         guncmdr_fire_chain_inner(context, false);
     } else {
         context.set_move("guncmdr_move_endfire_chain", false);
@@ -607,15 +605,60 @@ fn gunner_cmdr_grenade(context: &mut MonsterContext) {
         return;
     };
     let shots = [
-        GrenadeShot { frame: frame::C_ATTACK205, spread: -0.1, id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_1, kind: "mortar" },
-        GrenadeShot { frame: frame::C_ATTACK208, spread: 0.0, id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_2, kind: "mortar" },
-        GrenadeShot { frame: frame::C_ATTACK211, spread: 0.1, id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_3, kind: "mortar" },
-        GrenadeShot { frame: frame::C_ATTACK304, spread: -0.1, id: rerelease_flash::GUNCMDR_GRENADE_FRONT_1, kind: "front" },
-        GrenadeShot { frame: frame::C_ATTACK307, spread: 0.0, id: rerelease_flash::GUNCMDR_GRENADE_FRONT_2, kind: "front" },
-        GrenadeShot { frame: frame::C_ATTACK310, spread: 0.1, id: rerelease_flash::GUNCMDR_GRENADE_FRONT_3, kind: "front" },
-        GrenadeShot { frame: frame::C_ATTACK911, spread: 0.25, id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_1, kind: "crouch" },
-        GrenadeShot { frame: frame::C_ATTACK912, spread: 0.0, id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_2, kind: "crouch" },
-        GrenadeShot { frame: frame::C_ATTACK913, spread: -0.25, id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_3, kind: "crouch" },
+        GrenadeShot {
+            frame: frame::C_ATTACK205,
+            spread: -0.1,
+            id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_1,
+            kind: "mortar",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK208,
+            spread: 0.0,
+            id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_2,
+            kind: "mortar",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK211,
+            spread: 0.1,
+            id: rerelease_flash::GUNCMDR_GRENADE_MORTAR_3,
+            kind: "mortar",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK304,
+            spread: -0.1,
+            id: rerelease_flash::GUNCMDR_GRENADE_FRONT_1,
+            kind: "front",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK307,
+            spread: 0.0,
+            id: rerelease_flash::GUNCMDR_GRENADE_FRONT_2,
+            kind: "front",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK310,
+            spread: 0.1,
+            id: rerelease_flash::GUNCMDR_GRENADE_FRONT_3,
+            kind: "front",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK911,
+            spread: 0.25,
+            id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_1,
+            kind: "crouch",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK912,
+            spread: 0.0,
+            id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_2,
+            kind: "crouch",
+        },
+        GrenadeShot {
+            frame: frame::C_ATTACK913,
+            spread: -0.25,
+            id: rerelease_flash::GUNCMDR_GRENADE_CROUCH_3,
+            kind: "crouch",
+        },
     ];
     let frame_now = context.entity().frame;
     let Some(shot) = shots.iter().find(|shot| shot.frame == frame_now) else {
@@ -642,9 +685,7 @@ fn gunner_cmdr_grenade(context: &mut MonsterContext) {
             delta.z += distance - 512.0;
         }
         pitch = normalize3(delta).z.clamp(-0.5, 0.4) as f64;
-        if enemy.origin.z + enemy.bounds.min.z - body.origin.z - body.bounds.max.z > 16.0
-            && shot.kind == "mortar"
-        {
+        if enemy.origin.z + enemy.bounds.min.z - body.origin.z - body.bounds.max.z > 16.0 && shot.kind == "mortar" {
             pitch += 0.5;
         }
     }
@@ -676,16 +717,7 @@ fn gunner_cmdr_grenade(context: &mut MonsterContext) {
         }
     } else {
         let speed = if shot.kind == "mortar" { 850.0 } else { 600.0 };
-        let predicted = calculate_pitch_to_fire(
-            context,
-            target,
-            start,
-            aim,
-            speed,
-            2.5,
-            shot.kind == "mortar",
-            false,
-        );
+        let predicted = calculate_pitch_to_fire(context, target, start, aim, speed, 2.5, shot.kind == "mortar", false);
         let right = (context.game.random() * 2.0 - 1.0) * 10.0;
         let up = if predicted.is_none() {
             200.0 + (context.game.random() * 2.0 - 1.0) * 10.0
@@ -768,8 +800,7 @@ fn guncmdr_jump2_now(context: &mut MonsterContext) {
 /// Jump wait land (`guncmdr_jump_wait_land`).
 fn guncmdr_jump_wait_land(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    let landed =
-        context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
+    let landed = context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
     context.state_mut().next_frame = context.entity().frame + if landed { 1 } else { 0 };
 }
 
@@ -787,15 +818,17 @@ fn gunner_cmdr_counter(context: &mut MonsterContext) {
         mask: 3,
         exclude: Vec::new(),
     });
-    context.game.host_emit(crate::q2::foundation::host::Q2PresentationEvent::Effect(
-        crate::q2::foundation::host::Q2EffectEvent {
-            effect: "q2:berserk-slam".to_string(),
-            origin: trace.end,
-            direction,
-            count: 1,
-            color: 0,
-        },
-    ));
+    context
+        .game
+        .host_emit(crate::q2::foundation::host::Q2PresentationEvent::Effect(
+            crate::q2::foundation::host::Q2EffectEvent {
+                effect: "q2:berserk-slam".to_string(),
+                origin: trace.end,
+                direction,
+                count: 1,
+                color: 0,
+            },
+        ));
     slam_radius_damage(context, trace.end, 15.0, 250.0, 200.0);
 }
 
@@ -834,22 +867,40 @@ pub fn create_gun_commander_definition() -> Q2MonsterDefinition {
         ("guncmdr_idlesound", sound_handler("guncmdr/gcdridle1.wav", 2, 2.0)),
         ("guncmdr_opengun", sound_handler("guncmdr/gcdratck1.wav", 2, 2.0)),
         ("guncmdr_fidget", MonsterHandler::Callback(guncmdr_fidget)),
-        ("guncmdr_pain5_to_death1", MonsterHandler::Callback(guncmdr_pain5_to_death1)),
-        ("guncmdr_pain5_to_death2", MonsterHandler::Callback(guncmdr_pain5_to_death2)),
-        ("guncmdr_pain6_to_death6", MonsterHandler::Callback(guncmdr_pain6_to_death6)),
+        (
+            "guncmdr_pain5_to_death1",
+            MonsterHandler::Callback(guncmdr_pain5_to_death1),
+        ),
+        (
+            "guncmdr_pain5_to_death2",
+            MonsterHandler::Callback(guncmdr_pain5_to_death2),
+        ),
+        (
+            "guncmdr_pain6_to_death6",
+            MonsterHandler::Callback(guncmdr_pain6_to_death6),
+        ),
         ("guncmdr_dead", MonsterHandler::Callback(guncmdr_dead)),
         ("guncmdr_shrink", MonsterHandler::Callback(guncmdr_shrink)),
         ("guncmdr_fire_chain", MonsterHandler::Callback(guncmdr_fire_chain)),
         ("guncmdr_refire_chain", MonsterHandler::Callback(guncmdr_refire_chain)),
         ("GunnerCmdrFire", MonsterHandler::Callback(gunner_cmdr_fire)),
         ("GunnerCmdrGrenade", MonsterHandler::Callback(gunner_cmdr_grenade)),
-        ("guncmdr_grenade_mortar_resume", MonsterHandler::Callback(guncmdr_grenade_mortar_resume)),
-        ("guncmdr_grenade_back_dodge_resume", MonsterHandler::Callback(guncmdr_grenade_back_dodge_resume)),
+        (
+            "guncmdr_grenade_mortar_resume",
+            MonsterHandler::Callback(guncmdr_grenade_mortar_resume),
+        ),
+        (
+            "guncmdr_grenade_back_dodge_resume",
+            MonsterHandler::Callback(guncmdr_grenade_back_dodge_resume),
+        ),
         ("guncmdr_kick_finished", MonsterHandler::Callback(guncmdr_kick_finished)),
         ("guncmdr_kick", MonsterHandler::Callback(guncmdr_kick)),
         ("guncmdr_jump_now", MonsterHandler::Callback(guncmdr_jump_now)),
         ("guncmdr_jump2_now", MonsterHandler::Callback(guncmdr_jump2_now)),
-        ("guncmdr_jump_wait_land", MonsterHandler::Callback(guncmdr_jump_wait_land)),
+        (
+            "guncmdr_jump_wait_land",
+            MonsterHandler::Callback(guncmdr_jump_wait_land),
+        ),
         ("GunnerCmdrCounter", MonsterHandler::Callback(gunner_cmdr_counter)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);

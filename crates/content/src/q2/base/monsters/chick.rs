@@ -5,11 +5,11 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 
 use super::common::{
-    alive_enemy, begin_death, damaged_skin, finish_corpse_default, monster_muzzle, monster_shot,
-    move_handler, sound_handler, standard_gib,
+    alive_enemy, begin_death, damaged_skin, finish_corpse_default, monster_muzzle, monster_shot, move_handler,
+    sound_handler, standard_gib,
 };
 use super::tables::chick::chick_moves;
 use crate::q2::foundation::monsters::ai::{set_duck, target_distance, visible};
@@ -70,15 +70,7 @@ fn chick_pain(context: &mut MonsterContext, reaction: &PainReaction) {
 
 /// Die (`die`).
 fn chick_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        4,
-        "models/objects/gibs/head2/tris.md2",
-        1.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 4, "models/objects/gibs/head2/tris.md2", 1.0) || context.state().dead {
         return;
     }
     let first = context.game.random() < 0.5;
@@ -163,16 +155,7 @@ fn chick_rocket(context: &mut MonsterContext) {
     };
     let fire_rocket = context.weapons.fire_rocket;
     let actor = context.actor().clone();
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        500.0,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
     monster_muzzle(context, 57, direction, start);
 }
 
@@ -183,13 +166,7 @@ fn chick_slash(context: &mut MonsterContext) {
     context.game.sound(&actor, "chick/chkatck3.wav", 1, 1.0, 1.0);
     let side = context.game.body_of(actor.clone()).bounds.min.x;
     let damage = 10.0 + (context.game.random() * 6.0).floor();
-    fire_hit(
-        actor,
-        &mut *context.game,
-        vec3(80.0, side, 10.0),
-        damage,
-        100.0,
-    );
+    fire_hit(actor, &mut *context.game, vec3(80.0, side, 10.0), damage, 100.0);
 }
 
 /// Rerocket (`chick_rerocket`).
@@ -249,67 +226,28 @@ pub fn chick_definition() -> Q2MonsterDefinition {
     definition.pain = Some(chick_pain);
     definition.dodge = Some(chick_dodge);
     definition.callbacks = HashMap::from([
-        (
-            "chick_stand".to_string(),
-            move_handler("chick_move_stand"),
-        ),
+        ("chick_stand".to_string(), move_handler("chick_move_stand")),
         ("chick_run".to_string(), MonsterHandler::Callback(chick_run)),
         (
             "chick_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
         ),
-        (
-            "ChickMoan".to_string(),
-            MonsterHandler::Callback(chick_moan),
-        ),
-        (
-            "chick_fidget".to_string(),
-            MonsterHandler::Callback(chick_fidget),
-        ),
-        (
-            "chick_duck_down".to_string(),
-            MonsterHandler::Callback(chick_duck_down),
-        ),
-        (
-            "chick_duck_hold".to_string(),
-            MonsterHandler::Callback(chick_duck_hold),
-        ),
-        (
-            "chick_duck_up".to_string(),
-            MonsterHandler::Callback(chick_duck_up),
-        ),
+        ("ChickMoan".to_string(), MonsterHandler::Callback(chick_moan)),
+        ("chick_fidget".to_string(), MonsterHandler::Callback(chick_fidget)),
+        ("chick_duck_down".to_string(), MonsterHandler::Callback(chick_duck_down)),
+        ("chick_duck_hold".to_string(), MonsterHandler::Callback(chick_duck_hold)),
+        ("chick_duck_up".to_string(), MonsterHandler::Callback(chick_duck_up)),
         (
             "Chick_PreAttack1".to_string(),
             sound_handler("chick/chkatck1.wav", 2, 1.0),
         ),
-        (
-            "ChickReload".to_string(),
-            sound_handler("chick/chkatck5.wav", 2, 1.0),
-        ),
-        (
-            "ChickRocket".to_string(),
-            MonsterHandler::Callback(chick_rocket),
-        ),
-        (
-            "ChickSlash".to_string(),
-            MonsterHandler::Callback(chick_slash),
-        ),
-        (
-            "chick_attack1".to_string(),
-            move_handler("chick_move_attack1"),
-        ),
-        (
-            "chick_slash".to_string(),
-            move_handler("chick_move_slash"),
-        ),
-        (
-            "chick_rerocket".to_string(),
-            MonsterHandler::Callback(chick_rerocket),
-        ),
-        (
-            "chick_reslash".to_string(),
-            MonsterHandler::Callback(chick_reslash),
-        ),
+        ("ChickReload".to_string(), sound_handler("chick/chkatck5.wav", 2, 1.0)),
+        ("ChickRocket".to_string(), MonsterHandler::Callback(chick_rocket)),
+        ("ChickSlash".to_string(), MonsterHandler::Callback(chick_slash)),
+        ("chick_attack1".to_string(), move_handler("chick_move_attack1")),
+        ("chick_slash".to_string(), move_handler("chick_move_slash")),
+        ("chick_rerocket".to_string(), MonsterHandler::Callback(chick_rerocket)),
+        ("chick_reslash".to_string(), MonsterHandler::Callback(chick_reslash)),
     ]);
     definition
 }

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2PresentationEvent};
@@ -15,12 +15,9 @@ use crate::q2::foundation::monsters::types::MonsterContext;
 pub fn random_body_point(actor: &ActorId, game: &mut Q2GameServices) -> Vec3 {
     let body = game.body_of(actor.clone());
     vec3(
-        body.origin.x + body.bounds.min.x
-            + (game.random() * f64::from(body.bounds.max.x - body.bounds.min.x)) as f32,
-        body.origin.y + body.bounds.min.y
-            + (game.random() * f64::from(body.bounds.max.y - body.bounds.min.y)) as f32,
-        body.origin.z + body.bounds.min.z
-            + (game.random() * f64::from(body.bounds.max.z - body.bounds.min.z)) as f32,
+        body.origin.x + body.bounds.min.x + (game.random() * f64::from(body.bounds.max.x - body.bounds.min.x)) as f32,
+        body.origin.y + body.bounds.min.y + (game.random() * f64::from(body.bounds.max.y - body.bounds.min.y)) as f32,
+        body.origin.z + body.bounds.min.z + (game.random() * f64::from(body.bounds.max.z - body.bounds.min.z)) as f32,
     )
 }
 

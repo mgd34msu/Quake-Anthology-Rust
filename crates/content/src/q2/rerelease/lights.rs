@@ -11,7 +11,7 @@ use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{Q2GameServices, Q2Think, Q2Use};
 
-use super::types::{Q2RereleaseEvent, Q2RereleaseHooks, q2_is_n64};
+use super::types::{q2_is_n64, Q2RereleaseEvent, Q2RereleaseHooks};
 
 /// Parse a rerelease light color (`q2RereleaseColor`).
 ///
@@ -46,30 +46,53 @@ pub struct Q2RereleaseLights {
 /// Rerelease light callbacks (`Q2RereleaseLights::callbacks`).
 pub fn rerelease_light_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("rr.target_light_think", rerelease_light_think as Q2Think);
-    callbacks.think.insert("rr.target_light_flicker_think", rerelease_light_flicker as Q2Think);
-    callbacks.use_.insert("rr.target_light_use", rerelease_light_use as Q2Use);
+    callbacks
+        .think
+        .insert("rr.target_light_think", rerelease_light_think as Q2Think);
+    callbacks
+        .think
+        .insert("rr.target_light_flicker_think", rerelease_light_flicker as Q2Think);
+    callbacks
+        .use_
+        .insert("rr.target_light_use", rerelease_light_use as Q2Use);
     callbacks
 }
 
 /// Spawn rerelease lights (`Q2RereleaseLights::spawn`).
 pub fn rerelease_light_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    Q2RereleaseLights { hooks: super::rerelease_hooks(game) }.spawn(entity, game)
+    Q2RereleaseLights {
+        hooks: super::rerelease_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Light use (`use`).
-fn rerelease_light_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
-    Q2RereleaseLights { hooks: super::rerelease_hooks(game) }.use_light(entity, game);
+fn rerelease_light_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
+    Q2RereleaseLights {
+        hooks: super::rerelease_hooks(game),
+    }
+    .use_light(entity, game);
 }
 
 /// Light flicker think (`flicker`).
 fn rerelease_light_flicker(entity: ActorId, game: &mut Q2GameServices) {
-    Q2RereleaseLights { hooks: super::rerelease_hooks(game) }.flicker(entity, game);
+    Q2RereleaseLights {
+        hooks: super::rerelease_hooks(game),
+    }
+    .flicker(entity, game);
 }
 
 /// Light style think (`think`).
 fn rerelease_light_think(entity: ActorId, game: &mut Q2GameServices) {
-    Q2RereleaseLights { hooks: super::rerelease_hooks(game) }.think(entity, game);
+    Q2RereleaseLights {
+        hooks: super::rerelease_hooks(game),
+    }
+    .think(entity, game);
 }
 
 impl Q2RereleaseLights {
@@ -194,7 +217,8 @@ impl Q2RereleaseLights {
         };
         let count = record.count as u32;
         let channel = |shift: u32| {
-            (((target_skin >> shift) & 255) as f64 * lerp + ((count >> shift) & 255) as f64 * (1.0 - lerp)).trunc() as i32
+            (((target_skin >> shift) & 255) as f64 * lerp + ((count >> shift) & 255) as f64 * (1.0 - lerp)).trunc()
+                as i32
         };
         record.skin = channel(8) << 8 | channel(16) << 16 | channel(24) << 24;
         self.show(&entity, game);

@@ -101,7 +101,8 @@ pub fn enter_q2_rerelease_level(game: &mut Q2GameServices) {
     let map_name = game.options.map_name.clone();
     let world_message = game.entity(&world_actor).map(|world| world.message.clone());
     if add_level(&mut game.rerelease.campaign, &map_name).is_none() {
-        game.host.diagnostic("More than 8 maps in unit; cannot track remaining levels");
+        game.host
+            .diagnostic("More than 8 maps in unit; cannot track remaining levels");
         return;
     }
     let unnamed = game
@@ -141,19 +142,29 @@ pub fn enter_q2_rerelease_level(game: &mut Q2GameServices) {
     let destinations: Vec<String> = game
         .entities
         .values()
-        .filter(|entity| entity.classname == "target_changelevel" && !entity.map.is_empty() && !entity.map.contains('*'))
+        .filter(|entity| {
+            entity.classname == "target_changelevel" && !entity.map.is_empty() && !entity.map.contains('*')
+        })
         .filter_map(|entity| {
-            let destination = entity.map.find('+').map_or(entity.map.as_str(), |index| &entity.map[index + 1..]);
+            let destination = entity
+                .map
+                .find('+')
+                .map_or(entity.map.as_str(), |index| &entity.map[index + 1..]);
             if destination.contains(".cin") || destination.contains(".pcx") {
                 return None;
             }
             let map = destination.split('$').next().unwrap_or("");
-            if map.is_empty() { None } else { Some(map.to_string()) }
+            if map.is_empty() {
+                None
+            } else {
+                Some(map.to_string())
+            }
         })
         .collect();
     for map in destinations {
         if add_level(&mut game.rerelease.campaign, &map).is_none() {
-            game.host.diagnostic("More than 8 maps in unit; cannot track remaining levels");
+            game.host
+                .diagnostic("More than 8 maps in unit; cannot track remaining levels");
             return;
         }
     }

@@ -1,6 +1,6 @@
 //! Q2 player view (`src/content/q2/base/player/view.ts`).
 
-use qa_core::math::{Vec3, Vec4, add3, dot3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, normalize3, scale3, sub3, vec3, Vec3, Vec4};
 
 use crate::contract::RegularArmorState;
 use crate::q2::foundation::entity_services::js_round;
@@ -52,18 +52,12 @@ pub fn q2_death_animation_frames(ducked: bool, index: i32) -> (i32, i32) {
 }
 
 /// Damage feedback (`q2DamageFeedback`).
-pub fn q2_damage_feedback(
-    context: &mut impl Q2CharacterContext,
-    pain_index: i32,
-) -> (i32, i32) {
+pub fn q2_damage_feedback(context: &mut impl Q2CharacterContext, pain_index: i32) -> (i32, i32) {
     let now = context.now();
     let powers = context.powerups();
     let snapshot = context.state_snapshot();
     let flashes = (if snapshot.damage_blood != 0.0 { 1 } else { 0 })
-        | (if snapshot.damage_armor != 0.0
-            && !snapshot.god
-            && powers.invulnerability_until <= now
-        {
+        | (if snapshot.damage_armor != 0.0 && !snapshot.god && powers.invulnerability_until <= now {
             2
         } else {
             0
@@ -114,11 +108,7 @@ pub fn q2_damage_feedback(
         );
     });
     if snapshot.damage_knockback != 0.0 && health > 0.0 {
-        let kick = clamp(
-            snapshot.damage_knockback.abs() * 100.0 / health,
-            count * 0.5,
-            50.0,
-        );
+        let kick = clamp(snapshot.damage_knockback.abs() * 100.0 / health, count * 0.5, 50.0);
         let origin = context.body().origin;
         let direction = normalize3(sub3(snapshot.damage_from, origin));
         let vectors = angle_vectors(movement.view_angles);
@@ -152,11 +142,7 @@ fn angle_difference(old: f32, current: f32) -> f64 {
 /// Build the player view (`q2BuildView`).
 ///
 /// Each seat gets a complete source view; no module-global current player/vectors.
-pub fn q2_build_view(
-    context: &mut impl Q2CharacterContext,
-    flashes: i32,
-    intermission: bool,
-) -> Q2PlayerView {
+pub fn q2_build_view(context: &mut impl Q2CharacterContext, flashes: i32, intermission: bool) -> Q2PlayerView {
     let zero = vec3(0.0, 0.0, 0.0);
     let body = context.body();
     let now = context.now();
@@ -201,10 +187,8 @@ pub fn q2_build_view(
             (f64::from(kicks.z)
                 + damage_ratio * snapshot.damage_roll
                 + f64::from(dot3(body.velocity, vectors.right)) * rules.run_roll
-                + bob * rules.bob_roll
-                    * speed
-                    * duck
-                    * (if bob_cycle & 1 != 0 { -1.0 } else { 1.0 })) as f32,
+                + bob * rules.bob_roll * speed * duck * (if bob_cycle & 1 != 0 { -1.0 } else { 1.0 }))
+                as f32,
         );
     }
     let snapshot = context.state_snapshot();
@@ -214,8 +198,7 @@ pub fn q2_build_view(
         clamp(f64::from(recoil.x), -14.0, 14.0) as f32,
         clamp(f64::from(recoil.y), -14.0, 14.0) as f32,
         clamp(
-            f64::from(entity.view_height)
-                - ((snapshot.fall_time - now) / 0.3).max(0.0) * snapshot.fall_value * 0.4
+            f64::from(entity.view_height) - ((snapshot.fall_time - now) / 0.3).max(0.0) * snapshot.fall_value * 0.4
                 + (bob * speed * rules.bob_up).min(6.0)
                 + f64::from(recoil.z),
             -22.0,
@@ -252,13 +235,37 @@ pub fn q2_build_view(
         blend = add_q2_blend(blend, vec3(0.5, 0.3, 0.2), 0.4);
     }
     let power = if powers.quad_until > now {
-        Some(("q2:item_quad", powers.quad_until, "items/damage2.wav", vec3(0.0, 0.0, 1.0), 0.08))
+        Some((
+            "q2:item_quad",
+            powers.quad_until,
+            "items/damage2.wav",
+            vec3(0.0, 0.0, 1.0),
+            0.08,
+        ))
     } else if powers.invulnerability_until > now {
-        Some(("q2:item_invulnerability", powers.invulnerability_until, "items/protect2.wav", vec3(1.0, 1.0, 0.0), 0.08))
+        Some((
+            "q2:item_invulnerability",
+            powers.invulnerability_until,
+            "items/protect2.wav",
+            vec3(1.0, 1.0, 0.0),
+            0.08,
+        ))
     } else if powers.enviro_until > now {
-        Some(("q2:item_enviro", powers.enviro_until, "items/airout.wav", vec3(0.0, 1.0, 0.0), 0.08))
+        Some((
+            "q2:item_enviro",
+            powers.enviro_until,
+            "items/airout.wav",
+            vec3(0.0, 1.0, 0.0),
+            0.08,
+        ))
     } else if powers.breather_until > now {
-        Some(("q2:item_breather", powers.breather_until, "items/airout.wav", vec3(0.4, 1.0, 0.4), 0.04))
+        Some((
+            "q2:item_breather",
+            powers.breather_until,
+            "items/airout.wav",
+            vec3(0.4, 1.0, 0.4),
+            0.04,
+        ))
     } else {
         None
     };
@@ -327,11 +334,7 @@ pub fn q2_build_view(
         crate::contract::PoweredProtectionState::None => None,
     });
     let armor_display = match (armor.as_ref(), powered_cells) {
-        (Some(_), Some(cells))
-            if armor_points == 0.0 || js_round(now * 10.0) as i64 & 8 != 0 =>
-        {
-            cells
-        }
+        (Some(_), Some(cells)) if armor_points == 0.0 || js_round(now * 10.0) as i64 & 8 != 0 => cells,
         _ => armor_points,
     };
     Q2PlayerView {
@@ -341,7 +344,12 @@ pub fn q2_build_view(
         gun_angles,
         gun_offset,
         blend: if intermission {
-            Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 0.0 }
+            Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            }
         } else {
             blend
         },
@@ -359,11 +367,7 @@ pub fn q2_build_view(
             1
         } else {
             0
-        }) | (if snapshot.show_inventory && health > 0.0 {
-            2
-        } else {
-            0
-        }),
+        }) | (if snapshot.show_inventory && health > 0.0 { 2 } else { 0 }),
     }
 }
 
@@ -376,21 +380,11 @@ pub fn q2_client_animation(context: &mut impl Q2CharacterContext) {
     }
     let velocity = context.body().velocity;
     let run = f64::from(velocity.x).hypot(f64::from(velocity.y)) != 0.0;
-    advance_q2_player_animation(
-        context,
-        movement.grounded,
-        movement.ducked,
-        run,
-    );
+    advance_q2_player_animation(context, movement.grounded, movement.ducked, run);
 }
 
 /// Advance player animation (`advanceQ2PlayerAnimation`).
-pub fn advance_q2_player_animation(
-    context: &mut impl Q2CharacterContext,
-    grounded: bool,
-    duck: bool,
-    run: bool,
-) {
+pub fn advance_q2_player_animation(context: &mut impl Q2CharacterContext, grounded: bool, duck: bool, run: bool) {
     let snapshot = context.state_snapshot();
     let entity = context.entity_snapshot();
     let changed = snapshot.animation_duck != duck && snapshot.animation_priority < 5
@@ -467,15 +461,9 @@ pub fn q2_client_effects(context: &mut impl Q2CharacterContext) {
     let edition = context.edition();
     context.with_entity(|entity| {
         entity.effects = 0;
-        entity.render_flags = if edition == Q2Edition::Rerelease {
-            32768
-        } else {
-            0
-        };
+        entity.render_flags = if edition == Q2Edition::Rerelease { 32768 } else { 0 };
     });
-    let flashing = |until: f64| {
-        until > now && (until - now > 3.0 || js_round((until - now) * 10.0) as i64 & 4 != 0)
-    };
+    let flashing = |until: f64| until > now && (until - now > 3.0 || js_round((until - now) * 10.0) as i64 & 4 != 0);
     if combat.as_ref().map_or(0.0, |combat| combat.health) > 0.0 {
         let snapshot = context.state_snapshot();
         if snapshot.power_armor_time > now {
@@ -566,11 +554,7 @@ pub fn q2_client_effects(context: &mut impl Q2CharacterContext) {
 }
 
 /// Emit a named player event effect.
-pub fn emit_player_effect(
-    context: &mut impl Q2CharacterContext,
-    effect: &str,
-    origin: Vec3,
-) {
+pub fn emit_player_effect(context: &mut impl Q2CharacterContext, effect: &str, origin: Vec3) {
     let zero = vec3(0.0, 0.0, 0.0);
     context.emit(Q2PresentationEvent::Effect(Q2EffectEvent {
         effect: effect.to_string(),

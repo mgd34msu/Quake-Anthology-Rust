@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use super::callbacks::Q2CallbackDefinitions;
 use super::checkpoint::restore_q2_actor;
@@ -97,10 +97,7 @@ fn linear_moves(game: &Q2GameServices, scope: LinearMotionScope) -> &HashMap<Act
 }
 
 /// Mutably read the scoped move map.
-fn linear_moves_mut(
-    game: &mut Q2GameServices,
-    scope: LinearMotionScope,
-) -> &mut HashMap<ActorId, LinearMoveState> {
+fn linear_moves_mut(game: &mut Q2GameServices, scope: LinearMotionScope) -> &mut HashMap<ActorId, LinearMoveState> {
     match scope {
         LinearMotionScope::Foundation => &mut game.movers.linear_moves,
         LinearMotionScope::Base => &mut game.base_entities.linear_moves,
@@ -122,11 +119,21 @@ fn linear_scope_for(game: &Q2GameServices, actor: &ActorId) -> LinearMotionScope
 /// uses `q2:foundation/linear`, so the names are fixed here.
 pub fn linear_motion_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("q2:foundation/linear/Move_Done", linear_move_done);
-    callbacks.think.insert("q2:foundation/linear/Move_Final", linear_move_final);
-    callbacks.think.insert("q2:foundation/linear/Move_Begin", linear_move_begin);
-    callbacks.think.insert("q2:foundation/linear/Think_AccelMove", linear_move_accelerate);
-    callbacks.think.insert("q2:foundation/linear/Move_Accel_Curve", linear_move_curve);
+    callbacks
+        .think
+        .insert("q2:foundation/linear/Move_Done", linear_move_done);
+    callbacks
+        .think
+        .insert("q2:foundation/linear/Move_Final", linear_move_final);
+    callbacks
+        .think
+        .insert("q2:foundation/linear/Move_Begin", linear_move_begin);
+    callbacks
+        .think
+        .insert("q2:foundation/linear/Think_AccelMove", linear_move_accelerate);
+    callbacks
+        .think
+        .insert("q2:foundation/linear/Move_Accel_Curve", linear_move_curve);
     callbacks
 }
 
@@ -136,8 +143,12 @@ pub fn base_linear_motion_callbacks() -> Q2CallbackDefinitions {
     callbacks.think.insert("q2:base/linear/Move_Done", linear_move_done);
     callbacks.think.insert("q2:base/linear/Move_Final", linear_move_final);
     callbacks.think.insert("q2:base/linear/Move_Begin", linear_move_begin);
-    callbacks.think.insert("q2:base/linear/Think_AccelMove", linear_move_accelerate);
-    callbacks.think.insert("q2:base/linear/Move_Accel_Curve", linear_move_curve);
+    callbacks
+        .think
+        .insert("q2:base/linear/Think_AccelMove", linear_move_accelerate);
+    callbacks
+        .think
+        .insert("q2:base/linear/Move_Accel_Curve", linear_move_curve);
     callbacks
 }
 
@@ -150,19 +161,12 @@ fn scoped_linear_motion_callbacks(scope: LinearMotionScope) -> Q2CallbackDefinit
 }
 
 /// Linear move destination (`Q2LinearMotion[destination]`).
-pub fn linear_move_destination(
-    game: &mut Q2GameServices,
-    scope: LinearMotionScope,
-    actor: &ActorId,
-) -> Option<Vec3> {
+pub fn linear_move_destination(game: &mut Q2GameServices, scope: LinearMotionScope, actor: &ActorId) -> Option<Vec3> {
     linear_moves(game, scope).get(actor).map(|state| state.destination)
 }
 
 /// Capture linear motion (`Q2LinearMotion[capture]`).
-pub fn capture_linear_motion(
-    game: &mut Q2GameServices,
-    scope: LinearMotionScope,
-) -> Q2LinearMotionCheckpoint {
+pub fn capture_linear_motion(game: &mut Q2GameServices, scope: LinearMotionScope) -> Q2LinearMotionCheckpoint {
     let mut entries = Vec::new();
     let actors: Vec<ActorId> = game.entities.keys().cloned().collect();
     for actor in actors {
@@ -255,7 +259,11 @@ pub fn linear_move_to(
     let entity = game.require_entity(&actor);
     let (speed, accel, decel) = (entity.speed, entity.accel, entity.decel);
     if speed == accel && speed == decel {
-        let team_master = game.require_entity(&actor).team_master.clone().unwrap_or_else(|| actor.clone());
+        let team_master = game
+            .require_entity(&actor)
+            .team_master
+            .clone()
+            .unwrap_or_else(|| actor.clone());
         if game.current_actor == Some(team_master) {
             return linear_move_begin(actor, game);
         }
@@ -354,8 +362,7 @@ fn linear_move_begin(actor: ActorId, game: &mut Q2GameServices) {
 fn linear_move_accelerate(actor: ActorId, game: &mut Q2GameServices) {
     let mut state = linear_move_state(game, &actor);
     if game.options.edition == Q2Edition::Rerelease {
-        state.remaining =
-            f64::from(length3(sub3(state.destination, game.body_of(actor.clone()).origin)));
+        state.remaining = f64::from(length3(sub3(state.destination, game.body_of(actor.clone()).origin)));
     } else {
         state.remaining -= state.current_speed;
     }
@@ -463,14 +470,11 @@ fn accelerate(state: &mut LinearMoveState, speed: f64, accel: f64, decel: f64) {
         }
         return;
     }
-    if state.current_speed == state.move_speed
-        && state.remaining - state.current_speed < state.decel_distance
-    {
+    if state.current_speed == state.move_speed && state.remaining - state.current_speed < state.decel_distance {
         let first_distance = state.remaining - state.decel_distance;
         let second_distance = state.move_speed * (1.0 - first_distance / state.move_speed);
         state.current_speed = state.move_speed;
-        state.next_speed =
-            state.move_speed - decel * second_distance / (first_distance + second_distance);
+        state.next_speed = state.move_speed - decel * second_distance / (first_distance + second_distance);
         return;
     }
     if state.current_speed < speed {
@@ -483,8 +487,7 @@ fn accelerate(state: &mut LinearMoveState, speed: f64, accel: f64, decel: f64) {
         let first_speed = (old_speed + state.move_speed) / 2.0;
         let second_distance = state.move_speed * (1.0 - first_distance / first_speed);
         let distance = first_distance + second_distance;
-        state.current_speed =
-            first_speed * first_distance / distance + state.move_speed * second_distance / distance;
+        state.current_speed = first_speed * first_distance / distance + state.move_speed * second_distance / distance;
         state.next_speed = state.move_speed - decel * second_distance / distance;
     }
 }

@@ -4,40 +4,75 @@
 
 use std::collections::BTreeMap;
 
-use qa_core::math::{Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Vec3};
 
 use super::common::{chainfist, check_gib, predicted_direction, reacts_to_pain};
 use super::tables::shambler::{shambler_frame, shambler_moves};
 use crate::q2::base::monsters::common::{move_handler, sound_handler};
 use crate::q2::foundation::host::{Q2BeamEvent, Q2PresentationEvent, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    clear_shot, corpse, enemy_body, enemy_eye, health, project_flash, run_ai,
-    target_distance,
+    clear_shot, corpse, enemy_body, enemy_eye, health, project_flash, run_ai, target_distance,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAi, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAi, MonsterContext, MonsterHandler, Q2MonsterDefinition};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Left hand lightning offsets (`leftHand`).
 const LEFT_HAND: [Vec3; 5] = [
-    Vec3 { x: 44.0, y: 36.0, z: 25.0 },
-    Vec3 { x: 10.0, y: 44.0, z: 57.0 },
-    Vec3 { x: -1.0, y: 40.0, z: 70.0 },
-    Vec3 { x: -10.0, y: 34.0, z: 75.0 },
-    Vec3 { x: 7.4, y: 24.0, z: 89.0 },
+    Vec3 {
+        x: 44.0,
+        y: 36.0,
+        z: 25.0,
+    },
+    Vec3 {
+        x: 10.0,
+        y: 44.0,
+        z: 57.0,
+    },
+    Vec3 {
+        x: -1.0,
+        y: 40.0,
+        z: 70.0,
+    },
+    Vec3 {
+        x: -10.0,
+        y: 34.0,
+        z: 75.0,
+    },
+    Vec3 {
+        x: 7.4,
+        y: 24.0,
+        z: 89.0,
+    },
 ];
 
 /// Right hand lightning offsets (`rightHand`).
 const RIGHT_HAND: [Vec3; 5] = [
-    Vec3 { x: 28.0, y: -38.0, z: 25.0 },
-    Vec3 { x: 31.0, y: -7.0, z: 70.0 },
-    Vec3 { x: 20.0, y: 0.0, z: 80.0 },
-    Vec3 { x: 16.0, y: 1.2, z: 81.0 },
-    Vec3 { x: 27.0, y: -11.0, z: 83.0 },
+    Vec3 {
+        x: 28.0,
+        y: -38.0,
+        z: 25.0,
+    },
+    Vec3 {
+        x: 31.0,
+        y: -7.0,
+        z: 70.0,
+    },
+    Vec3 {
+        x: 20.0,
+        y: 0.0,
+        z: 80.0,
+    },
+    Vec3 {
+        x: 16.0,
+        y: 1.2,
+        z: 81.0,
+    },
+    Vec3 {
+        x: 27.0,
+        y: -11.0,
+        z: 83.0,
+    },
 ];
 
 /// Run (`run`).
@@ -62,10 +97,7 @@ fn shambler_run(context: &mut MonsterContext) {
 /// Clear the lightning beam (`clearBeam`).
 fn shambler_clear_beam(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    let beams = [
-        context.entity().beam.clone(),
-        context.entity().beam2.clone(),
-    ];
+    let beams = [context.entity().beam.clone(), context.entity().beam2.clone()];
     for beam in beams.into_iter().flatten() {
         if context.game.entity(&beam).is_none() {
             continue;
@@ -299,8 +331,7 @@ fn shambler_cast_lightning(context: &mut MonsterContext) {
     }
     let start = project_flash(context, offset, None);
     let spawnflags = context.entity().spawnflags;
-    let Some(direction) =
-        predicted_direction(context, start, 0.0, false, if spawnflags & 1 != 0 { 0.0 } else { 0.1 })
+    let Some(direction) = predicted_direction(context, start, 0.0, false, if spawnflags & 1 != 0 { 0.0 } else { 0.1 })
     else {
         return;
     };
@@ -323,26 +354,13 @@ fn shambler_cast_lightning(context: &mut MonsterContext) {
     }));
     let damage = 8.0 + (context.game.random() * 4.0).floor();
     let fire_bullet = context.weapons.fire_bullet;
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        damage,
-        15.0,
-        0.0,
-        0.0,
-        45,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, damage, 15.0, 0.0, 0.0, 45);
 }
 
 /// Left swing follow-up (`sham_swingl9`).
 fn shambler_swingl9(context: &mut MonsterContext) {
     run_ai(context, &MonsterAi::Charge, 8.0);
-    if context.game.random() < 0.5
-        && enemy_body(context).is_some()
-        && target_distance(context) < 80.0
-    {
+    if context.game.random() < 0.5 && enemy_body(context).is_some() && target_distance(context) < 80.0 {
         context.set_move("shambler_attack_swingr", true);
     }
 }
@@ -351,10 +369,7 @@ fn shambler_swingl9(context: &mut MonsterContext) {
 fn shambler_swingr9(context: &mut MonsterContext) {
     run_ai(context, &MonsterAi::Charge, 1.0);
     run_ai(context, &MonsterAi::Charge, 10.0);
-    if context.game.random() < 0.5
-        && enemy_body(context).is_some()
-        && target_distance(context) < 80.0
-    {
+    if context.game.random() < 0.5 && enemy_body(context).is_some() && target_distance(context) < 80.0 {
         context.set_move("shambler_attack_swingl", true);
     }
 }
@@ -406,10 +421,7 @@ pub fn shambler_definition() -> Q2MonsterDefinition {
     definition.pain = Some(shambler_pain);
     for (name, handler) in [
         ("shambler_run", MonsterHandler::Callback(shambler_run)),
-        (
-            "shambler_maybe_idle",
-            MonsterHandler::Callback(shambler_maybe_idle),
-        ),
+        ("shambler_maybe_idle", MonsterHandler::Callback(shambler_maybe_idle)),
         ("shambler_windup", MonsterHandler::Callback(shambler_windup)),
         (
             "shambler_lightning_update",
@@ -420,14 +432,8 @@ pub fn shambler_definition() -> Q2MonsterDefinition {
             "ShamblerCastLightning",
             MonsterHandler::Callback(shambler_cast_lightning),
         ),
-        (
-            "shambler_melee1",
-            sound_handler("shambler/melee1.wav", 1, 1.0),
-        ),
-        (
-            "shambler_melee2",
-            sound_handler("shambler/melee2.wav", 1, 1.0),
-        ),
+        ("shambler_melee1", sound_handler("shambler/melee1.wav", 1, 1.0)),
+        ("shambler_melee2", sound_handler("shambler/melee2.wav", 1, 1.0)),
         ("sham_smash10", MonsterHandler::Callback(shambler_smash)),
         ("ShamClaw", MonsterHandler::Callback(shambler_chop)),
         ("sham_swingl9", MonsterHandler::Callback(shambler_swingl9)),

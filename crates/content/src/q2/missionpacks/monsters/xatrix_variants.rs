@@ -3,60 +3,146 @@
 //! Quake II Xatrix base monster variants. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::dabeam::{monster_dabeam, monster_dabeam_callbacks};
-use super::power_armor::{PowerArmorKind, monster_power_armor, restore_monster_power_armor};
+use super::power_armor::{monster_power_armor, restore_monster_power_armor, PowerArmorKind};
 use super::tables::xatrix_brain::{brain_frame, brain_moves};
 use super::tables::xatrix_infantry::{infantry_frame, infantry_moves};
 use crate::q2::base::monsters::boss_common::with_boss_explosion_callbacks;
 use crate::q2::base::monsters::brain::brain_definition;
-use crate::q2::base::monsters::common::{HUMANOID_BOUNDS, damaged_skin, move_handler};
+use crate::q2::base::monsters::common::{damaged_skin, move_handler, HUMANOID_BOUNDS};
 use crate::q2::base::monsters::supertank::supertank_definition;
 use crate::q2::foundation::host::Q2TraceRequest;
+use crate::q2::foundation::host::{Q2MonsterBeam, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{
     angles_vectors, enemy_body, health, project_flash, target_distance, vector_angles, visible,
 };
 use crate::q2::foundation::monsters::infantry::{
-    infantry_attack, infantry_callbacks, infantry_die, infantry_pain, infantry_run, infantry_sight,
-    infantry_stand, infantry_walk, machine_gun,
+    infantry_attack, infantry_callbacks, infantry_die, infantry_pain, infantry_run, infantry_sight, infantry_stand,
+    infantry_walk, machine_gun,
 };
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at,
-};
-use crate::q2::foundation::host::{Q2MonsterBeam, Q2PresentationEvent};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::monster_flash;
 use crate::q2::support::contracts::{PainReaction, TraceHit};
 
 /// Xatrix brain right eye offsets (`xatrixBrainRightEye`).
 pub const XATRIX_BRAIN_RIGHT_EYE: [Vec3; 11] = [
-    Vec3 { x: 0.7467, y: 0.23837, z: 34.16769 },
-    Vec3 { x: -1.07639, y: 0.23837, z: 33.386372 },
-    Vec3 { x: -1.3355, y: 5.3343, z: 32.17717 },
-    Vec3 { x: -0.17536, y: 8.84637, z: 30.635479 },
-    Vec3 { x: -2.75759, y: 7.80461, z: 30.15086 },
-    Vec3 { x: -5.57509, y: 5.15284, z: 30.05616 },
-    Vec3 { x: -7.01755, y: 3.26247, z: 30.552521 },
-    Vec3 { x: -7.91574, y: 0.6388, z: 33.176189 },
-    Vec3 { x: -3.91539, y: 8.28573, z: 33.976349 },
-    Vec3 { x: -0.91354, y: 10.93303, z: 34.141811 },
-    Vec3 { x: -0.3699, y: 8.9239, z: 34.189079 },
+    Vec3 {
+        x: 0.7467,
+        y: 0.23837,
+        z: 34.16769,
+    },
+    Vec3 {
+        x: -1.07639,
+        y: 0.23837,
+        z: 33.386372,
+    },
+    Vec3 {
+        x: -1.3355,
+        y: 5.3343,
+        z: 32.17717,
+    },
+    Vec3 {
+        x: -0.17536,
+        y: 8.84637,
+        z: 30.635479,
+    },
+    Vec3 {
+        x: -2.75759,
+        y: 7.80461,
+        z: 30.15086,
+    },
+    Vec3 {
+        x: -5.57509,
+        y: 5.15284,
+        z: 30.05616,
+    },
+    Vec3 {
+        x: -7.01755,
+        y: 3.26247,
+        z: 30.552521,
+    },
+    Vec3 {
+        x: -7.91574,
+        y: 0.6388,
+        z: 33.176189,
+    },
+    Vec3 {
+        x: -3.91539,
+        y: 8.28573,
+        z: 33.976349,
+    },
+    Vec3 {
+        x: -0.91354,
+        y: 10.93303,
+        z: 34.141811,
+    },
+    Vec3 {
+        x: -0.3699,
+        y: 8.9239,
+        z: 34.189079,
+    },
 ];
 
 /// Xatrix brain left eye offsets (`xatrixBrainLeftEye`).
 pub const XATRIX_BRAIN_LEFT_EYE: [Vec3; 11] = [
-    Vec3 { x: -3.36471, y: 0.32775, z: 33.938381 },
-    Vec3 { x: -5.14045, y: 0.49348, z: 32.659851 },
-    Vec3 { x: -5.34198, y: 5.64698, z: 31.277901 },
-    Vec3 { x: -4.13448, y: 9.27744, z: 29.925621 },
-    Vec3 { x: -6.59834, y: 6.81509, z: 29.32262 },
-    Vec3 { x: -8.61084, y: 2.52965, z: 29.251591 },
-    Vec3 { x: -9.23136, y: 0.09328, z: 29.747959 },
-    Vec3 { x: -11.00411, y: 1.93693, z: 32.39526 },
-    Vec3 { x: -7.87831, y: 7.64819, z: 33.148151 },
-    Vec3 { x: -4.94737, y: 11.43005, z: 33.31361 },
-    Vec3 { x: -4.33282, y: 9.44457, z: 33.52634 },
+    Vec3 {
+        x: -3.36471,
+        y: 0.32775,
+        z: 33.938381,
+    },
+    Vec3 {
+        x: -5.14045,
+        y: 0.49348,
+        z: 32.659851,
+    },
+    Vec3 {
+        x: -5.34198,
+        y: 5.64698,
+        z: 31.277901,
+    },
+    Vec3 {
+        x: -4.13448,
+        y: 9.27744,
+        z: 29.925621,
+    },
+    Vec3 {
+        x: -6.59834,
+        y: 6.81509,
+        z: 29.32262,
+    },
+    Vec3 {
+        x: -8.61084,
+        y: 2.52965,
+        z: 29.251591,
+    },
+    Vec3 {
+        x: -9.23136,
+        y: 0.09328,
+        z: 29.747959,
+    },
+    Vec3 {
+        x: -11.00411,
+        y: 1.93693,
+        z: 32.39526,
+    },
+    Vec3 {
+        x: -7.87831,
+        y: 7.64819,
+        z: 33.148151,
+    },
+    Vec3 {
+        x: -4.94737,
+        y: 11.43005,
+        z: 33.31361,
+    },
+    Vec3 {
+        x: -4.33282,
+        y: 9.44457,
+        z: 33.52634,
+    },
 ];
 
 /// Whether a tongue shot is allowed (`tongueAllowed`).
@@ -141,10 +227,7 @@ fn brain_tongue_attack(context: &mut MonsterContext) {
         y: enemy.origin.y,
         z: enemy.origin.z + enemy.bounds.min.z + 8.0,
     };
-    if !tongue_allowed(start, enemy.origin)
-        && !tongue_allowed(start, top)
-        && !tongue_allowed(start, bottom)
-    {
+    if !tongue_allowed(start, enemy.origin) && !tongue_allowed(start, top) && !tongue_allowed(start, bottom) {
         return;
     }
     let trace = context.game.host.trace(&Q2TraceRequest {
@@ -183,10 +266,7 @@ fn brain_tongue_attack(context: &mut MonsterContext) {
     context.game.write_body(actor, &body, false);
     if let Some(target) = context.game.host.actors().resolve_owned(&enemy_id) {
         let mut shoved = enemy;
-        shoved.velocity = scale3(
-            angles_vectors(body.angles).forward,
-            -1200.0,
-        );
+        shoved.velocity = scale3(angles_vectors(body.angles).forward, -1200.0);
         context.game.host.bodies().write(&target, &shoved);
     }
 }
@@ -209,10 +289,7 @@ fn brain_laserbeam(context: &mut MonsterContext) {
             origin,
             add3(
                 scale3(basis.right, offset.x),
-                add3(
-                    scale3(basis.forward, offset.y),
-                    scale3(basis.up, offset.z),
-                ),
+                add3(scale3(basis.forward, offset.y), scale3(basis.up, offset.z)),
             ),
         );
         monster_dabeam(&actor, &mut *context.game, enemy_id.clone(), start, angles, 1.0, false);
@@ -222,10 +299,7 @@ fn brain_laserbeam(context: &mut MonsterContext) {
 /// Laser beam reattack (`brain_laserbeam_reattack`).
 fn brain_laserbeam_reattack(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    if context.game.random() < 0.5
-        && visible(context, None)
-        && health(&mut *context.game, enemy.as_ref()) > 0.0
-    {
+    if context.game.random() < 0.5 && visible(context, None) && health(&mut *context.game, enemy.as_ref()) > 0.0 {
         context.entity_mut().frame = brain_frame::WALK101;
     }
 }
@@ -242,10 +316,9 @@ pub fn xatrix_brain_definition() -> Q2MonsterDefinition {
         "brain_tounge_attack".to_string(),
         MonsterHandler::Callback(brain_tongue_attack),
     );
-    definition.callbacks.insert(
-        "brain_laserbeam".to_string(),
-        MonsterHandler::Callback(brain_laserbeam),
-    );
+    definition
+        .callbacks
+        .insert("brain_laserbeam".to_string(), MonsterHandler::Callback(brain_laserbeam));
     definition.callbacks.insert(
         "brain_laserbeam_reattack".to_string(),
         MonsterHandler::Callback(brain_laserbeam_reattack),
@@ -284,17 +357,7 @@ fn xatrix_infantry_fire(context: &mut MonsterContext) {
     };
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        3.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 3.0, 4.0, 300.0, 500.0, 0);
     monster_flash(context, 26, start, direction);
 }
 

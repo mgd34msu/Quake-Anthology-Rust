@@ -4,11 +4,13 @@
 
 use qa_core::identity::{ActorId, SavedActorId};
 
-use crate::q2::equipment::grapple_services::{CtfGrappleCheckpoint, CtfGrapplePhase, CtfGrappleState, capture_ctf_grapple, restore_ctf_grapple};
+use crate::q2::equipment::grapple_services::{
+    capture_ctf_grapple, restore_ctf_grapple, CtfGrappleCheckpoint, CtfGrapplePhase, CtfGrappleState,
+};
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
 
 use super::types::{
-    Q2CtfElectionKind, Q2CtfForceJoin, Q2CtfMatchPhase, Q2CtfPlayerState, Q2CtfPlayingTeam, save_ctf_actor,
+    save_ctf_actor, Q2CtfElectionKind, Q2CtfForceJoin, Q2CtfMatchPhase, Q2CtfPlayerState, Q2CtfPlayingTeam,
 };
 
 /// CTF rules checkpoint (`Q2CtfCheckpoint["rules"]`).
@@ -160,10 +162,16 @@ pub fn capture_q2_ctf(game: &Q2GameServices) -> Q2CtfCheckpoint {
             } else {
                 CtfGrappleState::default()
             };
-            Q2CtfPlayerCheckpoint { actor: save_ctf_actor(actor), state: state.clone(), grapple: capture_ctf_grapple(&grapple) }
+            Q2CtfPlayerCheckpoint {
+                actor: save_ctf_actor(actor),
+                state: state.clone(),
+                grapple: capture_ctf_grapple(&grapple),
+            }
         })
         .collect();
-    players.sort_by(|left, right| (left.actor.slot, left.actor.generation).cmp(&(right.actor.slot, right.actor.generation)));
+    players.sort_by(|left, right| {
+        (left.actor.slot, left.actor.generation).cmp(&(right.actor.slot, right.actor.generation))
+    });
     Q2CtfCheckpoint {
         version: 1,
         rules: Q2CtfRulesCheckpoint {
@@ -274,21 +282,31 @@ pub fn restore_q2_ctf(game: &mut Q2GameServices, checkpoint: &Q2CtfCheckpoint) {
             },
         );
     }
-    game.ctf.match_state.election = checkpoint.match_state.election.as_ref().map(|election| super::types::Q2CtfElection {
-        kind: election.kind,
-        target: game.host.actors().reference_saved(election.target),
-        map: election.map.clone(),
-        message: election.message.clone(),
-        votes: election.votes,
-        needed: election.needed,
-        expires: election.expires,
-    });
+    game.ctf.match_state.election =
+        checkpoint
+            .match_state
+            .election
+            .as_ref()
+            .map(|election| super::types::Q2CtfElection {
+                kind: election.kind,
+                target: game.host.actors().reference_saved(election.target),
+                map: election.map.clone(),
+                message: election.message.clone(),
+                votes: election.votes,
+                needed: election.needed,
+                expires: election.expires,
+            });
     if game.options.edition == Q2Edition::Classic {
         let predictions: Vec<(ActorId, bool)> = game
             .equipment
             .ctf_states
             .iter()
-            .map(|(actor, state)| (actor.clone(), state.grapple.is_some() && state.grapple_state == CtfGrapplePhase::Hang))
+            .map(|(actor, state)| {
+                (
+                    actor.clone(),
+                    state.grapple.is_some() && state.grapple_state == CtfGrapplePhase::Hang,
+                )
+            })
             .collect();
         let hooks = super::ctf_hooks(game);
         for (actor, suppressed) in predictions {

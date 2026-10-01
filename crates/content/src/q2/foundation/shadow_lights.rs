@@ -46,7 +46,12 @@ pub struct Q2ShadowCone {
 }
 
 /// Toggle a dynamic light (`dynamic_light_use`).
-pub fn dynamic_light_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+pub fn dynamic_light_use(
+    actor: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let visible = {
         let entity = game.require_entity_mut(&actor);
         entity.server_flags ^= 1;
@@ -98,7 +103,10 @@ pub fn emit_q2_shadow_light(actor: ActorId, game: &mut Q2GameServices) {
     let target = if target_name.is_empty() {
         None
     } else {
-        game.entities.values().find(|candidate| candidate.targetname == target_name).map(|entity| entity.actor.id().clone())
+        game.entities
+            .values()
+            .find(|candidate| candidate.targetname == target_name)
+            .map(|entity| entity.actor.id().clone())
     };
     let style = style_target.as_ref().and_then(|name| {
         game.entities

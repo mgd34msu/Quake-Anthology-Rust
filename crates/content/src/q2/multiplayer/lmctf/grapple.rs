@@ -7,16 +7,16 @@ use qa_core::math::Vec3;
 
 use crate::q2::equipment::grapple_services::LmctfGrappleState;
 use crate::q2::equipment::grapple_weapon::{
-    GrappleWeaponInput, LmctfGrappleWeaponActions, fire_lmctf_grapple_weapon, lmctf_grapple, release_lmctf_grapple_weapon,
-    step_lmctf_grapple_weapon,
+    fire_lmctf_grapple_weapon, lmctf_grapple, release_lmctf_grapple_weapon, step_lmctf_grapple_weapon,
+    GrappleWeaponInput, LmctfGrappleWeaponActions,
 };
-use crate::q2::equipment::lmctf_grapple::{LmctfGrappleEquipment, LmctfGrapplePolicy, lmctf_grapple_callbacks};
+use crate::q2::equipment::lmctf_grapple::{lmctf_grapple_callbacks, LmctfGrappleEquipment, LmctfGrapplePolicy};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::Q2GameServices;
 use crate::q2::foundation::items::{Q2ItemDefinition, Q2ItemKindData};
-use crate::q2::foundation::weapons::generic_frame::{Q2GenericFrameState, project_weapon_animation};
+use crate::q2::foundation::weapons::generic_frame::{project_weapon_animation, Q2GenericFrameState};
 use crate::q2::foundation::weapons::player::{
-    Q2WeaponContext, Q2WeaponExtension, register_weapon_extension, request_weapon, weapon_generic_classic,
+    register_weapon_extension, request_weapon, weapon_generic_classic, Q2WeaponContext, Q2WeaponExtension,
 };
 use crate::q2::foundation::weapons::presentation::{q2_weapon_recoil, set_q2_weapon_recoil};
 use crate::q2::foundation::weapons::types::{PrimaryHandoff, Q2WeaponDefinition, Q2WeaponState};
@@ -24,14 +24,17 @@ use crate::q2::support::contracts::{GrappleBinding, GrappleMechanic, GrappleSele
 
 use super::super::ctf::native_grapple_hooks::native_grapple_hooks;
 use super::super::ctf::types::item_id;
-use super::types::{LmctfHooks, lmctf_active, lmctf_print};
+use super::types::{lmctf_active, lmctf_print, LmctfHooks};
 
 /// Re-export the hook definition (`hookDefinition`).
 pub use crate::q2::equipment::grapple_weapon::lmctf_grapple as hook_definition;
 
 /// LMCTF grapple attach eligibility (`new LmctfGrappleEquipment` attach).
 fn lmctf_grapple_can_attach(owner: ActorId, target: ActorId, game: &mut Q2GameServices) -> bool {
-    let classname = game.entity(&target).map(|entity| entity.classname.clone()).unwrap_or_default();
+    let classname = game
+        .entity(&target)
+        .map(|entity| entity.classname.clone())
+        .unwrap_or_default();
     if !game.host.is_player(&target)
         && classname != "bodyque"
         && classname != "worldspawn"
@@ -74,7 +77,12 @@ fn release_hook_weapon(state: &mut Q2WeaponState) {
 
 /// LMCTF grapple release (`new LmctfGrappleEquipment` release).
 fn lmctf_grapple_released(actor: ActorId, game: &mut Q2GameServices) {
-    if game.weapons.states.get(&actor).is_some_and(|state| state.weapon.as_deref() == Some("lmctf:hook")) {
+    if game
+        .weapons
+        .states
+        .get(&actor)
+        .is_some_and(|state| state.weapon.as_deref() == Some("lmctf:hook"))
+    {
         if let Some(state) = game.weapons.states.get_mut(&actor) {
             release_hook_weapon(state);
         }
@@ -87,7 +95,9 @@ pub fn lmctf_grapple_equipment(shared: Option<&dyn SharedGrappleControl>) -> Opt
         None => true,
         Some(shared) => match shared.selection() {
             GrappleSelection::Enabled { binding, mechanic, .. } => {
-                *binding == GrappleBinding::Slot && *mechanic == GrappleMechanic::Q2Lmctf && shared.native_slot(GrappleMechanic::Q2Lmctf)
+                *binding == GrappleBinding::Slot
+                    && *mechanic == GrappleMechanic::Q2Lmctf
+                    && shared.native_slot(GrappleMechanic::Q2Lmctf)
             }
             GrappleSelection::Disabled => false,
         },
@@ -116,7 +126,11 @@ pub struct LmctfGrapple {
 impl LmctfGrapple {
     /// Active grapple states (`states`).
     pub fn states(game: &mut Q2GameServices) -> &mut HashMap<ActorId, LmctfGrappleState> {
-        if game.lmctf.equipment.is_some() { &mut game.equipment.lmctf_states } else { &mut game.lmctf.inactive_grapple }
+        if game.lmctf.equipment.is_some() {
+            &mut game.equipment.lmctf_states
+        } else {
+            &mut game.lmctf.inactive_grapple
+        }
     }
 
     /// Whether native grapple is enabled (`nativeEnabled`).
@@ -135,12 +149,19 @@ impl LmctfGrapple {
 
     /// Read grapple callbacks (`callbacks`).
     pub fn callbacks(&self, game: &Q2GameServices) -> Q2CallbackDefinitions {
-        if game.lmctf.equipment.is_some() { lmctf_grapple_callbacks() } else { Q2CallbackDefinitions::default() }
+        if game.lmctf.equipment.is_some() {
+            lmctf_grapple_callbacks()
+        } else {
+            Q2CallbackDefinitions::default()
+        }
     }
 
     /// Read the gravity scale (`gravityScale`).
     pub fn gravity_scale(&self, actor: ActorId, game: &Q2GameServices) -> i32 {
-        game.lmctf.equipment.map(|equipment| equipment.gravity_scale(game, actor)).unwrap_or(1)
+        game.lmctf
+            .equipment
+            .map(|equipment| equipment.gravity_scale(game, actor))
+            .unwrap_or(1)
     }
 
     /// Abort a grapple (`abort`).
@@ -163,14 +184,29 @@ impl LmctfGrapple {
         }
         let edition = game.options.edition;
         let now = game.now();
-        let mut animation = project_weapon_animation(game.weapons.states.get(&player).expect("LMCTF hook weapon state is missing"));
+        let mut animation = project_weapon_animation(
+            game.weapons
+                .states
+                .get(&player)
+                .expect("LMCTF hook weapon state is missing"),
+        );
         let kick = fire_lmctf_grapple_weapon(player.clone(), game, equipment, &mut animation);
         if let Some(state) = game.weapons.states.get_mut(&player) {
             state.phase = animation.phase;
             state.frame = animation.frame;
             if let Some((origin, pitch)) = kick {
                 let (_, kick_angles) = q2_weapon_recoil(state, edition, now);
-                set_q2_weapon_recoil(state, edition, now, origin, Vec3 { x: pitch as f32, ..kick_angles }, None);
+                set_q2_weapon_recoil(
+                    state,
+                    edition,
+                    now,
+                    origin,
+                    Vec3 {
+                        x: pitch as f32,
+                        ..kick_angles
+                    },
+                    None,
+                );
             }
         }
     }
@@ -180,7 +216,10 @@ impl LmctfGrapple {
         if game.lmctf.equipment.is_none() {
             let offhand = matches!(
                 game.lmctf.shared.as_ref().map(|shared| shared.selection()),
-                Some(GrappleSelection::Enabled { binding: GrappleBinding::Offhand, .. })
+                Some(GrappleSelection::Enabled {
+                    binding: GrappleBinding::Offhand,
+                    ..
+                })
             );
             if offhand {
                 if let Some(shared) = game.lmctf.shared.as_mut() {
@@ -197,7 +236,11 @@ impl LmctfGrapple {
             return;
         }
         if game.lmctf.rules.ctf_flags & 16 != 0 {
-            let selected = game.weapons.states.get(&player).is_some_and(|state| state.weapon.as_deref() == Some("lmctf:hook"));
+            let selected = game
+                .weapons
+                .states
+                .get(&player)
+                .is_some_and(|state| state.weapon.as_deref() == Some("lmctf:hook"));
             if selected {
                 Self::states(game).entry(player.clone()).or_default().hook_held = pressed;
                 if pressed {
@@ -213,14 +256,25 @@ impl LmctfGrapple {
                 self.abort(player, game);
                 return;
             }
-            if Self::states(game).get(&player).and_then(|state| state.hook.clone()).is_some() {
+            if Self::states(game)
+                .get(&player)
+                .and_then(|state| state.hook.clone())
+                .is_some()
+            {
                 return;
             }
             if game.host.inventory().count(&player, &item_id("q2:weapon_hook")) == 0.0 {
                 lmctf_print(game, "You have no hook.\n", Some(player));
                 return;
             }
-            if game.weapons.inputs.get(&player).map(|input| input.quad_until).unwrap_or(0.0) > game.now() {
+            if game
+                .weapons
+                .inputs
+                .get(&player)
+                .map(|input| input.quad_until)
+                .unwrap_or(0.0)
+                > game.now()
+            {
                 game.sound(&player, "items/damage3.wav", 3, 1.0, 1.0);
             }
             self.fire(player, game);
@@ -270,10 +324,19 @@ impl LmctfGrapple {
                 rotate: false,
                 respawn: 0.0,
                 console_give: None,
-                kind: Q2ItemKindData::Weapon { ammo: None, coop_stay: Some(true) },
+                kind: Q2ItemKindData::Weapon {
+                    ammo: None,
+                    coop_stay: Some(true),
+                },
             },
         );
-        register_weapon_extension(game, Box::new(LmctfGrappleExtension { hooks: self.hooks, definition }));
+        register_weapon_extension(
+            game,
+            Box::new(LmctfGrappleExtension {
+                hooks: self.hooks,
+                definition,
+            }),
+        );
     }
 }
 
@@ -341,7 +404,17 @@ impl Q2WeaponExtension for LmctfGrappleExtension {
         state.frame = animation.frame;
         if let Some((origin, pitch)) = kick {
             let (_, kick_angles) = q2_weapon_recoil(state, edition, now);
-            set_q2_weapon_recoil(state, edition, now, origin, Vec3 { x: pitch as f32, ..kick_angles }, None);
+            set_q2_weapon_recoil(
+                state,
+                edition,
+                now,
+                origin,
+                Vec3 {
+                    x: pitch as f32,
+                    ..kick_angles
+                },
+                None,
+            );
         }
     }
 
@@ -358,7 +431,13 @@ impl Q2WeaponExtension for LmctfGrappleExtension {
             latched_holster: false,
         };
         let mut animation = project_weapon_animation(state);
-        let mut actions = LmctfHookThinkDriver { owner, game, state: &mut *state, context, equipment };
+        let mut actions = LmctfHookThinkDriver {
+            owner,
+            game,
+            state: &mut *state,
+            context,
+            equipment,
+        };
         step_lmctf_grapple_weapon(&mut animation, &source, &input, &mut actions);
         state.phase = animation.phase;
         state.frame = animation.frame;

@@ -5,56 +5,72 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Vec3};
 
 use crate::contract::InventoryEntry;
 use crate::q2::base::player::commands::userinfo_value;
-use crate::q2::base::player::spawns::{q2_entities_named, q2_kill_box, q2_players_range, q2_spawn_origin, select_q2_spawn};
+use crate::q2::base::player::spawns::{
+    q2_entities_named, q2_kill_box, q2_players_range, q2_spawn_origin, select_q2_spawn,
+};
 use crate::q2::equipment::ctf_grapple::ctf_grapple_callbacks;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::movedir;
 use crate::q2::foundation::host::{
-    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch, SpawnModule,
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch,
+    SpawnModule,
 };
-use crate::q2::foundation::weapons::WeaponSourceRules;
-use crate::q2::foundation::weapons::player::{CtfWeaponHooks, Q2WeaponContext, Q2WeaponSourceRules, set_weapon_source_rules};
+use crate::q2::foundation::weapons::player::{
+    set_weapon_source_rules, CtfWeaponHooks, Q2WeaponContext, Q2WeaponSourceRules,
+};
 use crate::q2::foundation::weapons::types::Q2WeaponInput;
+use crate::q2::foundation::weapons::WeaponSourceRules;
 use crate::q2::support::contracts::{CombatTraitChanges, GrappleSelection, SharedGrappleControl, TouchContact};
 
-use super::checkpoint::{Q2CtfCheckpoint, capture_q2_ctf, restore_q2_ctf};
-use super::flags::{Q2CtfFlags, ctf_flag_callbacks};
-use super::grapple::{Q2CtfGrapple, Q2CtfGrappleBinding, ctf_grapple_equipment};
-use super::match_::{Q2CtfAdminSettings, Q2CtfMatch, ctf_match_actions};
-use super::presentation::{Q2CtfPresentation, ctf_tech};
-use super::techs::{Q2CtfTechs, ctf_tech_callbacks};
+use super::checkpoint::{capture_q2_ctf, restore_q2_ctf, Q2CtfCheckpoint};
+use super::flags::{ctf_flag_callbacks, Q2CtfFlags};
+use super::grapple::{ctf_grapple_equipment, Q2CtfGrapple, Q2CtfGrappleBinding};
+use super::match_::{ctf_match_actions, Q2CtfAdminSettings, Q2CtfMatch};
+use super::presentation::{ctf_tech, Q2CtfPresentation};
+use super::techs::{ctf_tech_callbacks, Q2CtfTechs};
 use super::types::{
-    Q2CtfElectionKind, Q2CtfEvent, Q2CtfForceJoin, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry, Q2CtfPlayerState, Q2CtfPlayingTeam,
-    Q2CtfPrintLevel, Q2CtfRules, ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name, item_id,
+    ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name, item_id, Q2CtfElectionKind, Q2CtfEvent, Q2CtfForceJoin,
+    Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry, Q2CtfPlayerState, Q2CtfPlayingTeam, Q2CtfPrintLevel,
+    Q2CtfRules,
 };
 
 /// CTF weapon haste (`setSourceRules` haste).
 fn ctf_weapon_haste(context: &Q2WeaponContext, game: &mut Q2GameServices) -> bool {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     techs.haste(context.owner.actor.id().clone(), game)
 }
 
 /// CTF weapon strength sound (`setSourceRules` strengthSound).
 fn ctf_weapon_strength_sound(context: &Q2WeaponContext, game: &mut Q2GameServices) -> bool {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     techs.strength_sound(context.owner.actor.id().clone(), game)
 }
 
 /// CTF weapon haste sound (`setSourceRules` hasteSound).
 fn ctf_weapon_haste_sound(context: &Q2WeaponContext, game: &mut Q2GameServices) {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     techs.haste_sound(context.owner.actor.id().clone(), game);
 }
 
 /// CTF integration callbacks.
 pub fn ctf_index_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("misc_ctf_banner_think", ctf_banner_think as Q2Think);
-    callbacks.touch.insert("old_teleporter_touch", ctf_teleport_touch as Q2Touch);
+    callbacks
+        .think
+        .insert("misc_ctf_banner_think", ctf_banner_think as Q2Think);
+    callbacks
+        .touch
+        .insert("old_teleporter_touch", ctf_teleport_touch as Q2Touch);
     callbacks
 }
 
@@ -95,7 +111,9 @@ pub fn ctf_item_name(classname: &str) -> Option<String> {
 
 /// CTF spawn dispatch (`spawn`).
 pub fn ctf_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    let ctf = Q2Ctf { hooks: super::ctf_hooks(game) };
+    let ctf = Q2Ctf {
+        hooks: super::ctf_hooks(game),
+    };
     ctf.spawn(entity, game)
 }
 
@@ -117,7 +135,9 @@ fn ctf_teleport_touch(entity: ActorId, game: &mut Q2GameServices, contact: Touch
         game.host.diagnostic("Couldn't find CTF teleporter destination");
         return;
     };
-    let grapple = Q2CtfGrapple { hooks: super::ctf_hooks(game) };
+    let grapple = Q2CtfGrapple {
+        hooks: super::ctf_hooks(game),
+    };
     grapple.reset(contact.other.clone(), game);
     let body = game.body_of(destination);
     let velocity = scale3(movedir(body.angles), 200.0);
@@ -126,33 +146,46 @@ fn ctf_teleport_touch(entity: ActorId, game: &mut Q2GameServices, contact: Touch
     let mut moved = game.body_of(contact.other.clone());
     moved.origin = body.origin;
     moved.velocity = velocity;
-    moved.angles = Vec3 { x: 0.0, y: body.angles.y, z: 0.0 };
+    moved.angles = Vec3 {
+        x: 0.0,
+        y: body.angles.y,
+        z: 0.0,
+    };
     game.write_body(contact.other.clone(), &moved, false);
     let hooks = super::ctf_hooks(game);
     (hooks.teleport)(contact.other.clone(), game, body.origin, body.angles, velocity);
     if let Some(enemy) = game.require_entity(&entity).enemy.clone() {
         game.host_emit(Q2PresentationEvent::EntityEvent { actor: enemy, event: 6 });
     }
-    game.host_emit(Q2PresentationEvent::EntityEvent { actor: contact.other.clone(), event: 6 });
+    game.host_emit(Q2PresentationEvent::EntityEvent {
+        actor: contact.other.clone(),
+        event: 6,
+    });
     q2_kill_box(contact.other.clone(), game);
     game.link_actor(contact.other);
 }
 
 /// Reset CTF players (`resetPlayers` action).
 pub fn ctf_reset_players(game: &mut Q2GameServices) {
-    let ctf = Q2Ctf { hooks: super::ctf_hooks(game) };
+    let ctf = Q2Ctf {
+        hooks: super::ctf_hooks(game),
+    };
     ctf.reset_players(game);
 }
 
 /// Reset a CTF grapple (`resetGrapple` action).
 pub fn ctf_reset_grapple(entity: ActorId, game: &mut Q2GameServices) {
-    let grapple = Q2CtfGrapple { hooks: super::ctf_hooks(game) };
+    let grapple = Q2CtfGrapple {
+        hooks: super::ctf_hooks(game),
+    };
     grapple.reset(entity, game);
 }
 
 /// Join a CTF team (`join` action).
 pub fn ctf_join(entity: ActorId, game: &mut Q2GameServices, team: Q2CtfPlayingTeam, ghost: bool) -> bool {
-    let ctf = Q2Ctf { hooks: super::ctf_hooks(game) };
+    let ctf = Q2Ctf {
+        hooks: super::ctf_hooks(game),
+    };
     ctf.join(entity, game, team, ghost)
 }
 
@@ -172,7 +205,10 @@ impl Q2Ctf {
 
     /// Session match.
     fn match_service(&self) -> Q2CtfMatch {
-        Q2CtfMatch { hooks: self.hooks, actions: ctf_match_actions() }
+        Q2CtfMatch {
+            hooks: self.hooks,
+            actions: ctf_match_actions(),
+        }
     }
 
     /// Session presentation.
@@ -217,7 +253,11 @@ impl Q2Ctf {
                 lmctf: None,
             },
         );
-        SpawnModule { spawn: ctf_spawn, item_name: ctf_item_name, callbacks: ctf_callbacks() }
+        SpawnModule {
+            spawn: ctf_spawn,
+            item_name: ctf_item_name,
+            callbacks: ctf_callbacks(),
+        }
     }
 
     /// Spawn CTF entities (`spawn`).
@@ -318,7 +358,12 @@ impl Q2Ctf {
             let owned = game.owned_of(entity.clone());
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id("q2:weapon_grapple"), count: 0.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id("q2:weapon_grapple"),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         if game.ctf.states.contains_key(&entity) {
@@ -329,7 +374,10 @@ impl Q2Ctf {
             None => panic!("CTF admission requires the shared player state"),
         };
         game.ctf.states.insert(entity.clone(), Q2CtfPlayerState::default());
-        if game.options.deathmatch_flags & 131072 != 0 && game.ctf.match_state.phase == Q2CtfMatchPhase::None && !requested {
+        if game.options.deathmatch_flags & 131072 != 0
+            && game.ctf.match_state.phase == Q2CtfMatchPhase::None
+            && !requested
+        {
             let mut one = 0;
             let mut two = 0;
             for member in game.ctf.states.values() {
@@ -339,7 +387,15 @@ impl Q2Ctf {
                     two += 1;
                 }
             }
-            let team = if one < two { 1 } else if two < one { 2 } else if game.random() < 0.5 { 1 } else { 2 };
+            let team = if one < two {
+                1
+            } else if two < one {
+                2
+            } else if game.random() < 0.5 {
+                1
+            } else {
+                2
+            };
             if let Some(state) = game.ctf.states.get_mut(&entity) {
                 state.team = team;
             }
@@ -366,7 +422,11 @@ impl Q2Ctf {
         (self.hooks.set_skin)(
             entity,
             game,
-            if team == 0 { original } else { format!("{model}{}", if team == 1 { "ctf_r" } else { "ctf_b" }) },
+            if team == 0 {
+                original
+            } else {
+                format!("{model}{}", if team == 1 { "ctf_r" } else { "ctf_b" })
+            },
         );
     }
 
@@ -393,12 +453,20 @@ impl Q2Ctf {
         let owned = game.owned_of(entity.clone());
         game.host.combat().set_traits(
             &owned,
-            &CombatTraitChanges { team: Some(Some(ctf_team_name(team).to_string())), ..CombatTraitChanges::default() },
+            &CombatTraitChanges {
+                team: Some(Some(ctf_team_name(team).to_string())),
+                ..CombatTraitChanges::default()
+            },
         );
         if game.ctf.equipment.is_some() && use_weapons {
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id("q2:weapon_grapple"), count: 1.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id("q2:weapon_grapple"),
+                    count: 1.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         self.assign_skin(entity, game);
@@ -425,9 +493,17 @@ impl Q2Ctf {
             self.match_service().assign_ghost(entity.clone(), game);
         }
         self.spawn_player(entity.clone(), game);
-        game.host_emit(Q2PresentationEvent::EntityEvent { actor: entity.clone(), event: 6 });
+        game.host_emit(Q2PresentationEvent::EntityEvent {
+            actor: entity.clone(),
+            event: 6,
+        });
         let name = ctf_name(game, &entity);
-        ctf_print(game, &format!("{name} joined the {} team.\n", ctf_team_name(team)), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} joined the {} team.\n", ctf_team_name(team)),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         if phase == Q2CtfMatchPhase::Setup {
             game.host_emit(Q2PresentationEvent::CenterPrint {
                 actor: entity,
@@ -450,16 +526,31 @@ impl Q2Ctf {
         };
         if name.is_empty() {
             let state_team = ctf_player(game, &entity).team;
-            ctf_print(game, &format!("You are on the {} team.\n", ctf_team_name(state_team)), Some(entity), Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                &format!("You are on the {} team.\n", ctf_team_name(state_team)),
+                Some(entity),
+                Q2CtfPrintLevel::High,
+            );
             return;
         }
         let phase = game.ctf.match_state.phase;
         if phase != Q2CtfMatchPhase::None && phase != Q2CtfMatchPhase::Setup {
-            ctf_print(game, "Can't change teams in a match.\n", Some(entity), Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                "Can't change teams in a match.\n",
+                Some(entity),
+                Q2CtfPrintLevel::High,
+            );
             return;
         }
         let Some(team) = team else {
-            ctf_print(game, &format!("Unknown team {name}.\n"), Some(entity), Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                &format!("Unknown team {name}.\n"),
+                Some(entity),
+                Q2CtfPrintLevel::High,
+            );
             return;
         };
         if ctf_player(game, &entity).team == team {
@@ -479,9 +570,27 @@ impl Q2Ctf {
                 player.god = false;
             }
             let owned = game.owned_of(entity.clone());
-            game.host.combat().set_traits(&owned, &CombatTraitChanges { invulnerable: Some(false), ..CombatTraitChanges::default() });
+            game.host.combat().set_traits(
+                &owned,
+                &CombatTraitChanges {
+                    invulnerable: Some(false),
+                    ..CombatTraitChanges::default()
+                },
+            );
             let origin = game.body_of(entity.clone()).origin;
-            game.damage(entity.clone(), entity.clone(), Some(entity.clone()), 100000.0, 0.0, Vec3::default(), origin, Vec3::default(), 23, 32, None);
+            game.damage(
+                entity.clone(),
+                entity.clone(),
+                Some(entity.clone()),
+                100000.0,
+                0.0,
+                Vec3::default(),
+                origin,
+                Vec3::default(),
+                23,
+                32,
+                None,
+            );
             if let Some(player) = (self.hooks.player)(entity.clone(), game) {
                 player.score = 0;
             }
@@ -552,15 +661,23 @@ impl Q2Ctf {
                 state.spawn_state += 1;
             }
             let starts = q2_entities_named(game, &format!("info_player_team{team}"));
-            let mut ranged: Vec<(ActorId, f64)> =
-                starts.iter().map(|spot| (spot.clone(), q2_players_range(game, spot.clone()))).collect();
+            let mut ranged: Vec<(ActorId, f64)> = starts
+                .iter()
+                .map(|spot| (spot.clone(), q2_players_range(game, spot.clone())))
+                .collect();
             ranged.sort_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(std::cmp::Ordering::Equal));
             let candidates = if starts.len() > 2 {
-                starts.iter().filter(|spot| *spot != &ranged[0].0 && *spot != &ranged[1].0).cloned().collect::<Vec<_>>()
+                starts
+                    .iter()
+                    .filter(|spot| *spot != &ranged[0].0 && *spot != &ranged[1].0)
+                    .cloned()
+                    .collect::<Vec<_>>()
             } else {
                 starts
             };
-            spot = candidates.get((game.random() * candidates.len() as f64).floor() as usize).cloned();
+            spot = candidates
+                .get((game.random() * candidates.len() as f64).floor() as usize)
+                .cloned();
         }
         let spot = spot.unwrap_or_else(|| select_q2_spawn(game, &snapshot, ""));
         let origin = q2_spawn_origin(game, spot.clone());
@@ -584,7 +701,9 @@ impl Q2Ctf {
 
     /// Whether two actors share a team (`sameTeam`).
     pub fn same_team(&self, one: Option<ActorId>, two: ActorId, game: &Q2GameServices) -> bool {
-        let first = one.as_ref().and_then(|actor| game.ctf.states.get(actor).map(|state| state.team));
+        let first = one
+            .as_ref()
+            .and_then(|actor| game.ctf.states.get(actor).map(|state| state.team));
         first.is_some_and(|team| team != 0 && Some(team) == game.ctf.states.get(&two).map(|state| state.team))
     }
 
@@ -612,7 +731,13 @@ impl Q2Ctf {
                 ghost.actor = None;
             }
         }
-        if game.ctf.match_state.election.as_ref().is_some_and(|election| election.target == entity) {
+        if game
+            .ctf
+            .match_state
+            .election
+            .as_ref()
+            .is_some_and(|election| election.target == entity)
+        {
             game.ctf.match_state.election = None;
         }
         game.ctf.states.remove(&entity);
@@ -672,10 +797,16 @@ impl Q2Ctf {
             let owned = game.owned_of(entity.clone());
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id("q2:weapon_grapple"), count: 1.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id("q2:weapon_grapple"),
+                    count: 1.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
-        self.grapple().player_frame(entity.clone(), game, Q2CtfGrappleBinding::WeaponSlot);
+        self.grapple()
+            .player_frame(entity.clone(), game, Q2CtfGrappleBinding::WeaponSlot);
         self.techs().regenerate(entity.clone(), game);
         self.flags().effects(entity.clone(), game);
         self.match_service().sync_ghost(entity.clone(), game);
@@ -732,7 +863,8 @@ impl Q2Ctf {
     /// Run a client command (`command`).
     pub fn command(&self, entity: ActorId, game: &mut Q2GameServices, command: &str, args: &[String]) -> bool {
         if command == "hook" || command == "+hook" || command == "unhook" || command == "-hook" {
-            self.grapple().command(entity, game, command == "hook" || command == "+hook");
+            self.grapple()
+                .command(entity, game, command == "hook" || command == "+hook");
             return true;
         }
         if !game.ctf.states.contains_key(&entity) {
@@ -808,7 +940,10 @@ impl Q2Ctf {
                 };
                 ctf_print(
                     game,
-                    &format!("Disabling player identification {}.\n", if id_view { "off" } else { "on" }),
+                    &format!(
+                        "Disabling player identification {}.\n",
+                        if id_view { "off" } else { "on" }
+                    ),
                     Some(entity),
                     Q2CtfPrintLevel::High,
                 );
@@ -866,7 +1001,13 @@ impl Q2Ctf {
                 let mut lines = String::new();
                 for actor in game.host.players() {
                     let common = (self.hooks.player)(actor.clone(), game).map(|player| {
-                        (player.slot, player.entered_at, player.ping, player.score, player.name.clone())
+                        (
+                            player.slot,
+                            player.entered_at,
+                            player.ping,
+                            player.score,
+                            player.name.clone(),
+                        )
                     });
                     let member = game.ctf.states.get(&actor).map(|state| (state.team, state.admin));
                     let (Some(common), Some(member)) = (common, member) else {
@@ -912,7 +1053,8 @@ impl Q2Ctf {
             Q2CtfMenuAction::Observer => self.observer(entity, game),
             Q2CtfMenuAction::Chase => (self.hooks.chase)(entity, game),
             Q2CtfMenuAction::Match => {
-                self.match_service().begin_election(entity, game, Q2CtfElectionKind::Match, "");
+                self.match_service()
+                    .begin_election(entity, game, Q2CtfElectionKind::Match, "");
             }
             Q2CtfMenuAction::Ready => {
                 self.match_service().ready(entity, game, true);
@@ -944,15 +1086,28 @@ impl Q2Ctf {
                     actor: entity,
                     title: "ThreeWave CTF credits".to_string(),
                     entries: vec![
-                        Q2CtfMenuEntry { label: "Design and code: David 'Zoid' Kirsch".to_string(), action: None },
-                        Q2CtfMenuEntry { label: "id Software Quake II".to_string(), action: None },
-                        Q2CtfMenuEntry { label: "Close".to_string(), action: Some(Q2CtfMenuAction::Close) },
+                        Q2CtfMenuEntry {
+                            label: "Design and code: David 'Zoid' Kirsch".to_string(),
+                            action: None,
+                        },
+                        Q2CtfMenuEntry {
+                            label: "id Software Quake II".to_string(),
+                            action: None,
+                        },
+                        Q2CtfMenuEntry {
+                            label: "Close".to_string(),
+                            action: Some(Q2CtfMenuAction::Close),
+                        },
                     ],
                 },
             ),
             Q2CtfMenuAction::Close => (self.hooks.emit)(
                 game,
-                Q2CtfEvent::Menu { actor: entity, title: String::new(), entries: Vec::new() },
+                Q2CtfEvent::Menu {
+                    actor: entity,
+                    title: String::new(),
+                    entries: Vec::new(),
+                },
             ),
         }
     }

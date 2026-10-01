@@ -32,34 +32,51 @@ pub struct Q2RereleaseGoals {
 /// Rerelease goal callbacks (`Q2RereleaseGoals::callbacks`).
 pub fn rerelease_goal_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("rr.G_VerifyTargetted", rerelease_verify_target as Q2Think);
+    callbacks
+        .think
+        .insert("rr.G_VerifyTargetted", rerelease_verify_target as Q2Think);
     callbacks.use_.insert("rr.Use_Target_Help", rerelease_help_use as Q2Use);
-    callbacks.use_.insert("rr.use_target_goal_or_secret", rerelease_goal_use as Q2Use);
+    callbacks
+        .use_
+        .insert("rr.use_target_goal_or_secret", rerelease_goal_use as Q2Use);
     callbacks
 }
 
 /// Spawn rerelease goals (`Q2RereleaseGoals::spawn`).
 pub fn rerelease_goals_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    Q2RereleaseGoals { hooks: super::rerelease_hooks(game) }.spawn(entity, game)
+    Q2RereleaseGoals {
+        hooks: super::rerelease_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Target help use (`helpUse`).
 fn rerelease_help_use(entity: ActorId, game: &mut Q2GameServices, other: Option<ActorId>, activator: Option<ActorId>) {
-    Q2RereleaseGoals { hooks: super::rerelease_hooks(game) }.help_use(entity, game, other, activator);
+    Q2RereleaseGoals {
+        hooks: super::rerelease_hooks(game),
+    }
+    .help_use(entity, game, other, activator);
 }
 
 /// Target goal or secret use (`goalUse`).
 fn rerelease_goal_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
-    Q2RereleaseGoals { hooks: super::rerelease_hooks(game) }.goal_use(entity, game, activator);
+    Q2RereleaseGoals {
+        hooks: super::rerelease_hooks(game),
+    }
+    .goal_use(entity, game, activator);
 }
 
 /// Verify a goal target (`verifyTarget`).
 fn rerelease_verify_target(entity: ActorId, game: &mut Q2GameServices) {
     let record = game.require_entity(&entity).clone();
     if record.targetname.is_empty() {
-        game.host.diagnostic(&format!("WARNING: missing targetname on {}", record.classname));
+        game.host
+            .diagnostic(&format!("WARNING: missing targetname on {}", record.classname));
     } else if !game.entities.values().any(|other| other.target == record.targetname) {
-        game.host.diagnostic(&format!("WARNING: nothing targets {} {}", record.classname, record.targetname));
+        game.host.diagnostic(&format!(
+            "WARNING: nothing targets {} {}",
+            record.classname, record.targetname
+        ));
     }
 }
 
@@ -86,7 +103,8 @@ impl Q2RereleaseGoals {
             }
             return false;
         }
-        if record.classname != "target_help" && record.classname != "target_secret" && record.classname != "target_goal" {
+        if record.classname != "target_help" && record.classname != "target_secret" && record.classname != "target_goal"
+        {
             return false;
         }
         if game.options.mode == Q2Mode::Deathmatch {
@@ -144,7 +162,12 @@ impl Q2RereleaseGoals {
     /// Use a goal or secret target.
     fn goal_use(&self, entity: ActorId, game: &mut Q2GameServices, activator: Option<ActorId>) {
         let record = game.require_entity(&entity).clone();
-        let noise = record.spawn.values.get("noise").cloned().unwrap_or_else(|| "misc/secret.wav".to_string());
+        let noise = record
+            .spawn
+            .values
+            .get("noise")
+            .cloned()
+            .unwrap_or_else(|| "misc/secret.wav".to_string());
         game.sound(&entity, &noise, 2, 1.0, 1.0);
         if record.classname == "target_secret" {
             game.counters.found_secrets += 1;
@@ -369,7 +392,10 @@ impl Q2RereleaseGoals {
             .expect("Q2 player has not been admitted")
             .show_help;
         let player_hooks = game.players.hooks.expect("Q2 player hooks are not registered");
-        (player_hooks.emit)(Q2PlayerEvent::Help { actor: player.clone(), visible });
+        (player_hooks.emit)(Q2PlayerEvent::Help {
+            actor: player.clone(),
+            visible,
+        });
         (self.hooks.emit)(
             game,
             Q2RereleaseEvent::HelpComputer {

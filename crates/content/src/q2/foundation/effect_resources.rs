@@ -55,5 +55,4 @@ pub const Q2_TRANSIENT_SOUNDS: [&str; 14] = [
 ];
 
 /// Rogue transient sounds (`Q2_ROGUE_TRANSIENT_SOUNDS`).
-pub const Q2_ROGUE_TRANSIENT_SOUNDS: [&str; 2] =
-    ["weapons/tesla.wav", "weapons/disrupthit.wav"];
+pub const Q2_ROGUE_TRANSIENT_SOUNDS: [&str; 2] = ["weapons/tesla.wav", "weapons/disrupthit.wav"];

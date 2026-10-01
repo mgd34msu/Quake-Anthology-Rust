@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, dot3, sub3, vec3};
+use qa_core::math::{dot3, sub3, vec3, Vec3};
 
-use super::callbacks::{Q2CallbackDefinitions, free_q2_entity};
+use super::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use super::fields::{integer_field, movedir, number_field};
 use super::host::{
-    Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2LandmarkCarry, Q2Mode,
-    Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, SpawnModule,
+    Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2LandmarkCarry, Q2Mode, Q2PresentationEvent, Q2Solid,
+    Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, SpawnModule,
 };
 use super::shadow_lights::{dynamic_light_use, spawn_q2_shadow_light};
 use crate::q2::support::contracts::{TouchContact, TransitionIntent};
@@ -85,12 +85,19 @@ fn target_speaker(this: ActorId, game: &mut Q2GameServices) {
     let volume = number_field(&spawn, "volume", 0.0);
     let volume = if volume == 0.0 { 1.0 } else { volume };
     let authored = number_field(&spawn, "attenuation", 0.0);
-    let rerelease_loop =
-        game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 3 != 0;
+    let rerelease_loop = game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 3 != 0;
     let attenuation = if authored == -1.0 {
-        if rerelease_loop { -1.0 } else { 0.0 }
+        if rerelease_loop {
+            -1.0
+        } else {
+            0.0
+        }
     } else if authored == 0.0 {
-        if rerelease_loop { 3.0 } else { 1.0 }
+        if rerelease_loop {
+            3.0
+        } else {
+            1.0
+        }
     } else {
         authored
     };
@@ -193,8 +200,13 @@ fn spawn_target(actor: ActorId, game: &mut Q2GameServices) -> bool {
             game.host_emit(Q2PresentationEvent::Music { track });
             true
         }
-        "info_player_start" | "info_player_coop" | "info_player_deathmatch"
-        | "info_player_intermission" | "info_notnull" | "info_landmark" | "func_group" => true,
+        "info_player_start"
+        | "info_player_coop"
+        | "info_player_deathmatch"
+        | "info_player_intermission"
+        | "info_notnull"
+        | "info_landmark"
+        | "func_group" => true,
         "info_null" => {
             game.remove_actor(actor);
             true
@@ -202,9 +214,7 @@ fn spawn_target(actor: ActorId, game: &mut Q2GameServices) -> bool {
         "light" => {
             let spawn = game.require_entity(&actor).spawn.clone();
             let style = integer_field(&spawn, "style", 0);
-            if game.require_entity(&actor).targetname.is_empty()
-                || game.options.mode == Q2Mode::Deathmatch
-            {
+            if game.require_entity(&actor).targetname.is_empty() || game.options.mode == Q2Mode::Deathmatch {
                 game.remove_actor(actor);
                 return true;
             }
@@ -259,30 +269,22 @@ fn spawn_target(actor: ActorId, game: &mut Q2GameServices) -> bool {
             true
         }
         "trigger_key" => {
-            let key_name = game
-                .require_entity(&actor)
-                .spawn
-                .values
-                .get("item")
-                .cloned();
+            let key_name = game.require_entity(&actor).spawn.values.get("item").cloned();
             let Some(key_name) = key_name else {
                 game.host.diagnostic("trigger_key has no item");
                 return true;
             };
             let pickup = game.item_name(&key_name);
             if pickup.is_none() || game.require_entity(&actor).target.is_empty() {
-                game.host.diagnostic(&format!(
-                    "Q2 trigger_key has unknown item or no target: {key_name}"
-                ));
+                game.host
+                    .diagnostic(&format!("Q2 trigger_key has unknown item or no target: {key_name}"));
                 return true;
             }
             game.require_entity_mut(&actor).use_ = Some(trigger_key_use);
             true
         }
         "target_help" => {
-            if game.options.mode == Q2Mode::Deathmatch
-                || game.require_entity(&actor).message.is_empty()
-            {
+            if game.options.mode == Q2Mode::Deathmatch || game.require_entity(&actor).message.is_empty() {
                 game.remove_actor(actor);
             } else {
                 game.require_entity_mut(&actor).use_ = Some(use_target_help);
@@ -363,12 +365,7 @@ fn touch_multi(this: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
 }
 
 /// Multi use (`Use_Multi`).
-fn use_multi(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn use_multi(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     if game.require_entity(&this).solid == Q2Solid::None {
         game.set_solid(this, Q2Solid::Trigger);
         return;
@@ -417,30 +414,13 @@ fn emit_speaker(this: ActorId, game: &mut Q2GameServices, operation: Q2SoundLoop
 }
 
 /// Target speaker use (`Use_Target_Speaker`).
-fn use_target_speaker(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_speaker(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     if game.require_entity(&this).spawnflags & 3 != 0 {
         let noise = game.require_entity(&this).noise.clone();
         let entity = game.require_entity_mut(&this);
-        entity.sound = if entity.sound.is_empty() {
-            noise
-        } else {
-            String::new()
-        };
+        entity.sound = if entity.sound.is_empty() { noise } else { String::new() };
         let start = !game.require_entity(&this).sound.is_empty();
-        emit_speaker(
-            this,
-            game,
-            if start {
-                Q2SoundLoop::Start
-            } else {
-                Q2SoundLoop::Stop
-            },
-        );
+        emit_speaker(this, game, if start { Q2SoundLoop::Start } else { Q2SoundLoop::Stop });
         return;
     }
     emit_speaker(this, game, Q2SoundLoop::Once);
@@ -459,12 +439,7 @@ fn func_timer_think(this: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Func timer use (`func_timer_use`).
-fn func_timer_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn func_timer_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     game.require_entity_mut(&this).activator = activator;
     if game.require_entity(&this).next_think.is_some() {
         game.cancel_actor(this);
@@ -507,8 +482,7 @@ fn use_target_changelevel(
         Some(other)
             if game.options.mode == Q2Mode::Deathmatch
                 && game.deathmatch_flags() & 4096 == 0
-                && game.entity(&other).map(|entity| entity.classname.as_str())
-                    != Some("worldspawn") =>
+                && game.entity(&other).map(|entity| entity.classname.as_str()) != Some("worldspawn") =>
         {
             Some(other)
         }
@@ -518,10 +492,7 @@ fn use_target_changelevel(
         let body = game.host.bodies().read(&other);
         let health = game.host.combat().read(&other);
         if let (Some(body), Some(_)) = (body, health) {
-            let max_health = game
-                .entity(&other)
-                .map(|entity| entity.max_health)
-                .unwrap_or(0.0);
+            let max_health = game.entity(&other).map(|entity| entity.max_health).unwrap_or(0.0);
             let max_health = if max_health == 0.0 { 100.0 } else { max_health };
             let zero = vec3(0.0, 0.0, 0.0);
             game.damage(
@@ -567,16 +538,12 @@ fn use_target_changelevel(
         let carry = Q2LandmarkCarry {
             player: activator,
             name,
-            relative_origin: unrotate_q2_landmark(
-                sub3(player_body.origin, reference.origin),
-                reference.angles,
-            ),
+            relative_origin: unrotate_q2_landmark(sub3(player_body.origin, reference.origin), reference.angles),
             relative_velocity: unrotate_q2_landmark(player_view.old_velocity, reference.angles),
             relative_view_angles: sub3(player_view.view_angles, reference.angles),
         };
         let server_flags = game.counters.server_flags;
-        game.host
-            .prepare_level_change(&map, Some(&carry), server_flags);
+        game.host.prepare_level_change(&map, Some(&carry), server_flags);
     } else {
         let server_flags = game.counters.server_flags;
         game.host.prepare_level_change(&map, None, server_flags);
@@ -593,18 +560,10 @@ fn use_target_changelevel(
 }
 
 /// Light use (`light_use`).
-fn light_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn light_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity_mut(&this);
     entity.spawnflags ^= 1;
-    let (style, pattern) = (
-        entity.style,
-        if entity.spawnflags & 1 != 0 { "a" } else { "m" },
-    );
+    let (style, pattern) = (entity.style, if entity.spawnflags & 1 != 0 { "a" } else { "m" });
     game.host_emit(Q2PresentationEvent::LightStyle {
         style,
         pattern: pattern.to_string(),
@@ -612,23 +571,13 @@ fn light_use(
 }
 
 /// Trigger relay use (`trigger_relay_use`).
-fn trigger_relay_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn trigger_relay_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     let authored = game.require_entity(&this).authored_target();
     game.use_targets(&authored, activator.as_ref(), false);
 }
 
 /// Trigger counter use (`trigger_counter_use`).
-fn trigger_counter_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn trigger_counter_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     if game.require_entity(&this).count == 0 {
         return;
     }
@@ -655,12 +604,7 @@ fn trigger_counter_use(
 }
 
 /// Trigger key use (`trigger_key_use`).
-fn trigger_key_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn trigger_key_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     let key_name = game
         .require_entity(&this)
         .spawn
@@ -721,10 +665,7 @@ fn trigger_key_use(
         || game.options.edition == Q2Edition::Rerelease && key_name == "key_explosive_charges";
     let mut cube = 0;
     if game.options.mode == Q2Mode::Coop && cube_key {
-        let bits = game
-            .entity(&activator)
-            .map(|entity| entity.power_cubes)
-            .unwrap_or(0);
+        let bits = game.entity(&activator).map(|entity| entity.power_cubes).unwrap_or(0);
         while cube < 8 && bits & 1 << cube == 0 {
             cube += 1;
         }
@@ -762,12 +703,7 @@ fn trigger_key_use(
 }
 
 /// Target help use (`use_target_help`).
-fn use_target_help(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_help(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity(&this).clone();
     game.host_emit(Q2PresentationEvent::Help {
         slot: if entity.spawnflags & 1 != 0 { 1 } else { 2 },
@@ -797,9 +733,7 @@ fn use_target_secret_or_goal(
         game.counters.found_goals += 1;
     }
     if !secret && game.counters.total_goals == game.counters.found_goals {
-        game.host_emit(Q2PresentationEvent::Music {
-            track: "0".to_string(),
-        });
+        game.host_emit(Q2PresentationEvent::Music { track: "0".to_string() });
     }
     let authored = game.require_entity(&this).authored_target();
     game.use_targets(&authored, activator.as_ref(), false);
@@ -807,12 +741,7 @@ fn use_target_secret_or_goal(
 }
 
 /// Target explosion use (`use_target_explosion`).
-fn use_target_explosion(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn use_target_explosion(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     game.require_entity_mut(&this).activator = activator;
     if game.require_entity(&this).delay == 0.0 {
         target_explosion_explode(this, game);
@@ -847,12 +776,7 @@ fn target_explosion_explode(this: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Target splash use (`use_target_splash`).
-fn use_target_splash(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn use_target_splash(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     let entity = game.require_entity(&this).clone();
     let origin = game.body_of(this.clone()).origin;
     game.host_emit(Q2PresentationEvent::Effect(Q2EffectEvent {
@@ -877,12 +801,7 @@ fn use_target_splash(
 }
 
 /// Target POI use (`use_target_poi`).
-fn use_target_poi(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_poi(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity(&this).clone();
     let origin = game.body_of(this).origin;
     game.host_emit(Q2PresentationEvent::Poi {
@@ -893,12 +812,7 @@ fn use_target_poi(
 }
 
 /// Func areaportal use (`Use_Areaportal`).
-fn use_areaportal(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_areaportal(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity_mut(&this);
     entity.count ^= 1;
     let (style, open) = (entity.style, entity.count != 0);
@@ -922,9 +836,7 @@ pub fn create_q2_target_module() -> SpawnModule {
     callbacks.use_.insert("Use_Multi", use_multi);
     callbacks.use_.insert("Use_Target_Speaker", use_target_speaker);
     callbacks.use_.insert("func_timer_use", func_timer_use);
-    callbacks
-        .use_
-        .insert("use_target_changelevel", use_target_changelevel);
+    callbacks.use_.insert("use_target_changelevel", use_target_changelevel);
     callbacks.use_.insert("light_use", light_use);
     callbacks.use_.insert("trigger_relay_use", trigger_relay_use);
     callbacks.use_.insert("trigger_counter_use", trigger_counter_use);
@@ -933,9 +845,7 @@ pub fn create_q2_target_module() -> SpawnModule {
     callbacks
         .use_
         .insert("use_target_secret_or_goal", use_target_secret_or_goal);
-    callbacks
-        .use_
-        .insert("use_target_explosion", use_target_explosion);
+    callbacks.use_.insert("use_target_explosion", use_target_explosion);
     callbacks.use_.insert("use_target_splash", use_target_splash);
     callbacks.use_.insert("use_target_poi", use_target_poi);
     callbacks.use_.insert("Use_Areaportal", use_areaportal);

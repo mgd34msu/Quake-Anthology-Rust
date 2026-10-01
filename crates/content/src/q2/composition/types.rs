@@ -261,18 +261,25 @@ pub enum Q2CompositionOptions {
 impl std::fmt::Debug for Q2CompositionOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Q2CompositionOptions::Classic { common, program } => {
-                f.debug_struct("Classic").field("common", common).field("program", program).finish()
-            }
-            Q2CompositionOptions::Rerelease { common, program, rerelease_hooks, rerelease_options, campaign } => {
-                f.debug_struct("Rerelease")
-                    .field("common", common)
-                    .field("program", program)
-                    .field("rerelease_hooks", rerelease_hooks)
-                    .field("rerelease_options", rerelease_options)
-                    .field("campaign", campaign)
-                    .finish()
-            }
+            Q2CompositionOptions::Classic { common, program } => f
+                .debug_struct("Classic")
+                .field("common", common)
+                .field("program", program)
+                .finish(),
+            Q2CompositionOptions::Rerelease {
+                common,
+                program,
+                rerelease_hooks,
+                rerelease_options,
+                campaign,
+            } => f
+                .debug_struct("Rerelease")
+                .field("common", common)
+                .field("program", program)
+                .field("rerelease_hooks", rerelease_hooks)
+                .field("rerelease_options", rerelease_options)
+                .field("campaign", campaign)
+                .finish(),
         }
     }
 }

@@ -12,9 +12,7 @@ use crate::monsters::MonsterMission;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Entity, Q2GameServices};
 use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
-use crate::q2::support::contracts::{
-    DeathReaction, PainReaction, PowerArmorCells, TraceResult,
-};
+use crate::q2::support::contracts::{DeathReaction, PainReaction, PowerArmorCells, TraceResult};
 
 /// Monster frame AI selector (`MonsterFrame["ai"]`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -124,12 +122,7 @@ pub struct MonsterMove {
 }
 
 /// Build one animation frame (species table shorthand).
-pub fn monster_frame(
-    ai: MonsterAi,
-    distance: f64,
-    actions: Vec<MonsterAction>,
-    lerp_frame: i32,
-) -> MonsterFrame {
+pub fn monster_frame(ai: MonsterAi, distance: f64, actions: Vec<MonsterAction>, lerp_frame: i32) -> MonsterFrame {
     MonsterFrame {
         ai,
         distance,
@@ -377,7 +370,11 @@ impl MonsterHandler {
         match self {
             MonsterHandler::Callback(callback) => callback(context),
             MonsterHandler::SetMove(name) => context.set_move(name, true),
-            MonsterHandler::PlaySound { path, channel, attenuation } => {
+            MonsterHandler::PlaySound {
+                path,
+                channel,
+                attenuation,
+            } => {
                 let actor = context.actor().clone();
                 context.game.sound(&actor, path, *channel, 1.0, *attenuation);
             }
@@ -844,16 +841,13 @@ pub struct MonsterWeapons {
     /// Fire a bullet.
     pub fire_bullet: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32),
     /// Fire shotgun pellets.
-    pub fire_shotgun:
-        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32, i32),
+    pub fire_shotgun: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32, i32),
     /// Fire a blaster bolt.
-    pub fire_blaster:
-        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId,
+    pub fire_blaster: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId,
     /// Melee hit.
     pub fire_hit: fn(ActorId, &mut Q2GameServices, Vec3, f64, f64) -> bool,
     /// Fire a rocket.
-    pub fire_rocket:
-        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId,
+    pub fire_rocket: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId,
     /// Fire a grenade.
     pub fire_grenade: fn(
         ActorId,
@@ -886,11 +880,7 @@ pub trait Q2MonsterSourceCombatHooks {
     /// Recover an enemy after the current one died.
     fn recover_enemy(&mut self, context: &mut MonsterContext) -> Option<ActorId>;
     /// Intercept a step displacement.
-    fn before_move(
-        &mut self,
-        context: &mut MonsterContext,
-        displacement: Vec3,
-    ) -> SourceMoveOutcome;
+    fn before_move(&mut self, context: &mut MonsterContext, displacement: Vec3) -> SourceMoveOutcome;
     /// Whether a ground move destination is acceptable.
     fn accepts_ground_move(&mut self, context: &mut MonsterContext, origin: Vec3) -> bool;
     /// Consume a blocked move, reporting whether handled.
@@ -921,7 +911,12 @@ pub struct Q2MonsterHooks {
 
 impl Default for Q2MonsterHooks {
     fn default() -> Self {
-        Self { drop_item: None, platform_state: None, mission: None, healthbar_transfer: None }
+        Self {
+            drop_item: None,
+            platform_state: None,
+            mission: None,
+            healthbar_transfer: None,
+        }
     }
 }
 
@@ -1033,10 +1028,7 @@ impl<'a> MonsterContext<'a> {
     /// Consume a blocked move (`consumeSourceBlocked`).
     pub fn consume_source_blocked(&mut self) -> bool {
         let mut hooks = self.game.monsters.source_combat_hooks.take();
-        let consumed = hooks
-            .as_mut()
-            .map(|hooks| hooks.consume_blocked(self))
-            .unwrap_or(false);
+        let consumed = hooks.as_mut().map(|hooks| hooks.consume_blocked(self)).unwrap_or(false);
         self.game.monsters.source_combat_hooks = hooks;
         consumed
     }
@@ -1044,8 +1036,7 @@ impl<'a> MonsterContext<'a> {
     /// Run hint-path movement (`runHintPath`).
     pub fn run_hint_path(&mut self, distance: f64) -> bool {
         let mut hooks = self.game.monsters.hint_hooks.take();
-        let handled =
-            hooks.as_mut().map(|hooks| hooks.run(self, distance)).unwrap_or(false);
+        let handled = hooks.as_mut().map(|hooks| hooks.run(self, distance)).unwrap_or(false);
         self.game.monsters.hint_hooks = hooks;
         handled
     }
@@ -1174,7 +1165,12 @@ impl<'a> MonsterContext<'a> {
 
     /// Read platform state (`platformState`).
     pub fn platform_state(&self, actor: &ActorId) -> Option<PlatformPhase> {
-        self.game.monsters.hooks.platform_state.map(|read| read(actor)).flatten()
+        self.game
+            .monsters
+            .hooks
+            .platform_state
+            .map(|read| read(actor))
+            .flatten()
     }
 
     /// Look up the authored mission (`hooks.mission`).
@@ -1213,11 +1209,7 @@ pub fn bind_shared_power_cells(context: &mut MonsterContext) {
             .inventory()
             .count(&actor, &"q2:monster-power".to_string()),
     ));
-    context
-        .game
-        .monsters
-        .power_cells
-        .insert(actor.clone(), cells.clone());
+    context.game.monsters.power_cells.insert(actor.clone(), cells.clone());
     let owned = context.game.owned_of(actor);
     context
         .game

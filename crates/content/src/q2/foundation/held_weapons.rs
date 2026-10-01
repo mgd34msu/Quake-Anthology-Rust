@@ -4,9 +4,7 @@ use qa_core::math::Vec3;
 
 use crate::contract::{HeldWeaponModel, ModelTransform};
 use crate::q2::foundation::weapons::definitions::base_weapons;
-use crate::q2::missionpacks::weapons::definitions::{
-    rogue_weapon_definitions, xatrix_weapon_definitions,
-};
+use crate::q2::missionpacks::weapons::definitions::{rogue_weapon_definitions, xatrix_weapon_definitions};
 
 /// Shared male blaster grip (`MALE_BLASTER_GRIP`).
 const MALE_BLASTER_GRIP: ModelTransform = ModelTransform {
@@ -32,11 +30,7 @@ const MALE_BLASTER_GRIP: ModelTransform = ModelTransform {
             z: (0.9841850996017456_f64 as f32),
         },
     ],
-    scale: Vec3 {
-        x: 1.0,
-        y: 1.0,
-        z: 1.0,
-    },
+    scale: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
 };
 
 /// Native male held-weapon model names by item (`nativeModels`).
@@ -109,8 +103,7 @@ mod tests {
         assert_eq!(by_item.path, "players/male/w_railgun.md2");
         let rogue = q2_held_weapon("", Some("q2:weapon_chainfist")).expect("chainfist");
         assert_eq!(rogue.path, "players/male/w_chainfist.md2");
-        let grapple =
-            q2_held_weapon("models/weapons/grapple/tris.md2", None).expect("grapple");
+        let grapple = q2_held_weapon("models/weapons/grapple/tris.md2", None).expect("grapple");
         assert_eq!(grapple.path, "players/male/w_grapple.md2");
         assert!(q2_held_weapon("models/weapons/v_unknown/tris.md2", None).is_none());
     }

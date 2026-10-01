@@ -6,35 +6,25 @@
 use qa_core::identity::ActorId;
 use qa_core::math::{add3, scale3};
 
-use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_monster_dodge, rogue_parasite_drain_trace,
-};
+use super::rogue_common::{rogue_blocked_check_shot, rogue_monster_dodge, rogue_parasite_drain_trace};
 use super::state::rogue_state;
 use super::tables::rogue_berserk::berserk_moves;
 use super::tables::rogue_mutant::mutant_moves;
 use super::tables::rogue_parasite::parasite_moves;
 use crate::q2::base::monsters::berserk::{berserk_definition, berserk_run};
 use crate::q2::base::monsters::common::damaged_skin;
-use crate::q2::base::monsters::mutant::{MutantSource, create_mutant_definition};
+use crate::q2::base::monsters::mutant::{create_mutant_definition, MutantSource};
 use crate::q2::base::monsters::parasite::parasite_definition;
 use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, finish_dodge};
 use crate::q2::foundation::monsters::perception::default_check_attack;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    monster_jump_finished,
+    blocked_check_jump, blocked_check_platform, monster_jump_finished, JumpNavigation, JumpResult,
 };
 use crate::q2::support::contracts::{PainReaction, TraceHit, TraceResult};
 
 /// Jump impulse (`jumpImpulse`).
-fn jump_impulse(
-    context: &mut MonsterContext,
-    forward_speed: f64,
-    up_speed: f64,
-    timed: bool,
-) {
+fn jump_impulse(context: &mut MonsterContext, forward_speed: f64, up_speed: f64, timed: bool) {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
     let axes = angles_vectors(body.angles);
@@ -56,8 +46,7 @@ fn jump_impulse(
 /// Jump wait (`jumpWait`).
 fn jump_wait(context: &mut MonsterContext, timed: bool) {
     let actor = context.actor().clone();
-    let landed = context.game.body_of(actor).ground.is_some()
-        || timed && monster_jump_finished(context);
+    let landed = context.game.body_of(actor).ground.is_some() || timed && monster_jump_finished(context);
     let next = context.entity().frame + if landed { 1 } else { 0 };
     context.state_mut().next_frame = next;
 }
@@ -98,10 +87,7 @@ fn rogue_berserk_melee(context: &mut MonsterContext) {
 /// Berserk sidestep (`berserkSidestep`).
 fn rogue_berserk_sidestep(context: &mut MonsterContext) {
     let current = context.state().current_move.name.clone();
-    if current == "berserk_move_jump"
-        || current == "berserk_move_jump2"
-        || current == "berserk_move_run1"
-    {
+    if current == "berserk_move_jump" || current == "berserk_move_jump2" || current == "berserk_move_run1" {
         return;
     }
     context.set_move("berserk_move_run1", true);
@@ -120,9 +106,7 @@ fn rogue_berserk_dodge(
 
 /// Berserk blocked (`blocked`).
 fn rogue_berserk_blocked(context: &mut MonsterContext, distance: f64) -> bool {
-    if blocked_check_jump(context, distance, 256.0, 40.0, true, JumpNavigation::None)
-        != JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 256.0, 40.0, true, JumpNavigation::None) != JumpResult::None {
         jump(context, "berserk_move_jump2", "berserk_move_jump", true);
         return true;
     }
@@ -171,9 +155,7 @@ fn berserk_jump_wait_land(context: &mut MonsterContext) {
 
 /// Mutant blocked (`blocked`).
 fn rogue_mutant_blocked(context: &mut MonsterContext, distance: f64) -> bool {
-    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None)
-        != JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None) != JumpResult::None {
         jump(context, "mutant_move_jump_up", "mutant_move_jump_down", false);
         return true;
     }
@@ -201,9 +183,7 @@ fn rogue_parasite_blocked(context: &mut MonsterContext, distance: f64) -> bool {
     if rogue_blocked_check_shot(context, chance) {
         return true;
     }
-    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None)
-        != JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None) != JumpResult::None {
         jump(context, "parasite_move_jump_up", "parasite_move_jump_down", false);
         return true;
     }
@@ -255,14 +235,12 @@ pub fn create_rogue_jumping_monsters() -> Vec<Q2MonsterDefinition> {
     berserk.dodge = Some(rogue_berserk_dodge);
     berserk.blocked = Some(rogue_berserk_blocked);
     berserk.pain = Some(rogue_berserk_pain);
-    berserk.callbacks.insert(
-        "berserk_run".to_string(),
-        MonsterHandler::Callback(rogue_berserk_run),
-    );
-    berserk.callbacks.insert(
-        "monster_done_dodge".to_string(),
-        MonsterHandler::Callback(finish_dodge),
-    );
+    berserk
+        .callbacks
+        .insert("berserk_run".to_string(), MonsterHandler::Callback(rogue_berserk_run));
+    berserk
+        .callbacks
+        .insert("monster_done_dodge".to_string(), MonsterHandler::Callback(finish_dodge));
     berserk.callbacks.insert(
         "berserk_jump_now".to_string(),
         MonsterHandler::Callback(berserk_jump_now),
@@ -279,10 +257,9 @@ pub fn create_rogue_jumping_monsters() -> Vec<Q2MonsterDefinition> {
     let mut mutant = create_mutant_definition(MutantSource::Rogue);
     mutant.moves = mutant_moves();
     mutant.blocked = Some(rogue_mutant_blocked);
-    mutant.callbacks.insert(
-        "mutant_jump_up".to_string(),
-        MonsterHandler::Callback(mutant_jump_up),
-    );
+    mutant
+        .callbacks
+        .insert("mutant_jump_up".to_string(), MonsterHandler::Callback(mutant_jump_up));
     mutant.callbacks.insert(
         "mutant_jump_down".to_string(),
         MonsterHandler::Callback(mutant_jump_down),

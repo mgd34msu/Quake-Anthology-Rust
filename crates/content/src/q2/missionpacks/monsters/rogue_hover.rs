@@ -2,21 +2,15 @@
 //!
 //! Original Rogue m_hover.c behavior. ZeniMax Media, GPL-2.0-or-later.
 
-use super::power_armor::{
-    PowerArmorKind, monster_power_armor, restore_monster_power_armor,
-};
+use super::power_armor::{monster_power_armor, restore_monster_power_armor, PowerArmorKind};
 use super::rogue_common::{monster_mass, rogue_blocked_check_shot};
 use super::tables::rogue_hover::{hover_frame, hover_moves};
 use super::types::mission_weapons;
-use crate::q2::base::monsters::common::{
-    alive_enemy, begin_death, monster_loop_sound, monster_shot, standard_gib,
-};
+use crate::q2::base::monsters::common::{alive_enemy, begin_death, monster_loop_sound, monster_shot, standard_gib};
 use crate::q2::base::monsters::hover::{hover_dead_think, hover_definition};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::monsters::ai::{health, visible};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::rerelease::monsters::common::monster_flash;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
@@ -96,15 +90,7 @@ fn rogue_hover_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             powered: crate::contract::PoweredProtectionState::None,
         },
     );
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        2,
-        "models/objects/gibs/sm_meat/tris.md2",
-        1.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 2, "models/objects/gibs/sm_meat/tris.md2", 1.0) || context.state().dead {
         return;
     }
     let suffix = if context.game.random() < 0.5 { "deth1" } else { "deth2" };
@@ -121,11 +107,7 @@ fn rogue_hover_blocked(context: &mut MonsterContext, _distance: f64) -> bool {
 /// Attack (`hover_attack`).
 fn hover_attack(context: &mut MonsterContext) {
     let skill = context.game.options.skill;
-    let mut chance = if skill == 0 {
-        0.0
-    } else {
-        1.0 - 0.5 / f64::from(skill)
-    };
+    let mut chance = if skill == 0 { 0.0 } else { 1.0 - 0.5 / f64::from(skill) };
     if monster_mass(context) > 150.0 {
         chance += 0.1;
     }
@@ -155,9 +137,10 @@ fn hover_reattack(context: &mut MonsterContext) {
                 return;
             }
             other => {
-                context.game.host.diagnostic(&format!(
-                    "hover_reattack: unexpected state {other:?}"
-                ));
+                context
+                    .game
+                    .host
+                    .diagnostic(&format!("hover_reattack: unexpected state {other:?}"));
             }
         }
     }
@@ -223,14 +206,12 @@ pub fn create_rogue_hover_definitions() -> Vec<Q2MonsterDefinition> {
     definition.pain = Some(rogue_hover_pain);
     definition.die = rogue_hover_die;
     definition.blocked = Some(rogue_hover_blocked);
-    definition.callbacks.insert(
-        "hover_attack".to_string(),
-        MonsterHandler::Callback(hover_attack),
-    );
-    definition.callbacks.insert(
-        "hover_reattack".to_string(),
-        MonsterHandler::Callback(hover_reattack),
-    );
+    definition
+        .callbacks
+        .insert("hover_attack".to_string(), MonsterHandler::Callback(hover_attack));
+    definition
+        .callbacks
+        .insert("hover_reattack".to_string(), MonsterHandler::Callback(hover_reattack));
     definition.callbacks.insert(
         "hover_fire_blaster".to_string(),
         MonsterHandler::Callback(hover_fire_blaster),

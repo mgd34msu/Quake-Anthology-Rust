@@ -4,22 +4,20 @@
 //! movement authority.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2Die, Q2Edition, Q2GameServices, Q2MotionKind, Q2Pain, Q2PresentationEvent,
-    Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch,
+    Q2Die, Q2Edition, Q2GameServices, Q2MotionKind, Q2Pain, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2Think, Q2Touch,
 };
 use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::weapons::vectors::vector_angles;
-use crate::q2::support::contracts::{
-    AttackProvenance, DeathReaction, PainReaction, TouchContact,
-};
+use crate::q2::support::contracts::{AttackProvenance, DeathReaction, PainReaction, TouchContact};
 
 use super::projectiles::common::{explode, projectile_mask, publish_projectile, sight};
 use super::projectiles::{mission_projectiles, Q2MissionPackProjectiles};
-use super::types::{Q2_MISSION_PACK_DAMAGE, Q2MissionPackPlayerEffect};
+use super::types::{Q2MissionPackPlayerEffect, Q2_MISSION_PACK_DAMAGE};
 
 /// Sphere kind (`Q2SphereKind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,10 +108,7 @@ impl Q2MissionPackSpheres {
         game.entities.values().find_map(|entity| {
             let id = entity.actor.id().clone();
             let record = game.require_entity(&id);
-            if record.classname == "sphere"
-                && record.owner.as_ref() == Some(actor)
-                && record.spawnflags & flag == 0
-            {
+            if record.classname == "sphere" && record.owner.as_ref() == Some(actor) && record.spawnflags & flag == 0 {
                 Some(id)
             } else {
                 None
@@ -122,12 +117,7 @@ impl Q2MissionPackSpheres {
     }
 
     /// Retaliate for owner damage (`ownerDamaged`).
-    pub fn owner_damaged(
-        &self,
-        actor: &ActorId,
-        attack: &AttackProvenance,
-        game: &mut Q2GameServices,
-    ) {
+    pub fn owner_damaged(&self, actor: &ActorId, attack: &AttackProvenance, game: &mut Q2GameServices) {
         let Some(sphere) = self.owned_sphere(actor, game) else {
             return;
         };
@@ -149,12 +139,7 @@ impl Q2MissionPackSpheres {
     }
 
     /// Retaliate for owner death (`ownerDied`).
-    pub fn owner_died(
-        &self,
-        actor: &ActorId,
-        game: &mut Q2GameServices,
-        attack: Option<&AttackProvenance>,
-    ) {
+    pub fn owner_died(&self, actor: &ActorId, game: &mut Q2GameServices, attack: Option<&AttackProvenance>) {
         let Some(sphere) = self.owned_sphere(actor, game) else {
             return;
         };
@@ -187,13 +172,7 @@ impl Q2MissionPackSpheres {
     }
 
     /// Launch a sphere (`launch`).
-    pub fn launch(
-        &self,
-        owner: &ActorId,
-        game: &mut Q2GameServices,
-        kind: Q2SphereKind,
-        dopple: bool,
-    ) -> ActorId {
+    pub fn launch(&self, owner: &ActorId, game: &mut Q2GameServices, kind: Q2SphereKind, dopple: bool) -> ActorId {
         game.source_callbacks.register(&sphere_callbacks());
         if !dopple {
             if let Some(old) = self.owned_sphere(owner, game) {
@@ -273,7 +252,9 @@ impl Q2MissionPackSpheres {
 /// Expire a sphere (`expire`).
 fn sphere_expire(entity: ActorId, game: &mut Q2GameServices) {
     let owner = game.require_entity(&entity).owner.clone();
-    if let Some(owner) = owner.as_ref().and_then(|owner| game.entity(owner).map(|entity| entity.actor.id().clone()))
+    if let Some(owner) = owner
+        .as_ref()
+        .and_then(|owner| game.entity(owner).map(|entity| entity.actor.id().clone()))
     {
         if game.require_entity(&owner).flags & 0x4000 != 0 {
             let mut moved = game.body_of(owner.clone());
@@ -380,7 +361,12 @@ fn sphere_chase(entity: ActorId, game: &mut Q2GameServices, direct: bool) {
         || enemy.is_none()
         || body.is_none()
         || enemy.as_ref().is_some_and(|enemy| {
-            game.host.combat().read(enemy).map(|combat| combat.health).unwrap_or(0.0) < 1.0
+            game.host
+                .combat()
+                .read(enemy)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                < 1.0
         })
     {
         sphere_expire(entity, game);
@@ -389,7 +375,16 @@ fn sphere_chase(entity: ActorId, game: &mut Q2GameServices, direct: bool) {
     let enemy = enemy.expect("sphere enemy is missing");
     let body = body.expect("sphere enemy body is missing");
     let destination = if game.host.is_player(&enemy) {
-        add3(body.origin, vec3(0.0, 0.0, game.entity(&enemy).map(|entity| entity.view_height as f32).unwrap_or(22.0)))
+        add3(
+            body.origin,
+            vec3(
+                0.0,
+                0.0,
+                game.entity(&enemy)
+                    .map(|entity| entity.view_height as f32)
+                    .unwrap_or(22.0),
+            ),
+        )
     } else {
         body.origin
     };
@@ -445,16 +440,32 @@ fn sphere_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContac
         game.require_entity_mut(&entity).owner = master;
         game.require_entity_mut(&entity).team_master = None;
     } else if game.require_entity(&entity).owner.as_ref() == Some(&contact.other)
-        || game.entity(&contact.other).map(|entity| entity.classname.clone()).as_deref() == Some("bodyque")
+        || game
+            .entity(&contact.other)
+            .map(|entity| entity.classname.clone())
+            .as_deref()
+            == Some("bodyque")
     {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(entity);
         return;
     }
     let body = game.body_of(entity.clone());
-    if game.host.combat().read(&contact.other).is_some_and(|combat| combat.can_take_damage) {
+    if game
+        .host
+        .combat()
+        .read(&contact.other)
+        .is_some_and(|combat| combat.can_take_damage)
+    {
         let normal = contact.plane.map(|plane| plane.normal).unwrap_or_default();
         game.damage(
             contact.other.clone(),
@@ -528,7 +539,12 @@ fn vengeance_pain(entity: ActorId, game: &mut Q2GameServices, reaction: PainReac
     }
     let flag = dopple_flag(game);
     let owner_healthy = game.require_entity(&entity).owner.clone().is_some_and(|owner| {
-        game.host.combat().read(&owner).map(|combat| combat.health).unwrap_or(0.0) >= 25.0
+        game.host
+            .combat()
+            .read(&owner)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            >= 25.0
     });
     if game.require_entity(&entity).spawnflags & flag == 0
         && (owner_healthy || reaction.attacker == game.require_entity(&entity).owner)
@@ -556,7 +572,12 @@ fn hunter_pain(entity: ActorId, game: &mut Q2GameServices, reaction: PainReactio
     let flag = dopple_flag(game);
     let dopple = game.require_entity(&entity).spawnflags & flag != 0;
     let owner_healthy = owner.as_ref().is_some_and(|owner| {
-        game.host.combat().read(owner).map(|combat| combat.health).unwrap_or(0.0) > 0.0
+        game.host
+            .combat()
+            .read(owner)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            > 0.0
     });
     if !dopple && (owner_healthy || reaction.attacker == game.require_entity(&entity).owner) {
         return;
@@ -658,7 +679,13 @@ fn defender_think(entity: ActorId, game: &mut Q2GameServices) {
         return;
     };
     if (mission_spheres(game).hooks.intermission)()
-        || game.host.combat().read(&owner).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+        || game
+            .host
+            .combat()
+            .read(&owner)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            <= 0.0
     {
         sphere_expire(entity, game);
         return;
@@ -672,7 +699,13 @@ fn defender_think(entity: ActorId, game: &mut Q2GameServices) {
     }
     if let Some(enemy) = game.require_entity(&entity).enemy.clone() {
         let target = game.host.bodies().read(&enemy);
-        if game.host.combat().read(&enemy).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+        if game
+            .host
+            .combat()
+            .read(&enemy)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            <= 0.0
             || target.is_none()
         {
             game.require_entity_mut(&entity).enemy = None;
@@ -749,21 +782,18 @@ fn hunter_think(entity: ActorId, game: &mut Q2GameServices) {
     } else {
         sphere_chase(entity.clone(), game, false);
     }
-    if owner.as_ref().is_some_and(|owner| game.require_entity(owner).flags & 0x4000 != 0)
+    if owner
+        .as_ref()
+        .is_some_and(|owner| game.require_entity(owner).flags & 0x4000 != 0)
         && game.host.actors().is_live(&entity)
     {
         let owner = owner.expect("sphere owner is missing");
         let current = game.body_of(entity.clone());
         let current_owner = game.body_of(owner.clone());
-        game.require_entity_mut(&owner).view_height =
-            (current.origin.z - current_owner.origin.z) as i32;
+        game.require_entity_mut(&owner).view_height = (current.origin.z - current_owner.origin.z) as i32;
         let angles = match enemy {
             None => current.angles,
-            Some(enemy) => vec3(
-                0.0,
-                vector_angles(sub3(enemy.origin, current.origin)).y,
-                0.0,
-            ),
+            Some(enemy) => vec3(0.0, vector_angles(sub3(enemy.origin, current.origin)).y, 0.0),
         };
         let mut moved = game.body_of(owner.clone());
         moved.origin = current.origin;

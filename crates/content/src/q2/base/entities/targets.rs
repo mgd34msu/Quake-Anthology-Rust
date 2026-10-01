@@ -5,13 +5,12 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::{integer_field, movedir};
 use crate::q2::foundation::host::{
-    Q2BeamEvent, Q2Edition, Q2EffectEvent, Q2GameServices, Q2Mode, Q2PresentationEvent,
-    Q2SpawnFields, Q2TraceRequest,
+    Q2BeamEvent, Q2Edition, Q2EffectEvent, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2SpawnFields, Q2TraceRequest,
 };
 use crate::q2::foundation::scenery::kill_q2_box;
 use crate::q2::support::contracts::{TraceContact, TraceHit};
@@ -38,20 +37,12 @@ pub fn target_laser_think(actor: ActorId, game: &mut Q2GameServices) {
     };
     let origin = game.body_of(actor.clone()).origin;
     let enemy = game.require_entity(&actor).enemy.clone();
-    let target_body = enemy
-        .as_ref()
-        .and_then(|enemy| game.host.bodies().read(enemy));
+    let target_body = enemy.as_ref().and_then(|enemy| game.host.bodies().read(enemy));
     if let Some(target) = target_body {
-        let center = scale3(
-            add3(target.bounds.min, target.bounds.max),
-            0.5,
-        );
+        let center = scale3(add3(target.bounds.min, target.bounds.max), 0.5);
         let direction = normalize3(sub3(add3(target.origin, center), origin));
         let entity = game.require_entity_mut(&actor);
-        if direction.x != entity.movedir.x
-            || direction.y != entity.movedir.y
-            || direction.z != entity.movedir.z
-        {
+        if direction.x != entity.movedir.x || direction.y != entity.movedir.y || direction.z != entity.movedir.z {
             entity.spawnflags |= LASER_DIRTY;
         }
         entity.movedir = direction;
@@ -82,9 +73,7 @@ pub fn target_laser_think(actor: ActorId, game: &mut Q2GameServices) {
                 .combat()
                 .read(&hit_actor)
                 .is_some_and(|state| state.can_take_damage);
-            let immune = game
-                .entity(&hit_actor)
-                .is_some_and(|entity| entity.laser_immune);
+            let immune = game.entity(&hit_actor).is_some_and(|entity| entity.laser_immune);
             if can_take && !immune {
                 let self_id = game.require_entity(&actor).actor.id().clone();
                 let activator = game.require_entity(&actor).activator.clone();
@@ -106,9 +95,7 @@ pub fn target_laser_think(actor: ActorId, game: &mut Q2GameServices) {
         }
         let stop = match hit.clone() {
             None => true,
-            Some(hit_actor) => {
-                !game.host.is_monster(&hit_actor) && !game.host.is_player(&hit_actor)
-            }
+            Some(hit_actor) => !game.host.is_monster(&hit_actor) && !game.host.is_player(&hit_actor),
         };
         if stop {
             let spawnflags = game.require_entity(&actor).spawnflags;
@@ -189,12 +176,7 @@ fn target_laser_off(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Target laser use (`laserUse`).
-fn target_laser_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn target_laser_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     game.require_entity_mut(&actor).activator = activator;
     if game.require_entity(&actor).spawnflags & 1 != 0 {
         target_laser_off(actor, game);
@@ -275,9 +257,7 @@ fn target_lightramp_think(actor: ActorId, game: &mut Q2GameServices) {
     let elapsed = now - timestamp;
     let level = (97.0 + f64::from(from) + elapsed / speed * f64::from(to - from)).trunc() as i32;
     let style = integer_field(&game.require_entity(&enemy).spawn.clone(), "style", 0);
-    let pattern = char::from_u32((level & 255) as u32)
-        .unwrap_or('\0')
-        .to_string();
+    let pattern = char::from_u32((level & 255) as u32).unwrap_or('\0').to_string();
     game.host.emit(Q2PresentationEvent::LightStyle { style, pattern });
     if elapsed < speed {
         let frame_seconds = game.host.frame_seconds();
@@ -307,9 +287,8 @@ fn target_lightramp_use(
             if classname == "light" {
                 game.require_entity_mut(&actor).enemy = Some(candidate);
             } else {
-                game.host.diagnostic(&format!(
-                    "target_lightramp target {classname} is not a light"
-                ));
+                game.host
+                    .diagnostic(&format!("target_lightramp target {classname} is not a light"));
             }
         }
         if game.require_entity(&actor).enemy.is_none() {
@@ -325,12 +304,7 @@ fn target_lightramp_use(
 }
 
 /// Target temp-entity use (`Use_Target_Tent`).
-fn use_target_tent(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_tent(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let zero = vec3(0.0, 0.0, 0.0);
     let style = integer_field(&game.require_entity(&actor).spawn.clone(), "style", 0);
     let origin = game.body_of(actor).origin;
@@ -344,12 +318,7 @@ fn use_target_tent(
 }
 
 /// Target spawner use (`spawnerUse`).
-fn use_target_spawner(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_spawner(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let body = game.body_of(actor.clone());
     let target = game.require_entity(&actor).target.clone();
     let mut values = BTreeMap::new();
@@ -387,12 +356,7 @@ fn use_target_spawner(
 }
 
 /// Target blaster use (`blasterUse`).
-fn use_target_blaster(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_target_blaster(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity(&actor);
     let effects = if game.options.edition == Q2Edition::Classic {
         8
@@ -405,17 +369,7 @@ fn use_target_blaster(
     };
     let (movedir, damage, speed) = (entity.movedir, entity.damage, entity.speed);
     let origin = game.body_of(actor.clone()).origin;
-    (hooks(game).fire_blaster)(
-        actor.clone(),
-        game,
-        origin,
-        movedir,
-        damage,
-        speed,
-        effects,
-        false,
-        33,
-    );
+    (hooks(game).fire_blaster)(actor.clone(), game, origin, movedir, damage, speed, effects, false, 33);
     game.sound(&actor, "weapons/laser2.wav", 2, 1.0, 1.0);
 }
 
@@ -461,11 +415,7 @@ fn target_earthquake_think(actor: ActorId, game: &mut Q2GameServices) {
         if body.ground.is_none() {
             continue;
         }
-        let mass = game
-            .host
-            .combat()
-            .read(&player)
-            .map_or(200.0, |state| state.mass);
+        let mass = game.host.combat().read(&player).map_or(200.0, |state| state.mass);
         let mut moved = body.clone();
         moved.ground = None;
         moved.velocity = vec3(
@@ -510,24 +460,20 @@ pub fn target_callbacks() -> Q2CallbackDefinitions {
     callbacks
         .think
         .insert("target_lightramp_think", target_lightramp_think as _);
-    callbacks.think.insert(
-        "target_crosslevel_target_think",
-        target_crosslevel_target_think as _,
-    );
+    callbacks
+        .think
+        .insert("target_crosslevel_target_think", target_crosslevel_target_think as _);
     callbacks
         .think
         .insert("target_earthquake_think", target_earthquake_think as _);
     callbacks.use_.insert("target_laser_use", target_laser_use as _);
-    callbacks
-        .use_
-        .insert("target_lightramp_use", target_lightramp_use as _);
+    callbacks.use_.insert("target_lightramp_use", target_lightramp_use as _);
     callbacks.use_.insert("Use_Target_Tent", use_target_tent as _);
     callbacks.use_.insert("use_target_spawner", use_target_spawner as _);
     callbacks.use_.insert("use_target_blaster", use_target_blaster as _);
-    callbacks.use_.insert(
-        "target_crosslevel_trigger_use",
-        target_crosslevel_trigger_use as _,
-    );
+    callbacks
+        .use_
+        .insert("target_crosslevel_trigger_use", target_crosslevel_trigger_use as _);
     callbacks
         .use_
         .insert("target_earthquake_use", target_earthquake_use as _);
@@ -610,17 +556,12 @@ pub fn spawn_target(actor: ActorId, game: &mut Q2GameServices) -> bool {
             if !valid {
                 if game.options.mode != Q2Mode::Deathmatch {
                     let message = entity.message.clone();
-                    game.host
-                        .diagnostic(&format!("Invalid target_lightramp {message}"));
+                    game.host.diagnostic(&format!("Invalid target_lightramp {message}"));
                 }
                 game.remove_actor(actor);
                 return true;
             }
-            let movedir = vec3(
-                (message[0] as u32 - 97) as f32,
-                (message[1] as u32 - 97) as f32,
-                0.0,
-            );
+            let movedir = vec3((message[0] as u32 - 97) as f32, (message[1] as u32 - 97) as f32, 0.0);
             let entity = game.require_entity_mut(&actor);
             entity.movedir = movedir;
             entity.timestamp = 0.0;

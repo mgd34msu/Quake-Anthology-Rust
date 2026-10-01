@@ -59,7 +59,11 @@ impl Q2GameServices {
             if let Some(definition) = replacements.get(&field.ordinal) {
                 let definition = definition.clone();
                 let spawn_admission = self.monster_admission.as_ref().expect("admission").spawn;
-                let text = format!("{}/{}", provider_text(&definition.source.provider), definition.classname);
+                let text = format!(
+                    "{}/{}",
+                    provider_text(&definition.source.provider),
+                    definition.classname
+                );
                 let actor = self.allocate_actor(field, Some(&text));
                 self.create_combat(&actor, 0.0, 100.0, false);
                 spawn_admission(self, &actor, field, &definition);
@@ -92,7 +96,10 @@ impl Q2GameServices {
         actors.sort_by_key(|actor| self.source_slots.get(actor).copied().unwrap_or(0));
         for master in actors.clone() {
             let (name, flags) = match self.entity(&master) {
-                Some(entity) => (entity.spawn.values.get("team").cloned().unwrap_or_default(), entity.flags),
+                Some(entity) => (
+                    entity.spawn.values.get("team").cloned().unwrap_or_default(),
+                    entity.flags,
+                ),
                 None => continue,
             };
             if name.is_empty() || flags & 0x400 != 0 {

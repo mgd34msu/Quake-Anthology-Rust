@@ -5,16 +5,16 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Vec3, add3, dot3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::ai::{
-    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health, project_flash, set_duck,
-    target_distance, walk_move,
+    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health, project_flash, set_duck, target_distance,
+    walk_move,
 };
-use super::frames::{InfantryFrames, classic_infantry, rerelease_infantry};
-use super::gibs::{Q2GibOptions, throw_gib, throw_head};
+use super::frames::{classic_infantry, rerelease_infantry, InfantryFrames};
+use super::gibs::{throw_gib, throw_head, Q2GibOptions};
 use super::muzzle::{self, muzzle_offset};
-use super::types::{MonsterAttackState, MonsterContext, MonsterHandler, record_at};
+use super::types::{record_at, MonsterAttackState, MonsterContext, MonsterHandler};
 use crate::q2::foundation::host::{Q2Edition, Q2TraceRequest};
 use crate::q2::support::contracts::{AttackCause, DeathReaction, PainReaction, TraceHit};
 
@@ -67,7 +67,9 @@ pub fn infantry_sight(context: &mut MonsterContext) {
     } else {
         "infantry/infsrch1.wav"
     };
-    context.game.sound(&actor, path, if rerelease { 2 } else { 4 }, 1.0, 1.0);
+    context
+        .game
+        .sound(&actor, path, if rerelease { 2 } else { 4 }, 1.0, 1.0);
 }
 
 /// Infantry pain (`infantryPain`).
@@ -103,14 +105,18 @@ pub fn infantry_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     let actor = context.actor().clone();
     context.game.sound(
         &actor,
-        if n == 0 { "infantry/infpain1.wav" } else { "infantry/infpain2.wav" },
+        if n == 0 {
+            "infantry/infpain1.wav"
+        } else {
+            "infantry/infpain2.wav"
+        },
         2,
         1.0,
         1.0,
     );
     let cause = context.entity().last_attack.as_ref().map(|attack| attack.cause.clone());
-    let excluded = context.game.options.skill == 3
-        && !matches!(cause, Some(AttackCause::Q2 { means_of_death: 41, .. }));
+    let excluded =
+        context.game.options.skill == 3 && !matches!(cause, Some(AttackCause::Q2 { means_of_death: 41, .. }));
     if rerelease && (context.state().ducked || context.state().combat_point || excluded) {
         if context.game.random() < 0.33 {
             if let Some(attacker) = reaction.attacker.clone() {
@@ -120,7 +126,14 @@ pub fn infantry_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         }
         return;
     }
-    context.set_move(if n == 0 { "infantry_move_pain1" } else { "infantry_move_pain2" }, true);
+    context.set_move(
+        if n == 0 {
+            "infantry_move_pain1"
+        } else {
+            "infantry_move_pain2"
+        },
+        true,
+    );
     if rerelease {
         set_duck(context, false);
     }
@@ -129,17 +142,61 @@ pub fn infantry_pain(context: &mut MonsterContext, reaction: &PainReaction) {
 /// Death aim offsets (`deathAim`).
 const DEATH_AIM: [Vec3; 12] = [
     Vec3 { x: 0.0, y: 5.0, z: 0.0 },
-    Vec3 { x: 10.0, y: 15.0, z: 0.0 },
-    Vec3 { x: 20.0, y: 25.0, z: 0.0 },
-    Vec3 { x: 25.0, y: 35.0, z: 0.0 },
-    Vec3 { x: 30.0, y: 40.0, z: 0.0 },
-    Vec3 { x: 30.0, y: 45.0, z: 0.0 },
-    Vec3 { x: 25.0, y: 50.0, z: 0.0 },
-    Vec3 { x: 20.0, y: 40.0, z: 0.0 },
-    Vec3 { x: 15.0, y: 35.0, z: 0.0 },
-    Vec3 { x: 40.0, y: 35.0, z: 0.0 },
-    Vec3 { x: 70.0, y: 35.0, z: 0.0 },
-    Vec3 { x: 90.0, y: 35.0, z: 0.0 },
+    Vec3 {
+        x: 10.0,
+        y: 15.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 20.0,
+        y: 25.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 25.0,
+        y: 35.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 30.0,
+        y: 40.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 30.0,
+        y: 45.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 25.0,
+        y: 50.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 20.0,
+        y: 40.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 15.0,
+        y: 35.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 40.0,
+        y: 35.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 70.0,
+        y: 35.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 90.0,
+        y: 35.0,
+        z: 0.0,
+    },
 ];
 
 /// Fire the machine gun (`machineGun`).
@@ -151,9 +208,7 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
         return;
     }
     let frame = context.entity().frame;
-    let running = rerelease
-        && frame >= rerelease_infantry::RUN201
-        && frame <= rerelease_infantry::RUN208;
+    let running = rerelease && frame >= rerelease_infantry::RUN201 && frame <= rerelease_infantry::RUN208;
     let normal = if rerelease {
         frame == rerelease_infantry::ATTAK103
             || frame == rerelease_infantry::ATTAK311
@@ -186,10 +241,7 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
         let enemy = enemy.expect("enemy body");
         if !rerelease {
             forward = normalize3(sub3(
-                add3(
-                    add3(enemy.origin, scale3(enemy.velocity, -0.2)),
-                    vec3(0.0, 0.0, height),
-                ),
+                add3(add3(enemy.origin, scale3(enemy.velocity, -0.2)), vec3(0.0, 0.0, height)),
                 start,
             ));
         } else {
@@ -209,15 +261,18 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
                 normalize3(sub3(target, start)),
                 normalize3(sub3(predicted, start)),
             )) < 0.0;
-            let blocked = context.game.host.trace(&Q2TraceRequest {
-                start,
-                end: predicted,
-                bounds: None,
-                ignore: None,
-                mask: 3,
-                exclude: Vec::new(),
-            })
-            .fraction
+            let blocked = context
+                .game
+                .host
+                .trace(&Q2TraceRequest {
+                    start,
+                    end: predicted,
+                    bounds: None,
+                    ignore: None,
+                    mask: 3,
+                    exclude: Vec::new(),
+                })
+                .fraction
                 < 0.9;
             if diverging || blocked {
                 predicted = enemy.origin;
@@ -234,12 +289,14 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
     }
     let actor = context.actor().clone();
     (context.weapons.fire_bullet)(actor.clone(), context.game, start, forward, 3.0, 4.0, 300.0, 500.0, 0);
-    context.game.host_emit(crate::q2::foundation::host::Q2PresentationEvent::MonsterMuzzleflash {
-        actor,
-        flash,
-        origin: start,
-        direction: forward,
-    });
+    context
+        .game
+        .host_emit(crate::q2::foundation::host::Q2PresentationEvent::MonsterMuzzleflash {
+            actor,
+            flash,
+            origin: start,
+            direction: forward,
+        });
 }
 
 /// Infantry attack (`infantryAttack`).
@@ -277,9 +334,7 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     let actor = context.actor().clone();
     let cause = context.entity().last_attack.as_ref().map(|attack| attack.cause.clone());
     if health(context.game, Some(&actor)) <= context.state().gib_health
-        || rerelease
-            && context.state().dead
-            && matches!(cause, Some(AttackCause::Q2 { means_of_death: 20, .. }))
+        || rerelease && context.state().dead && matches!(cause, Some(AttackCause::Q2 { means_of_death: 20, .. }))
     {
         let actor = context.actor().clone();
         context.game.sound(&actor, "misc/udeath.wav", 2, 1.0, 1.0);
@@ -292,7 +347,13 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             context.entity_mut().skin /= 2;
             let damage = reaction.pain.damage;
             let actor = context.actor().clone();
-            throw_gib(actor.clone(), context.game, "models/objects/gibs/bone/tris.md2", damage, Q2GibOptions::default());
+            throw_gib(
+                actor.clone(),
+                context.game,
+                "models/objects/gibs/bone/tris.md2",
+                damage,
+                Q2GibOptions::default(),
+            );
             for _ in 0..3 {
                 throw_gib(
                     actor.clone(),
@@ -307,14 +368,21 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
                 context.game,
                 "models/monsters/infantry/gibs/chest.md2",
                 damage,
-                Q2GibOptions { skinned: true, ..Q2GibOptions::default() },
+                Q2GibOptions {
+                    skinned: true,
+                    ..Q2GibOptions::default()
+                },
             );
             throw_gib(
                 actor.clone(),
                 context.game,
                 "models/monsters/infantry/gibs/gun.md2",
                 damage,
-                Q2GibOptions { skinned: true, upright: true, ..Q2GibOptions::default() },
+                Q2GibOptions {
+                    skinned: true,
+                    upright: true,
+                    ..Q2GibOptions::default()
+                },
             );
             for _ in 0..2 {
                 throw_gib(
@@ -322,7 +390,10 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
                     context.game,
                     "models/monsters/infantry/gibs/foot.md2",
                     damage,
-                    Q2GibOptions { skinned: true, ..Q2GibOptions::default() },
+                    Q2GibOptions {
+                        skinned: true,
+                        ..Q2GibOptions::default()
+                    },
                 );
             }
             for _ in 0..2 {
@@ -331,7 +402,10 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
                     context.game,
                     "models/monsters/infantry/gibs/arm.md2",
                     damage,
-                    Q2GibOptions { skinned: true, ..Q2GibOptions::default() },
+                    Q2GibOptions {
+                        skinned: true,
+                        ..Q2GibOptions::default()
+                    },
                 );
             }
             throw_gib(
@@ -339,7 +413,11 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
                 context.game,
                 head,
                 damage,
-                Q2GibOptions { skinned: true, head: true, ..Q2GibOptions::default() },
+                Q2GibOptions {
+                    skinned: true,
+                    head: true,
+                    ..Q2GibOptions::default()
+                },
             );
         } else {
             let damage = reaction.pain.damage;
@@ -374,18 +452,27 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     context.state_mut().dead = true;
     let actor = context.actor().clone();
     let owned = context.game.owned_of(actor);
-    context.game.set_combat_traits(&owned, &crate::q2::support::contracts::CombatTraitChanges {
-        can_take_damage: Some(true),
-        ..crate::q2::support::contracts::CombatTraitChanges::default()
-    });
+    context.game.set_combat_traits(
+        &owned,
+        &crate::q2::support::contracts::CombatTraitChanges {
+            can_take_damage: Some(true),
+            ..crate::q2::support::contracts::CombatTraitChanges::default()
+        },
+    );
     let n = (context.game.random() * 3.0).floor() as usize;
-    let movement =
-        record_at(&["infantry_move_death1", "infantry_move_death2", "infantry_move_death3"], n);
+    let movement = record_at(
+        &["infantry_move_death1", "infantry_move_death2", "infantry_move_death3"],
+        n,
+    );
     context.set_move(movement, true);
     let actor = context.actor().clone();
     context.game.sound(
         &actor,
-        if n == 1 { "infantry/infdeth1.wav" } else { "infantry/infdeth2.wav" },
+        if n == 1 {
+            "infantry/infdeth1.wav"
+        } else {
+            "infantry/infdeth2.wav"
+        },
         2,
         1.0,
         1.0,
@@ -403,10 +490,14 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         if let Some(head) = head {
             let body = context.game.body_of(actor.clone());
             let inflictor = reaction.inflictor.clone();
-            let inflictor_origin =
-                inflictor.as_ref().and_then(|inflictor| context.game.host.bodies().read(inflictor));
+            let inflictor_origin = inflictor
+                .as_ref()
+                .and_then(|inflictor| context.game.host.bodies().read(inflictor));
             let direction = scale3(
-                normalize3(sub3(body.origin, inflictor_origin.map(|body| body.origin).unwrap_or(body.origin))),
+                normalize3(sub3(
+                    body.origin,
+                    inflictor_origin.map(|body| body.origin).unwrap_or(body.origin),
+                )),
                 100.0,
             );
             let spin = context.game.require_entity(&head).angular_velocity;
@@ -416,7 +507,9 @@ pub fn infantry_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             moved.angles = body.angles;
             moved.velocity = vec3(direction.x, direction.y, 200.0);
             context.game.write_body(head.clone(), &moved, true);
-            context.game.set_motion_kind(head, crate::q2::foundation::host::Q2MotionKind::Toss);
+            context
+                .game
+                .set_motion_kind(head, crate::q2::foundation::host::Q2MotionKind::Toss);
         }
     }
 }
@@ -447,7 +540,11 @@ pub fn infantry_sidestep(context: &mut MonsterContext) -> bool {
     }
     let frame = context.entity().frame;
     if context.state().current_move.name != "infantry_move_attack4"
-        && context.state().next_move.as_ref().is_none_or(|next| next.name != "infantry_move_attack4")
+        && context
+            .state()
+            .next_move
+            .as_ref()
+            .is_none_or(|next| next.name != "infantry_move_attack4")
         && !context.state().cocked
         && (frame == rerelease_infantry::ATTAK103
             || frame == rerelease_infantry::ATTAK311
@@ -510,7 +607,9 @@ fn infantry_jump(context: &mut MonsterContext, high: bool) {
     );
     moved.ground = None;
     context.game.write_body(actor.clone(), &moved, true);
-    context.game.set_motion_kind(actor, crate::q2::foundation::host::Q2MotionKind::Step);
+    context
+        .game
+        .set_motion_kind(actor, crate::q2::foundation::host::Q2MotionKind::Step);
 }
 
 /// Cock the gun (`infantry_cock_gun`).
@@ -518,8 +617,7 @@ fn cock_gun(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "infantry/infatck3.wav", 1, 1.0, 1.0);
     if context.game.options.edition == Q2Edition::Classic {
-        let pause = context.game.host.now()
-            + ((context.game.random() * 16.0).floor() + 10.0) * 0.1;
+        let pause = context.game.host.now() + ((context.game.random() * 16.0).floor() + 10.0) * 0.1;
         context.state_mut().pause_time = pause;
     } else {
         context.state_mut().cocked = true;
@@ -595,8 +693,7 @@ fn attack4_refire(context: &mut MonsterContext) {
         context.set_move("infantry_move_attack1", false);
         context.state_mut().next_frame = rerelease_infantry::ATTAK114;
     } else if context.state().stand_ground
-        || context.entity().enemy.is_some()
-            && (target_distance(context) < 330.0 || !can_run(context))
+        || context.entity().enemy.is_some() && (target_distance(context) < 330.0 || !can_run(context))
     {
         context.set_move("infantry_move_attack1", false);
         context.state_mut().next_frame = rerelease_infantry::ATTAK103;
@@ -638,7 +735,9 @@ fn jump_wait_land(context: &mut MonsterContext) {
         let flat = scale3(forward, 150.0);
         moved.velocity = vec3(flat.x, flat.y, body.velocity.z);
         context.game.write_body(actor.clone(), &moved, true);
-        context.game.set_motion_kind(actor, crate::q2::foundation::host::Q2MotionKind::Step);
+        context
+            .game
+            .set_motion_kind(actor, crate::q2::foundation::host::Q2MotionKind::Step);
     }
     if context.state().jump_time < context.game.host.now() {
         let next = context.entity().frame + 1;
@@ -655,16 +754,25 @@ pub fn infantry_callbacks() -> HashMap<String, MonsterHandler> {
         ("infantry_fire".to_string(), MonsterHandler::Callback(infantry_fire)),
         ("infantry_dead".to_string(), MonsterHandler::Callback(corpse)),
         ("infantry_cock_gun".to_string(), MonsterHandler::Callback(cock_gun)),
-        ("infantry_set_firetime".to_string(), MonsterHandler::Callback(set_firetime)),
+        (
+            "infantry_set_firetime".to_string(),
+            MonsterHandler::Callback(set_firetime),
+        ),
         ("infantry_swing".to_string(), MonsterHandler::Callback(swing)),
         ("infantry_smack".to_string(), MonsterHandler::Callback(smack)),
         ("infantry_duck_down".to_string(), MonsterHandler::Callback(duck_down)),
         ("infantry_duck_hold".to_string(), MonsterHandler::Callback(duck_hold)),
         ("infantry_duck_up".to_string(), MonsterHandler::Callback(duck_up)),
         ("infantry_shrink".to_string(), MonsterHandler::Callback(shrink)),
-        ("infantry_attack4_refire".to_string(), MonsterHandler::Callback(attack4_refire)),
+        (
+            "infantry_attack4_refire".to_string(),
+            MonsterHandler::Callback(attack4_refire),
+        ),
         ("infantry_jump_now".to_string(), MonsterHandler::Callback(jump_now)),
         ("infantry_jump2_now".to_string(), MonsterHandler::Callback(jump2_now)),
-        ("infantry_jump_wait_land".to_string(), MonsterHandler::Callback(jump_wait_land)),
+        (
+            "infantry_jump_wait_land".to_string(),
+            MonsterHandler::Callback(jump_wait_land),
+        ),
     ])
 }

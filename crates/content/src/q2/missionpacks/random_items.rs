@@ -155,9 +155,7 @@ const RERELEASE: [&[&str]; 4] = [
 
 /// Find the category table holding a classname (`category`).
 fn category(classname: &str, table: [&[&str]; 4]) -> Option<usize> {
-    table
-        .iter()
-        .position(|choices| choices.contains(&classname))
+    table.iter().position(|choices| choices.contains(&classname))
 }
 
 /// Pick a rerelease random integer (`rereleaseRandom?.integer(n) ?? floor(random * n)`).
@@ -219,12 +217,7 @@ pub fn q2_random_item(
         let kind = category(&item.classname, CLASSIC)?;
         let classname = game.require_entity(entity).classname.clone();
         if settings.no_spheres
-            && [
-                "item_sphere_vengeance",
-                "item_sphere_hunter",
-                "item_spehre_defender",
-            ]
-            .contains(&classname.as_str())
+            && ["item_sphere_vengeance", "item_sphere_hunter", "item_spehre_defender"].contains(&classname.as_str())
             || settings.no_nukes && classname == "ammo_nuke"
             || settings.no_mines && ["ammo_prox", "ammo_tesla"].contains(&classname.as_str())
         {
@@ -239,20 +232,24 @@ pub fn q2_random_item(
     }
     if ["item_health_small", "item_armor_shard"].contains(&item.classname.as_str()) {
         let choice = rerelease_integer(game, 2);
-        return Some(if choice == 0 {
-            "item_health_small"
-        } else {
-            "item_armor_shard"
-        }
-        .to_string());
+        return Some(
+            if choice == 0 {
+                "item_health_small"
+            } else {
+                "item_armor_shard"
+            }
+            .to_string(),
+        );
     }
     if ["item_health", "item_health_large"].contains(&item.classname.as_str()) {
-        return Some(if game.host.random() < 0.6 {
-            "item_health"
-        } else {
-            "item_health_large"
-        }
-        .to_string());
+        return Some(
+            if game.host.random() < 0.6 {
+                "item_health"
+            } else {
+                "item_health_large"
+            }
+            .to_string(),
+        );
     }
     if [
         "item_armor_jacket",
@@ -296,13 +293,7 @@ pub fn q2_random_item(
             !(settings.no_spheres && classname.starts_with("item_sphere_")
                 || settings.no_nukes && **classname == "ammo_nuke"
                 || settings.no_mines
-                    && [
-                        "ammo_prox",
-                        "ammo_tesla",
-                        "ammo_trap",
-                        "weapon_proxlauncher",
-                    ]
-                    .contains(*classname))
+                    && ["ammo_prox", "ammo_tesla", "ammo_trap", "weapon_proxlauncher"].contains(*classname))
         })
         .collect();
     if choices.is_empty() {

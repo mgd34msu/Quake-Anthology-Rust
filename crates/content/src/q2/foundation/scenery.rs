@@ -5,27 +5,19 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Vec3};
 
-use super::callbacks::{Q2CallbackDefinitions, free_q2_entity, free_q2_entity_die};
+use super::callbacks::{free_q2_entity, free_q2_entity_die, Q2CallbackDefinitions};
 use super::fields::{integer_field, number_field};
 use super::host::{
-    Q2Die, Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent,
-    Q2Solid, Q2SpawnFn, Q2TraceRequest, SpawnModule,
+    Q2Die, Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SpawnFn,
+    Q2TraceRequest, SpawnModule,
 };
-use super::monsters::gibs::{Q2GibOptions, throw_gib, throw_head};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, TouchContact, TraceHit,
-};
+use super::monsters::gibs::{throw_gib, throw_head, Q2GibOptions};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, TouchContact, TraceHit};
 
 /// Throw debris (`throwQ2Debris`).
-pub fn throw_q2_debris(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    model: &str,
-    speed: f64,
-    origin: Vec3,
-) -> ActorId {
+pub fn throw_q2_debris(this: ActorId, game: &mut Q2GameServices, model: &str, speed: f64, origin: Vec3) -> ActorId {
     let chunk = game.create("debris", BTreeMap::new());
     game.require_entity_mut(&chunk).model = model.to_string();
     let random_velocity = vec3(
@@ -35,10 +27,7 @@ pub fn throw_q2_debris(
     );
     let mut moved = game.body_of(chunk.clone());
     moved.origin = origin;
-    moved.velocity = add3(
-        game.body_of(this).velocity,
-        scale3(random_velocity, speed as f32),
-    );
+    moved.velocity = add3(game.body_of(this).velocity, scale3(random_velocity, speed as f32));
     game.write_body(chunk.clone(), &moved, false);
     game.require_entity_mut(&chunk).angular_velocity = vec3(
         (game.host.random() * 600.0) as f32,
@@ -166,9 +155,7 @@ fn scenery_explosive(game: &mut Q2GameServices, actor: ActorId) {
     } else if !game.require_entity(&actor).targetname.is_empty() {
         game.require_entity_mut(&actor).use_ = Some(func_explosive_use);
     }
-    if game.require_entity(&actor).spawnflags & 1 != 0
-        || game.require_entity(&actor).targetname.is_empty()
-    {
+    if game.require_entity(&actor).spawnflags & 1 != 0 || game.require_entity(&actor).targetname.is_empty() {
         if game.require_entity(&actor).max_health == 0.0 {
             game.require_entity_mut(&actor).max_health = 100.0;
         }
@@ -313,12 +300,7 @@ fn spawn_scenery(actor: ActorId, game: &mut Q2GameServices) -> bool {
 }
 
 /// Func wall use (`func_wall_use`).
-fn func_wall_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn func_wall_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let visible = game.require_entity(&this).solid == Q2Solid::None;
     game.require_entity_mut(&this).visible = visible;
     game.set_solid(this.clone(), if visible { Q2Solid::Brush } else { Q2Solid::None });
@@ -414,12 +396,7 @@ fn func_explosive_spawn(
 }
 
 /// Func explosive use (`func_explosive_use`).
-fn func_explosive_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn func_explosive_use(this: ActorId, game: &mut Q2GameServices, other: Option<ActorId>, _activator: Option<ActorId>) {
     scenery_break_apart(this.clone(), game, Some(this), other);
 }
 
@@ -568,12 +545,7 @@ fn satellite_think(this: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Satellite use (`satellite_use`).
-fn satellite_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn satellite_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.require_entity_mut(&this).frame = 0;
     game.schedule(this, 0.1, satellite_think);
 }

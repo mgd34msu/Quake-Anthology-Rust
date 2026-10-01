@@ -3,34 +3,27 @@
 //! ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    check_gib, monster_jump_finished, predicted_direction, reacts_to_pain,
+    blocked_check_jump, blocked_check_platform, check_gib, monster_jump_finished, predicted_direction, reacts_to_pain,
+    JumpNavigation, JumpResult,
 };
 use super::tables::berserk::{berserk_frame, berserk_moves};
-use crate::q2::base::monsters::common::{HUMANOID_BOUNDS, move_handler, sound_handler};
+use crate::q2::base::monsters::common::{move_handler, sound_handler, HUMANOID_BOUNDS};
 use crate::q2::foundation::fields::number_field;
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2PresentationEvent, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2PresentationEvent, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, corpse, enemy_body, finish_dodge, health, project_flash,
-    set_duck, target_distance, vector_angles,
+    angles_vectors, corpse, enemy_body, finish_dodge, health, project_flash, set_duck, target_distance, vector_angles,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TouchContact};
 
 /// Jumping (`jumping`).
 fn berserk_jumping(context: &mut MonsterContext) -> bool {
     let current = context.state().current_move.name.clone();
-    current == "berserk_move_jump"
-        || current == "berserk_move_jump2"
-        || current == "berserk_move_attack_strike"
+    current == "berserk_move_jump" || current == "berserk_move_jump2" || current == "berserk_move_attack_strike"
 }
 
 /// Run (`run`).
@@ -72,13 +65,7 @@ fn rerelease_berserk_melee(context: &mut MonsterContext) {
 }
 
 /// Slam radius damage (`slamRadiusDamage`).
-pub fn slam_radius_damage(
-    context: &mut MonsterContext,
-    origin: Vec3,
-    damage: f64,
-    kick: f64,
-    radius: f64,
-) {
+pub fn slam_radius_damage(context: &mut MonsterContext, origin: Vec3, damage: f64, kick: f64, radius: f64) {
     let actor = context.actor().clone();
     let center = context.game.body_of(actor.clone()).origin;
     let nearby = context.game.host.nearby(center, radius * 2.0);
@@ -340,10 +327,7 @@ fn rerelease_berserk_die(context: &mut MonsterContext, reaction: &DeathReaction)
 /// Duck (`duck`).
 fn rerelease_berserk_duck(context: &mut MonsterContext, _eta: f64) -> bool {
     let current = context.state().current_move.name.clone();
-    if context.game.random() >= 0.05
-        || current == "berserk_move_jump"
-        || current == "berserk_move_jump2"
-    {
+    if context.game.random() >= 0.05 || current == "berserk_move_jump" || current == "berserk_move_jump2" {
         return false;
     }
     context.set_move("berserk_move_duck2", true);
@@ -384,10 +368,7 @@ fn rerelease_berserk_blocked(context: &mut MonsterContext, distance: f64) -> boo
 
 /// Fidget (`berserk_fidget`).
 fn berserk_fidget(context: &mut MonsterContext) {
-    if context.state().stand_ground
-        || context.entity().enemy.is_some()
-        || context.game.random() > 0.15
-    {
+    if context.state().stand_ground || context.entity().enemy.is_some() || context.game.random() > 0.15 {
         return;
     }
     context.set_move("berserk_move_stand_fidget", true);
@@ -453,11 +434,7 @@ fn berserk_jump_takeoff(context: &mut MonsterContext) {
     let forward = angles_vectors(angles).forward;
     let mut moved = body;
     moved.origin.z += 1.0;
-    moved.velocity = vec3(
-        scale3(forward, speed as f32).x,
-        scale3(forward, speed as f32).y,
-        450.0,
-    );
+    moved.velocity = vec3(scale3(forward, speed as f32).x, scale3(forward, speed as f32).y, 450.0);
     moved.angles = angles;
     moved.ground = None;
     context.game.write_body(actor, &moved, true);
@@ -570,7 +547,10 @@ pub fn create_rerelease_berserk_definition() -> Q2MonsterDefinition {
         ("berserk_swing", sound_handler("berserk/attack.wav", 1, 1.0)),
         ("berserk_attack_spike", MonsterHandler::Callback(berserk_attack_spike)),
         ("berserk_attack_club", MonsterHandler::Callback(berserk_attack_club)),
-        ("berserk_run_attack_speed", MonsterHandler::Callback(berserk_run_attack_speed)),
+        (
+            "berserk_run_attack_speed",
+            MonsterHandler::Callback(berserk_run_attack_speed),
+        ),
         ("berserk_run_swing", MonsterHandler::Callback(berserk_run_swing)),
         ("berserk_high_gravity", MonsterHandler::Callback(berserk_high_gravity)),
         ("berserk_jump_takeoff", MonsterHandler::Callback(berserk_jump_takeoff)),
@@ -578,7 +558,10 @@ pub fn create_rerelease_berserk_definition() -> Q2MonsterDefinition {
         ("berserk_shrink", MonsterHandler::Callback(berserk_shrink)),
         ("berserk_jump_now", MonsterHandler::Callback(berserk_jump_now)),
         ("berserk_jump2_now", MonsterHandler::Callback(berserk_jump2_now)),
-        ("berserk_jump_wait_land", MonsterHandler::Callback(berserk_jump_wait_land)),
+        (
+            "berserk_jump_wait_land",
+            MonsterHandler::Callback(berserk_jump_wait_land),
+        ),
     ] {
         definition.callbacks.insert(name.to_string(), handler);
     }

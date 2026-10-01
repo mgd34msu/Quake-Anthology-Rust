@@ -9,31 +9,29 @@ use qa_core::identity::{ActorId, SavedActorId};
 use qa_core::math::Vec3;
 
 use crate::contract::InventoryEntry;
-use crate::q2::equipment::grapple_services::{
-    LmctfGrappleCheckpoint, capture_lmctf_grapple, restore_lmctf_grapple,
-};
+use crate::q2::equipment::grapple_services::{capture_lmctf_grapple, restore_lmctf_grapple, LmctfGrappleCheckpoint};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2GameServices, Q2Mode, Q2PresentationEvent, Q2Solid, SpawnModule};
-use crate::q2::foundation::weapons::WeaponSourceRules;
 use crate::q2::foundation::weapons::player::{
-    LmctfWeaponHooks, Q2WeaponContext, Q2WeaponSourceRules, set_weapon_source_rules,
+    set_weapon_source_rules, LmctfWeaponHooks, Q2WeaponContext, Q2WeaponSourceRules,
 };
+use crate::q2::foundation::weapons::WeaponSourceRules;
 use crate::q2::support::contracts::{CombatTraitChanges, GrappleSelection, SharedGrappleControl};
 
 use super::super::ctf::types::item_id;
 use super::admin::lmctf_admin_command;
-use super::flags::{LmctfFlags, LmctfFlagsCheckpoint, lmctf_flag_callbacks};
-use super::grapple::{LmctfGrapple, lmctf_grapple_equipment};
+use super::flags::{lmctf_flag_callbacks, LmctfFlags, LmctfFlagsCheckpoint};
+use super::grapple::{lmctf_grapple_equipment, LmctfGrapple};
 use super::match_::{LmctfMatch, LmctfMatchCheckpoint, LmctfMatchState};
 use super::presentation::{lmctf_menu, lmctf_scoreboard};
-use super::runes::{LmctfRunes, LmctfRunesCheckpoint, lmctf_rune_callbacks};
+use super::runes::{lmctf_rune_callbacks, LmctfRunes, LmctfRunesCheckpoint};
 use super::spawns::select_lmctf_spawn;
 use super::types::{
-    LmctfHooks, LmctfPlayerState, LmctfPlayingTeam, LmctfRules, LmctfTeam, LmctfTravel, lmctf_name, lmctf_player,
-    lmctf_print, lmctf_score, lmctf_stat,
+    lmctf_name, lmctf_player, lmctf_print, lmctf_score, lmctf_stat, LmctfHooks, LmctfPlayerState, LmctfPlayingTeam,
+    LmctfRules, LmctfTeam, LmctfTravel,
 };
 use super::vote::{LmctfVote, LmctfVoteCheckpoint};
-use super::weapons::{LmctfWeapons, lmctf_weapon_callbacks};
+use super::weapons::{lmctf_weapon_callbacks, LmctfWeapons};
 
 /// LMCTF rules checkpoint (`Q2Lmctf::capture` rules).
 #[derive(Debug, Clone, PartialEq)]
@@ -122,7 +120,10 @@ pub struct LmctfCheckpoint {
 pub fn lmctf_callbacks(game: &Q2GameServices) -> Q2CallbackDefinitions {
     let mut callbacks = lmctf_flag_callbacks();
     let runes = lmctf_rune_callbacks();
-    let grapple = LmctfGrapple { hooks: super::lmctf_hooks(game) }.callbacks(game);
+    let grapple = LmctfGrapple {
+        hooks: super::lmctf_hooks(game),
+    }
+    .callbacks(game);
     let weapons = lmctf_weapon_callbacks();
     callbacks.think.extend(runes.think);
     callbacks.think.extend(grapple.think);
@@ -136,15 +137,25 @@ pub fn lmctf_callbacks(game: &Q2GameServices) -> Q2CallbackDefinitions {
 
 /// LMCTF spawn dispatch (`spawn`).
 pub fn lmctf_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    let lmctf = Q2Lmctf { hooks: super::lmctf_hooks(game) };
+    let lmctf = Q2Lmctf {
+        hooks: super::lmctf_hooks(game),
+    };
     lmctf.spawn(entity, game)
 }
 
 /// Post-native-think hook running the rune weapon frame (`postNativeThink`).
 fn lmctf_post_native_think(context: &Q2WeaponContext, game: &mut Q2GameServices) -> bool {
     let owner = context.owner.actor.id().clone();
-    let firing = game.weapons.states.get(&owner).map(|state| state.source_firing).unwrap_or(false);
-    LmctfRunes { hooks: super::lmctf_hooks(game) }.weapon_frame(owner, game, firing)
+    let firing = game
+        .weapons
+        .states
+        .get(&owner)
+        .map(|state| state.source_firing)
+        .unwrap_or(false);
+    LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    }
+    .weapon_frame(owner, game, firing)
 }
 
 /// One selected LMCTF match attached to the existing source player and game
@@ -210,10 +221,16 @@ impl Q2Lmctf {
             &Q2WeaponSourceRules {
                 kind: WeaponSourceRules::Lmctf,
                 ctf: None,
-                lmctf: Some(LmctfWeaponHooks { post_native_think: lmctf_post_native_think }),
+                lmctf: Some(LmctfWeaponHooks {
+                    post_native_think: lmctf_post_native_think,
+                }),
             },
         );
-        SpawnModule { spawn: lmctf_spawn, item_name: |_| None, callbacks: lmctf_callbacks(game) }
+        SpawnModule {
+            spawn: lmctf_spawn,
+            item_name: |_| None,
+            callbacks: lmctf_callbacks(game),
+        }
     }
 
     /// Spawn LMCTF entities (`spawn`).
@@ -257,7 +274,13 @@ impl Q2Lmctf {
         game.source_callbacks.register(&lmctf_callbacks(game));
         self.flags().post_spawn(game);
         self.runes().post_spawn(game);
-        if game.lmctf.travel.as_ref().map(|travel| travel.countdown).unwrap_or(false) {
+        if game
+            .lmctf
+            .travel
+            .as_ref()
+            .map(|travel| travel.countdown)
+            .unwrap_or(false)
+        {
             self.match_service().start(game);
         }
     }
@@ -283,7 +306,13 @@ impl Q2Lmctf {
         players.sort_by(|left, right| left.slot.cmp(&right.slot));
         LmctfTravel {
             rules: game.lmctf.rules.clone(),
-            countdown: game.lmctf.match_state.pending_map.as_ref().map(|pending| pending.countdown).unwrap_or(false),
+            countdown: game
+                .lmctf
+                .match_state
+                .pending_map
+                .as_ref()
+                .map(|pending| pending.countdown)
+                .unwrap_or(false),
             paused: game.lmctf.match_state.paused,
             players,
         }
@@ -297,8 +326,11 @@ impl Q2Lmctf {
             .states
             .iter()
             .map(|(actor, state)| {
-                let mut statistics: Vec<(String, f64)> =
-                    state.statistics.iter().map(|(key, count)| (key.clone(), *count)).collect();
+                let mut statistics: Vec<(String, f64)> = state
+                    .statistics
+                    .iter()
+                    .map(|(key, count)| (key.clone(), *count))
+                    .collect();
                 statistics.sort_by(|left, right| left.0.cmp(&right.0));
                 let grapple = if game.lmctf.equipment.is_some() {
                     game.equipment.lmctf_states.get(actor).cloned().unwrap_or_default()
@@ -323,7 +355,9 @@ impl Q2Lmctf {
                 }
             })
             .collect();
-        players.sort_by(|left, right| (left.actor.slot, left.actor.generation).cmp(&(right.actor.slot, right.actor.generation)));
+        players.sort_by(|left, right| {
+            (left.actor.slot, left.actor.generation).cmp(&(right.actor.slot, right.actor.generation))
+        });
         LmctfCheckpoint {
             rules: LmctfRulesCheckpoint {
                 time_limit_minutes: rules.time_limit_minutes,
@@ -439,8 +473,8 @@ impl Q2Lmctf {
         if game.lmctf.states.contains_key(&entity) {
             return;
         }
-        let snapshot =
-            (self.hooks.player)(entity.clone(), game).map(|player| (player.slot, player.spectator, player.requested_spectator));
+        let snapshot = (self.hooks.player)(entity.clone(), game)
+            .map(|player| (player.slot, player.spectator, player.requested_spectator));
         let Some((slot, spectator, requested)) = snapshot else {
             panic!("LMCTF admission requires shared source player state");
         };
@@ -493,21 +527,39 @@ impl Q2Lmctf {
         self.grapple().abort(entity.clone(), game);
         LmctfGrapple::states(game).entry(entity.clone()).or_default().hook_held = false;
         let owned = game.owned_of(entity.clone());
-        if !game.host.inventory().entries(owned.id()).iter().any(|entry| entry.item == "q2:weapon_hook") {
+        if !game
+            .host
+            .inventory()
+            .entries(owned.id())
+            .iter()
+            .any(|entry| entry.item == "q2:weapon_hook")
+        {
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id("q2:weapon_hook"), count: 0.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id("q2:weapon_hook"),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         if self.grapple().native_enabled(game) && team != 0 {
             game.host.inventory().give(&owned, &item_id("q2:weapon_hook"), 1.0);
         }
-        let disabled =
-            matches!(game.lmctf.shared.as_ref().map(|shared| shared.selection()), Some(GrappleSelection::Disabled));
+        let disabled = matches!(
+            game.lmctf.shared.as_ref().map(|shared| shared.selection()),
+            Some(GrappleSelection::Disabled)
+        );
         if disabled {
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id("q2:weapon_hook"), count: 0.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id("q2:weapon_hook"),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         let null_team = team == 0 || game.lmctf.rules.ctf_flags & 128 != 0;
@@ -554,7 +606,14 @@ impl Q2Lmctf {
             },
         );
         let name = lmctf_name(game, &entity);
-        lmctf_print(game, &format!("{name} is now on the {} team.\n", if team == 1 { "red" } else { "blue" }), None);
+        lmctf_print(
+            game,
+            &format!(
+                "{name} is now on the {} team.\n",
+                if team == 1 { "red" } else { "blue" }
+            ),
+            None,
+        );
     }
 
     /// Join a team (`join`).
@@ -578,7 +637,9 @@ impl Q2Lmctf {
             });
             return;
         }
-        let spectator = (self.hooks.player)(entity.clone(), game).map(|player| player.spectator).unwrap_or(true);
+        let spectator = (self.hooks.player)(entity.clone(), game)
+            .map(|player| player.spectator)
+            .unwrap_or(true);
         if !spectator {
             let origin = game.body_of(entity.clone()).origin;
             game.damage(
@@ -648,7 +709,13 @@ impl Q2Lmctf {
         _means: i32,
         recipient: ActorId,
     ) {
-        lmctf_score(game, &recipient, change, if change > 0 { "Kill" } else { "Suicide" }, Some(victim.clone()));
+        lmctf_score(
+            game,
+            &recipient,
+            change,
+            if change > 0 { "Kill" } else { "Suicide" },
+            Some(victim.clone()),
+        );
         if let Some(attacker) = attacker {
             self.flags().frag(victim, attacker, game);
         }
@@ -658,7 +725,10 @@ impl Q2Lmctf {
     pub fn drop_inventory(&self, entity: ActorId, game: &mut Q2GameServices) {
         self.flags().drop(entity.clone(), game);
         self.runes().drop(&entity, game);
-        if LmctfGrapple::states(game).get(&entity).is_some_and(|state| state.hook.is_some()) {
+        if LmctfGrapple::states(game)
+            .get(&entity)
+            .is_some_and(|state| state.hook.is_some())
+        {
             self.grapple().abort(entity, game);
         }
     }
@@ -681,14 +751,20 @@ impl Q2Lmctf {
         self.match_service().frame(game);
         self.vote().frame(game);
         self.runes().player_frame(entity.clone(), game);
-        if LmctfGrapple::states(game).get(&entity).map(|state| state.hook_state).unwrap_or(0) != 0 {
+        if LmctfGrapple::states(game)
+            .get(&entity)
+            .map(|state| state.hook_state)
+            .unwrap_or(0)
+            != 0
+        {
             self.grapple().fire(entity, game);
         }
     }
 
     /// Whether the player may move (`canMove`).
     pub fn can_move(&self, actor: &ActorId, game: &Q2GameServices) -> bool {
-        !game.lmctf.match_state.paused || game.lmctf.states.get(actor).map(|state| state.extra_flags).unwrap_or(0) & 2 != 0
+        !game.lmctf.match_state.paused
+            || game.lmctf.states.get(actor).map(|state| state.extra_flags).unwrap_or(0) & 2 != 0
     }
 
     /// Read the gravity scale (`gravityScale`).
@@ -703,8 +779,18 @@ impl Q2Lmctf {
             return true;
         }
         if !self.can_move(&entity, game)
-            && !["ctfmenu", "voteyes", "voteno", "lmctf-vote", "score", "say", "say_team", "players", "playerlist"]
-                .contains(&name.as_str())
+            && ![
+                "ctfmenu",
+                "voteyes",
+                "voteno",
+                "lmctf-vote",
+                "score",
+                "say",
+                "say_team",
+                "players",
+                "playerlist",
+            ]
+            .contains(&name.as_str())
         {
             return true;
         }
@@ -755,7 +841,17 @@ impl Q2Lmctf {
                 true
             }
             "observe" | "observe_red" | "observe_blue" => {
-                self.observer(entity, game, if name == "observe_red" { 1 } else if name == "observe_blue" { 2 } else { 0 });
+                self.observer(
+                    entity,
+                    game,
+                    if name == "observe_red" {
+                        1
+                    } else if name == "observe_blue" {
+                        2
+                    } else {
+                        0
+                    },
+                );
                 true
             }
             "drop" | "use" => {

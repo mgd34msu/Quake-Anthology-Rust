@@ -3,56 +3,136 @@
 //! ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::super::common::{predicted_direction, rerelease_random};
 use super::super::tables::parasite::parasite_frame;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest};
+use crate::q2::foundation::host::{
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
+};
 use crate::q2::foundation::monsters::ai::{health, project_flash, vector_angles};
 use crate::q2::foundation::monsters::types::MonsterContext;
-use crate::q2::support::contracts::{
-    AttackCause, DeathReaction, TouchContact, TraceContact, TraceHit,
-};
+use crate::q2::support::contracts::{AttackCause, DeathReaction, TouchContact, TraceContact, TraceHit};
 
 /// Break offsets (`breakOffsets`).
 const BREAK_OFFSETS: [Vec3; 20] = [
     Vec3 { x: 7.0, y: 0.0, z: 7.0 },
-    Vec3 { x: 6.3, y: 14.5, z: 4.0 },
+    Vec3 {
+        x: 6.3,
+        y: 14.5,
+        z: 4.0,
+    },
     Vec3 { x: 8.5, y: 0.0, z: 5.6 },
-    Vec3 { x: 5.0, y: -15.25, z: 4.0 },
-    Vec3 { x: 9.5, y: -1.8, z: 5.9 },
-    Vec3 { x: 6.2, y: 14.0, z: 4.0 },
-    Vec3 { x: 12.25, y: 7.5, z: 1.4 },
-    Vec3 { x: 13.8, y: 0.0, z: -2.4 },
-    Vec3 { x: 13.8, y: 0.0, z: -4.0 },
-    Vec3 { x: 0.1, y: 0.0, z: -0.7 },
+    Vec3 {
+        x: 5.0,
+        y: -15.25,
+        z: 4.0,
+    },
+    Vec3 {
+        x: 9.5,
+        y: -1.8,
+        z: 5.9,
+    },
+    Vec3 {
+        x: 6.2,
+        y: 14.0,
+        z: 4.0,
+    },
+    Vec3 {
+        x: 12.25,
+        y: 7.5,
+        z: 1.4,
+    },
+    Vec3 {
+        x: 13.8,
+        y: 0.0,
+        z: -2.4,
+    },
+    Vec3 {
+        x: 13.8,
+        y: 0.0,
+        z: -4.0,
+    },
+    Vec3 {
+        x: 0.1,
+        y: 0.0,
+        z: -0.7,
+    },
     Vec3 { x: 5.0, y: 0.0, z: 3.7 },
-    Vec3 { x: 11.0, y: 0.0, z: 4.0 },
-    Vec3 { x: 13.5, y: 0.0, z: -4.0 },
-    Vec3 { x: 13.5, y: 0.0, z: -4.0 },
-    Vec3 { x: 0.2, y: 0.0, z: -0.7 },
+    Vec3 {
+        x: 11.0,
+        y: 0.0,
+        z: 4.0,
+    },
+    Vec3 {
+        x: 13.5,
+        y: 0.0,
+        z: -4.0,
+    },
+    Vec3 {
+        x: 13.5,
+        y: 0.0,
+        z: -4.0,
+    },
+    Vec3 {
+        x: 0.2,
+        y: 0.0,
+        z: -0.7,
+    },
     Vec3 { x: 3.9, y: 0.0, z: 3.6 },
     Vec3 { x: 8.5, y: 0.0, z: 5.0 },
-    Vec3 { x: 14.0, y: 0.0, z: -4.0 },
-    Vec3 { x: 14.0, y: 0.0, z: -4.0 },
-    Vec3 { x: 0.1, y: 0.0, z: -0.5 },
+    Vec3 {
+        x: 14.0,
+        y: 0.0,
+        z: -4.0,
+    },
+    Vec3 {
+        x: 14.0,
+        y: 0.0,
+        z: -4.0,
+    },
+    Vec3 {
+        x: 0.1,
+        y: 0.0,
+        z: -0.5,
+    },
 ];
 
 /// Drain offsets (`drainOffsets`).
 const DRAIN_OFFSETS: [Vec3; 13] = [
-    Vec3 { x: -1.7, y: 0.0, z: 1.2 },
-    Vec3 { x: -2.2, y: 0.0, z: -0.6 },
+    Vec3 {
+        x: -1.7,
+        y: 0.0,
+        z: 1.2,
+    },
+    Vec3 {
+        x: -2.2,
+        y: 0.0,
+        z: -0.6,
+    },
     Vec3 { x: 7.7, y: 0.0, z: 7.2 },
     Vec3 { x: 7.2, y: 0.0, z: 5.7 },
     Vec3 { x: 6.2, y: 0.0, z: 7.8 },
     Vec3 { x: 4.7, y: 0.0, z: 6.7 },
     Vec3 { x: 5.0, y: 0.0, z: 9.0 },
     Vec3 { x: 5.0, y: 0.0, z: 7.0 },
-    Vec3 { x: 5.0, y: 0.0, z: 10.5 },
+    Vec3 {
+        x: 5.0,
+        y: 0.0,
+        z: 10.5,
+    },
     Vec3 { x: 4.5, y: 0.0, z: 9.7 },
-    Vec3 { x: 1.5, y: 0.0, z: 12.0 },
-    Vec3 { x: 2.9, y: 0.0, z: 11.0 },
+    Vec3 {
+        x: 1.5,
+        y: 0.0,
+        z: 12.0,
+    },
+    Vec3 {
+        x: 2.9,
+        y: 0.0,
+        z: 11.0,
+    },
     Vec3 { x: 2.1, y: 0.0, z: 7.6 },
 ];
 
@@ -137,7 +217,13 @@ fn proboscis_hit(
     let Some(owner) = owner.filter(|owner| game.monsters.states.contains_key(owner)) else {
         return;
     };
-    if game.monsters.states.get(&owner).expect("proboscis owner").current_move.name
+    if game
+        .monsters
+        .states
+        .get(&owner)
+        .expect("proboscis owner")
+        .current_move
+        .name
         != "parasite_move_fire_proboscis"
     {
         return;
@@ -145,9 +231,7 @@ fn proboscis_hit(
     let body = game.body_of(tip.clone());
     let target = game.host.bodies().read(&other);
     let owner_enemy = game.require_entity(&owner).enemy.clone();
-    let position = if target.is_some()
-        && (game.host.is_player(&other) || owner_enemy == Some(other.clone()))
-    {
+    let position = if target.is_some() && (game.host.is_player(&other) || owner_enemy == Some(other.clone())) {
         let target = target.expect("proboscis target");
         let position = if start_solid {
             point
@@ -185,10 +269,26 @@ fn proboscis_hit(
         }
         position
     };
-    let damageable = game.host.combat().read(&other).is_some_and(|state| state.can_take_damage);
+    let damageable = game
+        .host
+        .combat()
+        .read(&other)
+        .is_some_and(|state| state.can_take_damage);
     if damageable {
         let attacker = game.require_entity(&tip).owner.clone();
-        game.damage(other, tip.clone(), attacker, 5.0, 0.0, normal, point, normal, 0, 0, None);
+        game.damage(
+            other,
+            tip.clone(),
+            attacker,
+            5.0,
+            0.0,
+            normal,
+            point,
+            normal,
+            0,
+            0,
+            None,
+        );
     }
     let owner_actor = game.require_entity(&tip).owner.clone().expect("proboscis owner");
     game.host_emit(Q2PresentationEvent::Sound(Q2SoundEvent {
@@ -328,10 +428,7 @@ fn proboscis_think(tip: ActorId, game: &mut Q2GameServices) {
         let speed = game.require_entity(&tip).speed;
         let owner_origin = game.body_of(owner).origin;
         if length3(delta) > speed as f32 * 2.0 / 15.0
-            && dot3(
-                normalize3(delta),
-                normalize3(sub3(body.origin, owner_origin)),
-            ) > 0.0
+            && dot3(normalize3(delta), normalize3(sub3(body.origin, owner_origin))) > 0.0
         {
             proboscis_retract(tip, game);
         }
@@ -349,10 +446,7 @@ pub fn proboscis_draw(segment: ActorId, game: &mut Q2GameServices) {
     let tip = game.require_entity(&segment).owner.clone().expect("proboscis tip");
     let from = proboscis_start_for(game, &owner);
     let tip_origin = game.body_of(tip).origin;
-    let to = sub3(
-        tip_origin,
-        scale3(normalize3(sub3(tip_origin, from)), 8.0),
-    );
+    let to = sub3(tip_origin, scale3(normalize3(sub3(tip_origin, from)), 8.0));
     game.require_entity_mut(&segment).pos2 = to;
     let mut moved = game.body_of(segment.clone());
     moved.origin = from;
@@ -369,17 +463,16 @@ pub fn proboscis_fire(context: &mut MonsterContext) {
         }
     }
     let from = proboscis_start(context);
-    let offset = f64::from(
-        rerelease_random(context).float_range(-0.999_999_940_395_355_2, 1.0) * 0.1f32,
-    );
+    let offset = f64::from(rerelease_random(context).float_range(-0.999_999_940_395_355_2, 1.0) * 0.1f32);
     let Some(direction) = predicted_direction(context, from, 1250.0, false, offset) else {
         return;
     };
-    let tip = context.game.create("parasite_proboscis", std::collections::BTreeMap::new());
-    let segment = context.game.create(
-        "parasite_proboscis_segment",
-        std::collections::BTreeMap::new(),
-    );
+    let tip = context
+        .game
+        .create("parasite_proboscis", std::collections::BTreeMap::new());
+    let segment = context
+        .game
+        .create("parasite_proboscis_segment", std::collections::BTreeMap::new());
     let entity = context.game.require_entity_mut(&tip);
     entity.model = "models/monsters/parasite/tip/tris.md2".to_string();
     entity.owner = Some(actor.clone());
@@ -435,10 +528,7 @@ pub fn proboscis_fire(context: &mut MonsterContext) {
         proboscis_hit(tip.clone(), &mut *context.game, other, point, normal, start_solid);
     }
     let tip_origin = context.game.body_of(tip.clone()).origin;
-    context.game.require_entity_mut(&segment).pos2 = add3(
-        tip_origin,
-        scale3(normalize3(sub3(tip_origin, from)), 8.0),
-    );
+    context.game.require_entity_mut(&segment).pos2 = add3(tip_origin, scale3(normalize3(sub3(tip_origin, from)), 8.0));
     let mut moved = context.game.body_of(segment.clone());
     moved.origin = from;
     context.game.write_body(segment.clone(), &moved, true);
@@ -449,10 +539,18 @@ pub fn proboscis_fire(context: &mut MonsterContext) {
 /// Proboscis callbacks (`callbacks`).
 pub fn proboscis_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("rerelease.parasite.proboscis_reset", proboscis_reset);
-    callbacks.think.insert("rerelease.parasite.proboscis_think", proboscis_think);
-    callbacks.think.insert("rerelease.parasite.proboscis_segment_draw", proboscis_draw);
-    callbacks.touch.insert("rerelease.parasite.proboscis_touch", proboscis_touch);
+    callbacks
+        .think
+        .insert("rerelease.parasite.proboscis_reset", proboscis_reset);
+    callbacks
+        .think
+        .insert("rerelease.parasite.proboscis_think", proboscis_think);
+    callbacks
+        .think
+        .insert("rerelease.parasite.proboscis_segment_draw", proboscis_draw);
+    callbacks
+        .touch
+        .insert("rerelease.parasite.proboscis_touch", proboscis_touch);
     callbacks.die.insert("rerelease.parasite.proboscis_die", proboscis_die);
     callbacks
 }

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, length3, scale3, sub3, vec3};
+use qa_core::math::{length3, scale3, sub3, vec3, Vec3};
 
 use super::callbacks::Q2CallbackDefinitions;
 use super::checkpoint::restore_q2_actor;
@@ -44,9 +44,15 @@ pub type Q2AngularMotionCheckpoint = Vec<AngularMoveCheckpoint>;
 /// uses `q2:foundation/angular`, so the names are fixed here.
 pub fn angular_motion_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("q2:foundation/angular/AngleMove_Done", angle_move_done);
-    callbacks.think.insert("q2:foundation/angular/AngleMove_Final", angle_move_final);
-    callbacks.think.insert("q2:foundation/angular/AngleMove_Begin", angle_move_begin);
+    callbacks
+        .think
+        .insert("q2:foundation/angular/AngleMove_Done", angle_move_done);
+    callbacks
+        .think
+        .insert("q2:foundation/angular/AngleMove_Final", angle_move_final);
+    callbacks
+        .think
+        .insert("q2:foundation/angular/AngleMove_Begin", angle_move_begin);
     callbacks
 }
 
@@ -93,12 +99,7 @@ pub fn restore_angular_motion(game: &mut Q2GameServices, checkpoint: &Q2AngularM
 }
 
 /// Move to angles (`Q2AngularMotion[moveTo]`).
-pub fn angular_move_to(
-    game: &mut Q2GameServices,
-    actor: ActorId,
-    destination: Vec3,
-    done: super::host::Q2Think,
-) {
+pub fn angular_move_to(game: &mut Q2GameServices, actor: ActorId, destination: Vec3, done: super::host::Q2Think) {
     let callbacks = angular_motion_callbacks();
     game.source_callbacks.register(&callbacks);
     let entity = game.require_entity(&actor);
@@ -119,7 +120,11 @@ pub fn angular_move_to(
     game.require_entity_mut(&actor).angular_velocity = vec3(0.0, 0.0, 0.0);
     let motion = game.require_entity(&actor).motion;
     game.set_motion_kind(actor.clone(), motion);
-    let team_master = game.require_entity(&actor).team_master.clone().unwrap_or_else(|| actor.clone());
+    let team_master = game
+        .require_entity(&actor)
+        .team_master
+        .clone()
+        .unwrap_or_else(|| actor.clone());
     if game.current_actor == Some(team_master) {
         angle_move_begin(actor, game);
     } else {
@@ -178,11 +183,7 @@ fn angle_move_begin(actor: ActorId, game: &mut Q2GameServices) {
     let motion = game.require_entity(&actor).motion;
     game.set_motion_kind(actor.clone(), motion);
     if state.speed >= speed {
-        game.schedule(
-            actor,
-            (time / frame_seconds).floor() * frame_seconds,
-            angle_move_final,
-        );
+        game.schedule(actor, (time / frame_seconds).floor() * frame_seconds, angle_move_final);
     } else {
         game.schedule(actor, frame_seconds, angle_move_begin);
     }

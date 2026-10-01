@@ -2,9 +2,7 @@
 //!
 //! Original Quake II rogue/m_turret.c frame order and distances. ZeniMax Media, GPL-2.0-or-later.
 
-use crate::q2::foundation::monsters::types::{
-    MonsterAi, MonsterAction, MonsterMove, monster_frame, monster_move,
-};
+use crate::q2::foundation::monsters::types::{monster_frame, monster_move, MonsterAction, MonsterAi, MonsterMove};
 
 /// Frame numbers for `turretFrame`.
 pub mod turret_frame {
@@ -45,38 +43,74 @@ pub mod turret_frame {
 /// `turretMoves` move tables.
 pub fn turret_moves() -> Vec<MonsterMove> {
     vec![
-        monster_move("turret_move_stand", 0, 1, None, vec![
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-        ]),
-        monster_move("turret_move_ready_gun", 2, 8, Some("turret_run"), vec![
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-            monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
-        ]),
-        monster_move("turret_move_seek", 8, 9, None, vec![
-            monster_frame(MonsterAi::Walk, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Walk, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-        ]),
-        monster_move("turret_move_run", 8, 9, Some("turret_run"), vec![
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-        ]),
-        monster_move("turret_move_fire", 10, 13, Some("turret_run"), vec![
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretFire")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-        ]),
-        monster_move("turret_move_fire_blind", 10, 13, Some("turret_run"), vec![
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
-            monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretFireBlind")], -1),
-        ]),
+        monster_move(
+            "turret_move_stand",
+            0,
+            1,
+            None,
+            vec![
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+            ],
+        ),
+        monster_move(
+            "turret_move_ready_gun",
+            2,
+            8,
+            Some("turret_run"),
+            vec![
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+                monster_frame(MonsterAi::Stand, 0.0, vec![], -1),
+            ],
+        ),
+        monster_move(
+            "turret_move_seek",
+            8,
+            9,
+            None,
+            vec![
+                monster_frame(MonsterAi::Walk, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Walk, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+            ],
+        ),
+        monster_move(
+            "turret_move_run",
+            8,
+            9,
+            Some("turret_run"),
+            vec![
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+            ],
+        ),
+        monster_move(
+            "turret_move_fire",
+            10,
+            13,
+            Some("turret_run"),
+            vec![
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretFire")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+            ],
+        ),
+        monster_move(
+            "turret_move_fire_blind",
+            10,
+            13,
+            Some("turret_run"),
+            vec![
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretAim")], -1),
+                monster_frame(MonsterAi::Run, 0.0, vec![MonsterAction::name("TurretFireBlind")], -1),
+            ],
+        ),
     ]
 }

@@ -224,9 +224,7 @@ pub fn capture_lmctf_grapple(state: &LmctfGrappleState) -> LmctfGrappleCheckpoin
 /// Restore CTF grapple state (`restoreCtfGrapple`).
 pub fn restore_ctf_grapple(saved: CtfGrappleCheckpoint, game: &mut Q2GameServices) -> CtfGrappleState {
     CtfGrappleState {
-        grapple: saved
-            .grapple
-            .map(|hook| game.host.actors().reference_saved(hook)),
+        grapple: saved.grapple.map(|hook| game.host.actors().reference_saved(hook)),
         grapple_state: saved.grapple_state,
         grapple_release_time: saved.grapple_release_time,
         grapple_no_knockback: saved.grapple_no_knockback,
@@ -234,14 +232,9 @@ pub fn restore_ctf_grapple(saved: CtfGrappleCheckpoint, game: &mut Q2GameService
 }
 
 /// Restore LMCTF grapple state (`restoreLmctfGrapple`).
-pub fn restore_lmctf_grapple(
-    saved: LmctfGrappleCheckpoint,
-    game: &mut Q2GameServices,
-) -> LmctfGrappleState {
+pub fn restore_lmctf_grapple(saved: LmctfGrappleCheckpoint, game: &mut Q2GameServices) -> LmctfGrappleState {
     LmctfGrappleState {
-        hook: saved
-            .hook
-            .map(|hook| game.host.actors().reference_saved(hook)),
+        hook: saved.hook.map(|hook| game.host.actors().reference_saved(hook)),
         hook_state: saved.hook_state,
         hook_length: saved.hook_length,
         hook_held: saved.hook_held,

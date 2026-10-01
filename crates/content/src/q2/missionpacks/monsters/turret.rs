@@ -5,30 +5,25 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::state::rogue_state;
 use super::tables::rogue_turret::{turret_frame, turret_moves};
 use super::types::mission_services;
 use crate::q2::base::monsters::common::move_handler;
-use crate::q2::foundation::callbacks::{Q2CallbackDefinitions, free_q2_entity};
+use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2TraceRequest,
+    Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, attack_trace_mask, enemy_body, enemy_eye, health,
-    target_distance, vector_angles, visible,
+    angles_vectors, attack_trace_mask, enemy_body, enemy_eye, health, target_distance, vector_angles, visible,
 };
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion,
-    Q2MonsterDefinition, StartMode,
+    MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition, StartMode,
 };
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::rerelease::monsters::common::monster_flash;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit, TraceResult,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit, TraceResult};
 
 /// Angle mod (`anglemod`).
 fn angle_mod(angle: f64) -> f64 {
@@ -46,8 +41,7 @@ fn target_or_world(context: &mut MonsterContext, trace: &TraceResult) -> bool {
         TraceHit::None => true,
         TraceHit::World { .. } => true,
         TraceHit::Actor { actor } => {
-            *actor == context.game.host.world_actor()
-                || context.entity().enemy.as_ref() == Some(actor)
+            *actor == context.game.host.world_actor() || context.entity().enemy.as_ref() == Some(actor)
         }
     }
 }
@@ -80,7 +74,9 @@ fn turret_aim(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let enemy = context.entity().enemy.clone();
     if enemy.is_none()
-        || enemy.as_ref().is_some_and(|enemy| *enemy == context.game.host.world_actor())
+        || enemy
+            .as_ref()
+            .is_some_and(|enemy| *enemy == context.game.host.world_actor())
     {
         if !context.find_target() {
             return;
@@ -296,11 +292,7 @@ fn turret_fire_inner(context: &mut MonsterContext, blind: bool) {
         )
     };
     let distance = length3(sub3(end, start));
-    if !blind
-        && spawnflags & 80 == 0
-        && distance < 512.0
-        && context.game.random() + f64::from(3 - skill) * 0.1 < 0.8
-    {
+    if !blind && spawnflags & 80 == 0 && distance < 512.0 && context.game.random() + f64::from(3 - skill) * 0.1 < 0.8 {
         end = add3(end, scale3(enemy.velocity, distance / 1000.0));
     }
     let direction = normalize3(sub3(end, start));
@@ -338,32 +330,15 @@ fn turret_fire_inner(context: &mut MonsterContext, blind: bool) {
         monster_flash(context, 143, start, direction);
     } else if !blind && spawnflags & 16 != 0 {
         let fire_bullet = context.weapons.fire_bullet;
-        fire_bullet(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            4.0,
-            0.0,
-            300.0,
-            500.0,
-            0,
-        );
+        fire_bullet(actor, &mut *context.game, start, direction, 4.0, 0.0, 300.0, 500.0, 0);
         monster_flash(context, 141, start, direction);
     } else if spawnflags & 32 != 0
-        && trace.as_ref().is_none_or(|trace| f64::from(distance) * trace.fraction > 72.0)
+        && trace
+            .as_ref()
+            .is_none_or(|trace| f64::from(distance) * trace.fraction > 72.0)
     {
         let fire_rocket = context.weapons.fire_rocket;
-        fire_rocket(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            50.0,
-            speed,
-            70.0,
-            50.0,
-        );
+        fire_rocket(actor, &mut *context.game, start, direction, 50.0, speed, 70.0, 50.0);
         monster_flash(context, 142, start, direction);
     }
 }
@@ -404,12 +379,7 @@ fn turret_wake(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Activate (`activate`).
-fn turret_activate(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn turret_activate(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.set_motion_kind(actor.clone(), Q2MotionKind::Push);
     {
         let entity = game.require_entity_mut(&actor);
@@ -652,15 +622,15 @@ fn turret_check_attack(context: &mut MonsterContext) -> bool {
         let enemy_solid = context.game.entity(&enemy_id).map(|enemy| enemy.solid);
         let direct = matches!(&trace.hit, TraceHit::Actor { actor } if *actor == enemy_id);
         if !direct && (enemy_solid != Some(Q2Solid::None) || trace.fraction < 1.0) {
-            let blocker_monster = matches!(&trace.hit, TraceHit::Actor { actor } if context.game.host.is_monster(actor));
+            let blocker_monster =
+                matches!(&trace.hit, TraceHit::Actor { actor } if context.game.host.is_monster(actor));
             let spawnflags = context.entity().spawnflags;
             if !blocker_monster
                 && !visible(context, None)
                 && spawnflags & 40 != 0
                 && context.state().blind_fire_delay <= 10.0
                 && context.game.host.now() >= context.state().attack_finished
-                && context.game.host.now()
-                    >= context.state().trail_time + context.state().blind_fire_delay
+                && context.game.host.now() >= context.state().trail_time + context.state().blind_fire_delay
             {
                 let target = context.state().blind_fire_target;
                 let blind = context.game.host.trace(&Q2TraceRequest {
@@ -673,8 +643,7 @@ fn turret_check_attack(context: &mut MonsterContext) -> bool {
                 });
                 if !blind.all_solid
                     && !blind.start_solid
-                    && (blind.fraction == 1.0
-                        || matches!(&blind.hit, TraceHit::Actor { actor } if *actor == enemy_id))
+                    && (blind.fraction == 1.0 || matches!(&blind.hit, TraceHit::Actor { actor } if *actor == enemy_id))
                 {
                     context.state_mut().attack_state = MonsterAttackState::Blind;
                     let finished = context.game.host.now() + 0.5 + 2.0 * context.game.random();
@@ -805,7 +774,9 @@ fn turret_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
     // Stationary entities reach the source die callback before monster_death_use.
     if !context.entity().target.is_empty() {
         let enemy = context.entity().enemy.clone();
-        let live = enemy.as_ref().is_some_and(|enemy| context.game.host.actors().is_live(enemy));
+        let live = enemy
+            .as_ref()
+            .is_some_and(|enemy| context.game.host.actors().is_live(enemy));
         let activator = if live { enemy } else { Some(actor.clone()) };
         let authored = context.game.require_entity(&actor).clone().authored_target();
         context.game.use_targets(&authored, activator.as_ref(), false);
@@ -854,22 +825,21 @@ pub fn create_rogue_turret_definition() -> Q2MonsterDefinition {
     definition.after_spawn = Some(MonsterHandler::Callback(turret_after_spawn));
     let mut source_callbacks = Q2CallbackDefinitions::default();
     source_callbacks.think.insert("q2:rogue/turret_wake", turret_wake);
-    source_callbacks.use_.insert("q2:rogue/turret_activate", turret_activate);
+    source_callbacks
+        .use_
+        .insert("q2:rogue/turret_activate", turret_activate);
     definition.source_callbacks = Some(source_callbacks);
     definition.check_attack = Some(turret_check_attack);
     definition.pain = Some(turret_pain);
-    definition.callbacks.insert(
-        "turret_run".to_string(),
-        MonsterHandler::Callback(turret_run),
-    );
-    definition.callbacks.insert(
-        "TurretAim".to_string(),
-        MonsterHandler::Callback(turret_aim),
-    );
-    definition.callbacks.insert(
-        "TurretFire".to_string(),
-        MonsterHandler::Callback(turret_fire),
-    );
+    definition
+        .callbacks
+        .insert("turret_run".to_string(), MonsterHandler::Callback(turret_run));
+    definition
+        .callbacks
+        .insert("TurretAim".to_string(), MonsterHandler::Callback(turret_aim));
+    definition
+        .callbacks
+        .insert("TurretFire".to_string(), MonsterHandler::Callback(turret_fire));
     definition.callbacks.insert(
         "TurretFireBlind".to_string(),
         MonsterHandler::Callback(turret_fire_blind),

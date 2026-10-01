@@ -11,16 +11,11 @@ use crate::q2::base::monsters::actor::{actor_definition, actor_name};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::{integer_field, movedir, number_field};
 use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2PrintLevel,
-    Q2Solid, Q2SpawnFn, SpawnModule,
+    Q2Edition, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2PrintLevel, Q2Solid, Q2SpawnFn, SpawnModule,
 };
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, health, vector_angles,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, health, vector_angles};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at,
-};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{PainReaction, TouchContact};
 
 /// Hold forever (`holdForever`).
@@ -55,7 +50,8 @@ fn actor_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>,
         Some(target) => game.require_entity(target).classname != "target_actor",
     };
     if bad {
-        game.host.diagnostic(&format!("misc_actor has bad target {target_name}"));
+        game.host
+            .diagnostic(&format!("misc_actor has bad target {target_name}"));
         game.require_entity_mut(&actor).target = String::new();
         let mut context = MonsterContext::new(actor, &mut *game);
         context.state_mut().pause_time = HOLD_FOREVER;
@@ -83,7 +79,13 @@ fn target_actor_touch(this: ActorId, game: &mut Q2GameServices, contact: TouchCo
     if game.entity(&other).is_none() || !game.monsters.states.contains_key(&other) {
         return;
     }
-    let move_target = game.monsters.states.get(&other).expect("actor touch").move_target.clone();
+    let move_target = game
+        .monsters
+        .states
+        .get(&other)
+        .expect("actor touch")
+        .move_target
+        .clone();
     if move_target != Some(this.clone()) || game.require_entity(&other).enemy.is_some() {
         return;
     }
@@ -203,11 +205,7 @@ fn rerelease_actor_initialize(context: &mut MonsterContext) {
     context.state_mut().good_guy = true;
     let spawn = context.game.require_entity(&actor).spawn.clone();
     let authored = integer_field(&spawn, "health", 0);
-    let max_health = if authored != 0 {
-        f64::from(authored)
-    } else {
-        100.0
-    };
+    let max_health = if authored != 0 { f64::from(authored) } else { 100.0 };
     context.game.require_entity_mut(&actor).max_health = max_health;
     let owned = context.game.owned_of(actor);
     context.game.host.combat().set_health(&owned, max_health);
@@ -239,14 +237,15 @@ fn rerelease_actor_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     context.state_mut().pain_time = now + 3.0;
     let attacker = reaction.attacker.clone();
     if attacker.is_some()
-        && attacker.as_ref().is_some_and(|attacker| context.game.host.is_player(attacker))
+        && attacker
+            .as_ref()
+            .is_some_and(|attacker| context.game.host.is_player(attacker))
         && context.game.random() < 0.4
     {
         let attacker = attacker.expect("actor attacker");
         if let Some(other) = context.game.host.bodies().read(&attacker) {
             let origin = context.game.body_of(actor.clone()).origin;
-            context.state_mut().ideal_yaw =
-                f64::from(vector_angles(sub3(other.origin, origin)).y);
+            context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(other.origin, origin)).y);
         }
         let flipoff = context.game.random() < 0.5;
         context.set_move(
@@ -362,11 +361,7 @@ fn spawn_target_actor(actor: ActorId, game: &mut Q2GameServices) -> bool {
         }
         let angles = game.body_of(actor.clone()).angles;
         let spawn = game.require_entity(&actor).spawn.clone();
-        let facing = vec3(
-            angles.x,
-            if angles.y != 0.0 { angles.y } else { 360.0 },
-            angles.z,
-        );
+        let facing = vec3(angles.x, if angles.y != 0.0 { angles.y } else { 360.0 }, angles.z);
         let height = number_field(&spawn, "height", 0.0);
         let mut movedir = movedir(facing);
         movedir.z = if height != 0.0 { height as f32 } else { 200.0 };
@@ -387,7 +382,9 @@ fn target_actor_item_name(_classname: &str) -> Option<String> {
 /// Create the rerelease actor targets module (`createRereleaseActorModule targets`).
 pub fn rerelease_actor_targets() -> SpawnModule {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.touch.insert("rerelease.actor.target_actor_touch", target_actor_touch);
+    callbacks
+        .touch
+        .insert("rerelease.actor.target_actor_touch", target_actor_touch);
     let spawn: Q2SpawnFn = spawn_target_actor;
     SpawnModule {
         spawn,

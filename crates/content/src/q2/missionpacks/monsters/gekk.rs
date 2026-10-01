@@ -6,28 +6,20 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::tables::xatrix_gekk::{gekk_frame, gekk_moves};
-use crate::q2::base::monsters::common::{
-    alive_enemy, finish_corpse_default, move_handler, sound_handler,
-};
-use crate::q2::foundation::callbacks::{Q2CallbackDefinitions, free_q2_entity};
-use crate::q2::foundation::host::{
-    Q2GameServices, Q2MotionKind, Q2Solid, Q2TraceRequest,
-};
+use crate::q2::base::monsters::common::{alive_enemy, finish_corpse_default, move_handler, sound_handler};
+use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
+use crate::q2::foundation::host::{Q2GameServices, Q2MotionKind, Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    MASK_SHOT, angles_vectors, check_bottom, enemy_body, enemy_eye, health,
-    project_flash, run_ai, set_duck, target_distance, trace_ground_actor,
-    vector_angles,
+    angles_vectors, check_bottom, enemy_body, enemy_eye, health, project_flash, run_ai, set_duck, target_distance,
+    trace_ground_actor, vector_angles, MASK_SHOT,
 };
 use crate::q2::foundation::monsters::types::{
-    MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler,
-    MonsterLocomotion, Q2MonsterDefinition,
+    MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
 };
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TouchContact, TraceResult,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TouchContact, TraceResult};
 
 /// Acid gib die (`gibDie`).
 fn acid_gib_die(actor: ActorId, game: &mut Q2GameServices, _reaction: DeathReaction) {
@@ -40,7 +32,14 @@ fn loogie_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchContact
     if Some(&contact.other) == entity.owner.as_ref() {
         return;
     }
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(actor);
         return;
     }
@@ -151,10 +150,7 @@ fn acid_gib(context: &mut MonsterContext, part: &str, damage: f64, head: bool) {
     callbacks.die.insert("acid_gib_die", acid_gib_die);
     context.game.source_callbacks.register(&callbacks);
     let half = scale3(sub3(body.bounds.max, body.bounds.min), 0.5);
-    let center = add3(
-        add3(body.origin, body.bounds.min),
-        add3(half, vec3(-1.0, -1.0, -1.0)),
-    );
+    let center = add3(add3(body.origin, body.bounds.min), add3(half, vec3(-1.0, -1.0, -1.0)));
     let origin = if head {
         body.origin
     } else {
@@ -185,8 +181,9 @@ fn acid_gib(context: &mut MonsterContext, part: &str, damage: f64, head: bool) {
         }
     }
     if head {
-        context.game.host_emit(
-            crate::q2::foundation::host::Q2PresentationEvent::Sound(
+        context
+            .game
+            .host_emit(crate::q2::foundation::host::Q2PresentationEvent::Sound(
                 crate::q2::foundation::host::Q2SoundEvent {
                     actor: Some(gib.clone()),
                     origin,
@@ -198,8 +195,7 @@ fn acid_gib(context: &mut MonsterContext, part: &str, damage: f64, head: bool) {
                     loop_: crate::q2::foundation::host::Q2SoundLoop::Stop,
                     loop_owner: None,
                 },
-            ),
-        );
+            ));
     }
     let scale = if damage < 50.0 { 0.7 } else { 1.2 };
     let impulse = scale3(
@@ -426,9 +422,7 @@ fn gekk_search(context: &mut MonsterContext) {
     }
     context.game.sound(&actor, path, 2, 1.0, 1.0);
     let max_health = context.entity().max_health;
-    let hp = max_health.min(
-        (health(&mut *context.game, Some(&actor)) + 10.0 + 10.0 * context.game.random()).trunc(),
-    );
+    let hp = max_health.min((health(&mut *context.game, Some(&actor)) + 10.0 + 10.0 * context.game.random()).trunc());
     let owned = context.game.owned_of(actor);
     context.game.host.combat().set_health(&owned, hp);
     let skin = if hp < max_health / 4.0 {
@@ -506,14 +500,22 @@ fn gekk_takeoff(context: &mut MonsterContext, from_water: bool) {
     context.game.write_body(actor.clone(), &moved, false);
     let long = gekk_check_jump(context);
     let speed = if from_water {
-        if long { 300.0 } else { 150.0 }
+        if long {
+            300.0
+        } else {
+            150.0
+        }
     } else if long {
         700.0
     } else {
         250.0
     };
     let up = if from_water {
-        if long { 250.0 } else { 300.0 }
+        if long {
+            250.0
+        } else {
+            300.0
+        }
     } else if long {
         250.0
     } else {
@@ -546,14 +548,7 @@ fn gekk_stand(context: &mut MonsterContext) {
 /// Idle (`idle`).
 fn gekk_idle(context: &mut MonsterContext) {
     let wet = gekk_wet(context, None);
-    context.set_move(
-        if wet {
-            "gekk_move_swim_start"
-        } else {
-            "gekk_move_idle"
-        },
-        false,
-    );
+    context.set_move(if wet { "gekk_move_swim_start" } else { "gekk_move_idle" }, false);
 }
 
 /// After spawn (`afterSpawn`).
@@ -570,9 +565,7 @@ fn gekk_ai_stand2(context: &mut MonsterContext, distance: f64) {
         return;
     }
     run_ai(context, &MonsterAi::Move, distance);
-    if context.entity().spawnflags & 1 == 0
-        && context.game.host.now() > context.state().idle_time
-    {
+    if context.entity().spawnflags & 1 == 0 && context.game.host.now() > context.state().idle_time {
         if context.state().idle_time != 0.0 {
             context.idle();
             let idle = context.game.host.now() + 15.0 + context.game.random() * 15.0;
@@ -598,8 +591,7 @@ fn gekk_check_attack(context: &mut MonsterContext) -> bool {
     };
     let actor = context.actor().clone();
     let origin = context.game.body_of(actor).origin;
-    let close = f32::hypot(origin.x - enemy.origin.x, origin.y - enemy.origin.y) >= 100.0
-        || origin.z < enemy.origin.z;
+    let close = f32::hypot(origin.x - enemy.origin.x, origin.y - enemy.origin.y) >= 100.0 || origin.z < enemy.origin.z;
     if gekk_check_jump(context) || close && !gekk_wet(context, None) {
         context.state_mut().attack_state = MonsterAttackState::Missile;
         return true;
@@ -612,16 +604,8 @@ fn gekk_attack(context: &mut MonsterContext) {
     if context.entity().flags & 2 != 0 || gekk_wet(context, None) {
         return;
     }
-    let spit = context.game.random() > 0.5 && target_distance(context) >= 80.0
-        || context.game.random() > 0.8;
-    context.set_move(
-        if spit {
-            "gekk_move_spit"
-        } else {
-            "gekk_move_leapatk"
-        },
-        false,
-    );
+    let spit = context.game.random() > 0.5 && target_distance(context) >= 80.0 || context.game.random() > 0.8;
+    context.set_move(if spit { "gekk_move_spit" } else { "gekk_move_leapatk" }, false);
 }
 
 /// Pain (`pain`).
@@ -700,13 +684,7 @@ fn gekk_die(context: &mut MonsterContext, reaction: &DeathReaction) {
 }
 
 /// Dodge (`dodge`).
-fn gekk_dodge(
-    context: &mut MonsterContext,
-    attacker: &ActorId,
-    eta: f64,
-    _trace: Option<&TraceResult>,
-    _direct: bool,
-) {
+fn gekk_dodge(context: &mut MonsterContext, attacker: &ActorId, eta: f64, _trace: Option<&TraceResult>, _direct: bool) {
     if context.game.random() > 0.25 {
         return;
     }
@@ -719,14 +697,7 @@ fn gekk_dodge(
     }
     if context.game.options.skill == 0 {
         let left = context.game.random() > 0.5;
-        context.set_move(
-            if left {
-                "gekk_move_lduck"
-            } else {
-                "gekk_move_rduck"
-            },
-            false,
-        );
+        context.set_move(if left { "gekk_move_lduck" } else { "gekk_move_rduck" }, false);
         return;
     }
     let pause = context.game.host.now() + eta + 0.3;
@@ -735,14 +706,7 @@ fn gekk_dodge(
     let random = context.game.random();
     if skill < 3 && random > if skill == 1 { 0.33 } else { 0.66 } {
         let left = context.game.random() > 0.5;
-        context.set_move(
-            if left {
-                "gekk_move_lduck"
-            } else {
-                "gekk_move_rduck"
-            },
-            false,
-        );
+        context.set_move(if left { "gekk_move_lduck" } else { "gekk_move_rduck" }, false);
         return;
     }
     let first = context.game.random() > 0.66;
@@ -771,10 +735,7 @@ fn gekk_swim_loop(context: &mut MonsterContext) {
 /// Swim (`gekk_swim`).
 fn gekk_swim(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let enemy_entity = enemy
-        .as_ref()
-        .and_then(|enemy| context.game.entity(enemy))
-        .cloned();
+    let enemy_entity = enemy.as_ref().and_then(|enemy| context.game.entity(enemy)).cloned();
     let leave = match enemy_entity {
         Some(enemy_entity) => {
             let id = enemy_entity.actor.id().clone();
@@ -799,9 +760,7 @@ fn gekk_check_underwater(context: &mut MonsterContext) {
 /// Idle loop (`gekk_idle_loop`).
 fn gekk_idle_loop(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    if context.game.random() > 0.75
-        && health(&mut *context.game, Some(&actor)) < context.entity().max_health
-    {
+    if context.game.random() > 0.75 && health(&mut *context.game, Some(&actor)) < context.entity().max_health {
         context.state_mut().next_frame = gekk_frame::IDLE_01;
     }
 }
@@ -865,9 +824,7 @@ fn gekk_loogie(context: &mut MonsterContext) {
 /// Reloogie (`reloogie`).
 fn gekk_reloogie(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    if context.game.random() > 0.8
-        && health(&mut *context.game, Some(&actor)) < context.entity().max_health
-    {
+    if context.game.random() > 0.8 && health(&mut *context.game, Some(&actor)) < context.entity().max_health {
         context.set_move("gekk_move_idle2", true);
         return;
     }

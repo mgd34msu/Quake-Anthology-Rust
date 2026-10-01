@@ -1,7 +1,7 @@
 //! Mission-pack monster power armor (`src/content/q2/missionpacks/monsters/power-armor.ts`).
 
 use crate::contract::{InventoryEntry, PoweredProtectionState};
-use crate::q2::foundation::monsters::types::{MonsterContext, bind_shared_power_cells};
+use crate::q2::foundation::monsters::types::{bind_shared_power_cells, MonsterContext};
 
 /// Power-armor kind (`"screen" | "shield"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

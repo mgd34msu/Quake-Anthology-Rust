@@ -7,9 +7,7 @@ use qa_core::math::Vec3;
 
 use crate::contract::InventoryEntry;
 use crate::q2::foundation::checkpoint::{restore_q2_actor, save_q2_actor};
-use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop,
-};
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop};
 use crate::q2::foundation::weapons::ballistics::{fire_hand_grenade, Q2HandGrenadeLaunch};
 use crate::q2::foundation::weapons::damage::q2_weapon_damage_multiplier;
 use crate::q2::foundation::weapons::hand_action::{
@@ -126,21 +124,12 @@ impl Q2HandGrenadeEquipment {
     }
 
     /// Read owner state (`state`).
-    pub fn state_snapshot(
-        &self,
-        game: &Q2GameServices,
-        actor: ActorId,
-    ) -> Option<HandGrenadeEquipmentState> {
+    pub fn state_snapshot(&self, game: &Q2GameServices, actor: ActorId) -> Option<HandGrenadeEquipmentState> {
         game.equipment.grenades.get(&actor).cloned()
     }
 
     /// Configure an owner (`configure`).
-    pub fn configure(
-        &self,
-        owner: &OwnedActor,
-        game: &mut Q2GameServices,
-        loadout: HandGrenadeLoadout,
-    ) {
+    pub fn configure(&self, owner: &OwnedActor, game: &mut Q2GameServices, loadout: HandGrenadeLoadout) {
         check_loadout(&loadout);
         let actor = owner.id().clone();
         game.host.inventory().configure(
@@ -237,9 +226,7 @@ impl Q2HandGrenadeEquipment {
         };
         let action = step_hand_action(&current.action, &mut action_input, &mut host);
         let game = host.game;
-        if game.equipment.grenades.get(&actor) != Some(current)
-            || !game.host.actors().is_live(&actor)
-        {
+        if game.equipment.grenades.get(&actor) != Some(current) || !game.host.actors().is_live(&actor) {
             return;
         }
         let next = HandGrenadeEquipmentState {
@@ -249,9 +236,7 @@ impl Q2HandGrenadeEquipment {
         game.equipment.grenades.insert(actor.clone(), next.clone());
         let effects = host.effects;
         for effect in effects {
-            if game.equipment.grenades.get(&actor) != Some(&next)
-                || !game.host.actors().is_live(&actor)
-            {
+            if game.equipment.grenades.get(&actor) != Some(&next) || !game.host.actors().is_live(&actor) {
                 break;
             }
             match effect {
@@ -279,8 +264,7 @@ impl Q2HandGrenadeEquipment {
                         weapon_thunk: false,
                         view_height: 0.0,
                     };
-                    let damage =
-                        spec.damage * q2_weapon_damage_multiplier(&actor, &weapon_input, now, game);
+                    let damage = spec.damage * q2_weapon_damage_multiplier(&actor, &weapon_input, now, game);
                     fire_hand_grenade(
                         actor.clone(),
                         game,
@@ -298,9 +282,11 @@ impl Q2HandGrenadeEquipment {
                     );
                 }
                 GrenadeSideEffect::Sound { event } => {
-                    let body = game.host.bodies().read(&actor).unwrap_or_else(|| {
-                        panic!("Hand grenade owner lost its shared body before removal")
-                    });
+                    let body = game
+                        .host
+                        .bodies()
+                        .read(&actor)
+                        .unwrap_or_else(|| panic!("Hand grenade owner lost its shared body before removal"));
                     game.host.emit(Q2PresentationEvent::Sound(Q2SoundEvent {
                         actor: Some(actor.clone()),
                         origin: body.origin,
@@ -361,9 +347,7 @@ impl Q2HandGrenadeEquipment {
         for saved in checkpoint.actors.values() {
             check_loadout(&saved.config);
             let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
-            if game.host.bodies().read(&actor).is_none()
-                || game.host.inventory().entries(&actor).is_empty()
-            {
+            if game.host.bodies().read(&actor).is_none() || game.host.inventory().entries(&actor).is_empty() {
                 panic!("Hand grenade checkpoint owner is missing shared state");
             }
             if next.contains_key(&actor) {
@@ -437,7 +421,11 @@ impl HandActionHost for GrenadeStepHost<'_> {
             weapon_ammo_changed(self.game, &self.actor, &HAND_GRENADE_AMMO.to_string());
             return true;
         }
-        self.game.host.inventory().count(&self.actor, &HAND_GRENADE_AMMO.to_string()) != 0.0
+        self.game
+            .host
+            .inventory()
+            .count(&self.actor, &HAND_GRENADE_AMMO.to_string())
+            != 0.0
     }
 
     fn consume(&mut self) {}
@@ -455,10 +443,7 @@ impl HandActionHost for GrenadeStepHost<'_> {
         };
         let mut refunded = entry.clone();
         refunded.count += 1.0;
-        self.game
-            .host
-            .inventory()
-            .configure(&self.owned, &refunded);
+        self.game.host.inventory().configure(&self.owned, &refunded);
         weapon_ammo_changed(self.game, &self.actor, &HAND_GRENADE_AMMO.to_string());
     }
 
@@ -474,8 +459,7 @@ impl HandActionHost for GrenadeStepHost<'_> {
 /// Validate a loadout (`checkLoadout`).
 fn check_loadout(loadout: &HandGrenadeLoadout) {
     for value in [loadout.capacity, loadout.initial_ammo] {
-        if !value.is_finite() || value.fract() != 0.0 || !(0.0..=9_007_199_254_740_992.0).contains(&value)
-        {
+        if !value.is_finite() || value.fract() != 0.0 || !(0.0..=9_007_199_254_740_992.0).contains(&value) {
             panic!("Hand grenade loadout violates the engine ammo contract");
         }
     }

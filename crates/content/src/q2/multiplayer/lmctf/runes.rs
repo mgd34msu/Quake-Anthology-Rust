@@ -5,21 +5,34 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Bounds, Vec3, add3, length3, sub3, vec3};
+use qa_core::math::{add3, length3, sub3, vec3, Bounds, Vec3};
 
 use crate::contract::{InventoryEntry, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think, Q2Touch, Q2TraceRequest};
+use crate::q2::foundation::host::{
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think, Q2Touch, Q2TraceRequest,
+};
 use crate::q2::foundation::items::{Q2ItemDefinition, Q2ItemKindData};
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::TouchContact;
 
 use super::super::ctf::types::item_id;
 use super::flags::LmctfFlags;
-use super::types::{LMCTF_RUNES, LmctfHooks, LmctfRune, LmctfRuneDefinition, lmctf_player, lmctf_toss};
+use super::types::{lmctf_player, lmctf_toss, LmctfHooks, LmctfRune, LmctfRuneDefinition, LMCTF_RUNES};
 
 /// LMCTF rune bounds.
-const RUNE_BOUNDS: Bounds = Bounds { min: Vec3 { x: -15.0, y: -15.0, z: -15.0 }, max: Vec3 { x: 15.0, y: 15.0, z: 15.0 } };
+const RUNE_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -15.0,
+        y: -15.0,
+        z: -15.0,
+    },
+    max: Vec3 {
+        x: 15.0,
+        y: 15.0,
+        z: 15.0,
+    },
+};
 
 /// Single-precision rounding (`Math.fround`).
 fn fround(value: f64) -> f64 {
@@ -44,28 +57,38 @@ pub struct LmctfRunes {
 pub fn lmctf_rune_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
     callbacks.think.insert("lmctf:Rune_Think", lmctf_rune_think as Q2Think);
-    callbacks.think.insert("lmctf:Drop_Rune_Think", lmctf_drop_rune_think as Q2Think);
+    callbacks
+        .think
+        .insert("lmctf:Drop_Rune_Think", lmctf_drop_rune_think as Q2Think);
     callbacks.touch.insert("lmctf:Rune_Touch", lmctf_rune_touch as Q2Touch);
-    callbacks.touch.insert("lmctf:Rune_DropTouch", lmctf_rune_drop_touch as Q2Touch);
+    callbacks
+        .touch
+        .insert("lmctf:Rune_DropTouch", lmctf_rune_drop_touch as Q2Touch);
     callbacks
 }
 
 /// Rune item pickup (`register` pickup).
 fn lmctf_rune_item_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> bool {
-    let runes = LmctfRunes { hooks: super::lmctf_hooks(game) };
+    let runes = LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    };
     runes.pickup(entity, game, player.id().clone());
     false
 }
 
 /// Rune item use (`register` use).
 fn lmctf_rune_item_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    let runes = LmctfRunes { hooks: super::lmctf_hooks(game) };
+    let runes = LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    };
     runes.drop(player.id(), game)
 }
 
 /// Rune think (`think`).
 fn lmctf_rune_think(entity: ActorId, game: &mut Q2GameServices) {
-    let runes = LmctfRunes { hooks: super::lmctf_hooks(game) };
+    let runes = LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    };
     if game.require_entity(&entity).solid != Q2Solid::None {
         let kind = runes.definition(&game.require_entity(&entity).classname.clone()).kind;
         let frame = game.require_entity(&entity).frame;
@@ -79,7 +102,9 @@ fn lmctf_rune_think(entity: ActorId, game: &mut Q2GameServices) {
                     game.lmctf.runes_forward = true;
                 }
             }
-            LmctfRune::Haste => game.require_entity_mut(&entity).frame = if (1..=15).contains(&frame) { frame + 1 } else { 5 },
+            LmctfRune::Haste => {
+                game.require_entity_mut(&entity).frame = if (1..=15).contains(&frame) { frame + 1 } else { 5 }
+            }
             LmctfRune::Regen => game.require_entity_mut(&entity).frame = (frame + 1) % 14,
             LmctfRune::Resist | LmctfRune::Vampire => game.require_entity_mut(&entity).frame = (frame + 1) % 15,
         }
@@ -87,7 +112,12 @@ fn lmctf_rune_think(entity: ActorId, game: &mut Q2GameServices) {
     game.show(entity.clone());
     game.schedule(entity.clone(), 0.1, lmctf_rune_think as Q2Think);
     if game.require_entity(&entity).timestamp + 30.0 < game.now() {
-        let spot = runes.random_spot(game).or_else(|| LmctfFlags { hooks: super::lmctf_hooks(game) }.flag(game, 1));
+        let spot = runes.random_spot(game).or_else(|| {
+            LmctfFlags {
+                hooks: super::lmctf_hooks(game),
+            }
+            .flag(game, 1)
+        });
         if let Some(spot) = spot {
             let origin = game.body_of(spot).origin;
             let mut body = game.body_of(entity.clone());
@@ -101,7 +131,9 @@ fn lmctf_rune_think(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Rune touch (`touch`).
 fn lmctf_rune_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    let runes = LmctfRunes { hooks: super::lmctf_hooks(game) };
+    let runes = LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    };
     runes.pickup(entity, game, contact.other);
 }
 
@@ -110,7 +142,9 @@ fn lmctf_rune_drop_touch(entity: ActorId, game: &mut Q2GameServices, contact: To
     if game.require_entity(&entity).owner.as_ref() == Some(&contact.other) {
         return;
     }
-    let runes = LmctfRunes { hooks: super::lmctf_hooks(game) };
+    let runes = LmctfRunes {
+        hooks: super::lmctf_hooks(game),
+    };
     runes.pickup(entity, game, contact.other);
 }
 
@@ -154,7 +188,9 @@ impl LmctfRunes {
 
     /// Capture rune state (`capture`).
     pub fn capture(&self, game: &Q2GameServices) -> LmctfRunesCheckpoint {
-        LmctfRunesCheckpoint { forward: game.lmctf.runes_forward }
+        LmctfRunesCheckpoint {
+            forward: game.lmctf.runes_forward,
+        }
     }
 
     /// Restore rune state (`restore`).
@@ -166,7 +202,10 @@ impl LmctfRunes {
     pub fn held(&self, actor: &ActorId, game: &mut Q2GameServices) -> Option<LmctfRune> {
         let rune = game.lmctf.states.get(actor).and_then(|state| state.rune.clone())?;
         let entity = game.entity(&rune)?;
-        LMCTF_RUNES.iter().find(|definition| definition.classname == entity.classname).map(|definition| definition.kind)
+        LMCTF_RUNES
+            .iter()
+            .find(|definition| definition.classname == entity.classname)
+            .map(|definition| definition.kind)
     }
 
     /// Read a rune definition (`definition`).
@@ -181,8 +220,12 @@ impl LmctfRunes {
     /// Find a random rune spot (`randomSpot`).
     fn random_spot(&self, game: &mut Q2GameServices) -> Option<ActorId> {
         for classname in ["item_health_small", "item_health_large", "item_health"] {
-            let spots: Vec<ActorId> =
-                game.entities.values().filter(|entity| entity.classname == classname).map(|entity| entity.actor.id().clone()).collect();
+            let spots: Vec<ActorId> = game
+                .entities
+                .values()
+                .filter(|entity| entity.classname == classname)
+                .map(|entity| entity.actor.id().clone())
+                .collect();
             if !spots.is_empty() {
                 let index = 0.max(20.min((game.random() * spots.len() as f64).trunc() as i32) - 1) as usize;
                 return spots.get(index).cloned();
@@ -203,7 +246,9 @@ impl LmctfRunes {
             let mut nearest: f64 = 9999999.0;
             for definition in LMCTF_RUNES {
                 // G_Find starts after the health edict and uses only the first of each rune.
-                let rune = entities[index + 1..].iter().find(|entity| game.require_entity(entity).classname == definition.classname);
+                let rune = entities[index + 1..]
+                    .iter()
+                    .find(|entity| game.require_entity(entity).classname == definition.classname);
                 if let Some(rune) = rune {
                     let origin = game.body_of(spot.clone()).origin;
                     nearest = nearest.min(f64::from(length3(sub3(origin, game.body_of(rune.clone()).origin))));
@@ -239,8 +284,11 @@ impl LmctfRunes {
         let origin = game.body_of(entity.clone()).origin;
         let destination = add3(origin, vec3(0.0, 0.0, 48.0));
         let owner = game.require_entity_mut(&entity).owner.take();
-        let velocity =
-            vec3((-2000.0 + game.random() * 4000.0) as f32, (-2000.0 + game.random() * 4000.0) as f32, (800.0 + game.random() * 200.0) as f32);
+        let velocity = vec3(
+            (-2000.0 + game.random() * 4000.0) as f32,
+            (-2000.0 + game.random() * 4000.0) as f32,
+            (800.0 + game.random() * 200.0) as f32,
+        );
         let trace = game.host.trace(&Q2TraceRequest {
             start: origin,
             end: destination,
@@ -251,7 +299,11 @@ impl LmctfRunes {
         });
         let mut body = game.body_of(entity.clone());
         body.bounds = RUNE_BOUNDS;
-        body.origin = if trace.fraction < 1.0 || trace.all_solid { origin } else { destination };
+        body.origin = if trace.fraction < 1.0 || trace.all_solid {
+            origin
+        } else {
+            destination
+        };
         body.velocity = velocity;
         body.ground = None;
         game.write_body(entity.clone(), &body, true);
@@ -285,7 +337,12 @@ impl LmctfRunes {
             if game.lmctf.rules.runes & definition.bit == 0 {
                 continue;
             }
-            let spot = self.farthest_spot(game).or_else(|| LmctfFlags { hooks: super::lmctf_hooks(game) }.flag(game, 1));
+            let spot = self.farthest_spot(game).or_else(|| {
+                LmctfFlags {
+                    hooks: super::lmctf_hooks(game),
+                }
+                .flag(game, 1)
+            });
             let Some(spot) = spot else {
                 continue;
             };
@@ -308,21 +365,43 @@ impl LmctfRunes {
             Some(player) => player.spectator,
             None => return false,
         };
-        let health = game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&actor)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         if spectator || health <= 0.0 || game.require_entity(&entity).solid != Q2Solid::Trigger {
             return false;
         }
-        if game.lmctf.states.get(&actor).and_then(|state| state.rune.clone()).is_some() {
+        if game
+            .lmctf
+            .states
+            .get(&actor)
+            .and_then(|state| state.rune.clone())
+            .is_some()
+        {
             game.require_entity_mut(&entity).touch = Some(lmctf_rune_touch as Q2Touch);
             game.schedule(entity, 0.1, lmctf_rune_think as Q2Think);
             return false;
         }
         let definition = self.definition(&game.require_entity(&entity).classname.clone());
         let owned = game.owned_of(actor.clone());
-        if !game.host.inventory().entries(&actor).iter().any(|entry| entry.item == definition.item) {
+        if !game
+            .host
+            .inventory()
+            .entries(&actor)
+            .iter()
+            .any(|entry| entry.item == definition.item)
+        {
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item_id(definition.item), count: 0.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item_id(definition.item),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         game.host.inventory().give(&owned, &item_id(definition.item), 1.0);
@@ -377,7 +456,11 @@ impl LmctfRunes {
         game.random();
         game.random();
         game.random();
-        let angles = game.host.player_view_state(actor).map(|view| view.view_angles).unwrap_or_else(|| game.body_of(actor.clone()).angles);
+        let angles = game
+            .host
+            .player_view_state(actor)
+            .map(|view| view.view_angles)
+            .unwrap_or_else(|| game.body_of(actor.clone()).angles);
         lmctf_toss(rune.clone(), actor.clone(), game, angle_vectors(angles).forward);
         game.require_entity_mut(&rune).timestamp = game.now();
         game.schedule(rune, 1.0, lmctf_drop_rune_think as Q2Think);
@@ -412,7 +495,10 @@ impl LmctfRunes {
         if source == target || take == 0.0 || self.held(&source, game) != Some(LmctfRune::Vampire) {
             return;
         }
-        let victim_bodyque = game.entity(&target).map(|entity| entity.classname == "bodyque").unwrap_or(false);
+        let victim_bodyque = game
+            .entity(&target)
+            .map(|entity| entity.classname == "bodyque")
+            .unwrap_or(false);
         let health = game.host.combat().read(&source).map(|combat| combat.health);
         let Some(health) = health else {
             return;
@@ -431,7 +517,9 @@ impl LmctfRunes {
             return;
         }
         let owned = game.owned_of(source.clone());
-        game.host.combat().set_health(&owned, 250.0f64.min(health + f64::from(take.trunc() as i32 >> shift)));
+        game.host
+            .combat()
+            .set_health(&owned, 250.0f64.min(health + f64::from(take.trunc() as i32 >> shift)));
         game.sound(&source, "brain/brnatck3.wav", 3, 1.0, 1.0);
     }
 
@@ -453,7 +541,10 @@ impl LmctfRunes {
         let max_health = game.require_entity(&entity).max_health;
         if combat.health < max_health + 25.0 {
             let owned = game.owned_of(entity.clone());
-            game.host.combat().set_health(&owned, (max_health + 25.0).min((combat.health + fround(f64::from(heart_rate) / 3.0)).trunc()));
+            game.host.combat().set_health(
+                &owned,
+                (max_health + 25.0).min((combat.health + fround(f64::from(heart_rate) / 3.0)).trunc()),
+            );
             sound = true;
         }
         let points = match &combat.armor.regular {
@@ -479,7 +570,11 @@ impl LmctfRunes {
             }
             Some(points) if points < 200.0 => {
                 let owned = game.owned_of(entity.clone());
-                game.host.combat().set_regular_points(&owned, 200.0f64.min((points + fround(f64::from(heart_rate) / 3.0)).trunc()), None);
+                game.host.combat().set_regular_points(
+                    &owned,
+                    200.0f64.min((points + fround(f64::from(heart_rate) / 3.0)).trunc()),
+                    None,
+                );
                 sound = true;
             }
             _ => {}

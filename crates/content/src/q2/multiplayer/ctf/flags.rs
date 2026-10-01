@@ -5,20 +5,21 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Bounds, Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use crate::contract::InventoryEntry;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::movedir;
 use crate::q2::foundation::host::{
-    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch, Q2TraceRequest,
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch,
+    Q2TraceRequest,
 };
 use crate::q2::foundation::items::{Q2ConsoleGive, Q2ItemDefinition, Q2ItemKindData};
 use crate::q2::support::contracts::TouchContact;
 
 use super::types::{
-    CTF_FLAGS, Q2CtfFlagState, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfPlayingTeam, Q2CtfPrintLevel, ctf_carried_flag, ctf_flag,
-    ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name, item_id, other_ctf_team,
+    ctf_carried_flag, ctf_flag, ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name, item_id, other_ctf_team,
+    Q2CtfFlagState, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfPlayingTeam, Q2CtfPrintLevel, CTF_FLAGS,
 };
 
 /// Flag team for a classname (`ctfFlagTeam`).
@@ -74,22 +75,31 @@ pub fn ctf_flag_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
     callbacks.think.insert("CTFFlagThink", ctf_flag_animate as Q2Think);
     callbacks.think.insert("CTFFlagSetup", ctf_flag_setup as Q2Think);
-    callbacks.think.insert("CTFDropFlagThink", ctf_drop_flag_return as Q2Think);
-    callbacks.touch.insert("CTFDropFlagTouch", ctf_drop_flag_touch as Q2Touch);
+    callbacks
+        .think
+        .insert("CTFDropFlagThink", ctf_drop_flag_return as Q2Think);
+    callbacks
+        .touch
+        .insert("CTFDropFlagTouch", ctf_drop_flag_touch as Q2Touch);
     callbacks.touch.insert("CTF_FlagTouch", ctf_flag_touch as Q2Touch);
     callbacks
 }
 
 /// Flag item pickup (`register` pickup).
 fn ctf_flag_item_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> bool {
-    let flags = Q2CtfFlags { hooks: super::ctf_hooks(game) };
+    let flags = Q2CtfFlags {
+        hooks: super::ctf_hooks(game),
+    };
     flags.pickup(entity, game, player.id().clone());
     false
 }
 
 /// Flag setup think (`setup`).
 fn ctf_flag_setup(entity: ActorId, game: &mut Q2GameServices) {
-    let bounds = Bounds { min: vec3(-15.0, -15.0, -15.0), max: vec3(15.0, 15.0, 15.0) };
+    let bounds = Bounds {
+        min: vec3(-15.0, -15.0, -15.0),
+        max: vec3(15.0, 15.0, 15.0),
+    };
     let origin = game.body_of(entity.clone()).origin;
     let trace = game.host.trace(&Q2TraceRequest {
         start: origin,
@@ -130,7 +140,9 @@ fn ctf_flag_animate(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Flag touch (`touch`).
 fn ctf_flag_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    let flags = Q2CtfFlags { hooks: super::ctf_hooks(game) };
+    let flags = Q2CtfFlags {
+        hooks: super::ctf_hooks(game),
+    };
     flags.pickup(entity, game, contact.other);
 }
 
@@ -141,7 +153,9 @@ fn ctf_drop_flag_touch(entity: ActorId, game: &mut Q2GameServices, contact: Touc
     if owner.as_ref() == Some(&contact.other) && fresh {
         return;
     }
-    let flags = Q2CtfFlags { hooks: super::ctf_hooks(game) };
+    let flags = Q2CtfFlags {
+        hooks: super::ctf_hooks(game),
+    };
     flags.pickup(entity, game, contact.other);
 }
 
@@ -149,9 +163,16 @@ fn ctf_drop_flag_touch(entity: ActorId, game: &mut Q2GameServices, contact: Touc
 fn ctf_drop_flag_return(entity: ActorId, game: &mut Q2GameServices) {
     let classname = game.require_entity(&entity).classname.clone();
     if let Some(team) = ctf_flag_team(&classname) {
-        let flags = Q2CtfFlags { hooks: super::ctf_hooks(game) };
+        let flags = Q2CtfFlags {
+            hooks: super::ctf_hooks(game),
+        };
         flags.reset(game, team);
-        ctf_print(game, &format!("The {} flag has returned!\n", ctf_team_name(team)), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("The {} flag has returned!\n", ctf_team_name(team)),
+            None,
+            Q2CtfPrintLevel::High,
+        );
     }
 }
 
@@ -217,7 +238,11 @@ impl Q2CtfFlags {
     /// Read the flag state (`state`).
     pub fn state(&self, game: &mut Q2GameServices, team: Q2CtfPlayingTeam) -> Q2CtfFlagState {
         let classname = ctf_flag(team).classname;
-        if game.entities.values().any(|entity| entity.classname == classname && entity.spawnflags & 0x30000 != 0) {
+        if game
+            .entities
+            .values()
+            .any(|entity| entity.classname == classname && entity.spawnflags & 0x30000 != 0)
+        {
             return Q2CtfFlagState::Dropped;
         }
         match self.base(game, team) {
@@ -278,7 +303,12 @@ impl Q2CtfFlags {
             Some(player) => player.spectator,
             None => return,
         };
-        let health = game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&actor)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         if spectator || health <= 0.0 {
             return;
         }
@@ -358,7 +388,12 @@ impl Q2CtfFlags {
                     if at + 10.0 > now {
                         ctf_score(game, &teammate, 1);
                         let name = ctf_name(game, &teammate);
-                        ctf_print(game, &format!("{name} gets an assist for returning the flag!\n"), None, Q2CtfPrintLevel::High);
+                        ctf_print(
+                            game,
+                            &format!("{name} gets an assist for returning the flag!\n"),
+                            None,
+                            Q2CtfPrintLevel::High,
+                        );
                     }
                 }
                 if let Some(at) = fragged {
@@ -383,16 +418,32 @@ impl Q2CtfFlags {
             return;
         }
         let owned = game.owned_of(actor.clone());
-        if !game.host.inventory().entries(&actor).iter().any(|entry| entry.item == item) {
+        if !game
+            .host
+            .inventory()
+            .entries(&actor)
+            .iter()
+            .any(|entry| entry.item == item)
+        {
             game.host.inventory().configure(
                 &owned,
-                &InventoryEntry { item: item.clone(), count: 0.0, capacity: 1.0, count_policy: None },
+                &InventoryEntry {
+                    item: item.clone(),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                },
             );
         }
         game.host.inventory().give(&owned, &item, 1.0);
         ctf_player(game, &actor).flag_since = now;
         let name = ctf_name(game, &actor);
-        ctf_print(game, &format!("{name} got the {} flag!\n", ctf_team_name(team)), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} got the {} flag!\n", ctf_team_name(team)),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         game.host_emit(Q2PresentationEvent::Pickup {
             player: actor.clone(),
             item: item.clone(),
@@ -448,7 +499,11 @@ impl Q2CtfFlags {
         let flag = ctf_flag(team);
         let dropped = game.create(flag.classname, BTreeMap::new());
         let body = game.body_of(entity.clone());
-        let view = game.host.player_view_state(&entity).map(|state| state.view_angles).unwrap_or(body.angles);
+        let view = game
+            .host
+            .player_view_state(&entity)
+            .map(|state| state.view_angles)
+            .unwrap_or(body.angles);
         let forward = movedir(view);
         let now = game.now();
         {
@@ -461,7 +516,10 @@ impl Q2CtfFlags {
             record.timestamp = now;
             record.touch = Some(ctf_drop_flag_touch as Q2Touch);
         }
-        let bounds = Bounds { min: vec3(-15.0, -15.0, -15.0), max: vec3(15.0, 15.0, 15.0) };
+        let bounds = Bounds {
+            min: vec3(-15.0, -15.0, -15.0),
+            max: vec3(15.0, 15.0, 15.0),
+        };
         let origin = game
             .host
             .trace(&Q2TraceRequest {
@@ -478,7 +536,11 @@ impl Q2CtfFlags {
             moved.origin = origin;
             moved.bounds = bounds;
             let push = scale3(forward, 100.0);
-            moved.velocity = Vec3 { x: push.x, y: push.y, z: 300.0 };
+            moved.velocity = Vec3 {
+                x: push.x,
+                y: push.y,
+                z: 300.0,
+            };
             game.write_body(dropped.clone(), &moved, true);
         }
         game.set_solid(dropped.clone(), Q2Solid::Trigger);
@@ -488,14 +550,21 @@ impl Q2CtfFlags {
         let owned = game.owned_of(entity.clone());
         game.host.inventory().consume(&owned, &item_id(flag.item), 1.0);
         let name = ctf_name(game, &entity);
-        ctf_print(game, &format!("{name} lost the {} flag!\n", ctf_team_name(team)), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} lost the {} flag!\n", ctf_team_name(team)),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         Some(dropped)
     }
 
     /// Mark carrier damage (`hurtCarrier`).
     pub fn hurt_carrier(&self, target: ActorId, attacker: Option<ActorId>, game: &mut Q2GameServices) {
         let victim = game.ctf.states.get(&target).map(|state| state.team);
-        let aggressor = attacker.as_ref().and_then(|actor| game.ctf.states.get(actor).map(|state| state.team));
+        let aggressor = attacker
+            .as_ref()
+            .and_then(|actor| game.ctf.states.get(actor).map(|state| state.team));
         let (Some(victim_team), Some(aggressor_team)) = (victim, aggressor) else {
             return;
         };
@@ -522,7 +591,11 @@ impl Q2CtfFlags {
             return;
         };
         let attacker_team = game.ctf.states.get(&source).map(|state| state.team);
-        let victim_state = game.ctf.states.get(&victim).map(|state| (state.team, state.last_hurt_carrier));
+        let victim_state = game
+            .ctf
+            .states
+            .get(&victim)
+            .map(|state| (state.team, state.last_hurt_carrier));
         let (Some(attacker_team), Some((victim_team, hurt))) = (attacker_team, victim_state) else {
             return;
         };
@@ -568,7 +641,10 @@ impl Q2CtfFlags {
                 let name = ctf_name(game, &source);
                 ctf_print(
                     game,
-                    &format!("{name} defends {}'s flag carrier against an aggressive enemy\n", ctf_team_name(attacker_team)),
+                    &format!(
+                        "{name} defends {}'s flag carrier against an aggressive enemy\n",
+                        ctf_team_name(attacker_team)
+                    ),
                     None,
                     Q2CtfPrintLevel::Medium,
                 );
@@ -645,7 +721,12 @@ impl Q2CtfFlags {
     /// Update carrier effects (`effects`).
     pub fn effects(&self, entity: ActorId, game: &mut Q2GameServices) {
         let team = ctf_carried_flag(game, &entity);
-        let health = game.host.combat().read(&entity).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&entity)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         {
             let record = game.require_entity_mut(&entity);
             record.effects &= !0xc0000;
@@ -654,7 +735,9 @@ impl Q2CtfFlags {
                     record.effects |= ctf_flag(carried).effect;
                 }
             }
-            record.model3 = team.map(|carried| ctf_flag(carried).model.to_string()).unwrap_or_default();
+            record.model3 = team
+                .map(|carried| ctf_flag(carried).model.to_string())
+                .unwrap_or_default();
         }
         game.show(entity);
     }

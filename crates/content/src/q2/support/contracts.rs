@@ -651,12 +651,7 @@ pub trait WeaponBehaviorProjectilePort {
     /// Launch a projectile.
     fn launch(&mut self, input: &WeaponBehaviorLaunch) -> Option<WeaponTrajectoryUpdate>;
     /// Step a projectile trajectory.
-    fn step(
-        &mut self,
-        projectile: &OwnedActor,
-        body: &BodyState,
-        time_seconds: f64,
-    ) -> Option<WeaponTrajectoryUpdate>;
+    fn step(&mut self, projectile: &OwnedActor, body: &BodyState, time_seconds: f64) -> Option<WeaponTrajectoryUpdate>;
 }
 
 /// Weapon behavior launch input (`WeaponBehaviorLaunch`).
@@ -725,12 +720,7 @@ pub trait Q2DamageSourceEffects {
     }
 
     /// Whether regular armor applies.
-    fn armor_allowed(
-        &mut self,
-        request: &DamageRequest,
-        target: &CombatState,
-        attacker: Option<&CombatState>,
-    ) -> bool {
+    fn armor_allowed(&mut self, request: &DamageRequest, target: &CombatState, attacker: Option<&CombatState>) -> bool {
         let _ = (request, target, attacker);
         true
     }

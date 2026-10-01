@@ -3,23 +3,21 @@
 //! Rerelease m_gladiator.cpp, including the Xatrix plasma variant.
 //! ZeniMax Media, GPL-2.0.
 
-use qa_core::math::{Bounds, length3, normalize3, sub3, vec3};
+use qa_core::math::{length3, normalize3, sub3, vec3, Bounds};
 
 use super::common::{blocked_check_platform, check_gib, monster_flash, reacts_to_pain};
 use super::tables::gladiator::{gladiator_frame, gladiator_moves};
+use crate::contract::{InventoryEntry, PoweredProtectionState};
 use crate::q2::base::monsters::gladiator::gladiator_definition;
-use crate::q2::missionpacks::monsters::types::mission_weapons;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{Q2Edition, Q2SoundEvent, Q2SoundLoop};
-use crate::q2::foundation::monsters::ai::{
-    clear_shot, corpse, enemy_body, enemy_eye, health, project_flash,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::ai::{clear_shot, corpse, enemy_body, enemy_eye, health, project_flash};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, bind_shared_power_cells,
+    bind_shared_power_cells, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
-use crate::contract::{InventoryEntry, PoweredProtectionState};
+use crate::q2::missionpacks::monsters::types::mission_weapons;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 /// Bind armor (`bindArmor`).
@@ -31,8 +29,9 @@ fn bind_armor(context: &mut MonsterContext) {
 fn loop_start(context: &mut MonsterContext, path: &str) {
     let actor = context.actor().clone();
     let origin = context.game.body_of(actor.clone()).origin;
-    context.game.host_emit(
-        crate::q2::foundation::host::Q2PresentationEvent::Sound(Q2SoundEvent {
+    context
+        .game
+        .host_emit(crate::q2::foundation::host::Q2PresentationEvent::Sound(Q2SoundEvent {
             actor: Some(actor),
             origin,
             path: path.to_string(),
@@ -42,8 +41,7 @@ fn loop_start(context: &mut MonsterContext, path: &str) {
             reliable: false,
             loop_: Q2SoundLoop::Start,
             loop_owner: None,
-        }),
-    );
+        }));
 }
 
 /// Plasma (`plasma`).
@@ -86,8 +84,7 @@ fn rerelease_gladiator_attack(context: &mut MonsterContext) {
     };
     let actor = context.actor().clone();
     let origin = context.game.body_of(actor).origin;
-    if length3(sub3(origin, enemy.origin)) <= 112.0
-        && context.state().melee_time <= context.game.host.now()
+    if length3(sub3(origin, enemy.origin)) <= 112.0 && context.state().melee_time <= context.game.host.now()
         || !clear_shot(context, muzzle_offset(Q2Edition::Rerelease, 61))
     {
         return;
@@ -234,7 +231,13 @@ fn gladiator_melee(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let min_x = context.game.body_of(actor.clone()).bounds.min.x;
     let damage = 20.0 + (context.game.random() * 5.0).floor();
-    let hit = fire_hit(actor.clone(), &mut *context.game, vec3(80.0, min_x, -4.0), damage, 300.0);
+    let hit = fire_hit(
+        actor.clone(),
+        &mut *context.game,
+        vec3(80.0, min_x, -4.0),
+        damage,
+        300.0,
+    );
     if !hit {
         let melee = context.game.host.now() + 1.5;
         context.state_mut().melee_time = melee;
@@ -324,22 +327,18 @@ pub fn create_rerelease_gladiator_definitions() -> Vec<Q2MonsterDefinition> {
     definition.attack = MonsterHandler::Callback(rerelease_gladiator_attack);
     definition.pain = Some(rerelease_gladiator_pain);
     definition.die = rerelease_gladiator_die;
-    definition.callbacks.insert(
-        "gladiator_dead".to_string(),
-        MonsterHandler::Callback(corpse),
-    );
-    definition.callbacks.insert(
-        "GladiatorMelee".to_string(),
-        MonsterHandler::Callback(gladiator_melee),
-    );
-    definition.callbacks.insert(
-        "GladiatorGun".to_string(),
-        MonsterHandler::Callback(gladiator_gun),
-    );
-    definition.callbacks.insert(
-        "gladbGun".to_string(),
-        MonsterHandler::Callback(gladb_plasma),
-    );
+    definition
+        .callbacks
+        .insert("gladiator_dead".to_string(), MonsterHandler::Callback(corpse));
+    definition
+        .callbacks
+        .insert("GladiatorMelee".to_string(), MonsterHandler::Callback(gladiator_melee));
+    definition
+        .callbacks
+        .insert("GladiatorGun".to_string(), MonsterHandler::Callback(gladiator_gun));
+    definition
+        .callbacks
+        .insert("gladbGun".to_string(), MonsterHandler::Callback(gladb_plasma));
     definition.callbacks.insert(
         "gladbGun_check".to_string(),
         MonsterHandler::Callback(gladb_plasma_check),

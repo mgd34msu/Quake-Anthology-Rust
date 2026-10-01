@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
 use crate::q2::base::player::types::Q2PlayerState;
 use crate::q2::foundation::host::{Q2GameServices, Q2Mode, Q2PresentationEvent, Q2PrintLevel, Q2TraceRequest};
@@ -341,18 +341,27 @@ impl Default for LmctfPlayerState {
 
 /// Read the admitted LMCTF player state (`lmctfPlayer`).
 pub fn lmctf_player<'a>(game: &'a mut Q2GameServices, actor: &ActorId) -> &'a mut LmctfPlayerState {
-    game.lmctf.states.get_mut(actor).unwrap_or_else(|| panic!("LMCTF player has not been admitted"))
+    game.lmctf
+        .states
+        .get_mut(actor)
+        .unwrap_or_else(|| panic!("LMCTF player has not been admitted"))
 }
 
 /// LMCTF player name (`lmctfName`).
 pub fn lmctf_name(game: &mut Q2GameServices, actor: &ActorId) -> String {
     let hooks = super::lmctf_hooks(game);
-    (hooks.player)(actor.clone(), game).map(|player| player.name.clone()).unwrap_or_else(|| "player".to_string())
+    (hooks.player)(actor.clone(), game)
+        .map(|player| player.name.clone())
+        .unwrap_or_else(|| "player".to_string())
 }
 
 /// Print LMCTF text (`lmctfPrint`).
 pub fn lmctf_print(game: &mut Q2GameServices, text: &str, actor: Option<ActorId>) {
-    game.host_emit(Q2PresentationEvent::Print { actor, level: Q2PrintLevel::High, text: text.to_string() });
+    game.host_emit(Q2PresentationEvent::Print {
+        actor,
+        level: Q2PrintLevel::High,
+        text: text.to_string(),
+    });
 }
 
 /// Whether the match can score (`LmctfContext::canScore`).
@@ -371,7 +380,10 @@ pub fn lmctf_stat(game: &mut Q2GameServices, actor: &ActorId, name: &str, amount
         return;
     }
     let state = lmctf_player(game, actor);
-    state.statistics.insert(name.to_string(), state.statistics.get(name).copied().unwrap_or(0.0) + f64::from(amount));
+    state.statistics.insert(
+        name.to_string(),
+        state.statistics.get(name).copied().unwrap_or(0.0) + f64::from(amount),
+    );
 }
 
 /// Add LMCTF score (`lmctfScore`).
@@ -384,7 +396,13 @@ pub fn lmctf_score(game: &mut Q2GameServices, actor: &ActorId, amount: i32, name
     lmctf_stat(game, actor, "score", amount);
     (hooks.emit)(
         game,
-        LmctfEvent::ScoreLog { actor: actor.clone(), victim, name: name.to_string(), amount, seconds: game.now() },
+        LmctfEvent::ScoreLog {
+            actor: actor.clone(),
+            victim,
+            name: name.to_string(),
+            amount,
+            seconds: game.now(),
+        },
     );
 }
 
@@ -411,11 +429,22 @@ pub fn lmctf_active(game: &mut Q2GameServices, actor: &ActorId) -> bool {
 /// Toss an entity forward (`lmctfToss`).
 pub fn lmctf_toss(entity: ActorId, player: ActorId, game: &mut Q2GameServices, forward: Vec3) {
     let body = game.body_of(player.clone());
-    let end = vec3(body.origin.x + forward.x * 24.0, body.origin.y + forward.y * 24.0, body.origin.z + forward.z * 24.0 - 16.0);
+    let end = vec3(
+        body.origin.x + forward.x * 24.0,
+        body.origin.y + forward.y * 24.0,
+        body.origin.z + forward.z * 24.0 - 16.0,
+    );
     let bounds = game.body_of(entity.clone()).bounds;
     let origin = game
         .host
-        .trace(&Q2TraceRequest { start: body.origin, end, bounds: Some(bounds), ignore: Some(player), mask: 1, exclude: Vec::new() })
+        .trace(&Q2TraceRequest {
+            start: body.origin,
+            end,
+            bounds: Some(bounds),
+            ignore: Some(player),
+            mask: 1,
+            exclude: Vec::new(),
+        })
         .end;
     let mut moved = game.body_of(entity.clone());
     moved.origin = origin;

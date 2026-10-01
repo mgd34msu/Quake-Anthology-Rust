@@ -41,7 +41,14 @@ pub fn q2_weapon_recoil(state: &Q2WeaponState, edition: Q2Edition, now: f64) -> 
         0.0f64.max(1.0f64.min((state.kick_until - now) / state.kick_duration))
     };
     (
-        scale3(state.kick_origin, if edition == Q2Edition::Classic { impulse as f32 } else { factor as f32 }),
+        scale3(
+            state.kick_origin,
+            if edition == Q2Edition::Classic {
+                impulse as f32
+            } else {
+                factor as f32
+            },
+        ),
         scale3(state.kick_angles, factor as f32),
     )
 }

@@ -130,21 +130,15 @@ fn firing_interval(host: &mut dyn HandActionHost, seconds: f64) -> f64 {
     result
 }
 
-fn emit_action(
-    expires_at: f64,
-    input: &mut HandActionInput,
-    host: &mut dyn HandActionHost,
-    held: bool,
-) -> HandAction {
+fn emit_action(expires_at: f64, input: &mut HandActionInput, host: &mut dyn HandActionHost, held: bool) -> HandAction {
     host.sound(HandSound::CookStop);
     host.consume();
     let edition = input.tempo.edition;
-    let fuse_deadline =
-        if input.lifecycle == HandLifecycle::Dead && edition == Q2Edition::Classic {
-            input.now
-        } else {
-            expires_at
-        };
+    let fuse_deadline = if input.lifecycle == HandLifecycle::Dead && edition == Q2Edition::Classic {
+        input.now
+    } else {
+        expires_at
+    };
     let spec = calculate_hand_throw(HandThrowInput {
         edition,
         angles: input.angles,
@@ -158,7 +152,11 @@ fn emit_action(
     });
     host.emit(&spec);
     HandAction::Recovering {
-        ready_at: hand_deadline(input.now, firing_interval(host, hand_recovery_seconds(&input.tempo)), edition),
+        ready_at: hand_deadline(
+            input.now,
+            firing_interval(host, hand_recovery_seconds(&input.tempo)),
+            edition,
+        ),
         require_release: held && input.held,
     }
 }
@@ -189,11 +187,7 @@ fn release_action(
     }
 }
 
-fn cook_action(
-    expires_at: f64,
-    input: &mut HandActionInput,
-    host: &mut dyn HandActionHost,
-) -> HandAction {
+fn cook_action(expires_at: f64, input: &mut HandActionInput, host: &mut dyn HandActionHost) -> HandAction {
     if input.now >= expires_at {
         return emit_action(expires_at, input, host, true);
     }
@@ -209,21 +203,17 @@ fn cook_action(
 /// Send removing before releasing the actor so a primed grenade can use
 /// its last pose. Removed only discards a stale reservation; it cannot
 /// refund or spawn without an actor.
-pub fn step_hand_action(
-    state: &HandAction,
-    input: &mut HandActionInput,
-    host: &mut dyn HandActionHost,
-) -> HandAction {
+pub fn step_hand_action(state: &HandAction, input: &mut HandActionInput, host: &mut dyn HandActionHost) -> HandAction {
     if input.lifecycle == HandLifecycle::Removed {
-        if matches!(state, HandAction::Preparing { .. } | HandAction::Cooking { .. } | HandAction::Releasing { .. }) {
+        if matches!(
+            state,
+            HandAction::Preparing { .. } | HandAction::Cooking { .. } | HandAction::Releasing { .. }
+        ) {
             host.consume();
         }
         return HandAction::Disarmed;
     }
-    if input.lifecycle == HandLifecycle::Dead
-        || input.lifecycle == HandLifecycle::Removing
-        || !input.enabled
-    {
+    if input.lifecycle == HandLifecycle::Dead || input.lifecycle == HandLifecycle::Removing || !input.enabled {
         if matches!(state, HandAction::Preparing { .. }) {
             host.refund();
         }
@@ -257,7 +247,11 @@ pub fn step_hand_action(
                 release_queued: input.released || !input.held,
             }
         }
-        HandAction::Preparing { frame, next_at, release_queued } => {
+        HandAction::Preparing {
+            frame,
+            next_at,
+            release_queued,
+        } => {
             let mut frame = frame;
             let mut next_at = next_at;
             while input.now >= next_at && frame < 11 {
@@ -293,10 +287,16 @@ pub fn step_hand_action(
                 emit_action(expires_at, input, host, false)
             }
         }
-        HandAction::Recovering { ready_at, require_release } => {
+        HandAction::Recovering {
+            ready_at,
+            require_release,
+        } => {
             let require_release = require_release && input.held && !input.released;
             if input.now < ready_at {
-                return HandAction::Recovering { ready_at, require_release };
+                return HandAction::Recovering {
+                    ready_at,
+                    require_release,
+                };
             }
             if require_release {
                 HandAction::Disarmed

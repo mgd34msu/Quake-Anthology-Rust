@@ -665,7 +665,12 @@ pub fn q64_capture(game: &Q2GameServices) -> super::checkpoint::Q2RereleaseQ64Ch
             .into_iter()
             .map(|actor| super::checkpoint::Q2RereleaseQ64EyeCheckpoint {
                 actor: SavedActorId::from(&actor),
-                state: game.rerelease.q64_eyes.get(&actor).copied().expect("Q64 eye is missing"),
+                state: game
+                    .rerelease
+                    .q64_eyes
+                    .get(&actor)
+                    .copied()
+                    .expect("Q64 eye is missing"),
             })
             .collect(),
         cameras: cameras

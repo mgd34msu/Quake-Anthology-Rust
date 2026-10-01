@@ -4,11 +4,10 @@
 //! GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up,
-    rogue_monster_dodge, source_trace_world,
+    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up, rogue_monster_dodge, source_trace_world,
 };
 use super::tables::rogue_chick::{chick_frame, chick_moves};
 use crate::q2::base::monsters::chick::{chick_definition, chick_run};
@@ -20,9 +19,7 @@ use crate::q2::foundation::monsters::ai::{
     angles_vectors, enemy_body, finish_dodge, health, project_flash, target_distance, visible,
 };
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{blocked_check_platform, monster_flash};
 use crate::q2::support::contracts::{PainReaction, TraceHit, TraceResult};
 
@@ -53,8 +50,7 @@ fn rogue_rocket(context: &mut MonsterContext, flash: usize, head_chance: f64, bl
             .get(&enemy_id)
             .map(|entity| entity.view_height)
             .unwrap_or(22);
-        let head = context.game.random() < head_chance
-            || start.z < enemy.origin.z + enemy.bounds.min.z;
+        let head = context.game.random() < head_chance || start.z < enemy.origin.z + enemy.bounds.min.z;
         vec3(
             target.x,
             target.y,
@@ -70,9 +66,7 @@ fn rogue_rocket(context: &mut MonsterContext, flash: usize, head_chance: f64, bl
         let flight = f64::from(length3(sub3(point, start))) / speed;
         point = add3(point, scale3(enemy.velocity, flight as f32));
     }
-    let trace_to = |game: &mut crate::q2::foundation::host::Q2GameServices,
-                    end: Vec3|
-     -> TraceResult {
+    let trace_to = |game: &mut crate::q2::foundation::host::Q2GameServices, end: Vec3| -> TraceResult {
         game.host.trace(&Q2TraceRequest {
             start,
             end,
@@ -103,24 +97,14 @@ fn rogue_rocket(context: &mut MonsterContext, flash: usize, head_chance: f64, bl
         if !(hit_enemy || source_trace_world(&mut *context.game, &trace)) {
             return;
         }
-        let hit_player =
-            matches!(&trace.hit, TraceHit::Actor { actor } if context.game.host.is_player(actor));
+        let hit_player = matches!(&trace.hit, TraceHit::Actor { actor } if context.game.host.is_player(actor));
         if !(trace.fraction > 0.5 || hit_player) {
             return;
         }
     }
     let direction = normalize3(sub3(point, start));
     let fire_rocket = context.weapons.fire_rocket;
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        speed,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, speed, 70.0, 50.0);
     monster_flash(context, if blind { flash as i32 } else { 57 }, start, direction);
 }
 
@@ -247,10 +231,7 @@ fn rogue_tank_refire_rocket(context: &mut MonsterContext) {
         return;
     }
     let elite = context.game.options.skill >= 2;
-    let acquire = elite
-        && alive_enemy(context)
-        && visible(context, None)
-        && context.game.random() <= 0.4;
+    let acquire = elite && alive_enemy(context) && visible(context, None) && context.game.random() <= 0.4;
     context.set_move(
         if acquire {
             "tank_move_attack_fire_rocket"
@@ -292,8 +273,7 @@ fn rogue_chick_duck_inner(context: &mut MonsterContext, eta: f64) {
     }
     let skill = context.game.options.skill;
     let now = context.game.host.now();
-    context.state_mut().duck_wait =
-        now + eta + if skill == 0 { 1.0 } else { 0.1 * f64::from(3 - skill) };
+    context.state_mut().duck_wait = now + eta + if skill == 0 { 1.0 } else { 0.1 * f64::from(3 - skill) };
     rogue_duck_down(context);
     context.state_mut().next_frame = chick_frame::DUCK01;
     context.set_move("chick_move_duck", true);
@@ -439,10 +419,8 @@ pub fn create_rogue_arsenal_monsters() -> Vec<Q2MonsterDefinition> {
     tank.initialize = Some(MonsterHandler::Callback(rogue_tank_initialize));
     tank.pain = Some(rogue_tank_pain);
     tank.attack = MonsterHandler::Callback(rogue_tank_attack);
-    tank.callbacks.insert(
-        "TankRocket".to_string(),
-        MonsterHandler::Callback(rogue_tank_rocket),
-    );
+    tank.callbacks
+        .insert("TankRocket".to_string(), MonsterHandler::Callback(rogue_tank_rocket));
     tank.callbacks.insert(
         "TankMachineGun".to_string(),
         MonsterHandler::Callback(rogue_tank_machine_gun),
@@ -469,10 +447,9 @@ pub fn create_rogue_arsenal_monsters() -> Vec<Q2MonsterDefinition> {
     chick.dodge = Some(rogue_chick_dodge);
     chick.duck = Some(rogue_chick_duck);
     chick.sidestep = Some(rogue_chick_sidestep);
-    chick.callbacks.insert(
-        "chick_run".to_string(),
-        MonsterHandler::Callback(rogue_chick_run),
-    );
+    chick
+        .callbacks
+        .insert("chick_run".to_string(), MonsterHandler::Callback(rogue_chick_run));
     chick.callbacks.insert(
         "monster_duck_down".to_string(),
         MonsterHandler::Callback(rogue_duck_down),
@@ -481,14 +458,12 @@ pub fn create_rogue_arsenal_monsters() -> Vec<Q2MonsterDefinition> {
         "monster_duck_hold".to_string(),
         MonsterHandler::Callback(rogue_duck_hold),
     );
-    chick.callbacks.insert(
-        "monster_duck_up".to_string(),
-        MonsterHandler::Callback(rogue_duck_up),
-    );
-    chick.callbacks.insert(
-        "ChickRocket".to_string(),
-        MonsterHandler::Callback(rogue_chick_rocket),
-    );
+    chick
+        .callbacks
+        .insert("monster_duck_up".to_string(), MonsterHandler::Callback(rogue_duck_up));
+    chick
+        .callbacks
+        .insert("ChickRocket".to_string(), MonsterHandler::Callback(rogue_chick_rocket));
     chick.callbacks.insert(
         "chick_rerocket".to_string(),
         MonsterHandler::Callback(rogue_chick_rerocket),

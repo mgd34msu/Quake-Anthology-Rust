@@ -6,19 +6,16 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2Die, Q2GameServices, Q2MotionKind, Q2Pain, Q2Solid, Q2Think,
-};
+use crate::q2::foundation::host::{Q2Die, Q2GameServices, Q2MotionKind, Q2Pain, Q2Solid, Q2Think};
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
 use crate::q2::support::contracts::{CombatState, DeathReaction, PainReaction};
 
 use super::monsters::spawn::{
-    check_rogue_ground_spawn_point, find_rogue_spawn_point, rogue_spawn_callbacks,
-    rogue_spawn_grow,
+    check_rogue_ground_spawn_point, find_rogue_spawn_point, rogue_spawn_callbacks, rogue_spawn_grow,
 };
 use super::projectiles::common::explode;
 use super::projectiles::{mission_projectiles, Q2MissionPackProjectiles};
@@ -27,7 +24,9 @@ use super::spheres::{mission_spheres, Q2SphereKind};
 /// Doppleganger callbacks (`Q2MissionPackDoppleganger::callbacks`).
 pub fn doppleganger_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = rogue_spawn_callbacks();
-    callbacks.think.insert("doppleganger_timeout", doppleganger_timeout as Q2Think);
+    callbacks
+        .think
+        .insert("doppleganger_timeout", doppleganger_timeout as Q2Think);
     callbacks.think.insert("body_think", doppleganger_body_think as Q2Think);
     callbacks.pain.insert("doppleganger_pain", doppleganger_pain as Q2Pain);
     callbacks.die.insert("doppleganger_die", doppleganger_die as Q2Die);
@@ -59,12 +58,7 @@ impl Q2MissionPackDoppleganger {
             .map(|input| input.angles)
             .unwrap_or(body.angles);
         let forward = angle_vectors(vec3(0.0, angles.y, 0.0)).forward;
-        let point = find_rogue_spawn_point(
-            game,
-            add3(body.origin, scale3(forward, 48.0)),
-            body.bounds,
-            32.0,
-        );
+        let point = find_rogue_spawn_point(game, add3(body.origin, scale3(forward, 48.0)), body.bounds, 32.0);
         let Some(point) = point else {
             return false;
         };
@@ -72,7 +66,11 @@ impl Q2MissionPackDoppleganger {
             return false;
         }
         let owned = game.owned_of(owner.clone());
-        if !game.host.inventory().consume(&owned, &"q2:item_doppleganger".to_string(), 1.0) {
+        if !game
+            .host
+            .inventory()
+            .consume(&owned, &"q2:item_doppleganger".to_string(), 1.0)
+        {
             return false;
         }
         rogue_spawn_grow(game, point, 0);
@@ -81,13 +79,7 @@ impl Q2MissionPackDoppleganger {
     }
 
     /// Fire a doppleganger decoy (`fire`).
-    pub fn fire(
-        &self,
-        owner: &ActorId,
-        game: &mut Q2GameServices,
-        start: Vec3,
-        direction: Vec3,
-    ) -> ActorId {
+    pub fn fire(&self, owner: &ActorId, game: &mut Q2GameServices, start: Vec3, direction: Vec3) -> ActorId {
         game.source_callbacks.register(&doppleganger_callbacks());
         let base = game.create("doppleganger", BTreeMap::new());
         let angles = vector_angles(direction);

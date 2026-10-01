@@ -5,21 +5,21 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Bounds, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Bounds};
 
+use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::checkpoint::restore_q2_actor;
 use crate::q2::foundation::fields::integer_field;
 use crate::q2::foundation::host::{
-    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
-    Q2SoundLoop, Q2Think, Q2TraceRequest,
+    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2Think, Q2TraceRequest,
 };
 use crate::q2::foundation::scenery::kill_q2_box;
 use crate::q2::foundation::weapons::vectors::vector_angles;
 use crate::q2::support::contracts::{
     AttackProvenance, CombatState, DamageDelivery, DamageRequest, TouchContact, TraceHit,
 };
-use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 
 use super::types::Q2BaseEntityHooks;
 
@@ -154,24 +154,14 @@ fn reset_clock(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Commander-body use (`commanderUse`).
-fn commander_body_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn commander_body_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.sound(&actor, "tank/pain.wav", 4, 1.0, 1.0);
     let frame_seconds = game.host.frame_seconds();
     game.schedule(actor, frame_seconds, commander_body_collapse as _);
 }
 
 /// Remove use (`removeUse`).
-fn scenery_remove_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn scenery_remove_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.remove_actor(actor);
 }
 
@@ -230,15 +220,9 @@ fn func_clock_tick(actor: ActorId, game: &mut Q2GameServices) {
         }
     } else {
         let time = (hooks(game).local_time)();
-        game.require_entity_mut(&actor).message =
-            format!("{:>2}:{:02}:{:02}", time.hour, time.minute, time.second);
+        game.require_entity_mut(&actor).message = format!("{:>2}:{:02}:{:02}", time.hour, time.minute, time.second);
     }
-    let message: String = game
-        .require_entity(&actor)
-        .message
-        .chars()
-        .take(15)
-        .collect();
+    let message: String = game.require_entity(&actor).message.chars().take(15).collect();
     game.require_entity_mut(&actor).message = message.clone();
     game.require_entity_mut(&display_actor).message = message;
     game.dispatch_use(display_actor, Some(actor.clone()), Some(actor.clone()));
@@ -250,9 +234,7 @@ fn func_clock_tick(actor: ActorId, game: &mut Q2GameServices) {
         .expect("Missing saved Q2 clock state")
         .value;
     let wait = game.require_entity(&actor).wait;
-    if (spawnflags & 1 != 0 && f64::from(value) > wait)
-        || (spawnflags & 2 != 0 && f64::from(value) < wait)
-    {
+    if (spawnflags & 1 != 0 && f64::from(value) > wait) || (spawnflags & 2 != 0 && f64::from(value) < wait) {
         let path_target = game
             .require_entity(&actor)
             .spawn
@@ -285,12 +267,7 @@ fn func_clock_tick(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Clock use (`clockUse`).
-fn func_clock_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn func_clock_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     {
         let entity = game.require_entity_mut(&actor);
         if entity.spawnflags & 8 == 0 {
@@ -336,10 +313,7 @@ fn teleporter_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
     let source_origin = owner
         .as_ref()
         .and_then(|owner| game.host.bodies().read(owner))
-        .map_or_else(
-            || game.body_of(actor.clone()).origin,
-            |owner_body| owner_body.origin,
-        );
+        .map_or_else(|| game.body_of(actor.clone()).origin, |owner_body| owner_body.origin);
     game.host.emit(Q2PresentationEvent::Effect(Q2EffectEvent {
         effect: "q2:player-teleport".to_string(),
         origin: source_origin,
@@ -370,8 +344,7 @@ fn teleporter_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
                 TraceHit::Actor { actor } => actor.clone(),
                 _ => break,
             };
-            let mut attack: AttackProvenance =
-                game.attack(actor.clone(), Some(other.clone()), 21, 32, None);
+            let mut attack: AttackProvenance = game.attack(actor.clone(), Some(other.clone()), 21, 32, None);
             attack.inflictor = Some(other.clone());
             game.host.combat().apply(&DamageRequest {
                 attack,
@@ -429,14 +402,19 @@ fn misc_viper_bomb_touch(actor: ActorId, game: &mut Q2GameServices, _contact: To
     }
     let body = game.body_of(actor.clone());
     let mut moved = body.clone();
-    moved.origin = vec3(
-        body.origin.x,
-        body.origin.y,
-        body.origin.z + body.bounds.min.z + 1.0,
-    );
+    moved.origin = vec3(body.origin.x, body.origin.y, body.origin.z + body.bounds.min.z + 1.0);
     game.write_body(actor.clone(), &moved, false);
     let damage = game.require_entity(&actor).damage;
-    game.radius_damage(actor.clone(), Some(actor.clone()), damage, None, damage + 40.0, 27, 0, None);
+    game.radius_damage(
+        actor.clone(),
+        Some(actor.clone()),
+        damage,
+        None,
+        damage + 40.0,
+        27,
+        0,
+        None,
+    );
     let origin = game.body_of(actor.clone()).origin;
     game.host.emit(Q2PresentationEvent::Effect(Q2EffectEvent {
         effect: "q2:explosion2".to_string(),
@@ -475,12 +453,7 @@ fn commander_body_release(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Viper bomb use (`bombUse`).
-fn misc_viper_bomb_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn misc_viper_bomb_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     let viper = game
         .entities
         .values()
@@ -514,12 +487,7 @@ fn misc_viper_bomb_use(
 }
 
 /// Target string use (`stringUse`).
-fn target_string_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn target_string_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity(&actor);
     let team = entity.spawn.values.get("team").cloned();
     let message: Vec<char> = entity.message.chars().collect();
@@ -577,11 +545,7 @@ fn spawn_viper_bomb(actor: ActorId, game: &mut Q2GameServices) {
 /// Spawn a clock (`clock`).
 fn spawn_clock(actor: ActorId, game: &mut Q2GameServices) {
     let entity = game.require_entity(&actor);
-    let (target_empty, spawnflags, count) = (
-        entity.target.is_empty(),
-        entity.spawnflags,
-        entity.count,
-    );
+    let (target_empty, spawnflags, count) = (entity.target.is_empty(), entity.spawnflags, entity.count);
     if target_empty || (spawnflags & 2 != 0 && count == 0) {
         let missing = if spawnflags & 2 != 0 {
             "count or target"
@@ -675,12 +639,8 @@ pub fn scenery_callbacks() -> Q2CallbackDefinitions {
         .think
         .insert("q2_base_scenery_remove", scenery_remove_think as _);
     callbacks.use_.insert("func_clock_use", func_clock_use as _);
-    callbacks
-        .use_
-        .insert("misc_viper_bomb_use", misc_viper_bomb_use as _);
-    callbacks
-        .use_
-        .insert("commander_body_use", commander_body_use as _);
+    callbacks.use_.insert("misc_viper_bomb_use", misc_viper_bomb_use as _);
+    callbacks.use_.insert("commander_body_use", commander_body_use as _);
     callbacks.use_.insert("misc_blackhole_use", scenery_remove_use as _);
     callbacks.use_.insert("target_string_use", target_string_use as _);
     callbacks.touch.insert("teleporter_touch", teleporter_touch as _);
@@ -712,10 +672,7 @@ pub fn capture_scenery(game: &mut Q2GameServices) -> Q2BaseSceneryCheckpoint {
             });
         }
     }
-    Q2BaseSceneryCheckpoint {
-        animations,
-        clocks,
-    }
+    Q2BaseSceneryCheckpoint { animations, clocks }
 }
 
 /// Restore base scenery (`Q2BaseScenery[restore]`).
@@ -799,16 +756,8 @@ pub fn spawn_scenery(actor: ActorId, game: &mut Q2GameServices) -> bool {
             true
         }
         "misc_easterchick" | "misc_easterchick2" => {
-            let first = if classname == "misc_easterchick" {
-                208
-            } else {
-                248
-            };
-            let end = if classname == "misc_easterchick" {
-                247
-            } else {
-                287
-            };
+            let first = if classname == "misc_easterchick" { 208 } else { 248 };
+            let end = if classname == "misc_easterchick" { 247 } else { 287 };
             set_model(
                 actor.clone(),
                 game,

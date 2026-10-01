@@ -7,24 +7,19 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
-use super::super::callbacks::{Q2CallbackDefinitions, free_q2_entity};
+use super::super::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use super::super::checkpoint::restore_q2_actor;
-use super::super::host::{
-    Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2Solid, Q2TraceRequest,
-};
+use super::super::host::{Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2Solid, Q2TraceRequest};
 use super::super::monsters::perception::report_noise;
 use super::projection::q2_actor_shot_mask;
 use super::types::{
-    Mod, PLAYER_CONTENTS, Q2GrenadeAdjustment, Q2NoiseRecord, Q2WeaponEvent, WATER_MASK,
-    WeaponBeamEffect,
+    Mod, Q2GrenadeAdjustment, Q2NoiseRecord, Q2WeaponEvent, WeaponBeamEffect, PLAYER_CONTENTS, WATER_MASK,
 };
 use super::vectors::{angle_vectors, lerp_angle, vector_angles};
 use crate::contract::ItemId;
-use crate::q2::support::contracts::{
-    Q2TraceFields, TouchContact, TraceContact, TraceFamily, TraceHit, TraceResult,
-};
+use crate::q2::support::contracts::{Q2TraceFields, TouchContact, TraceContact, TraceFamily, TraceHit, TraceResult};
 
 /// Contact normal or zero (`normal`).
 fn trace_normal(trace: &TraceResult) -> Vec3 {
@@ -46,9 +41,9 @@ fn trace_contents(trace: &TraceResult) -> i32 {
 /// Whether a trace hit sky (`sky`).
 fn trace_sky(trace: &TraceResult) -> bool {
     match &trace.family {
-        TraceFamily::Q2(Q2TraceFields { surface, .. }) => surface.as_ref().is_some_and(|surface| {
-            (surface.flags & 4) != 0 || surface.name.starts_with("sky")
-        }),
+        TraceFamily::Q2(Q2TraceFields { surface, .. }) => surface
+            .as_ref()
+            .is_some_and(|surface| (surface.flags & 4) != 0 || surface.name.starts_with("sky")),
         TraceFamily::Q3 { surface_flags, .. } => (surface_flags & 4) != 0,
         TraceFamily::Q1 { .. } => false,
     }
@@ -65,7 +60,10 @@ fn trace_hit(trace: &TraceResult) -> Option<ActorId> {
 /// Whether an actor can be hurt (`canHurt`).
 fn can_hurt(game: &mut Q2GameServices, actor: Option<&ActorId>) -> bool {
     let Some(actor) = actor else { return false };
-    game.host.combat().read(actor).is_some_and(|state| state.can_take_damage)
+    game.host
+        .combat()
+        .read(actor)
+        .is_some_and(|state| state.can_take_damage)
 }
 
 /// Body centroid (`centroid`).
@@ -75,14 +73,7 @@ fn centroid(game: &mut Q2GameServices, actor: &ActorId) -> Option<Vec3> {
 }
 
 /// Emit an effect (`effect`).
-fn emit_effect(
-    game: &mut Q2GameServices,
-    name: &str,
-    origin: Vec3,
-    direction: Vec3,
-    count: i32,
-    color: i32,
-) {
+fn emit_effect(game: &mut Q2GameServices, name: &str, origin: Vec3, direction: Vec3, count: i32, color: i32) {
     game.host_emit(crate::q2::foundation::host::Q2PresentationEvent::Effect(
         crate::q2::foundation::host::Q2EffectEvent {
             effect: name.to_string(),
@@ -136,7 +127,10 @@ pub fn q2_ballistics_callbacks() -> Q2CallbackDefinitions {
         trajectory: Vec::new(),
         think: HashMap::from([
             ("G_FreeEdict", free_q2_entity as crate::q2::foundation::host::Q2Think),
-            ("Grenade_Explode", grenade_explode as crate::q2::foundation::host::Q2Think),
+            (
+                "Grenade_Explode",
+                grenade_explode as crate::q2::foundation::host::Q2Think,
+            ),
             ("grenade_think", grenade_update as crate::q2::foundation::host::Q2Think),
             ("bfg_think", bfg_think as crate::q2::foundation::host::Q2Think),
             ("bfg_explode", bfg_explode as crate::q2::foundation::host::Q2Think),
@@ -151,8 +145,7 @@ pub fn q2_ballistics_callbacks() -> Q2CallbackDefinitions {
         pain: HashMap::new(),
         die: HashMap::from([(
             "q2_weapon_debris_die",
-            crate::q2::foundation::entity_services::free_q2_entity_die
-                as crate::q2::foundation::host::Q2Die,
+            crate::q2::foundation::entity_services::free_q2_entity_die as crate::q2::foundation::host::Q2Die,
         )]),
         blocked: HashMap::new(),
     }
@@ -179,15 +172,14 @@ pub fn capture_projectiles(game: &Q2GameServices) -> Vec<super::checkpoint::Q2Bl
 }
 
 /// Restore projectile state (`restoreProjectiles`).
-pub fn restore_projectiles(
-    game: &mut Q2GameServices,
-    checkpoint: &[super::checkpoint::Q2BlasterCauseEntry],
-) {
+pub fn restore_projectiles(game: &mut Q2GameServices, checkpoint: &[super::checkpoint::Q2BlasterCauseEntry]) {
     register_ballistics_callbacks(game);
     game.weapons.blaster_causes.clear();
     for saved in checkpoint {
         let owner = restore_q2_actor(game, saved.actor);
-        game.weapons.blaster_causes.insert(owner.id().clone(), saved.means_of_death);
+        game.weapons
+            .blaster_causes
+            .insert(owner.id().clone(), saved.means_of_death);
     }
 }
 
@@ -216,8 +208,12 @@ pub fn reset_silencer(game: &mut Q2GameServices, actor: &ActorId) {
 
 /// Shot mask for an owner (`shotMask`).
 fn shot_mask(game: &mut Q2GameServices, owner: &ActorId) -> i32 {
-    let players_collide =
-        game.weapons.inputs.get(owner).map(|input| input.players_collide).unwrap_or(true);
+    let players_collide = game
+        .weapons
+        .inputs
+        .get(owner)
+        .map(|input| input.players_collide)
+        .unwrap_or(true);
     q2_actor_shot_mask(game, players_collide)
 }
 
@@ -238,32 +234,17 @@ pub(crate) fn player_noise(game: &mut Q2GameServices, owner: &ActorId, origin: V
 }
 
 /// Report player noise (`playerNoise`, shared with mission packs).
-pub fn weapon_player_noise(
-    game: &mut Q2GameServices,
-    owner: &ActorId,
-    origin: Vec3,
-    kind: NoiseKind,
-) {
+pub fn weapon_player_noise(game: &mut Q2GameServices, owner: &ActorId, origin: Vec3, kind: NoiseKind) {
     player_noise(game, owner, origin, kind);
 }
 
 /// Report player noise for an owner (`playerNoiseForActor`, shared with mission packs).
-pub fn weapon_player_noise_for_actor(
-    game: &mut Q2GameServices,
-    owner: ActorId,
-    origin: Vec3,
-    kind: NoiseKind,
-) {
+pub fn weapon_player_noise_for_actor(game: &mut Q2GameServices, owner: ActorId, origin: Vec3, kind: NoiseKind) {
     player_noise_for_actor(game, owner, origin, kind);
 }
 
 /// Report player noise for an owner (`playerNoiseForActor`).
-pub(crate) fn player_noise_for_actor(
-    game: &mut Q2GameServices,
-    owner: ActorId,
-    origin: Vec3,
-    kind: NoiseKind,
-) {
+pub(crate) fn player_noise_for_actor(game: &mut Q2GameServices, owner: ActorId, origin: Vec3, kind: NoiseKind) {
     if !game.host.actors().is_live(&owner) || !game.host.is_player(&owner) {
         return;
     }
@@ -271,7 +252,13 @@ pub(crate) fn player_noise_for_actor(
     if kind == NoiseKind::Weapon {
         if game.options.edition == Q2Edition::Rerelease {
             let until = game.host.now() + if charges > 0 { 0.4 } else { 2.0 };
-            weapon_emit(game, &Q2WeaponEvent::InvisibilityReveal { actor: owner.clone(), until });
+            weapon_emit(
+                game,
+                &Q2WeaponEvent::InvisibilityReveal {
+                    actor: owner.clone(),
+                    until,
+                },
+            );
         }
         if charges > 0 {
             game.weapons.silencer_charges.insert(owner, charges - 1);
@@ -280,12 +267,18 @@ pub(crate) fn player_noise_for_actor(
     }
     if game.options.mode == Q2Mode::Deathmatch
         || game.weapons.inputs.get(&owner).is_some_and(|input| input.notarget)
-        || game.monster_target(Some(&owner)).is_some_and(|observed| observed.notarget)
+        || game
+            .monster_target(Some(&owner))
+            .is_some_and(|observed| observed.notarget)
     {
         return;
     }
-    let record =
-        Q2NoiseRecord { actor: owner.clone(), origin, time: game.host.now(), secondary: kind == NoiseKind::Impact };
+    let record = Q2NoiseRecord {
+        actor: owner.clone(),
+        origin,
+        time: game.host.now(),
+        secondary: kind == NoiseKind::Impact,
+    };
     let mut records = game.weapons.noises.get(&owner).cloned().unwrap_or(super::WeaponNoises {
         primary: None,
         secondary: None,
@@ -330,13 +323,7 @@ fn can_target(game: &mut Q2GameServices, attacker: Option<&ActorId>, target: &Ac
 }
 
 /// Check classic dodge (`checkDodge`).
-pub fn check_dodge(
-    game: &mut Q2GameServices,
-    owner: &ActorId,
-    start: Vec3,
-    direction: Vec3,
-    speed: f64,
-) {
+pub fn check_dodge(game: &mut Q2GameServices, owner: &ActorId, start: Vec3, direction: Vec3, speed: f64) {
     if game.options.edition != Q2Edition::Classic || !game.host.is_player(owner) {
         return;
     }
@@ -355,14 +342,16 @@ pub fn check_dodge(
     // Donor `hit(trace)` borrows the trace while the game is borrowed
     // for combat reads; resolve the actor first.
     let target = trace_hit(&trace);
-    let target_health = target.as_ref().map(|target| {
-        game.host.combat().read(target).map(|state| state.health).unwrap_or(0.0)
-    });
+    let target_health = target
+        .as_ref()
+        .map(|target| game.host.combat().read(target).map(|state| state.health).unwrap_or(0.0));
     let Some(target) = target else { return };
     if !game.host.is_monster(&target) || target_health.unwrap_or(0.0) <= 0.0 {
         return;
     }
-    let Some(body) = game.host.bodies().read(&target) else { return };
+    let Some(body) = game.host.bodies().read(&target) else {
+        return;
+    };
     let self_origin = game.body_of(owner.clone()).origin;
     if f64::from(dot3(
         normalize3(sub3(self_origin, body.origin)),
@@ -557,8 +546,7 @@ fn fire_lead(
                 .read(&target)
                 .is_some_and(|state| state.health <= 0.0);
             if rerelease
-                && ((trace_contents(&trace) & 0x4000000) != 0
-                    || game.host.is_monster(&target) && dead)
+                && ((trace_contents(&trace) & 0x4000000) != 0 || game.host.is_monster(&target) && dead)
                 && !excluded.contains(&target)
             {
                 if excluded.len() == 16 {
@@ -574,42 +562,36 @@ fn fire_lead(
         break trace;
     };
     if let Some(water_start) = water_start {
-        let back = add3(
-            trace.end,
-            scale3(normalize3(sub3(trace.end, water_start)), -2.0),
-        );
+        let back = add3(trace.end, scale3(normalize3(sub3(trace.end, water_start)), -2.0));
         let water_end = if (game.host.point_contents(back) & WATER_MASK) != 0 {
             back
         } else {
-            game.host.trace(&Q2TraceRequest {
-                start: back,
-                end: water_start,
-                bounds: None,
-                ignore: trace_hit(&trace),
-                mask: WATER_MASK,
-                exclude: Vec::new(),
-            })
-            .end
+            game.host
+                .trace(&Q2TraceRequest {
+                    start: back,
+                    end: water_start,
+                    bounds: None,
+                    ignore: trace_hit(&trace),
+                    mask: WATER_MASK,
+                    exclude: Vec::new(),
+                })
+                .end
         };
-        weapon_emit(game, &Q2WeaponEvent::Beam {
-            effect: WeaponBeamEffect::BubbleTrail,
-            actor: Some(owner.clone()),
-            start: water_start,
-            end: water_end,
-            duration: 0.0,
-        });
+        weapon_emit(
+            game,
+            &Q2WeaponEvent::Beam {
+                effect: WeaponBeamEffect::BubbleTrail,
+                actor: Some(owner.clone()),
+                start: water_start,
+                end: water_end,
+                duration: 0.0,
+            },
+        );
     }
 }
 
 /// Fire a rail slug (`fireRail`).
-pub fn fire_rail(
-    owner: ActorId,
-    game: &mut Q2GameServices,
-    start: Vec3,
-    direction: Vec3,
-    damage: f64,
-    kick: f64,
-) {
+pub fn fire_rail(owner: ActorId, game: &mut Q2GameServices, start: Vec3, direction: Vec3, damage: f64, kick: f64) {
     let end = add3(start, scale3(direction, 8192.0));
     let mut excluded: Vec<ActorId> = Vec::new();
     let mut from = start;
@@ -674,36 +656,40 @@ pub fn fire_rail(
             from = trace.end;
         }
     };
-    weapon_emit(game, &Q2WeaponEvent::Beam {
-        effect: WeaponBeamEffect::Rail,
-        actor: Some(owner.clone()),
-        start,
-        end: trace.end,
-        duration: 0.0,
-    });
-    if water && !rerelease {
-        weapon_emit(game, &Q2WeaponEvent::Beam {
-            effect: WeaponBeamEffect::RailWater,
+    weapon_emit(
+        game,
+        &Q2WeaponEvent::Beam {
+            effect: WeaponBeamEffect::Rail,
             actor: Some(owner.clone()),
             start,
             end: trace.end,
             duration: 0.0,
-        });
+        },
+    );
+    if water && !rerelease {
+        weapon_emit(
+            game,
+            &Q2WeaponEvent::Beam {
+                effect: WeaponBeamEffect::RailWater,
+                actor: Some(owner.clone()),
+                start,
+                end: trace.end,
+                duration: 0.0,
+            },
+        );
     }
     player_noise(game, &owner, trace.end, NoiseKind::Impact);
 }
 
 /// Melee hit (`fireHit`).
-pub fn fire_hit(
-    owner: ActorId,
-    game: &mut Q2GameServices,
-    aim: Vec3,
-    damage: f64,
-    kick: f64,
-) -> bool {
+pub fn fire_hit(owner: ActorId, game: &mut Q2GameServices, aim: Vec3, damage: f64, kick: f64) -> bool {
     let enemy = game.require_entity(&owner).enemy.clone();
-    let Some(enemy) = enemy else { panic!("Q2 fireHit requires an enemy") };
-    let Some(target_body) = game.host.bodies().read(&enemy) else { return false };
+    let Some(enemy) = enemy else {
+        panic!("Q2 fireHit requires an enemy")
+    };
+    let Some(target_body) = game.host.bodies().read(&enemy) else {
+        return false;
+    };
     let body = game.body_of(owner.clone());
     let delta = sub3(target_body.origin, body.origin);
     let mut range = f64::from(length3(delta));
@@ -715,10 +701,9 @@ pub fn fire_hit(
         let self_min = add3(body.origin, body.bounds.min);
         let self_max = add3(body.origin, body.bounds.max);
         let axis = |a: f32, b: f32| -> f64 { 0.0f64.max(f64::from(a)).max(f64::from(b)) };
-        range = axis(min.x - self_max.x, self_min.x - max.x).hypot(axis(
-            min.y - self_max.y,
-            self_min.y - max.y,
-        )).hypot(axis(min.z - self_max.z, self_min.z - max.z));
+        range = axis(min.x - self_max.x, self_min.x - max.x)
+            .hypot(axis(min.y - self_max.y, self_min.y - max.y))
+            .hypot(axis(min.z - self_max.z, self_min.z - max.z));
     }
     if range > f64::from(aim.x) {
         return false;
@@ -728,7 +713,11 @@ pub fn fire_hit(
             range -= f64::from(target_body.bounds.max.x);
         }
     } else {
-        side = f64::from(if side < 0.0 { target_body.bounds.min.x } else { target_body.bounds.max.x });
+        side = f64::from(if side < 0.0 {
+            target_body.bounds.min.x
+        } else {
+            target_body.bounds.max.x
+        });
     }
     let point = if rerelease {
         vec3(
@@ -781,7 +770,10 @@ pub fn fire_hit(
     }
     let axes = angle_vectors(body.angles);
     let impact = add3(
-        add3(add3(body.origin, scale3(axes.forward, range as f32)), scale3(axes.right, side as f32)),
+        add3(
+            add3(body.origin, scale3(axes.forward, range as f32)),
+            scale3(axes.right, side as f32),
+        ),
         scale3(axes.up, aim.z),
     );
     game.damage(
@@ -803,8 +795,10 @@ pub fn fire_hit(
     let owned = game.host.actors().resolve_owned(&enemy);
     let current = game.host.bodies().read(&enemy);
     if let (Some(owned), Some(current)) = (owned, current) {
-        let center =
-            add3(current.origin, scale3(add3(current.bounds.min, current.bounds.max), 0.5));
+        let center = add3(
+            current.origin,
+            scale3(add3(current.bounds.min, current.bounds.max), 0.5),
+        );
         let velocity = add3(current.velocity, scale3(normalize3(sub3(center, impact)), kick as f32));
         let mut moved = current;
         moved.velocity = velocity;
@@ -828,7 +822,17 @@ fn projectile(
     effects: i64,
 ) -> ActorId {
     let mask = shot_mask(game, owner);
-    projectile_for_actor(game, owner.clone(), classname, start, direction, speed, model, effects, mask)
+    projectile_for_actor(
+        game,
+        owner.clone(),
+        classname,
+        start,
+        direction,
+        speed,
+        model,
+        effects,
+        mask,
+    )
 }
 
 /// Spawn a projectile for an owner (`projectileForActor`).
@@ -938,22 +942,41 @@ pub fn fire_blaster(
 ) -> ActorId {
     let classic = game.options.edition == Q2Edition::Classic;
     let dir = if classic { normalize3(direction) } else { direction };
-    let bolt = projectile(game, &owner, "bolt", start, dir, speed, "models/objects/laser/tris.md2", effects);
+    let bolt = projectile(
+        game,
+        &owner,
+        "bolt",
+        start,
+        dir,
+        speed,
+        "models/objects/laser/tris.md2",
+        effects,
+    );
     game.require_entity_mut(&bolt).damage = damage;
     game.weapons.blaster_causes.insert(bolt.clone(), means_of_death);
     game.require_entity_mut(&bolt).touch = Some(blaster_touch as crate::q2::foundation::host::Q2Touch);
-    game.schedule(bolt.clone(), 2.0, free_q2_entity as crate::q2::foundation::host::Q2Think);
+    game.schedule(
+        bolt.clone(),
+        2.0,
+        free_q2_entity as crate::q2::foundation::host::Q2Think,
+    );
     game.set_solid(bolt.clone(), Q2Solid::Box);
     game.set_motion_kind(bolt.clone(), Q2MotionKind::FlyMissile);
     let trajectory = launch_behavior(
         game,
         &bolt,
-        if hyper { "q2:weapon_hyperblaster".to_string() } else { "q2:weapon_blaster".to_string() },
+        if hyper {
+            "q2:weapon_hyperblaster".to_string()
+        } else {
+            "q2:weapon_blaster".to_string()
+        },
         crate::contract::ProjectileRole::Bolt,
     );
     let launch_origin = game.body_of(bolt.clone()).origin;
-    let launch_direction =
-        trajectory.as_ref().map(|update| normalize3(update.velocity)).unwrap_or(dir);
+    let launch_direction = trajectory
+        .as_ref()
+        .map(|update| normalize3(update.velocity))
+        .unwrap_or(dir);
     game.show(bolt.clone());
     loop_sound(game, &bolt, "misc/lasfly.wav", true);
     check_dodge(game, &owner, start, dir, speed);
@@ -976,7 +999,11 @@ pub fn fire_blaster(
         };
         game.write_body(bolt.clone(), &moved, true);
         let other = trace_hit(&trace);
-        let plane = if classic { vec3(0.0, 0.0, 0.0) } else { trace_normal(&trace) };
+        let plane = if classic {
+            vec3(0.0, 0.0, 0.0)
+        } else {
+            trace_normal(&trace)
+        };
         let sky_hit = !classic && trace_sky(&trace);
         blaster_impact(game, &bolt, other.as_ref(), plane, sky_hit);
     }
@@ -1005,21 +1032,28 @@ pub fn fire_grenade(
         .unwrap_or(800.0);
     let mask = shot_mask(game, &owner);
     launch_grenade(
-        game, owner, start, direction, damage, speed, timer, radius, hand, held, monster,
-        gravity, mask, adjustment,
+        game, owner, start, direction, damage, speed, timer, radius, hand, held, monster, gravity, mask, adjustment,
     )
 }
 
 /// Fire a hand grenade (`fireHandGrenade`).
-pub fn fire_hand_grenade(
-    owner: ActorId,
-    game: &mut Q2GameServices,
-    spec: &Q2HandGrenadeLaunch,
-) -> ActorId {
+pub fn fire_hand_grenade(owner: ActorId, game: &mut Q2GameServices, spec: &Q2HandGrenadeLaunch) -> ActorId {
     let mask = q2_actor_shot_mask(game, spec.players_collide);
     launch_grenade(
-        game, owner, spec.start, spec.direction, spec.damage, spec.speed, spec.timer,
-        spec.radius, true, spec.held, false, spec.gravity, mask, None,
+        game,
+        owner,
+        spec.start,
+        spec.direction,
+        spec.damage,
+        spec.speed,
+        spec.timer,
+        spec.radius,
+        true,
+        spec.held,
+        false,
+        spec.gravity,
+        mask,
+        None,
     )
 }
 
@@ -1044,14 +1078,25 @@ fn launch_grenade(
     let rerelease = game.options.edition == Q2Edition::Rerelease;
     let axes = angle_vectors(vector_angles(direction));
     let model = if hand {
-        if rerelease { "grenade3" } else { "grenade2" }
+        if rerelease {
+            "grenade3"
+        } else {
+            "grenade2"
+        }
     } else if rerelease && !monster {
         "grenade4"
     } else {
         "grenade"
     };
-    let classname =
-        if hand { if rerelease { "hand_grenade" } else { "hgrenade" } } else { "grenade" };
+    let classname = if hand {
+        if rerelease {
+            "hand_grenade"
+        } else {
+            "hgrenade"
+        }
+    } else {
+        "grenade"
+    };
     let grenade = projectile_for_actor(
         game,
         owner.clone(),
@@ -1068,15 +1113,29 @@ fn launch_grenade(
         entity.damage_radius = radius;
         entity.damage = damage;
         entity.speed = speed;
-        entity.spawnflags = if hand { if held { 3 } else { 1 } } else { 0 };
+        entity.spawnflags = if hand {
+            if held {
+                3
+            } else {
+                1
+            }
+        } else {
+            0
+        };
     }
     let gravity = if rerelease { owner_gravity / 800.0 } else { 1.0 };
-    let up = adjustment.map(|adjustment| adjustment.up).unwrap_or(200.0 + (game.random() * 2.0 - 1.0) * 10.0) * gravity;
-    let right =
-        adjustment.map(|adjustment| adjustment.right).unwrap_or((game.random() * 2.0 - 1.0) * 10.0);
+    let up = adjustment
+        .map(|adjustment| adjustment.up)
+        .unwrap_or(200.0 + (game.random() * 2.0 - 1.0) * 10.0)
+        * gravity;
+    let right = adjustment
+        .map(|adjustment| adjustment.right)
+        .unwrap_or((game.random() * 2.0 - 1.0) * 10.0);
     let mut moved = game.body_of(grenade.clone());
-    moved.velocity =
-        add3(add3(scale3(direction, speed as f32), scale3(axes.up, up as f32)), scale3(axes.right, right as f32));
+    moved.velocity = add3(
+        add3(scale3(direction, speed as f32), scale3(axes.up, up as f32)),
+        scale3(axes.right, right as f32),
+    );
     game.write_body(grenade.clone(), &moved, false);
     game.require_entity_mut(&grenade).angular_velocity = if rerelease {
         if hand || monster {
@@ -1091,8 +1150,7 @@ fn launch_grenade(
     } else {
         vec3(300.0, 300.0, 300.0)
     };
-    game.require_entity_mut(&grenade).touch =
-        Some(grenade_touch as crate::q2::foundation::host::Q2Touch);
+    game.require_entity_mut(&grenade).touch = Some(grenade_touch as crate::q2::foundation::host::Q2Touch);
     if rerelease && !hand && !monster {
         let timestamp = game.host.now() + timer;
         game.require_entity_mut(&grenade).timestamp = timestamp;
@@ -1101,7 +1159,11 @@ fn launch_grenade(
         moved.angles = vector_angles(moved.velocity);
         game.write_body(grenade.clone(), &moved, false);
         let frame = game.host.frame_seconds();
-        game.schedule(grenade.clone(), frame, grenade_update as crate::q2::foundation::host::Q2Think);
+        game.schedule(
+            grenade.clone(),
+            frame,
+            grenade_update as crate::q2::foundation::host::Q2Think,
+        );
     } else {
         game.schedule(
             grenade.clone(),
@@ -1116,7 +1178,11 @@ fn launch_grenade(
         grenade_explode(grenade.clone(), game);
     } else {
         if hand {
-            let body = game.host.bodies().read(&owner).expect("Q2 grenade thrower has no shared body");
+            let body = game
+                .host
+                .bodies()
+                .read(&owner)
+                .expect("Q2 grenade thrower has no shared body");
             game.host_emit(crate::q2::foundation::host::Q2PresentationEvent::Sound(
                 crate::q2::foundation::host::Q2SoundEvent {
                     actor: Some(owner),
@@ -1136,7 +1202,11 @@ fn launch_grenade(
         launch_behavior(
             game,
             &grenade,
-            if hand { "q2:ammo_grenades".to_string() } else { "q2:weapon_grenadelauncher".to_string() },
+            if hand {
+                "q2:ammo_grenades".to_string()
+            } else {
+                "q2:weapon_grenadelauncher".to_string()
+            },
             crate::contract::ProjectileRole::Grenade,
         );
         game.show(grenade.clone());
@@ -1173,7 +1243,11 @@ pub fn fire_rocket(
         entity.radius_damage = radius_damage;
         entity.touch = Some(rocket_touch as crate::q2::foundation::host::Q2Touch);
     }
-    game.schedule(rocket.clone(), 8000.0 / speed, free_q2_entity as crate::q2::foundation::host::Q2Think);
+    game.schedule(
+        rocket.clone(),
+        8000.0 / speed,
+        free_q2_entity as crate::q2::foundation::host::Q2Think,
+    );
     game.set_solid(rocket.clone(), Q2Solid::Box);
     game.set_motion_kind(rocket.clone(), Q2MotionKind::FlyMissile);
     launch_behavior(
@@ -1214,9 +1288,8 @@ fn debris(game: &mut Q2GameServices, source: &ActorId) {
     );
     let owned = game.owned_of(piece.clone());
     game.create_combat(&owned, 0.0, 0.0, true);
-    game.require_entity_mut(&piece).die = Some(
-        crate::q2::foundation::entity_services::free_q2_entity_die as crate::q2::foundation::host::Q2Die,
-    );
+    game.require_entity_mut(&piece).die =
+        Some(crate::q2::foundation::entity_services::free_q2_entity_die as crate::q2::foundation::host::Q2Die);
     game.set_motion_kind(piece.clone(), Q2MotionKind::Bounce);
     game.set_solid(piece.clone(), Q2Solid::None);
     game.show(piece.clone());
@@ -1234,7 +1307,16 @@ pub fn fire_bfg(
     speed: f64,
     radius: f64,
 ) -> ActorId {
-    let bfg = projectile(game, &owner, "bfg blast", start, direction, speed, "sprites/s_bfg1.sp2", 128 | 8192);
+    let bfg = projectile(
+        game,
+        &owner,
+        "bfg blast",
+        start,
+        direction,
+        speed,
+        "sprites/s_bfg1.sp2",
+        128 | 8192,
+    );
     {
         let entity = game.require_entity_mut(&bfg);
         entity.dodgeable = false;
@@ -1320,7 +1402,14 @@ pub fn grenade_explode(actor: ActorId, game: &mut Q2GameServices) {
         if body.ground.is_none() { "rocket" } else { "grenade" },
         if wet { "-water" } else { "" }
     );
-    emit_effect(game, &name, add3(body.origin, scale3(body.velocity, -0.02)), vec3(0.0, 0.0, 0.0), 0, 0);
+    emit_effect(
+        game,
+        &name,
+        add3(body.origin, scale3(body.velocity, -0.02)),
+        vec3(0.0, 0.0, 0.0),
+        0,
+        0,
+    );
     game.remove_actor(actor);
 }
 
@@ -1331,7 +1420,14 @@ pub fn grenade_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCo
     if Some(&contact.other) == entity.owner.as_ref() {
         return;
     }
-    if (contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4) != 0 {
+    if (contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4)
+        != 0
+    {
         game.remove_actor(actor);
         return;
     }
@@ -1382,7 +1478,14 @@ pub fn rocket_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
     if Some(&contact.other) == entity.owner.as_ref() {
         return;
     }
-    if (contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4) != 0 {
+    if (contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4)
+        != 0
+    {
         game.remove_actor(actor);
         return;
     }
@@ -1404,7 +1507,10 @@ pub fn rocket_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
             Some("q2:weapon_rocketlauncher".to_string()),
         );
     } else if game.options.mode == Q2Mode::Singleplayer
-        && contact.surface.as_ref().is_some_and(|surface| (surface.native_flags & (8 | 16 | 32 | 64)) == 0)
+        && contact
+            .surface
+            .as_ref()
+            .is_some_and(|surface| (surface.native_flags & (8 | 16 | 32 | 64)) == 0)
     {
         let count = (game.random() * 5.0).floor() as i32;
         for _ in 0..count {
@@ -1424,7 +1530,11 @@ pub fn rocket_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
     );
     let body = game.body_of(actor.clone());
     let wet = (game.host.point_contents(body.origin) & WATER_MASK) != 0;
-    let name = if wet { "rocket-explosion-water" } else { "rocket-explosion" };
+    let name = if wet {
+        "rocket-explosion-water"
+    } else {
+        "rocket-explosion"
+    };
     let origin = if game.options.edition == Q2Edition::Classic {
         add3(body.origin, scale3(body.velocity, -0.02))
     } else {
@@ -1452,7 +1562,9 @@ pub fn bfg_explode(actor: ActorId, game: &mut Q2GameServices) {
             }
             if let Some(owner) = entity.owner.as_ref() {
                 let resolved = game.host.actors().resolve_owned(owner);
-                if resolved.as_ref().is_some_and(|owned| game.host.bodies().read(owned.id()).is_some())
+                if resolved
+                    .as_ref()
+                    .is_some_and(|owned| game.host.bodies().read(owned.id()).is_some())
                     && !game.can_damage(&target, owner)
                 {
                     continue;
@@ -1463,12 +1575,13 @@ pub fn bfg_explode(actor: ActorId, game: &mut Q2GameServices) {
             }
             let center = centroid(game, &target);
             let body = game.host.bodies().read(&target);
-            let (Some(center), Some(body)) = (center, body) else { continue };
+            let (Some(center), Some(body)) = (center, body) else {
+                continue;
+            };
             let origin = game.body_of(actor.clone()).origin;
             let distance = f64::from(length3(sub3(origin, center)));
             let entity = game.require_entity(&actor).clone();
-            let points =
-                (entity.damage * (1.0 - (distance / entity.damage_radius).sqrt())).trunc();
+            let points = (entity.damage * (1.0 - (distance / entity.damage_radius).sqrt())).trunc();
             if !rerelease {
                 emit_effect(game, "bfg-explosion", body.origin, vec3(0.0, 0.0, 0.0), 0, 0);
             }
@@ -1488,13 +1601,16 @@ pub fn bfg_explode(actor: ActorId, game: &mut Q2GameServices) {
             );
             if rerelease {
                 let origin = game.body_of(actor.clone()).origin;
-                weapon_emit(game, &Q2WeaponEvent::Beam {
-                    effect: WeaponBeamEffect::BfgZap,
-                    actor: Some(actor.clone()),
-                    start: origin,
-                    end: center,
-                    duration: 0.0,
-                });
+                weapon_emit(
+                    game,
+                    &Q2WeaponEvent::Beam {
+                        effect: WeaponBeamEffect::BfgZap,
+                        actor: Some(actor.clone()),
+                        start: origin,
+                        end: center,
+                        duration: 0.0,
+                    },
+                );
             }
         }
     }
@@ -1518,13 +1634,24 @@ pub fn bfg_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchContac
     if Some(&contact.other) == entity.owner.as_ref() {
         return;
     }
-    if (contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4) != 0 {
+    if (contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4)
+        != 0
+    {
         game.remove_actor(actor);
         return;
     }
     impact_noise(game, &actor);
     let body = game.body_of(actor.clone());
-    let energy = if game.options.edition == Q2Edition::Rerelease { 4 } else { 0 };
+    let energy = if game.options.edition == Q2Edition::Rerelease {
+        4
+    } else {
+        0
+    };
     if can_hurt(game, Some(&contact.other)) {
         game.damage(
             contact.other.clone(),
@@ -1592,17 +1719,21 @@ pub fn bfg_think(actor: ActorId, game: &mut Q2GameServices) {
         if rerelease && !can_target(game, entity.owner.as_ref(), &target) {
             continue;
         }
-        let Some(center) = centroid(game, &target) else { continue };
+        let Some(center) = centroid(game, &target) else {
+            continue;
+        };
         if rerelease
-            && game.host.trace(&Q2TraceRequest {
-                start: origin,
-                end: center,
-                bounds: None,
-                ignore: None,
-                mask: 3,
-                exclude: Vec::new(),
-            })
-            .fraction
+            && game
+                .host
+                .trace(&Q2TraceRequest {
+                    start: origin,
+                    end: center,
+                    bounds: None,
+                    ignore: None,
+                    mask: 3,
+                    exclude: Vec::new(),
+                })
+                .fraction
                 < 1.0
         {
             continue;
@@ -1637,7 +1768,11 @@ pub fn bfg_think(actor: ActorId, game: &mut Q2GameServices) {
                     zap,
                     actor.clone(),
                     entity.owner,
-                    if game.options.mode == Q2Mode::Deathmatch { 5.0 } else { 10.0 },
+                    if game.options.mode == Q2Mode::Deathmatch {
+                        5.0
+                    } else {
+                        10.0
+                    },
                     1.0,
                     direction,
                     trace.end,
@@ -1672,25 +1807,22 @@ pub fn bfg_think(actor: ActorId, game: &mut Q2GameServices) {
                 ignore = Some(hit_actor);
             }
         };
-        weapon_emit(game, &Q2WeaponEvent::Beam {
-            effect: WeaponBeamEffect::BfgLaser,
-            actor: Some(actor.clone()),
-            start: origin,
-            end: trace.end,
-            duration: 0.0,
-        });
+        weapon_emit(
+            game,
+            &Q2WeaponEvent::Beam {
+                effect: WeaponBeamEffect::BfgLaser,
+                actor: Some(actor.clone()),
+                start: origin,
+                end: trace.end,
+                duration: 0.0,
+            },
+        );
     }
     game.schedule(actor, 0.1, bfg_think as crate::q2::foundation::host::Q2Think);
 }
 
 /// Blaster impact (`blasterImpact`).
-fn blaster_impact(
-    game: &mut Q2GameServices,
-    entity: &ActorId,
-    other: Option<&ActorId>,
-    plane: Vec3,
-    sky_hit: bool,
-) {
+fn blaster_impact(game: &mut Q2GameServices, entity: &ActorId, other: Option<&ActorId>, plane: Vec3, sky_hit: bool) {
     let means_of_death = game
         .weapons
         .blaster_causes
@@ -1738,8 +1870,13 @@ fn blaster_impact(
 /// Blaster touch (`blasterTouch`).
 pub fn blaster_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
     let plane = contact.plane.map(|plane| plane.normal).unwrap_or(vec3(0.0, 0.0, 0.0));
-    let sky_hit =
-        (contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4) != 0;
+    let sky_hit = (contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4)
+        != 0;
     blaster_impact(game, &actor, Some(&contact.other), plane, sky_hit);
 }
 
@@ -1771,13 +1908,16 @@ fn bfg_ambient(game: &mut Q2GameServices, entity: &ActorId) {
         exclude: Vec::new(),
     });
     if trace.fraction < 1.0 {
-        weapon_emit(game, &Q2WeaponEvent::Beam {
-            effect: WeaponBeamEffect::BfgLightning,
-            actor: Some(entity.clone()),
-            start,
-            end: trace.end,
-            duration: 0.3,
-        });
+        weapon_emit(
+            game,
+            &Q2WeaponEvent::Beam {
+                effect: WeaponBeamEffect::BfgLightning,
+                actor: Some(entity.clone()),
+                start,
+                end: trace.end,
+                duration: 0.3,
+            },
+        );
     }
 }
 

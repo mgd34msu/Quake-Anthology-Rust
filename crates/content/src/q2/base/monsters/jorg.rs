@@ -69,28 +69,17 @@ fn jorg_attack(context: &mut MonsterContext) {
 fn jorg_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     damaged_skin(context);
     stop_loop(context);
-    if context.game.host.now() < context.state().pain_time
-        || reaction.damage <= 40.0 && context.game.random() <= 0.6
-    {
+    if context.game.host.now() < context.state().pain_time || reaction.damage <= 40.0 && context.game.random() <= 0.6 {
         return;
     }
     let frame = context.entity().frame;
-    if frame >= boss31_frame::ATTAK101
-        && frame <= boss31_frame::ATTAK108
-        && context.game.random() <= 0.005
-    {
+    if frame >= boss31_frame::ATTAK101 && frame <= boss31_frame::ATTAK108 && context.game.random() <= 0.005 {
         return;
     }
-    if frame >= boss31_frame::ATTAK109
-        && frame <= boss31_frame::ATTAK114
-        && context.game.random() <= 0.00005
-    {
+    if frame >= boss31_frame::ATTAK109 && frame <= boss31_frame::ATTAK114 && context.game.random() <= 0.00005 {
         return;
     }
-    if frame >= boss31_frame::ATTAK201
-        && frame <= boss31_frame::ATTAK208
-        && context.game.random() <= 0.005
-    {
+    if frame >= boss31_frame::ATTAK201 && frame <= boss31_frame::ATTAK208 && context.game.random() <= 0.005 {
         return;
     }
     let now = context.game.host.now();
@@ -186,17 +175,7 @@ fn jorg_firebullet(context: &mut MonsterContext) {
             return;
         };
         let actor = context.actor().clone();
-        fire_bullet(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            6.0,
-            4.0,
-            300.0,
-            500.0,
-            0,
-        );
+        fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 300.0, 500.0, 0);
         monster_muzzle(context, flash as i32, direction, start);
     }
 }
@@ -211,8 +190,16 @@ pub fn create_jorg_definition() -> Q2MonsterDefinition {
         -2000.0,
         1000.0,
         Bounds {
-            min: Vec3 { x: -80.0, y: -80.0, z: 0.0 },
-            max: Vec3 { x: 80.0, y: 80.0, z: 140.0 },
+            min: Vec3 {
+                x: -80.0,
+                y: -80.0,
+                z: 0.0,
+            },
+            max: Vec3 {
+                x: 80.0,
+                y: 80.0,
+                z: 140.0,
+            },
         },
         1.0,
         "jorg_move_stand",
@@ -229,50 +216,17 @@ pub fn create_jorg_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(jorg_initialize));
     definition.callbacks = HashMap::from([
         ("jorg_run".to_string(), MonsterHandler::Callback(jorg_run)),
-        (
-            "jorg_attack1".to_string(),
-            move_handler("jorg_move_attack1"),
-        ),
-        (
-            "BossExplode".to_string(),
-            MonsterHandler::Callback(boss_explode),
-        ),
-        (
-            "jorg_idle".to_string(),
-            sound_handler("boss3/bs3idle1.wav", 2, 1.0),
-        ),
-        (
-            "jorg_step_left".to_string(),
-            sound_handler("boss3/step1.wav", 4, 1.0),
-        ),
-        (
-            "jorg_step_right".to_string(),
-            sound_handler("boss3/step2.wav", 4, 1.0),
-        ),
-        (
-            "jorg_death_hit".to_string(),
-            sound_handler("boss3/d_hit.wav", 4, 1.0),
-        ),
-        (
-            "jorg_dead".to_string(),
-            MonsterHandler::Callback(jorg_dead),
-        ),
-        (
-            "MakronToss".to_string(),
-            MonsterHandler::Callback(jorg_makron_toss),
-        ),
-        (
-            "jorg_reattack1".to_string(),
-            MonsterHandler::Callback(jorg_reattack1),
-        ),
-        (
-            "jorgBFG".to_string(),
-            MonsterHandler::Callback(jorg_bfg),
-        ),
-        (
-            "jorg_firebullet".to_string(),
-            MonsterHandler::Callback(jorg_firebullet),
-        ),
+        ("jorg_attack1".to_string(), move_handler("jorg_move_attack1")),
+        ("BossExplode".to_string(), MonsterHandler::Callback(boss_explode)),
+        ("jorg_idle".to_string(), sound_handler("boss3/bs3idle1.wav", 2, 1.0)),
+        ("jorg_step_left".to_string(), sound_handler("boss3/step1.wav", 4, 1.0)),
+        ("jorg_step_right".to_string(), sound_handler("boss3/step2.wav", 4, 1.0)),
+        ("jorg_death_hit".to_string(), sound_handler("boss3/d_hit.wav", 4, 1.0)),
+        ("jorg_dead".to_string(), MonsterHandler::Callback(jorg_dead)),
+        ("MakronToss".to_string(), MonsterHandler::Callback(jorg_makron_toss)),
+        ("jorg_reattack1".to_string(), MonsterHandler::Callback(jorg_reattack1)),
+        ("jorgBFG".to_string(), MonsterHandler::Callback(jorg_bfg)),
+        ("jorg_firebullet".to_string(), MonsterHandler::Callback(jorg_firebullet)),
     ]);
     definition
 }

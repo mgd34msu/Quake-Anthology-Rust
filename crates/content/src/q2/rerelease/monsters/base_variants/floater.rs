@@ -10,10 +10,8 @@ use crate::q2::base::monsters::common::{monster_loop_sound, monster_shot};
 use crate::q2::base::monsters::floater::floater_definition;
 use crate::q2::foundation::host::{Q2EffectEvent, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{enemy_body, health, project_flash};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
@@ -190,7 +188,17 @@ fn floater_fire_blaster(context: &mut MonsterContext) {
     let frame = context.game.require_entity(&actor).frame;
     let effects = if frame % 4 == 0 { 64 } else { 0 };
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 1.0, 1000.0, effects, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        1.0,
+        1000.0,
+        effects,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, 82, start, direction);
 }
 
@@ -255,10 +263,7 @@ pub fn rerelease_floater_definition() -> Q2MonsterDefinition {
     definition.die = rerelease_floater_die;
     for (name, handler) in [
         ("floater_run", MonsterHandler::Callback(rerelease_floater_run)),
-        (
-            "floater_fire_blaster",
-            MonsterHandler::Callback(floater_fire_blaster),
-        ),
+        ("floater_fire_blaster", MonsterHandler::Callback(floater_fire_blaster)),
         ("floater_wham", MonsterHandler::Callback(floater_wham)),
         ("floater_zap", MonsterHandler::Callback(floater_zap)),
     ] {

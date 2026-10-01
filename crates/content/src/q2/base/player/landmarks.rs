@@ -1,7 +1,7 @@
 //! Q2 landmark placement (`src/content/q2/base/player/landmarks.ts`).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, scale3, sub3, vec3, Bounds, Vec3};
 
 use crate::q2::foundation::host::{Q2GameServices, Q2LandmarkCarry, Q2TraceRequest};
 
@@ -47,11 +47,7 @@ pub fn rotate_q2_landmark(vector: Vec3, angles: Vec3) -> Vec3 {
     let pitch = f64::from(angles.x) * std::f64::consts::PI / 180.0;
     let roll = f64::from(angles.z) * std::f64::consts::PI / 180.0;
     let yaw = f64::from(angles.y) * std::f64::consts::PI / 180.0;
-    let (vx, vy, vz) = (
-        f64::from(vector.x),
-        f64::from(vector.y),
-        f64::from(vector.z),
-    );
+    let (vx, vy, vz) = (f64::from(vector.x), f64::from(vector.y), f64::from(vector.z));
     let x = vec3(
         vx as f32,
         (vy * pitch.cos() - vz * pitch.sin()) as f32,
@@ -72,12 +68,7 @@ pub fn rotate_q2_landmark(vector: Vec3, angles: Vec3) -> Vec3 {
 /// Free a stuck player (`fixQ2StuckPlayer`).
 ///
 /// Source p_move.cpp face probes, including its final-unsorted-candidate quirk.
-pub fn fix_q2_stuck_player(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    origin: Vec3,
-    bounds: Bounds,
-) -> Option<Vec3> {
+pub fn fix_q2_stuck_player(actor: ActorId, game: &mut Q2GameServices, origin: Vec3, bounds: Bounds) -> Option<Vec3> {
     let trace = |game: &mut Q2GameServices, start: Vec3, shape: Bounds, end: Vec3| {
         game.host.trace(&Q2TraceRequest {
             start,
@@ -93,12 +84,12 @@ pub fn fix_q2_stuck_player(
     }
     let mut good: Vec<(Vec3, f32)> = Vec::new();
     for side in SIDES {
-        let facing = if side.sign < 0.0 {
-            bounds.min
-        } else {
-            bounds.max
-        };
-        let mut start = set_component(origin, side.axis, component(origin, side.axis) + component(facing, side.axis));
+        let facing = if side.sign < 0.0 { bounds.min } else { bounds.max };
+        let mut start = set_component(
+            origin,
+            side.axis,
+            component(origin, side.axis) + component(facing, side.axis),
+        );
         let face = Bounds {
             min: set_component(bounds.min, side.axis, 0.0),
             max: set_component(bounds.max, side.axis, 0.0),
@@ -131,11 +122,7 @@ pub fn fix_q2_stuck_player(
         if hit.start_solid {
             continue;
         }
-        let facing = if side.sign < 0.0 {
-            bounds.max
-        } else {
-            bounds.min
-        };
+        let facing = if side.sign < 0.0 { bounds.max } else { bounds.min };
         let mut opposite = set_component(
             origin,
             side.axis,
@@ -160,11 +147,7 @@ pub fn fix_q2_stuck_player(
     }
     if good.len() > 1 {
         let last = good.pop();
-        good.sort_by(|left, right| {
-            left.1
-                .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        good.sort_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(std::cmp::Ordering::Equal));
         if let Some(last) = last {
             good.push(last);
         }

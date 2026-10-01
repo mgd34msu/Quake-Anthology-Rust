@@ -6,17 +6,19 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Bounds, Vec3};
 
 use crate::contract::RegularArmorState;
 use crate::q2::base::player::spawns::q2_entities_named;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::movedir;
-use crate::q2::foundation::host::{Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think};
+use crate::q2::foundation::host::{
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think,
+};
 use crate::q2::foundation::items::{Q2ConsoleGive, Q2DropOptions, Q2ItemDefinition, Q2ItemKindData};
 use crate::q2::foundation::weapons::ballistics::silencer_shots;
 
-use super::types::{Q2CtfHooks, Q2CtfMatchPhase, ctf_player, item_id};
+use super::types::{ctf_player, item_id, Q2CtfHooks, Q2CtfMatchPhase};
 
 /// CTF tech info.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,10 +37,34 @@ struct Q2CtfTechInfo {
 
 /// CTF techs by ordinal.
 const TECHS: [Q2CtfTechInfo; 4] = [
-    Q2CtfTechInfo { classname: "item_tech1", item: "q2:item_tech1", model: "resistance", icon: "tech1", name: "Disruptor Shield" },
-    Q2CtfTechInfo { classname: "item_tech2", item: "q2:item_tech2", model: "strength", icon: "tech2", name: "Power Amplifier" },
-    Q2CtfTechInfo { classname: "item_tech3", item: "q2:item_tech3", model: "haste", icon: "tech3", name: "Time Accel" },
-    Q2CtfTechInfo { classname: "item_tech4", item: "q2:item_tech4", model: "regeneration", icon: "tech4", name: "AutoDoc" },
+    Q2CtfTechInfo {
+        classname: "item_tech1",
+        item: "q2:item_tech1",
+        model: "resistance",
+        icon: "tech1",
+        name: "Disruptor Shield",
+    },
+    Q2CtfTechInfo {
+        classname: "item_tech2",
+        item: "q2:item_tech2",
+        model: "strength",
+        icon: "tech2",
+        name: "Power Amplifier",
+    },
+    Q2CtfTechInfo {
+        classname: "item_tech3",
+        item: "q2:item_tech3",
+        model: "haste",
+        icon: "tech3",
+        name: "Time Accel",
+    },
+    Q2CtfTechInfo {
+        classname: "item_tech4",
+        item: "q2:item_tech4",
+        model: "regeneration",
+        icon: "tech4",
+        name: "AutoDoc",
+    },
 ];
 
 /// Tech lifetime seconds.
@@ -61,13 +87,17 @@ pub fn ctf_tech_callbacks() -> Q2CallbackDefinitions {
 
 /// Tech item pickup (`register` pickup).
 fn ctf_tech_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> bool {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     techs.pickup(entity, game, player)
 }
 
 /// Tech lifetime think (`think`).
 fn ctf_tech_think(entity: ActorId, game: &mut Q2GameServices) {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     let Some(spot) = techs.find_spawn(game) else {
         game.schedule(entity, TECH_TIMEOUT, ctf_tech_think as Q2Think);
         return;
@@ -79,7 +109,9 @@ fn ctf_tech_think(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Tech spawner think (`spawnTechs`).
 fn ctf_spawn_techs(entity: ActorId, game: &mut Q2GameServices) {
-    let techs = Q2CtfTechs { hooks: super::ctf_hooks(game) };
+    let techs = Q2CtfTechs {
+        hooks: super::ctf_hooks(game),
+    };
     techs.spawn_all(game);
     game.remove_actor(entity);
 }
@@ -141,7 +173,10 @@ impl Q2CtfTechs {
         }
         let id = player.id().clone();
         let now = game.now();
-        if TECHS.iter().any(|tech| game.host.inventory().count(&id, &item_id(tech.item)) > 0.0) {
+        if TECHS
+            .iter()
+            .any(|tech| game.host.inventory().count(&id, &item_id(tech.item)) > 0.0)
+        {
             if now - ctf_player(game, &id).last_tech_message > 2.0 {
                 ctf_player(game, &id).last_tech_message = now;
                 game.host_emit(Q2PresentationEvent::CenterPrint {
@@ -154,7 +189,9 @@ impl Q2CtfTechs {
             return false;
         }
         let classname = game.require_entity(&entity).classname.clone();
-        game.host.inventory().give(&player, &item_id(&format!("q2:{classname}")), 1.0);
+        game.host
+            .inventory()
+            .give(&player, &item_id(&format!("q2:{classname}")), 1.0);
         ctf_player(game, &id).regen_time = now;
         true
     }
@@ -192,8 +229,15 @@ impl Q2CtfTechs {
         let spot_origin = game.body_of(spot).origin;
         let mut body = game.body_of(entity.clone());
         body.origin = add3(spot_origin, vec3(0.0, 0.0, 16.0));
-        body.velocity = Vec3 { x: velocity.x, y: velocity.y, z: 300.0 };
-        body.bounds = Bounds { min: vec3(-15.0, -15.0, -15.0), max: vec3(15.0, 15.0, 15.0) };
+        body.velocity = Vec3 {
+            x: velocity.x,
+            y: velocity.y,
+            z: 300.0,
+        };
+        body.bounds = Bounds {
+            min: vec3(-15.0, -15.0, -15.0),
+            max: vec3(15.0, 15.0, 15.0),
+        };
         game.write_body(entity.clone(), &body, false);
         game.set_solid(entity.clone(), Q2Solid::Trigger);
         game.set_motion_kind(entity.clone(), Q2MotionKind::Toss);
@@ -227,7 +271,10 @@ impl Q2CtfTechs {
             .values()
             .filter(|entity| {
                 let id = entity.actor.id().clone();
-                self.hooks.items.item_definition(game, &id).is_some_and(|definition| TECHS.iter().any(|tech| tech.classname == definition.classname))
+                self.hooks
+                    .items
+                    .item_definition(game, &id)
+                    .is_some_and(|definition| TECHS.iter().any(|tech| tech.classname == definition.classname))
             })
             .map(|entity| entity.actor.id().clone())
             .collect();
@@ -262,7 +309,10 @@ impl Q2CtfTechs {
                 entity.clone(),
                 game,
                 &item,
-                &Q2DropOptions { player_death: false, ..Q2DropOptions::default() },
+                &Q2DropOptions {
+                    player_death: false,
+                    ..Q2DropOptions::default()
+                },
             );
             let Some(dropped) = dropped else {
                 continue;
@@ -303,7 +353,11 @@ impl Q2CtfTechs {
 
     /// Apply tech strength (`strength`).
     pub fn strength(&self, actor: Option<ActorId>, game: &mut Q2GameServices, damage: f64) -> f64 {
-        if damage != 0.0 && self.has(actor, game, 2) { damage * 2.0 } else { damage }
+        if damage != 0.0 && self.has(actor, game, 2) {
+            damage * 2.0
+        } else {
+            damage
+        }
     }
 
     /// Apply tech resistance (`resistance`).
@@ -369,7 +423,9 @@ impl Q2CtfTechs {
         let mut noise = false;
         if current.health < 150.0 {
             let owned = game.owned_of(entity.clone());
-            game.host.combat().set_health(&owned, 150.0f64.min(current.health + 5.0));
+            game.host
+                .combat()
+                .set_health(&owned, 150.0f64.min(current.health + 5.0));
             ctf_player(game, &entity).regen_time += 0.5;
             noise = true;
         }
@@ -383,7 +439,9 @@ impl Q2CtfTechs {
         if let Some(points) = points {
             if points > 0.0 && points < 150.0 {
                 let owned = game.owned_of(entity.clone());
-                game.host.combat().set_regular_points(&owned, 150.0f64.min(points + 5.0), None);
+                game.host
+                    .combat()
+                    .set_regular_points(&owned, 150.0f64.min(points + 5.0), None);
                 ctf_player(game, &entity).regen_time += 0.5;
                 noise = true;
             }

@@ -3,24 +3,30 @@
 //! Original Rogue m_widow.c and g_newai.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Bounds, Vec3};
 
-use super::power_armor::{
-    PowerArmorKind, monster_power_armor, restore_monster_power_armor,
-};
+use super::power_armor::{monster_power_armor, restore_monster_power_armor, PowerArmorKind};
 use super::spawn::{create_rogue_ground_monster, find_rogue_spawn_point, rogue_spawn_grow};
 use super::state::rogue_state;
 use super::types::mission_services;
 use crate::q2::foundation::host::{Q2GameServices, Q2Mode};
 use crate::q2::foundation::monsters::ai::{angles_vectors, health, visible};
 use crate::q2::foundation::monsters::perception::found_target;
-use crate::q2::foundation::monsters::types::{MonsterContext, MonsterSpawner, record_at};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterSpawner};
 use crate::q2::support::contracts::CombatTraitChanges;
 
 /// Stalker bounds (`stalkerBounds`).
 const STALKER_BOUNDS: Bounds = Bounds {
-    min: Vec3 { x: -28.0, y: -28.0, z: -18.0 },
-    max: Vec3 { x: 28.0, y: 28.0, z: 18.0 },
+    min: Vec3 {
+        x: -28.0,
+        y: -28.0,
+        z: -18.0,
+    },
+    max: Vec3 {
+        x: 28.0,
+        y: 28.0,
+        z: 18.0,
+    },
 };
 
 /// Widow project (`widowProject`).
@@ -52,9 +58,7 @@ pub fn widow_slots(context: &mut MonsterContext) {
             .host
             .players()
             .into_iter()
-            .filter(|actor| {
-                context.game.host.actors().is_live(actor) && context.game.host.is_player(actor)
-            })
+            .filter(|actor| context.game.host.actors().is_live(actor) && context.game.host.is_player(actor))
             .count();
         slots = (slots + i32::from(skill) * (players as i32 - 1)).min(6);
     }
@@ -93,7 +97,11 @@ pub fn widow_summon(context: &mut MonsterContext, second: bool, grow: bool) {
         let anchor = widow_project(
             &actor,
             &mut *context.game,
-            vec3(30.0, side * if second { 135.0 } else { 100.0 }, if second { 0.0 } else { 16.0 }),
+            vec3(
+                30.0,
+                side * if second { 135.0 } else { 100.0 },
+                if second { 0.0 } else { 16.0 },
+            ),
         );
         let point = find_rogue_spawn_point(&mut *context.game, anchor, STALKER_BOUNDS, 64.0);
         let Some(point) = point else {
@@ -185,7 +193,11 @@ fn powerup_shown(until: f64, now: f64) -> bool {
 /// Widow armor (`armor`).
 fn widow_armor(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    let power = context.game.host.inventory().count(&actor, &"q2:monster-power".to_string());
+    let power = context
+        .game
+        .host
+        .inventory()
+        .count(&actor, &"q2:monster-power".to_string());
     if power <= 0.0 {
         let skill = f64::from(context.game.options.skill);
         monster_power_armor(context, PowerArmorKind::Shield, 250.0 * skill);
@@ -224,8 +236,7 @@ fn widow_respond(context: &mut MonsterContext, actor: &ActorId) {
         if skill == 1 {
             widow_armor(context);
         } else if skill >= 2 {
-            rogue_state(&mut *context.game, &self_actor).widow_invulnerable_until =
-                other.invulnerability_until;
+            rogue_state(&mut *context.game, &self_actor).widow_invulnerable_until = other.invulnerability_until;
             if skill == 3 {
                 widow_armor(context);
             }
@@ -246,9 +257,7 @@ pub fn widow_powerups(context: &mut MonsterContext) {
             .host
             .players()
             .into_iter()
-            .filter(|actor| {
-                context.game.host.actors().is_live(actor) && context.game.host.is_player(actor)
-            })
+            .filter(|actor| context.game.host.actors().is_live(actor) && context.game.host.is_player(actor))
             .collect();
         let now = context.game.host.now();
         let services = mission_services(&*context.game);
@@ -287,7 +296,11 @@ pub fn widow_power_think(actor: ActorId, game: &mut Q2GameServices) {
     }
     let (quad, double, invulnerable) = {
         let power = rogue_state(game, &actor);
-        (power.widow_quad_until, power.widow_double_until, power.widow_invulnerable_until)
+        (
+            power.widow_quad_until,
+            power.widow_double_until,
+            power.widow_invulnerable_until,
+        )
     };
     let now = game.host.now();
     game.require_entity_mut(&actor).effects &= !(32768 | 65536 | 134217728);

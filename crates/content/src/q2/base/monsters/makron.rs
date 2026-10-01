@@ -5,18 +5,16 @@
 use std::collections::{BTreeMap, HashMap};
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::boss_common::{boss_check_attack, stop_loop};
-use super::common::{damaged_skin, finish_corpse, move_handler, monster_muzzle, monster_shot, sound_handler};
+use super::common::{damaged_skin, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler};
 use super::tables::boss32::{boss32_frame, boss32_moves};
 use crate::q2::foundation::host::{
-    Q2GameServices, Q2MotionKind, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2PresentationEvent,
+    Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
 };
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_eye, health, project_flash, vector_angles,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_eye, health, project_flash, vector_angles};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::monster_spawn;
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
@@ -97,9 +95,7 @@ fn makron_attack(context: &mut MonsterContext) {
 /// Pain (`pain`).
 fn makron_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     damaged_skin(context);
-    if context.game.host.now() < context.state().pain_time
-        || reaction.damage <= 25.0 && context.game.random() < 0.2
-    {
+    if context.game.host.now() < context.state().pain_time || reaction.damage <= 25.0 && context.game.random() < 0.2 {
         return;
     }
     let now = context.game.host.now();
@@ -194,7 +190,11 @@ fn makron_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     torso_body.origin = vec3(body.origin.x, body.origin.y - 84.0, body.origin.z);
     torso_body.angles = body.angles;
     torso_body.bounds = Bounds {
-        min: Vec3 { x: -8.0, y: -8.0, z: 0.0 },
+        min: Vec3 {
+            x: -8.0,
+            y: -8.0,
+            z: 0.0,
+        },
         max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
     };
     torso_body.velocity = vec3(0.0, 0.0, 0.0);
@@ -223,8 +223,16 @@ fn makron_dead(context: &mut MonsterContext) {
     finish_corpse(
         context,
         Bounds {
-            min: Vec3 { x: -60.0, y: -60.0, z: 0.0 },
-            max: Vec3 { x: 60.0, y: 60.0, z: 72.0 },
+            min: Vec3 {
+                x: -60.0,
+                y: -60.0,
+                z: 0.0,
+            },
+            max: Vec3 {
+                x: 60.0,
+                y: 60.0,
+                z: 72.0,
+            },
         },
     );
 }
@@ -296,7 +304,17 @@ fn makron_hyperblaster(context: &mut MonsterContext) {
     };
     let direction = angles_vectors(vec3(pitch, sweep, 0.0)).forward;
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 15.0, 1000.0, 8, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        15.0,
+        1000.0,
+        8,
+        false,
+        Mod::BLASTER,
+    );
     monster_muzzle(context, 102, direction, start);
 }
 
@@ -315,8 +333,16 @@ pub fn makron_definition() -> Q2MonsterDefinition {
         -2000.0,
         500.0,
         Bounds {
-            min: Vec3 { x: -30.0, y: -30.0, z: 0.0 },
-            max: Vec3 { x: 30.0, y: 30.0, z: 90.0 },
+            min: Vec3 {
+                x: -30.0,
+                y: -30.0,
+                z: 0.0,
+            },
+            max: Vec3 {
+                x: 30.0,
+                y: 30.0,
+                z: 90.0,
+            },
         },
         1.0,
         "makron_move_sight",
@@ -331,14 +357,8 @@ pub fn makron_definition() -> Q2MonsterDefinition {
     definition.pain = Some(makron_pain);
     definition.check_attack = Some(makron_check_attack);
     definition.callbacks = HashMap::from([
-        (
-            "makron_run".to_string(),
-            MonsterHandler::Callback(makron_run),
-        ),
-        (
-            "makron_dead".to_string(),
-            MonsterHandler::Callback(makron_dead),
-        ),
+        ("makron_run".to_string(), MonsterHandler::Callback(makron_run)),
+        ("makron_dead".to_string(), MonsterHandler::Callback(makron_dead)),
         (
             "makron_step_left".to_string(),
             sound_handler("makron/step1.wav", 4, 1.0),
@@ -347,14 +367,8 @@ pub fn makron_definition() -> Q2MonsterDefinition {
             "makron_step_right".to_string(),
             sound_handler("makron/step2.wav", 4, 1.0),
         ),
-        (
-            "makron_popup".to_string(),
-            sound_handler("makron/popup.wav", 4, 0.0),
-        ),
-        (
-            "makron_hit".to_string(),
-            sound_handler("makron/bhit.wav", 0, 0.0),
-        ),
+        ("makron_popup".to_string(), sound_handler("makron/popup.wav", 4, 0.0)),
+        ("makron_hit".to_string(), sound_handler("makron/bhit.wav", 0, 0.0)),
         (
             "makron_brainsplorch".to_string(),
             sound_handler("makron/brain1.wav", 2, 1.0),
@@ -363,22 +377,10 @@ pub fn makron_definition() -> Q2MonsterDefinition {
             "makron_prerailgun".to_string(),
             sound_handler("makron/rail_up.wav", 1, 1.0),
         ),
-        (
-            "makron_taunt".to_string(),
-            MonsterHandler::Callback(makron_taunt),
-        ),
-        (
-            "makronBFG".to_string(),
-            MonsterHandler::Callback(makron_bfg),
-        ),
-        (
-            "MakronSaveloc".to_string(),
-            MonsterHandler::Callback(makron_save_loc),
-        ),
-        (
-            "MakronRailgun".to_string(),
-            MonsterHandler::Callback(makron_railgun),
-        ),
+        ("makron_taunt".to_string(), MonsterHandler::Callback(makron_taunt)),
+        ("makronBFG".to_string(), MonsterHandler::Callback(makron_bfg)),
+        ("MakronSaveloc".to_string(), MonsterHandler::Callback(makron_save_loc)),
+        ("MakronRailgun".to_string(), MonsterHandler::Callback(makron_railgun)),
         (
             "MakronHyperblaster".to_string(),
             MonsterHandler::Callback(makron_hyperblaster),

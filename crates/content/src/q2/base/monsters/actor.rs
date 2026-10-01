@@ -5,24 +5,19 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
-use super::common::{
-    HUMANOID_BOUNDS, damaged_skin, finish_corpse_default, monster_muzzle, move_handler,
-};
+use super::common::{damaged_skin, finish_corpse_default, monster_muzzle, move_handler, HUMANOID_BOUNDS};
 use super::tables::actor::{actor_frame, actor_moves};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::{integer_field, movedir, number_field};
 use crate::q2::foundation::host::{
-    Q2Entity, Q2GameServices, Q2PresentationEvent, Q2PrintLevel, Q2Solid, Q2SpawnFn, Q2Touch,
-    Q2Use, SpawnModule,
+    Q2Entity, Q2GameServices, Q2PresentationEvent, Q2PrintLevel, Q2Solid, Q2SpawnFn, Q2Touch, Q2Use, SpawnModule,
 };
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, health, project_flash, vector_angles,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib, throw_head};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, health, project_flash, vector_angles};
+use crate::q2::foundation::monsters::gibs::{throw_gib, throw_head, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TouchContact};
 
 /// Actor names (`actorNames`).
@@ -120,7 +115,10 @@ fn actor_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     }
     let now = context.game.host.now();
     context.state_mut().pain_time = now + 3.0;
-    if reaction.attacker.as_ref().is_some_and(|attacker| context.game.host.is_player(attacker))
+    if reaction
+        .attacker
+        .as_ref()
+        .is_some_and(|attacker| context.game.host.is_player(attacker))
         && context.game.random() < 0.4
     {
         let attacker = reaction.attacker.clone().expect("actor pain attacker");
@@ -235,24 +233,13 @@ fn actor_fire(context: &mut MonsterContext) {
             vec3(
                 enemy_body.origin.x + enemy_body.bounds.min.x,
                 enemy_body.origin.y + enemy_body.bounds.min.y,
-                enemy_body.origin.z
-                    + (enemy_body.bounds.min.z + enemy_body.bounds.max.z) / 2.0,
+                enemy_body.origin.z + (enemy_body.bounds.min.z + enemy_body.bounds.max.z) / 2.0,
             )
         };
         direction = normalize3(sub3(target, start));
     }
     let fire_bullet = context.weapons.fire_bullet;
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        3.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 3.0, 4.0, 300.0, 500.0, 0);
     monster_muzzle(context, 63, direction, start);
     let hold = context.game.host.now() < context.state().pause_time;
     context.state_mut().hold_frame = hold;
@@ -280,29 +267,18 @@ pub fn actor_definition() -> Q2MonsterDefinition {
     definition.pain = Some(actor_pain);
     definition.initialize = Some(MonsterHandler::Callback(actor_initialize));
     definition.callbacks = HashMap::from([
-        (
-            "actor_run".to_string(),
-            MonsterHandler::Callback(actor_run),
-        ),
+        ("actor_run".to_string(), MonsterHandler::Callback(actor_run)),
         (
             "actor_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
         ),
-        (
-            "actor_fire".to_string(),
-            MonsterHandler::Callback(actor_fire),
-        ),
+        ("actor_fire".to_string(), MonsterHandler::Callback(actor_fire)),
     ]);
     definition
 }
 
 /// Actor use (`actor_use`).
-pub fn actor_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+pub fn actor_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     if !game.monsters.states.contains_key(&actor) {
         panic!("Actor use without restored monster state");
     }
@@ -313,11 +289,12 @@ pub fn actor_use(
     if let Some(state) = game.monsters.states.get_mut(&actor) {
         state.move_target = target.clone();
     }
-    let bad = target.as_ref().is_none_or(|target| {
-        game.require_entity(target).classname != "target_actor"
-    });
+    let bad = target
+        .as_ref()
+        .is_none_or(|target| game.require_entity(target).classname != "target_actor");
     if bad {
-        game.host.diagnostic(&format!("misc_actor has bad target {target_name}"));
+        game.host
+            .diagnostic(&format!("misc_actor has bad target {target_name}"));
         game.require_entity_mut(&actor).target = String::new();
         if let Some(state) = game.monsters.states.get_mut(&actor) {
             state.pause_time = 100000000.0;
@@ -469,11 +446,7 @@ pub fn spawn_target_actor(actor: ActorId, game: &mut Q2GameServices) -> bool {
             y: -8.0,
             z: -8.0,
         },
-        max: Vec3 {
-            x: 8.0,
-            y: 8.0,
-            z: 8.0,
-        },
+        max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
     };
     game.write_body(actor.clone(), &body, true);
     if game.require_entity(&actor).spawnflags & 1 != 0 {

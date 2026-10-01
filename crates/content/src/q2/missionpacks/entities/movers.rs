@@ -4,14 +4,14 @@
 //! (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, scale3, sub3, vec3};
+use qa_core::math::{add3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{
-    Q2Blocked, Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent,
-    Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think, Q2Touch, Q2Use,
+    Q2Blocked, Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
+    Q2SoundLoop, Q2Think, Q2Touch, Q2Use,
 };
 use crate::q2::foundation::motion::{linear_move_to, LinearMotionScope};
 use crate::q2::foundation::scenery::kill_q2_box;
@@ -54,7 +54,9 @@ pub fn rogue_mover_callbacks() -> Q2CallbackDefinitions {
     callbacks.use_.insert("plat2_activate", plat2_activate as Q2Use);
     callbacks.use_.insert("fd_secret_use", fd_secret_use as Q2Use);
     callbacks.use_.insert("force_wall_use", force_wall_use as Q2Use);
-    callbacks.touch.insert("Touch_Plat_Center2", touch_plat_center2 as Q2Touch);
+    callbacks
+        .touch
+        .insert("Touch_Plat_Center2", touch_plat_center2 as Q2Touch);
     callbacks.touch.insert("secret_touch", secret_touch as Q2Touch);
     callbacks.die.insert("fd_secret_killed", fd_secret_killed as Q2Die);
     callbacks.blocked.insert("plat2_blocked", plat2_blocked as Q2Blocked);
@@ -87,11 +89,7 @@ impl Q2RogueMovers {
     }
 
     /// Read platform state (`platformState`).
-    pub fn platform_state(
-        &self,
-        entity: &ActorId,
-        game: &Q2GameServices,
-    ) -> Option<(Vec3, Vec3, Q2Plat2Phase)> {
+    pub fn platform_state(&self, entity: &ActorId, game: &Q2GameServices) -> Option<(Vec3, Vec3, Q2Plat2Phase)> {
         let _ = self;
         let record = game.require_entity(entity);
         if record.classname != "func_plat2" {
@@ -117,7 +115,11 @@ fn plat_sound(entity: &ActorId, game: &mut Q2GameServices, start: bool) {
     }
     game.sound(
         entity,
-        if start { "plats/pt1_strt.wav" } else { "plats/pt1_end.wav" },
+        if start {
+            "plats/pt1_strt.wav"
+        } else {
+            "plats/pt1_end.wav"
+        },
         10,
         1.0,
         3.0,
@@ -145,19 +147,26 @@ fn plat_sound(entity: &ActorId, game: &mut Q2GameServices, start: bool) {
 fn plat_hit(entity: ActorId, game: &mut Q2GameServices, top: bool) {
     plat_sound(&entity, game, false);
     game.require_entity_mut(&entity).style = if top { 0 } else { 1 };
-    let returning = if top { plat2_go_down as Q2Think } else { plat2_go_up as Q2Think };
+    let returning = if top {
+        plat2_go_down as Q2Think
+    } else {
+        plat2_go_up as Q2Think
+    };
     if game.require_entity(&entity).count & 1 != 0 {
         game.require_entity_mut(&entity).count = 4;
         if game.require_entity(&entity).spawnflags & 2 == 0 {
             game.schedule(entity.clone(), 5.0, returning);
         }
-        let offset = if game.options.mode == Q2Mode::Deathmatch { 1.0 } else { 2.0 };
+        let offset = if game.options.mode == Q2Mode::Deathmatch {
+            1.0
+        } else {
+            2.0
+        };
         game.require_entity_mut(&entity).timestamp = game.host.now() - offset;
     } else {
         game.require_entity_mut(&entity).count = 0;
         game.require_entity_mut(&entity).timestamp = game.host.now();
-        if (game.require_entity(&entity).spawnflags & 4 != 0) != top
-            && game.require_entity(&entity).spawnflags & 2 == 0
+        if (game.require_entity(&entity).spawnflags & 4 != 0) != top && game.require_entity(&entity).spawnflags & 2 == 0
         {
             game.schedule(entity.clone(), 2.0, returning);
         }
@@ -193,7 +202,13 @@ fn plat2_go_down(entity: ActorId, game: &mut Q2GameServices) {
     let count = game.require_entity(&entity).count;
     game.require_entity_mut(&entity).count = count | 2;
     let destination = game.require_entity(&entity).pos2;
-    linear_move_to(game, LinearMotionScope::Base, entity, destination, plat2_hit_bottom as Q2Think);
+    linear_move_to(
+        game,
+        LinearMotionScope::Base,
+        entity,
+        destination,
+        plat2_hit_bottom as Q2Think,
+    );
 }
 
 /// Platform go up (`up`).
@@ -211,20 +226,26 @@ fn plat2_go_up(entity: ActorId, game: &mut Q2GameServices) {
         Some(entity.clone()),
     );
     let destination = game.require_entity(&entity).pos1;
-    linear_move_to(game, LinearMotionScope::Base, entity, destination, plat2_hit_top as Q2Think);
+    linear_move_to(
+        game,
+        LinearMotionScope::Base,
+        entity,
+        destination,
+        plat2_hit_top as Q2Think,
+    );
 }
 
 /// Operate a platform from a trigger (`operate`).
 fn plat_operate(trigger: ActorId, game: &mut Q2GameServices, actor: ActorId) {
     let platform = game.require_entity(&trigger).enemy.clone();
-    let entity = platform.as_ref().and_then(|enemy| game.entity(enemy).map(|entity| entity.actor.id().clone()));
+    let entity = platform
+        .as_ref()
+        .and_then(|enemy| game.entity(enemy).map(|entity| entity.actor.id().clone()));
     let other = game.host.bodies().read(&actor);
     let (Some(entity), Some(other)) = (entity, other) else {
         return;
     };
-    if game.require_entity(&entity).count & 2 != 0
-        || game.require_entity(&entity).timestamp + 2.0 > game.host.now()
-    {
+    if game.require_entity(&entity).count & 2 != 0 || game.require_entity(&entity).timestamp + 2.0 > game.host.now() {
         return;
     }
     let bounds = game.body_of(trigger);
@@ -245,18 +266,36 @@ fn plat_operate(trigger: ActorId, game: &mut Q2GameServices, actor: ActorId) {
         1
     };
     game.require_entity_mut(&entity).count = 2;
-    let mut pause = if game.options.mode == Q2Mode::Deathmatch { 0.3 } else { 0.5 };
+    let mut pause = if game.options.mode == Q2Mode::Deathmatch {
+        0.3
+    } else {
+        0.5
+    };
     if style != other_state {
         game.require_entity_mut(&entity).count |= 1;
         pause = 0.1;
     }
     game.require_entity_mut(&entity).timestamp = game.host.now();
-    game.schedule(entity, pause, if style == 1 { plat2_go_up as Q2Think } else { plat2_go_down as Q2Think });
+    game.schedule(
+        entity,
+        pause,
+        if style == 1 {
+            plat2_go_up as Q2Think
+        } else {
+            plat2_go_down as Q2Think
+        },
+    );
 }
 
 /// Platform center touch (`platTouch`).
 fn touch_plat_center2(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    if game.host.combat().read(&contact.other).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+    if game
+        .host
+        .combat()
+        .read(&contact.other)
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        <= 0.0
         || !game.host.is_player(&contact.other) && !game.host.is_monster(&contact.other)
     {
         return;
@@ -316,7 +355,14 @@ fn plat2_blocked(entity: ActorId, game: &mut Q2GameServices, other: ActorId) {
         }
         return;
     }
-    if game.host.combat().read(&other).map(|combat| combat.health).unwrap_or(0.0) < 1.0 {
+    if game
+        .host
+        .combat()
+        .read(&other)
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        < 1.0
+    {
         game.damage(
             other.clone(),
             entity.clone(),
@@ -395,7 +441,11 @@ fn spawn_platform(entity: ActorId, game: &mut Q2GameServices) {
     game.set_solid(entity.clone(), Q2Solid::Brush);
     game.set_motion_kind(entity.clone(), Q2MotionKind::Push);
     game.require_entity_mut(&entity).blocked = Some(plat2_blocked as Q2Blocked);
-    let multiplier = if game.options.mode == Q2Mode::Deathmatch { 2.0 } else { 1.0 };
+    let multiplier = if game.options.mode == Q2Mode::Deathmatch {
+        2.0
+    } else {
+        1.0
+    };
     {
         let record = game.require_entity_mut(&entity);
         record.speed = (if record.speed == 0.0 { 20.0 } else { record.speed * 0.1 }) * multiplier;
@@ -419,8 +469,8 @@ fn spawn_platform(entity: ActorId, game: &mut Q2GameServices) {
         record.style = 0;
         record.count = 0;
     }
-    let rerelease_hold = game.options.edition == Q2Edition::Rerelease
-        && game.require_entity(&entity).spawnflags & 8 != 0;
+    let rerelease_hold =
+        game.options.edition == Q2Edition::Rerelease && game.require_entity(&entity).spawnflags & 8 != 0;
     if !game.require_entity(&entity).targetname.is_empty() && !rerelease_hold {
         game.require_entity_mut(&entity).use_ = Some(plat2_activate as Q2Use);
     } else {
@@ -445,7 +495,13 @@ fn fd_secret_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<Acto
     let mut member = Some(entity);
     while let Some(current) = member {
         let destination = game.require_entity(&current).pos1;
-        linear_move_to(game, LinearMotionScope::Base, current.clone(), destination, fd_secret_move1 as Q2Think);
+        linear_move_to(
+            game,
+            LinearMotionScope::Base,
+            current.clone(),
+            destination,
+            fd_secret_move1 as Q2Think,
+        );
         member = game
             .require_entity(&current)
             .team_chain
@@ -477,7 +533,10 @@ fn fd_secret_killed(entity: ActorId, game: &mut Q2GameServices, reaction: DeathR
         .and_then(|master| game.entity(&master).map(|entity| entity.actor.id().clone()));
     if game.require_entity(&entity).flags & 1024 != 0
         && master.as_ref().is_some_and(|master| {
-            game.host.combat().read(master).is_some_and(|combat| combat.can_take_damage)
+            game.host
+                .combat()
+                .read(master)
+                .is_some_and(|combat| combat.can_take_damage)
         })
     {
         let master = master.expect("secret master is missing");
@@ -498,7 +557,13 @@ fn fd_secret_move1(entity: ActorId, game: &mut Q2GameServices) {
 /// Secret move 2 (`secret2`).
 fn fd_secret_move2(entity: ActorId, game: &mut Q2GameServices) {
     let destination = game.require_entity(&entity).pos2;
-    linear_move_to(game, LinearMotionScope::Base, entity, destination, fd_secret_move3 as Q2Think);
+    linear_move_to(
+        game,
+        LinearMotionScope::Base,
+        entity,
+        destination,
+        fd_secret_move3 as Q2Think,
+    );
 }
 
 /// Secret move 3 (`secret3`).
@@ -513,7 +578,13 @@ fn fd_secret_move3(entity: ActorId, game: &mut Q2GameServices) {
 /// Secret move 4 (`secret4`).
 fn fd_secret_move4(entity: ActorId, game: &mut Q2GameServices) {
     let destination = game.require_entity(&entity).pos1;
-    linear_move_to(game, LinearMotionScope::Base, entity, destination, fd_secret_move5 as Q2Think);
+    linear_move_to(
+        game,
+        LinearMotionScope::Base,
+        entity,
+        destination,
+        fd_secret_move5 as Q2Think,
+    );
 }
 
 /// Secret move 5 (`secret5`).
@@ -524,14 +595,18 @@ fn fd_secret_move5(entity: ActorId, game: &mut Q2GameServices) {
 /// Secret move 6 (`secret6`).
 fn fd_secret_move6(entity: ActorId, game: &mut Q2GameServices) {
     let destination = game.require_entity(&entity).movedir;
-    linear_move_to(game, LinearMotionScope::Base, entity, destination, fd_secret_done as Q2Think);
+    linear_move_to(
+        game,
+        LinearMotionScope::Base,
+        entity,
+        destination,
+        fd_secret_done as Q2Think,
+    );
 }
 
 /// Secret done (`secretDone`).
 fn fd_secret_done(entity: ActorId, game: &mut Q2GameServices) {
-    if game.require_entity(&entity).targetname.is_empty()
-        || game.require_entity(&entity).spawnflags & 16 != 0
-    {
+    if game.require_entity(&entity).targetname.is_empty() || game.require_entity(&entity).spawnflags & 16 != 0 {
         let owned = game.owned_of(entity.clone());
         game.host.combat().set_health(&owned, 1.0);
         let owned = game.owned_of(entity.clone());
@@ -575,7 +650,13 @@ fn secret_blocked(entity: ActorId, game: &mut Q2GameServices, other: ActorId) {
 /// Secret touch (`secretTouch`).
 fn secret_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
     if !game.host.is_player(&contact.other)
-        || game.host.combat().read(&contact.other).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+        || game
+            .host
+            .combat()
+            .read(&contact.other)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            <= 0.0
         || game.require_entity(&entity).timestamp > game.host.now()
     {
         return;
@@ -612,27 +693,27 @@ fn spawn_secret(entity: ActorId, game: &mut Q2GameServices) {
     let spawnflags = game.require_entity(&entity).spawnflags;
     let forward = scale3(
         axes.forward,
-        (if angles.y == 0.0 || angles.y == 180.0 { size.x } else { size.y })
-            * (if spawnflags & 64 != 0 { 1.0 } else { -1.0 }),
+        (if angles.y == 0.0 || angles.y == 180.0 {
+            size.x
+        } else {
+            size.y
+        }) * (if spawnflags & 64 != 0 { 1.0 } else { -1.0 }),
     );
     let right = scale3(
         axes.right,
-        (if angles.y == 0.0 || angles.y == 180.0 { size.y } else { size.x })
-            * (if spawnflags & 32 != 0 { 1.0 } else { -1.0 }),
+        (if angles.y == 0.0 || angles.y == 180.0 {
+            size.y
+        } else {
+            size.x
+        }) * (if spawnflags & 32 != 0 { 1.0 } else { -1.0 }),
     );
     {
         let record = game.require_entity_mut(&entity);
         record.movedir = body.origin;
-        record.pos1 = add3(
-            body.origin,
-            if spawnflags & 4 != 0 { forward } else { right },
-        );
+        record.pos1 = add3(body.origin, if spawnflags & 4 != 0 { forward } else { right });
     }
     let pos1 = game.require_entity(&entity).pos1;
-    game.require_entity_mut(&entity).pos2 = add3(
-        pos1,
-        if spawnflags & 4 != 0 { right } else { forward },
-    );
+    game.require_entity_mut(&entity).pos2 = add3(pos1, if spawnflags & 4 != 0 { right } else { forward });
     if game.require_entity(&entity).damage == 0.0 {
         game.require_entity_mut(&entity).damage = 2.0;
     }
@@ -645,9 +726,7 @@ fn spawn_secret(entity: ActorId, game: &mut Q2GameServices) {
     game.require_entity_mut(&entity).touch = Some(secret_touch as Q2Touch);
     game.require_entity_mut(&entity).blocked = Some(secret_blocked as Q2Blocked);
     game.require_entity_mut(&entity).use_ = Some(fd_secret_use as Q2Use);
-    if game.require_entity(&entity).targetname.is_empty()
-        || game.require_entity(&entity).spawnflags & 16 != 0
-    {
+    if game.require_entity(&entity).targetname.is_empty() || game.require_entity(&entity).spawnflags & 16 != 0 {
         game.require_entity_mut(&entity).max_health = 1.0;
         game.require_entity_mut(&entity).die = Some(fd_secret_killed as Q2Die);
         let owned = game.owned_of(entity.clone());

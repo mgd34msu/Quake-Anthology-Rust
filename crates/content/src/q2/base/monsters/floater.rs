@@ -4,18 +4,16 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, sub3, vec3};
+use qa_core::math::{sub3, vec3, Bounds, Vec3};
 
 use super::common::{
-    damaged_skin, finish_corpse_default, monster_explode, monster_loop_sound, monster_muzzle,
-    monster_shot, move_handler, sound_handler,
+    damaged_skin, finish_corpse_default, monster_explode, monster_loop_sound, monster_muzzle, monster_shot,
+    move_handler, sound_handler,
 };
 use super::tables::float::{float_frame, float_moves};
 use crate::q2::foundation::host::{Q2EffectEvent, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{enemy_body, project_flash};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
@@ -205,10 +203,7 @@ pub fn floater_definition() -> Q2MonsterDefinition {
     definition.pain = Some(floater_pain);
     definition.initialize = Some(MonsterHandler::Callback(floater_initialize));
     definition.callbacks = HashMap::from([
-        (
-            "floater_run".to_string(),
-            MonsterHandler::Callback(floater_run),
-        ),
+        ("floater_run".to_string(), MonsterHandler::Callback(floater_run)),
         (
             "floater_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
@@ -217,14 +212,8 @@ pub fn floater_definition() -> Q2MonsterDefinition {
             "floater_fire_blaster".to_string(),
             MonsterHandler::Callback(floater_fire_blaster),
         ),
-        (
-            "floater_wham".to_string(),
-            MonsterHandler::Callback(floater_wham),
-        ),
-        (
-            "floater_zap".to_string(),
-            MonsterHandler::Callback(floater_zap),
-        ),
+        ("floater_wham".to_string(), MonsterHandler::Callback(floater_wham)),
+        ("floater_zap".to_string(), MonsterHandler::Callback(floater_zap)),
     ]);
     definition
 }

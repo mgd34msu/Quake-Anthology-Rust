@@ -12,18 +12,12 @@ use crate::contract::PoweredProtectionState;
 use crate::q2::base::monsters::common::{alive_enemy, monster_loop_sound, monster_shot};
 use crate::q2::base::monsters::hover::hover_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent,
-};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{health, visible};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Gib (`gib`).
 fn hover_gib(context: &mut MonsterContext) {
@@ -110,9 +104,7 @@ fn hover_gib(context: &mut MonsterContext) {
 
 /// Dead think (`deadThink`).
 fn hover_dead_think(actor: ActorId, game: &mut Q2GameServices) {
-    if game.body_of(actor.clone()).ground.is_none()
-        && game.host.now() < game.require_entity(&actor).timestamp
-    {
+    if game.body_of(actor.clone()).ground.is_none() && game.host.now() < game.require_entity(&actor).timestamp {
         game.schedule(actor, 0.1, hover_dead_think);
         return;
     }
@@ -185,7 +177,11 @@ fn rerelease_hover_die(context: &mut MonsterContext, _reaction: &DeathReaction) 
     let actor = context.actor().clone();
     context.game.require_entity_mut(&actor).effects = 0;
     let owned = context.game.owned_of(actor.clone());
-    context.game.host.combat().set_powered_protection(&owned, &PoweredProtectionState::None);
+    context
+        .game
+        .host
+        .combat()
+        .set_powered_protection(&owned, &PoweredProtectionState::None);
     if check_gib(context) {
         hover_gib(context);
         return;
@@ -262,7 +258,17 @@ fn hover_fire_blaster(context: &mut MonsterContext) {
     };
     let effects = if frame % 4 == 0 { 64 } else { 0 };
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 1.0, 1000.0, effects, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        1.0,
+        1000.0,
+        effects,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, flash, start, direction);
 }
 
@@ -328,10 +334,7 @@ pub fn create_rerelease_hover_definition() -> Q2MonsterDefinition {
     for (name, handler) in [
         ("hover_attack", MonsterHandler::Callback(hover_attack)),
         ("hover_reattack", MonsterHandler::Callback(hover_reattack)),
-        (
-            "hover_fire_blaster",
-            MonsterHandler::Callback(hover_fire_blaster),
-        ),
+        ("hover_fire_blaster", MonsterHandler::Callback(hover_fire_blaster)),
         ("hover_dead", MonsterHandler::Callback(hover_dead)),
         ("hover_dying", MonsterHandler::Callback(hover_dying)),
     ] {

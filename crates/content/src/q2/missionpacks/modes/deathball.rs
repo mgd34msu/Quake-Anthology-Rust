@@ -3,14 +3,14 @@
 //! Original Rogue dm_ball.c (GPL-2.0-or-later).
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::movedir;
 use crate::q2::foundation::host::{
-    Q2Die, Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2Pain, Q2PresentationEvent,
-    Q2PrintLevel, Q2Solid, Q2SpawnFn, Q2Think, Q2Touch, SpawnModule,
+    Q2Die, Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2Pain, Q2PresentationEvent, Q2PrintLevel, Q2Solid,
+    Q2SpawnFn, Q2Think, Q2Touch, SpawnModule,
 };
 use crate::q2::foundation::monsters::ai::monster_solid_mask;
 use crate::q2::foundation::scenery::kill_q2_box;
@@ -198,13 +198,11 @@ impl Q2DeathBall {
             game.show(entity);
         } else if classname == "dm_dball_goal" || classname == "dm_dball_speed_change" {
             let speed = classname == "dm_dball_speed_change";
-            game.require_entity_mut(&entity).touch = Some(
-                if speed {
-                    dball_speed_touch as Q2Touch
-                } else {
-                    dball_goal_touch as Q2Touch
-                },
-            );
+            game.require_entity_mut(&entity).touch = Some(if speed {
+                dball_speed_touch as Q2Touch
+            } else {
+                dball_goal_touch as Q2Touch
+            });
             game.require_entity_mut(&entity).visible = false;
             if speed {
                 if game.require_entity(&entity).speed == 0.0 {
@@ -243,7 +241,11 @@ impl Q2DeathBall {
     pub fn restore(&self, game: &mut Q2GameServices, saved: Q2DeathBallCheckpoint) {
         let _ = self;
         game.deathball.ball = saved.ball.map(|saved| {
-            game.host.actors().resolve_saved(saved).map(|owned| owned.id().clone()).unwrap_or_else(|| game.host.actors().reference_saved(saved))
+            game.host
+                .actors()
+                .resolve_saved(saved)
+                .map(|owned| owned.id().clone())
+                .unwrap_or_else(|| game.host.actors().reference_saved(saved))
         });
         game.deathball.starts = saved.starts;
         game.deathball.team1_score = saved.team1_score;
@@ -316,7 +318,8 @@ impl Q2DeathBall {
             },
         );
         if unassigned != 0 {
-            game.host.diagnostic(&format!("{unassigned} unassigned players present!"));
+            game.host
+                .diagnostic(&format!("{unassigned} unassigned players present!"));
         }
     }
 
@@ -424,7 +427,10 @@ impl Q2DeathBall {
 
 /// Deathball spawn entry.
 fn deathball_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    Q2DeathBall { hooks: deathball_hooks(game) }.spawn(entity, game)
+    Q2DeathBall {
+        hooks: deathball_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Goal touch (`goalTouch`).
@@ -433,10 +439,17 @@ fn dball_goal_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchCo
         return;
     }
     let ball_id = game.deathball.ball.clone();
-    let Some(ball) = ball_id.as_ref().and_then(|ball| game.entity(ball).map(|entity| entity.actor.id().clone())) else {
+    let Some(ball) = ball_id
+        .as_ref()
+        .and_then(|ball| game.entity(ball).map(|entity| entity.actor.id().clone()))
+    else {
         return;
     };
-    let team = if game.require_entity(&entity).spawnflags & 1 != 0 { 1 } else { 2 };
+    let team = if game.require_entity(&entity).spawnflags & 1 != 0 {
+        1
+    } else {
+        2
+    };
     if team == 1 {
         game.deathball.team1_score = (game.deathball.team1_score + game.require_entity(&entity).wait).trunc();
     } else {
@@ -446,7 +459,13 @@ fn dball_goal_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchCo
     for actor in game.host.players() {
         let skin = (deathball_hooks(game).skin)(actor.clone(), game);
         let wait = game.require_entity(&entity).wait;
-        let score = (wait + if actor == enemy.clone().unwrap_or(actor.clone()) { 5.0 } else { 0.0 }).trunc();
+        let score = (wait
+            + if actor == enemy.clone().unwrap_or(actor.clone()) {
+                5.0
+            } else {
+                0.0
+            })
+        .trunc();
         if !skin.contains('/') {
             continue;
         }
@@ -479,7 +498,11 @@ fn dball_goal_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchCo
 /// Ball touch (`ballTouch`).
 fn dball_ball_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
     if !game.host.is_player(&contact.other)
-        || !game.host.combat().read(&contact.other).is_some_and(|combat| combat.can_take_damage)
+        || !game
+            .host
+            .combat()
+            .read(&contact.other)
+            .is_some_and(|combat| combat.can_take_damage)
     {
         return;
     }
@@ -561,7 +584,9 @@ fn dball_respawn(entity: ActorId, game: &mut Q2GameServices) {
     }
     game.require_entity_mut(&entity).angular_velocity = Vec3::default();
     game.require_entity_mut(&entity).model = "models/objects/dball/tris.md2".to_string();
-    let origin = spot.map(|spot| game.body_of(spot.clone()).origin).unwrap_or_else(|| game.body_of(entity.clone()).origin);
+    let origin = spot
+        .map(|spot| game.body_of(spot.clone()).origin)
+        .unwrap_or_else(|| game.body_of(entity.clone()).origin);
     let mut moved = game.body_of(entity.clone());
     moved.origin = origin;
     moved.angles = Vec3::default();
@@ -582,13 +607,15 @@ fn dball_respawn(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Speed touch (`speedTouch`).
 fn dball_speed_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    if Some(&contact.other) != game.deathball.ball.as_ref()
-        || game.require_entity(&entity).timestamp >= game.host.now()
+    if Some(&contact.other) != game.deathball.ball.as_ref() || game.require_entity(&entity).timestamp >= game.host.now()
     {
         return;
     }
     let ball_id = game.deathball.ball.clone();
-    let Some(ball) = ball_id.as_ref().and_then(|ball| game.entity(ball).map(|entity| entity.actor.id().clone())) else {
+    let Some(ball) = ball_id
+        .as_ref()
+        .and_then(|ball| game.entity(ball).map(|entity| entity.actor.id().clone()))
+    else {
         return;
     };
     let velocity = game.body_of(ball.clone()).velocity;
@@ -596,9 +623,7 @@ fn dball_speed_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchC
         let record = game.require_entity(&entity);
         (record.spawnflags, record.movedir, record.delay, record.speed)
     };
-    if f64::from(length3(velocity)) < 1.0
-        || spawnflags & 1 != 0 && dot3(normalize3(velocity), movedir) < 0.8
-    {
+    if f64::from(length3(velocity)) < 1.0 || spawnflags & 1 != 0 && dot3(normalize3(velocity), movedir) < 0.8 {
         return;
     }
     game.require_entity_mut(&entity).timestamp = game.host.now() + delay;

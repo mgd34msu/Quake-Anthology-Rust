@@ -11,25 +11,16 @@ use crate::q2::base::monsters::boss_common::stop_loop;
 use crate::q2::base::monsters::makron::makron_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2SoundEvent,
-    Q2SoundLoop,
+    Q2Edition, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop,
 };
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, corpse, enemy_eye, health, project_flash, vector_angles,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::perception::{
-    Q2AttackChanceProfile, check_attack_with_profile, found_target,
-};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, corpse, enemy_eye, health, project_flash, vector_angles};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::monster_spawn;
+use crate::q2::foundation::monsters::muzzle::muzzle_offset;
+use crate::q2::foundation::monsters::perception::{check_attack_with_profile, found_target, Q2AttackChanceProfile};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Torso think (`torsoThink`).
 fn makron_torso_think(torso: ActorId, game: &mut Q2GameServices) {
@@ -308,7 +299,17 @@ fn makron_hyperblaster(context: &mut MonsterContext) {
     let direction = angles_vectors(vec3(pitch, sweep as f32, 0.0)).forward;
     let actor = context.actor().clone();
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 15.0, 1000.0, 8, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        15.0,
+        1000.0,
+        8,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, flash, start, direction);
 }
 
@@ -317,7 +318,9 @@ pub fn rerelease_makron_definition() -> Q2MonsterDefinition {
     let mut definition = makron_definition();
     definition.moves = boss32_moves();
     let mut source_callbacks = Q2CallbackDefinitions::default();
-    source_callbacks.think.insert("rerelease.makron.makron_torso_think", makron_torso_think);
+    source_callbacks
+        .think
+        .insert("rerelease.makron.makron_torso_think", makron_torso_think);
     definition.source_callbacks = Some(source_callbacks);
     definition.initialize = Some(MonsterHandler::Callback(rerelease_makron_initialize));
     definition.check_attack = Some(rerelease_makron_check_attack);
@@ -325,16 +328,10 @@ pub fn rerelease_makron_definition() -> Q2MonsterDefinition {
     definition.die = rerelease_makron_die;
     for (name, handler) in [
         ("makron_dead", MonsterHandler::Callback(makron_dead)),
-        (
-            "makron_spawn_torso",
-            MonsterHandler::Callback(makron_spawn_torso),
-        ),
+        ("makron_spawn_torso", MonsterHandler::Callback(makron_spawn_torso)),
         ("MakronSaveloc", MonsterHandler::Callback(makron_saveloc)),
         ("MakronRailgun", MonsterHandler::Callback(makron_railgun)),
-        (
-            "MakronHyperblaster",
-            MonsterHandler::Callback(makron_hyperblaster),
-        ),
+        ("MakronHyperblaster", MonsterHandler::Callback(makron_hyperblaster)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);
     }

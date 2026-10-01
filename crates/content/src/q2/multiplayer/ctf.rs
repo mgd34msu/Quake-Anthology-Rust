@@ -22,7 +22,7 @@ pub mod presentation;
 pub mod techs;
 pub mod types;
 
-pub use self::checkpoint::{Q2CtfCheckpoint, capture_q2_ctf, restore_q2_ctf};
+pub use self::checkpoint::{capture_q2_ctf, restore_q2_ctf, Q2CtfCheckpoint};
 pub use self::flags::Q2CtfFlags;
 pub use self::grapple::{Q2CtfGrapple, Q2CtfGrappleBinding};
 pub use self::index::Q2Ctf;
@@ -30,10 +30,10 @@ pub use self::match_::{Q2CtfAdminSettings, Q2CtfMatch, Q2CtfMatchActions};
 pub use self::presentation::Q2CtfPresentation;
 pub use self::techs::Q2CtfTechs;
 pub use self::types::{
-    CTF_FLAGS, Q2CtfElection, Q2CtfElectionKind, Q2CtfEvent, Q2CtfFlagState, Q2CtfForceJoin, Q2CtfGhost, Q2CtfHooks, Q2CtfMatchPhase,
-    Q2CtfMatchState, Q2CtfMenuAction, Q2CtfPlayerState, Q2CtfPlayingTeam, Q2CtfRules, Q2CtfScoreRow, Q2CtfTeam, Q2CtfTech,
-    create_q2_ctf_rules, ctf_carried_flag, ctf_flag, ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name, other_ctf_team,
-    save_ctf_actor,
+    create_q2_ctf_rules, ctf_carried_flag, ctf_flag, ctf_name, ctf_player, ctf_print, ctf_score, ctf_team_name,
+    other_ctf_team, save_ctf_actor, Q2CtfElection, Q2CtfElectionKind, Q2CtfEvent, Q2CtfFlagState, Q2CtfForceJoin,
+    Q2CtfGhost, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMatchState, Q2CtfMenuAction, Q2CtfPlayerState, Q2CtfPlayingTeam,
+    Q2CtfRules, Q2CtfScoreRow, Q2CtfTeam, Q2CtfTech, CTF_FLAGS,
 };
 
 /// Arena runtime state for CTF.

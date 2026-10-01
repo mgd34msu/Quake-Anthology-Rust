@@ -141,21 +141,96 @@ fn key_definition(classname: &str, name: &str, icon: &str, model: &str) -> Q2Ite
 /// Xatrix ammo and keys (`xatrixAmmo`).
 fn xatrix_ammo() -> Vec<Q2ItemDefinition> {
     vec![
-        ammo_definition("ammo_magslug", "Mag Slug", "a_mslugs", "models/objects/ammo/tris.md2", false, 10.0, 50.0, false, None),
-        ammo_definition("ammo_trap", "Trap", "a_trap", "models/weapons/g_trap/tris.md2", true, 1.0, 5.0, true, None),
-        key_definition("key_green_key", "Green Key", "k_green", "models/items/keys/green_key/tris.md2"),
+        ammo_definition(
+            "ammo_magslug",
+            "Mag Slug",
+            "a_mslugs",
+            "models/objects/ammo/tris.md2",
+            false,
+            10.0,
+            50.0,
+            false,
+            None,
+        ),
+        ammo_definition(
+            "ammo_trap",
+            "Trap",
+            "a_trap",
+            "models/weapons/g_trap/tris.md2",
+            true,
+            1.0,
+            5.0,
+            true,
+            None,
+        ),
+        key_definition(
+            "key_green_key",
+            "Green Key",
+            "k_green",
+            "models/items/keys/green_key/tris.md2",
+        ),
     ]
 }
 
 /// Rogue ammo and keys (`rogueAmmo`).
 fn rogue_ammo() -> Vec<Q2ItemDefinition> {
     vec![
-        ammo_definition("ammo_flechettes", "Flechettes", "a_flechettes", "models/ammo/am_flechette/tris.md2", false, 50.0, 200.0, false, None),
-        ammo_definition("ammo_prox", "Prox", "a_prox", "models/ammo/am_prox/tris.md2", false, 5.0, 50.0, false, None),
-        ammo_definition("ammo_tesla", "Tesla", "a_tesla", "models/ammo/am_tesl/tris.md2", false, 5.0, 50.0, true, Some(None)),
-        ammo_definition("ammo_disruptor", "Rounds", "a_disruptor", "models/ammo/am_disr/tris.md2", false, 15.0, 100.0, false, None),
-        key_definition("key_nuke_container", "Antimatter Pod", "i_contain", "models/weapons/g_nuke/tris.md2"),
-        key_definition("key_nuke", "Antimatter Bomb", "i_nuke", "models/weapons/g_nuke/tris.md2"),
+        ammo_definition(
+            "ammo_flechettes",
+            "Flechettes",
+            "a_flechettes",
+            "models/ammo/am_flechette/tris.md2",
+            false,
+            50.0,
+            200.0,
+            false,
+            None,
+        ),
+        ammo_definition(
+            "ammo_prox",
+            "Prox",
+            "a_prox",
+            "models/ammo/am_prox/tris.md2",
+            false,
+            5.0,
+            50.0,
+            false,
+            None,
+        ),
+        ammo_definition(
+            "ammo_tesla",
+            "Tesla",
+            "a_tesla",
+            "models/ammo/am_tesl/tris.md2",
+            false,
+            5.0,
+            50.0,
+            true,
+            Some(None),
+        ),
+        ammo_definition(
+            "ammo_disruptor",
+            "Rounds",
+            "a_disruptor",
+            "models/ammo/am_disr/tris.md2",
+            false,
+            15.0,
+            100.0,
+            false,
+            None,
+        ),
+        key_definition(
+            "key_nuke_container",
+            "Antimatter Pod",
+            "i_contain",
+            "models/weapons/g_nuke/tris.md2",
+        ),
+        key_definition(
+            "key_nuke",
+            "Antimatter Bomb",
+            "i_nuke",
+            "models/weapons/g_nuke/tris.md2",
+        ),
     ]
 }
 
@@ -204,7 +279,10 @@ pub fn q2_mission_weapon_icons() -> Vec<(ItemId, String)> {
             entries.push((format!("q2:{}", item.classname), item.icon));
         }
     }
-    for weapon in xatrix_weapon_definitions().into_iter().chain(rogue_weapon_definitions()) {
+    for weapon in xatrix_weapon_definitions()
+        .into_iter()
+        .chain(rogue_weapon_definitions())
+    {
         if let Some(display) = NAMES.iter().find(|entry| entry.0 == weapon.name) {
             entries.push((weapon.item, display.2.to_string()));
         }
@@ -260,12 +338,7 @@ impl Q2MissionPackItems {
     }
 
     /// Register the pack items (`register`).
-    pub fn register(
-        &self,
-        game: &mut Q2GameServices,
-        pack: Q2MissionPack,
-        edition: Q2Edition,
-    ) -> SpawnModule {
+    pub fn register(&self, game: &mut Q2GameServices, pack: Q2MissionPack, edition: Q2Edition) -> SpawnModule {
         game.mission_packs.item_hooks = self.hooks;
         game.mission_packs.items_pack = Some(pack);
         game.mission_packs.shared_items = Some(self.shared_items);
@@ -275,7 +348,10 @@ impl Q2MissionPackItems {
         };
         for mut item in ammo {
             if item.classname == "ammo_trap" && edition == Q2Edition::Rerelease {
-                if let Q2ItemKindData::Ammo { infinite_ammo_quantity, .. } = &mut item.kind {
+                if let Q2ItemKindData::Ammo {
+                    infinite_ammo_quantity, ..
+                } = &mut item.kind
+                {
                     *infinite_ammo_quantity = Some(None);
                 }
             }
@@ -308,10 +384,18 @@ impl Q2MissionPackItems {
             );
         }
         if pack == Q2MissionPack::Xatrix {
-            self.shared_items.register_item(game, power_definition(
-                "item_quadfire", "DualFire Damage", "p_quadfire", "models/items/quadfire/tris.md2",
-                PowerField::QuadFire, quadfire_pickup, quadfire_use,
-            ));
+            self.shared_items.register_item(
+                game,
+                power_definition(
+                    "item_quadfire",
+                    "DualFire Damage",
+                    "p_quadfire",
+                    "models/items/quadfire/tris.md2",
+                    PowerField::QuadFire,
+                    quadfire_pickup,
+                    quadfire_use,
+                ),
+            );
             self.shared_items.register_item(
                 game,
                 Q2ItemDefinition {
@@ -378,14 +462,30 @@ impl Q2MissionPackItems {
                     },
                 },
             );
-            self.shared_items.register_item(game, power_definition(
-                "item_double", "Double Damage", "p_double", "models/items/ddamage/tris.md2",
-                PowerField::Double, double_pickup, double_use,
-            ));
-            self.shared_items.register_item(game, power_definition(
-                "item_ir_goggles", "IR Goggles", "p_ir", "models/items/goggles/tris.md2",
-                PowerField::Ir, ir_pickup, ir_use,
-            ));
+            self.shared_items.register_item(
+                game,
+                power_definition(
+                    "item_double",
+                    "Double Damage",
+                    "p_double",
+                    "models/items/ddamage/tris.md2",
+                    PowerField::Double,
+                    double_pickup,
+                    double_use,
+                ),
+            );
+            self.shared_items.register_item(
+                game,
+                power_definition(
+                    "item_ir_goggles",
+                    "IR Goggles",
+                    "p_ir",
+                    "models/items/goggles/tris.md2",
+                    PowerField::Ir,
+                    ir_pickup,
+                    ir_use,
+                ),
+            );
             self.shared_items.register_item(
                 game,
                 Q2ItemDefinition {
@@ -407,9 +507,12 @@ impl Q2MissionPackItems {
                     },
                 },
             );
-            self.shared_items.register_item(game, sphere_definition(Q2SphereKind::Defender));
-            self.shared_items.register_item(game, sphere_definition(Q2SphereKind::Hunter));
-            self.shared_items.register_item(game, sphere_definition(Q2SphereKind::Vengeance));
+            self.shared_items
+                .register_item(game, sphere_definition(Q2SphereKind::Defender));
+            self.shared_items
+                .register_item(game, sphere_definition(Q2SphereKind::Hunter));
+            self.shared_items
+                .register_item(game, sphere_definition(Q2SphereKind::Vengeance));
         }
         SpawnModule {
             spawn: mission_item_spawn as Q2SpawnFn,
@@ -429,12 +532,7 @@ impl Q2MissionPackItems {
     }
 
     /// Fold powerup timers into weapon input (`input`).
-    pub fn input(
-        &self,
-        actor: &ActorId,
-        game: &Q2GameServices,
-        mut input: Q2WeaponInput,
-    ) -> Q2WeaponInput {
+    pub fn input(&self, actor: &ActorId, game: &Q2GameServices, mut input: Q2WeaponInput) -> Q2WeaponInput {
         let powers = self.powerups(actor, game);
         input.quad_fire_until = input.quad_fire_until.max(powers.quad_fire_until);
         input.double_until = input.double_until.max(powers.double_until);
@@ -448,29 +546,44 @@ impl Q2MissionPackItems {
     }
 
     /// Grant pack ammo (`ammoPack`).
-    pub fn ammo_pack(
-        &self,
-        player: &OwnedActor,
-        game: &mut Q2GameServices,
-        full: bool,
-        pack: Q2MissionPack,
-    ) {
+    pub fn ammo_pack(&self, player: &OwnedActor, game: &mut Q2GameServices, full: bool, pack: Q2MissionPack) {
         let _ = self;
         let changes: &[(&str, f64, f64)] = match pack {
-            Q2MissionPack::Xatrix => &[("q2:ammo_magslug", if full { 100.0 } else { 75.0 }, if full { 10.0 } else { 0.0 })],
+            Q2MissionPack::Xatrix => &[(
+                "q2:ammo_magslug",
+                if full { 100.0 } else { 75.0 },
+                if full { 10.0 } else { 0.0 },
+            )],
             Q2MissionPack::Rogue => &[
-                ("q2:ammo_flechettes", if full { 200.0 } else { 250.0 }, if full { 50.0 } else { 0.0 }),
-                ("q2:ammo_disruptor", if full { 200.0 } else { 150.0 }, if full { 15.0 } else { 0.0 }),
+                (
+                    "q2:ammo_flechettes",
+                    if full { 200.0 } else { 250.0 },
+                    if full { 50.0 } else { 0.0 },
+                ),
+                (
+                    "q2:ammo_disruptor",
+                    if full { 200.0 } else { 150.0 },
+                    if full { 15.0 } else { 0.0 },
+                ),
             ],
         };
         for (item, capacity, give) in changes {
-            let current = game.host.inventory().entries(player.id()).into_iter().find(|entry| entry.item == *item);
+            let current = game
+                .host
+                .inventory()
+                .entries(player.id())
+                .into_iter()
+                .find(|entry| entry.item == *item);
             game.host.inventory().configure(
                 player,
                 &InventoryEntry {
                     item: item.to_string(),
                     count: current.as_ref().map(|entry| entry.count).unwrap_or(0.0),
-                    capacity: current.as_ref().map(|entry| entry.capacity).unwrap_or(0.0).max(*capacity),
+                    capacity: current
+                        .as_ref()
+                        .map(|entry| entry.capacity)
+                        .unwrap_or(0.0)
+                        .max(*capacity),
                     count_policy: None,
                 },
             );
@@ -505,8 +618,14 @@ impl Q2MissionPackItems {
 
 /// Spawn entry for the module table.
 fn mission_item_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
-    let pack = game.mission_packs.items_pack.expect("Q2 mission-pack items are not registered");
-    let shared = game.mission_packs.shared_items.expect("Q2 mission-pack items are not registered");
+    let pack = game
+        .mission_packs
+        .items_pack
+        .expect("Q2 mission-pack items are not registered");
+    let shared = game
+        .mission_packs
+        .shared_items
+        .expect("Q2 mission-pack items are not registered");
     mission_item_spawn_inner(pack, &shared, entity, game)
 }
 
@@ -676,8 +795,7 @@ fn power_pickup(
     if game.host.inventory().give(player, &item.to_string(), 1.0) == 0.0 {
         return false;
     }
-    let dropped_quad_fire =
-        field == PowerField::QuadFire && game.require_entity(entity).spawnflags & 0x20000 != 0;
+    let dropped_quad_fire = field == PowerField::QuadFire && game.require_entity(entity).spawnflags & 0x20000 != 0;
     if game.options.deathmatch_flags & 16 != 0 || dropped_quad_fire {
         let timeout = if dropped_quad_fire {
             game.require_entity(entity)
@@ -704,7 +822,14 @@ fn quadfire_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActo
 
 /// Use quad fire.
 fn quadfire_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    power_use(&player, game, "q2:item_quadfire", PowerField::QuadFire, "items/quadfire1.wav", 30.0)
+    power_use(
+        &player,
+        game,
+        "q2:item_quadfire",
+        PowerField::QuadFire,
+        "items/quadfire1.wav",
+        30.0,
+    )
 }
 
 /// Pick up double damage.
@@ -714,7 +839,14 @@ fn double_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor)
 
 /// Use double damage.
 fn double_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    power_use(&player, game, "q2:item_double", PowerField::Double, "misc/ddamage1.wav", 30.0)
+    power_use(
+        &player,
+        game,
+        "q2:item_double",
+        PowerField::Double,
+        "misc/ddamage1.wav",
+        30.0,
+    )
 }
 
 /// Pick up IR goggles.
@@ -724,7 +856,14 @@ fn ir_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> 
 
 /// Use IR goggles.
 fn ir_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    power_use(&player, game, "q2:item_ir_goggles", PowerField::Ir, "misc/ir_start.wav", 60.0)
+    power_use(
+        &player,
+        game,
+        "q2:item_ir_goggles",
+        PowerField::Ir,
+        "misc/ir_start.wav",
+        60.0,
+    )
 }
 
 /// Pick up a food cube.
@@ -773,13 +912,16 @@ fn compass_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
 /// Pick up the doppleganger.
 fn doppleganger_pickup(_entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> bool {
     game.options.mode == Q2Mode::Deathmatch
-        && game.host.inventory().give(&player, &"q2:item_doppleganger".to_string(), 1.0) > 0.0
+        && game
+            .host
+            .inventory()
+            .give(&player, &"q2:item_doppleganger".to_string(), 1.0)
+            > 0.0
 }
 
 /// Use the doppleganger.
 fn doppleganger_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    game.entity(player.id()).is_some()
-        && mission_doppleganger(game).use_doppleganger(player.id(), game)
+    game.entity(player.id()).is_some() && mission_doppleganger(game).use_doppleganger(player.id(), game)
 }
 
 /// Pick up the antimatter bomb.
@@ -812,7 +954,14 @@ fn nuke_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
     let multiplier = (if quad { 4.0 } else { 1.0 }) * (if double { 2.0 } else { 1.0 });
     let body = game.body_of(owner.clone());
     let angles = input.map(|input| input.angles).unwrap_or(body.angles);
-    mission_projectiles(game).fire_nuke(owner, game, body.origin, angle_vectors(angles).forward, 100.0, multiplier);
+    mission_projectiles(game).fire_nuke(
+        owner,
+        game,
+        body.origin,
+        angle_vectors(angles).forward,
+        100.0,
+        multiplier,
+    );
     true
 }
 
@@ -847,11 +996,14 @@ fn sphere_definition(kind: Q2SphereKind) -> Q2ItemDefinition {
     Q2ItemDefinition {
         classname: classname.to_string(),
         model: model.to_string(),
-        icon: format!("p_{}", match kind {
-            Q2SphereKind::Defender => "defender",
-            Q2SphereKind::Hunter => "hunter",
-            Q2SphereKind::Vengeance => "vengeance",
-        }),
+        icon: format!(
+            "p_{}",
+            match kind {
+                Q2SphereKind::Defender => "defender",
+                Q2SphereKind::Hunter => "hunter",
+                Q2SphereKind::Vengeance => "vengeance",
+            }
+        ),
         name: name.to_string(),
         sound: "items/pkup.wav".to_string(),
         rotate: true,
@@ -884,12 +1036,7 @@ fn sphere_use(player: &OwnedActor, game: &mut Q2GameServices, id: &str, kind: Q2
 }
 
 /// Pick up a sphere (`pickup`).
-fn sphere_pickup(
-    game: &mut Q2GameServices,
-    player: &OwnedActor,
-    id: &str,
-    kind: Q2SphereKind,
-) -> bool {
+fn sphere_pickup(game: &mut Q2GameServices, player: &OwnedActor, id: &str, kind: Q2SphereKind) -> bool {
     let count = game.host.inventory().count(player.id(), &id.to_string());
     if mission_spheres(game).owned_sphere(player.id(), game).is_some()
         || game.options.skill == 1 && count >= 2.0

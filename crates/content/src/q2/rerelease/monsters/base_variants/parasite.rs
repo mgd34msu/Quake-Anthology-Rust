@@ -4,23 +4,17 @@
 
 use qa_core::math::{add3, scale3, vec3};
 
-use super::proboscis::{proboscis_callbacks, proboscis_draw, proboscis_fire, proboscis_reset, proboscis_retract};
 use super::super::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform, check_gib,
-    monster_jump_finished, reacts_to_pain, rerelease_random,
+    blocked_check_jump, blocked_check_platform, check_gib, monster_jump_finished, reacts_to_pain, rerelease_random,
+    JumpNavigation, JumpResult,
 };
 use super::super::tables::parasite::{parasite_frame, parasite_moves};
+use super::proboscis::{proboscis_callbacks, proboscis_draw, proboscis_fire, proboscis_reset, proboscis_retract};
 use crate::q2::base::monsters::parasite::parasite_definition;
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, clear_shot, corpse, health, run_ai,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAi, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, clear_shot, corpse, health, run_ai};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAi, MonsterContext, MonsterHandler, Q2MonsterDefinition};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Start run (`startRun`).
 fn parasite_start_run(context: &mut MonsterContext) {
@@ -111,9 +105,15 @@ fn parasite_charge_proboscis(context: &mut MonsterContext, distance: f64) {
     let actor = context.actor().clone();
     let frame = context.game.require_entity(&actor).frame;
     let trailed = frame >= parasite_frame::BREAK01 && frame <= parasite_frame::BREAK32;
-    run_ai(context, if trailed { &MonsterAi::Move } else { &MonsterAi::Charge }, distance);
+    run_ai(
+        context,
+        if trailed { &MonsterAi::Move } else { &MonsterAi::Charge },
+        distance,
+    );
     let tip = context.game.require_entity(&actor).proboscus.clone();
-    let segment = tip.as_ref().and_then(|tip| context.game.require_entity(tip).proboscus.clone());
+    let segment = tip
+        .as_ref()
+        .and_then(|tip| context.game.require_entity(tip).proboscus.clone());
     if let Some(segment) = segment {
         if context.game.entity(&segment).is_some() {
             proboscis_draw(segment, &mut *context.game);
@@ -335,7 +335,9 @@ fn parasite_break_sound(context: &mut MonsterContext) {
 fn parasite_break_wait(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let tip = context.game.require_entity(&actor).proboscus.clone();
-    let waiting = tip.as_ref().is_some_and(|tip| context.game.require_entity(tip).style != 3);
+    let waiting = tip
+        .as_ref()
+        .is_some_and(|tip| context.game.require_entity(tip).style != 3);
     if waiting {
         context.state_mut().next_frame = parasite_frame::BREAK19;
     } else if rerelease_random(context).integer_max(2) != 0 {
@@ -348,8 +350,7 @@ fn parasite_break_wait(context: &mut MonsterContext) {
 fn parasite_jump_wait_land(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let frame = context.game.require_entity(&actor).frame;
-    let landed =
-        context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
+    let landed = context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
     context.state_mut().next_frame = if landed { frame + 1 } else { frame };
 }
 
@@ -381,25 +382,18 @@ pub fn create_rerelease_parasite_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(rerelease_parasite_initialize));
     definition.idle = Some(MonsterHandler::Callback(rerelease_parasite_idle));
     definition.attack = MonsterHandler::Callback(rerelease_parasite_attack);
-    definition.ai.insert(
-        "parasite_charge_proboscis".to_string(),
-        parasite_charge_proboscis,
-    );
+    definition
+        .ai
+        .insert("parasite_charge_proboscis".to_string(), parasite_charge_proboscis);
     definition.pain = Some(rerelease_parasite_pain);
     definition.die = rerelease_parasite_die;
     definition.blocked = Some(rerelease_parasite_blocked);
     for (name, handler) in [
         ("parasite_run", MonsterHandler::Callback(rerelease_parasite_run)),
-        (
-            "parasite_start_run",
-            MonsterHandler::Callback(parasite_start_run),
-        ),
+        ("parasite_start_run", MonsterHandler::Callback(parasite_start_run)),
         ("parasite_tap", MonsterHandler::Callback(parasite_tap)),
         ("parasite_scratch", MonsterHandler::Callback(parasite_scratch)),
-        (
-            "parasite_fire_proboscis",
-            MonsterHandler::Callback(proboscis_fire),
-        ),
+        ("parasite_fire_proboscis", MonsterHandler::Callback(proboscis_fire)),
         (
             "parasite_proboscis_wait",
             MonsterHandler::Callback(parasite_proboscis_wait),
@@ -408,22 +402,13 @@ pub fn create_rerelease_parasite_definition() -> Q2MonsterDefinition {
             "parasite_proboscis_pull_wait",
             MonsterHandler::Callback(parasite_proboscis_pull_wait),
         ),
-        (
-            "parasite_break_noise",
-            MonsterHandler::Callback(parasite_break_noise),
-        ),
+        ("parasite_break_noise", MonsterHandler::Callback(parasite_break_noise)),
         (
             "parasite_break_retract",
             MonsterHandler::Callback(parasite_break_retract),
         ),
-        (
-            "parasite_break_sound",
-            MonsterHandler::Callback(parasite_break_sound),
-        ),
-        (
-            "parasite_break_wait",
-            MonsterHandler::Callback(parasite_break_wait),
-        ),
+        ("parasite_break_sound", MonsterHandler::Callback(parasite_break_sound)),
+        ("parasite_break_wait", MonsterHandler::Callback(parasite_break_wait)),
         ("parasite_jump_down", MonsterHandler::Callback(parasite_jump_down)),
         ("parasite_jump_up", MonsterHandler::Callback(parasite_jump_up)),
         (

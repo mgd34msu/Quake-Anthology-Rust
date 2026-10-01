@@ -2,28 +2,22 @@
 //!
 //! ZeniMax Media, GPL-2.0-or-later.
 
-use super::makron::toss_rerelease_makron;
 use super::super::boss::{boss_explode, boss_explode_think};
 use super::super::common::{chainfist, monster_flash, predicted_direction, reacts_to_pain};
-use super::super::tables::boss31::boss31_moves;
 use super::super::tables::boss31::boss31_frame;
+use super::super::tables::boss31::boss31_moves;
+use super::makron::toss_rerelease_makron;
 use crate::q2::base::monsters::boss_common::stop_loop;
 use crate::q2::base::monsters::common::{monster_loop_sound, monster_shot};
 use crate::q2::base::monsters::jorg::create_jorg_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Edition, Q2EffectEvent, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{health, project_flash, visible};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::perception::{
-    Q2AttackChanceProfile, check_attack_with_profile,
-};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::foundation::monsters::perception::{check_attack_with_profile, Q2AttackChanceProfile};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 use qa_core::math::vec3;
 
 /// End sound (`endSound`).
@@ -144,22 +138,13 @@ fn rerelease_jorg_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         if damage <= 40.0 && context.game.random() <= 0.6 {
             return;
         }
-        if frame >= boss31_frame::ATTAK101
-            && frame <= boss31_frame::ATTAK108
-            && context.game.random() <= 0.005
-        {
+        if frame >= boss31_frame::ATTAK101 && frame <= boss31_frame::ATTAK108 && context.game.random() <= 0.005 {
             return;
         }
-        if frame >= boss31_frame::ATTAK109
-            && frame <= boss31_frame::ATTAK114
-            && context.game.random() <= 0.00005
-        {
+        if frame >= boss31_frame::ATTAK109 && frame <= boss31_frame::ATTAK114 && context.game.random() <= 0.00005 {
             return;
         }
-        if frame >= boss31_frame::ATTAK201
-            && frame <= boss31_frame::ATTAK208
-            && context.game.random() <= 0.005
-        {
+        if frame >= boss31_frame::ATTAK201 && frame <= boss31_frame::ATTAK208 && context.game.random() <= 0.005 {
             return;
         }
     }
@@ -263,8 +248,7 @@ fn jorg_dead(context: &mut MonsterContext) {
         );
     }
     for part in [
-        "chest", "foot", "foot", "tube", "tube", "tube", "tube", "spike", "spike", "spike",
-        "spike", "spike", "spike",
+        "chest", "foot", "foot", "tube", "tube", "tube", "tube", "spike", "spike", "spike", "spike", "spike", "spike",
     ] {
         throw_gib(
             actor.clone(),
@@ -328,14 +312,8 @@ pub fn create_rerelease_jorg_definition() -> Q2MonsterDefinition {
         ("jorg_reattack1", MonsterHandler::Callback(jorg_reattack1)),
         ("jorg_attack1_end_sound", MonsterHandler::Callback(jorg_end_sound)),
         ("jorgBFG", MonsterHandler::Callback(jorg_bfg)),
-        (
-            "jorg_firebullet_left",
-            MonsterHandler::Callback(jorg_firebullet_left),
-        ),
-        (
-            "jorg_firebullet_right",
-            MonsterHandler::Callback(jorg_firebullet_right),
-        ),
+        ("jorg_firebullet_left", MonsterHandler::Callback(jorg_firebullet_left)),
+        ("jorg_firebullet_right", MonsterHandler::Callback(jorg_firebullet_right)),
         ("jorg_firebullet", MonsterHandler::Callback(jorg_firebullet)),
         ("MakronToss", MonsterHandler::Callback(jorg_toss)),
         ("jorg_dead", MonsterHandler::Callback(jorg_dead)),

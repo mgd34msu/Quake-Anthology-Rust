@@ -5,19 +5,17 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 
 use super::common::{
-    alive_enemy, begin_death, damaged_skin, monster_loop_sound, monster_muzzle, monster_shot,
-    move_handler, sound_handler, standard_gib,
+    alive_enemy, begin_death, damaged_skin, monster_loop_sound, monster_muzzle, monster_shot, move_handler,
+    sound_handler, standard_gib,
 };
 use super::tables::hover::{hover_frame, hover_moves};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::visible;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
@@ -85,15 +83,7 @@ fn hover_pain(context: &mut MonsterContext, reaction: &PainReaction) {
 
 /// Die (`die`).
 fn hover_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        2,
-        "models/objects/gibs/sm_meat/tris.md2",
-        1.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 2, "models/objects/gibs/sm_meat/tris.md2", 1.0) || context.state().dead {
         return;
     }
     let path = if context.game.random() < 0.5 {
@@ -228,22 +218,13 @@ pub fn hover_definition() -> Q2MonsterDefinition {
     definition.source_callbacks = Some(hover_source_callbacks());
     definition.callbacks = HashMap::from([
         ("hover_run".to_string(), MonsterHandler::Callback(hover_run)),
-        (
-            "hover_attack".to_string(),
-            move_handler("hover_move_attack1"),
-        ),
-        (
-            "hover_reattack".to_string(),
-            MonsterHandler::Callback(hover_reattack),
-        ),
+        ("hover_attack".to_string(), move_handler("hover_move_attack1")),
+        ("hover_reattack".to_string(), MonsterHandler::Callback(hover_reattack)),
         (
             "hover_fire_blaster".to_string(),
             MonsterHandler::Callback(hover_fire_blaster),
         ),
-        (
-            "hover_dead".to_string(),
-            MonsterHandler::Callback(hover_dead),
-        ),
+        ("hover_dead".to_string(), MonsterHandler::Callback(hover_dead)),
     ]);
     definition
 }

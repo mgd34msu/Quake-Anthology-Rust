@@ -78,19 +78,17 @@ pub fn q2_obituary(
             Q2PlayerGender::Neutral => "itself",
             Q2PlayerGender::Male => "himself",
         };
-        message = Some(
-            if means == 24 {
-                "tried to put the pin back in".to_string()
-            } else if means == 7 || means == 16 {
-                format!("tripped on {possessive} own grenade")
-            } else if means == 9 {
-                format!("blew {reflexive} up")
-            } else if means == 13 {
-                "should have used a smaller gun".to_string()
-            } else {
-                format!("killed {reflexive}")
-            },
-        );
+        message = Some(if means == 24 {
+            "tried to put the pin back in".to_string()
+        } else if means == 7 || means == 16 {
+            format!("tripped on {possessive} own grenade")
+        } else if means == 9 {
+            format!("blew {reflexive} up")
+        } else if means == 13 {
+            "should have used a smaller gun".to_string()
+        } else {
+            format!("killed {reflexive}")
+        });
     }
     if (deathmatch || coop) && message.is_some() {
         if deathmatch {
@@ -104,10 +102,7 @@ pub fn q2_obituary(
         .map(|(_, verb, possessive)| (verb, possessive));
     if (deathmatch || coop) && attacker.is_some() && kill.is_some() {
         if deathmatch {
-            score(
-                Q2ObituaryRecipient::Attacker,
-                if friendly { -1 } else { 1 },
-            );
+            score(Q2ObituaryRecipient::Attacker, if friendly { -1 } else { 1 });
         }
         let (verb, possessive) = kill.unwrap_or((&"", &""));
         return format!(

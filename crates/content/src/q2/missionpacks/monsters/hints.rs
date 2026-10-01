@@ -6,13 +6,13 @@
 use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, length3, sub3, vec3};
+use qa_core::math::{length3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::checkpoint::save_q2_actor;
 use crate::q2::foundation::host::{
     Q2Edition, Q2Entity, Q2GameServices, Q2Mode, Q2Solid, Q2SpawnFn, Q2TraceRequest, SpawnModule,
 };
-use crate::q2::foundation::monsters::ai::{MASK_OPAQUE, health, vector_angles, visible};
+use crate::q2::foundation::monsters::ai::{health, vector_angles, visible, MASK_OPAQUE};
 use crate::q2::foundation::monsters::perception::{found_target, hunt_target};
 use crate::q2::foundation::monsters::types::{MonsterContext, Q2MonsterHintHooks};
 use crate::q2::support::contracts::TouchContact;
@@ -144,17 +144,15 @@ pub fn spawn_hint_path(actor: ActorId, game: &mut Q2GameServices) -> bool {
     };
     if target.is_empty() && targetname.is_empty() {
         let origin = game.body_of(actor.clone()).origin;
-        game.host.diagnostic(&format!(
-            "unlinked hint_path at {} {} {}",
-            origin.x, origin.y, origin.z
-        ));
+        game.host
+            .diagnostic(&format!("unlinked hint_path at {} {} {}", origin.x, origin.y, origin.z));
         game.remove_actor(actor);
         return true;
     }
-    game.mission_monsters.hints.nodes.insert(
-        actor.clone(),
-        HintNodeState { chain: -1, next: None },
-    );
+    game.mission_monsters
+        .hints
+        .nodes
+        .insert(actor.clone(), HintNodeState { chain: -1, next: None });
     let entity = game.require_entity_mut(&actor);
     entity.touch = Some(hint_path_touch);
     entity.server_flags |= 1;
@@ -204,10 +202,10 @@ pub fn finalize_hint_paths(game: &mut Q2GameServices) -> HintPathInitialization 
     game.mission_monsters.hints.present = !hints.is_empty();
     let mut issues = Vec::new();
     for hint in &hints {
-        game.mission_monsters.hints.nodes.insert(
-            hint.clone(),
-            HintNodeState { chain: -1, next: None },
-        );
+        game.mission_monsters
+            .hints
+            .nodes
+            .insert(hint.clone(), HintNodeState { chain: -1, next: None });
         let entity = game.require_entity(hint).clone();
         if entity.spawnflags & HINT_ENDPOINT == 0 || entity.target.is_empty() {
             continue;
@@ -307,10 +305,7 @@ pub fn finalize_hint_paths(game: &mut Q2GameServices) -> HintPathInitialization 
 }
 
 /// Pursuer state (`source`).
-fn pursuer<'a>(
-    game: &'a mut Q2GameServices,
-    actor: &ActorId,
-) -> &'a mut HintPursuerState {
+fn pursuer<'a>(game: &'a mut Q2GameServices, actor: &ActorId) -> &'a mut HintPursuerState {
     game.mission_monsters
         .hints
         .pursuers
@@ -392,11 +387,7 @@ fn visible_from(game: &mut Q2GameServices, actor: &ActorId, target: &ActorId) ->
     let body = game.host.bodies().read(actor);
     let Some(body) = body else { return false };
     let destination = game.body_of(target.clone()).origin;
-    let view_height = game
-        .entities
-        .get(actor)
-        .map(|entity| entity.view_height)
-        .unwrap_or(22);
+    let view_height = game.entities.get(actor).map(|entity| entity.view_height).unwrap_or(22);
     let target_height = game.require_entity(target).view_height;
     game.host
         .trace(&Q2TraceRequest {
@@ -428,8 +419,7 @@ pub fn check_hints(context: &mut MonsterContext) -> bool {
         || enemy.is_none()
         || context.state().stand_ground
         || classname == "monster_turret"
-        || context.game.options.edition == Q2Edition::Rerelease
-            && context.state().pathing.is_some()
+        || context.game.options.edition == Q2Edition::Rerelease && context.state().pathing.is_some()
     {
         return false;
     }
@@ -540,9 +530,7 @@ pub fn check_hints(context: &mut MonsterContext) -> bool {
 pub fn check_lost(context: &mut MonsterContext) -> bool {
     let now = context.game.host.now();
     let actor = context.actor().clone();
-    if context.state().trail_time + 5.0 > now
-        || pursuer(&mut *context.game, &actor).last_time + 10.0 > now
-    {
+    if context.state().trail_time + 5.0 > now || pursuer(&mut *context.game, &actor).last_time + 10.0 > now {
         return false;
     }
     pursuer(&mut *context.game, &actor).last_time = now;
@@ -582,7 +570,9 @@ pub fn stop_hints(context: &mut MonsterContext) {
     state.goal = None;
     context.state_mut().hint_path = false;
     let enemy = context.entity().enemy.clone();
-    if enemy.as_ref().is_some_and(|enemy| context.game.host.actors().is_live(enemy))
+    if enemy
+        .as_ref()
+        .is_some_and(|enemy| context.game.host.actors().is_live(enemy))
         && health(&mut *context.game, enemy.as_ref()) >= 1.0
     {
         if visible(context, None) {
@@ -594,12 +584,11 @@ pub fn stop_hints(context: &mut MonsterContext) {
     }
     context.entity_mut().enemy = None;
     let now = context.game.host.now();
-    context.state_mut().pause_time =
-        if context.game.options.edition == Q2Edition::Classic {
-            now + 100000000.0
-        } else {
-            HOLD_FOREVER
-        };
+    context.state_mut().pause_time = if context.game.options.edition == Q2Edition::Classic {
+        now + 100000000.0
+    } else {
+        HOLD_FOREVER
+    };
     context.stand();
 }
 
@@ -614,23 +603,22 @@ pub fn run_hints(context: &mut MonsterContext, distance: f64) -> bool {
         return true;
     }
     let enemy = context.entity().enemy.clone();
-    if enemy.as_ref().is_none_or(|enemy| !context.game.host.actors().is_live(enemy)) {
+    if enemy
+        .as_ref()
+        .is_none_or(|enemy| !context.game.host.actors().is_live(enemy))
+    {
         context.entity_mut().enemy = None;
         stop_hints(context);
         return true;
     }
     let enemy = enemy.expect("hint enemy");
-    let real_enemy = context
-        .game
-        .entities
-        .get(&enemy)
-        .and_then(|target| {
-            if target.classname == "player_noise" {
-                target.owner.clone()
-            } else {
-                Some(enemy.clone())
-            }
-        });
+    let real_enemy = context.game.entities.get(&enemy).and_then(|target| {
+        if target.classname == "player_noise" {
+            target.owner.clone()
+        } else {
+            Some(enemy.clone())
+        }
+    });
     let Some(real_enemy) = real_enemy else {
         context.entity_mut().enemy = None;
         stop_hints(context);
@@ -655,13 +643,7 @@ pub fn touch_hints(hint: &ActorId, context: &mut MonsterContext) {
         stop_hints(context);
         return;
     }
-    let node = context
-        .game
-        .mission_monsters
-        .hints
-        .nodes
-        .get(hint)
-        .cloned();
+    let node = context.game.mission_monsters.hints.nodes.get(hint).cloned();
     let start = node.and_then(|node| {
         context
             .game

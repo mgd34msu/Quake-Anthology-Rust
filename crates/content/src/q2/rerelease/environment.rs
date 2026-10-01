@@ -10,10 +10,7 @@ use crate::q2::foundation::host::Q2Mode;
 use super::types::{Q2RereleaseOptions, Q2RereleasePlayerState};
 
 /// Run rerelease world effects (`q2RereleaseWorldEffects`).
-pub fn q2_rerelease_world_effects(
-    context: &mut impl Q2CharacterContext,
-    extra: &mut Q2RereleasePlayerState,
-) {
+pub fn q2_rerelease_world_effects(context: &mut impl Q2CharacterContext, extra: &mut Q2RereleasePlayerState) {
     let now = context.now();
     let snapshot = context.state_snapshot();
     if snapshot.noclip || snapshot.spectator {

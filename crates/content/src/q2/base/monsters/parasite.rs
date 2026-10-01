@@ -4,18 +4,12 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, length3, sub3, vec3};
+use qa_core::math::{length3, sub3, vec3, Bounds, Vec3};
 
-use super::common::{
-    begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler,
-};
+use super::common::{begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler};
 use super::tables::parasite::{parasite_frame, parasite_moves};
-use crate::q2::foundation::host::{
-    Q2MonsterBeam, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
-};
-use crate::q2::foundation::monsters::ai::{
-    MASK_SHOT, enemy_body, project_flash, vector_angles,
-};
+use crate::q2::foundation::host::{Q2MonsterBeam, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest};
+use crate::q2::foundation::monsters::ai::{enemy_body, project_flash, vector_angles, MASK_SHOT};
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit};
 
@@ -195,18 +189,9 @@ pub fn parasite_definition() -> Q2MonsterDefinition {
     definition.idle = Some(move_handler("parasite_move_start_fidget"));
     definition.pain = Some(parasite_pain);
     definition.callbacks = HashMap::from([
-        (
-            "parasite_stand".to_string(),
-            move_handler("parasite_move_stand"),
-        ),
-        (
-            "parasite_walk".to_string(),
-            move_handler("parasite_move_walk"),
-        ),
-        (
-            "parasite_run".to_string(),
-            MonsterHandler::Callback(parasite_run),
-        ),
+        ("parasite_stand".to_string(), move_handler("parasite_move_stand")),
+        ("parasite_walk".to_string(), move_handler("parasite_move_walk")),
+        ("parasite_run".to_string(), MonsterHandler::Callback(parasite_run)),
         (
             "parasite_start_run".to_string(),
             MonsterHandler::Callback(parasite_start_run),
@@ -235,10 +220,7 @@ pub fn parasite_definition() -> Q2MonsterDefinition {
             "parasite_search".to_string(),
             sound_handler("parasite/parsrch1.wav", 1, 2.0),
         ),
-        (
-            "parasite_do_fidget".to_string(),
-            move_handler("parasite_move_fidget"),
-        ),
+        ("parasite_do_fidget".to_string(), move_handler("parasite_move_fidget")),
         (
             "parasite_refidget".to_string(),
             MonsterHandler::Callback(parasite_refidget),

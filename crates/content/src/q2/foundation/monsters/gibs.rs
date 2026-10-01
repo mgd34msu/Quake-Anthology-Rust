@@ -49,9 +49,13 @@ pub fn animate_meat(actor: ActorId, game: &mut Q2GameServices) {
 
 /// Gib death reaction (`gibDie`).
 pub fn gib_die(actor: ActorId, game: &mut Q2GameServices, _reaction: DeathReaction) {
-    let cause = game.require_entity(&actor).last_attack.as_ref().map(|attack| attack.cause.clone());
-    let removed = game.options.edition == Q2Edition::Classic
-        || matches!(cause, Some(AttackCause::Q2 { means_of_death: 20, .. }));
+    let cause = game
+        .require_entity(&actor)
+        .last_attack
+        .as_ref()
+        .map(|attack| attack.cause.clone());
+    let removed =
+        game.options.edition == Q2Edition::Classic || matches!(cause, Some(AttackCause::Q2 { means_of_death: 20, .. }));
     if removed {
         game.remove_actor(actor);
     }
@@ -99,7 +103,10 @@ pub fn q2_gib_callbacks() -> Q2CallbackDefinitions {
         use_: HashMap::new(),
         touch: HashMap::from([
             ("gib_touch", organic_touch as crate::q2::foundation::host::Q2Touch),
-            ("gib_touch_upright", upright_touch as crate::q2::foundation::host::Q2Touch),
+            (
+                "gib_touch_upright",
+                upright_touch as crate::q2::foundation::host::Q2Touch,
+            ),
         ]),
         pain: HashMap::new(),
         die: HashMap::from([("gib_die", gib_die as crate::q2::foundation::host::Q2Die)]),
@@ -128,7 +135,15 @@ pub fn throw_gib(
         y: (body.bounds.max.y - body.bounds.min.y) * 0.5,
         z: (body.bounds.max.z - body.bounds.min.z) * 0.5,
     };
-    let offset = if rerelease { Vec3 { x: 0.0, y: 0.0, z: 0.0 } } else { Vec3 { x: -1.0, y: -1.0, z: -1.0 } };
+    let offset = if rerelease {
+        Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    } else {
+        Vec3 {
+            x: -1.0,
+            y: -1.0,
+            z: -1.0,
+        }
+    };
     let center = Vec3 {
         x: body.origin.x + body.bounds.min.x + half.x + offset.x,
         y: body.origin.y + body.bounds.min.y + half.y + offset.y,
@@ -197,7 +212,11 @@ pub fn throw_gib(
         gib_entity.frame = 0;
         gib_entity.old_frame = -1;
         gib_entity.skin = if options.skinned { skin } else { 0 };
-        gib_entity.effects = if rerelease { 2 } else { (gib_entity.effects | 2) & !0x4000 };
+        gib_entity.effects = if rerelease {
+            2
+        } else {
+            (gib_entity.effects | 2) & !0x4000
+        };
         if rerelease {
             gib_entity.render_flags = (1 << 24) | (1 << 13) | (1 << 15);
         }
@@ -231,10 +250,13 @@ pub fn throw_gib(
         game.create_combat(&owned, 0.0, 0.0, true);
     } else {
         let owned = game.owned_of(gib.clone());
-        game.set_combat_traits(&owned, &CombatTraitChanges {
-            can_take_damage: Some(true),
-            ..CombatTraitChanges::default()
-        });
+        game.set_combat_traits(
+            &owned,
+            &CombatTraitChanges {
+                can_take_damage: Some(true),
+                ..CombatTraitChanges::default()
+            },
+        );
     }
     {
         let gib_entity = game.require_entity_mut(&gib);
@@ -256,7 +278,11 @@ pub fn throw_gib(
     game.set_solid(gib.clone(), crate::q2::foundation::host::Q2Solid::None);
     game.set_motion_kind(
         gib.clone(),
-        if options.metallic { Q2MotionKind::Bounce } else { Q2MotionKind::Toss },
+        if options.metallic {
+            Q2MotionKind::Bounce
+        } else {
+            Q2MotionKind::Toss
+        },
     );
     let delay = 10.0 + game.random() * 10.0;
     game.schedule(gib.clone(), delay, free_gib as crate::q2::foundation::host::Q2Think);
@@ -266,14 +292,15 @@ pub fn throw_gib(
 }
 
 /// Throw a head gib (`throwHead`).
-pub fn throw_head(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    model: &str,
-    damage: f64,
-) -> Option<ActorId> {
-    throw_gib(this, game, model, damage, Q2GibOptions {
-        head: true,
-        ..Q2GibOptions::default()
-    })
+pub fn throw_head(this: ActorId, game: &mut Q2GameServices, model: &str, damage: f64) -> Option<ActorId> {
+    throw_gib(
+        this,
+        game,
+        model,
+        damage,
+        Q2GibOptions {
+            head: true,
+            ..Q2GibOptions::default()
+        },
+    )
 }

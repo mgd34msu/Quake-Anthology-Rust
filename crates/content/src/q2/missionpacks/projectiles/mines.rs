@@ -5,24 +5,22 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, dot3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, ProjectileRole, RegularArmorState};
 use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use crate::q2::foundation::host::{
-    Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think,
-    Q2Touch, Q2TraceRequest,
+    Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think, Q2Touch,
+    Q2TraceRequest,
 };
-use crate::q2::foundation::weapons::ballistics::{
-    weapon_player_noise_for_actor, NoiseKind,
-};
+use crate::q2::foundation::weapons::ballistics::{weapon_player_noise_for_actor, NoiseKind};
 use crate::q2::foundation::weapons::player::{weapon_can_target, weapon_emit};
 use crate::q2::foundation::weapons::types::{Q2WeaponEvent, WeaponBeamEffect};
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
 use crate::q2::support::contracts::{CombatState, CombatTraitChanges, DeathReaction, TouchContact, TraceContact};
 
-use super::common::{projectile, projectile_mask, publish_projectile, sight};
 use super::super::types::Q2_MISSION_PACK_DAMAGE;
+use super::common::{projectile, projectile_mask, publish_projectile, sight};
 use super::Q2MissionPackProjectiles;
 
 /// Mine life for a multiplier (`mineLife`).
@@ -61,17 +59,11 @@ pub fn mine_callbacks() -> Q2CallbackDefinitions {
     callbacks.think.insert("Prox_Think", prox_flight as Q2Think);
     callbacks.think.insert("tesla_think", tesla_open as Q2Think);
     callbacks.think.insert("tesla_activate", tesla_activate as Q2Think);
-    callbacks
-        .think
-        .insert("tesla_think_active", tesla_active as Q2Think);
+    callbacks.think.insert("tesla_think_active", tesla_active as Q2Think);
     callbacks.touch.insert("prox_land", prox_land as Q2Touch);
-    callbacks
-        .touch
-        .insert("Prox_Field_Touch", prox_field as Q2Touch);
+    callbacks.touch.insert("Prox_Field_Touch", prox_field as Q2Touch);
     callbacks.touch.insert("tesla_lava", tesla_lava as Q2Touch);
-    callbacks
-        .touch
-        .insert("badarea_touch", bad_area_touch as Q2Touch);
+    callbacks.touch.insert("badarea_touch", bad_area_touch as Q2Touch);
     callbacks.die.insert("prox_die", prox_die as Q2Die);
     callbacks.die.insert("tesla_die", tesla_die as Q2Die);
     callbacks
@@ -110,12 +102,7 @@ impl Q2MissionPackProjectiles {
 
     /// Find a bad area overlapping an actor (`badAreaEntity`).
     #[allow(unpredictable_function_pointer_comparisons)]
-    pub fn bad_area_entity(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        origin: Option<Vec3>,
-    ) -> Option<ActorId> {
+    pub fn bad_area_entity(&self, actor: ActorId, game: &mut Q2GameServices, origin: Option<Vec3>) -> Option<ActorId> {
         let body = game.host.bodies().read(&actor)?;
         let base = origin.unwrap_or(body.origin);
         let min = add3(base, body.bounds.min);
@@ -152,18 +139,16 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Mark a tesla area (`markTeslaArea`).
-    pub fn mark_tesla_area(
-        &self,
-        owner: &ActorId,
-        game: &mut Q2GameServices,
-        tesla: &ActorId,
-    ) -> bool {
+    pub fn mark_tesla_area(&self, owner: &ActorId, game: &mut Q2GameServices, tesla: &ActorId) -> bool {
         if !game.host.actors().is_live(owner) || !game.host.actors().is_live(tesla) {
             return false;
         }
         let mut tail = tesla.clone();
         let mut next = game.require_entity(tesla).team_chain.clone();
-        while let Some(link) = next.clone().and_then(|link| game.entity(&link).map(|entity| entity.actor.id().clone())) {
+        while let Some(link) = next
+            .clone()
+            .and_then(|link| game.entity(&link).map(|entity| entity.actor.id().clone()))
+        {
             if game.require_entity(&link).classname == "bad_area" {
                 return false;
             }
@@ -374,12 +359,7 @@ impl Q2MissionPackProjectiles {
         );
         game.require_entity_mut(&mine).wait = game.host.now() + 30.0;
         game.schedule(mine.clone(), 3.0, tesla_open as Q2Think);
-        publish_projectile(
-            mine.clone(),
-            game,
-            "",
-            Some(("q2:ammo_tesla", ProjectileRole::Grenade)),
-        );
+        publish_projectile(mine.clone(), game, "", Some(("q2:ammo_tesla", ProjectileRole::Grenade)));
         mine
     }
 }
@@ -398,7 +378,10 @@ fn remove_tesla(entity: ActorId, game: &mut Q2GameServices, blow: bool) {
         },
     );
     let mut child = game.require_entity(&entity).team_chain.clone();
-    while let Some(link) = child.clone().and_then(|link| game.entity(&link).map(|entity| entity.actor.id().clone())) {
+    while let Some(link) = child
+        .clone()
+        .and_then(|link| game.entity(&link).map(|entity| entity.actor.id().clone()))
+    {
         child = game.require_entity(&link).team_chain.clone();
         game.remove_actor(link);
     }
@@ -529,14 +512,11 @@ fn prox_field(field: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
     let prox_deathmatch = game.options.mode == Q2Mode::Deathmatch;
     let prox_player = game.host.is_player(&contact.other);
     if prox_rerelease
-        && (!weapon_can_target(game, prox_master.as_ref(), &contact.other)
-            || !prox_deathmatch && prox_player)
+        && (!weapon_can_target(game, prox_master.as_ref(), &contact.other) || !prox_deathmatch && prox_player)
     {
         return;
     }
-    if contact.other == mine
-        || game.require_entity(&mine).think == Some(prox_explode as Q2Think)
-    {
+    if contact.other == mine || game.require_entity(&mine).think == Some(prox_explode as Q2Think) {
         return;
     }
     if game.require_entity(&mine).team_chain.as_ref() != Some(&field) {
@@ -598,19 +578,27 @@ fn prox_open(entity: ActorId, game: &mut Q2GameServices) {
         let target = game.entity(&actor).map(|entity| entity.actor.id().clone());
         let rerelease = game.options.edition == Q2Edition::Rerelease;
         let prox_master = game.require_entity(&entity).team_master.clone();
-        if rerelease
-            && (actor == entity || !weapon_can_target(game, prox_master.as_ref(), &actor))
-        {
+        if rerelease && (actor == entity || !weapon_can_target(game, prox_master.as_ref(), &actor)) {
             continue;
         }
-        let newcomer = target.as_ref().is_some_and(|target| game.require_entity(target).classname == "prox_mine");
+        let newcomer = target
+            .as_ref()
+            .is_some_and(|target| game.require_entity(target).classname == "prox_mine");
         let living = (game.host.is_monster(&actor)
             || (game.host.is_player(&actor) || rerelease && newcomer)
                 && (!rerelease || game.options.mode == Q2Mode::Deathmatch))
-            && game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) > 0.0;
+            && game
+                .host
+                .combat()
+                .read(&actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                > 0.0;
         if !living
             && !(game.options.mode == Q2Mode::Deathmatch
-                && target.as_ref().is_some_and(|target| player_start(game.require_entity(target), game)))
+                && target
+                    .as_ref()
+                    .is_some_and(|target| player_start(game.require_entity(target), game)))
         {
             continue;
         }
@@ -626,14 +614,26 @@ fn prox_open(entity: ActorId, game: &mut Q2GameServices) {
         return;
     }
     let strong = super::mission_hooks(game).strong_mines;
-    let wait = game.host.now() + if strong { 45.0 } else { mine_life(game.require_entity(&entity).damage / 90.0) };
+    let wait = game.host.now()
+        + if strong {
+            45.0
+        } else {
+            mine_life(game.require_entity(&entity).damage / 90.0)
+        };
     game.require_entity_mut(&entity).wait = wait;
     game.schedule(entity, 0.2, prox_seek as Q2Think);
 }
 
 /// Prox land touch (`proxLand`).
 fn prox_land(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    if contact.surface.as_ref().map(|surface| surface.native_flags).unwrap_or(0) & 4 != 0 {
+    if contact
+        .surface
+        .as_ref()
+        .map(|surface| surface.native_flags)
+        .unwrap_or(0)
+        & 4
+        != 0
+    {
         game.remove_actor(entity);
         return;
     }
@@ -648,9 +648,17 @@ fn prox_land(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
     let other = game.entity(&contact.other).map(|entity| entity.actor.id().clone());
     if game.host.is_monster(&contact.other)
         || game.host.is_player(&contact.other)
-        || other.as_ref().is_some_and(|other| game.require_entity(other).damageable_target)
+        || other
+            .as_ref()
+            .is_some_and(|other| game.require_entity(other).damageable_target)
     {
-        if contact.other == game.require_entity(&entity).team_master.clone().unwrap_or(entity.clone()) {
+        if contact.other
+            == game
+                .require_entity(&entity)
+                .team_master
+                .clone()
+                .unwrap_or(entity.clone())
+        {
             return;
         }
         prox_explode(entity, game);
@@ -667,7 +675,9 @@ fn prox_land(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
         if out.z > 60.0 {
             return;
         }
-        let push = other.as_ref().is_some_and(|other| game.require_entity(other).motion == Q2MotionKind::Push);
+        let push = other
+            .as_ref()
+            .is_some_and(|other| game.require_entity(other).motion == Q2MotionKind::Push);
         if !push || normal.z <= 0.7 {
             if normal.z > 0.7 {
                 prox_explode(entity, game);
@@ -724,7 +734,11 @@ fn prox_land(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
         game.require_entity_mut(&entity).projectile = false;
     }
     game.set_motion_kind(entity.clone(), motion);
-    let delay = if game.options.edition == Q2Edition::Rerelease { 0.0 } else { 0.05 };
+    let delay = if game.options.edition == Q2Edition::Rerelease {
+        0.0
+    } else {
+        0.05
+    };
     game.schedule(entity, delay, prox_open as Q2Think);
 }
 
@@ -755,11 +769,7 @@ fn tesla_lava(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact)
     } else {
         "weapons/hgrenb2a.wav"
     };
-    game.sound(&entity, bounce,
-        2,
-        1.0,
-        1.0,
-    );
+    game.sound(&entity, bounce, 2, 1.0, 1.0);
 }
 
 /// Tesla die (`teslaDie`).
@@ -812,8 +822,12 @@ fn tesla_activate(entity: ActorId, game: &mut Q2GameServices) {
         let scan_origin = game.body_of(entity.clone()).origin;
         for actor in game.host.nearby(scan_origin, 192.0) {
             let other = game.entity(&actor).map(|entity| entity.actor.id().clone());
-            let other_id = other.as_ref().map(|other| game.require_entity(other).actor.id().clone());
-            if other.as_ref().is_some_and(|other| player_start(game.require_entity(other), game))
+            let other_id = other
+                .as_ref()
+                .map(|other| game.require_entity(other).actor.id().clone());
+            if other
+                .as_ref()
+                .is_some_and(|other| player_start(game.require_entity(other), game))
                 && other_id.as_ref().is_some_and(|other_id| sight(game, other_id, &entity))
             {
                 remove_tesla(entity, game, false);
@@ -874,7 +888,14 @@ fn tesla_active(entity: ActorId, game: &mut Q2GameServices) {
         let Some(body) = body else {
             continue;
         };
-        if game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) < 1.0 {
+        if game
+            .host
+            .combat()
+            .read(&actor)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0)
+            < 1.0
+        {
             continue;
         }
         if game.host.is_player(&actor) && game.options.mode != Q2Mode::Deathmatch {
@@ -898,7 +919,9 @@ fn tesla_active(entity: ActorId, game: &mut Q2GameServices) {
         }
         if !game.host.is_player(&actor)
             && !game.host.is_monster(&actor)
-            && target.as_ref().is_none_or(|target| !game.require_entity(target).damageable_target)
+            && target
+                .as_ref()
+                .is_none_or(|target| !game.require_entity(target).damageable_target)
         {
             continue;
         }
@@ -928,7 +951,12 @@ fn tesla_active(entity: ActorId, game: &mut Q2GameServices) {
             game.sound(&entity, "items/damage3.wav", 3, 1.0, 1.0);
         }
         let knockback = if game.host.is_monster(&actor)
-            && target.as_ref().map(|target| game.require_entity(target).flags).unwrap_or(0) & 3 == 0
+            && target
+                .as_ref()
+                .map(|target| game.require_entity(target).flags)
+                .unwrap_or(0)
+                & 3
+                == 0
         {
             0.0
         } else {

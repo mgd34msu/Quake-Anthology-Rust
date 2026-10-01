@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use qa_core::math::vec3;
 
 use super::common::{
-    HUMANOID_BOUNDS, damaged_skin, monster_explode, monster_loop_sound, monster_muzzle,
-    monster_shot, move_handler, sound_handler,
+    damaged_skin, monster_explode, monster_loop_sound, monster_muzzle, monster_shot, move_handler, sound_handler,
+    HUMANOID_BOUNDS,
 };
 use super::tables::flyer::{flyer_frame, flyer_moves};
 use crate::q2::foundation::monsters::ai::target_distance;
@@ -33,10 +33,7 @@ fn flyer_fire(context: &mut MonsterContext, flash: usize) {
         return;
     };
     let frame = context.entity().frame;
-    let effect = if frame == flyer_frame::ATTAK204
-        || frame == flyer_frame::ATTAK207
-        || frame == flyer_frame::ATTAK210
-    {
+    let effect = if frame == flyer_frame::ATTAK204 || frame == flyer_frame::ATTAK207 || frame == flyer_frame::ATTAK210 {
         64
     } else {
         0
@@ -75,9 +72,7 @@ fn flyer_slash(context: &mut MonsterContext, right: bool) {
 /// Initialize (`initialize`).
 fn flyer_initialize(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    if context.game.options.map_name.to_lowercase() == "jail5"
-        && context.game.body_of(actor).origin.z == -104.0
-    {
+    if context.game.options.map_name.to_lowercase() == "jail5" && context.game.body_of(actor).origin.z == -104.0 {
         let target = context.entity().target.clone();
         let entity = context.entity_mut();
         entity.targetname = target;
@@ -208,14 +203,8 @@ pub fn flyer_definition() -> Q2MonsterDefinition {
             "flyer_pop_blades".to_string(),
             sound_handler("flyer/flyatck1.wav", 2, 1.0),
         ),
-        (
-            "flyer_loop_melee".to_string(),
-            move_handler("flyer_move_loop_melee"),
-        ),
-        (
-            "flyer_fireleft".to_string(),
-            MonsterHandler::Callback(flyer_fire_left),
-        ),
+        ("flyer_loop_melee".to_string(), move_handler("flyer_move_loop_melee")),
+        ("flyer_fireleft".to_string(), MonsterHandler::Callback(flyer_fire_left)),
         (
             "flyer_fireright".to_string(),
             MonsterHandler::Callback(flyer_fire_right),
@@ -232,14 +221,8 @@ pub fn flyer_definition() -> Q2MonsterDefinition {
             "flyer_check_melee".to_string(),
             MonsterHandler::Callback(flyer_check_melee),
         ),
-        (
-            "flyer_setstart".to_string(),
-            MonsterHandler::Callback(flyer_set_start),
-        ),
-        (
-            "flyer_nextmove".to_string(),
-            MonsterHandler::Callback(flyer_next_move),
-        ),
+        ("flyer_setstart".to_string(), MonsterHandler::Callback(flyer_set_start)),
+        ("flyer_nextmove".to_string(), MonsterHandler::Callback(flyer_next_move)),
     ]);
     definition
 }

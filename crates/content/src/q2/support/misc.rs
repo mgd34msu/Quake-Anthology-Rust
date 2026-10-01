@@ -230,7 +230,11 @@ fn push_arrow(
     let delta = sub3(end, start);
     let length = length3(delta);
     let dir = normalize3(delta);
-    let apex = if length > size { add3(start, scale3(dir, length - size)) } else { end };
+    let apex = if length > size {
+        add3(start, scale3(dir, length - size))
+    } else {
+        end
+    };
     if length > size {
         lines.push(DebugLine {
             start,
@@ -247,7 +251,11 @@ fn push_arrow(
         z: dir.y,
     };
     let right = normalize3(sub3(rotated, scale3(dir, dot3(rotated, dir))));
-    for end in [tip, add3(apex, scale3(right, extent)), add3(apex, scale3(right, -extent))] {
+    for end in [
+        tip,
+        add3(apex, scale3(right, extent)),
+        add3(apex, scale3(right, -extent)),
+    ] {
         lines.push(DebugLine {
             start: apex,
             end,
@@ -275,9 +283,21 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
         DebugShape::Point { origin, size } => {
             let half = size * 0.5;
             for axis in [
-                Vec3 { x: half, y: 0.0, z: 0.0 },
-                Vec3 { x: 0.0, y: half, z: 0.0 },
-                Vec3 { x: 0.0, y: 0.0, z: half },
+                Vec3 {
+                    x: half,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.0,
+                    y: half,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: half,
+                },
             ] {
                 push_line(&mut lines, sub3(origin, axis), add3(origin, axis), color, depth_test);
             }
@@ -306,7 +326,13 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
                 }
             };
             for i in 0..count {
-                push_line(&mut lines, point(i, origin.z), point((i + 1) % count, origin.z), color, depth_test);
+                push_line(
+                    &mut lines,
+                    point(i, origin.z),
+                    point((i + 1) % count, origin.z),
+                    color,
+                    depth_test,
+                );
             }
         }
         DebugShape::Cylinder {
@@ -326,8 +352,20 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
             for i in 0..count {
                 let bottom = origin.z - half_height;
                 let top = origin.z + half_height;
-                push_line(&mut lines, point(i, bottom), point((i + 1) % count, bottom), color, depth_test);
-                push_line(&mut lines, point(i, top), point((i + 1) % count, top), color, depth_test);
+                push_line(
+                    &mut lines,
+                    point(i, bottom),
+                    point((i + 1) % count, bottom),
+                    color,
+                    depth_test,
+                );
+                push_line(
+                    &mut lines,
+                    point(i, top),
+                    point((i + 1) % count, top),
+                    color,
+                    depth_test,
+                );
                 push_line(&mut lines, point(i, bottom), point(i, top), color, depth_test);
             }
         }
@@ -349,15 +387,35 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
                     ),
                 )
             };
-            let north = add3(origin, Vec3 { x: 0.0, y: 0.0, z: radius });
-            let south = sub3(origin, Vec3 { x: 0.0, y: 0.0, z: radius });
+            let north = add3(
+                origin,
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: radius,
+                },
+            );
+            let south = sub3(
+                origin,
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: radius,
+                },
+            );
             for i in 0..slices {
                 let next = (i + 1) % slices;
                 push_line(&mut lines, north, ring(0, next), color, depth_test);
                 push_line(&mut lines, ring(0, next), ring(0, i), color, depth_test);
                 push_line(&mut lines, ring(0, i), north, color, depth_test);
                 push_line(&mut lines, south, ring(stacks - 2, i), color, depth_test);
-                push_line(&mut lines, ring(stacks - 2, i), ring(stacks - 2, next), color, depth_test);
+                push_line(
+                    &mut lines,
+                    ring(stacks - 2, i),
+                    ring(stacks - 2, next),
+                    color,
+                    depth_test,
+                );
                 push_line(&mut lines, ring(stacks - 2, next), south, color, depth_test);
             }
             for j in 0..stacks - 2 {
@@ -576,7 +634,10 @@ pub fn inventory_give(entry: &InventoryEntry, count: f64) -> InventoryGiveTransi
         ..entry.clone()
     };
     let delta = next.count - entry.count;
-    InventoryGiveTransition::Write { entry: next, given: delta }
+    InventoryGiveTransition::Write {
+        entry: next,
+        given: delta,
+    }
 }
 
 /// Preview pickup grants (`previewPickupGrants`).
@@ -608,13 +669,19 @@ pub fn preview_pickup_grants(inventory: &[InventoryEntry], plan: &PickupGrantPla
     for entry in inventory {
         entries.insert(entry.item.clone(), entry.clone());
     }
-    for item in weapons.iter().map(|grant| &grant.item).chain(ammo.iter().map(|grant| &grant.item)) {
+    for item in weapons
+        .iter()
+        .map(|grant| &grant.item)
+        .chain(ammo.iter().map(|grant| &grant.item))
+    {
         if !entries.contains_key(item) {
             panic!("Pickup destination {item} was not admitted");
         }
     }
     let mut give = |grant: &PickupAmmoGrant| -> PickupAmmoReceipt {
-        let entry = entries.get(&grant.item).unwrap_or_else(|| panic!("Pickup destination {} was not admitted", grant.item));
+        let entry = entries
+            .get(&grant.item)
+            .unwrap_or_else(|| panic!("Pickup destination {} was not admitted", grant.item));
         let before = entry.count;
         match inventory_give(entry, grant.amount) {
             InventoryGiveTransition::Unchanged { given } => PickupAmmoReceipt {
@@ -656,15 +723,24 @@ pub fn preview_pickup_grants(inventory: &[InventoryEntry], plan: &PickupGrantPla
                     PickupWeaponLink::Grant { grants } => grants
                         .iter()
                         .map(|grant| {
-                            ammo.iter().find(|receipt| receipt.item == grant.item).cloned().unwrap_or_else(|| give(grant))
+                            ammo.iter()
+                                .find(|receipt| receipt.item == grant.item)
+                                .cloned()
+                                .unwrap_or_else(|| give(grant))
                         })
                         .collect(),
-                    PickupWeaponLink::SharedAmmo { items } => {
-                        ammo.iter().filter(|receipt| items.contains(&receipt.item)).cloned().collect()
-                    }
+                    PickupWeaponLink::SharedAmmo { items } => ammo
+                        .iter()
+                        .filter(|receipt| items.contains(&receipt.item))
+                        .cloned()
+                        .collect(),
                 }
             };
-            PickupSupplyPreview { accepted, ammo, weapons }
+            PickupSupplyPreview {
+                accepted,
+                ammo,
+                weapons,
+            }
         }
     }
 }
@@ -735,7 +811,9 @@ mod tests {
                     item: "q2:ammo_shells".to_string(),
                     amount: 8.0,
                 }],
-                weapons: PickupWeaponLink::SharedAmmo { items: vec!["q2:ammo_shells".to_string()] },
+                weapons: PickupWeaponLink::SharedAmmo {
+                    items: vec!["q2:ammo_shells".to_string()],
+                },
             },
         );
         assert!(!denied.accepted);

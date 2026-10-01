@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, sub3, vec3};
+use qa_core::math::{add3, length3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2GameServices, Q2Mode, Q2Solid, Q2TraceRequest};
@@ -13,8 +13,8 @@ use super::types::Q2PlayerState;
 
 /// Coop maps with fixed spawn points.
 const FIXED_COOP_MAPS: &[&str] = &[
-    "jail2", "jail4", "mine1", "mine2", "mine3", "mine4", "lab", "boss1", "fact3", "biggun",
-    "space", "command", "power2", "strike",
+    "jail2", "jail4", "mine1", "mine2", "mine3", "mine4", "lab", "boss1", "fact3", "biggun", "space", "command",
+    "power2", "strike",
 ];
 
 /// Entities with a classname in source order (`q2EntitiesNamed`).
@@ -81,9 +81,7 @@ pub fn spawn_player_spawn(actor: ActorId, game: &mut Q2GameServices) -> bool {
     let classname = game.require_entity(&actor).classname.clone();
     match classname.as_str() {
         "info_player_start" => {
-            if game.options.mode == Q2Mode::Coop
-                && game.options.map_name.to_lowercase() == "security"
-            {
+            if game.options.mode == Q2Mode::Coop && game.options.map_name.to_lowercase() == "security" {
                 game.schedule(actor, 0.1, security_coop_spots as _);
             }
             true
@@ -126,11 +124,7 @@ pub fn q2_players_range(game: &mut Q2GameServices, spot: ActorId) -> f64 {
     let mut closest: f64 = 9999999.0;
     let origin = game.body_of(spot).origin;
     for player in game.host.players() {
-        let health = game
-            .host
-            .combat()
-            .read(&player)
-            .map_or(0.0, |combat| combat.health);
+        let health = game.host.combat().read(&player).map_or(0.0, |combat| combat.health);
         if health <= 0.0 {
             continue;
         }
@@ -142,11 +136,7 @@ pub fn q2_players_range(game: &mut Q2GameServices, spot: ActorId) -> f64 {
 }
 
 /// Select a spawn (`selectQ2Spawn`).
-pub fn select_q2_spawn(
-    game: &mut Q2GameServices,
-    state: &Q2PlayerState,
-    spawn_point: &str,
-) -> ActorId {
+pub fn select_q2_spawn(game: &mut Q2GameServices, state: &Q2PlayerState, spawn_point: &str) -> ActorId {
     let mut spot: Option<ActorId> = None;
     if game.options.mode == Q2Mode::Deathmatch {
         let spots = q2_entities_named(game, "info_player_deathmatch");
@@ -186,10 +176,7 @@ pub fn select_q2_spawn(
             if count > 0 {
                 let mut selection = (game.host.random() * f64::from(count)).floor() as i32;
                 for candidate in &spots {
-                    if spots.len() > 2
-                        && (Some(candidate) == first.as_ref()
-                            || Some(candidate) == second.as_ref())
-                    {
+                    if spots.len() > 2 && (Some(candidate) == first.as_ref() || Some(candidate) == second.as_ref()) {
                         selection += 1;
                     }
                     if selection == 0 {
@@ -203,32 +190,27 @@ pub fn select_q2_spawn(
     } else if game.options.mode == Q2Mode::Coop && state.slot != 0 {
         spot = q2_entities_named(game, "info_player_coop")
             .into_iter()
-            .filter(|candidate| {
-                game.require_entity(candidate).targetname.to_lowercase()
-                    == spawn_point.to_lowercase()
-            })
+            .filter(|candidate| game.require_entity(candidate).targetname.to_lowercase() == spawn_point.to_lowercase())
             .nth((state.slot - 1) as usize);
     }
     if spot.is_none() {
         let starts = q2_entities_named(game, "info_player_start");
-        spot = starts.iter().find(|candidate| {
-            let targetname = game.require_entity(candidate).targetname.clone();
-            if spawn_point.is_empty() {
-                targetname.is_empty()
-            } else {
-                targetname.to_lowercase() == spawn_point.to_lowercase()
-            }
-        }).cloned();
+        spot = starts
+            .iter()
+            .find(|candidate| {
+                let targetname = game.require_entity(candidate).targetname.clone();
+                if spawn_point.is_empty() {
+                    targetname.is_empty()
+                } else {
+                    targetname.to_lowercase() == spawn_point.to_lowercase()
+                }
+            })
+            .cloned();
         if spot.is_none() && spawn_point.is_empty() {
             spot = starts.first().cloned();
         }
     }
-    spot.unwrap_or_else(|| {
-        panic!(
-            "No Q2 player spawn for '{spawn_point}' on {}",
-            game.options.map_name
-        )
-    })
+    spot.unwrap_or_else(|| panic!("No Q2 player spawn for '{spawn_point}' on {}", game.options.map_name))
 }
 
 /// Kill everything at an entity's position (`q2KillBox`).

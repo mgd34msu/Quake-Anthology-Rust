@@ -12,10 +12,9 @@ use crate::q2::base::monsters::flyer::flyer_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{enemy_body, health, target_distance, visible};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion,
-    Q2MonsterDefinition,
+    MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
 };
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TouchContact};
@@ -56,7 +55,17 @@ fn flyer_fire(context: &mut MonsterContext, flash: usize) {
     let frame = context.game.require_entity(&actor).frame;
     let effects = if frame % 4 == 0 { 64 } else { 0 };
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 1.0, 1000.0, effects, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        1.0,
+        1000.0,
+        effects,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, flash as i32, start, direction);
 }
 
@@ -95,9 +104,7 @@ fn flyer_slash_right(context: &mut MonsterContext) {
 
 /// Touch (`touch`).
 fn flyer_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    if !game.monsters.states.contains_key(&actor)
-        || !game.monsters.states.contains_key(&contact.other)
-    {
+    if !game.monsters.states.contains_key(&actor) || !game.monsters.states.contains_key(&contact.other) {
         return;
     }
     let other = game.monsters.states.get(&contact.other).expect("flyer touch other");
@@ -312,18 +319,12 @@ pub fn create_rerelease_flyer_definition() -> Q2MonsterDefinition {
     definition.callbacks.clear();
     for (name, handler) in [
         ("flyer_run", MonsterHandler::Callback(rerelease_flyer_run)),
-        (
-            "flyer_pop_blades",
-            sound_handler("flyer/flyatck1.wav", 2, 1.0),
-        ),
+        ("flyer_pop_blades", sound_handler("flyer/flyatck1.wav", 2, 1.0)),
         ("flyer_loop_melee", move_handler("flyer_move_loop_melee")),
         ("flyer_fireleft", MonsterHandler::Callback(flyer_fire_left)),
         ("flyer_fireright", MonsterHandler::Callback(flyer_fire_right)),
         ("flyer_slash_left", MonsterHandler::Callback(flyer_slash_left)),
-        (
-            "flyer_slash_right",
-            MonsterHandler::Callback(flyer_slash_right),
-        ),
+        ("flyer_slash_right", MonsterHandler::Callback(flyer_slash_right)),
         ("flyer_check_melee", MonsterHandler::Callback(flyer_check_melee)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);

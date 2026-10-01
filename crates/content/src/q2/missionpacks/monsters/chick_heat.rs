@@ -70,16 +70,7 @@ fn chick_heat_rocket(context: &mut MonsterContext) {
         );
     } else {
         let fire_rocket = context.weapons.fire_rocket;
-        fire_rocket(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            50.0,
-            500.0,
-            70.0,
-            50.0,
-        );
+        fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
     }
     monster_muzzle(context, 57, direction, start);
 }
@@ -90,9 +81,8 @@ pub fn create_chick_heat_definition() -> Q2MonsterDefinition {
     definition.classname = "monster_chick_heat".to_string();
     definition.initialize = Some(MonsterHandler::Callback(chick_heat_initialize));
     definition.pain = Some(chick_heat_pain);
-    definition.callbacks.insert(
-        "ChickRocket".to_string(),
-        MonsterHandler::Callback(chick_heat_rocket),
-    );
+    definition
+        .callbacks
+        .insert("ChickRocket".to_string(), MonsterHandler::Callback(chick_heat_rocket));
     definition
 }

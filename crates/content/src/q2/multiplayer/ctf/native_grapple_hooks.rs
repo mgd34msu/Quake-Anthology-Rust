@@ -4,9 +4,11 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
 use crate::q2::base::player::types::Q2PlayerHand;
-use crate::q2::equipment::grapple_services::{GrappleAnchor, GrappleCableEvent, GrappleHand, GrappleHooks, GrappleNoise, GrapplePose};
+use crate::q2::equipment::grapple_services::{
+    GrappleAnchor, GrappleCableEvent, GrappleHand, GrappleHooks, GrappleNoise, GrapplePose,
+};
 use crate::q2::foundation::host::{Q2GameServices, Q2Solid};
-use crate::q2::foundation::weapons::ballistics::{NoiseKind, silencer_shots, weapon_player_noise};
+use crate::q2::foundation::weapons::ballistics::{silencer_shots, weapon_player_noise, NoiseKind};
 use crate::q2::foundation::weapons::types::WeaponHand;
 
 use super::types::Q2CtfEvent;
@@ -16,10 +18,18 @@ fn grapple_pose(actor: ActorId, game: &mut Q2GameServices, weapon_aim: bool) -> 
     if game.entity(&actor).is_none() {
         panic!("Native grapple binding requires its source player entity");
     }
-    let stored = if weapon_aim { game.weapons.inputs.get(&actor).map(|input| (input.angles, input.hand)) } else { None };
+    let stored = if weapon_aim {
+        game.weapons.inputs.get(&actor).map(|input| (input.angles, input.hand))
+    } else {
+        None
+    };
     let angles = match stored {
         Some((angles, _)) => angles,
-        None => game.host.player_view_state(&actor).map(|view| view.view_angles).unwrap_or_else(|| game.body_of(actor.clone()).angles),
+        None => game
+            .host
+            .player_view_state(&actor)
+            .map(|view| view.view_angles)
+            .unwrap_or_else(|| game.body_of(actor.clone()).angles),
     };
     let hand = match stored {
         Some((_, WeaponHand::Left)) => GrappleHand::Left,
@@ -98,13 +108,18 @@ fn ctf_grapple_dead(actor: ActorId, game: &mut Q2GameServices) -> bool {
     if (hooks.player)(actor.clone(), game).is_some_and(|player| player.dead) {
         return true;
     }
-    game.host.combat().read(&actor).is_some_and(|combat| combat.can_take_damage && combat.health <= 0.0)
+    game.host
+        .combat()
+        .read(&actor)
+        .is_some_and(|combat| combat.can_take_damage && combat.health <= 0.0)
 }
 
 /// Read the previous velocity (`previousVelocity`).
 fn ctf_grapple_previous_velocity(actor: ActorId, game: &mut Q2GameServices) -> Vec3 {
     let hooks = super::ctf_hooks(game);
-    (hooks.player)(actor, game).map(|player| player.old_velocity).unwrap_or_default()
+    (hooks.player)(actor, game)
+        .map(|player| player.old_velocity)
+        .unwrap_or_default()
 }
 
 /// Write the previous velocity (`setPreviousVelocity`).
@@ -117,7 +132,11 @@ fn ctf_grapple_set_previous_velocity(actor: ActorId, velocity: Vec3, game: &mut 
 
 /// Read the grapple volume (`volume`).
 fn ctf_grapple_volume(actor: ActorId, game: &mut Q2GameServices) -> f64 {
-    if silencer_shots(game, &actor) > 0 { 0.2 } else { 1.0 }
+    if silencer_shots(game, &actor) > 0 {
+        0.2
+    } else {
+        1.0
+    }
 }
 
 /// Emit a grapple noise (`noise`).
@@ -150,7 +169,12 @@ fn ctf_grapple_emit(event: GrappleCableEvent, game: &mut Q2GameServices) {
     let hooks = super::ctf_hooks(game);
     (hooks.emit)(
         game,
-        Q2CtfEvent::GrappleCable { actor: event.actor, start: event.start, end: event.end, offset: event.offset },
+        Q2CtfEvent::GrappleCable {
+            actor: event.actor,
+            start: event.start,
+            end: event.end,
+            offset: event.offset,
+        },
     );
 }
 
@@ -160,8 +184,16 @@ fn ctf_grapple_emit(event: GrappleCableEvent, game: &mut Q2GameServices) {
 /// from the arena; weapon aim selects the hook variants.
 pub fn native_grapple_hooks(weapon_aim: bool) -> GrappleHooks {
     GrappleHooks {
-        pose: if weapon_aim { ctf_grapple_pose_aim } else { ctf_grapple_pose },
-        anchor: if weapon_aim { ctf_grapple_anchor_aim } else { ctf_grapple_anchor },
+        pose: if weapon_aim {
+            ctf_grapple_pose_aim
+        } else {
+            ctf_grapple_pose
+        },
+        anchor: if weapon_aim {
+            ctf_grapple_anchor_aim
+        } else {
+            ctf_grapple_anchor
+        },
         dead: ctf_grapple_dead,
         previous_velocity: ctf_grapple_previous_velocity,
         set_previous_velocity: ctf_grapple_set_previous_velocity,

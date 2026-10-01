@@ -4,15 +4,14 @@
 //! (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::base::entities::targets::target_laser_think;
 use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use crate::q2::foundation::fields::{movedir, number_field};
 use crate::q2::foundation::host::{
-    Q2BeamEvent, Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent,
-    Q2Solid, Q2Think, Q2Use,
+    Q2BeamEvent, Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think, Q2Use,
 };
 use crate::q2::foundation::weapons::ballistics::fire_rocket;
 use crate::q2::support::contracts::{CombatState, DeathReaction};
@@ -22,18 +21,32 @@ use super::types::{mission_entity_hooks, Q2MissionPackEntityHooks};
 /// Xatrix entity callbacks (`Q2XatrixEntities::callbacks`).
 pub fn xatrix_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("rotating_light_alarm", rotating_light_alarm as Q2Think);
-    callbacks.think.insert("object_repair_sparks", object_repair_sparks as Q2Think);
-    callbacks.think.insert("object_repair_dead", object_repair_dead as Q2Think);
+    callbacks
+        .think
+        .insert("rotating_light_alarm", rotating_light_alarm as Q2Think);
+    callbacks
+        .think
+        .insert("object_repair_sparks", object_repair_sparks as Q2Think);
+    callbacks
+        .think
+        .insert("object_repair_dead", object_repair_dead as Q2Think);
     callbacks.think.insert("object_repair_fx", object_repair_fx as Q2Think);
     callbacks.think.insert("amb4_think", amb4_think as Q2Think);
     callbacks.think.insert("mal_laser_think", mal_laser_think as Q2Think);
-    callbacks.think.insert("target_laser_think", target_laser_think as Q2Think);
-    callbacks.die.insert("rotating_light_killed", rotating_light_killed as Q2Die);
+    callbacks
+        .think
+        .insert("target_laser_think", target_laser_think as Q2Think);
+    callbacks
+        .die
+        .insert("rotating_light_killed", rotating_light_killed as Q2Die);
     callbacks.use_.insert("rotating_light_use", rotating_light_use as Q2Use);
-    callbacks.use_.insert("misc_viper_missile_use", misc_viper_missile_use as Q2Use);
+    callbacks
+        .use_
+        .insert("misc_viper_missile_use", misc_viper_missile_use as Q2Use);
     callbacks.use_.insert("use_nuke", use_nuke as Q2Use);
-    callbacks.use_.insert("target_mal_laser_use", target_mal_laser_use as Q2Use);
+    callbacks
+        .use_
+        .insert("target_mal_laser_use", target_mal_laser_use as Q2Use);
     callbacks
 }
 
@@ -252,7 +265,12 @@ fn rotating_light_killed(entity: ActorId, game: &mut Q2GameServices, _reaction: 
 }
 
 /// Rotating light use (`lightUse`).
-fn rotating_light_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn rotating_light_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     if game.require_entity(&entity).spawnflags & 1 != 0 {
         game.require_entity_mut(&entity).spawnflags &= !1;
         game.require_entity_mut(&entity).effects |= 0x800000;
@@ -293,7 +311,14 @@ fn object_repair_dead(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Repair sparks (`repairSparks`).
 fn object_repair_sparks(entity: ActorId, game: &mut Q2GameServices) {
-    if game.host.combat().read(&entity).map(|combat| combat.health).unwrap_or(0.0) < 0.0 {
+    if game
+        .host
+        .combat()
+        .read(&entity)
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        < 0.0
+    {
         game.schedule(entity, 0.1, object_repair_dead as Q2Think);
         return;
     }
@@ -309,17 +334,32 @@ fn amb4_think(entity: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Viper missile use (`missileUse`).
-fn misc_viper_missile_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn misc_viper_missile_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let target_name = game.require_entity(&entity).target.clone();
     let Some(target) = game.targets(&target_name).into_iter().next() else {
-        game.host.diagnostic(&format!("misc_viper_missile missing target {target_name}"));
+        game.host
+            .diagnostic(&format!("misc_viper_missile missing target {target_name}"));
         return;
     };
     game.require_entity_mut(&entity).enemy = Some(target.clone());
     let origin = game.body_of(entity.clone()).origin;
     let direction = normalize3(sub3(game.body_of(target).origin, origin));
     let damage = game.require_entity(&entity).damage;
-    fire_rocket(entity.clone(), game, origin, direction, damage, 500.0, damage + 20.0, damage);
+    fire_rocket(
+        entity.clone(),
+        game,
+        origin,
+        direction,
+        damage,
+        500.0,
+        damage + 20.0,
+        damage,
+    );
     game.host.emit(Q2PresentationEvent::MonsterMuzzleflash {
         actor: entity.clone(),
         flash: 57,
@@ -403,7 +443,12 @@ fn mal_off(entity: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Mal laser use (`malUse`).
-fn target_mal_laser_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
+fn target_mal_laser_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    activator: Option<ActorId>,
+) {
     game.require_entity_mut(&entity).activator = activator;
     if game.require_entity(&entity).spawnflags & 1 != 0 {
         mal_off(entity, game);

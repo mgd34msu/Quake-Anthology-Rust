@@ -2,28 +2,22 @@
 //!
 //! ZeniMax Media, GPL-2.0-or-later.
 
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
-use super::super::common::{
-    blocked_check_platform, check_gib, monster_flash, predict_aim, reacts_to_pain,
-};
+use super::super::common::{blocked_check_platform, check_gib, monster_flash, predict_aim, reacts_to_pain};
 use super::super::tables::chick::chick_moves;
 use crate::q2::base::monsters::chick::chick_definition;
 use crate::q2::base::monsters::common::alive_enemy;
 use crate::q2::foundation::host::{Q2Edition, Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health,
-    project_flash, set_duck, target_distance, vector_angles, visible,
+    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health, project_flash, set_duck, target_distance,
+    vector_angles, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::missionpacks::monsters::types::mission_weapons;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit};
 
 /// Run (`run`).
 fn rerelease_chick_run(context: &mut MonsterContext) {
@@ -128,10 +122,7 @@ fn chick_rocket(context: &mut MonsterContext) {
 }
 
 /// Whether a rocket trace is blocked (`rocket` obstruction check).
-fn chick_trace_blocked(
-    context: &mut MonsterContext,
-    trace: &crate::q2::support::contracts::TraceResult,
-) -> bool {
+fn chick_trace_blocked(context: &mut MonsterContext, trace: &crate::q2::support::contracts::TraceResult) -> bool {
     match &trace.hit {
         TraceHit::World { .. } => true,
         TraceHit::Actor { actor } => context
@@ -339,10 +330,7 @@ fn rerelease_chick_duck(context: &mut MonsterContext, _eta: f64) -> bool {
 /// Sidestep (`sidestep`).
 fn rerelease_chick_sidestep(context: &mut MonsterContext) -> bool {
     let current = context.state().current_move.name.clone();
-    if current == "chick_move_start_attack1"
-        || current == "chick_move_attack1"
-        || current == "chick_move_pain3"
-    {
+    if current == "chick_move_start_attack1" || current == "chick_move_attack1" || current == "chick_move_pain3" {
         return false;
     }
     if current != "chick_move_run" {
@@ -366,11 +354,7 @@ fn chick_pre_attack1(context: &mut MonsterContext) {
 fn chick_slash(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "chick/chkatck3.wav", 1, 1.0, 1.0);
-    let aim = vec3(
-        80.0,
-        context.game.body_of(actor.clone()).bounds.min.x,
-        10.0,
-    );
+    let aim = vec3(80.0, context.game.body_of(actor.clone()).bounds.min.x, 10.0);
     let damage = 10.0 + (context.game.random() * 6.0).floor();
     let fire_hit = context.weapons.fire_hit;
     fire_hit(actor, &mut *context.game, aim, damage, 100.0);
@@ -400,9 +384,7 @@ fn chick_rerocket(context: &mut MonsterContext) {
 
 /// Reslash (`chick_reslash`).
 fn chick_reslash(context: &mut MonsterContext) {
-    let again = alive_enemy(context)
-        && target_distance(context) <= 80.0
-        && context.game.random() <= 0.9;
+    let again = alive_enemy(context) && target_distance(context) <= 80.0 && context.game.random() <= 0.9;
     context.set_move(
         if again {
             "chick_move_slash"

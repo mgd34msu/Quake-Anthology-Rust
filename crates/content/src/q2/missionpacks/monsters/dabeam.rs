@@ -6,12 +6,11 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
-use crate::q2::foundation::callbacks::{Q2CallbackDefinitions, free_q2_entity};
+use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use crate::q2::foundation::host::{
-    Q2BeamEvent, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2TraceRequest,
+    Q2BeamEvent, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::ai::{angles_vectors, trace_ground_actor};
 use crate::q2::support::contracts::{TraceContact, TraceResult};
@@ -66,10 +65,7 @@ fn beam_hit(entity: ActorId, game: &mut Q2GameServices) {
         }
         let damage = game.require_entity(&entity).damage;
         let updated = game.host.combat().read(&actor);
-        if damage < 0.0
-            && game.host.is_player(&actor)
-            && updated.as_ref().is_some_and(|state| state.health > 100.0)
-        {
+        if damage < 0.0 && game.host.is_player(&actor) && updated.as_ref().is_some_and(|state| state.health > 100.0) {
             let updated = updated.expect("beam heal target");
             if let Some(owned) = game.host.actors().resolve_owned(&actor) {
                 game.host.combat().set_health(&owned, updated.health + damage);
@@ -135,16 +131,15 @@ pub fn monster_dabeam(
         beam_entity.damage = damage;
         beam_entity.render_flags = 128 | 32;
         beam_entity.frame = 2;
-        beam_entity.skin = if medic { 0xf3f3f1f1u32 as i32 } else { 0xf2f2f0f0u32 as i32 };
+        beam_entity.skin = if medic {
+            0xf3f3f1f1u32 as i32
+        } else {
+            0xf2f2f0f0u32 as i32
+        };
     }
-    let enemy = target
-        .as_ref()
-        .and_then(|target| game.host.bodies().read(target));
+    let enemy = target.as_ref().and_then(|target| game.host.bodies().read(target));
     if let Some(enemy) = enemy {
-        let point = add3(
-            enemy.origin,
-            scale3(add3(enemy.bounds.min, enemy.bounds.max), 0.5),
-        );
+        let point = add3(enemy.origin, scale3(add3(enemy.bounds.min, enemy.bounds.max), 0.5));
         let aim = if medic {
             vec3(point.x + (game.host.now().sin() * 8.0) as f32, point.y, point.z)
         } else {

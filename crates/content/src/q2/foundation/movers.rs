@@ -5,22 +5,22 @@
 use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::angular_motion::{
-    Q2AngularMotionCheckpoint, angular_motion_callbacks, angular_move_to, capture_angular_motion,
-    restore_angular_motion,
+    angular_motion_callbacks, angular_move_to, capture_angular_motion, restore_angular_motion,
+    Q2AngularMotionCheckpoint,
 };
 use super::callbacks::Q2CallbackDefinitions;
 use super::checkpoint::restore_q2_actor;
 use super::fields::{integer_field, movedir, number_field};
 use super::host::{
-    Q2Die, Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2Mode, Q2MotionKind,
-    Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, SpawnModule,
+    Q2Die, Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid,
+    Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, SpawnModule,
 };
 use super::motion::{
-    LinearMotionScope, Q2LinearMotionCheckpoint, capture_linear_motion, linear_motion_callbacks,
-    linear_move_destination, linear_move_to, restore_linear_motion,
+    capture_linear_motion, linear_motion_callbacks, linear_move_destination, linear_move_to, restore_linear_motion,
+    LinearMotionScope, Q2LinearMotionCheckpoint,
 };
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, TouchContact};
 
@@ -285,7 +285,11 @@ impl Q2MoverModule {
         callbacks.blocked.insert("rotating_blocked", rotating_damage);
         let spawn: Q2SpawnFn = spawn_mover;
         let item_name: Q2ItemNameFn = mover_item_name;
-        SpawnModule { spawn, item_name, callbacks }
+        SpawnModule {
+            spawn,
+            item_name,
+            callbacks,
+        }
     }
 
     /// Observe the deterministic source route without advancing callbacks or
@@ -300,8 +304,7 @@ impl Q2MoverModule {
             if candidate.targetname.is_empty() {
                 continue;
             }
-            let ambiguous =
-                targets.contains_key(&candidate.targetname) || candidate.classname != "path_corner";
+            let ambiguous = targets.contains_key(&candidate.targetname) || candidate.classname != "path_corner";
             targets.insert(
                 candidate.targetname.clone(),
                 if ambiguous { None } else { Some(actor.clone()) },
@@ -363,12 +366,14 @@ impl Q2MoverModule {
                 let master_entity = game.require_entity(&master).clone();
                 master_entity.use_ == Some(door_activate)
                     || !door.button
-                        && (master_entity.max_health > 0.0
-                            || !master_entity.targetname.is_empty() && !door.activated)
+                        && (master_entity.max_health > 0.0 || !master_entity.targetname.is_empty() && !door.activated)
             }
             _ => false,
         };
-        Q2MoverTraversal { locked, destination: linear_move_destination(game, LinearMotionScope::Foundation, &this) }
+        Q2MoverTraversal {
+            locked,
+            destination: linear_move_destination(game, LinearMotionScope::Foundation, &this),
+        }
     }
 
     /// Capture mover state (`capture`).
@@ -508,22 +513,36 @@ fn restore_mover_actor(game: &mut Q2GameServices, saved: SavedActorId) -> ActorI
 
 /// Read door state, panicking when absent.
 fn door_state(game: &Q2GameServices, actor: &ActorId) -> DoorState {
-    game.movers.doors.get(actor).cloned().unwrap_or_else(|| panic!("Missing Q2 door state"))
+    game.movers
+        .doors
+        .get(actor)
+        .cloned()
+        .unwrap_or_else(|| panic!("Missing Q2 door state"))
 }
 
 /// Read train state, panicking when absent.
 fn train_state(game: &Q2GameServices, actor: &ActorId) -> TrainState {
-    game.movers.trains.get(actor).cloned().unwrap_or_else(|| panic!("Missing Q2 train state"))
+    game.movers
+        .trains
+        .get(actor)
+        .cloned()
+        .unwrap_or_else(|| panic!("Missing Q2 train state"))
 }
 
 /// Mutably read train state, panicking when absent.
 fn train_state_mut<'game>(game: &'game mut Q2GameServices, actor: &ActorId) -> &'game mut TrainState {
-    game.movers.trains.get_mut(actor).unwrap_or_else(|| panic!("Missing Q2 train state"))
+    game.movers
+        .trains
+        .get_mut(actor)
+        .unwrap_or_else(|| panic!("Missing Q2 train state"))
 }
 
 /// Mutably read door state, panicking when absent.
 fn door_state_mut<'game>(game: &'game mut Q2GameServices, actor: &ActorId) -> &'game mut DoorState {
-    game.movers.doors.get_mut(actor).unwrap_or_else(|| panic!("Missing Q2 door state"))
+    game.movers
+        .doors
+        .get_mut(actor)
+        .unwrap_or_else(|| panic!("Missing Q2 door state"))
 }
 
 /// Mover loop sound (`loop`).
@@ -580,7 +599,10 @@ fn door_sound(this: ActorId, game: &mut Q2GameServices, start: bool) {
             Some(value) => value,
         }
     };
-    let sound = select(if start { "noise_start" } else { "noise_end" }, if start { 0 } else { 2 });
+    let sound = select(
+        if start { "noise_start" } else { "noise_end" },
+        if start { 0 } else { 2 },
+    );
     let middle = select("noise_middle", 1);
     let attenuation = if game.options.edition == Q2Edition::Rerelease && !state.water {
         number_field(&entity.spawn, "attenuation", 3.0)
@@ -592,7 +614,10 @@ fn door_sound(this: ActorId, game: &mut Q2GameServices, start: bool) {
         if game.options.edition == Q2Edition::Rerelease && state.team.len() > 1 {
             let sum = state.team.iter().fold(vec3(0.0, 0.0, 0.0), |sum, member| {
                 let body = game.body_of(member.clone());
-                add3(sum, add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5)))
+                add3(
+                    sum,
+                    add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5)),
+                )
             });
             let center = scale3(sum, 1.0 / state.team.len() as f32);
             if game.host.point_contents(center) & 1 == 0 {
@@ -649,9 +674,7 @@ fn door_hit_bottom(this: ActorId, game: &mut Q2GameServices) {
         game.show(this);
     } else {
         door_sound(this.clone(), game, false);
-        if game.options.edition == Q2Edition::Classic
-            || game.require_entity(&this).spawnflags & 1 == 0
-        {
+        if game.options.edition == Q2Edition::Classic || game.require_entity(&this).spawnflags & 1 == 0 {
             door_portals(this, game, false);
         }
     }
@@ -667,7 +690,10 @@ fn door_go_down(this: ActorId, game: &mut Q2GameServices) {
         game.host.combat().set_health(&owned, entity.max_health);
         game.host.combat().set_traits(
             &owned,
-            &CombatTraitChanges { can_take_damage: Some(true), ..CombatTraitChanges::default() },
+            &CombatTraitChanges {
+                can_take_damage: Some(true),
+                ..CombatTraitChanges::default()
+            },
         );
     }
     if state.button {
@@ -679,12 +705,15 @@ fn door_go_down(this: ActorId, game: &mut Q2GameServices) {
     if state.angular {
         angular_move_to(game, this.clone(), state.start, door_hit_bottom);
     } else {
-        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), state.start, door_hit_bottom);
+        linear_move_to(
+            game,
+            LinearMotionScope::Foundation,
+            this.clone(),
+            state.start,
+            door_hit_bottom,
+        );
     }
-    if game.options.edition == Q2Edition::Rerelease
-        && !state.button
-        && game.require_entity(&this).spawnflags & 1 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && !state.button && game.require_entity(&this).spawnflags & 1 != 0 {
         door_portals(this, game, true);
     }
 }
@@ -714,10 +743,7 @@ fn door_hit_top(this: ActorId, game: &mut Q2GameServices) {
         let wait = game.require_entity(&this).wait;
         game.schedule(this.clone(), wait, door_go_down);
     }
-    if game.options.edition == Q2Edition::Rerelease
-        && !state.button
-        && game.require_entity(&this).spawnflags & 1 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && !state.button && game.require_entity(&this).spawnflags & 1 != 0 {
         door_portals(this, game, false);
     }
 }
@@ -738,18 +764,26 @@ fn door_up(this: ActorId, game: &mut Q2GameServices, activator: Option<ActorId>)
     game.require_entity_mut(&this).activator = activator.clone();
     door_state_mut(game, &this).phase = DoorPhase::Up;
     door_sound(this.clone(), game, true);
-    let destination = if state.reversed { scale3(state.end, -1.0) } else { state.end };
+    let destination = if state.reversed {
+        scale3(state.end, -1.0)
+    } else {
+        state.end
+    };
     if state.angular {
         angular_move_to(game, this.clone(), destination, door_hit_top);
     } else {
-        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), destination, door_hit_top);
+        linear_move_to(
+            game,
+            LinearMotionScope::Foundation,
+            this.clone(),
+            destination,
+            door_hit_top,
+        );
     }
     if !state.button {
         let authored = game.require_entity(&this).authored_target();
         game.use_targets(&authored, activator.as_ref(), false);
-        if game.options.edition == Q2Edition::Classic
-            || game.require_entity(&this).spawnflags & 1 == 0
-        {
+        if game.options.edition == Q2Edition::Classic || game.require_entity(&this).spawnflags & 1 == 0 {
             door_portals(this, game, true);
         }
     }
@@ -770,22 +804,16 @@ fn mover_use(this: ActorId, game: &mut Q2GameServices, activator: Option<ActorId
         if let Some(activator_id) = activator.clone() {
             if let Some(body) = game.host.bodies().read(&activator_id) {
                 let origin = game.body_of(this.clone()).origin;
-                let reversed =
-                    dot3(normalize3(sub3(body.origin, origin)), state.safe_direction) > 0.0;
+                let reversed = dot3(normalize3(sub3(body.origin, origin)), state.safe_direction) > 0.0;
                 door_state_mut(game, &this).reversed = reversed;
             }
         }
     }
     let state = door_state(game, &this);
     let entity = game.require_entity(&this).clone();
-    let close = !state.button
-        && entity.spawnflags & 32 != 0
-        && (state.phase == DoorPhase::Up || state.phase == DoorPhase::Top);
-    if !close
-        && game.options.edition == Q2Edition::Rerelease
-        && state.water
-        && entity.spawnflags & 2 != 0
-    {
+    let close =
+        !state.button && entity.spawnflags & 32 != 0 && (state.phase == DoorPhase::Up || state.phase == DoorPhase::Top);
+    if !close && game.options.edition == Q2Edition::Rerelease && state.water && entity.spawnflags & 2 != 0 {
         let body = game.body_of(this.clone());
         let center = scale3(add3(body.bounds.min, body.bounds.max), 0.5);
         if game.host.point_contents(center) & 56 != 0 {
@@ -840,10 +868,19 @@ fn spawn_door(this: ActorId, game: &mut Q2GameServices) {
     moved.angles = vec3(0.0, 0.0, 0.0);
     game.write_body(this.clone(), &moved, false);
     game.set_solid(this.clone(), Q2Solid::Brush);
-    game.set_motion_kind(this.clone(), if button { Q2MotionKind::Stop } else { Q2MotionKind::Push });
+    game.set_motion_kind(
+        this.clone(),
+        if button { Q2MotionKind::Stop } else { Q2MotionKind::Push },
+    );
     let entity = game.require_entity_mut(&this);
     if entity.speed == 0.0 {
-        entity.speed = if button { 40.0 } else if water { 25.0 } else { 100.0 };
+        entity.speed = if button {
+            40.0
+        } else if water {
+            25.0
+        } else {
+            100.0
+        };
     }
     if !button && !angular && !water && game.options.mode == Q2Mode::Deathmatch {
         let entity = game.require_entity_mut(&this);
@@ -865,15 +902,15 @@ fn spawn_door(this: ActorId, game: &mut Q2GameServices) {
     let entity = game.require_entity(&this).clone();
     let body = game.body_of(this.clone());
     let size = sub3(body.bounds.max, body.bounds.min);
-    let direction = vec3(
-        entity.movedir.x.abs(),
-        entity.movedir.y.abs(),
-        entity.movedir.z.abs(),
-    );
+    let direction = vec3(entity.movedir.x.abs(), entity.movedir.y.abs(), entity.movedir.z.abs());
     let lip = number_field(&entity.spawn, "lip", 0.0);
     let distance = if angular {
         let authored = number_field(&entity.spawn, "distance", 0.0);
-        if authored == 0.0 { 90.0 } else { authored }
+        if authored == 0.0 {
+            90.0
+        } else {
+            authored
+        }
     } else {
         f64::from(dot3(direction, size))
             - if lip == 0.0 {
@@ -891,10 +928,7 @@ fn spawn_door(this: ActorId, game: &mut Q2GameServices) {
     let mut start = if angular { vec3(0.0, 0.0, 0.0) } else { body.origin };
     let mut end = add3(start, scale3(entity.movedir, distance as f32));
     if !button && entity.spawnflags & 1 != 0 {
-        if game.options.edition == Q2Edition::Rerelease
-            && angular
-            && entity.spawnflags & 0x20000 != 0
-        {
+        if game.options.edition == Q2Edition::Rerelease && angular && entity.spawnflags & 0x20000 != 0 {
             game.require_entity_mut(&this).spawnflags &= !0x20000;
             game.host
                 .diagnostic("Q2 rotating door SAFE_OPEN is incompatible with START_OPEN");
@@ -975,16 +1009,11 @@ fn spawn_door(this: ActorId, game: &mut Q2GameServices) {
     }
     if water {
         game.require_entity_mut(&this).blocked = None;
-        if game.options.edition == Q2Edition::Rerelease
-            && game.require_entity(&this).spawnflags & 2 != 0
-        {
+        if game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 2 != 0 {
             game.require_entity_mut(&this).blocked = Some(smart_water_blocked);
         }
     }
-    if game.options.edition == Q2Edition::Rerelease
-        && angular
-        && game.require_entity(&this).spawnflags & 0x10000 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && angular && game.require_entity(&this).spawnflags & 0x10000 != 0 {
         if game.require_entity(&this).max_health > 0.0 {
             let owned = game.owned_of(this.clone());
             game.host.combat().set_traits(
@@ -1020,10 +1049,7 @@ fn prepare_door(this: ActorId, game: &mut Q2GameServices) {
         return;
     }
     let entity = game.require_entity(&this).clone();
-    if game.options.edition == Q2Edition::Rerelease
-        && !door_state(game, &this).angular
-        && entity.spawnflags & 1 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && !door_state(game, &this).angular && entity.spawnflags & 1 != 0 {
         door_portals(this.clone(), game, true);
     }
     let shortest = team.iter().fold(f64::INFINITY, |shortest, member| {
@@ -1042,9 +1068,7 @@ fn prepare_door(this: ActorId, game: &mut Q2GameServices) {
         }
     }
     let entity = game.require_entity(&this).clone();
-    if entity.max_health > 0.0
-        || !entity.targetname.is_empty() && !door_state(game, &this).activated
-    {
+    if entity.max_health > 0.0 || !entity.targetname.is_empty() && !door_state(game, &this).activated {
         return;
     }
     let mut min = vec3(f32::INFINITY, f32::INFINITY, f32::INFINITY);
@@ -1111,9 +1135,11 @@ fn smart_water(this: ActorId, game: &mut Q2GameServices) {
     }
     let Some(lowest) = lowest else { return };
     let distance = f64::from(height) - f64::from(top);
-    let speed = entity
-        .speed
-        .min(5.0f64.max(if distance < state.water_divisor { 5.0 } else { distance / state.water_divisor }));
+    let speed = entity.speed.min(5.0f64.max(if distance < state.water_divisor {
+        5.0
+    } else {
+        distance / state.water_divisor
+    }));
     let mut moved = game.body_of(this.clone());
     moved.velocity = vec3(0.0, 0.0, speed as f32);
     game.write_body(this.clone(), &moved, false);
@@ -1132,15 +1158,11 @@ fn smart_water(this: ActorId, game: &mut Q2GameServices) {
 /// Train destination for a corner (`trainDestination`).
 fn train_destination(this: ActorId, target: ActorId, game: &mut Q2GameServices) -> Vec3 {
     let origin = game.body_of(target).origin;
-    if game.options.edition == Q2Edition::Rerelease
-        && game.require_entity(&this).spawnflags & 32 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 32 != 0 {
         return origin;
     }
     let destination = sub3(origin, game.body_of(this.clone()).bounds.min);
-    if game.options.edition == Q2Edition::Rerelease
-        && game.require_entity(&this).spawnflags & 16 != 0
-    {
+    if game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 16 != 0 {
         sub3(destination, vec3(1.0, 1.0, 1.0))
     } else {
         destination
@@ -1269,10 +1291,14 @@ fn train_next(this: ActorId, game: &mut Q2GameServices) {
         game.require_entity_mut(&this).spawnflags |= 1;
         let destination = train_destination(this.clone(), target, game);
         let delta = sub3(destination, game.body_of(this.clone()).origin);
-        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), destination, train_wait);
-        if game.options.edition == Q2Edition::Rerelease
-            && game.require_entity(&this).spawnflags & 8 != 0
-        {
+        linear_move_to(
+            game,
+            LinearMotionScope::Foundation,
+            this.clone(),
+            destination,
+            train_wait,
+        );
+        if game.options.edition == Q2Edition::Rerelease && game.require_entity(&this).spawnflags & 8 != 0 {
             for owned in game.push_team(&this) {
                 let member = owned.id().clone();
                 if game.entity(&member).is_none() || member == this {
@@ -1300,7 +1326,11 @@ fn spawn_train(this: ActorId, game: &mut Q2GameServices) {
     let ship = game.require_entity(&this).classname != "func_train";
     game.movers.trains.insert(
         this.clone(),
-        TrainState { destination: None, debounce: 0.0, ship },
+        TrainState {
+            destination: None,
+            debounce: 0.0,
+            ship,
+        },
     );
     if ship {
         let model = if game.require_entity(&this).classname == "misc_strogg_ship" {
@@ -1422,12 +1452,7 @@ fn spawn_mover(actor: ActorId, game: &mut Q2GameServices) -> bool {
 }
 
 /// Door use callback (`doorUse`).
-fn door_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn door_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     mover_use(this, game, activator);
 }
 
@@ -1443,7 +1468,10 @@ fn door_killed(this: ActorId, game: &mut Q2GameServices, reaction: DeathReaction
         game.host.combat().set_health(&owned, max_health);
         game.host.combat().set_traits(
             &owned,
-            &CombatTraitChanges { can_take_damage: Some(false), ..CombatTraitChanges::default() },
+            &CombatTraitChanges {
+                can_take_damage: Some(false),
+                ..CombatTraitChanges::default()
+            },
         );
     }
     mover_use(state.master, game, reaction.pain.attacker);
@@ -1493,7 +1521,19 @@ fn door_blocked(this: ActorId, game: &mut Q2GameServices, other: ActorId) {
     let zero = vec3(0.0, 0.0, 0.0);
     if !game.host.is_player(&other) && !game.host.is_monster(&other) {
         if game.host.combat().read(&other).is_some() {
-            game.damage(other.clone(), this.clone(), Some(this), 100_000.0, 1.0, zero, body.origin, zero, 20, 0, None);
+            game.damage(
+                other.clone(),
+                this.clone(),
+                Some(this),
+                100_000.0,
+                1.0,
+                zero,
+                body.origin,
+                zero,
+                20,
+                0,
+                None,
+            );
         }
         if game.entity(&other).is_some() {
             game.remove_actor(other);
@@ -1501,7 +1541,19 @@ fn door_blocked(this: ActorId, game: &mut Q2GameServices, other: ActorId) {
         return;
     }
     let damage = game.require_entity(&this).damage;
-    game.damage(other, this.clone(), Some(this.clone()), damage, 1.0, zero, body.origin, zero, 20, 0, None);
+    game.damage(
+        other,
+        this.clone(),
+        Some(this.clone()),
+        damage,
+        1.0,
+        zero,
+        body.origin,
+        zero,
+        20,
+        0,
+        None,
+    );
     let entity = game.require_entity(&this).clone();
     if entity.spawnflags & 4 != 0 || entity.wait < 0.0 {
         return;
@@ -1550,12 +1602,7 @@ fn smart_water_blocked(this: ActorId, game: &mut Q2GameServices, other: ActorId)
 }
 
 /// Door activate (`doorActivate`).
-fn door_activate(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn door_activate(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let max_health = game.require_entity(&this).max_health;
     let entity = game.require_entity_mut(&this);
     entity.use_ = None;
@@ -1565,7 +1612,10 @@ fn door_activate(
         let owned = game.owned_of(this.clone());
         game.host.combat().set_traits(
             &owned,
-            &CombatTraitChanges { can_take_damage: Some(true), ..CombatTraitChanges::default() },
+            &CombatTraitChanges {
+                can_take_damage: Some(true),
+                ..CombatTraitChanges::default()
+            },
         );
     }
     let frame_seconds = game.host.frame_seconds();
@@ -1604,12 +1654,7 @@ fn door_trigger_touch(this: ActorId, game: &mut Q2GameServices, contact: TouchCo
 }
 
 /// Train use (`trainUse`).
-fn train_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+fn train_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     game.require_entity_mut(&this).activator = activator;
     let entity = game.require_entity(&this).clone();
     if train_state(game, &this).ship && !entity.visible {
@@ -1657,7 +1702,19 @@ fn train_blocked(this: ActorId, game: &mut Q2GameServices, other: ActorId) {
     if game.host.combat().read(&other).is_some() {
         let zero = vec3(0.0, 0.0, 0.0);
         let damage = game.require_entity(&this).damage;
-        game.damage(other, this.clone(), Some(this), damage, 1.0, zero, body.origin, zero, 20, 0, None);
+        game.damage(
+            other,
+            this.clone(),
+            Some(this),
+            damage,
+            1.0,
+            zero,
+            body.origin,
+            zero,
+            20,
+            0,
+            None,
+        );
     }
 }
 
@@ -1665,7 +1722,8 @@ fn train_blocked(this: ActorId, game: &mut Q2GameServices, other: ActorId) {
 fn train_find(this: ActorId, game: &mut Q2GameServices) {
     let target_name = game.require_entity(&this).target.clone();
     let Some(target) = game.pick_target(&target_name) else {
-        game.host.diagnostic(&format!("Q2 train first target missing: {target_name}"));
+        game.host
+            .diagnostic(&format!("Q2 train first target missing: {target_name}"));
         return;
     };
     let next = game.require_entity(&target).target.clone();
@@ -1691,7 +1749,19 @@ fn rotating_damage(this: ActorId, game: &mut Q2GameServices, other: ActorId) {
         let zero = vec3(0.0, 0.0, 0.0);
         let damage = game.require_entity(&this).damage;
         let origin = body.map(|body| body.origin).unwrap_or(zero);
-        game.damage(other, this.clone(), Some(this), damage, 1.0, zero, origin, zero, 20, 0, None);
+        game.damage(
+            other,
+            this.clone(),
+            Some(this),
+            damage,
+            1.0,
+            zero,
+            origin,
+            zero,
+            20,
+            0,
+            None,
+        );
     }
 }
 
@@ -1701,12 +1771,7 @@ fn rotating_touch(this: ActorId, game: &mut Q2GameServices, contact: TouchContac
 }
 
 /// Rotating use (`rotatingUse`).
-fn rotating_use(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn rotating_use(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity(&this).clone();
     let stop = length3(entity.angular_velocity) != 0.0;
     let entity = game.require_entity_mut(&this);

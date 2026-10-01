@@ -485,7 +485,10 @@ pub struct Q2CtfMatchState {
 impl Q2CtfMatchState {
     /// Create match state (`new Q2CtfMatchState`).
     pub fn new() -> Self {
-        Self { last_time: -1.0, ..Self::default() }
+        Self {
+            last_time: -1.0,
+            ..Self::default()
+        }
     }
 }
 
@@ -569,7 +572,11 @@ pub fn ctf_flag(team: Q2CtfPlayingTeam) -> &'static Q2CtfFlagInfo {
 
 /// Other CTF team (`otherCtfTeam`).
 pub fn other_ctf_team(team: Q2CtfPlayingTeam) -> Q2CtfPlayingTeam {
-    if team == 1 { 2 } else { 1 }
+    if team == 1 {
+        2
+    } else {
+        1
+    }
 }
 
 /// CTF team name (`ctfTeamName`).
@@ -585,7 +592,10 @@ pub fn ctf_team_name(team: Q2CtfTeam) -> &'static str {
 
 /// Read the admitted CTF player state (`ctfPlayer`).
 pub fn ctf_player<'a>(game: &'a mut Q2GameServices, actor: &ActorId) -> &'a mut Q2CtfPlayerState {
-    game.ctf.states.get_mut(actor).unwrap_or_else(|| panic!("CTF player has not been admitted to the shared match"))
+    game.ctf
+        .states
+        .get_mut(actor)
+        .unwrap_or_else(|| panic!("CTF player has not been admitted to the shared match"))
 }
 
 /// CTF print level.
@@ -611,13 +621,19 @@ impl From<Q2CtfPrintLevel> for Q2PrintLevel {
 
 /// Print CTF text (`ctfPrint`).
 pub fn ctf_print(game: &mut Q2GameServices, text: &str, actor: Option<ActorId>, level: Q2CtfPrintLevel) {
-    game.host_emit(Q2PresentationEvent::Print { actor, level: level.into(), text: text.to_string() });
+    game.host_emit(Q2PresentationEvent::Print {
+        actor,
+        level: level.into(),
+        text: text.to_string(),
+    });
 }
 
 /// CTF player name (`ctfName`).
 pub fn ctf_name(game: &mut Q2GameServices, actor: &ActorId) -> String {
     let hooks = super::ctf_hooks(game);
-    (hooks.player)(actor.clone(), game).map(|player| player.name.clone()).unwrap_or_else(|| "player".to_string())
+    (hooks.player)(actor.clone(), game)
+        .map(|player| player.name.clone())
+        .unwrap_or_else(|| "player".to_string())
 }
 
 /// Add CTF score (`ctfScore`).

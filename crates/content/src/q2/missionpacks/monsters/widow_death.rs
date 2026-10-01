@@ -6,14 +6,11 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Bounds, Vec3};
 
 use super::widow_common::widow_project;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent,
-    Q2Solid,
-};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid};
 use crate::q2::foundation::monsters::gibs::q2_gib_callbacks;
 use crate::q2::foundation::monsters::resume_monster;
 use crate::q2::foundation::monsters::types::MonsterContext;
@@ -82,10 +79,7 @@ pub fn widow_gib(
         ),
         0.5,
     );
-    let center = add3(
-        body.origin,
-        add3(body.bounds.min, add3(half, vec3(-1.0, -1.0, -1.0))),
-    );
+    let center = add3(body.origin, add3(body.bounds.min, add3(half, vec3(-1.0, -1.0, -1.0))));
     let point = origin.unwrap_or_else(|| {
         add3(
             center,
@@ -104,7 +98,11 @@ pub fn widow_gib(
         entity.die = Some(widow_gib_die);
     }
     let lifetime = (if fade {
-        if sized { 20.0 } else { 5.0 }
+        if sized {
+            20.0
+        } else {
+            5.0
+        }
     } else if sized {
         60.0
     } else {
@@ -238,10 +236,7 @@ fn widow_legs_think(actor: ActorId, game: &mut Q2GameServices) {
         game.require_entity_mut(&actor).wait = wait;
     }
     if game.host.now() > game.require_entity(&actor).wait {
-        for (offset, pieces) in [
-            (vec3(-65.6, -8.44, 28.59), 2),
-            (vec3(-1.04, -51.18, 7.04), 3),
-        ] {
+        for (offset, pieces) in [(vec3(-65.6, -8.44, 28.59), 2), (vec3(-1.04, -51.18, 7.04), 3)] {
             let point = widow_project(&actor, game, offset);
             widow_effect(game, point, "q2:explosion1", 1);
             widow_small(&actor, game, point);
@@ -254,9 +249,7 @@ fn widow_legs_think(actor: ActorId, game: &mut Q2GameServices) {
         game.remove_actor(actor);
         return;
     }
-    if game.host.now() > game.require_entity(&actor).wait - 0.5
-        && game.require_entity(&actor).count == 0
-    {
+    if game.host.now() > game.require_entity(&actor).wait - 0.5 && game.require_entity(&actor).count == 0 {
         game.require_entity_mut(&actor).count = 1;
         let first = widow_project(&actor, game, vec3(31.0, -88.7, 10.96));
         widow_effect(game, first, "q2:explosion1", 1);
@@ -301,10 +294,40 @@ pub fn widow_explosion(context: &mut MonsterContext, offset: Vec3) {
     let actor = context.actor().clone();
     let point = widow_project(&actor, &mut *context.game, offset);
     widow_effect(&mut *context.game, point, "q2:explosion1", 1);
-    widow_gib(&actor, &mut *context.game, MEAT, 300.0, true, Some(point), false, "", false);
-    widow_gib(&actor, &mut *context.game, METAL, 100.0, false, Some(point), false, "", false);
+    widow_gib(
+        &actor,
+        &mut *context.game,
+        MEAT,
+        300.0,
+        true,
+        Some(point),
+        false,
+        "",
+        false,
+    );
+    widow_gib(
+        &actor,
+        &mut *context.game,
+        METAL,
+        100.0,
+        false,
+        Some(point),
+        false,
+        "",
+        false,
+    );
     for _ in 0..2 {
-        widow_gib(&actor, &mut *context.game, METAL, 300.0, false, Some(point), false, "", false);
+        widow_gib(
+            &actor,
+            &mut *context.game,
+            METAL,
+            300.0,
+            false,
+            Some(point),
+            false,
+            "",
+            false,
+        );
     }
 }
 
@@ -338,8 +361,28 @@ pub fn widow_explosion_leg(context: &mut MonsterContext) {
             "misc/fhit3.wav",
             false,
         );
-        widow_gib(&actor, &mut *context.game, MEAT, 300.0, true, Some(point), false, "", false);
-        widow_gib(&actor, &mut *context.game, METAL, 100.0, false, Some(point), false, "", false);
+        widow_gib(
+            &actor,
+            &mut *context.game,
+            MEAT,
+            300.0,
+            true,
+            Some(point),
+            false,
+            "",
+            false,
+        );
+        widow_gib(
+            &actor,
+            &mut *context.game,
+            METAL,
+            100.0,
+            false,
+            Some(point),
+            false,
+            "",
+            false,
+        );
     }
 }
 

@@ -6,19 +6,15 @@
 use std::collections::HashMap;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Vec3};
 
 use super::ai::{
-    FL_NOTARGET, MASK_OPAQUE, angles_vectors, attack_trace_mask, change_yaw, chase_direction,
-    enemy_body, enemy_eye, health, in_front, monster_solid_mask, step_direction, target_distance,
-    vector_angles, visible,
+    angles_vectors, attack_trace_mask, change_yaw, chase_direction, enemy_body, enemy_eye, health, in_front,
+    monster_solid_mask, step_direction, target_distance, vector_angles, visible, FL_NOTARGET, MASK_OPAQUE,
 };
-use super::checkpoint::{
-    Q2MonsterPerceptionCheckpoint, SavedNoise, SavedSighting, save_actor,
-};
+use super::checkpoint::{save_actor, Q2MonsterPerceptionCheckpoint, SavedNoise, SavedSighting};
 use super::types::{
-    MonsterAttackState, MonsterCheckAttack, MonsterContext, MonsterLocomotion,
-    MonsterSoundTarget, SourceCombatMode,
+    MonsterAttackState, MonsterCheckAttack, MonsterContext, MonsterLocomotion, MonsterSoundTarget, SourceCombatMode,
 };
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode, Q2TraceRequest};
 use crate::q2::support::contracts::TraceHit;
@@ -96,7 +92,10 @@ pub struct PerceptionRuntime {
 impl PerceptionRuntime {
     /// Empty perception state.
     pub fn new() -> Self {
-        Self { last_frame: f64::NEG_INFINITY, ..Self::default() }
+        Self {
+            last_frame: f64::NEG_INFINITY,
+            ..Self::default()
+        }
     }
 
     /// Drop perception state after an actor release (`release`).
@@ -153,16 +152,17 @@ pub fn default_check_attack(context: &mut MonsterContext) -> bool {
 ///
 /// The species-specific `M_CheckAttack` slot; the controller handles
 /// turning and dispatch separately.
-pub fn check_attack_with_profile(
-    context: &mut MonsterContext,
-    profile: &Q2AttackChanceProfile,
-) -> bool {
+pub fn check_attack_with_profile(context: &mut MonsterContext, profile: &Q2AttackChanceProfile) -> bool {
     let Some(target) = enemy_eye(context) else { return false };
     let rerelease = context.game.options.edition == Q2Edition::Rerelease;
     let rogue = context.source_combat_rules() == SourceCombatMode::Rogue;
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
-    let start = vec3(body.origin.x, body.origin.y, body.origin.z + context.entity().view_height as f32);
+    let start = vec3(
+        body.origin.x,
+        body.origin.y,
+        body.origin.z + context.entity().view_height as f32,
+    );
     let enemy_actor = context.entity().enemy.clone();
     if health(context.game, enemy_actor.as_ref()) > 0.0 {
         let mask = attack_trace_mask(context.game);
@@ -176,8 +176,7 @@ pub fn check_attack_with_profile(
         });
         let hit_enemy = match &trace.hit {
             TraceHit::Actor { actor: hit } => {
-                Some(hit) == enemy_actor.as_ref()
-                    || rerelease && context.game.host.is_player(hit)
+                Some(hit) == enemy_actor.as_ref() || rerelease && context.game.host.is_player(hit)
             }
             _ => false,
         };
@@ -237,10 +236,12 @@ pub fn check_attack_with_profile(
             }
             return false;
         }
-        let melee = context.state().has_melee
-            && (!rerelease || context.state().melee_time <= context.game.host.now());
-        context.state_mut().attack_state =
-            if melee { MonsterAttackState::Melee } else { MonsterAttackState::Missile };
+        let melee = context.state().has_melee && (!rerelease || context.state().melee_time <= context.game.host.now());
+        context.state_mut().attack_state = if melee {
+            MonsterAttackState::Melee
+        } else {
+            MonsterAttackState::Missile
+        };
         return true;
     }
     if rerelease
@@ -255,9 +256,7 @@ pub fn check_attack_with_profile(
         }
         return false;
     }
-    if context.game.host.now() < context.state().attack_finished
-        || !rerelease && distance >= 1000.0
-    {
+    if context.game.host.now() < context.state().attack_finished || !rerelease && distance >= 1000.0 {
         return false;
     }
     let mut chance = if rerelease {
@@ -297,7 +296,9 @@ pub fn check_attack_with_profile(
             .entity(enemy)
             .is_some_and(|target| target.solid == crate::q2::foundation::host::Q2Solid::None)
     });
-    let hostile_enemy = enemy_actor.as_ref().is_some_and(|enemy| !context.game.host.is_player(enemy));
+    let hostile_enemy = enemy_actor
+        .as_ref()
+        .is_some_and(|enemy| !context.game.host.is_player(enemy));
     if rerelease && (hostile_enemy && non_solid_enemy || context.game.random() < chance)
         || !rerelease && (context.game.random() < chance || rogue && non_solid_enemy)
     {
@@ -318,13 +319,16 @@ pub fn check_attack_with_profile(
             .and_then(|enemy| context.game.entity(enemy))
             .map(|target| target.classname.clone());
         let mut strafe_chance = if rerelease || rogue {
-            if context.entity().classname == "monster_daedalus" { 0.8 } else { 0.6 }
+            if context.entity().classname == "monster_daedalus" {
+                0.8
+            } else {
+                0.6
+            }
         } else {
             0.3
         };
         if (rerelease || rogue)
-            && (enemy_class.as_deref() == Some("tesla")
-                || rerelease && enemy_class.as_deref() == Some("tesla_mine"))
+            && (enemy_class.as_deref() == Some("tesla") || rerelease && enemy_class.as_deref() == Some("tesla_mine"))
         {
             strafe_chance = 0.0;
         } else if rerelease {
@@ -350,10 +354,7 @@ pub fn check_attack_with_profile(
             context.state_mut().strafe_time = strafe;
         }
         context.state_mut().attack_state = next;
-    } else if rerelease
-        && context.state().locomotion != MonsterLocomotion::Fly
-        && context.state().pathing.is_none()
-    {
+    } else if rerelease && context.state().locomotion != MonsterLocomotion::Fly && context.state().pathing.is_none() {
         context.state_mut().attack_state = MonsterAttackState::Straight;
     }
     false
@@ -383,7 +384,13 @@ pub fn capture(game: &Q2GameServices) -> Q2MonsterPerceptionCheckpoint {
         .alerted
         .iter()
         .map(|(id, value)| {
-            (saved(id), SavedSighting { actor: saved(&value.actor), time: value.time })
+            (
+                saved(id),
+                SavedSighting {
+                    actor: saved(&value.actor),
+                    time: value.time,
+                },
+            )
         })
         .collect();
     alerted.sort_by_key(|(actor, _)| (actor.slot, actor.generation));
@@ -405,11 +412,8 @@ pub fn capture(game: &Q2GameServices) -> Q2MonsterPerceptionCheckpoint {
         .map(|(id, origin)| (saved(id), *origin))
         .collect();
     player_origins.sort_by_key(|(actor, _)| (actor.slot, actor.generation));
-    let mut hostile: Vec<(SavedActorId, f64)> = perception
-        .hostile
-        .iter()
-        .map(|(id, time)| (saved(id), *time))
-        .collect();
+    let mut hostile: Vec<(SavedActorId, f64)> =
+        perception.hostile.iter().map(|(id, time)| (saved(id), *time)).collect();
     hostile.sort_by_key(|(actor, _)| (actor.slot, actor.generation));
     Q2MonsterPerceptionCheckpoint {
         sight_client: perception.sight_client.as_ref().map(saved),
@@ -431,8 +435,7 @@ pub fn capture(game: &Q2GameServices) -> Q2MonsterPerceptionCheckpoint {
 
 /// Restore perception state (`restore`).
 pub fn restore(game: &mut Q2GameServices, checkpoint: &Q2MonsterPerceptionCheckpoint) {
-    let sight_client =
-        checkpoint.sight_client.map(|id| game.host.actors().reference_saved(id));
+    let sight_client = checkpoint.sight_client.map(|id| game.host.actors().reference_saved(id));
     let sight = checkpoint.sight.as_ref().map(|value| Sighting {
         actor: game.host.actors().reference_saved(value.actor),
         time: value.time,
@@ -443,10 +446,11 @@ pub fn restore(game: &mut Q2GameServices, checkpoint: &Q2MonsterPerceptionCheckp
         owner: game.host.actors().reference_saved(value.owner),
         origin: value.origin,
     };
-    let primary =
-        checkpoint.primary.as_ref().map(|value| saved_noise(&mut *game, value));
-    let secondary =
-        checkpoint.secondary.as_ref().map(|value| saved_noise(&mut *game, value));
+    let primary = checkpoint.primary.as_ref().map(|value| saved_noise(&mut *game, value));
+    let secondary = checkpoint
+        .secondary
+        .as_ref()
+        .map(|value| saved_noise(&mut *game, value));
     let perception = &mut game.monsters.perception;
     perception.sight_client = sight_client;
     perception.sight = sight;
@@ -466,7 +470,10 @@ pub fn restore(game: &mut Q2GameServices, checkpoint: &Q2MonsterPerceptionCheckp
             let game = &mut *game;
             (
                 game.host.actors().reference_saved(*id),
-                Sighting { actor: game.host.actors().reference_saved(value.actor), time: value.time },
+                Sighting {
+                    actor: game.host.actors().reference_saved(value.actor),
+                    time: value.time,
+                },
             )
         })
         .collect();
@@ -538,15 +545,16 @@ pub fn begin_frame(game: &mut Q2GameServices) {
     let sight_client = game.monsters.perception.sight_client.clone();
     let current = match sight_client {
         None => 0,
-        Some(id) => players.iter().position(|player| *player == id).map(|index| index as i32).unwrap_or(-1),
+        Some(id) => players
+            .iter()
+            .position(|player| *player == id)
+            .map(|index| index as i32)
+            .unwrap_or(-1),
     };
     game.monsters.perception.sight_client = None;
     for i in 1..=players.len() {
         let candidate = players[((current + i as i32) % players.len() as i32) as usize].clone();
-        let visible_flag = game
-            .entity(&candidate)
-            .map(|target| target.flags)
-            .unwrap_or(0);
+        let visible_flag = game.entity(&candidate).map(|target| target.flags).unwrap_or(0);
         if targetable(game, &candidate) && (rogue && (visible_flag & 0x8000) == 0 || !rogue) {
             game.monsters.perception.sight_client = Some(candidate);
             break;
@@ -558,35 +566,55 @@ pub fn begin_frame(game: &mut Q2GameServices) {
         if health(game, Some(&player)) <= 0.0 {
             continue;
         }
-        let trail = game.monsters.perception.trails.get(&player).cloned().unwrap_or_default();
+        let trail = game
+            .monsters
+            .perception
+            .trails
+            .get(&player)
+            .cloned()
+            .unwrap_or_default();
         let previous = trail.last().copied();
         let observed = game.monster_target(Some(&player));
         let Some(observed) = observed else { continue };
-        let eye = vec3(body.origin.x, body.origin.y, body.origin.z + observed.view_height as f32);
+        let eye = vec3(
+            body.origin.x,
+            body.origin.y,
+            body.origin.z + observed.view_height as f32,
+        );
         let stale = match previous {
             None => true,
             Some(previous) => {
-                game.host.trace(&Q2TraceRequest {
-                    start: eye,
-                    end: previous.origin,
-                    bounds: None,
-                    ignore: Some(player.clone()),
-                    mask: MASK_OPAQUE,
-                    exclude: Vec::new(),
-                })
-                .fraction
+                game.host
+                    .trace(&Q2TraceRequest {
+                        start: eye,
+                        end: previous.origin,
+                        bounds: None,
+                        ignore: Some(player.clone()),
+                        mask: MASK_OPAQUE,
+                        exclude: Vec::new(),
+                    })
+                    .fraction
                     != 1.0
             }
         };
         if stale {
-            let old_origin =
-                game.monsters.perception.player_origins.get(&player).copied().unwrap_or(body.origin);
+            let old_origin = game
+                .monsters
+                .perception
+                .player_origins
+                .get(&player)
+                .copied()
+                .unwrap_or(body.origin);
             let yaw = match previous {
                 None => f64::from(body.angles.y),
                 Some(previous) => f64::from(vector_angles(sub3(old_origin, previous.origin)).y),
             };
             let mut trail = trail;
-            trail.push(TrailPoint { origin: old_origin, time: now, yaw });
+            trail.push(TrailPoint {
+                origin: old_origin,
+                time: now,
+                yaw,
+            });
             if trail.len() > 8 {
                 trail.remove(0);
             }
@@ -620,7 +648,10 @@ pub fn report_noise(game: &mut Q2GameServices, actor: ActorId, origin: Vec3, sec
                 };
                 game.write_body(noise, &moved, false);
             }
-            let pair = NoisePair { primary, secondary: other };
+            let pair = NoisePair {
+                primary,
+                secondary: other,
+            };
             game.monsters.perception.noises.insert(actor.clone(), pair.clone());
             pair
         }
@@ -632,8 +663,12 @@ pub fn report_noise(game: &mut Q2GameServices, actor: ActorId, origin: Vec3, sec
     let mut moved = game.body_of(noise_actor.clone());
     moved.origin = origin;
     game.write_body(noise_actor.clone(), &moved, true);
-    let record =
-        Noise { actor: noise_actor, owner: actor, origin, time: game.host.now() };
+    let record = Noise {
+        actor: noise_actor,
+        owner: actor,
+        origin,
+        time: game.host.now(),
+    };
     if secondary {
         game.monsters.perception.secondary = Some(record);
     } else {
@@ -651,7 +686,9 @@ fn targetable(game: &mut Q2GameServices, actor: &ActorId) -> bool {
 
 /// Whether an actor is a visual candidate (`visualCandidate`).
 fn visual_candidate(context: &mut MonsterContext, actor: &ActorId) -> bool {
-    let Some(_target) = context.game.host.bodies().read(actor) else { return false };
+    let Some(_target) = context.game.host.bodies().read(actor) else {
+        return false;
+    };
     if !context.game.host.actors().is_live(actor) {
         return false;
     }
@@ -664,23 +701,24 @@ fn visual_candidate(context: &mut MonsterContext, actor: &ActorId) -> bool {
             return false;
         }
         let now = context.game.host.now();
-        let hostile = context.game.monsters.perception.hostile.get(actor).copied().unwrap_or(-1.0);
-        return distance <= 440.0
-            && hostile >= now
-            && (context.entity().spawnflags & 1) == 0
+        let hostile = context
+            .game
+            .monsters
+            .perception
+            .hostile
+            .get(actor)
+            .copied()
+            .unwrap_or(-1.0);
+        return distance <= 440.0 && hostile >= now && (context.entity().spawnflags & 1) == 0
             || visible(context, Some(actor)) && (distance <= 20.0 || in_front(context, actor));
     }
     let observed = context.game.monster_target(Some(actor));
     let Some(observed) = observed else { return false };
-    if distance >= 1000.0
-        || observed.light_level.is_some_and(|light| light <= 5.0)
-        || !visible(context, Some(actor))
-    {
+    if distance >= 1000.0 || observed.light_level.is_some_and(|light| light <= 5.0) || !visible(context, Some(actor)) {
         return false;
     }
     if distance >= 80.0 && distance < 500.0 {
-        let shown_state =
-            context.game.monsters.states.get(actor).map(|state| state.show_hostile);
+        let shown_state = context.game.monsters.states.get(actor).map(|state| state.show_hostile);
         let shown = shown_state
             .or_else(|| context.game.monsters.perception.hostile.get(actor).copied())
             .unwrap_or(-1.0);
@@ -716,7 +754,9 @@ pub fn find_target(context: &mut MonsterContext) -> bool {
             if !targetable(context.game, &actor) {
                 continue;
             }
-            let Some(target) = context.game.host.bodies().read(&actor) else { continue };
+            let Some(target) = context.game.host.bodies().read(&actor) else {
+                continue;
+            };
             if close_enough(context, target.origin, 0.0, Some(&actor))
                 || in_front(context, &actor) && visible(context, Some(&actor))
             {
@@ -731,8 +771,7 @@ pub fn find_target(context: &mut MonsterContext) -> bool {
             return false;
         }
         if candidate.is_none() && (context.entity().spawnflags & 1) == 0 {
-            let alerted: Vec<Sighting> =
-                context.game.monsters.perception.alerted.values().cloned().collect();
+            let alerted: Vec<Sighting> = context.game.monsters.perception.alerted.values().cloned().collect();
             // Donor map order is insertion order; slot order keeps the
             // scan deterministic.
             let mut alerted = alerted;
@@ -744,9 +783,7 @@ pub fn find_target(context: &mut MonsterContext) -> bool {
                 }
             }
         }
-    } else if recent_sight(context.game.monsters.perception.sight.clone())
-        && (context.entity().spawnflags & 1) == 0
-    {
+    } else if recent_sight(context.game.monsters.perception.sight.clone()) && (context.entity().spawnflags & 1) == 0 {
         candidate = context.game.monsters.perception.sight.clone().map(|sight| sight.actor);
         let candidate_enemy = candidate
             .as_ref()
@@ -837,11 +874,10 @@ pub fn find_target(context: &mut MonsterContext) -> bool {
                 return false;
             }
         } else if context.game.host.is_monster(&candidate) {
-            let candidate_enemy = context
-                .game
-                .entity(&candidate)
-                .and_then(|target| target.enemy.clone());
-            let Some(candidate_enemy) = candidate_enemy else { return false };
+            let candidate_enemy = context.game.entity(&candidate).and_then(|target| target.enemy.clone());
+            let Some(candidate_enemy) = candidate_enemy else {
+                return false;
+            };
             if !targetable(context.game, &candidate_enemy) {
                 return false;
             }
@@ -855,10 +891,7 @@ pub fn find_target(context: &mut MonsterContext) -> bool {
         if context.game.host.is_player(&candidate) {
             context.entity_mut().enemy = Some(candidate);
         } else {
-            let candidate_enemy = context
-                .game
-                .entity(&candidate)
-                .and_then(|target| target.enemy.clone());
+            let candidate_enemy = context.game.entity(&candidate).and_then(|target| target.enemy.clone());
             context.entity_mut().enemy = candidate_enemy;
         }
         let enemy = context.entity().enemy.clone();
@@ -909,15 +942,26 @@ pub fn hunt_target(context: &mut MonsterContext) {
 pub fn found_target(context: &mut MonsterContext) {
     let Some(enemy) = enemy_body(context) else { return };
     let enemy_actor = context.entity().enemy.clone();
-    if enemy_actor.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy)) {
+    if enemy_actor
+        .as_ref()
+        .is_some_and(|enemy| context.game.host.is_player(enemy))
+    {
         let enemy_actor = enemy_actor.clone().expect("player enemy");
         if context.source_combat_rules() == SourceCombatMode::Rogue {
             context.game.require_entity_mut(&enemy_actor).flags &= !0x8000;
         }
         let actor = context.actor().clone();
-        let record = Sighting { actor, time: context.game.host.now() };
+        let record = Sighting {
+            actor,
+            time: context.game.host.now(),
+        };
         context.game.monsters.perception.sight = Some(record.clone());
-        context.game.monsters.perception.alerted.insert(enemy_actor.clone(), record);
+        context
+            .game
+            .monsters
+            .perception
+            .alerted
+            .insert(enemy_actor.clone(), record);
         let hostile = context.game.host.now() + 1.0;
         context.game.monsters.perception.hostile.insert(enemy_actor, hostile);
     }
@@ -943,9 +987,7 @@ pub fn found_target(context: &mut MonsterContext) {
     context.state_mut().last_sighting = enemy.origin;
     let now = context.game.host.now();
     context.state_mut().trail_time = now;
-    if context.source_combat_rules() == SourceCombatMode::Rogue
-        && context.game.options.edition == Q2Edition::Classic
-    {
+    if context.source_combat_rules() == SourceCombatMode::Rogue && context.game.options.edition == Q2Edition::Classic {
         context.state_mut().blind_fire_target = enemy.origin;
     }
     let actor = context.actor().clone();
@@ -973,7 +1015,10 @@ pub fn found_target(context: &mut MonsterContext) {
     let target = context.game.pick_target(&combat_target);
     let Some(target) = target else {
         let classname = context.entity().classname.clone();
-        context.game.host.diagnostic(&format!("{classname}: combattarget {combat_target} not found"));
+        context
+            .game
+            .host
+            .diagnostic(&format!("{classname}: combattarget {combat_target} not found"));
         hunt_target(context);
         return;
     };
@@ -996,8 +1041,10 @@ pub fn react_to_damage(context: &mut MonsterContext, attacker: Option<&ActorId>)
         return;
     }
     let mut hooks = context.game.monsters.source_combat_hooks.take();
-    let handled =
-        hooks.as_mut().map(|hooks| hooks.before_react(context, &attacker)).unwrap_or(false);
+    let handled = hooks
+        .as_mut()
+        .map(|hooks| hooks.before_react(context, &attacker))
+        .unwrap_or(false);
     context.game.monsters.source_combat_hooks = hooks;
     if handled {
         return;
@@ -1010,7 +1057,12 @@ pub fn react_to_damage(context: &mut MonsterContext, attacker: Option<&ActorId>)
     let rogue = context.source_combat_rules() == SourceCombatMode::Rogue;
     if context.state().good_guy
         && (context.game.host.is_player(&attacker)
-            || context.game.monsters.states.get(&attacker).is_some_and(|state| state.good_guy)
+            || context
+                .game
+                .monsters
+                .states
+                .get(&attacker)
+                .is_some_and(|state| state.good_guy)
             || other.as_ref().is_some_and(|_| {
                 let mut hooks = context.game.monsters.source_combat_hooks.take();
                 let good = other.as_ref().is_some_and(|entity| {
@@ -1028,8 +1080,9 @@ pub fn react_to_damage(context: &mut MonsterContext, attacker: Option<&ActorId>)
     if context.game.host.is_player(&attacker) {
         context.state_mut().sound_target = None;
         let current_enemy = context.entity().enemy.clone();
-        let enemy_is_player =
-            current_enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy));
+        let enemy_is_player = current_enemy
+            .as_ref()
+            .is_some_and(|enemy| context.game.host.is_player(enemy));
         if enemy_is_player {
             if visible(context, None) {
                 context.state_mut().old_enemy = Some(attacker.clone());
@@ -1049,15 +1102,17 @@ pub fn react_to_damage(context: &mut MonsterContext, attacker: Option<&ActorId>)
                     .get(&attacker)
                     .is_some_and(|state| state.ignore_shots)
         } else {
-            ["monster_tank", "monster_supertank", "monster_makron", "monster_jorg"]
-                .contains(&other.classname.as_str())
+            ["monster_tank", "monster_supertank", "monster_makron", "monster_jorg"].contains(&other.classname.as_str())
         };
         let retaliate = (context.entity().flags & 3) == (other.flags & 3)
             && context.entity().classname != other.classname
             && !ignore_shots
             || other.enemy == Some(actor.clone());
         let current_enemy = context.entity().enemy.clone();
-        if current_enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy)) {
+        if current_enemy
+            .as_ref()
+            .is_some_and(|enemy| context.game.host.is_player(enemy))
+        {
             context.state_mut().old_enemy = current_enemy;
         }
         if retaliate {
@@ -1138,7 +1193,10 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
             context.entity_mut().goal = None;
         }
         let old_enemy = context.state().old_enemy.clone();
-        if old_enemy.as_ref().is_some_and(|old| health(context.game, Some(old)) > 0.0) {
+        if old_enemy
+            .as_ref()
+            .is_some_and(|old| health(context.game, Some(old)) > 0.0)
+        {
             context.entity_mut().enemy = old_enemy;
             context.state_mut().old_enemy = None;
             hunt_target(context);
@@ -1147,8 +1205,7 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
             && context.game.monsters.source_combat_hooks.is_some()
         {
             let mut hooks = context.game.monsters.source_combat_hooks.take();
-            let recovered =
-                hooks.as_mut().map(|hooks| hooks.recover_enemy(context)).unwrap_or(None);
+            let recovered = hooks.as_mut().map(|hooks| hooks.recover_enemy(context)).unwrap_or(None);
             context.game.monsters.source_combat_hooks = hooks;
             context.entity_mut().enemy = recovered;
             if context.entity().enemy.is_some() {
@@ -1203,8 +1260,7 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
             context.state_mut().saved_goal = Some(enemy.origin);
             let now = context.game.host.now();
             context.state_mut().trail_time = now;
-            context.state_mut().blind_fire_target =
-                add3(enemy.origin, scale3(enemy.velocity, -0.1));
+            context.state_mut().blind_fire_target = add3(enemy.origin, scale3(enemy.velocity, -0.1));
             context.state_mut().blind_fire_delay = 0.0;
             if let Some(enemy_actor) = context.entity().enemy.clone() {
                 let hostile = context.game.host.now() + 1.0;
@@ -1223,8 +1279,7 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
         ) {
             let actor = context.actor().clone();
             let origin = context.game.body_of(actor).origin;
-            context.state_mut().ideal_yaw =
-                f64::from(vector_angles(sub3(enemy.origin, origin)).y);
+            context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(enemy.origin, origin)).y);
             if !context.state().manual_steering {
                 change_yaw(context);
             }
@@ -1276,9 +1331,7 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
             if !rerelease
                 || matches!(
                     context.state().attack_state,
-                    MonsterAttackState::Missile
-                        | MonsterAttackState::Blind
-                        | MonsterAttackState::Melee
+                    MonsterAttackState::Missile | MonsterAttackState::Blind | MonsterAttackState::Melee
                 )
             {
                 context.state_mut().attack_state = MonsterAttackState::Straight;
@@ -1296,8 +1349,7 @@ pub fn check_attack(context: &mut MonsterContext, check: MonsterCheckAttack) -> 
 pub fn move_to_goal(context: &mut MonsterContext, distance: f64) -> bool {
     let actor = context.actor().clone();
     if context.state().locomotion == MonsterLocomotion::Stationary
-        || context.game.body_of(actor).ground.is_none()
-            && context.state().locomotion == MonsterLocomotion::Walk
+        || context.game.body_of(actor).ground.is_none() && context.state().locomotion == MonsterLocomotion::Walk
     {
         return false;
     }
@@ -1323,9 +1375,7 @@ pub fn move_to_goal(context: &mut MonsterContext, distance: f64) -> bool {
     if tracking {
         let enemy_origin = enemy.map(|body| body.origin);
         let enemy_actor = context.entity().enemy.clone();
-        if enemy_origin.is_some_and(|origin| {
-            close_enough(context, origin, distance, enemy_actor.as_ref())
-        }) {
+        if enemy_origin.is_some_and(|origin| close_enough(context, origin, distance, enemy_actor.as_ref())) {
             return true;
         }
     }
@@ -1352,12 +1402,7 @@ pub fn move_to_goal(context: &mut MonsterContext, distance: f64) -> bool {
 }
 
 /// Whether an origin is within reach (`closeEnough`).
-fn close_enough(
-    context: &mut MonsterContext,
-    origin: Vec3,
-    distance: f64,
-    actor: Option<&ActorId>,
-) -> bool {
+fn close_enough(context: &mut MonsterContext, origin: Vec3, distance: f64, actor: Option<&ActorId>) -> bool {
     let self_actor = context.actor().clone();
     let body = context.game.body_of(self_actor);
     let target = actor.and_then(|actor| context.game.host.bodies().read(actor));
@@ -1402,11 +1447,16 @@ fn pursuit_goal(context: &mut MonsterContext, distance: f64) -> Vec3 {
                 .and_then(|enemy| context.game.monsters.perception.trails.get(enemy))
                 .cloned()
                 .unwrap_or_default();
-            let mut marker = trail.iter().find(|point| point.time > context.state().trail_time).copied();
+            let mut marker = trail
+                .iter()
+                .find(|point| point.time > context.state().trail_time)
+                .copied();
             if context.state().pursuit_last_seen && marker.is_some() {
-                let index =
-                    marker.and_then(|marker| trail.iter().position(|point| *point == marker));
-                let prior = index.and_then(|index| index.checked_sub(1)).and_then(|index| trail.get(index)).copied();
+                let index = marker.and_then(|marker| trail.iter().position(|point| *point == marker));
+                let prior = index
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| trail.get(index))
+                    .copied();
                 if let Some(marker_point) = marker {
                     let trace = context.game.host.trace(&Q2TraceRequest {
                         start: body.origin,
@@ -1418,15 +1468,18 @@ fn pursuit_goal(context: &mut MonsterContext, distance: f64) -> Vec3 {
                     });
                     if trace.fraction != 1.0 {
                         if let Some(prior) = prior {
-                            let clear = context.game.host.trace(&Q2TraceRequest {
-                                start: body.origin,
-                                end: prior.origin,
-                                bounds: None,
-                                ignore: Some(actor.clone()),
-                                mask: MASK_OPAQUE,
-                                exclude: Vec::new(),
-                            })
-                            .fraction
+                            let clear = context
+                                .game
+                                .host
+                                .trace(&Q2TraceRequest {
+                                    start: body.origin,
+                                    end: prior.origin,
+                                    bounds: None,
+                                    ignore: Some(actor.clone()),
+                                    mask: MASK_OPAQUE,
+                                    exclude: Vec::new(),
+                                })
+                                .fraction
                                 == 1.0;
                             if clear {
                                 marker = Some(prior);
@@ -1464,8 +1517,7 @@ fn pursuit_goal(context: &mut MonsterContext, distance: f64) -> Vec3 {
         });
         if center.fraction < 1.0 {
             let d2 = d1 * (center.fraction + 1.0) * 0.5;
-            context.state_mut().ideal_yaw =
-                f64::from(vector_angles(sub3(last_sighting, body.origin)).y);
+            context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(last_sighting, body.origin)).y);
             let ideal_yaw = context.state().ideal_yaw;
             let basis = angles_vectors(vec3(body.angles.x, ideal_yaw as f32, body.angles.z));
             let make = |forward: f64, right: f64| {
@@ -1504,11 +1556,9 @@ fn pursuit_goal(context: &mut MonsterContext, distance: f64) -> Vec3 {
                 let fraction = if side < 0.0 { left.fraction } else { right.fraction };
                 context.state_mut().saved_goal = Some(last_sighting);
                 context.state_mut().pursue_temporary = true;
-                context.state_mut().last_sighting =
-                    make(if fraction < 1.0 { d2 * fraction * 0.5 } else { d2 }, side);
+                context.state_mut().last_sighting = make(if fraction < 1.0 { d2 * fraction * 0.5 } else { d2 }, side);
                 let last_sighting = context.state().last_sighting;
-                context.state_mut().ideal_yaw =
-                    f64::from(vector_angles(sub3(last_sighting, body.origin)).y);
+                context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(last_sighting, body.origin)).y);
             }
             let ideal_yaw = context.state().ideal_yaw;
             let mut moved = context.game.body_of(actor.clone());

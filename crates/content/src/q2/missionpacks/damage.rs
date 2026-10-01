@@ -87,10 +87,7 @@ pub fn canonical_cause_from_native(native: &Q2NativeCause) -> Option<i32> {
 }
 
 /// Convert a canonical cause to native (`nativeCauseFromCanonical`).
-pub fn native_cause_from_canonical(
-    profile: &Q2NativeCauseProfile,
-    canonical: i32,
-) -> Option<Q2NativeCause> {
+pub fn native_cause_from_canonical(profile: &Q2NativeCauseProfile, canonical: i32) -> Option<Q2NativeCause> {
     if canonical < 0 || canonical > FRIENDLY_FIRE + 58 {
         return None;
     }

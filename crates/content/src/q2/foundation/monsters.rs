@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Vec3, add3, dot3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, scale3, sub3, vec3, Vec3};
 
 use self::types::{
-    MonsterAction, MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler, NextFrame, PlatformPhase, Q2MonsterDefinition, Q2MonsterHintHooks, Q2MonsterHooks,
-    Q2MonsterSourceCombatHooks, SourceCombatMode,
+    MonsterAction, MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler, NextFrame, PlatformPhase,
+    Q2MonsterDefinition, Q2MonsterHintHooks, Q2MonsterHooks, Q2MonsterSourceCombatHooks, SourceCombatMode,
 };
 use super::host::Q2GameServices;
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
@@ -31,8 +31,8 @@ pub mod gibs;
 pub mod infantry;
 pub mod moves;
 pub mod muzzle;
-pub mod soldier;
 pub mod perception;
+pub mod soldier;
 pub mod types;
 
 /// External path follower (`Q2PathFollower`).
@@ -209,9 +209,9 @@ fn shared_duck_up(context: &mut MonsterContext) {
 fn shared_footstep(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     if context.game.body_of(actor.clone()).ground.is_some() {
-        context.game.host_emit(
-            crate::q2::foundation::host::Q2PresentationEvent::EntityEvent { actor, event: 8 },
-        );
+        context
+            .game
+            .host_emit(crate::q2::foundation::host::Q2PresentationEvent::EntityEvent { actor, event: 8 });
     }
 }
 
@@ -263,7 +263,14 @@ pub fn monster_dodge(
         context.state_mut().pause_time = pause;
         let threshold = if context.game.options.skill == 1 { 0.33 } else { 0.66 };
         let duck = context.game.random() > threshold;
-        context.set_move(if duck { "soldier_move_duck" } else { "soldier_move_attack3" }, true);
+        context.set_move(
+            if duck {
+                "soldier_move_duck"
+            } else {
+                "soldier_move_attack3"
+            },
+            true,
+        );
         return;
     }
     let actor = context.actor().clone();
@@ -280,17 +287,15 @@ pub fn monster_dodge(
         context.entity_mut().enemy = Some(attacker);
         perception::found_target(context);
     }
-    if eta_seconds < context.game.host.frame_seconds()
-        || eta_seconds > 2.5
-        || random > 0.5
-    {
+    if eta_seconds < context.game.host.frame_seconds() || eta_seconds > 2.5 || random > 0.5 {
         return;
     }
     let actor = context.actor().clone();
     let body = context.game.body_of(actor);
-    let height = f64::from(body.origin.z + body.bounds.max.z)
-        - if ducker && trace.is_some() { 32.0 } else { 0.0 };
-    if ducker && trace.is_some() && !dodger
+    let height = f64::from(body.origin.z + body.bounds.max.z) - if ducker && trace.is_some() { 32.0 } else { 0.0 };
+    if ducker
+        && trace.is_some()
+        && !dodger
         && (trace.is_some_and(|trace| f64::from(trace.end.z) <= height) || context.state().ducked)
     {
         return;
@@ -305,8 +310,7 @@ pub fn monster_dodge(
             || context.state().ducked
         {
             if context.game.options.skill < 2
-                && context.game.random()
-                    >= if context.game.options.skill == 0 { 0.25 } else { 0.5 }
+                && context.game.random() >= if context.game.options.skill == 0 { 0.25 } else { 0.5 }
             {
                 let dodge = context.game.host.now() + 0.8 + context.game.random() * 0.6;
                 context.state_mut().dodge_time = dodge;
@@ -385,18 +389,25 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
             } else {
                 ahead
             };
-            let end = if down { vec3(ahead.x, ahead.y, self_min as f32 - 193.0) } else { ahead };
+            let end = if down {
+                vec3(ahead.x, ahead.y, self_min as f32 - 193.0)
+            } else {
+                ahead
+            };
             let mask = ai::monster_solid_mask(context.game);
             let clear = !down
-                || context.game.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
-                    start: body.origin,
-                    end: ahead,
-                    bounds: Some(body.bounds),
-                    ignore: Some(actor.clone()),
-                    mask,
-                    exclude: Vec::new(),
-                })
-                .fraction
+                || context
+                    .game
+                    .host
+                    .trace(&crate::q2::foundation::host::Q2TraceRequest {
+                        start: body.origin,
+                        end: ahead,
+                        bounds: Some(body.bounds),
+                        ignore: Some(actor.clone()),
+                        mask,
+                        exclude: Vec::new(),
+                    })
+                    .fraction
                     == 1.0;
             if clear {
                 let mask = ai::monster_solid_mask(context.game) | ai::MASK_WATER;
@@ -423,11 +434,7 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
                                 if plane.normal.z >= 0.9
                         )
                 };
-                if trace.fraction < 1.0
-                    && !trace.all_solid
-                    && !trace.start_solid
-                    && (solid & (3 | 32)) != 0
-                    && landing
+                if trace.fraction < 1.0 && !trace.all_solid && !trace.start_solid && (solid & (3 | 32)) != 0 && landing
                 {
                     if (solid & 32) != 0 {
                         let mask = ai::monster_solid_mask(context.game);
@@ -439,11 +446,11 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
                             mask,
                             exclude: Vec::new(),
                         });
-                        if (context.game.host.point_contents(vec3(
-                            deep.end.x,
-                            deep.end.y,
-                            deep.end.z + 48.0,
-                        )) & ai::MASK_WATER)
+                        if (context
+                            .game
+                            .host
+                            .point_contents(vec3(deep.end.x, deep.end.y, deep.end.z + 48.0))
+                            & ai::MASK_WATER)
                             != 0
                         {
                             return false;
@@ -452,21 +459,32 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
                     ai::finish_dodge(context);
                     let jump = context.game.host.now() + 3.0;
                     context.state_mut().jump_time = jump;
-                    context.set_move(if up { "infantry_move_jump2" } else { "infantry_move_jump" }, true);
+                    context.set_move(
+                        if up {
+                            "infantry_move_jump2"
+                        } else {
+                            "infantry_move_jump"
+                        },
+                        true,
+                    );
                     return true;
                 }
             }
         }
     }
-    let above = f64::from(enemy.origin.z + enemy.bounds.min.z)
-        >= f64::from(body.origin.z + body.bounds.max.z);
-    let below = f64::from(enemy.origin.z + enemy.bounds.max.z)
-        <= f64::from(body.origin.z + body.bounds.min.z);
+    let above = f64::from(enemy.origin.z + enemy.bounds.min.z) >= f64::from(body.origin.z + body.bounds.max.z);
+    let below = f64::from(enemy.origin.z + enemy.bounds.max.z) <= f64::from(body.origin.z + body.bounds.min.z);
     if !above && !below {
         return false;
     }
-    let mut platform = body.ground.as_ref().and_then(|ground| context.game.entity(ground).cloned());
-    if platform.as_ref().is_none_or(|platform| !platform.classname.starts_with("func_plat")) {
+    let mut platform = body
+        .ground
+        .as_ref()
+        .and_then(|ground| context.game.entity(ground).cloned());
+    if platform
+        .as_ref()
+        .is_none_or(|platform| !platform.classname.starts_with("func_plat"))
+    {
         let start = add3(body.origin, scale3(forward, distance as f32));
         let mask = ai::monster_solid_mask(context.game);
         let trace = context.game.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
@@ -478,9 +496,7 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
             exclude: Vec::new(),
         });
         platform = match &trace.hit {
-            crate::q2::support::contracts::TraceHit::Actor { actor } => {
-                context.game.entity(actor).cloned()
-            }
+            crate::q2::support::contracts::TraceHit::Actor { actor } => context.game.entity(actor).cloned(),
             _ => None,
         };
     }
@@ -491,15 +507,15 @@ pub fn monster_blocked(context: &mut MonsterContext, distance: f64) -> bool {
     let endpoint = context.platform_state(platform.actor.id());
     let on_platform = body.ground == Some(platform.actor.id().clone());
     let call = if above {
-        on_platform && endpoint == Some(PlatformPhase::Bottom)
-            || !on_platform && endpoint == Some(PlatformPhase::Top)
+        on_platform && endpoint == Some(PlatformPhase::Bottom) || !on_platform && endpoint == Some(PlatformPhase::Top)
     } else {
-        on_platform && endpoint == Some(PlatformPhase::Top)
-            || !on_platform && endpoint == Some(PlatformPhase::Bottom)
+        on_platform && endpoint == Some(PlatformPhase::Top) || !on_platform && endpoint == Some(PlatformPhase::Bottom)
     };
     if call {
         let platform_actor = platform.actor.id().clone();
-        context.game.dispatch_use(platform_actor, Some(actor.clone()), Some(actor));
+        context
+            .game
+            .dispatch_use(platform_actor, Some(actor.clone()), Some(actor));
         return true;
     }
     false
@@ -542,16 +558,14 @@ pub fn source_trigger_spawn(actor: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Monster use (`sourceUse`).
-pub fn source_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    activator: Option<ActorId>,
-) {
+pub fn source_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, activator: Option<ActorId>) {
     {
         let context = MonsterContext::new(actor.clone(), &mut *game);
         let mut mission = context.mission(&actor);
-        if mission.as_mut().is_some_and(|mission| mission.r#use(activator.as_ref())) {
+        if mission
+            .as_mut()
+            .is_some_and(|mission| mission.r#use(activator.as_ref()))
+        {
             return;
         }
     }
@@ -560,7 +574,11 @@ pub fn source_use(
         return;
     }
     let activator = activator.expect("use activator");
-    if context.game.monster_target(Some(&activator)).is_some_and(|observed| observed.notarget) {
+    if context
+        .game
+        .monster_target(Some(&activator))
+        .is_some_and(|observed| observed.notarget)
+    {
         return;
     }
     if !context.game.host.is_player(&activator)
@@ -592,7 +610,10 @@ pub fn source_trigger_use(
     let think = game.source_callbacks.resolve_think(Some("monster_triggered_spawn"));
     let think = think.expect("monster triggered spawn thinker");
     game.schedule(actor.clone(), delay, think);
-    if activator.as_ref().is_some_and(|activator| game.host.is_player(activator)) {
+    if activator
+        .as_ref()
+        .is_some_and(|activator| game.host.is_player(activator))
+    {
         game.require_entity_mut(&actor).enemy = activator;
     }
     game.require_entity_mut(&actor).use_ = Some(source_use as crate::q2::foundation::host::Q2Use);
@@ -630,8 +651,10 @@ pub fn source_die(actor: ActorId, game: &mut Q2GameServices, reaction: DeathReac
             entity.flags |= 1 << 19;
         }
         let mut context = MonsterContext::new(actor, game);
-        let hit =
-            PainHit { inflictor: reaction.inflictor.clone(), point: reaction.point };
+        let hit = PainHit {
+            inflictor: reaction.inflictor.clone(),
+            point: reaction.point,
+        };
         queue_pain(&mut context, reaction.pain.clone(), &hit);
         return;
     }
@@ -699,8 +722,13 @@ fn monster_think(context: &mut MonsterContext) {
     if !context.game.host.actors().is_live(&actor) || context.state().gibbed {
         return;
     }
-    let link_count =
-        context.game.host.bodies().linked(&actor).map(|body| body.link_count).unwrap_or(0);
+    let link_count = context
+        .game
+        .host
+        .bodies()
+        .linked(&actor)
+        .map(|body| body.link_count)
+        .unwrap_or(0);
     if link_count as i32 != context.state().last_link_count {
         context.state_mut().last_link_count = link_count as i32;
         check_ground(context);
@@ -764,16 +792,13 @@ fn move_frame(context: &mut MonsterContext) {
                     }
                 }
                 movement = context.state().current_move.clone();
-                let corpse = context.state().corpse
-                    || (context.entity().server_flags & 2) != 0;
+                let corpse = context.state().corpse || (context.entity().server_flags & 2) != 0;
                 let actor = context.actor().clone();
                 if corpse || !context.game.host.actors().is_live(&actor) {
                     return;
                 }
             }
-            if context.entity().frame < movement.first_frame
-                || context.entity().frame > movement.last_frame
-            {
+            if context.entity().frame < movement.first_frame || context.entity().frame > movement.last_frame {
                 context.state_mut().hold_frame = false;
                 context.entity_mut().frame = movement.first_frame;
             } else if !explicit && !context.state().hold_frame {
@@ -784,15 +809,11 @@ fn move_frame(context: &mut MonsterContext) {
                 }
             }
         }
-        let next_move_time = crate::q2::foundation::entity_services::js_round(
-            (context.game.host.now() + 0.1) * 1000.0,
-        ) / 1000.0;
+        let next_move_time =
+            crate::q2::foundation::entity_services::js_round((context.game.host.now() + 0.1) * 1000.0) / 1000.0;
         context.state_mut().next_move_time = next_move_time;
         let next_frame = context.state().next_frame;
-        if rerelease
-            && next_frame != 0
-            && (next_frame < movement.first_frame || next_frame > movement.last_frame)
-        {
+        if rerelease && next_frame != 0 && (next_frame < movement.first_frame || next_frame > movement.last_frame) {
             context.state_mut().next_frame = 0;
         }
     }
@@ -803,7 +824,11 @@ fn move_frame(context: &mut MonsterContext) {
     } else {
         frame.distance
             * context.state().scale
-            * if rerelease { context.game.host.frame_seconds() * 10.0 } else { 1.0 }
+            * if rerelease {
+                context.game.host.frame_seconds() * 10.0
+            } else {
+                1.0
+            }
     };
     match &frame.ai {
         MonsterAi::Source(name) => {
@@ -843,11 +868,7 @@ fn move_frame(context: &mut MonsterContext) {
 }
 
 /// Process a death (`die`).
-fn monster_die(
-    context: &mut MonsterContext,
-    definition: std::rc::Rc<Q2MonsterDefinition>,
-    reaction: DeathReaction,
-) {
+fn monster_die(context: &mut MonsterContext, definition: std::rc::Rc<Q2MonsterDefinition>, reaction: DeathReaction) {
     let mut hooks = context.game.monsters.source_combat_hooks.take();
     if let Some(hooks) = hooks.as_mut() {
         hooks.before_killed(context);
@@ -855,22 +876,20 @@ fn monster_die(
     context.game.monsters.source_combat_hooks = hooks;
     if !context.state().dead {
         let commander = context.state().commander.clone();
-        let commander_entity =
-            commander.as_ref().and_then(|commander| context.game.entity(commander).cloned());
+        let commander_entity = commander
+            .as_ref()
+            .and_then(|commander| context.game.entity(commander).cloned());
         if let Some(commander_entity) = commander_entity {
             let commander_id = commander_entity.actor.id().clone();
             let spawned_by = context.state().spawned_by;
             let monster_slots = context.state().monster_slots;
             if let Some(commander_state) = context.game.monsters.states.get_mut(&commander_id) {
-                if spawned_by == types::MonsterSpawner::Carrier
-                    && commander_entity.classname == "monster_carrier"
-                {
+                if spawned_by == types::MonsterSpawner::Carrier && commander_entity.classname == "monster_carrier" {
                     commander_state.monster_slots += 1;
                 } else if spawned_by == types::MonsterSpawner::Medic
                     && commander_entity.classname == "monster_medic_commander"
                 {
-                    if context.game.options.edition == crate::q2::foundation::host::Q2Edition::Rerelease
-                    {
+                    if context.game.options.edition == crate::q2::foundation::host::Q2Edition::Rerelease {
                         commander_state.monster_used -= monster_slots;
                     } else {
                         commander_state.monster_slots += 1;
@@ -947,8 +966,16 @@ fn queue_pain(context: &mut MonsterContext, reaction: PainReaction, hit: &PainHi
     let pending = PendingMonsterDamage {
         reaction: DeathReaction {
             pain: PainReaction {
-                damage: reaction.damage + previous.as_ref().map(|pending| pending.reaction.pain.damage).unwrap_or(0.0),
-                kick: reaction.kick + previous.as_ref().map(|pending| pending.reaction.pain.kick).unwrap_or(0.0),
+                damage: reaction.damage
+                    + previous
+                        .as_ref()
+                        .map(|pending| pending.reaction.pain.damage)
+                        .unwrap_or(0.0),
+                kick: reaction.kick
+                    + previous
+                        .as_ref()
+                        .map(|pending| pending.reaction.pain.kick)
+                        .unwrap_or(0.0),
                 ..reaction.clone()
             },
             inflictor: hit.inflictor.clone(),
@@ -956,19 +983,20 @@ fn queue_pain(context: &mut MonsterContext, reaction: PainReaction, hit: &PainHi
         },
         attack: reaction.attack.clone(),
     };
-    context.game.monsters.pending_damage.insert(context.actor().clone(), pending);
+    context
+        .game
+        .monsters
+        .pending_damage
+        .insert(context.actor().clone(), pending);
 }
 
 /// Update the skin from health (`setSkin`).
 fn set_skin(context: &mut MonsterContext) {
-    if context.state().gibbed
-        || context.game.options.edition != crate::q2::foundation::host::Q2Edition::Rerelease
-    {
+    if context.state().gibbed || context.game.options.edition != crate::q2::foundation::host::Q2Edition::Rerelease {
         return;
     }
     let actor = context.actor().clone();
-    let wounded =
-        ai::health(context.game, Some(&actor)) < context.entity().max_health / 2.0;
+    let wounded = ai::health(context.game, Some(&actor)) < context.entity().max_health / 2.0;
     if context.state().kind == "soldier" {
         let skin = (context.entity().skin & !1) | if wounded { 1 } else { 0 };
         context.entity_mut().skin = skin;
@@ -997,14 +1025,20 @@ fn admit_monster(
         .find(|movement| movement.name == definition.initial_move)
         .cloned()
         .unwrap_or_else(|| panic!("Missing Q2 monster initial move {}", definition.initial_move));
-    let previous = if reviving { game.monsters.states.get(&actor).cloned() } else { None };
+    let previous = if reviving {
+        game.monsters.states.get(&actor).cloned()
+    } else {
+        None
+    };
     let classname = game.require_entity(&actor).classname.clone();
     let locomotion = definition.locomotion.unwrap_or(types::MonsterLocomotion::Walk);
-    let yaw_speed = definition.yaw_speed.unwrap_or(if locomotion == types::MonsterLocomotion::Walk {
-        20.0
-    } else {
-        10.0
-    });
+    let yaw_speed = definition
+        .yaw_speed
+        .unwrap_or(if locomotion == types::MonsterLocomotion::Walk {
+            20.0
+        } else {
+            10.0
+        });
     let ideal_yaw = f64::from(game.body_of(actor.clone()).angles.y);
     let combat_target = game.require_entity(&actor).combat_target.clone();
     let state = types::MonsterState {
@@ -1018,7 +1052,10 @@ fn admit_monster(
         blind_fire: definition.blind_fire,
         ignore_shots: previous.as_ref().is_some_and(|previous| previous.ignore_shots),
         do_not_count: summoned || previous.as_ref().is_some_and(|previous| previous.do_not_count),
-        spawned_by: previous.as_ref().map(|previous| previous.spawned_by).unwrap_or_default(),
+        spawned_by: previous
+            .as_ref()
+            .map(|previous| previous.spawned_by)
+            .unwrap_or_default(),
         commander: previous.as_ref().and_then(|previous| previous.commander.clone()),
         monster_slots: previous.as_ref().map(|previous| previous.monster_slots).unwrap_or(0),
         monster_used: previous.as_ref().map(|previous| previous.monster_used).unwrap_or(0),
@@ -1037,14 +1074,12 @@ fn admit_monster(
         ..types::MonsterState::default()
     };
     game.monsters.states.insert(actor.clone(), state);
-    game.monsters.actor_definitions.insert(actor.clone(), definition.clone());
+    game.monsters
+        .actor_definitions
+        .insert(actor.clone(), definition.clone());
     let rerelease = game.options.edition == Q2Edition::Rerelease;
     let multiplier = if rerelease {
-        crate::q2::foundation::fields::number_field(
-            &game.require_entity(&actor).spawn,
-            "health_multiplier",
-            1.0,
-        )
+        crate::q2::foundation::fields::number_field(&game.require_entity(&actor).spawn, "health_multiplier", 1.0)
     } else {
         1.0
     };
@@ -1110,21 +1145,32 @@ fn admit_monster(
     }
     if game.host.combat().read(&actor).is_none() {
         let owned = game.owned_of(actor.clone());
-        game.create_combat(&owned, game.require_entity(&actor).max_health, definition.mass * entity_scale, true);
+        game.create_combat(
+            &owned,
+            game.require_entity(&actor).max_health,
+            definition.mass * entity_scale,
+            true,
+        );
     } else {
         let owned = game.owned_of(actor.clone());
         let max_health = game.require_entity(&actor).max_health;
         game.host.combat().set_health(&owned, max_health);
-        game.host.combat().set_armor(&owned, &crate::contract::ArmorState {
-            regular: crate::contract::RegularArmorState::None,
-            powered: crate::contract::PoweredProtectionState::None,
-        });
-        game.set_combat_traits(&owned, &crate::q2::support::contracts::CombatTraitChanges {
-            mass: Some(definition.mass * entity_scale),
-            can_take_damage: Some(true),
-            invulnerable: Some(false),
-            ..crate::q2::support::contracts::CombatTraitChanges::default()
-        });
+        game.host.combat().set_armor(
+            &owned,
+            &crate::contract::ArmorState {
+                regular: crate::contract::RegularArmorState::None,
+                powered: crate::contract::PoweredProtectionState::None,
+            },
+        );
+        game.set_combat_traits(
+            &owned,
+            &crate::q2::support::contracts::CombatTraitChanges {
+                mass: Some(definition.mass * entity_scale),
+                can_take_damage: Some(true),
+                invulnerable: Some(false),
+                ..crate::q2::support::contracts::CombatTraitChanges::default()
+            },
+        );
     }
     {
         let entity = game.require_entity_mut(&actor);
@@ -1139,8 +1185,11 @@ fn admit_monster(
     if !game.host.actors().is_live(&actor) {
         return true;
     }
-    let initial_combat =
-        game.host.combat().read(&actor).expect("initialized monster combat state");
+    let initial_combat = game
+        .host
+        .combat()
+        .read(&actor)
+        .expect("initialized monster combat state");
     match &initial_combat.armor.powered {
         crate::contract::PoweredProtectionState::None => {
             let power = game.host.inventory().count(&actor, &"q2:monster-power".to_string());
@@ -1177,8 +1226,7 @@ fn admit_monster(
     let count = (!reviving || game.options.edition == Q2Edition::Classic)
         && !game.monsters.states.get(&actor).is_some_and(|state| state.good_guy)
         && !game.monsters.states.get(&actor).is_some_and(|state| state.do_not_count)
-        && (game.options.edition == Q2Edition::Classic
-            || (game.require_entity(&actor).spawnflags & 65536) == 0);
+        && (game.options.edition == Q2Edition::Classic || (game.require_entity(&actor).spawnflags & 65536) == 0);
     if count {
         let mut mission = game.monsters.hooks.mission.as_ref().and_then(|hook| hook(&actor));
         if let Some(mission) = mission.as_mut() {
@@ -1187,8 +1235,12 @@ fn admit_monster(
             game.counters.total_monsters += 1;
         }
     }
-    let locomotion =
-        game.monsters.states.get(&actor).map(|state| state.locomotion).unwrap_or(types::MonsterLocomotion::Walk);
+    let locomotion = game
+        .monsters
+        .states
+        .get(&actor)
+        .map(|state| state.locomotion)
+        .unwrap_or(types::MonsterLocomotion::Walk);
     game.set_solid(actor.clone(), Q2Solid::Box);
     game.set_motion_kind(
         actor.clone(),
@@ -1199,15 +1251,13 @@ fn admit_monster(
         },
     );
     let mut context = MonsterContext::new(actor.clone(), game);
-    let automatic =
-        definition.start_mode.map(|start_mode| start_mode(&mut context)) != Some(types::StartMode::Manual);
+    let automatic = definition.start_mode.map(|start_mode| start_mode(&mut context)) != Some(types::StartMode::Manual);
     if automatic {
         let (first, last) = {
             let movement = &context.state().current_move;
             (movement.first_frame, movement.last_frame)
         };
-        let frame =
-            first + (context.game.random() * (last - first + 1) as f64).floor() as i32;
+        let frame = first + (context.game.random() * (last - first + 1) as f64).floor() as i32;
         context.entity_mut().frame = frame;
     }
     let actor = context.actor().clone();
@@ -1236,8 +1286,7 @@ fn start_monster(context: &mut MonsterContext) {
     if (context.entity().spawnflags & 2) == 0
         && context.state().locomotion == types::MonsterLocomotion::Walk
         && context.game.host.now() < 1.0
-        && (context.game.options.edition == Q2Edition::Classic
-            || (context.entity().spawnflags & 262144) == 0)
+        && (context.game.options.edition == Q2Edition::Classic || (context.entity().spawnflags & 262144) == 0)
     {
         drop_to_floor(context);
     }
@@ -1276,7 +1325,10 @@ fn start_monster(context: &mut MonsterContext) {
             let target_name = context.entity().target.clone();
             let targets = context.game.targets(&target_name);
             let combat = targets.iter().any(|target| {
-                context.game.entity(target).is_some_and(|target| target.classname == "point_combat")
+                context
+                    .game
+                    .entity(target)
+                    .is_some_and(|target| target.classname == "point_combat")
             });
             if combat {
                 let target_name = context.entity().target.clone();
@@ -1288,18 +1340,19 @@ fn start_monster(context: &mut MonsterContext) {
         if !context.entity().target.is_empty() {
             let target_name = context.entity().target.clone();
             let target = context.game.pick_target(&target_name);
-            let goal = target.as_ref().and_then(|target| {
-                context.game.entity(target).map(|entity| entity.actor.id().clone())
-            });
+            let goal = target
+                .as_ref()
+                .and_then(|target| context.game.entity(target).map(|entity| entity.actor.id().clone()));
             context.entity_mut().goal = goal.clone();
             context.state_mut().move_target = goal;
             match target {
                 None => {
                     let classname = context.entity().classname.clone();
                     let target_name = context.entity().target.clone();
-                    context.game.host.diagnostic(&format!(
-                        "{classname}: target {target_name} not found"
-                    ));
+                    context
+                        .game
+                        .host
+                        .diagnostic(&format!("{classname}: target {target_name} not found"));
                     context.entity_mut().target = String::new();
                     let pause = context.game.host.now() + 100000000.0;
                     context.state_mut().pause_time = pause;
@@ -1308,8 +1361,7 @@ fn start_monster(context: &mut MonsterContext) {
                     }
                 }
                 Some(target) => {
-                    let classname =
-                        context.game.entity(&target).map(|entity| entity.classname.clone());
+                    let classname = context.game.entity(&target).map(|entity| entity.classname.clone());
                     if classname.as_deref() == Some("path_corner") {
                         let goal_origin = context.game.body_of(target).origin;
                         let actor = context.actor().clone();
@@ -1367,12 +1419,9 @@ fn start_monster(context: &mut MonsterContext) {
         let mut frame_number = movement.first_frame;
         while frame_number < movement.last_frame {
             context.entity_mut().frame = frame_number;
-            let actions = types::record_at(
-                &movement.frames,
-                (frame_number - movement.first_frame) as usize,
-            )
-            .actions
-            .clone();
+            let actions = types::record_at(&movement.frames, (frame_number - movement.first_frame) as usize)
+                .actions
+                .clone();
             for action in actions {
                 match action {
                     MonsterAction::Name(name) => context.dispatch(&name),
@@ -1410,13 +1459,15 @@ fn start_monster(context: &mut MonsterContext) {
         context.entity_mut().visible = false;
         context.entity_mut().server_flags |= 1;
         let owned = context.game.owned_of(actor.clone());
-        context.game.set_combat_traits(&owned, &crate::q2::support::contracts::CombatTraitChanges {
-            can_take_damage: Some(false),
-            ..crate::q2::support::contracts::CombatTraitChanges::default()
-        });
+        context.game.set_combat_traits(
+            &owned,
+            &crate::q2::support::contracts::CombatTraitChanges {
+                can_take_damage: Some(false),
+                ..crate::q2::support::contracts::CombatTraitChanges::default()
+            },
+        );
         context.game.show(actor.clone());
-        context.entity_mut().use_ =
-            Some(source_trigger_use as crate::q2::foundation::host::Q2Use);
+        context.entity_mut().use_ = Some(source_trigger_use as crate::q2::foundation::host::Q2Use);
         context.game.cancel_actor(actor);
         return;
     }
@@ -1444,13 +1495,18 @@ fn trigger_spawn(context: &mut MonsterContext) {
     context.entity_mut().spawnflags &= !2;
     context.entity_mut().server_flags &= !1;
     context.entity_mut().visible = true;
-    context.game.set_solid(actor.clone(), crate::q2::foundation::host::Q2Solid::Box);
+    context
+        .game
+        .set_solid(actor.clone(), crate::q2::foundation::host::Q2Solid::Box);
     context.game.set_motion_kind(actor.clone(), Q2MotionKind::Step);
     let owned = context.game.owned_of(actor.clone());
-    context.game.set_combat_traits(&owned, &crate::q2::support::contracts::CombatTraitChanges {
-        can_take_damage: Some(true),
-        ..crate::q2::support::contracts::CombatTraitChanges::default()
-    });
+    context.game.set_combat_traits(
+        &owned,
+        &crate::q2::support::contracts::CombatTraitChanges {
+            can_take_damage: Some(true),
+            ..crate::q2::support::contracts::CombatTraitChanges::default()
+        },
+    );
     let air = context.game.host.now() + 12.0;
     context.state_mut().air_finished = air;
     start_monster(context);
@@ -1478,20 +1534,30 @@ fn trigger_spawn(context: &mut MonsterContext) {
 fn drop_to_floor(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
-    let direction = if context.entity().gravity_vector.z > 0.0 { 1.0 } else { -1.0 };
+    let direction = if context.entity().gravity_vector.z > 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     let mask = ai::monster_solid_mask(context.game);
     let offset = context.game.options.edition == crate::q2::foundation::host::Q2Edition::Classic
-        || context.game.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
-            start: body.origin,
-            end: body.origin,
-            bounds: Some(body.bounds),
-            ignore: Some(actor.clone()),
-            mask,
-            exclude: Vec::new(),
-        })
-        .start_solid;
-    let start =
-        if offset { vec3(body.origin.x, body.origin.y, body.origin.z - direction) } else { body.origin };
+        || context
+            .game
+            .host
+            .trace(&crate::q2::foundation::host::Q2TraceRequest {
+                start: body.origin,
+                end: body.origin,
+                bounds: Some(body.bounds),
+                ignore: Some(actor.clone()),
+                mask,
+                exclude: Vec::new(),
+            })
+            .start_solid;
+    let start = if offset {
+        vec3(body.origin.x, body.origin.y, body.origin.z - direction)
+    } else {
+        body.origin
+    };
     let mut moved = context.game.body_of(actor.clone());
     moved.origin = start;
     context.game.write_body(actor.clone(), &moved, false);
@@ -1518,7 +1584,9 @@ fn process_pain(actor: &ActorId, game: &mut Q2GameServices) {
     let pending = game.monsters.pending_damage.get(actor).cloned();
     let has_context = game.monsters.states.contains_key(actor);
     let definition = game.monsters.actor_definitions.get(actor).cloned();
-    let (Some(pending), Some(definition)) = (pending, definition) else { return };
+    let (Some(pending), Some(definition)) = (pending, definition) else {
+        return;
+    };
     if !has_context || pending.reaction.pain.damage == 0.0 {
         return;
     }
@@ -1528,19 +1596,25 @@ fn process_pain(actor: &ActorId, game: &mut Q2GameServices) {
             let mut context = MonsterContext::new(actor.clone(), &mut *game);
             monster_die(&mut context, definition, pending.reaction.clone());
         }
-        let last_frame =
-            game.monsters.states.get(actor).map(|state| state.current_move.last_frame);
+        let last_frame = game
+            .monsters
+            .states
+            .get(actor)
+            .map(|state| state.current_move.last_frame);
         if game.host.actors().is_live(actor)
             && ai::health(game, Some(actor))
-                > game.monsters.states.get(actor).map(|state| state.gib_health).unwrap_or(0.0)
+                > game
+                    .monsters
+                    .states
+                    .get(actor)
+                    .map(|state| state.gib_health)
+                    .unwrap_or(0.0)
             && Some(game.require_entity(actor).frame) == last_frame
         {
-            let frame = game.require_entity(actor).frame - 1
-                - (game.random() * 2.0).floor() as i32;
+            let frame = game.require_entity(actor).frame - 1 - (game.random() * 2.0).floor() as i32;
             game.require_entity_mut(actor).frame = frame;
             let body = game.body_of(actor.clone());
-            let locomotion =
-                game.monsters.states.get(actor).map(|state| state.locomotion);
+            let locomotion = game.monsters.states.get(actor).map(|state| state.locomotion);
             if body.ground.is_some()
                 && game.require_entity(actor).motion == crate::q2::foundation::host::Q2MotionKind::Toss
                 && locomotion != Some(types::MonsterLocomotion::Stationary)
@@ -1630,10 +1704,7 @@ fn check_dodge(context: &mut MonsterContext) {
         {
             continue;
         }
-        let facing = f64::from(dot3(
-            qa_core::math::normalize3(sub3(shot.origin, body.origin)),
-            forward,
-        ));
+        let facing = f64::from(dot3(qa_core::math::normalize3(sub3(shot.origin, body.origin)), forward));
         if facing <= 0.35 {
             continue;
         }
@@ -1646,11 +1717,17 @@ fn check_dodge(context: &mut MonsterContext) {
             mask: clip_mask,
             exclude: Vec::new(),
         });
-        let hit_self = matches!(&trace.hit, crate::q2::support::contracts::TraceHit::Actor { actor: hit } if *hit == actor);
+        let hit_self =
+            matches!(&trace.hit, crate::q2::support::contracts::TraceHit::Actor { actor: hit } if *hit == actor);
         if !hit_self {
             continue;
         }
-        let owner = context.game.require_entity(&projectile).owner.clone().expect("projectile owner");
+        let owner = context
+            .game
+            .require_entity(&projectile)
+            .owner
+            .clone()
+            .expect("projectile owner");
         let motion = context.game.require_entity(&projectile).motion;
         let eta = f64::from(length3(sub3(trace.end, shot.origin))) / speed;
         let gravity = motion == crate::q2::foundation::host::Q2MotionKind::Bounce
@@ -1754,8 +1831,7 @@ fn world_effects(context: &mut MonsterContext) {
         } else if context.state().air_finished < context.game.host.now()
             && context.state().pain_time < context.game.host.now()
         {
-            let damage =
-                (15.0f64).min(2.0 + 2.0 * (context.game.host.now() - context.state().air_finished).floor());
+            let damage = (15.0f64).min(2.0 + 2.0 * (context.game.host.now() - context.state().air_finished).floor());
             let origin = body.origin;
             context.game.damage(
                 actor.clone(),
@@ -1852,7 +1928,11 @@ pub fn touch_path_corner(corner: ActorId, game: &mut Q2GameServices, actor: Acto
         touch_path_corner_external(&corner, game, &actor, &mut *follower);
         return;
     }
-    let move_target = game.monsters.states.get(&actor).and_then(|state| state.move_target.clone());
+    let move_target = game
+        .monsters
+        .states
+        .get(&actor)
+        .and_then(|state| state.move_target.clone());
     let enemy = game.require_entity(&actor).enemy.clone();
     if move_target != Some(corner.clone()) || enemy.is_some() {
         return;
@@ -1864,11 +1944,17 @@ pub fn touch_path_corner(corner: ActorId, game: &mut Q2GameServices, actor: Acto
         game.use_targets(&authored, Some(&actor), false);
     }
     let target_name = game.require_entity(&corner).target.clone();
-    let mut next = if target_name.is_empty() { None } else { game.pick_target(&target_name) };
+    let mut next = if target_name.is_empty() {
+        None
+    } else {
+        game.pick_target(&target_name)
+    };
     if let Some(next_actor) = next.clone() {
         if (game.require_entity(&next_actor).spawnflags & 1) != 0 {
             let destination = game.body_of(next_actor.clone());
-            let Some(body) = game.host.bodies().read(&actor) else { return };
+            let Some(body) = game.host.bodies().read(&actor) else {
+                return;
+            };
             let origin = vec3(
                 destination.origin.x,
                 destination.origin.y,
@@ -1882,7 +1968,11 @@ pub fn touch_path_corner(corner: ActorId, game: &mut Q2GameServices, actor: Acto
                 event: 7,
             });
             let next_target = game.require_entity(&next_actor).target.clone();
-            next = if next_target.is_empty() { None } else { game.pick_target(&next_target) };
+            next = if next_target.is_empty() {
+                None
+            } else {
+                game.pick_target(&next_target)
+            };
         }
     }
     let (name, goal) = match next.clone() {
@@ -1936,11 +2026,17 @@ fn touch_path_corner_external(
         game.use_targets(&authored, Some(actor), false);
     }
     let target_name = game.require_entity(corner).target.clone();
-    let mut next = if target_name.is_empty() { None } else { game.pick_target(&target_name) };
+    let mut next = if target_name.is_empty() {
+        None
+    } else {
+        game.pick_target(&target_name)
+    };
     if let Some(next_actor) = next.clone() {
         if (game.require_entity(&next_actor).spawnflags & 1) != 0 {
             let destination = game.body_of(next_actor.clone());
-            let Some(body) = game.host.bodies().read(actor) else { return };
+            let Some(body) = game.host.bodies().read(actor) else {
+                return;
+            };
             let origin = vec3(
                 destination.origin.x,
                 destination.origin.y,
@@ -1956,7 +2052,11 @@ fn touch_path_corner_external(
                 event: 7,
             });
             let next_target = game.require_entity(&next_actor).target.clone();
-            next = if next_target.is_empty() { None } else { game.pick_target(&next_target) };
+            next = if next_target.is_empty() {
+                None
+            } else {
+                game.pick_target(&next_target)
+            };
         }
     }
     let (name, goal) = match next.clone() {
@@ -1989,27 +2089,36 @@ pub fn touch_combat_point(corner: ActorId, game: &mut Q2GameServices, actor: Act
         touch_combat_point_external(&corner, game, &actor, &mut *follower);
         return;
     }
-    let move_target = game.monsters.states.get(&actor).and_then(|state| state.move_target.clone());
+    let move_target = game
+        .monsters
+        .states
+        .get(&actor)
+        .and_then(|state| state.move_target.clone());
     if move_target != Some(corner.clone()) {
         return;
     }
     if !game.require_entity(&corner).target.is_empty() {
         let target_name = game.require_entity(&corner).target.clone();
         let target = game.pick_target(&target_name);
-        let goal = target.as_ref().and_then(|target| {
-            game.entity(target).map(|entity| entity.actor.id().clone())
-        });
+        let goal = target
+            .as_ref()
+            .and_then(|target| game.entity(target).map(|entity| entity.actor.id().clone()));
         let mut context = MonsterContext::new(actor.clone(), &mut *game);
         context.entity_mut().target = target_name.clone();
         context.entity_mut().goal = goal.clone();
         context.state_mut().move_target = goal.or(Some(corner.clone()));
         let game = &mut *context.game;
         if target.is_none() {
-            game.host.diagnostic(&format!("point_combat target {target_name} does not exist"));
+            game.host
+                .diagnostic(&format!("point_combat target {target_name} does not exist"));
         }
         game.require_entity_mut(&corner).target = String::new();
     } else if (game.require_entity(&corner).spawnflags & 1) != 0
-        && game.monsters.states.get(&actor).is_some_and(|state| state.locomotion == types::MonsterLocomotion::Walk)
+        && game
+            .monsters
+            .states
+            .get(&actor)
+            .is_some_and(|state| state.locomotion == types::MonsterLocomotion::Walk)
     {
         let mut context = MonsterContext::new(actor.clone(), &mut *game);
         let pause = context.game.host.now() + 100000000.0;
@@ -2017,7 +2126,11 @@ pub fn touch_combat_point(corner: ActorId, game: &mut Q2GameServices, actor: Act
         context.state_mut().stand_ground = true;
         context.stand();
     }
-    let move_target = game.monsters.states.get(&actor).and_then(|state| state.move_target.clone());
+    let move_target = game
+        .monsters
+        .states
+        .get(&actor)
+        .and_then(|state| state.move_target.clone());
     if move_target == Some(corner.clone()) {
         let mut context = MonsterContext::new(actor.clone(), &mut *game);
         context.entity_mut().target = String::new();
@@ -2029,7 +2142,11 @@ pub fn touch_combat_point(corner: ActorId, game: &mut Q2GameServices, actor: Act
     let path_target = game.require_entity(&corner).spawn.values.get("pathtarget").cloned();
     if let Some(path_target) = path_target {
         let enemy = game.require_entity(&actor).enemy.clone();
-        let old_enemy = game.monsters.states.get(&actor).and_then(|state| state.old_enemy.clone());
+        let old_enemy = game
+            .monsters
+            .states
+            .get(&actor)
+            .and_then(|state| state.old_enemy.clone());
         let activator_entity = game.require_entity(&actor).activator.clone();
         let mut chosen = actor.clone();
         for candidate in [enemy, old_enemy, activator_entity].into_iter().flatten() {
@@ -2057,13 +2174,14 @@ fn touch_combat_point_external(
     if !game.require_entity(corner).target.is_empty() {
         let target_name = game.require_entity(corner).target.clone();
         let target = game.pick_target(&target_name);
-        let goal = target.as_ref().and_then(|target| {
-            game.entity(target).map(|entity| entity.actor.id().clone())
-        });
+        let goal = target
+            .as_ref()
+            .and_then(|target| game.entity(target).map(|entity| entity.actor.id().clone()));
         let move_target = goal.clone().or(Some(corner.clone()));
         follower.advance(&target_name, goal.as_ref(), move_target.as_ref());
         if target.is_none() {
-            game.host.diagnostic(&format!("point_combat target {target_name} does not exist"));
+            game.host
+                .diagnostic(&format!("point_combat target {target_name} does not exist"));
         }
         game.require_entity_mut(corner).target = String::new();
     } else if (game.require_entity(corner).spawnflags & 1) != 0 && follower.walking() {
@@ -2093,7 +2211,9 @@ fn touch_combat_point_external(
 /// Spawn a monster (`spawn`, `Q2SpawnModule`).
 pub fn monster_spawn(actor: ActorId, game: &mut Q2GameServices) -> bool {
     let classname = game.require_entity(&actor).classname.clone();
-    let Some(definition) = monster_definition(&classname, game) else { return false };
+    let Some(definition) = monster_definition(&classname, game) else {
+        return false;
+    };
     admit_monster(game, actor, definition, false, false)
 }
 
@@ -2173,32 +2293,26 @@ pub fn end_monster_frame(game: &mut Q2GameServices) {
     }
     let mut actors: Vec<ActorId> = game.monsters.states.keys().cloned().collect();
     actors.sort_by_key(|actor| {
-        game.host.actors().source_of(actor).map(|(_, slot)| slot).unwrap_or(actor.slot())
+        game.host
+            .actors()
+            .source_of(actor)
+            .map(|(_, slot)| slot)
+            .unwrap_or(actor.slot())
     });
     for actor in actors {
-        if game.host.actors().is_live(&actor)
-            && (game.require_entity(&actor).server_flags & 4) != 0
-        {
+        if game.host.actors().is_live(&actor) && (game.require_entity(&actor).server_flags & 4) != 0 {
             process_pain(&actor, game);
         }
     }
 }
 
 /// Report a noise (`reportNoise`).
-pub fn report_monster_noise(
-    game: &mut Q2GameServices,
-    actor: ActorId,
-    origin: Vec3,
-    secondary: bool,
-) {
+pub fn report_monster_noise(game: &mut Q2GameServices, actor: ActorId, origin: Vec3, secondary: bool) {
     perception::report_noise(game, actor, origin, secondary);
 }
 
 /// Look up a monster definition (`definition`).
-pub fn monster_definition(
-    classname: &str,
-    game: &Q2GameServices,
-) -> Option<Rc<Q2MonsterDefinition>> {
+pub fn monster_definition(classname: &str, game: &Q2GameServices) -> Option<Rc<Q2MonsterDefinition>> {
     if let Some(registered) = game
         .monsters
         .edition_definitions
@@ -2227,9 +2341,12 @@ pub fn register_monster(
     edition: Option<crate::q2::foundation::host::Q2Edition>,
 ) {
     if let Some(edition) = edition {
-        if game.monsters.edition_definitions.get(&edition).is_some_and(|definitions| {
-            definitions.contains_key(&definition.classname)
-        }) {
+        if game
+            .monsters
+            .edition_definitions
+            .get(&edition)
+            .is_some_and(|definitions| definitions.contains_key(&definition.classname))
+        {
             panic!("Duplicate Q2 monster definition {}", definition.classname);
         }
     } else if game.monsters.definitions.contains_key(&definition.classname) {
@@ -2255,9 +2372,7 @@ pub fn register_monster(
             }
         }
         for callback in callbacks.into_iter().flatten() {
-            if definition.callbacks.get(&callback).is_none()
-                && shared_callback(&callback).is_none()
-            {
+            if definition.callbacks.get(&callback).is_none() && shared_callback(&callback).is_none() {
                 panic!("Q2 move {} references missing callback {callback}", movement.name);
             }
         }
@@ -2269,7 +2384,9 @@ pub fn register_monster(
             .or_default()
             .insert(definition.classname.clone(), Rc::new(definition));
     } else {
-        game.monsters.definitions.insert(definition.classname.clone(), Rc::new(definition));
+        game.monsters
+            .definitions
+            .insert(definition.classname.clone(), Rc::new(definition));
     }
 }
 
@@ -2311,10 +2428,7 @@ fn built_in_callbacks() -> HashMap<String, MonsterHandler> {
 }
 
 /// Built-in definitions (`builtIn`).
-pub fn built_in_monster(
-    classname: &str,
-    game: &Q2GameServices,
-) -> Option<Rc<Q2MonsterDefinition>> {
+pub fn built_in_monster(classname: &str, game: &Q2GameServices) -> Option<Rc<Q2MonsterDefinition>> {
     use crate::q2::foundation::host::Q2Edition;
     let classic = game.options.edition == Q2Edition::Classic;
     let bounds = qa_core::math::Bounds {
@@ -2366,10 +2480,7 @@ pub fn built_in_monster(
             check_attack: None,
         }));
     }
-    if classname == "monster_soldier_light"
-        || classname == "monster_soldier"
-        || classname == "monster_soldier_ss"
-    {
+    if classname == "monster_soldier_light" || classname == "monster_soldier" || classname == "monster_soldier_ss" {
         return Some(Rc::new(Q2MonsterDefinition {
             classname: classname.to_string(),
             kind: "soldier".to_string(),
@@ -2457,21 +2568,17 @@ pub fn monster_callbacks(game: &Q2GameServices) -> super::callbacks::Q2CallbackD
         ("monster_use", source_use as Q2Use),
         ("monster_triggered_spawn_use", source_trigger_use as Q2Use),
     ]);
-    let pain: HashMap<&'static str, Q2Pain> =
-        HashMap::from([("monster_pain", source_pain as Q2Pain)]);
-    let mut die: HashMap<&'static str, Q2Die> =
-        HashMap::from([("monster_die", source_die as Q2Die)]);
+    let pain: HashMap<&'static str, Q2Pain> = HashMap::from([("monster_pain", source_pain as Q2Pain)]);
+    let mut die: HashMap<&'static str, Q2Die> = HashMap::from([("monster_die", source_die as Q2Die)]);
     die.extend(gib.die);
     let mut sources_think = vec![Some(think)];
     let mut sources_use = vec![Some(use_)];
     let mut sources_pain = vec![Some(pain)];
     let mut sources_die = vec![Some(die)];
     let mut sources_touch: Vec<Option<HashMap<&'static str, Q2Touch>>> = vec![Some(gib.touch)];
-    let mut sources_blocked: Vec<
-        Option<HashMap<&'static str, crate::q2::foundation::host::Q2Blocked>>,
-    > = vec![Some(HashMap::new())];
-    let mut definitions: Vec<Rc<Q2MonsterDefinition>> =
-        game.monsters.definitions.values().cloned().collect();
+    let mut sources_blocked: Vec<Option<HashMap<&'static str, crate::q2::foundation::host::Q2Blocked>>> =
+        vec![Some(HashMap::new())];
+    let mut definitions: Vec<Rc<Q2MonsterDefinition>> = game.monsters.definitions.values().cloned().collect();
     for entries in game.monsters.edition_definitions.values() {
         definitions.extend(entries.values().cloned());
     }
@@ -2527,7 +2634,9 @@ pub fn place_triggered_monster(game: &mut Q2GameServices, actor: OwnedActor) {
             mask,
             exclude: Vec::new(),
         });
-        let TraceHit::Actor { actor: target } = trace.hit.clone() else { break };
+        let TraceHit::Actor { actor: target } = trace.hit.clone() else {
+            break;
+        };
         if game.host.combat().read(&target).is_none() {
             break;
         }
@@ -2583,29 +2692,28 @@ pub fn capture_monsters(game: &Q2GameServices) -> checkpoint::Q2MonstersCheckpoi
     for actor in actors {
         let state = game.monsters.states.get(&actor).expect("monster state").clone();
         let entity = game.require_entity(&actor);
-        let definition = game.monsters.actor_definitions.get(&actor).unwrap_or_else(|| {
-            panic!("Cannot save missing Q2 monster definition {}", entity.classname)
-        });
-        let pending = game.monsters.pending_damage.get(&actor).map(|pending| {
-            checkpoint::Q2MonsterDamageCheckpoint {
+        let definition = game
+            .monsters
+            .actor_definitions
+            .get(&actor)
+            .unwrap_or_else(|| panic!("Cannot save missing Q2 monster definition {}", entity.classname));
+        let pending = game
+            .monsters
+            .pending_damage
+            .get(&actor)
+            .map(|pending| checkpoint::Q2MonsterDamageCheckpoint {
                 damage: pending.reaction.pain.damage,
                 kick: pending.reaction.pain.kick,
                 point: pending.reaction.point,
                 attacker: save_q2_actor(pending.reaction.pain.attacker.as_ref()),
                 inflictor: save_q2_actor(pending.reaction.inflictor.as_ref()),
-                attack: pending
-                    .attack
-                    .as_ref()
-                    .map(super::checkpoint::save_q2_attack),
-            }
-        });
-        let sound_target = state.sound_target.as_ref().map(|target| {
-            checkpoint::SavedSoundTarget {
-                actor: save_q2_actor(Some(&target.actor)).expect("live actor"),
-                owner: save_q2_actor(Some(&target.owner)).expect("live actor"),
-                origin: target.origin,
-                time: target.time,
-            }
+                attack: pending.attack.as_ref().map(super::checkpoint::save_q2_attack),
+            });
+        let sound_target = state.sound_target.as_ref().map(|target| checkpoint::SavedSoundTarget {
+            actor: save_q2_actor(Some(&target.actor)).expect("live actor"),
+            owner: save_q2_actor(Some(&target.owner)).expect("live actor"),
+            origin: target.origin,
+            time: target.time,
         });
         saved.push(checkpoint::Q2MonsterActorCheckpoint {
             actor: save_q2_actor(Some(&actor)).expect("live actor"),
@@ -2658,14 +2766,16 @@ pub fn restore_monsters(game: &mut Q2GameServices, checkpoint: &checkpoint::Q2Mo
         let mut state = saved_actor.state.state.clone();
         state.current_move = find_move(&saved_actor.state.movement);
         state.next_move = saved_actor.state.next_move.as_deref().map(find_move);
-        state.sound_target = saved_actor.state.sound_target.as_ref().map(|target| {
-            types::MonsterSoundTarget {
+        state.sound_target = saved_actor
+            .state
+            .sound_target
+            .as_ref()
+            .map(|target| types::MonsterSoundTarget {
                 actor: game.host.actors().reference_saved(target.actor),
                 owner: game.host.actors().reference_saved(target.owner),
                 origin: target.origin,
                 time: target.time,
-            }
-        });
+            });
         state.old_enemy = saved_actor
             .state
             .old_enemy
@@ -2674,36 +2784,37 @@ pub fn restore_monsters(game: &mut Q2GameServices, checkpoint: &checkpoint::Q2Mo
             .state
             .move_target
             .map(|id| game.host.actors().reference_saved(id));
-        state.commander =
-            saved_actor.state.commander.map(|id| game.host.actors().reference_saved(id));
+        state.commander = saved_actor
+            .state
+            .commander
+            .map(|id| game.host.actors().reference_saved(id));
         game.monsters.states.insert(owner.id().clone(), state);
         game.monsters.actor_definitions.insert(owner.id().clone(), definition);
         if let Some(pending) = saved_actor.pending_damage {
-            let mut reference = |id: qa_core::identity::SavedActorId| {
-                game.host.actors().reference_saved(id)
-            };
+            let mut reference = |id: qa_core::identity::SavedActorId| game.host.actors().reference_saved(id);
             let attack = pending
                 .attack
                 .as_ref()
                 .map(|attack| super::checkpoint::restore_q2_attack(attack, &mut reference));
-            let attacker =
-                pending.attacker.map(|id| game.host.actors().reference_saved(id));
-            let inflictor =
-                pending.inflictor.map(|id| game.host.actors().reference_saved(id));
-            game.monsters.pending_damage.insert(owner.id().clone(), PendingMonsterDamage {
-                reaction: DeathReaction {
-                    pain: PainReaction {
-                        attack: attack.clone(),
-                        this: owner.clone(),
-                        attacker,
-                        kick: pending.kick,
-                        damage: pending.damage,
+            let attacker = pending.attacker.map(|id| game.host.actors().reference_saved(id));
+            let inflictor = pending.inflictor.map(|id| game.host.actors().reference_saved(id));
+            game.monsters.pending_damage.insert(
+                owner.id().clone(),
+                PendingMonsterDamage {
+                    reaction: DeathReaction {
+                        pain: PainReaction {
+                            attack: attack.clone(),
+                            this: owner.clone(),
+                            attacker,
+                            kick: pending.kick,
+                            damage: pending.damage,
+                        },
+                        inflictor,
+                        point: pending.point,
                     },
-                    inflictor,
-                    point: pending.point,
+                    attack,
                 },
-                attack,
-            });
+            );
         }
         restored.push(owner.id().clone());
     }
@@ -2722,12 +2833,7 @@ pub fn restore_monsters(game: &mut Q2GameServices, checkpoint: &checkpoint::Q2Mo
 }
 
 /// Set a monster route (`setRoute`).
-pub fn set_monster_route(
-    game: &mut Q2GameServices,
-    actor: ActorId,
-    goal: Option<ActorId>,
-    pause_until: f64,
-) {
+pub fn set_monster_route(game: &mut Q2GameServices, actor: ActorId, goal: Option<ActorId>, pause_until: f64) {
     if !game.monsters.states.contains_key(&actor) {
         panic!("Monster route has no source continuation");
     }

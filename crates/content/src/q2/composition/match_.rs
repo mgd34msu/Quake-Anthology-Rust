@@ -8,7 +8,7 @@
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use super::types::{Q2CompositionEvent, Q2MatchSelection, set_q2_info_value};
+use super::types::{set_q2_info_value, Q2CompositionEvent, Q2MatchSelection};
 use super::{composition_emit, composition_services};
 use crate::contract::InventoryEntry;
 use crate::q2::base::player::index::{create_q2_players, player_hooks};
@@ -17,17 +17,22 @@ use crate::q2::base::player::types::{Q2PlayerMovementChange, Q2PlayerSpawnChange
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, SpawnModule};
 use crate::q2::foundation::items::Q2ItemModule;
-use crate::q2::missionpacks::modes::deathball::{Q2DeathBall, Q2DeathBallHooks, Q2DeathBallSettings, deathball_callbacks};
-use crate::q2::missionpacks::modes::tag::{Q2Tag, Q2TagHooks, tag_callbacks, tag_hooks};
-use crate::q2::multiplayer::ctf::index::{Q2Ctf, ctf_callbacks};
-use crate::q2::multiplayer::ctf::types::{Q2CtfEvent, Q2CtfHooks, create_q2_ctf_rules, ctf_team_name, item_id};
+use crate::q2::missionpacks::modes::deathball::{
+    deathball_callbacks, Q2DeathBall, Q2DeathBallHooks, Q2DeathBallSettings,
+};
+use crate::q2::missionpacks::modes::tag::{tag_callbacks, tag_hooks, Q2Tag, Q2TagHooks};
+use crate::q2::multiplayer::ctf::index::{ctf_callbacks, Q2Ctf};
+use crate::q2::multiplayer::ctf::types::{create_q2_ctf_rules, ctf_team_name, item_id, Q2CtfEvent, Q2CtfHooks};
 use crate::q2::multiplayer::lmctf::runtime::Q2Lmctf;
-use crate::q2::multiplayer::lmctf::types::{LmctfEvent, LmctfHooks, create_lmctf_rules};
+use crate::q2::multiplayer::lmctf::types::{create_lmctf_rules, LmctfEvent, LmctfHooks};
 use crate::q2::support::contracts::{CombatState, CombatTraitChanges, SharedGrappleControl};
 
 /// Rebuild the players handle from the arena.
 fn match_players(game: &Q2GameServices) -> crate::q2::base::player::index::Q2Players {
-    create_q2_players(game.players.items.expect("Q2 match requires registered players"), player_hooks(game))
+    create_q2_players(
+        game.players.items.expect("Q2 match requires registered players"),
+        player_hooks(game),
+    )
 }
 
 /// Admitted player state (`players().states.get`).
@@ -139,7 +144,12 @@ fn match_add_score(actor: ActorId, game: &mut Q2GameServices, amount: f64) {
 
 /// Select a match spawn placement (`selectSpawn`).
 fn match_select_spawn_placement(actor: ActorId, game: &mut Q2GameServices) -> (Vec3, Vec3) {
-    let state = game.players.states.get(&actor).cloned().unwrap_or_else(|| Q2PlayerState::new(0, game.now()));
+    let state = game
+        .players
+        .states
+        .get(&actor)
+        .cloned()
+        .unwrap_or_else(|| Q2PlayerState::new(0, game.now()));
     let spawn_point = game.players.rules.spawn_point.clone();
     let spot = select_q2_spawn(game, &state, &spawn_point);
     let origin = q2_spawn_origin(game, spot.clone());
@@ -163,12 +173,19 @@ fn match_farthest_spawn(game: &mut Q2GameServices) -> Option<ActorId> {
 
 /// Read the deathball settings (`settings`).
 fn match_deathball_settings(game: &Q2GameServices) -> Q2DeathBallSettings {
-    game.deathball.settings.clone().expect("Q2 DeathBall settings require a deathball match")
+    game.deathball
+        .settings
+        .clone()
+        .expect("Q2 DeathBall settings require a deathball match")
 }
 
 /// Read a deathball skin (`skin`).
 fn match_deathball_skin(actor: ActorId, game: &Q2GameServices) -> String {
-    game.players.states.get(&actor).map(|player| player.skin.clone()).unwrap_or_default()
+    game.players
+        .states
+        .get(&actor)
+        .map(|player| player.skin.clone())
+        .unwrap_or_default()
 }
 
 /// Set a deathball skin (`setSkin`).
@@ -177,7 +194,11 @@ fn match_deathball_set_skin(actor: ActorId, game: &mut Q2GameServices, skin: Str
         (Some(player), Some(_)) => player.userinfo.clone(),
         _ => panic!("Q2 DeathBall skin requires an admitted source player"),
     };
-    let maximum = if game.options.edition == Q2Edition::Rerelease { 2048 } else { 512 };
+    let maximum = if game.options.edition == Q2Edition::Rerelease {
+        2048
+    } else {
+        512
+    };
     let userinfo = set_q2_info_value(game, &userinfo, "skin", &skin, maximum);
     match_players(game).userinfo_changed(actor, game, &userinfo);
 }
@@ -205,7 +226,10 @@ fn match_spawn_deathball(entity: ActorId, game: &mut Q2GameServices) -> bool {
     if game.require_entity(&entity).classname == "dm_tag_token" {
         return false;
     }
-    Q2DeathBall { hooks: crate::q2::missionpacks::modes::deathball::deathball_hooks(game) }.spawn(entity, game)
+    Q2DeathBall {
+        hooks: crate::q2::missionpacks::modes::deathball::deathball_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Spawn dispatch for a CTF match.
@@ -213,7 +237,10 @@ fn match_spawn_ctf(entity: ActorId, game: &mut Q2GameServices) -> bool {
     if game.require_entity(&entity).classname == "dm_tag_token" {
         return false;
     }
-    Q2Ctf { hooks: crate::q2::multiplayer::ctf::ctf_hooks(game) }.spawn(entity, game)
+    Q2Ctf {
+        hooks: crate::q2::multiplayer::ctf::ctf_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Spawn dispatch for an LMCTF match.
@@ -221,7 +248,10 @@ fn match_spawn_lmctf(entity: ActorId, game: &mut Q2GameServices) -> bool {
     if game.require_entity(&entity).classname == "dm_tag_token" {
         return false;
     }
-    Q2Lmctf { hooks: crate::q2::multiplayer::lmctf::lmctf_hooks(game) }.spawn(entity, game)
+    Q2Lmctf {
+        hooks: crate::q2::multiplayer::lmctf::lmctf_hooks(game),
+    }
+    .spawn(entity, game)
 }
 
 /// Spawn dispatch for a standard match.
@@ -240,13 +270,17 @@ impl Q2ProductMatch {
     /// Session CTF handle.
     fn ctf(&self, game: &Q2GameServices) -> Q2Ctf {
         let _ = self;
-        Q2Ctf { hooks: crate::q2::multiplayer::ctf::ctf_hooks(game) }
+        Q2Ctf {
+            hooks: crate::q2::multiplayer::ctf::ctf_hooks(game),
+        }
     }
 
     /// Session LMCTF handle.
     fn lmctf(&self, game: &Q2GameServices) -> Q2Lmctf {
         let _ = self;
-        Q2Lmctf { hooks: crate::q2::multiplayer::lmctf::lmctf_hooks(game) }
+        Q2Lmctf {
+            hooks: crate::q2::multiplayer::lmctf::lmctf_hooks(game),
+        }
     }
 
     /// Session tag handle.
@@ -258,7 +292,9 @@ impl Q2ProductMatch {
     /// Session deathball handle.
     fn deathball(&self, game: &Q2GameServices) -> Q2DeathBall {
         let _ = self;
-        Q2DeathBall { hooks: crate::q2::missionpacks::modes::deathball::deathball_hooks(game) }
+        Q2DeathBall {
+            hooks: crate::q2::missionpacks::modes::deathball::deathball_hooks(game),
+        }
     }
 
     /// Build the shared CTF hooks.
@@ -320,7 +356,11 @@ impl Q2ProductMatch {
                 },
             }
             .register(game),
-            Q2MatchSelection::Deathball { team1_skin, team2_skin, goal_limit } => {
+            Q2MatchSelection::Deathball {
+                team1_skin,
+                team2_skin,
+                goal_limit,
+            } => {
                 game.deathball.settings = Some(Q2DeathBallSettings {
                     team1_skin: team1_skin.clone(),
                     team2_skin: team2_skin.clone(),
@@ -339,12 +379,19 @@ impl Q2ProductMatch {
                 }
                 .register(game)
             }
-            Q2MatchSelection::Ctf => {
-                Q2Ctf { hooks: self.ctf_hooks(items) }.register(game, create_q2_ctf_rules(), shared_grapple)
+            Q2MatchSelection::Ctf => Q2Ctf {
+                hooks: self.ctf_hooks(items),
             }
+            .register(game, create_q2_ctf_rules(), shared_grapple),
             Q2MatchSelection::Lmctf { travel } => {
-                let rules = travel.clone().map(|travel| travel.rules).unwrap_or_else(create_lmctf_rules);
-                Q2Lmctf { hooks: self.lmctf_hooks(items) }.register(game, rules, travel.clone(), shared_grapple)
+                let rules = travel
+                    .clone()
+                    .map(|travel| travel.rules)
+                    .unwrap_or_else(create_lmctf_rules);
+                Q2Lmctf {
+                    hooks: self.lmctf_hooks(items),
+                }
+                .register(game, rules, travel.clone(), shared_grapple)
             }
             Q2MatchSelection::Standard => SpawnModule {
                 spawn: match_spawn_standard,
@@ -448,7 +495,8 @@ impl Q2ProductMatch {
         match &self.selection {
             Q2MatchSelection::Tag => self.tag(game).change_damage(&target, attacker.as_ref(), amount, game),
             Q2MatchSelection::Deathball { .. } => {
-                self.deathball(game).change_damage(&target, attacker.as_ref(), amount, game)
+                self.deathball(game)
+                    .change_damage(&target, attacker.as_ref(), amount, game)
             }
             _ => amount,
         }
@@ -514,11 +562,21 @@ impl Q2ProductMatch {
                     },
                 );
                 if game.ctf.equipment.is_some()
-                    && game.players.states.get(&entity).map(|player| player.use_q2_weapons).unwrap_or(false)
+                    && game
+                        .players
+                        .states
+                        .get(&entity)
+                        .map(|player| player.use_q2_weapons)
+                        .unwrap_or(false)
                 {
                     game.host.inventory().configure(
                         &owned,
-                        &InventoryEntry { item: item_id("q2:weapon_grapple"), count: 1.0, capacity: 1.0, count_policy: None },
+                        &InventoryEntry {
+                            item: item_id("q2:weapon_grapple"),
+                            count: 1.0,
+                            capacity: 1.0,
+                            count_policy: None,
+                        },
                     );
                 }
                 self.ctf(game).assign_skin(entity, game);
@@ -557,9 +615,7 @@ impl Q2ProductMatch {
     /// Scale damage before momentum (`beforeMomentum`).
     pub fn before_momentum(&self, game: &mut Q2GameServices, attacker: Option<ActorId>, damage: f64) -> f64 {
         match &self.selection {
-            Q2MatchSelection::Ctf => {
-                self.ctf(game).techs().strength(attacker, game, damage)
-            }
+            Q2MatchSelection::Ctf => self.ctf(game).techs().strength(attacker, game, damage),
             Q2MatchSelection::Lmctf { .. } => self.lmctf(game).runes().damage(attacker, damage, game),
             _ => damage,
         }
@@ -612,13 +668,7 @@ impl Q2ProductMatch {
     }
 
     /// Apply damage after health (`afterHealth`).
-    pub fn after_health(
-        &self,
-        game: &mut Q2GameServices,
-        target: ActorId,
-        attacker: Option<ActorId>,
-        applied: f64,
-    ) {
+    pub fn after_health(&self, game: &mut Q2GameServices, target: ActorId, attacker: Option<ActorId>, applied: f64) {
         match &self.selection {
             Q2MatchSelection::Ctf => self.ctf(game).flags().hurt_carrier(target, attacker, game),
             Q2MatchSelection::Lmctf { .. } => self.lmctf(game).runes().after_health(target, attacker, applied, game),
@@ -633,8 +683,7 @@ impl Q2ProductMatch {
             Q2MatchSelection::Lmctf { .. } => self.lmctf(game).player_frame(entity, game),
             Q2MatchSelection::Tag => {
                 let bits = self.tag(game).effects(&entity, game);
-                game.require_entity_mut(&entity).effects =
-                    game.require_entity(&entity).effects & !0x20000000 | bits;
+                game.require_entity_mut(&entity).effects = game.require_entity(&entity).effects & !0x20000000 | bits;
                 game.show(entity);
             }
             _ => {}

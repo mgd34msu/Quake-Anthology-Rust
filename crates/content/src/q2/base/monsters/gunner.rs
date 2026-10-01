@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use qa_core::identity::ActorId;
 
 use super::common::{
-    HUMANOID_BOUNDS, alive_enemy, begin_death, damaged_skin, finish_corpse_default, forward_shot,
-    monster_muzzle, monster_shot, move_handler, sound_handler,
+    alive_enemy, begin_death, damaged_skin, finish_corpse_default, forward_shot, monster_muzzle, monster_shot,
+    move_handler, sound_handler, HUMANOID_BOUNDS,
 };
 use super::tables::gunner::{gunner_frame, gunner_moves};
 use crate::q2::foundation::monsters::ai::{set_duck, target_distance, visible};
@@ -158,17 +158,7 @@ fn gunner_fire(context: &mut MonsterContext) {
     };
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        3.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 3.0, 4.0, 300.0, 500.0, 0);
     monster_muzzle(context, flash, direction, start);
 }
 
@@ -205,14 +195,8 @@ pub fn gunner_definition() -> Q2MonsterDefinition {
     definition.pain = Some(gunner_pain);
     definition.dodge = Some(gunner_dodge);
     definition.callbacks = HashMap::from([
-        (
-            "gunner_stand".to_string(),
-            move_handler("gunner_move_stand"),
-        ),
-        (
-            "gunner_run".to_string(),
-            MonsterHandler::Callback(gunner_run),
-        ),
+        ("gunner_stand".to_string(), move_handler("gunner_move_stand")),
+        ("gunner_run".to_string(), MonsterHandler::Callback(gunner_run)),
         (
             "gunner_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
@@ -225,10 +209,7 @@ pub fn gunner_definition() -> Q2MonsterDefinition {
             "gunner_opengun".to_string(),
             sound_handler("gunner/gunatck1.wav", 2, 2.0),
         ),
-        (
-            "gunner_fidget".to_string(),
-            MonsterHandler::Callback(gunner_fidget),
-        ),
+        ("gunner_fidget".to_string(), MonsterHandler::Callback(gunner_fidget)),
         (
             "gunner_duck_down".to_string(),
             MonsterHandler::Callback(gunner_duck_down),
@@ -237,22 +218,10 @@ pub fn gunner_definition() -> Q2MonsterDefinition {
             "gunner_duck_hold".to_string(),
             MonsterHandler::Callback(gunner_duck_hold),
         ),
-        (
-            "gunner_duck_up".to_string(),
-            MonsterHandler::Callback(gunner_duck_up),
-        ),
-        (
-            "GunnerGrenade".to_string(),
-            MonsterHandler::Callback(gunner_grenade),
-        ),
-        (
-            "GunnerFire".to_string(),
-            MonsterHandler::Callback(gunner_fire),
-        ),
-        (
-            "gunner_fire_chain".to_string(),
-            move_handler("gunner_move_fire_chain"),
-        ),
+        ("gunner_duck_up".to_string(), MonsterHandler::Callback(gunner_duck_up)),
+        ("GunnerGrenade".to_string(), MonsterHandler::Callback(gunner_grenade)),
+        ("GunnerFire".to_string(), MonsterHandler::Callback(gunner_fire)),
+        ("gunner_fire_chain".to_string(), move_handler("gunner_move_fire_chain")),
         (
             "gunner_refire_chain".to_string(),
             MonsterHandler::Callback(gunner_refire_chain),

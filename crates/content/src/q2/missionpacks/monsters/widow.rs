@@ -2,29 +2,27 @@
 //!
 //! Original Rogue m_widow.c. ZeniMax Media, GPL-2.0-or-later.
 
-use qa_core::math::{Bounds, Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds, Vec3};
 
-use super::power_armor::{PowerArmorKind, monster_power_armor};
+use super::power_armor::{monster_power_armor, PowerArmorKind};
 use super::rogue_common::rogue_blocked_check_shot;
 use super::spawn::rogue_spawn_callbacks;
 use super::state::rogue_state;
 use super::tables::rogue_widow::{widow_frame, widow_moves};
 use super::types::{mission_services, mission_weapons};
 use super::widow_common::{
-    widow_clear_powerups, widow_power_think, widow_powerups, widow_project,
-    widow_restore_armor, widow_slots, widow_slots_left, widow_summon,
+    widow_clear_powerups, widow_power_think, widow_powerups, widow_project, widow_restore_armor, widow_slots,
+    widow_slots_left, widow_summon,
 };
 use super::widow_death::{spawn_widow_legs, widow_debris_callbacks, widow_effect};
 use crate::q2::base::monsters::common::{damaged_skin, finish_corpse, move_handler};
 use crate::q2::foundation::host::{Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, health, project_flash,
-    target_distance, vector_angles,
+    angles_vectors, enemy_body, enemy_eye, health, project_flash, target_distance, vector_angles,
 };
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-    record_at,
+    record_at, MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
 use crate::q2::rerelease::monsters::common::{monster_flash, predicted_direction};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit};
@@ -192,8 +190,7 @@ fn widow_check_attack(context: &mut MonsterContext) -> bool {
     widow_powerups(context);
     let frame = context.entity().frame;
     if context.state().current_move.name == "widow_move_run"
-        && (frame >= widow_frame::WALK04 && frame <= widow_frame::WALK08
-            || frame == widow_frame::WALK12)
+        && (frame >= widow_frame::WALK04 && frame <= widow_frame::WALK08 || frame == widow_frame::WALK12)
     {
         return false;
     }
@@ -229,7 +226,9 @@ fn widow_check_attack(context: &mut MonsterContext) -> bool {
             }
         }
     }
-    let enemy = enemy_body(context).map(|enemy| enemy.origin).unwrap_or(origin_of(context));
+    let enemy = enemy_body(context)
+        .map(|enemy| enemy.origin)
+        .unwrap_or(origin_of(context));
     let origin = context.game.body_of(actor).origin;
     context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(enemy, origin)).y);
     if distance <= 100.0 {
@@ -255,7 +254,10 @@ fn widow_check_attack(context: &mut MonsterContext) -> bool {
         0.5
     };
     if context.game.random() < chance
-        || context.game.entity(&enemy_id).is_some_and(|enemy| enemy.solid == Q2Solid::None)
+        || context
+            .game
+            .entity(&enemy_id)
+            .is_some_and(|enemy| enemy.solid == Q2Solid::None)
     {
         context.state_mut().attack_state = MonsterAttackState::Missile;
         return true;
@@ -289,13 +291,10 @@ fn widow_attack(context: &mut MonsterContext) {
         return;
     }
     let frame = context.entity().frame;
-    let rail_frames = frame == widow_frame::WALK13
-        || frame >= widow_frame::WALK01 && frame <= widow_frame::WALK03;
+    let rail_frames = frame == widow_frame::WALK13 || frame >= widow_frame::WALK01 && frame <= widow_frame::WALK03;
     let blaster_frames = frame >= widow_frame::WALK09 && frame <= widow_frame::WALK12;
     widow_slots(context);
-    if (context.state().attack_state == MonsterAttackState::Blind || blocked)
-        && widow_slots_left(context) >= 2
-    {
+    if (context.state().attack_state == MonsterAttackState::Blind || blocked) && widow_slots_left(context) >= 2 {
         context.set_move("widow_move_spawn", true);
         return;
     }
@@ -674,7 +673,9 @@ pub fn create_widow_definition() -> Q2MonsterDefinition {
     for (key, think) in rogue_spawn_callbacks().think {
         source_callbacks.think.insert(key, think);
     }
-    source_callbacks.think.insert("q2:rogue/widow_powerups", widow_power_think);
+    source_callbacks
+        .think
+        .insert("q2:rogue/widow_powerups", widow_power_think);
     definition.source_callbacks = Some(source_callbacks);
     definition.initialize = Some(MonsterHandler::Callback(widow_initialize));
     definition.restore = Some(MonsterHandler::Callback(widow_restore_armor));
@@ -689,7 +690,10 @@ pub fn create_widow_definition() -> Q2MonsterDefinition {
         ("widow_start_run_10", MonsterHandler::Callback(widow_start_run_10)),
         ("widow_start_run_12", MonsterHandler::Callback(widow_start_run_12)),
         ("widow_attack_blaster", MonsterHandler::Callback(widow_attack_blaster)),
-        ("widow_reattack_blaster", MonsterHandler::Callback(widow_reattack_blaster)),
+        (
+            "widow_reattack_blaster",
+            MonsterHandler::Callback(widow_reattack_blaster),
+        ),
         ("WidowSaveLoc", MonsterHandler::Callback(widow_save_loc)),
         ("WidowRail", MonsterHandler::Callback(widow_rail)),
         ("widow_start_rail", MonsterHandler::Callback(widow_start_rail)),

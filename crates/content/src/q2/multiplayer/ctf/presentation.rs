@@ -12,10 +12,10 @@ use crate::q2::foundation::weapons::player::weapon_definition;
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::TraceHit;
 
-use super::flags::{Q2CtfFlags, ctf_can_see};
+use super::flags::{ctf_can_see, Q2CtfFlags};
 use super::types::{
-    Q2CtfEvent, Q2CtfForceJoin, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry, Q2CtfPrintLevel, Q2CtfScoreRow,
-    Q2CtfTeam, Q2CtfTech, ctf_carried_flag, ctf_name, ctf_player, ctf_print, item_id,
+    ctf_carried_flag, ctf_name, ctf_player, ctf_print, item_id, Q2CtfEvent, Q2CtfForceJoin, Q2CtfHooks,
+    Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry, Q2CtfPrintLevel, Q2CtfScoreRow, Q2CtfTeam, Q2CtfTech,
 };
 
 /// Tech display name.
@@ -30,10 +30,26 @@ struct TechName {
 
 /// Tech names (`techNames`).
 const TECH_NAMES: [TechName; 4] = [
-    TechName { tech: Q2CtfTech::Tech1, classname: "item_tech1", name: "Disruptor Shield" },
-    TechName { tech: Q2CtfTech::Tech2, classname: "item_tech2", name: "Power Amplifier" },
-    TechName { tech: Q2CtfTech::Tech3, classname: "item_tech3", name: "Time Accel" },
-    TechName { tech: Q2CtfTech::Tech4, classname: "item_tech4", name: "AutoDoc" },
+    TechName {
+        tech: Q2CtfTech::Tech1,
+        classname: "item_tech1",
+        name: "Disruptor Shield",
+    },
+    TechName {
+        tech: Q2CtfTech::Tech2,
+        classname: "item_tech2",
+        name: "Power Amplifier",
+    },
+    TechName {
+        tech: Q2CtfTech::Tech3,
+        classname: "item_tech3",
+        name: "Time Accel",
+    },
+    TechName {
+        tech: Q2CtfTech::Tech4,
+        classname: "item_tech4",
+        name: "AutoDoc",
+    },
 ];
 
 /// Location entry.
@@ -46,30 +62,102 @@ struct LocationEntry {
 
 /// Location entries (`locations`).
 const LOCATIONS: [LocationEntry; 24] = [
-    LocationEntry { classname: "item_flag_team1", priority: 1 },
-    LocationEntry { classname: "item_flag_team2", priority: 1 },
-    LocationEntry { classname: "item_quad", priority: 2 },
-    LocationEntry { classname: "item_invulnerability", priority: 2 },
-    LocationEntry { classname: "weapon_bfg", priority: 3 },
-    LocationEntry { classname: "weapon_railgun", priority: 4 },
-    LocationEntry { classname: "weapon_rocketlauncher", priority: 4 },
-    LocationEntry { classname: "weapon_hyperblaster", priority: 4 },
-    LocationEntry { classname: "weapon_chaingun", priority: 4 },
-    LocationEntry { classname: "weapon_grenadelauncher", priority: 4 },
-    LocationEntry { classname: "weapon_machinegun", priority: 4 },
-    LocationEntry { classname: "weapon_supershotgun", priority: 4 },
-    LocationEntry { classname: "weapon_shotgun", priority: 4 },
-    LocationEntry { classname: "item_power_screen", priority: 5 },
-    LocationEntry { classname: "item_power_shield", priority: 5 },
-    LocationEntry { classname: "item_armor_body", priority: 6 },
-    LocationEntry { classname: "item_armor_combat", priority: 6 },
-    LocationEntry { classname: "item_armor_jacket", priority: 6 },
-    LocationEntry { classname: "item_silencer", priority: 7 },
-    LocationEntry { classname: "item_breather", priority: 7 },
-    LocationEntry { classname: "item_enviro", priority: 7 },
-    LocationEntry { classname: "item_adrenaline", priority: 7 },
-    LocationEntry { classname: "item_bandolier", priority: 8 },
-    LocationEntry { classname: "item_pack", priority: 8 },
+    LocationEntry {
+        classname: "item_flag_team1",
+        priority: 1,
+    },
+    LocationEntry {
+        classname: "item_flag_team2",
+        priority: 1,
+    },
+    LocationEntry {
+        classname: "item_quad",
+        priority: 2,
+    },
+    LocationEntry {
+        classname: "item_invulnerability",
+        priority: 2,
+    },
+    LocationEntry {
+        classname: "weapon_bfg",
+        priority: 3,
+    },
+    LocationEntry {
+        classname: "weapon_railgun",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_rocketlauncher",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_hyperblaster",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_chaingun",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_grenadelauncher",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_machinegun",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_supershotgun",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "weapon_shotgun",
+        priority: 4,
+    },
+    LocationEntry {
+        classname: "item_power_screen",
+        priority: 5,
+    },
+    LocationEntry {
+        classname: "item_power_shield",
+        priority: 5,
+    },
+    LocationEntry {
+        classname: "item_armor_body",
+        priority: 6,
+    },
+    LocationEntry {
+        classname: "item_armor_combat",
+        priority: 6,
+    },
+    LocationEntry {
+        classname: "item_armor_jacket",
+        priority: 6,
+    },
+    LocationEntry {
+        classname: "item_silencer",
+        priority: 7,
+    },
+    LocationEntry {
+        classname: "item_breather",
+        priority: 7,
+    },
+    LocationEntry {
+        classname: "item_enviro",
+        priority: 7,
+    },
+    LocationEntry {
+        classname: "item_adrenaline",
+        priority: 7,
+    },
+    LocationEntry {
+        classname: "item_bandolier",
+        priority: 8,
+    },
+    LocationEntry {
+        classname: "item_pack",
+        priority: 8,
+    },
 ];
 
 /// Location candidate.
@@ -88,7 +176,12 @@ struct LocationCandidate {
 pub fn ctf_tech(game: &mut Q2GameServices, actor: &ActorId) -> Option<Q2CtfTech> {
     TECH_NAMES
         .iter()
-        .find(|tech| game.host.inventory().count(actor, &item_id(&format!("q2:{}", tech.classname))) != 0.0)
+        .find(|tech| {
+            game.host
+                .inventory()
+                .count(actor, &item_id(&format!("q2:{}", tech.classname)))
+                != 0.0
+        })
         .map(|tech| tech.tech)
 }
 
@@ -114,7 +207,13 @@ impl Q2CtfPresentation {
                 };
                 let (slot, name, score, ping) = (player.slot, player.name.clone(), player.score, player.ping);
                 let carried = ctf_carried_flag(game, &actor);
-                out.push(Q2CtfScoreRow { slot, name, score, ping: 999.min(ping), carried_flag: carried });
+                out.push(Q2CtfScoreRow {
+                    slot,
+                    name,
+                    score,
+                    ping: 999.min(ping),
+                    carried_flag: carried,
+                });
             }
             out.sort_by(|left, right| right.score.cmp(&left.score).then(left.slot.cmp(&right.slot)));
             out
@@ -122,7 +221,10 @@ impl Q2CtfPresentation {
         let red = rows(game, 1);
         let blue = rows(game, 2);
         let spectators = rows(game, 0);
-        let totals = [red.iter().map(|row| row.score).sum::<i32>(), blue.iter().map(|row| row.score).sum::<i32>()];
+        let totals = [
+            red.iter().map(|row| row.score).sum::<i32>(),
+            blue.iter().map(|row| row.score).sum::<i32>(),
+        ];
         let (team1, team2) = (game.ctf.match_state.team1, game.ctf.match_state.team2);
         let mut layout = format!(
             "if 24 xv 8 yv 8 pic 24 endif xv 40 yv 28 string \"{:>4}/{:<3}\" xv 98 yv 12 num 2 18 if 25 xv 168 yv 8 pic 25 endif xv 200 yv 28 string \"{:>4}/{:<3}\" xv 256 yv 12 num 2 20 ",
@@ -163,24 +265,47 @@ impl Q2CtfPresentation {
         if !spectators.is_empty() && append(&format!("xv 0 yv {y} string2 \"Spectators\" ")) {
             y += 8;
             for (index, row) in spectators.iter().enumerate() {
-                append(&format!("ctf {} {} {} {} {} ", index % 2 * 160, y + index / 2 * 8, row.slot, row.score, row.ping));
+                append(&format!(
+                    "ctf {} {} {} {} {} ",
+                    index % 2 * 160,
+                    y + index / 2 * 8,
+                    row.slot,
+                    row.score,
+                    row.ping
+                ));
             }
         }
         for (total, shown, x) in [(red.len(), red_shown, 8), (blue.len(), blue_shown, 168)] {
             if total > shown {
-                append(&format!("xv {x} yv {} string \"..and {} more\" ", 42 + shown * 8, total - shown));
+                append(&format!(
+                    "xv {x} yv {} string \"..and {} more\" ",
+                    42 + shown * 8,
+                    total - shown
+                ));
             }
         }
         (self.hooks.emit)(
             game,
-            Q2CtfEvent::Scoreboard { actor: entity, red, blue, spectators, totals, captures: [team1, team2], layout },
+            Q2CtfEvent::Scoreboard {
+                actor: entity,
+                red,
+                blue,
+                spectators,
+                totals,
+                captures: [team1, team2],
+                layout,
+            },
         );
     }
 
     /// Identify the aimed player (`identify`).
     pub fn identify(&self, entity: ActorId, game: &mut Q2GameServices) -> Option<ActorId> {
         let origin = game.body_of(entity.clone()).origin;
-        let angles = game.host.player_view_state(&entity).map(|view| view.view_angles).unwrap_or_else(|| game.body_of(entity.clone()).angles);
+        let angles = game
+            .host
+            .player_view_state(&entity)
+            .map(|view| view.view_angles)
+            .unwrap_or_else(|| game.body_of(entity.clone()).angles);
         let forward = angle_vectors(angles).forward;
         let trace = game.host.trace(&Q2TraceRequest {
             start: origin,
@@ -222,10 +347,21 @@ impl Q2CtfPresentation {
         let blue = flags.state(game, 2);
         let carried = ctf_carried_flag(game, &entity);
         let tech = ctf_tech(game, &entity);
-        let id_target = if ctf_player(game, &entity).id_view { self.identify(entity.clone(), game) } else { None };
-        let (last_capture, last_team) = (game.ctf.match_state.last_flag_capture, game.ctf.match_state.last_capture_team);
+        let id_target = if ctf_player(game, &entity).id_view {
+            self.identify(entity.clone(), game)
+        } else {
+            None
+        };
+        let (last_capture, last_team) = (
+            game.ctf.match_state.last_flag_capture,
+            game.ctf.match_state.last_capture_team,
+        );
         let blink = (game.now() * 10.0).trunc() as i32 & 8;
-        let blink_team = if last_capture.is_some_and(|at| game.now() - at < 5.0) && blink != 0 { last_team } else { None };
+        let blink_team = if last_capture.is_some_and(|at| game.now() - at < 5.0) && blink != 0 {
+            last_team
+        } else {
+            None
+        };
         (self.hooks.emit)(
             game,
             Q2CtfEvent::Hud {
@@ -257,42 +393,78 @@ impl Q2CtfPresentation {
                 continue;
             }
             let visible = ctf_can_see(game, &target, &entity);
-            candidates.push(LocationCandidate { target, priority: entry.priority, distance, visible });
+            candidates.push(LocationCandidate {
+                target,
+                priority: entry.priority,
+                distance,
+                visible,
+            });
         }
         candidates.sort_by(|left, right| {
-            (i32::from(right.visible)).cmp(&i32::from(left.visible)).then(if left.visible {
-                left.priority.cmp(&right.priority)
-            } else {
-                std::cmp::Ordering::Equal
-            }).then(left.distance.partial_cmp(&right.distance).unwrap_or(std::cmp::Ordering::Equal))
+            (i32::from(right.visible))
+                .cmp(&i32::from(left.visible))
+                .then(if left.visible {
+                    left.priority.cmp(&right.priority)
+                } else {
+                    std::cmp::Ordering::Equal
+                })
+                .then(
+                    left.distance
+                        .partial_cmp(&right.distance)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
         });
         let Some(hot) = candidates.into_iter().next().map(|candidate| candidate.target) else {
             return "nowhere".to_string();
         };
         let mut team = String::new();
         let hot_classname = game.require_entity(&hot).classname.clone();
-        if game.entities.values().any(|other| other.actor.id() != &hot && other.classname == hot_classname) {
+        if game
+            .entities
+            .values()
+            .any(|other| other.actor.id() != &hot && other.classname == hot_classname)
+        {
             let flags = Q2CtfFlags { hooks: self.hooks };
             if let (Some(red), Some(blue)) = (flags.base(game, 1), flags.base(game, 2)) {
                 let hot_origin = game.body_of(hot.clone()).origin;
                 let one = length3(sub3(hot_origin, game.body_of(red).origin));
                 let two = length3(sub3(hot_origin, game.body_of(blue).origin));
-                team = if one < two { "red " } else if one > two { "blue " } else { "" }.to_string();
+                team = if one < two {
+                    "red "
+                } else if one > two {
+                    "blue "
+                } else {
+                    ""
+                }
+                .to_string();
             }
         }
         let delta = sub3(origin, game.body_of(hot.clone()).origin);
         let where_ = if delta.z.abs() > delta.x.abs() && delta.z.abs() > delta.y.abs() {
-            if delta.z > 0.0 { "above" } else { "below" }
+            if delta.z > 0.0 {
+                "above"
+            } else {
+                "below"
+            }
         } else {
             "near"
         };
         let bounds_min_z = game.body_of(entity.clone()).bounds.min.z;
-        let water = if game.host.point_contents(add3(origin, vec3(0.0, 0.0, bounds_min_z + 1.0))) & 56 != 0 {
+        let water = if game
+            .host
+            .point_contents(add3(origin, vec3(0.0, 0.0, bounds_min_z + 1.0)))
+            & 56
+            != 0
+        {
             "in the water "
         } else {
             ""
         };
-        let name = self.hooks.items.item_name(game, &hot_classname).unwrap_or(hot_classname);
+        let name = self
+            .hooks
+            .items
+            .item_name(game, &hot_classname)
+            .unwrap_or(hot_classname);
         format!("{water}{where_} the {team}{name}")
     }
 
@@ -317,18 +489,33 @@ impl Q2CtfPresentation {
                 let conventional = match &combat.armor.regular {
                     RegularArmorState::None => String::new(),
                     RegularArmorState::Q2 { points, item, .. } if *points > 0.0 => {
-                        format!("{points} units of {}", self.hooks.items.lookup(game, item).map(|found| found.name).unwrap_or_else(|| "armor".to_string()))
+                        format!(
+                            "{points} units of {}",
+                            self.hooks
+                                .items
+                                .lookup(game, item)
+                                .map(|found| found.name)
+                                .unwrap_or_else(|| "armor".to_string())
+                        )
                     }
-                    RegularArmorState::Q1 { points, .. } | RegularArmorState::Q3 { points, .. } | RegularArmorState::Source { points, .. }
+                    RegularArmorState::Q1 { points, .. }
+                    | RegularArmorState::Q3 { points, .. }
+                    | RegularArmorState::Source { points, .. }
                         if *points > 0.0 =>
                     {
                         format!("{points} armor")
                     }
                     _ => String::new(),
                 };
-                let parts: Vec<&str> =
-                    [power.as_str(), conventional.as_str()].into_iter().filter(|part| !part.is_empty()).collect();
-                if parts.is_empty() { "no armor".to_string() } else { parts.join(" and ") }
+                let parts: Vec<&str> = [power.as_str(), conventional.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if parts.is_empty() {
+                    "no armor".to_string()
+                } else {
+                    parts.join(" and ")
+                }
             }
         };
         let mut names = Vec::new();
@@ -385,7 +572,14 @@ impl Q2CtfPresentation {
                     match weapon.as_deref() {
                         Some(weapon) => {
                             let definition = weapon_definition(game, weapon);
-                            text.push_str(&self.hooks.items.lookup(game, &definition.item).map(|found| found.name).unwrap_or_else(|| weapon.to_string()));
+                            text.push_str(
+                                &self
+                                    .hooks
+                                    .items
+                                    .lookup(game, &definition.item)
+                                    .map(|found| found.name)
+                                    .unwrap_or_else(|| weapon.to_string()),
+                            );
                         }
                         None => text.push_str("none"),
                     }
@@ -398,7 +592,12 @@ impl Q2CtfPresentation {
         let speaker = ctf_name(game, &entity);
         for actor in game.host.players() {
             if game.ctf.states.get(&actor).map(|state| state.team) == Some(team) {
-                ctf_print(game, &format!("({speaker}): {text}\n"), Some(actor), Q2CtfPrintLevel::Chat);
+                ctf_print(
+                    game,
+                    &format!("({speaker}): {text}\n"),
+                    Some(actor),
+                    Q2CtfPrintLevel::Chat,
+                );
             }
         }
     }
@@ -426,19 +625,40 @@ impl Q2CtfPresentation {
                 entries: vec![
                     Q2CtfMenuEntry {
                         label: format!("Join Red Team ({red})"),
-                        action: if locked || force == Q2CtfForceJoin::Blue { None } else { Some(Q2CtfMenuAction::JoinRed) },
+                        action: if locked || force == Q2CtfForceJoin::Blue {
+                            None
+                        } else {
+                            Some(Q2CtfMenuAction::JoinRed)
+                        },
                     },
                     Q2CtfMenuEntry {
                         label: format!("Join Blue Team ({blue})"),
-                        action: if locked || force == Q2CtfForceJoin::Red { None } else { Some(Q2CtfMenuAction::JoinBlue) },
+                        action: if locked || force == Q2CtfForceJoin::Red {
+                            None
+                        } else {
+                            Some(Q2CtfMenuAction::JoinBlue)
+                        },
                     },
-                    Q2CtfMenuEntry { label: "Chase Camera".to_string(), action: Some(Q2CtfMenuAction::Chase) },
-                    Q2CtfMenuEntry { label: "Credits".to_string(), action: Some(Q2CtfMenuAction::Credits) },
+                    Q2CtfMenuEntry {
+                        label: "Chase Camera".to_string(),
+                        action: Some(Q2CtfMenuAction::Chase),
+                    },
+                    Q2CtfMenuEntry {
+                        label: "Credits".to_string(),
+                        action: Some(Q2CtfMenuAction::Credits),
+                    },
                     Q2CtfMenuEntry {
                         label: "Request match".to_string(),
-                        action: if competition != 0 && phase == Q2CtfMatchPhase::None { Some(Q2CtfMenuAction::Match) } else { None },
+                        action: if competition != 0 && phase == Q2CtfMatchPhase::None {
+                            Some(Q2CtfMenuAction::Match)
+                        } else {
+                            None
+                        },
                     },
-                    Q2CtfMenuEntry { label: "Close".to_string(), action: Some(Q2CtfMenuAction::Close) },
+                    Q2CtfMenuEntry {
+                        label: "Close".to_string(),
+                        action: Some(Q2CtfMenuAction::Close),
+                    },
                 ],
             },
         );

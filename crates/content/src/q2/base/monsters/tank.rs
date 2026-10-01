@@ -4,16 +4,14 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, sub3, vec3};
+use qa_core::math::{sub3, vec3, Bounds, Vec3};
 
-use super::common::{
-    alive_enemy, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler,
-};
+use super::common::{alive_enemy, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler};
 use super::tables::tank::{tank_frame, tank_moves};
 use crate::q2::foundation::monsters::ai::{
     angles_vectors, enemy_eye, health, project_flash, target_distance, vector_angles, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
@@ -22,9 +20,7 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn tank_run(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let brutal = enemy
-        .as_ref()
-        .is_some_and(|enemy| context.game.host.is_player(enemy));
+    let brutal = enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy));
     context.state_mut().brutal = brutal;
     if context.state().stand_ground {
         context.set_move("tank_move_stand", true);
@@ -207,10 +203,7 @@ fn tank_poststrike(context: &mut MonsterContext) {
 
 /// Reattack blaster (`tank_reattack_blaster`).
 fn tank_reattack_blaster(context: &mut MonsterContext) {
-    if context.game.options.skill >= 2
-        && visible(context, None)
-        && alive_enemy(context)
-        && context.game.random() <= 0.6
+    if context.game.options.skill >= 2 && visible(context, None) && alive_enemy(context) && context.game.random() <= 0.6
     {
         context.set_move("tank_move_reattack_blast", true);
     } else {
@@ -220,10 +213,7 @@ fn tank_reattack_blaster(context: &mut MonsterContext) {
 
 /// Refire rocket (`tank_refire_rocket`).
 fn tank_refire_rocket(context: &mut MonsterContext) {
-    if context.game.options.skill >= 2
-        && alive_enemy(context)
-        && visible(context, None)
-        && context.game.random() <= 0.4
+    if context.game.options.skill >= 2 && alive_enemy(context) && visible(context, None) && context.game.random() <= 0.4
     {
         context.set_move("tank_move_attack_fire_rocket", true);
     } else {
@@ -275,16 +265,7 @@ fn tank_rocket(context: &mut MonsterContext) {
     };
     let fire_rocket = context.weapons.fire_rocket;
     let actor = context.actor().clone();
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        550.0,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, 550.0, 70.0, 50.0);
     monster_muzzle(context, flash as i32, direction, start);
 }
 
@@ -306,17 +287,7 @@ pub(crate) fn tank_machine_gun(context: &mut MonsterContext) {
     let direction = angles_vectors(vec3(pitch, yaw, 0.0)).forward;
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        20.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 20.0, 4.0, 300.0, 500.0, 0);
     monster_muzzle(context, flash, direction, start);
 }
 
@@ -354,36 +325,15 @@ pub fn tank_definition() -> Q2MonsterDefinition {
     definition.idle = Some(sound_handler("tank/tnkidle1.wav", 2, 2.0));
     definition.pain = Some(tank_pain);
     definition.callbacks = HashMap::from([
-        (
-            "tank_stand".to_string(),
-            move_handler("tank_move_stand"),
-        ),
+        ("tank_stand".to_string(), move_handler("tank_move_stand")),
         ("tank_walk".to_string(), move_handler("tank_move_walk")),
         ("tank_run".to_string(), MonsterHandler::Callback(tank_run)),
-        (
-            "tank_footstep".to_string(),
-            sound_handler("tank/step.wav", 4, 1.0),
-        ),
-        (
-            "tank_thud".to_string(),
-            sound_handler("tank/tnkdeth2.wav", 4, 1.0),
-        ),
-        (
-            "tank_windup".to_string(),
-            sound_handler("tank/tnkatck4.wav", 1, 1.0),
-        ),
-        (
-            "TankStrike".to_string(),
-            sound_handler("tank/tnkatck5.wav", 1, 1.0),
-        ),
-        (
-            "tank_dead".to_string(),
-            MonsterHandler::Callback(tank_dead),
-        ),
-        (
-            "tank_poststrike".to_string(),
-            MonsterHandler::Callback(tank_poststrike),
-        ),
+        ("tank_footstep".to_string(), sound_handler("tank/step.wav", 4, 1.0)),
+        ("tank_thud".to_string(), sound_handler("tank/tnkdeth2.wav", 4, 1.0)),
+        ("tank_windup".to_string(), sound_handler("tank/tnkatck4.wav", 1, 1.0)),
+        ("TankStrike".to_string(), sound_handler("tank/tnkatck5.wav", 1, 1.0)),
+        ("tank_dead".to_string(), MonsterHandler::Callback(tank_dead)),
+        ("tank_poststrike".to_string(), MonsterHandler::Callback(tank_poststrike)),
         (
             "tank_doattack_rocket".to_string(),
             move_handler("tank_move_attack_fire_rocket"),
@@ -396,18 +346,9 @@ pub fn tank_definition() -> Q2MonsterDefinition {
             "tank_refire_rocket".to_string(),
             MonsterHandler::Callback(tank_refire_rocket),
         ),
-        (
-            "TankBlaster".to_string(),
-            MonsterHandler::Callback(tank_blaster),
-        ),
-        (
-            "TankRocket".to_string(),
-            MonsterHandler::Callback(tank_rocket),
-        ),
-        (
-            "TankMachineGun".to_string(),
-            MonsterHandler::Callback(tank_machine_gun),
-        ),
+        ("TankBlaster".to_string(), MonsterHandler::Callback(tank_blaster)),
+        ("TankRocket".to_string(), MonsterHandler::Callback(tank_rocket)),
+        ("TankMachineGun".to_string(), MonsterHandler::Callback(tank_machine_gun)),
     ]);
     definition
 }

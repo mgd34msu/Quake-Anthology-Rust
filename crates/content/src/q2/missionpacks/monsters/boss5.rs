@@ -4,17 +4,15 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds, Vec3};
 
-use super::power_armor::{PowerArmorKind, monster_power_armor, restore_monster_power_armor};
+use super::power_armor::{monster_power_armor, restore_monster_power_armor, PowerArmorKind};
 use super::tables::xatrix_boss5::{boss5_frame, boss5_moves};
 use crate::q2::base::monsters::boss_common::boss_explode;
 use crate::q2::base::monsters::common::{
     damaged_skin, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler,
 };
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_eye, project_flash, target_distance, visible,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_eye, project_flash, target_distance, visible};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
@@ -56,16 +54,11 @@ fn boss5_attack(context: &mut MonsterContext) {
 /// Pain (`pain`).
 fn boss5_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     damaged_skin(context);
-    if context.game.host.now() < context.state().pain_time
-        || reaction.damage <= 25.0 && context.game.random() < 0.2
-    {
+    if context.game.host.now() < context.state().pain_time || reaction.damage <= 25.0 && context.game.random() < 0.2 {
         return;
     }
     let frame = context.entity().frame;
-    if context.game.options.skill >= 2
-        && frame >= boss5_frame::ATTAK2_1
-        && frame <= boss5_frame::ATTAK2_14
-    {
+    if context.game.options.skill >= 2 && frame >= boss5_frame::ATTAK2_1 && frame <= boss5_frame::ATTAK2_14 {
         return;
     }
     let now = context.game.host.now();
@@ -119,8 +112,16 @@ fn boss5_dead(context: &mut MonsterContext) {
     finish_corpse(
         context,
         Bounds {
-            min: Vec3 { x: -60.0, y: -60.0, z: 0.0 },
-            max: Vec3 { x: 60.0, y: 60.0, z: 72.0 },
+            min: Vec3 {
+                x: -60.0,
+                y: -60.0,
+                z: 0.0,
+            },
+            max: Vec3 {
+                x: 60.0,
+                y: 60.0,
+                z: 72.0,
+            },
         },
     );
 }
@@ -149,16 +150,7 @@ fn boss5_rocket(context: &mut MonsterContext) {
     };
     let fire_rocket = context.weapons.fire_rocket;
     let actor = context.actor().clone();
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        500.0,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
     monster_muzzle(context, flash as i32, direction, start);
 }
 
@@ -179,17 +171,7 @@ fn boss5_machine_gun(context: &mut MonsterContext) {
         .unwrap_or_else(|| angles_vectors(vec3(0.0, body.angles.y, 0.0)).forward);
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        6.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 300.0, 500.0, 0);
     monster_muzzle(context, flash, direction, start);
 }
 
@@ -203,8 +185,16 @@ pub fn boss5_definition() -> Q2MonsterDefinition {
         -500.0,
         800.0,
         Bounds {
-            min: Vec3 { x: -64.0, y: -64.0, z: 0.0 },
-            max: Vec3 { x: 64.0, y: 64.0, z: 112.0 },
+            min: Vec3 {
+                x: -64.0,
+                y: -64.0,
+                z: 0.0,
+            },
+            max: Vec3 {
+                x: 64.0,
+                y: 64.0,
+                z: 112.0,
+            },
         },
         1.0,
         "boss5_move_stand",
@@ -221,26 +211,14 @@ pub fn boss5_definition() -> Q2MonsterDefinition {
     definition.restore = Some(MonsterHandler::Callback(restore_monster_power_armor));
     definition.callbacks = HashMap::from([
         ("boss5_run".to_string(), MonsterHandler::Callback(boss5_run)),
-        (
-            "BossExplode2".to_string(),
-            MonsterHandler::Callback(boss_explode),
-        ),
+        ("BossExplode2".to_string(), MonsterHandler::Callback(boss_explode)),
         (
             "TreadSound2".to_string(),
             sound_handler("bosstank/btkengn1.wav", 2, 1.0),
         ),
-        (
-            "boss5_dead".to_string(),
-            MonsterHandler::Callback(boss5_dead),
-        ),
-        (
-            "boss5_reattack1".to_string(),
-            MonsterHandler::Callback(boss5_reattack1),
-        ),
-        (
-            "boss5Rocket".to_string(),
-            MonsterHandler::Callback(boss5_rocket),
-        ),
+        ("boss5_dead".to_string(), MonsterHandler::Callback(boss5_dead)),
+        ("boss5_reattack1".to_string(), MonsterHandler::Callback(boss5_reattack1)),
+        ("boss5Rocket".to_string(), MonsterHandler::Callback(boss5_rocket)),
         (
             "boss5MachineGun".to_string(),
             MonsterHandler::Callback(boss5_machine_gun),

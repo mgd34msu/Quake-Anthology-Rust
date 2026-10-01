@@ -9,9 +9,8 @@ use qa_core::math::{add3, scale3, vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2BeamEvent, Q2EffectEvent, Q2GameServices, Q2MotionKind,
-    Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2Think,
-    Q2TraceRequest,
+    Q2BeamEvent, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2Think, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::types::MonsterContext;
 use crate::q2::support::contracts::{TraceContact, TraceHit};
@@ -50,7 +49,11 @@ pub fn update_monster_beam(beam: &ActorId, game: &mut Q2GameServices, damage: bo
         };
         if damage
             && beam_damage > 0.0
-            && game.host.combat().read(&target).is_some_and(|state| state.can_take_damage)
+            && game
+                .host
+                .combat()
+                .read(&target)
+                .is_some_and(|state| state.can_take_damage)
             && game.entity(&target).is_some_and(|entity| !entity.laser_immune)
             && beam_owner.as_ref() != Some(&target)
         {
@@ -72,10 +75,9 @@ pub fn update_monster_beam(beam: &ActorId, game: &mut Q2GameServices, damage: bo
             let entity = game.entity(&target).cloned();
             if let (Some(combat), Some(entity)) = (combat, entity) {
                 if combat.health < entity.max_health {
-                    game.host.combat().set_health(
-                        &entity.actor,
-                        entity.max_health.min(combat.health - beam_damage),
-                    );
+                    game.host
+                        .combat()
+                        .set_health(&entity.actor, entity.max_health.min(combat.health - beam_damage));
                 }
             }
         }
@@ -141,12 +143,7 @@ pub fn free_monster_beam(beam: ActorId, game: &mut Q2GameServices) {
 }
 
 /// Fire a monster beam (`fireMonsterBeam`).
-pub fn fire_monster_beam(
-    context: &mut MonsterContext,
-    damage: f64,
-    secondary: bool,
-    update: Q2Think,
-) {
+pub fn fire_monster_beam(context: &mut MonsterContext, damage: f64, secondary: bool, update: Q2Think) {
     let actor = context.actor().clone();
     let mut callbacks = Q2CallbackDefinitions::default();
     callbacks.think.insert("beam_think", free_monster_beam);
@@ -172,7 +169,11 @@ pub fn fire_monster_beam(
                 entity.damage = damage;
                 entity.frame = 2;
                 entity.spawnflags = if secondary { 1 } else { 0 };
-                entity.skin = if medic { 0xf3f3f1f1u32 as i32 } else { 0xf2f2f0f0u32 as i32 };
+                entity.skin = if medic {
+                    0xf3f3f1f1u32 as i32
+                } else {
+                    0xf2f2f0f0u32 as i32
+                };
                 entity.render_flags |= 128;
                 entity.postthink = Some(update);
                 entity.sound = "misc/lasfly.wav".to_string();

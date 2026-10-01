@@ -3,14 +3,13 @@
 //! Rogue g_newtrig.c/g_newtarg.c and misc_nuke_core (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::{integer_field, movedir};
 use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think,
-    Q2Touch, Q2Use,
+    Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2Think, Q2Touch, Q2Use,
 };
 use crate::q2::foundation::scenery::kill_q2_box;
 use crate::q2::support::contracts::{CombatState, TouchContact};
@@ -28,16 +27,28 @@ pub struct Q2RogueEntitiesCheckpoint {
 /// Rogue entity callbacks (`Q2RogueEntities::callbacks`).
 pub fn rogue_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("target_steam_start", target_steam_start as Q2Think);
+    callbacks
+        .think
+        .insert("target_steam_start", target_steam_start as Q2Think);
     callbacks.think.insert("blacklight_think", blacklight_think as Q2Think);
     callbacks.think.insert("orb_think", orb_think as Q2Think);
-    callbacks.touch.insert("trigger_teleport_touch", trigger_teleport_touch as Q2Touch);
-    callbacks.touch.insert("trigger_disguise_touch", trigger_disguise_touch as Q2Touch);
-    callbacks.use_.insert("trigger_teleport_use", trigger_teleport_use as Q2Use);
-    callbacks.use_.insert("trigger_disguise_use", trigger_disguise_use as Q2Use);
+    callbacks
+        .touch
+        .insert("trigger_teleport_touch", trigger_teleport_touch as Q2Touch);
+    callbacks
+        .touch
+        .insert("trigger_disguise_touch", trigger_disguise_touch as Q2Touch);
+    callbacks
+        .use_
+        .insert("trigger_teleport_use", trigger_teleport_use as Q2Use);
+    callbacks
+        .use_
+        .insert("trigger_disguise_use", trigger_disguise_use as Q2Use);
     callbacks.use_.insert("use_target_steam", use_target_steam as Q2Use);
     callbacks.use_.insert("target_anger_use", target_anger_use as Q2Use);
-    callbacks.use_.insert("target_killplayers_use", target_killplayers_use as Q2Use);
+    callbacks
+        .use_
+        .insert("target_killplayers_use", target_killplayers_use as Q2Use);
     callbacks.use_.insert("misc_nuke_core_use", misc_nuke_core_use as Q2Use);
     callbacks
 }
@@ -142,7 +153,11 @@ impl Q2RogueEntities {
                 game.schedule(
                     entity.clone(),
                     0.1,
-                    if orb { orb_think as Q2Think } else { blacklight_think as Q2Think },
+                    if orb {
+                        orb_think as Q2Think
+                    } else {
+                        blacklight_think as Q2Think
+                    },
                 );
                 game.show(entity);
             }
@@ -173,7 +188,12 @@ impl Q2RogueEntities {
 }
 
 /// Teleport use (`teleportUse`).
-fn trigger_teleport_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn trigger_teleport_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let delay = game.require_entity(&entity).delay;
     game.require_entity_mut(&entity).delay = if delay == 0.0 { 1.0 } else { 0.0 };
 }
@@ -226,16 +246,17 @@ fn trigger_disguise_touch(entity: ActorId, game: &mut Q2GameServices, contact: T
     if game.entity(&contact.other).is_some() {
         let disguised = game.require_entity(&entity).spawnflags & 4 == 0;
         let flags = game.require_entity(&contact.other).flags;
-        game.require_entity_mut(&contact.other).flags = if disguised {
-            flags | 0x8000
-        } else {
-            flags & !0x8000
-        };
+        game.require_entity_mut(&contact.other).flags = if disguised { flags | 0x8000 } else { flags & !0x8000 };
     }
 }
 
 /// Disguise use (`disguiseUse`).
-fn trigger_disguise_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn trigger_disguise_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let solid = game.require_entity(&entity).solid;
     game.set_solid(
         entity,
@@ -248,7 +269,12 @@ fn trigger_disguise_use(entity: ActorId, game: &mut Q2GameServices, _other: Opti
 }
 
 /// Nuke core use (`coreUse`).
-fn misc_nuke_core_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn misc_nuke_core_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let visible = game.require_entity(&entity).visible;
     game.require_entity_mut(&entity).visible = !visible;
     game.show(entity);
@@ -262,7 +288,8 @@ fn target_steam_start(entity: ActorId, game: &mut Q2GameServices) {
         let enemy = game.targets(&target_name).into_iter().next();
         if enemy.is_none() {
             let classname = game.require_entity(&entity).classname.clone();
-            game.host.diagnostic(&format!("{classname}: {target_name} is a bad target"));
+            game.host
+                .diagnostic(&format!("{classname}: {target_name} is a bad target"));
         }
         game.require_entity_mut(&entity).enemy = enemy;
     } else {
@@ -298,9 +325,7 @@ fn use_target_steam(entity: ActorId, game: &mut Q2GameServices, other: Option<Ac
     if game.require_entity(&entity).wait == 0.0 {
         let wait = match other {
             None => 1000.0,
-            Some(other) => {
-                game.entity(&other).map(|entity| entity.wait).unwrap_or(0.0) * 1000.0
-            }
+            Some(other) => game.entity(&other).map(|entity| entity.wait).unwrap_or(0.0) * 1000.0,
         };
         game.require_entity_mut(&entity).wait = wait;
     }
@@ -308,10 +333,7 @@ fn use_target_steam(entity: ActorId, game: &mut Q2GameServices, other: Option<Ac
     let target = enemy.as_ref().and_then(|enemy| game.host.bodies().read(enemy));
     let origin = game.body_of(entity.clone()).origin;
     if let Some(target) = target {
-        let center = add3(
-            target.origin,
-            scale3(add3(target.bounds.min, target.bounds.max), 0.5),
-        );
+        let center = add3(target.origin, scale3(add3(target.bounds.min, target.bounds.max), 0.5));
         game.require_entity_mut(&entity).movedir = normalize3(sub3(center, origin));
     }
     let steam_id = game.mission_packs.steam_id;
@@ -368,7 +390,14 @@ fn target_anger_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<A
         if monster == entity {
             game.host.diagnostic("WARNING: entity used itself.");
         } else if game.require_entity(&monster).use_.is_some() {
-            if game.host.combat().read(&monster).map(|combat| combat.health).unwrap_or(0.0) < 0.0 {
+            if game
+                .host
+                .combat()
+                .read(&monster)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                < 0.0
+            {
                 return;
             }
             (mission_entity_hooks(game).target_anger)(monster, target.clone(), game);
@@ -381,7 +410,12 @@ fn target_anger_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<A
 }
 
 /// Kill players use (`killPlayers`).
-fn target_killplayers_use(entity: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
+fn target_killplayers_use(
+    entity: ActorId,
+    game: &mut Q2GameServices,
+    _other: Option<ActorId>,
+    _activator: Option<ActorId>,
+) {
     let origin = game.body_of(entity.clone()).origin;
     for player in game.host.players() {
         game.damage(

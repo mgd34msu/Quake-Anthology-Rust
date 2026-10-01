@@ -7,7 +7,7 @@ use qa_core::math::Vec3;
 
 use crate::q2::foundation::host::{Q2GameServices, Q2PresentationEvent};
 
-use super::types::{LmctfHooks, LmctfMapChange, lmctf_print};
+use super::types::{lmctf_print, LmctfHooks, LmctfMapChange};
 
 /// LMCTF match phase (`LmctfMatch["phase"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -76,7 +76,12 @@ impl LmctfMatch {
         if game.lmctf.rules.auto_lock {
             game.lmctf.match_state.teams_locked = !game.lmctf.match_state.paused;
         }
-        let text = if game.lmctf.match_state.paused { "Game Paused\n" } else { "Game Unpaused\n" }.to_string();
+        let text = if game.lmctf.match_state.paused {
+            "Game Paused\n"
+        } else {
+            "Game Unpaused\n"
+        }
+        .to_string();
         let actors: Vec<ActorId> = game.lmctf.states.keys().cloned().collect();
         for actor in actors {
             if game.entity(&actor).is_some() {
@@ -94,7 +99,10 @@ impl LmctfMatch {
     /// Change the map (`changeMap`).
     pub fn change_map(&self, game: &mut Q2GameServices, map: &str, countdown: bool) {
         self.stop(game);
-        game.lmctf.match_state.pending_map = Some(LmctfMapChange { map: map.to_string(), countdown });
+        game.lmctf.match_state.pending_map = Some(LmctfMapChange {
+            map: map.to_string(),
+            countdown,
+        });
         if countdown {
             game.lmctf.match_state.phase = LmctfMatchPhase::Countdown;
         }
@@ -152,7 +160,9 @@ impl LmctfMatch {
             if game.lmctf.match_state.remaining <= 0 {
                 let actors: Vec<ActorId> = game.lmctf.states.keys().cloned().collect();
                 for actor in actors {
-                    let spectator = (self.hooks.player)(actor.clone(), game).map(|player| player.spectator).unwrap_or(true);
+                    let spectator = (self.hooks.player)(actor.clone(), game)
+                        .map(|player| player.spectator)
+                        .unwrap_or(true);
                     if spectator || game.entity(&actor).is_none() {
                         continue;
                     }
@@ -187,7 +197,11 @@ impl LmctfMatch {
             let frag_limit = game.lmctf.rules.frag_limit;
             if game.lmctf.match_state.remaining > 10
                 && frag_limit != 0
-                && game.lmctf.states.values().any(|state| state.statistics.get("score").copied().unwrap_or(0.0) >= f64::from(frag_limit))
+                && game
+                    .lmctf
+                    .states
+                    .values()
+                    .any(|state| state.statistics.get("score").copied().unwrap_or(0.0) >= f64::from(frag_limit))
             {
                 game.lmctf.match_state.remaining = 10;
             }

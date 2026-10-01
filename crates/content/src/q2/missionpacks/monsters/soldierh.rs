@@ -9,19 +9,14 @@ use qa_core::math::{add3, normalize3, scale3, sub3};
 use super::dabeam::monster_dabeam;
 use super::tables::xatrix_soldierh::{soldierh_frame, soldierh_moves};
 use super::types::mission_weapons;
-use crate::q2::base::monsters::common::{
-    HUMANOID_BOUNDS, alive_enemy, finish_corpse_default, monster_muzzle,
-};
+use crate::q2::base::monsters::common::{alive_enemy, finish_corpse_default, monster_muzzle, HUMANOID_BOUNDS};
 use crate::q2::foundation::fields::integer_field;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, health, project_flash, set_duck,
-    target_distance, vector_angles,
+    angles_vectors, enemy_body, enemy_eye, health, project_flash, set_duck, target_distance, vector_angles,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib, throw_head};
+use crate::q2::foundation::monsters::gibs::{throw_gib, throw_head, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at,
-};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
 /// Blaster flashes.
@@ -31,9 +26,7 @@ const MACHINEGUN_FLASHES: [usize; 8] = [43, 44, 85, 88, 91, 94, 97, 100];
 
 /// Stand (`stand`).
 fn soldierh_stand(context: &mut MonsterContext) {
-    if context.state().current_move.name == "soldierh_move_stand3"
-        || context.game.random() < 0.8
-    {
+    if context.state().current_move.name == "soldierh_move_stand3" || context.game.random() < 0.8 {
         context.set_move("soldierh_move_stand1", true);
     } else {
         context.set_move("soldierh_move_stand3", true);
@@ -48,9 +41,7 @@ fn soldierh_run(context: &mut MonsterContext) {
     }
     let current = context.state().current_move.name.clone();
     context.set_move(
-        if current == "soldierh_move_walk1"
-            || current == "soldierh_move_walk2"
-            || current == "soldierh_move_start_run"
+        if current == "soldierh_move_walk1" || current == "soldierh_move_walk2" || current == "soldierh_move_start_run"
         {
             "soldierh_move_run"
         } else {
@@ -62,8 +53,7 @@ fn soldierh_run(context: &mut MonsterContext) {
 
 /// Refire (`refire`).
 fn soldierh_refire(context: &mut MonsterContext) -> bool {
-    context.game.options.skill == 3 && context.game.random() < 0.5
-        || target_distance(context) < 80.0
+    context.game.options.skill == 3 && context.game.random() < 0.5 || target_distance(context) < 80.0
 }
 
 /// Duck (`duck`).
@@ -87,10 +77,7 @@ fn soldierh_pain_sound(context: &mut MonsterContext, death: bool) {
         3
     };
     let actor = context.actor().clone();
-    let path = format!(
-        "soldier/{}{variant}.wav",
-        if death { "soldeth" } else { "solpain" }
-    );
+    let path = format!("soldier/{}{variant}.wav", if death { "soldeth" } else { "solpain" });
     context.game.sound(&actor, &path, 2, 1.0, 1.0);
 }
 
@@ -137,8 +124,7 @@ fn soldierh_fire(context: &mut MonsterContext, index: usize) {
         return;
     }
     if !context.state().hold_frame {
-        let pause = context.game.host.now()
-            + (3.0 + (context.game.random() * 8.0).floor()) * 0.1;
+        let pause = context.game.host.now() + (3.0 + (context.game.random() * 8.0).floor()) * 0.1;
         context.state_mut().pause_time = pause;
     }
     if context.game.random() > 0.8 {
@@ -157,10 +143,7 @@ fn soldierh_fire(context: &mut MonsterContext, index: usize) {
         body.origin,
         add3(
             scale3(aim.right, offset.x + if flash == 85 { -14.0 } else { 2.0 }),
-            add3(
-                scale3(aim.up, offset.z + 8.0),
-                scale3(aim.forward, offset.y),
-            ),
+            add3(scale3(aim.up, offset.z + 8.0), scale3(aim.forward, offset.y)),
         ),
     );
     let target = context.entity().enemy.clone();
@@ -232,10 +215,7 @@ fn soldierh_sight(context: &mut MonsterContext) {
         "soldier/solsrch1.wav"
     };
     context.game.sound(&actor, path, 2, 1.0, 1.0);
-    if context.game.options.skill > 0
-        && target_distance(context) >= 500.0
-        && context.game.random() > 0.5
-    {
+    if context.game.options.skill > 0 && target_distance(context) >= 500.0 && context.game.random() > 0.5 {
         context.set_move(
             if context.entity().skin < 4 {
                 "soldierh_move_attack6"
@@ -312,12 +292,7 @@ fn soldierh_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             damage,
             Q2GibOptions::default(),
         );
-        throw_head(
-            actor,
-            &mut *context.game,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-        );
+        throw_head(actor, &mut *context.game, "models/objects/gibs/head2/tris.md2", damage);
         context.state_mut().dead = true;
         context.state_mut().gibbed = true;
         return;
@@ -502,9 +477,7 @@ fn soldierh_attack2_refire1(context: &mut MonsterContext) {
 fn soldierh_attack2_refire2(context: &mut MonsterContext) {
     if context.entity().skin >= 2 && alive_enemy(context) {
         let skill = context.game.options.skill;
-        if skill == 3 && context.game.random() < 0.5
-            || target_distance(context) < 80.0 && context.entity().skin < 4
-        {
+        if skill == 3 && context.game.random() < 0.5 || target_distance(context) < 80.0 && context.entity().skin < 4 {
             context.state_mut().next_frame = soldierh_frame::ATTAK204;
         }
     }
@@ -519,10 +492,7 @@ fn soldierh_attack3_refire(context: &mut MonsterContext) {
 
 /// Attack6 refire (`soldierh_attack6_refire`).
 fn soldierh_attack6_refire(context: &mut MonsterContext) {
-    if alive_enemy(context)
-        && target_distance(context) >= 500.0
-        && context.game.options.skill == 3
-    {
+    if alive_enemy(context) && target_distance(context) >= 500.0 && context.game.options.skill == 3 {
         context.state_mut().next_frame = soldierh_frame::RUNS03;
     }
 }
@@ -565,26 +535,14 @@ fn soldierh_definition(classname: &str, health: f64, skin: i32) -> Q2MonsterDefi
         definition.initialize = Some(MonsterHandler::Callback(soldierh_hyper_initialize(skin)));
     }
     let mut callbacks = definition.callbacks.clone();
-    callbacks.insert(
-        "soldierh_stand".to_string(),
-        MonsterHandler::Callback(soldierh_stand),
-    );
-    callbacks.insert(
-        "soldierh_run".to_string(),
-        MonsterHandler::Callback(soldierh_run),
-    );
+    callbacks.insert("soldierh_stand".to_string(), MonsterHandler::Callback(soldierh_stand));
+    callbacks.insert("soldierh_run".to_string(), MonsterHandler::Callback(soldierh_run));
     callbacks.insert(
         "soldierh_dead".to_string(),
         MonsterHandler::Callback(finish_corpse_default),
     );
-    callbacks.insert(
-        "soldierh_idle".to_string(),
-        MonsterHandler::Callback(soldierh_idle),
-    );
-    callbacks.insert(
-        "soldierh_cock".to_string(),
-        MonsterHandler::Callback(soldierh_cock),
-    );
+    callbacks.insert("soldierh_idle".to_string(), MonsterHandler::Callback(soldierh_idle));
+    callbacks.insert("soldierh_cock".to_string(), MonsterHandler::Callback(soldierh_cock));
     callbacks.insert(
         "soldierh_walk1_random".to_string(),
         MonsterHandler::Callback(soldierh_walk1_random),
@@ -601,34 +559,13 @@ fn soldierh_definition(classname: &str, health: f64, skin: i32) -> Q2MonsterDefi
         "soldierh_hyper_refire2".to_string(),
         MonsterHandler::Callback(soldierh_hyper_refire2),
     );
-    callbacks.insert(
-        "soldierh_fire1".to_string(),
-        MonsterHandler::Callback(soldierh_fire1),
-    );
-    callbacks.insert(
-        "soldierh_fire2".to_string(),
-        MonsterHandler::Callback(soldierh_fire2),
-    );
-    callbacks.insert(
-        "soldierh_fire3".to_string(),
-        MonsterHandler::Callback(soldierh_fire3),
-    );
-    callbacks.insert(
-        "soldierh_fire4".to_string(),
-        MonsterHandler::Callback(soldierh_fire4),
-    );
-    callbacks.insert(
-        "soldierh_fire8".to_string(),
-        MonsterHandler::Callback(soldierh_fire8),
-    );
-    callbacks.insert(
-        "soldierh_fire6".to_string(),
-        MonsterHandler::Callback(soldierh_fire6),
-    );
-    callbacks.insert(
-        "soldierh_fire7".to_string(),
-        MonsterHandler::Callback(soldierh_fire7),
-    );
+    callbacks.insert("soldierh_fire1".to_string(), MonsterHandler::Callback(soldierh_fire1));
+    callbacks.insert("soldierh_fire2".to_string(), MonsterHandler::Callback(soldierh_fire2));
+    callbacks.insert("soldierh_fire3".to_string(), MonsterHandler::Callback(soldierh_fire3));
+    callbacks.insert("soldierh_fire4".to_string(), MonsterHandler::Callback(soldierh_fire4));
+    callbacks.insert("soldierh_fire8".to_string(), MonsterHandler::Callback(soldierh_fire8));
+    callbacks.insert("soldierh_fire6".to_string(), MonsterHandler::Callback(soldierh_fire6));
+    callbacks.insert("soldierh_fire7".to_string(), MonsterHandler::Callback(soldierh_fire7));
     callbacks.insert(
         "soldierh_ripper1".to_string(),
         MonsterHandler::Callback(soldierh_ripper1),

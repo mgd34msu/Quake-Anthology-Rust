@@ -10,29 +10,25 @@ use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
 use qa_core::math::{add3, scale3, vec3};
 use qa_core::time::SourceTime;
 
-use super::callbacks::{Q2CallbackDefinitions, free_q2_entity};
+use super::callbacks::{free_q2_entity, Q2CallbackDefinitions};
 use super::checkpoint::restore_q2_actor;
 use super::fields::movedir;
 use super::host::{
-    Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2Mode, Q2MotionKind,
-    Q2OriginalPickupContinuation, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
-    Q2SpawnFn, Q2TraceRequest, SpawnModule,
+    Q2Edition, Q2EffectEvent, Q2GameServices, Q2ItemNameFn, Q2Mode, Q2MotionKind, Q2OriginalPickupContinuation,
+    Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, Q2TraceRequest, SpawnModule,
 };
 use super::monsters::types::SharedPowerCells;
 use super::start_items::parse_q2_start_items;
 use super::weapons::definitions::base_weapons;
 use super::weapons::types::Q2BaseWeaponName;
 use crate::contract::{
-    AmmoWeaponSelection, AmmoWeaponTiming, InventoryCountPolicy, InventoryEntry, ItemId,
-    OriginalPickupOffer, PickupAdmission, PickupAmmoGrant, PickupAmmoWeaponGrant,
-    PickupAvailability, PickupCount, PickupMapKind, PickupResource, PickupSelection,
-    PickupSupplyObservation, PickupSupplyOffer, PickupSupplyPreview, PickupWeaponGrant,
-    PoweredProtectionState, ProtectionChannel, RegularArmorState, SourceCounterArithmetic,
+    AmmoWeaponSelection, AmmoWeaponTiming, InventoryCountPolicy, InventoryEntry, ItemId, OriginalPickupOffer,
+    PickupAdmission, PickupAmmoGrant, PickupAmmoWeaponGrant, PickupAvailability, PickupCount, PickupMapKind,
+    PickupResource, PickupSelection, PickupSupplyObservation, PickupSupplyOffer, PickupSupplyPreview,
+    PickupWeaponGrant, PoweredProtectionState, ProtectionChannel, RegularArmorState, SourceCounterArithmetic,
 };
 use crate::q2::support::contracts::{CombatTraitChanges, TouchContact};
-use crate::q2::support::misc::{
-    PickupAcceptance, PickupGrantPlan, PickupWeaponLink, preview_pickup_grants,
-};
+use crate::q2::support::misc::{preview_pickup_grants, PickupAcceptance, PickupGrantPlan, PickupWeaponLink};
 
 /// Custom item pickup (`Q2ItemDefinition` custom `pickup`).
 pub type Q2CustomPickup = fn(ActorId, &mut Q2GameServices, OwnedActor) -> bool;
@@ -481,12 +477,66 @@ fn base_ammunition() -> Vec<Q2ItemDefinition> {
         }
     };
     vec![
-        ammo("ammo_shells", "models/items/ammo/shells/medium/tris.md2", "a_shells", "Shells", false, 10.0, 100.0, false),
-        ammo("ammo_bullets", "models/items/ammo/bullets/medium/tris.md2", "a_bullets", "Bullets", false, 50.0, 200.0, false),
-        ammo("ammo_cells", "models/items/ammo/cells/medium/tris.md2", "a_cells", "Cells", false, 50.0, 200.0, false),
-        ammo("ammo_rockets", "models/items/ammo/rockets/medium/tris.md2", "a_rockets", "Rockets", false, 5.0, 50.0, false),
-        ammo("ammo_slugs", "models/items/ammo/slugs/medium/tris.md2", "a_slugs", "Slugs", false, 10.0, 50.0, false),
-        ammo("ammo_grenades", "models/items/ammo/grenades/medium/tris.md2", "a_grenades", "Grenades", true, 5.0, 50.0, true),
+        ammo(
+            "ammo_shells",
+            "models/items/ammo/shells/medium/tris.md2",
+            "a_shells",
+            "Shells",
+            false,
+            10.0,
+            100.0,
+            false,
+        ),
+        ammo(
+            "ammo_bullets",
+            "models/items/ammo/bullets/medium/tris.md2",
+            "a_bullets",
+            "Bullets",
+            false,
+            50.0,
+            200.0,
+            false,
+        ),
+        ammo(
+            "ammo_cells",
+            "models/items/ammo/cells/medium/tris.md2",
+            "a_cells",
+            "Cells",
+            false,
+            50.0,
+            200.0,
+            false,
+        ),
+        ammo(
+            "ammo_rockets",
+            "models/items/ammo/rockets/medium/tris.md2",
+            "a_rockets",
+            "Rockets",
+            false,
+            5.0,
+            50.0,
+            false,
+        ),
+        ammo(
+            "ammo_slugs",
+            "models/items/ammo/slugs/medium/tris.md2",
+            "a_slugs",
+            "Slugs",
+            false,
+            10.0,
+            50.0,
+            false,
+        ),
+        ammo(
+            "ammo_grenades",
+            "models/items/ammo/grenades/medium/tris.md2",
+            "a_grenades",
+            "Grenades",
+            true,
+            5.0,
+            50.0,
+            true,
+        ),
     ]
 }
 
@@ -504,15 +554,60 @@ fn base_keys() -> Vec<Q2ItemDefinition> {
         kind: Q2ItemKindData::Key,
     };
     vec![
-        key("key_data_cd", "models/items/keys/data_cd/tris.md2", "k_datacd", "Data CD"),
-        key("key_power_cube", "models/items/keys/power/tris.md2", "k_powercube", "Power Cube"),
-        key("key_pyramid", "models/items/keys/pyramid/tris.md2", "k_pyramid", "Pyramid Key"),
-        key("key_data_spinner", "models/items/keys/spinner/tris.md2", "k_dataspin", "Data Spinner"),
-        key("key_pass", "models/items/keys/pass/tris.md2", "k_security", "Security Pass"),
-        key("key_blue_key", "models/items/keys/key/tris.md2", "k_bluekey", "Blue Key"),
-        key("key_red_key", "models/items/keys/red_key/tris.md2", "k_redkey", "Red Key"),
-        key("key_commander_head", "models/monsters/commandr/head/tris.md2", "k_comhead", "Commander's Head"),
-        key("key_airstrike_target", "models/items/keys/target/tris.md2", "i_airstrike", "Airstrike Marker"),
+        key(
+            "key_data_cd",
+            "models/items/keys/data_cd/tris.md2",
+            "k_datacd",
+            "Data CD",
+        ),
+        key(
+            "key_power_cube",
+            "models/items/keys/power/tris.md2",
+            "k_powercube",
+            "Power Cube",
+        ),
+        key(
+            "key_pyramid",
+            "models/items/keys/pyramid/tris.md2",
+            "k_pyramid",
+            "Pyramid Key",
+        ),
+        key(
+            "key_data_spinner",
+            "models/items/keys/spinner/tris.md2",
+            "k_dataspin",
+            "Data Spinner",
+        ),
+        key(
+            "key_pass",
+            "models/items/keys/pass/tris.md2",
+            "k_security",
+            "Security Pass",
+        ),
+        key(
+            "key_blue_key",
+            "models/items/keys/key/tris.md2",
+            "k_bluekey",
+            "Blue Key",
+        ),
+        key(
+            "key_red_key",
+            "models/items/keys/red_key/tris.md2",
+            "k_redkey",
+            "Red Key",
+        ),
+        key(
+            "key_commander_head",
+            "models/monsters/commandr/head/tris.md2",
+            "k_comhead",
+            "Commander's Head",
+        ),
+        key(
+            "key_airstrike_target",
+            "models/items/keys/target/tris.md2",
+            "i_airstrike",
+            "Airstrike Marker",
+        ),
     ]
 }
 
@@ -541,25 +636,237 @@ fn base_item_catalog() -> HashMap<String, Q2ItemDefinition> {
         }
     };
     items.extend([
-        visual(Q2ItemKindData::AmmoPack { full: false }, "item_bandolier", "models/items/band/tris.md2", "p_bandolier", "Bandolier", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::AmmoPack { full: true }, "item_pack", "models/items/pack/tris.md2", "i_pack", "Ammo Pack", "items/pkup.wav", true, 180.0),
-        visual(Q2ItemKindData::Health { amount: 10.0, ignore_maximum: false, timed: false }, "item_health", "models/items/healing/medium/tris.md2", "i_health", "Health", "items/n_health.wav", false, 30.0),
-        visual(Q2ItemKindData::Health { amount: 2.0, ignore_maximum: true, timed: false }, "item_health_small", "models/items/healing/stimpack/tris.md2", "i_health", "Health", "items/s_health.wav", false, 30.0),
-        visual(Q2ItemKindData::Health { amount: 25.0, ignore_maximum: false, timed: false }, "item_health_large", "models/items/healing/large/tris.md2", "i_health", "Health", "items/l_health.wav", false, 30.0),
-        visual(Q2ItemKindData::Health { amount: 100.0, ignore_maximum: true, timed: true }, "item_health_mega", "models/items/mega_h/tris.md2", "i_health", "Health", "items/m_health.wav", false, 20.0),
-        visual(Q2ItemKindData::Armor { points: 25.0, maximum: 50.0, normal: 0.3, energy: 0.0 }, "item_armor_jacket", "models/items/armor/jacket/tris.md2", "i_jacketarmor", "Jacket Armor", "misc/ar1_pkup.wav", true, 20.0),
-        visual(Q2ItemKindData::Armor { points: 50.0, maximum: 100.0, normal: 0.6, energy: 0.3 }, "item_armor_combat", "models/items/armor/combat/tris.md2", "i_combatarmor", "Combat Armor", "misc/ar1_pkup.wav", true, 20.0),
-        visual(Q2ItemKindData::Armor { points: 100.0, maximum: 200.0, normal: 0.8, energy: 0.6 }, "item_armor_body", "models/items/armor/body/tris.md2", "i_bodyarmor", "Body Armor", "misc/ar1_pkup.wav", true, 20.0),
-        visual(Q2ItemKindData::Shard, "item_armor_shard", "models/items/armor/shard/tris.md2", "i_jacketarmor", "Armor Shard", "misc/ar2_pkup.wav", true, 20.0),
-        visual(Q2ItemKindData::Power { coop_stay: false }, "item_quad", "models/items/quaddama/tris.md2", "p_quad", "Quad Damage", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::Power { coop_stay: false }, "item_invulnerability", "models/items/invulner/tris.md2", "p_invulnerability", "Invulnerability", "items/pkup.wav", true, 300.0),
-        visual(Q2ItemKindData::Power { coop_stay: false }, "item_silencer", "models/items/silencer/tris.md2", "p_silencer", "Silencer", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::Power { coop_stay: true }, "item_breather", "models/items/breather/tris.md2", "p_rebreather", "Rebreather", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::Power { coop_stay: true }, "item_enviro", "models/items/enviro/tris.md2", "p_envirosuit", "Environment Suit", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::PowerArmor { armor: Q2PowerArmorKind::Screen }, "item_power_screen", "models/items/armor/screen/tris.md2", "i_powerscreen", "Power Screen", "misc/ar3_pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::PowerArmor { armor: Q2PowerArmorKind::Shield }, "item_power_shield", "models/items/armor/shield/tris.md2", "i_powershield", "Power Shield", "misc/ar3_pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::MaximumHealth { increase: 1.0, fill: true }, "item_adrenaline", "models/items/adrenal/tris.md2", "p_adrenaline", "Adrenaline", "items/pkup.wav", true, 60.0),
-        visual(Q2ItemKindData::MaximumHealth { increase: 2.0, fill: false }, "item_ancient_head", "models/items/c_head/tris.md2", "i_fixme", "Ancient Head", "items/pkup.wav", true, 60.0),
+        visual(
+            Q2ItemKindData::AmmoPack { full: false },
+            "item_bandolier",
+            "models/items/band/tris.md2",
+            "p_bandolier",
+            "Bandolier",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::AmmoPack { full: true },
+            "item_pack",
+            "models/items/pack/tris.md2",
+            "i_pack",
+            "Ammo Pack",
+            "items/pkup.wav",
+            true,
+            180.0,
+        ),
+        visual(
+            Q2ItemKindData::Health {
+                amount: 10.0,
+                ignore_maximum: false,
+                timed: false,
+            },
+            "item_health",
+            "models/items/healing/medium/tris.md2",
+            "i_health",
+            "Health",
+            "items/n_health.wav",
+            false,
+            30.0,
+        ),
+        visual(
+            Q2ItemKindData::Health {
+                amount: 2.0,
+                ignore_maximum: true,
+                timed: false,
+            },
+            "item_health_small",
+            "models/items/healing/stimpack/tris.md2",
+            "i_health",
+            "Health",
+            "items/s_health.wav",
+            false,
+            30.0,
+        ),
+        visual(
+            Q2ItemKindData::Health {
+                amount: 25.0,
+                ignore_maximum: false,
+                timed: false,
+            },
+            "item_health_large",
+            "models/items/healing/large/tris.md2",
+            "i_health",
+            "Health",
+            "items/l_health.wav",
+            false,
+            30.0,
+        ),
+        visual(
+            Q2ItemKindData::Health {
+                amount: 100.0,
+                ignore_maximum: true,
+                timed: true,
+            },
+            "item_health_mega",
+            "models/items/mega_h/tris.md2",
+            "i_health",
+            "Health",
+            "items/m_health.wav",
+            false,
+            20.0,
+        ),
+        visual(
+            Q2ItemKindData::Armor {
+                points: 25.0,
+                maximum: 50.0,
+                normal: 0.3,
+                energy: 0.0,
+            },
+            "item_armor_jacket",
+            "models/items/armor/jacket/tris.md2",
+            "i_jacketarmor",
+            "Jacket Armor",
+            "misc/ar1_pkup.wav",
+            true,
+            20.0,
+        ),
+        visual(
+            Q2ItemKindData::Armor {
+                points: 50.0,
+                maximum: 100.0,
+                normal: 0.6,
+                energy: 0.3,
+            },
+            "item_armor_combat",
+            "models/items/armor/combat/tris.md2",
+            "i_combatarmor",
+            "Combat Armor",
+            "misc/ar1_pkup.wav",
+            true,
+            20.0,
+        ),
+        visual(
+            Q2ItemKindData::Armor {
+                points: 100.0,
+                maximum: 200.0,
+                normal: 0.8,
+                energy: 0.6,
+            },
+            "item_armor_body",
+            "models/items/armor/body/tris.md2",
+            "i_bodyarmor",
+            "Body Armor",
+            "misc/ar1_pkup.wav",
+            true,
+            20.0,
+        ),
+        visual(
+            Q2ItemKindData::Shard,
+            "item_armor_shard",
+            "models/items/armor/shard/tris.md2",
+            "i_jacketarmor",
+            "Armor Shard",
+            "misc/ar2_pkup.wav",
+            true,
+            20.0,
+        ),
+        visual(
+            Q2ItemKindData::Power { coop_stay: false },
+            "item_quad",
+            "models/items/quaddama/tris.md2",
+            "p_quad",
+            "Quad Damage",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::Power { coop_stay: false },
+            "item_invulnerability",
+            "models/items/invulner/tris.md2",
+            "p_invulnerability",
+            "Invulnerability",
+            "items/pkup.wav",
+            true,
+            300.0,
+        ),
+        visual(
+            Q2ItemKindData::Power { coop_stay: false },
+            "item_silencer",
+            "models/items/silencer/tris.md2",
+            "p_silencer",
+            "Silencer",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::Power { coop_stay: true },
+            "item_breather",
+            "models/items/breather/tris.md2",
+            "p_rebreather",
+            "Rebreather",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::Power { coop_stay: true },
+            "item_enviro",
+            "models/items/enviro/tris.md2",
+            "p_envirosuit",
+            "Environment Suit",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::PowerArmor {
+                armor: Q2PowerArmorKind::Screen,
+            },
+            "item_power_screen",
+            "models/items/armor/screen/tris.md2",
+            "i_powerscreen",
+            "Power Screen",
+            "misc/ar3_pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::PowerArmor {
+                armor: Q2PowerArmorKind::Shield,
+            },
+            "item_power_shield",
+            "models/items/armor/shield/tris.md2",
+            "i_powershield",
+            "Power Shield",
+            "misc/ar3_pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::MaximumHealth {
+                increase: 1.0,
+                fill: true,
+            },
+            "item_adrenaline",
+            "models/items/adrenal/tris.md2",
+            "p_adrenaline",
+            "Adrenaline",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
+        visual(
+            Q2ItemKindData::MaximumHealth {
+                increase: 2.0,
+                fill: false,
+            },
+            "item_ancient_head",
+            "models/items/c_head/tris.md2",
+            "i_fixme",
+            "Ancient Head",
+            "items/pkup.wav",
+            true,
+            60.0,
+        ),
     ]);
     for weapon in base_weapons() {
         if weapon.name == Q2BaseWeaponName::Grenades {
@@ -575,16 +882,17 @@ fn base_item_catalog() -> HashMap<String, Q2ItemDefinition> {
             rotate: true,
             respawn: 30.0,
             console_give: None,
-            kind: Q2ItemKindData::Weapon { ammo: weapon.definition.ammo.clone(), coop_stay: None },
+            kind: Q2ItemKindData::Weapon {
+                ammo: weapon.definition.ammo.clone(),
+                coop_stay: None,
+            },
         });
     }
     items.into_iter().map(|item| (item.classname.clone(), item)).collect()
 }
 
 /// Weapon inventory entries (`weaponInventory`).
-fn weapon_inventory_entries(
-    catalog: &HashMap<String, Q2ItemDefinition>,
-) -> Vec<(ItemId, f64)> {
+fn weapon_inventory_entries(catalog: &HashMap<String, Q2ItemDefinition>) -> Vec<(ItemId, f64)> {
     let mut entries = Vec::new();
     let mut classnames: Vec<&String> = catalog.keys().collect();
     classnames.sort();
@@ -601,17 +909,32 @@ fn weapon_inventory_entries(
 
 /// Ensure an admitted inventory entry (`ensure`).
 fn ensure_inventory_entry(game: &mut Q2GameServices, actor: &OwnedActor, item: &str, capacity: f64) {
-    if !game.host.inventory().entries(actor.id()).iter().any(|entry| entry.item == item) {
+    if !game
+        .host
+        .inventory()
+        .entries(actor.id())
+        .iter()
+        .any(|entry| entry.item == item)
+    {
         game.host.inventory().configure(
             actor,
-            &InventoryEntry { item: item.to_string(), count: 0.0, capacity, count_policy: None },
+            &InventoryEntry {
+                item: item.to_string(),
+                count: 0.0,
+                capacity,
+                count_policy: None,
+            },
         );
     }
 }
 
 /// Read pickup state, panicking when absent (`pickup`).
 fn pickup_state(game: &Q2GameServices, actor: &ActorId) -> PickupState {
-    game.items.pickups.get(actor).cloned().unwrap_or_else(|| panic!("Q2 item callback has no pickup state"))
+    game.items
+        .pickups
+        .get(actor)
+        .cloned()
+        .unwrap_or_else(|| panic!("Q2 item callback has no pickup state"))
 }
 
 /// Read item hooks, panicking when unregistered.
@@ -635,10 +958,18 @@ pub fn flush_player_power_cells(game: &mut Q2GameServices, actor: &ActorId) {
     };
     let count = *cells.borrow();
     let owned = game.owned_of(actor.clone());
-    let Some(entry) = game.host.inventory().entries(actor).into_iter().find(|entry| entry.item == POWER_CELL_ITEM) else {
+    let Some(entry) = game
+        .host
+        .inventory()
+        .entries(actor)
+        .into_iter()
+        .find(|entry| entry.item == POWER_CELL_ITEM)
+    else {
         panic!("Q2 power armor requires its admitted cell inventory");
     };
-    game.host.inventory().configure(&owned, &InventoryEntry { count, ..entry });
+    game.host
+        .inventory()
+        .configure(&owned, &InventoryEntry { count, ..entry });
 }
 
 /// Apply an inventory delta to the shared power cell store.
@@ -661,26 +992,28 @@ pub fn set_player_power_cells(game: &mut Q2GameServices, actor: &ActorId, count:
 
 /// Ammo pickup quantity (`ammoQuantity`).
 fn ammo_quantity(game: &Q2GameServices, actor: &ActorId, item: &Q2ItemDefinition) -> f64 {
-    let Q2ItemKindData::Ammo { quantity, weapon_ammo, infinite_ammo_quantity, .. } = &item.kind
+    let Q2ItemKindData::Ammo {
+        quantity,
+        weapon_ammo,
+        infinite_ammo_quantity,
+        ..
+    } = &item.kind
     else {
         panic!("Q2 ammo quantity needs an ammo descriptor");
     };
-    if *weapon_ammo
-        && *infinite_ammo_quantity != Some(None)
-        && game.deathmatch_flags() & 8192 != 0
-    {
+    if *weapon_ammo && *infinite_ammo_quantity != Some(None) && game.deathmatch_flags() & 8192 != 0 {
         return infinite_ammo_quantity.unwrap_or(Some(1000.0)).unwrap_or(1000.0);
     }
     let count = game.require_entity(actor).count;
-    if count == 0 { *quantity } else { f64::from(count) }
+    if count == 0 {
+        *quantity
+    } else {
+        f64::from(count)
+    }
 }
 
 /// Weapon ammo grants (`weaponAmmo`).
-fn weapon_ammo_grants(
-    game: &Q2GameServices,
-    actor: &ActorId,
-    item: &Q2ItemDefinition,
-) -> Vec<PickupAmmoGrant> {
+fn weapon_ammo_grants(game: &Q2GameServices, actor: &ActorId, item: &Q2ItemDefinition) -> Vec<PickupAmmoGrant> {
     let Q2ItemKindData::Weapon { ammo, .. } = &item.kind else {
         panic!("Q2 weapon grants need a weapon descriptor");
     };
@@ -695,8 +1028,15 @@ fn weapon_ammo_grants(
         return Vec::new();
     };
     if let Q2ItemKindData::Ammo { quantity, .. } = &descriptor.kind {
-        let amount = if game.deathmatch_flags() & 8192 != 0 { 1000.0 } else { *quantity };
-        vec![PickupAmmoGrant { item: item_id(descriptor), amount }]
+        let amount = if game.deathmatch_flags() & 8192 != 0 {
+            1000.0
+        } else {
+            *quantity
+        };
+        vec![PickupAmmoGrant {
+            item: item_id(descriptor),
+            amount,
+        }]
     } else {
         Vec::new()
     }
@@ -707,19 +1047,18 @@ fn weapon_owned(game: &mut Q2GameServices, player: &ActorId, item: &Q2ItemDefini
     let id = item_id(item);
     match &game.items.pickup_admission {
         Some(admission) if admission.maps(PickupMapKind::Weapons, &id) => {
-            if admission.owns(player, &id) { 1.0 } else { 0.0 }
+            if admission.owns(player, &id) {
+                1.0
+            } else {
+                0.0
+            }
         }
         _ => game.host.inventory().count(player, &id),
     }
 }
 
 /// Weapon eligibility (`weaponEligible`).
-fn weapon_eligible(
-    game: &mut Q2GameServices,
-    actor: &ActorId,
-    item: &Q2ItemDefinition,
-    previous: f64,
-) -> bool {
+fn weapon_eligible(game: &mut Q2GameServices, actor: &ActorId, item: &Q2ItemDefinition, previous: f64) -> bool {
     let id = item_id(item);
     if let Some(admission) = &game.items.pickup_admission {
         if admission.maps(PickupMapKind::Weapons, &id) && id == "q2:weapon_blaster" {
@@ -745,12 +1084,7 @@ fn owner_can_touch(game: &Q2GameServices, actor: &ActorId, player: &ActorId) -> 
 }
 
 /// Grant an item (`grant`).
-fn grant_item(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    player: &OwnedActor,
-    item: &Q2ItemDefinition,
-) -> bool {
+fn grant_item(this: ActorId, game: &mut Q2GameServices, player: &OwnedActor, item: &Q2ItemDefinition) -> bool {
     let Some(current) = game.host.combat().read(player.id()) else {
         return false;
     };
@@ -768,8 +1102,7 @@ fn grant_item(
             ensure_inventory_entry(game, player, &item_id(item), 32767.0);
             if game.options.mode == Q2Mode::Coop {
                 if item.classname == "key_power_cube"
-                    || game.options.edition == Q2Edition::Rerelease
-                        && item.classname == "key_explosive_charges"
+                    || game.options.edition == Q2Edition::Rerelease && item.classname == "key_explosive_charges"
                 {
                     let Some(player_entity) = game.entity(player.id()).cloned() else {
                         panic!("Q2 cooperative key pickup requires admitted source player fields");
@@ -792,11 +1125,23 @@ fn grant_item(
                     continue;
                 };
                 let pack_capacity = if ammo.classname == "ammo_bullets" || ammo.classname == "ammo_cells" {
-                    if *full { 300.0 } else { 250.0 }
+                    if *full {
+                        300.0
+                    } else {
+                        250.0
+                    }
                 } else if ammo.classname == "ammo_shells" {
-                    if *full { 200.0 } else { 150.0 }
+                    if *full {
+                        200.0
+                    } else {
+                        150.0
+                    }
                 } else if ammo.classname == "ammo_slugs" {
-                    if *full { 100.0 } else { 75.0 }
+                    if *full {
+                        100.0
+                    } else {
+                        75.0
+                    }
                 } else if *full {
                     100.0
                 } else {
@@ -830,7 +1175,9 @@ fn grant_item(
                 ammo_pack(player.clone(), game, *full);
             }
         }
-        Q2ItemKindData::Ammo { capacity, weapon_ammo, .. } => {
+        Q2ItemKindData::Ammo {
+            capacity, weapon_ammo, ..
+        } => {
             let quantity = ammo_quantity(game, &this, item);
             let mapped = game
                 .items
@@ -847,10 +1194,20 @@ fn grant_item(
                             amount: quantity,
                             weapon: item_id(item),
                         },
-                        AmmoWeaponSelection { mode: PickupSelection::Always, when: AmmoWeaponTiming::EmptyAmmo },
+                        AmmoWeaponSelection {
+                            mode: PickupSelection::Always,
+                            when: AmmoWeaponTiming::EmptyAmmo,
+                        },
                     )
                 } else {
-                    admission.ammo(player, &PickupAmmoGrant { item: item_id(item), amount: quantity }, false)
+                    admission.ammo(
+                        player,
+                        &PickupAmmoGrant {
+                            item: item_id(item),
+                            amount: quantity,
+                        },
+                        false,
+                    )
                 };
                 if !taken {
                     return false;
@@ -893,7 +1250,10 @@ fn grant_item(
             let grants = weapon_ammo_grants(game, &this, item);
             if !mapped {
                 for grant in &grants {
-                    let ammo = grant.item.strip_prefix("q2:").and_then(|classname| game.items.catalog.get(classname));
+                    let ammo = grant
+                        .item
+                        .strip_prefix("q2:")
+                        .and_then(|classname| game.items.catalog.get(classname));
                     let Some(ammo) = ammo else {
                         panic!("Weapon grant has no source ammo descriptor");
                     };
@@ -912,13 +1272,19 @@ fn grant_item(
                 if !admission.weapon(
                     player,
                     &PickupWeaponGrant { item: id, ammo: grants },
-                    if previous == 0.0 { PickupSelection::Always } else { PickupSelection::Never },
+                    if previous == 0.0 {
+                        PickupSelection::Always
+                    } else {
+                        PickupSelection::Never
+                    },
                 ) {
                     return false;
                 }
             }
         }
-        Q2ItemKindData::Health { amount, ignore_maximum, .. } => {
+        Q2ItemKindData::Health {
+            amount, ignore_maximum, ..
+        } => {
             if !ignore_maximum && current.health >= maximum {
                 return false;
             }
@@ -926,7 +1292,11 @@ fn grant_item(
             let amount = if count == 0 { *amount } else { f64::from(count) };
             game.host.combat().set_health(
                 player,
-                if *ignore_maximum { current.health + amount } else { maximum.min(current.health + amount) },
+                if *ignore_maximum {
+                    current.health + amount
+                } else {
+                    maximum.min(current.health + amount)
+                },
             );
         }
         Q2ItemKindData::Armor { .. } | Q2ItemKindData::Shard => {
@@ -936,7 +1306,11 @@ fn grant_item(
             game.host.combat().set_regular_armor(player, &next);
         }
         Q2ItemKindData::MaximumHealth { increase, fill } => {
-            let increase = if *fill && game.options.mode == Q2Mode::Deathmatch { 0.0 } else { *increase };
+            let increase = if *fill && game.options.mode == Q2Mode::Deathmatch {
+                0.0
+            } else {
+                *increase
+            };
             if game.entity(player.id()).is_some() {
                 game.require_entity_mut(player.id()).max_health = maximum + increase;
             }
@@ -965,7 +1339,9 @@ fn grant_item(
                     || item.classname == "item_quad" && game.require_entity(&this).spawnflags & 0x20000 != 0)
             {
                 let expires = pickup_state(game, &this).expires_at;
-                let duration = expires.map(|expires| 0.0f64.max(expires - game.host.now())).unwrap_or(30.0);
+                let duration = expires
+                    .map(|expires| 0.0f64.max(expires - game.host.now()))
+                    .unwrap_or(30.0);
                 use_inventory_item_at(player.clone(), &item_id(item), game, duration);
             }
         }
@@ -982,12 +1358,7 @@ fn grant_item(
 }
 
 /// Finish a grant (`finishGrant`).
-fn finish_grant(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    player: &OwnedActor,
-    item: &Q2ItemDefinition,
-) {
+fn finish_grant(this: ActorId, game: &mut Q2GameServices, player: &OwnedActor, item: &Q2ItemDefinition) {
     if item.kind() == Q2ItemKind::Key {
         return;
     }
@@ -1014,14 +1385,14 @@ fn finish_grant(
         return;
     }
     let respawn = if item.kind() == Q2ItemKind::Weapon {
-        item_hooks(game).weapon_respawn_seconds.map(|seconds| seconds()).unwrap_or(item.respawn)
+        item_hooks(game)
+            .weapon_respawn_seconds
+            .map(|seconds| seconds())
+            .unwrap_or(item.respawn)
     } else {
         item.respawn
     };
-    if !is_dropped(game, &this)
-        && game.options.mode == Q2Mode::Deathmatch
-        && game.host.actors().is_live(&this)
-    {
+    if !is_dropped(game, &this) && game.options.mode == Q2Mode::Deathmatch && game.host.actors().is_live(&this) {
         set_respawn(this, game, respawn);
     }
 }
@@ -1034,7 +1405,13 @@ fn pickup_q2_armor(item: &Q2ItemDefinition, old: &RegularArmorState) -> Option<R
     if item.kind() == Q2ItemKind::Shard {
         if let RegularArmorState::Q2 { points, .. } = old {
             if *points > 0.0 {
-                if let RegularArmorState::Q2 { points, normal_protection, energy_protection, item } = old.clone() {
+                if let RegularArmorState::Q2 {
+                    points,
+                    normal_protection,
+                    energy_protection,
+                    item,
+                } = old.clone()
+                {
                     return Some(RegularArmorState::Q2 {
                         points: points + 2.0,
                         normal_protection,
@@ -1051,13 +1428,22 @@ fn pickup_q2_armor(item: &Q2ItemDefinition, old: &RegularArmorState) -> Option<R
             energy_protection: 0.0,
         });
     }
-    let Q2ItemKindData::Armor { points, maximum, normal, energy } = &item.kind else {
+    let Q2ItemKindData::Armor {
+        points,
+        maximum,
+        normal,
+        energy,
+    } = &item.kind
+    else {
         panic!("Q2 armor pickup needs armor");
     };
     let (old_points, old_normal, old_energy, old_item) = match old {
-        RegularArmorState::Q2 { points, normal_protection, energy_protection, item } => {
-            (points, normal_protection, energy_protection, item)
-        }
+        RegularArmorState::Q2 {
+            points,
+            normal_protection,
+            energy_protection,
+            item,
+        } => (points, normal_protection, energy_protection, item),
         _ => {
             return Some(RegularArmorState::Q2 {
                 item: item_id(item),
@@ -1095,8 +1481,19 @@ fn pickup_q2_armor(item: &Q2ItemDefinition, old: &RegularArmorState) -> Option<R
         return None;
     }
     let _ = old_energy;
-    if let RegularArmorState::Q2 { normal_protection, energy_protection, item, .. } = old.clone() {
-        Some(RegularArmorState::Q2 { points, normal_protection, energy_protection, item })
+    if let RegularArmorState::Q2 {
+        normal_protection,
+        energy_protection,
+        item,
+        ..
+    } = old.clone()
+    {
+        Some(RegularArmorState::Q2 {
+            points,
+            normal_protection,
+            energy_protection,
+            item,
+        })
     } else {
         None
     }
@@ -1180,9 +1577,7 @@ impl Q2OriginalPickupContinuation for ItemTouch {
                 return;
             }
         }
-        if let Some(before_targets) =
-            game.items.pickup_policy.and_then(|policy| policy.before_targets)
-        {
+        if let Some(before_targets) = game.items.pickup_policy.and_then(|policy| policy.before_targets) {
             before_targets(self.pickup.clone(), game, self.player.clone(), taken);
         }
         if !self.live(game) {
@@ -1226,7 +1621,12 @@ fn touch_item_at(pickup: ActorId, game: &mut Q2GameServices, player: ActorId) {
     if !game.host.is_player(&player) {
         return;
     }
-    let health = game.host.combat().read(&player).map(|state| state.health).unwrap_or(0.0);
+    let health = game
+        .host
+        .combat()
+        .read(&player)
+        .map(|state| state.health)
+        .unwrap_or(0.0);
     if health < 1.0 {
         return;
     }
@@ -1234,15 +1634,21 @@ fn touch_item_at(pickup: ActorId, game: &mut Q2GameServices, player: ActorId) {
     let Some(owner) = game.host.actors().resolve_owned(&player) else {
         return;
     };
-    let mut touch = ItemTouch { pickup: pickup.clone(), player: player.clone(), owner, item: item.clone(), original_ran: false };
+    let mut touch = ItemTouch {
+        pickup: pickup.clone(),
+        player: player.clone(),
+        owner,
+        item: item.clone(),
+        original_ran: false,
+    };
     if game.host.original_pickups().is_some() {
         let default_resource = match item.kind() {
-            Q2ItemKind::Armor | Q2ItemKind::Shard => {
-                Some(PickupResource::Protection { channel: ProtectionChannel::Regular })
-            }
-            Q2ItemKind::PowerArmor => {
-                Some(PickupResource::Protection { channel: ProtectionChannel::Powered })
-            }
+            Q2ItemKind::Armor | Q2ItemKind::Shard => Some(PickupResource::Protection {
+                channel: ProtectionChannel::Regular,
+            }),
+            Q2ItemKind::PowerArmor => Some(PickupResource::Protection {
+                channel: ProtectionChannel::Powered,
+            }),
             Q2ItemKind::Ammo | Q2ItemKind::Weapon | Q2ItemKind::Key => {
                 Some(PickupResource::Inventory { item: item_id(&item) })
             }
@@ -1259,7 +1665,9 @@ fn touch_item_at(pickup: ActorId, game: &mut Q2GameServices, player: ActorId) {
             count: if count == 0 {
                 PickupCount::Default
             } else {
-                PickupCount::Override { amount: f64::from(count) }
+                PickupCount::Override {
+                    amount: f64::from(count),
+                }
             },
             dropped: is_dropped(game, &pickup),
             time: SourceTime::Seconds(game.host.now() as f32),
@@ -1277,12 +1685,7 @@ fn touch_item_at(pickup: ActorId, game: &mut Q2GameServices, player: ActorId) {
 }
 
 /// Use an inventory item (`use`).
-fn use_inventory_item_at(
-    player: OwnedActor,
-    item_id: &str,
-    game: &mut Q2GameServices,
-    duration: f64,
-) -> bool {
+fn use_inventory_item_at(player: OwnedActor, item_id: &str, game: &mut Q2GameServices, duration: f64) -> bool {
     let Some(item) = item_id
         .strip_prefix("q2:")
         .and_then(|classname| game.items.catalog.get(classname))
@@ -1338,7 +1741,10 @@ fn use_inventory_item_at(
             let until = state.invulnerability_until;
             game.host.combat().set_traits(
                 &player,
-                &CombatTraitChanges { invulnerable: Some(true), ..CombatTraitChanges::default() },
+                &CombatTraitChanges {
+                    invulnerable: Some(true),
+                    ..CombatTraitChanges::default()
+                },
             );
             let timer = game.create("invulnerability_expiry", BTreeMap::new());
             game.require_entity_mut(&timer).owner = Some(player.id().clone());
@@ -1369,7 +1775,12 @@ fn drop_source(
     game.require_entity_mut(&dropped).count = count as i32;
     game.items.pickups.insert(
         dropped.clone(),
-        PickupState { item: item.clone(), targets_used: false, retained: false, expires_at: options.expires_at },
+        PickupState {
+            item: item.clone(),
+            targets_used: false,
+            retained: false,
+            expires_at: options.expires_at,
+        },
     );
     let view = game
         .host
@@ -1382,18 +1793,17 @@ fn drop_source(
         max: vec3(15.0, 15.0, 15.0),
     };
     let origin = if game.host.is_player(actor.id()) {
-        let end = add3(
-            add3(body.origin, scale3(forward, 24.0)),
-            vec3(0.0, 0.0, -16.0),
-        );
-        game.host.trace(&Q2TraceRequest {
-            start: body.origin,
-            end,
-            bounds: Some(bounds),
-            ignore: Some(actor.id().clone()),
-            mask: 1,
-            exclude: Vec::new(),
-        }).end
+        let end = add3(add3(body.origin, scale3(forward, 24.0)), vec3(0.0, 0.0, -16.0));
+        game.host
+            .trace(&Q2TraceRequest {
+                start: body.origin,
+                end,
+                bounds: Some(bounds),
+                ignore: Some(actor.id().clone()),
+                mask: 1,
+                exclude: Vec::new(),
+            })
+            .end
     } else {
         body.origin
     };
@@ -1419,13 +1829,11 @@ fn drop_source(
 }
 
 /// Drop an item (`drop`).
-fn drop_item_at(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    item_id: &str,
-    options: &Q2DropOptions,
-) -> Option<ActorId> {
-    let item = item_id.strip_prefix("q2:").and_then(|classname| game.items.catalog.get(classname)).cloned();
+fn drop_item_at(this: ActorId, game: &mut Q2GameServices, item_id: &str, options: &Q2DropOptions) -> Option<ActorId> {
+    let item = item_id
+        .strip_prefix("q2:")
+        .and_then(|classname| game.items.catalog.get(classname))
+        .cloned();
     let descriptor = lookup_item(game, item_id);
     let (Some(item), Some(descriptor)) = (item, descriptor) else {
         return None;
@@ -1478,7 +1886,12 @@ fn spawn_item_at(game: &mut Q2GameServices, actor: ActorId, descriptor: &str) ->
     }
     game.items.pickups.insert(
         actor.clone(),
-        PickupState { item: item.clone(), targets_used: false, retained: false, expires_at: None },
+        PickupState {
+            item: item.clone(),
+            targets_used: false,
+            retained: false,
+            expires_at: None,
+        },
     );
     if game.options.mode == Q2Mode::Coop
         && (item.classname == "key_power_cube"
@@ -1522,7 +1935,10 @@ fn observe_supply_at(
                     weapon: item_id(&item),
                 })
             } else {
-                PickupSupplyOffer::Ammo(PickupAmmoGrant { item: item_id(&item), amount })
+                PickupSupplyOffer::Ammo(PickupAmmoGrant {
+                    item: item_id(&item),
+                    amount,
+                })
             }
         }
         Q2ItemKindData::Weapon { .. } => PickupSupplyOffer::Weapon(PickupWeaponGrant {
@@ -1555,7 +1971,13 @@ fn observe_supply_at(
     if entity.touch != Some(touch_pickup) && entity.touch != Some(temporary_touch) {
         return Some(inactive());
     }
-    let healthy = game.host.combat().read(&recipient).map(|state| state.health).unwrap_or(0.0) >= 1.0;
+    let healthy = game
+        .host
+        .combat()
+        .read(&recipient)
+        .map(|state| state.health)
+        .unwrap_or(0.0)
+        >= 1.0;
     let can_pickup = game
         .items
         .pickup_policy
@@ -1581,17 +2003,17 @@ fn observe_supply_at(
 }
 
 /// Preview pickup supply (`previewSupply`).
-fn preview_supply_at(
-    game: &mut Q2GameServices,
-    pickup: ActorId,
-    recipient: ActorId,
-) -> Option<PickupSupplyPreview> {
+fn preview_supply_at(game: &mut Q2GameServices, pickup: ActorId, recipient: ActorId) -> Option<PickupSupplyPreview> {
     let observation = observe_supply_at(game, pickup, recipient.clone())?;
     let offer = observation.offer.clone();
     if game.items.pickup_admission.is_some() {
         if let PickupSupplyOffer::Weapon(grant) = &offer {
             if grant.item == "q2:weapon_blaster" {
-                return Some(PickupSupplyPreview { accepted: false, ammo: Vec::new(), weapons: Vec::new() });
+                return Some(PickupSupplyPreview {
+                    accepted: false,
+                    ammo: Vec::new(),
+                    weapons: Vec::new(),
+                });
             }
         }
         let admission = game.items.pickup_admission.as_ref().expect("supply admission");
@@ -1602,11 +2024,17 @@ fn preview_supply_at(
         PickupSupplyOffer::Weapon(grant) => grant.ammo.clone(),
         PickupSupplyOffer::Ammo(grant) => vec![grant.clone()],
         PickupSupplyOffer::AmmoWeapon(grant) => {
-            vec![PickupAmmoGrant { item: grant.item.clone(), amount: grant.amount }]
+            vec![PickupAmmoGrant {
+                item: grant.item.clone(),
+                amount: grant.amount,
+            }]
         }
     };
     for grant in &ammo {
-        let descriptor = grant.item.strip_prefix("q2:").and_then(|classname| game.items.catalog.get(classname));
+        let descriptor = grant
+            .item
+            .strip_prefix("q2:")
+            .and_then(|classname| game.items.catalog.get(classname));
         let Some(descriptor) = descriptor else {
             panic!("Weapon grant has no source ammo descriptor");
         };
@@ -1614,7 +2042,12 @@ fn preview_supply_at(
             panic!("Weapon grant has no source ammo descriptor");
         };
         if !inventory.iter().any(|entry| entry.item == grant.item) {
-            inventory.push(InventoryEntry { item: grant.item.clone(), count: 0.0, capacity: *capacity, count_policy: None });
+            inventory.push(InventoryEntry {
+                item: grant.item.clone(),
+                count: 0.0,
+                capacity: *capacity,
+                count_policy: None,
+            });
         }
     }
     if let PickupSupplyOffer::Weapon(grant) = &offer {
@@ -1629,7 +2062,10 @@ fn preview_supply_at(
         return Some(preview_pickup_grants(
             &inventory,
             &PickupGrantPlan::Weapon {
-                weapons: vec![PickupAmmoGrant { item: grant.item.clone(), amount: 1.0 }],
+                weapons: vec![PickupAmmoGrant {
+                    item: grant.item.clone(),
+                    amount: 1.0,
+                }],
                 ammo,
             },
         ));
@@ -1805,12 +2241,7 @@ fn temporary_touch(this: ActorId, game: &mut Q2GameServices, contact: TouchConta
 }
 
 /// Item use (`useItem`).
-fn use_item_callback(
-    this: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn use_item_callback(this: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     game.require_entity_mut(&this).visible = true;
     game.require_entity_mut(&this).use_ = None;
     let boxed = game.require_entity(&this).spawnflags & 2 != 0;
@@ -1835,11 +2266,19 @@ fn invulnerability_expiry(this: ActorId, game: &mut Q2GameServices) {
     let owner = game.require_entity(&this).owner.clone();
     let player = owner.as_ref().and_then(|owner| game.host.actors().resolve_owned(owner));
     if let Some(player) = player {
-        let until = game.items.powers.get(player.id()).map(|powers| powers.invulnerability_until).unwrap_or(0.0);
+        let until = game
+            .items
+            .powers
+            .get(player.id())
+            .map(|powers| powers.invulnerability_until)
+            .unwrap_or(0.0);
         if game.host.now() >= until {
             game.host.combat().set_traits(
                 &player,
-                &CombatTraitChanges { invulnerable: Some(false), ..CombatTraitChanges::default() },
+                &CombatTraitChanges {
+                    invulnerable: Some(false),
+                    ..CombatTraitChanges::default()
+                },
             );
         }
     }
@@ -1861,9 +2300,9 @@ fn list_items(game: &Q2GameServices) -> Vec<Q2InventoryItem> {
             };
             let usable = match &item.kind {
                 Q2ItemKindData::Custom { use_item, .. } => use_item.is_some(),
-                Q2ItemKindData::Power { .. }
-                | Q2ItemKindData::PowerArmor { .. }
-                | Q2ItemKindData::Weapon { .. } => true,
+                Q2ItemKindData::Power { .. } | Q2ItemKindData::PowerArmor { .. } | Q2ItemKindData::Weapon { .. } => {
+                    true
+                }
                 Q2ItemKindData::Ammo { weapon_ammo, .. } => *weapon_ammo,
                 _ => false,
             };
@@ -1899,9 +2338,7 @@ fn list_items(game: &Q2GameServices) -> Vec<Q2InventoryItem> {
 fn lookup_item(game: &Q2GameServices, value: &str) -> Option<Q2InventoryItem> {
     let key = value.to_lowercase();
     list_items(game).into_iter().find(|item| {
-        item.id.to_lowercase() == key
-            || item.classname.to_lowercase() == key
-            || item.name.to_lowercase() == key
+        item.id.to_lowercase() == key || item.classname.to_lowercase() == key || item.name.to_lowercase() == key
     })
 }
 
@@ -1912,9 +2349,7 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
         .map(|grant| {
             let item = game.items.catalog.get(&grant.classname.to_lowercase()).cloned();
             match item {
-                Some(item) if item.console_give != Some(Q2ConsoleGive::InventoryOnly) => {
-                    (item, grant.count)
-                }
+                Some(item) if item.console_give != Some(Q2ConsoleGive::InventoryOnly) => (item, grant.count),
                 _ => panic!("Invalid Q2 starting item: {}", grant.classname),
             }
         })
@@ -1941,7 +2376,10 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
                 destinations = admission
                     .preview(
                         player.id(),
-                        &PickupSupplyOffer::Ammo(PickupAmmoGrant { item: id.clone(), amount: 0.0 }),
+                        &PickupSupplyOffer::Ammo(PickupAmmoGrant {
+                            item: id.clone(),
+                            amount: 0.0,
+                        }),
                     )
                     .ammo
                     .into_iter()
@@ -1967,7 +2405,10 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
                 destinations = admission
                     .preview(
                         player.id(),
-                        &PickupSupplyOffer::Weapon(PickupWeaponGrant { item: id, ammo: Vec::new() }),
+                        &PickupSupplyOffer::Weapon(PickupWeaponGrant {
+                            item: id,
+                            ammo: Vec::new(),
+                        }),
                     )
                     .weapons
                     .into_iter()
@@ -1986,10 +2427,9 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
                     .into_iter()
                     .find(|entry| entry.item == destination)
                 {
-                    game.host.inventory().configure(
-                        player,
-                        &InventoryEntry { count: 0.0, ..entry },
-                    );
+                    game.host
+                        .inventory()
+                        .configure(player, &InventoryEntry { count: 0.0, ..entry });
                     if destination == POWER_CELL_ITEM {
                         set_player_power_cells(game, player.id(), 0.0);
                     }
@@ -1998,12 +2438,16 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
             continue;
         }
         let temporary = game.create(&item.classname, BTreeMap::new());
-        game.require_entity_mut(&temporary).count =
-            count.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        game.require_entity_mut(&temporary).count = count.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         game.require_entity_mut(&temporary).spawnflags |= 0x10000;
         game.items.pickups.insert(
             temporary.clone(),
-            PickupState { item: item.clone(), targets_used: false, retained: false, expires_at: None },
+            PickupState {
+                item: item.clone(),
+                targets_used: false,
+                retained: false,
+                expires_at: None,
+            },
         );
         if grant_item(temporary.clone(), game, player, &item) {
             finish_grant(temporary.clone(), game, player, &item);
@@ -2015,12 +2459,7 @@ fn give_start_items_at(player: &OwnedActor, game: &mut Q2GameServices, expressio
 }
 
 /// Give an ammo count (`giveAmmoCount`).
-fn give_ammo_count_at(
-    player: &OwnedActor,
-    game: &mut Q2GameServices,
-    item_id: &str,
-    count: Option<f64>,
-) {
+fn give_ammo_count_at(player: &OwnedActor, game: &mut Q2GameServices, item_id: &str, count: Option<f64>) {
     let Some(item) = lookup_item(game, item_id) else {
         panic!("Console ammo grant requires a source ammo item");
     };
@@ -2037,7 +2476,10 @@ fn give_ammo_count_at(
         admission
             .preview(
                 player.id(),
-                &PickupSupplyOffer::Ammo(PickupAmmoGrant { item: item.id.clone(), amount: 0.0 }),
+                &PickupSupplyOffer::Ammo(PickupAmmoGrant {
+                    item: item.id.clone(),
+                    amount: 0.0,
+                }),
             )
             .ammo
             .into_iter()
@@ -2062,13 +2504,13 @@ fn give_ammo_count_at(
         let next = count.unwrap_or_else(|| entry.as_ref().map(|entry| entry.count).unwrap_or(0.0) + item.quantity);
         if mapped && entry.is_some() {
             let entry = entry.expect("ammo entry");
-            let source_counter = matches!(
-                entry.count_policy,
-                Some(InventoryCountPolicy::SourceCounter(_))
-            );
+            let source_counter = matches!(entry.count_policy, Some(InventoryCountPolicy::SourceCounter(_)));
             game.host.inventory().configure(
                 player,
-                &InventoryEntry { count: if source_counter { next } else { 0.0f64.max(next) }, ..entry },
+                &InventoryEntry {
+                    count: if source_counter { next } else { 0.0f64.max(next) },
+                    ..entry
+                },
             );
         } else {
             game.host.inventory().configure(
@@ -2077,9 +2519,7 @@ fn give_ammo_count_at(
                     item: destination.clone(),
                     count: next,
                     capacity: entry.as_ref().map(|entry| entry.capacity).unwrap_or(item.capacity),
-                    count_policy: Some(InventoryCountPolicy::SourceCounter(
-                        SourceCounterArithmetic::Int32,
-                    )),
+                    count_policy: Some(InventoryCountPolicy::SourceCounter(SourceCounterArithmetic::Int32)),
                 },
             );
         }
@@ -2097,7 +2537,10 @@ fn replace_item_at(game: &mut Q2GameServices, actor: ActorId, descriptor: &str) 
     let state = pickup_state(game, &actor);
     game.items.pickups.insert(
         actor.clone(),
-        PickupState { item: item.clone(), ..state },
+        PickupState {
+            item: item.clone(),
+            ..state
+        },
     );
     game.require_entity_mut(&actor).classname = item.classname.clone();
     game.require_entity_mut(&actor).model = item.model.clone();
@@ -2107,8 +2550,9 @@ fn replace_item_at(game: &mut Q2GameServices, actor: ActorId, descriptor: &str) 
 
 /// Configure a player (`configurePlayer`).
 fn configure_player_at(actor: &OwnedActor, game: &mut Q2GameServices, give_blaster: bool) {
-    let weapons: HashMap<ItemId, f64> =
-        weapon_inventory_entries(&game.items.catalog.clone()).into_iter().collect();
+    let weapons: HashMap<ItemId, f64> = weapon_inventory_entries(&game.items.catalog.clone())
+        .into_iter()
+        .collect();
     let catalog = game.items.catalog.clone();
     for item in catalog.values() {
         match item.kind() {
@@ -2124,9 +2568,20 @@ fn configure_player_at(actor: &OwnedActor, game: &mut Q2GameServices, give_blast
             Q2ItemKindData::Custom { capacity, .. } => *capacity,
             _ => 32767.0,
         };
-        ensure_inventory_entry(game, actor, &item_id(item), weapons.get(&item_id(item)).copied().unwrap_or(fallback));
+        ensure_inventory_entry(
+            game,
+            actor,
+            &item_id(item),
+            weapons.get(&item_id(item)).copied().unwrap_or(fallback),
+        );
     }
-    if give_blaster && game.host.inventory().count(actor.id(), &"q2:weapon_blaster".to_string()) == 0.0 {
+    if give_blaster
+        && game
+            .host
+            .inventory()
+            .count(actor.id(), &"q2:weapon_blaster".to_string())
+            == 0.0
+    {
         game.host.inventory().give(actor, &"q2:weapon_blaster".to_string(), 1.0);
     }
     bind_power_armor_at(actor, game);
@@ -2141,7 +2596,9 @@ fn bind_power_armor_at(actor: &OwnedActor, game: &mut Q2GameServices) {
         game.host.inventory().count(actor.id(), &POWER_CELL_ITEM.to_string()),
     ));
     game.items.power_cells.insert(actor.id().clone(), cells.clone());
-    game.host.combat().bind_power_armor_cells(actor, Box::new(SharedPowerCells(cells)));
+    game.host
+        .combat()
+        .bind_power_armor_cells(actor, Box::new(SharedPowerCells(cells)));
     game.items.power_armor_bindings.insert(actor.id().clone());
 }
 
@@ -2175,13 +2632,19 @@ impl Q2ItemModule {
         callbacks.think.insert("q2_items_drop_to_floor", drop_to_floor);
         callbacks.think.insert("q2_items_make_touchable", make_touchable);
         callbacks.think.insert("q2_items_mega_health", mega_health);
-        callbacks.think.insert("q2_items_invulnerability_expiry", invulnerability_expiry);
+        callbacks
+            .think
+            .insert("q2_items_invulnerability_expiry", invulnerability_expiry);
         callbacks.touch.insert("Touch_Item", touch_pickup);
         callbacks.touch.insert("drop_temp_touch", temporary_touch);
         callbacks.use_.insert("Use_Item", use_item_callback);
         let spawn: Q2SpawnFn = spawn_item_entity;
         let item_name: Q2ItemNameFn = item_module_name;
-        SpawnModule { spawn, item_name, callbacks }
+        SpawnModule {
+            spawn,
+            item_name,
+            callbacks,
+        }
     }
 
     /// Register an item (`register`).
@@ -2198,11 +2661,7 @@ impl Q2ItemModule {
     }
 
     /// Model and sound resource paths (`resourcePaths`).
-    pub fn resource_paths(
-        &self,
-        game: &Q2GameServices,
-        classnames: &HashSet<String>,
-    ) -> Vec<String> {
+    pub fn resource_paths(&self, game: &Q2GameServices, classnames: &HashSet<String>) -> Vec<String> {
         game.items
             .catalog
             .values()
@@ -2217,11 +2676,7 @@ impl Q2ItemModule {
     }
 
     /// Set the pickup admission (`setPickupAdmission`).
-    pub fn set_pickup_admission(
-        &self,
-        game: &mut Q2GameServices,
-        admission: Option<Box<dyn PickupAdmission>>,
-    ) {
+    pub fn set_pickup_admission(&self, game: &mut Q2GameServices, admission: Option<Box<dyn PickupAdmission>>) {
         game.items.pickup_admission = admission;
     }
 
@@ -2250,7 +2705,10 @@ impl Q2ItemModule {
                 });
             }
             if let Some(power) = game.items.powers.get(actor) {
-                powers.push(Q2PowerCheckpoint { actor: saved.clone(), state: *power });
+                powers.push(Q2PowerCheckpoint {
+                    actor: saved.clone(),
+                    state: *power,
+                });
             }
             if game.items.power_armor_bindings.contains(actor) {
                 bindings.push(saved);
@@ -2315,13 +2773,7 @@ impl Q2ItemModule {
     }
 
     /// Give an ammo count (`giveAmmoCount`).
-    pub fn give_ammo_count(
-        &self,
-        player: &OwnedActor,
-        game: &mut Q2GameServices,
-        item_id: &str,
-        count: Option<f64>,
-    ) {
+    pub fn give_ammo_count(&self, player: &OwnedActor, game: &mut Q2GameServices, item_id: &str, count: Option<f64>) {
         give_ammo_count_at(player, game, item_id, count);
     }
 
@@ -2342,15 +2794,19 @@ impl Q2ItemModule {
     }
 
     /// Drop a monster item (`dropMonster`).
-    pub fn drop_monster(
-        &self,
-        actor: &OwnedActor,
-        game: &mut Q2GameServices,
-        classname: &str,
-    ) -> Option<ActorId> {
+    pub fn drop_monster(&self, actor: &OwnedActor, game: &mut Q2GameServices, classname: &str) -> Option<ActorId> {
         let descriptor = lookup_item(game, classname)?;
         let item = game.items.catalog.get(&descriptor.classname).cloned()?;
-        Some(drop_source(actor, game, &item, &Q2DropOptions { player_death: false, ..Q2DropOptions::default() }, 0.0))
+        Some(drop_source(
+            actor,
+            game,
+            &item,
+            &Q2DropOptions {
+                player_death: false,
+                ..Q2DropOptions::default()
+            },
+            0.0,
+        ))
     }
 
     /// Read player powerups (`playerPowerups`).
@@ -2364,12 +2820,7 @@ impl Q2ItemModule {
     }
 
     /// Configure a player (`configurePlayer`).
-    pub fn configure_player(
-        &self,
-        actor: &OwnedActor,
-        game: &mut Q2GameServices,
-        give_blaster: bool,
-    ) {
+    pub fn configure_player(&self, actor: &OwnedActor, game: &mut Q2GameServices, give_blaster: bool) {
         configure_player_at(actor, game, give_blaster);
     }
 
@@ -2379,21 +2830,12 @@ impl Q2ItemModule {
     }
 
     /// Spawn an item (`spawnItem`).
-    pub fn spawn_item(
-        &self,
-        game: &mut Q2GameServices,
-        actor: ActorId,
-        descriptor: &str,
-    ) -> bool {
+    pub fn spawn_item(&self, game: &mut Q2GameServices, actor: ActorId, descriptor: &str) -> bool {
         spawn_item_at(game, actor, descriptor)
     }
 
     /// Read a pickup item definition (`itemDefinition`).
-    pub fn item_definition(
-        &self,
-        game: &Q2GameServices,
-        actor: &ActorId,
-    ) -> Option<Q2ItemDefinition> {
+    pub fn item_definition(&self, game: &Q2GameServices, actor: &ActorId) -> Option<Q2ItemDefinition> {
         game.items.pickups.get(actor).map(|pickup| pickup.item.clone())
     }
 
@@ -2484,7 +2926,12 @@ mod tests {
             rotate: false,
             respawn: 0.0,
             console_give: None,
-            kind: Q2ItemKindData::Armor { points, maximum, normal, energy },
+            kind: Q2ItemKindData::Armor {
+                points,
+                maximum,
+                normal,
+                energy,
+            },
         }
     }
 
@@ -2549,7 +2996,10 @@ mod tests {
         assert!(matches!(upgraded, RegularArmorState::Q2 { points, .. } if points == 115.0));
         let downgraded = pickup_q2_armor(&jacket, &upgraded).expect("downgrade");
         assert!(matches!(downgraded, RegularArmorState::Q2 { points, .. } if points == 124.0));
-        let source = RegularArmorState::Source { points: 5.0, item: None };
+        let source = RegularArmorState::Source {
+            points: 5.0,
+            item: None,
+        };
         assert!(pickup_q2_armor(&jacket, &source).is_none());
     }
 }

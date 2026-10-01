@@ -3,11 +3,10 @@
 //! Original Rogue changes to the base species. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, Vec3};
 
 use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up,
-    rogue_monster_dodge,
+    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up, rogue_monster_dodge,
 };
 use super::rogue_infantry::create_rogue_infantry_definition;
 use super::rogue_soldier::create_rogue_soldier_definitions;
@@ -23,13 +22,9 @@ use crate::q2::base::monsters::jorg::{create_jorg_definition, jorg_initialize};
 use crate::q2::base::monsters::makron::{makron_definition, with_makron_spawn_callbacks};
 use crate::q2::base::monsters::supertank::supertank_definition;
 use crate::q2::base::monsters::tables::supertank::supertank_frame;
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, project_flash,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, enemy_eye, project_flash};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{blocked_check_platform, monster_flash};
 use crate::q2::support::contracts::{PainReaction, TraceResult};
 
@@ -49,12 +44,7 @@ fn rogue_brain_duck_inner(context: &mut MonsterContext, eta: f64) {
     rogue_duck_down(context);
     let skill = context.game.options.skill;
     let now = context.game.host.now();
-    context.state_mut().duck_wait = now + eta
-        + if skill == 0 {
-            1.0
-        } else {
-            0.1 * f64::from(3 - skill)
-        };
+    context.state_mut().duck_wait = now + eta + if skill == 0 { 1.0 } else { 0.1 * f64::from(3 - skill) };
     context.state_mut().next_frame = brain_frame::DUCK01;
     context.set_move("brain_move_duck", true);
 }
@@ -106,14 +96,7 @@ fn rogue_brain_dodge(
     trace: Option<&TraceResult>,
     _direct: bool,
 ) {
-    rogue_monster_dodge(
-        context,
-        attacker,
-        eta,
-        trace,
-        Some(rogue_brain_duck_inner),
-        None,
-    );
+    rogue_monster_dodge(context, attacker, eta, trace, Some(rogue_brain_duck_inner), None);
 }
 
 /// Brain duck slot (`duck`).
@@ -125,11 +108,7 @@ fn rogue_brain_duck(context: &mut MonsterContext, eta: f64) -> bool {
 /// Floater attack (`attack`).
 fn rogue_floater_attack(context: &mut MonsterContext) {
     let skill = context.game.options.skill;
-    let chance = if skill == 0 {
-        0.0
-    } else {
-        1.0 - 0.5 / f64::from(skill)
-    };
+    let chance = if skill == 0 { 0.0 } else { 1.0 - 0.5 / f64::from(skill) };
     if context.game.random() > chance {
         context.state_mut().attack_state = MonsterAttackState::Straight;
         context.set_move("floater_move_attack1", true);
@@ -184,12 +163,8 @@ fn boss_rockets(context: &mut MonsterContext, predictive: bool) {
         let edition = context.game.options.edition;
         let start = project_flash(context, muzzle_offset(edition, flash), None);
         let direction = if predictive {
-            let flight = f64::from(length3(sub3(enemy.origin, start))) / 750.0 - 0.3
-                + index as f64 * 0.15;
-            normalize3(sub3(
-                add3(enemy.origin, scale3(enemy.velocity, flight as f32)),
-                start,
-            ))
+            let flight = f64::from(length3(sub3(enemy.origin, start))) / 750.0 - 0.3 + index as f64 * 0.15;
+            normalize3(sub3(add3(enemy.origin, scale3(enemy.velocity, flight as f32)), start))
         } else {
             let lowered = Vec3 {
                 x: enemy.origin.x,
@@ -220,23 +195,12 @@ fn boss_rockets(context: &mut MonsterContext, predictive: bool) {
 /// Boss bullet (`bossBullet`).
 fn boss_bullet(context: &mut MonsterContext, right: bool) {
     let flash = if right { 133usize } else { 73 };
-    let Some((start, direction)) = monster_shot(context, flash, if right { 0.2 } else { -0.2 })
-    else {
+    let Some((start, direction)) = monster_shot(context, flash, if right { 0.2 } else { -0.2 }) else {
         return;
     };
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        6.0,
-        4.0,
-        900.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 900.0, 500.0, 0);
     monster_flash(context, flash as i32, start, direction);
 }
 
@@ -248,8 +212,8 @@ fn boss2_predictive_rocket(context: &mut MonsterContext) {
 /// Rockets (`Boss2Rocket`).
 fn boss2_rocket(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let predictive = enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy))
-        && context.game.random() < 0.9;
+    let predictive =
+        enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy)) && context.game.random() < 0.9;
     boss_rockets(context, predictive);
 }
 
@@ -289,16 +253,7 @@ fn rogue_supertank_rocket(context: &mut MonsterContext) {
     };
     let fire_rocket = context.weapons.fire_rocket;
     let actor = context.actor().clone();
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        500.0,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
     monster_flash(context, flash as i32, start, direction);
 }
 
@@ -319,17 +274,7 @@ fn rogue_supertank_machine_gun(context: &mut MonsterContext) {
     let direction = normalize3(sub3(eye, start));
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        6.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 300.0, 500.0, 0);
     monster_flash(context, flash, start, direction);
 }
 
@@ -359,10 +304,9 @@ pub fn create_rogue_base_variants() -> Vec<Q2MonsterDefinition> {
         "monster_duck_hold".to_string(),
         MonsterHandler::Callback(rogue_duck_hold),
     );
-    brain.callbacks.insert(
-        "monster_duck_up".to_string(),
-        MonsterHandler::Callback(rogue_duck_up),
-    );
+    brain
+        .callbacks
+        .insert("monster_duck_up".to_string(), MonsterHandler::Callback(rogue_duck_up));
 
     let mut floater = floater_definition();
     floater.moves = float_moves()
@@ -383,10 +327,9 @@ pub fn create_rogue_base_variants() -> Vec<Q2MonsterDefinition> {
         "Boss2PredictiveRocket".to_string(),
         MonsterHandler::Callback(boss2_predictive_rocket),
     );
-    boss2.callbacks.insert(
-        "Boss2Rocket".to_string(),
-        MonsterHandler::Callback(boss2_rocket),
-    );
+    boss2
+        .callbacks
+        .insert("Boss2Rocket".to_string(), MonsterHandler::Callback(boss2_rocket));
     boss2.callbacks.insert(
         "boss2_firebullet_right".to_string(),
         MonsterHandler::Callback(boss2_firebullet_right),

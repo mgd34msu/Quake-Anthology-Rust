@@ -20,28 +20,23 @@ pub use ctf_grapple::{
     default_ctf_grapple_settings, CtfGrappleSettings, Q2CtfGrappleEquipment,
 };
 pub use grapple_services::{
-    capture_ctf_grapple, capture_lmctf_grapple, grapple_body, grapple_velocity,
-    restore_ctf_grapple, restore_lmctf_grapple, CtfGrappleCheckpoint, CtfGrapplePhase,
-    CtfGrappleState, GrappleAnchor, GrappleCableEvent, GrappleHand, GrappleHooks, GrappleNoise,
-    GrapplePose, LmctfGrappleCheckpoint, LmctfGrappleState,
+    capture_ctf_grapple, capture_lmctf_grapple, grapple_body, grapple_velocity, restore_ctf_grapple,
+    restore_lmctf_grapple, CtfGrappleCheckpoint, CtfGrapplePhase, CtfGrappleState, GrappleAnchor, GrappleCableEvent,
+    GrappleHand, GrappleHooks, GrappleNoise, GrapplePose, LmctfGrappleCheckpoint, LmctfGrappleState,
 };
 pub use grapple_weapon::{
-    create_grapple_weapon_state, ctf_grapple_weapon_should_reset, fire_ctf_grapple_weapon,
-    fire_lmctf_grapple_weapon, lmctf_grapple, q2_ctf_grapple, q2_rerelease_ctf_grapple,
-    release_lmctf_grapple_weapon, step_ctf_grapple_weapon, step_lmctf_grapple_weapon,
-    CtfGrappleWeaponActions, GrappleHandoff, GrappleStepInput, GrappleWeaponInput,
-    GrappleWeaponPresentation, GrappleWeaponSource, GrappleWeaponState, LmctfGrappleWeaponActions,
-    Q2GrappleWeapon,
+    create_grapple_weapon_state, ctf_grapple_weapon_should_reset, fire_ctf_grapple_weapon, fire_lmctf_grapple_weapon,
+    lmctf_grapple, q2_ctf_grapple, q2_rerelease_ctf_grapple, release_lmctf_grapple_weapon, step_ctf_grapple_weapon,
+    step_lmctf_grapple_weapon, CtfGrappleWeaponActions, GrappleHandoff, GrappleStepInput, GrappleWeaponInput,
+    GrappleWeaponPresentation, GrappleWeaponSource, GrappleWeaponState, LmctfGrappleWeaponActions, Q2GrappleWeapon,
 };
 pub use hand_grenades::{
-    default_hand_grenade_loadout, HandGrenadeActorCheckpoint, HandGrenadeCheckpoint,
-    HandGrenadeEquipmentInput, HandGrenadeEquipmentState, HandGrenadeLoadout,
-    Q2HandGrenadeEquipment, HAND_GRENADE_AMMO,
+    default_hand_grenade_loadout, HandGrenadeActorCheckpoint, HandGrenadeCheckpoint, HandGrenadeEquipmentInput,
+    HandGrenadeEquipmentState, HandGrenadeLoadout, Q2HandGrenadeEquipment, HAND_GRENADE_AMMO,
 };
 pub use lmctf_grapple::{
-    default_lmctf_grapple_policy, lmctf_actor_released, lmctf_can_attach, lmctf_can_damage,
-    lmctf_grapple_callbacks, lmctf_player_hit, lmctf_released, LmctfGrappleEquipment,
-    LmctfGrapplePolicy,
+    default_lmctf_grapple_policy, lmctf_actor_released, lmctf_can_attach, lmctf_can_damage, lmctf_grapple_callbacks,
+    lmctf_player_hit, lmctf_released, LmctfGrappleEquipment, LmctfGrapplePolicy,
 };
 
 /// Arena runtime state for this module.
@@ -63,9 +58,7 @@ pub struct EquipmentRuntime {
 
 /// Resolve the bound CTF handle.
 pub(crate) fn ctf_handle(game: &Q2GameServices) -> Q2CtfGrappleEquipment {
-    game.equipment
-        .ctf
-        .expect("Q2 CTF grapple equipment is not bound")
+    game.equipment.ctf.expect("Q2 CTF grapple equipment is not bound")
 }
 
 /// Read or create CTF owner state.
@@ -75,9 +68,7 @@ pub(crate) fn ctf_state_mut(game: &mut Q2GameServices, actor: ActorId) -> &mut C
 
 /// Resolve the bound LMCTF handle.
 pub(crate) fn lmctf_handle(game: &Q2GameServices) -> LmctfGrappleEquipment {
-    game.equipment
-        .lmctf
-        .expect("Q2 LMCTF grapple equipment is not bound")
+    game.equipment.lmctf.expect("Q2 LMCTF grapple equipment is not bound")
 }
 
 /// Read or create LMCTF owner state.

@@ -107,10 +107,7 @@ pub struct MissionPackMonstersCheckpoint {
 }
 
 /// Require rogue state for an actor (`Q2MissionPackMonsterState.get`).
-pub fn rogue_state<'a>(
-    game: &'a mut Q2GameServices,
-    actor: &ActorId,
-) -> &'a mut RogueMonsterState {
+pub fn rogue_state<'a>(game: &'a mut Q2GameServices, actor: &ActorId) -> &'a mut RogueMonsterState {
     game.mission_monsters.rogue.entry(actor.clone()).or_default()
 }
 
@@ -159,10 +156,7 @@ pub fn capture_mission_monsters(game: &mut Q2GameServices) -> MissionPackMonster
 }
 
 /// Restore mission-pack monster state (`restore`).
-pub fn restore_mission_monsters(
-    game: &mut Q2GameServices,
-    checkpoint: &MissionPackMonstersCheckpoint,
-) {
+pub fn restore_mission_monsters(game: &mut Q2GameServices, checkpoint: &MissionPackMonstersCheckpoint) {
     game.mission_monsters.rogue = HashMap::new();
     game.mission_monsters.flyer_next_move = checkpoint.flyer_next_move;
     game.mission_monsters.widow_shots_fired = checkpoint.widow_shots_fired;
@@ -170,8 +164,14 @@ pub fn restore_mission_monsters(
     for saved in &checkpoint.actors {
         let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
         let healer = saved.healer.clone().map(|id| game.host.actors().reference_saved(id));
-        let bad_medic1 = saved.bad_medic1.clone().map(|id| game.host.actors().reference_saved(id));
-        let bad_medic2 = saved.bad_medic2.clone().map(|id| game.host.actors().reference_saved(id));
+        let bad_medic1 = saved
+            .bad_medic1
+            .clone()
+            .map(|id| game.host.actors().reference_saved(id));
+        let bad_medic2 = saved
+            .bad_medic2
+            .clone()
+            .map(|id| game.host.actors().reference_saved(id));
         let last_player_enemy = saved
             .last_player_enemy
             .clone()

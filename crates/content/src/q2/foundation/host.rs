@@ -17,7 +17,7 @@ use crate::contract::{ItemId, MonsterDefinitionReference};
 use crate::monsters::{AuthoredTarget, MonsterTargetObservation};
 use crate::q2::base::entities::BaseEntitiesRuntime;
 use crate::q2::base::player::PlayerRuntime;
-use crate::q2::missionpacks::MissionPackRuntime;
+use crate::q2::composition::CompositionRuntime;
 use crate::q2::equipment::EquipmentRuntime;
 use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions, Q2SourceCallbacks};
 use crate::q2::foundation::items::ItemRuntime;
@@ -27,13 +27,13 @@ use crate::q2::foundation::shadow_lights::Q2ShadowLightState;
 use crate::q2::foundation::weapons::WeaponRuntime;
 use crate::q2::missionpacks::modes::{deathball::DeathballRuntime, tag::TagRuntime};
 use crate::q2::missionpacks::monsters::MissionMonsterRuntime;
-use crate::q2::composition::CompositionRuntime;
+use crate::q2::missionpacks::MissionPackRuntime;
 use crate::q2::multiplayer::ctf::CtfRuntime;
 use crate::q2::multiplayer::lmctf::LmctfRuntime;
 use crate::q2::rerelease::RereleaseRuntime;
 use crate::q2::support::contracts::{
-    AttackProvenance, BodyState, DeathReaction, PainReaction, SceneFlare, TouchContact, TraceResult,
-    TransitionIntent, WeaponBehaviorProjectilePort, WeaponTrajectoryUpdate,
+    AttackProvenance, BodyState, DeathReaction, PainReaction, SceneFlare, TouchContact, TraceResult, TransitionIntent,
+    WeaponBehaviorProjectilePort, WeaponTrajectoryUpdate,
 };
 use crate::q2::support::misc::Q2RereleaseRandomSource;
 use crate::q2::support::tables::{Q2ActorRegistry, Q2BodyTable, Q2CallbackTable, Q2CombatAuthority, Q2InventoryTable};
@@ -882,7 +882,11 @@ impl Q2Entity {
             solid: Q2Solid::None,
             motion: Q2MotionKind::Stationary,
             gravity: 1.0,
-            gravity_vector: Vec3 { x: 0.0, y: 0.0, z: -1.0 },
+            gravity_vector: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            },
             angular_velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             movedir: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             pos1: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
@@ -920,12 +924,20 @@ impl Q2Entity {
         }
         let shell = self.render_flags & 0x1c00;
         let image = if self.render_flags & 256 != 0 {
-            self.spawn.values.get("image").cloned().unwrap_or_else(|| "misc/flare.tga".to_string())
+            self.spawn
+                .values
+                .get("image")
+                .cloned()
+                .unwrap_or_else(|| "misc/flare.tga".to_string())
         } else {
             "misc/flare.tga".to_string()
         };
         let color = if self.skin == 0 {
-            Vec3 { x: 255.0, y: 255.0, z: 255.0 }
+            Vec3 {
+                x: 255.0,
+                y: 255.0,
+                z: 255.0,
+            }
         } else {
             let bits = self.skin as u32;
             Vec3 {
@@ -1043,9 +1055,13 @@ impl Q2GameServices {
     pub fn new(host: Box<dyn Q2FoundationHost>, options: Q2GameOptions, modules: Vec<SpawnModule>) -> Self {
         let mut source_callbacks = Q2SourceCallbacks::new();
         let mut builtin = Q2CallbackDefinitions::default();
-        builtin.think.insert("Think_Delay", super::entity_services::delayed_use as Q2Think);
+        builtin
+            .think
+            .insert("Think_Delay", super::entity_services::delayed_use as Q2Think);
         builtin.think.insert("G_FreeEdict", free_q2_entity as Q2Think);
-        builtin.die.insert("G_FreeEdict", super::entity_services::free_q2_entity_die as Q2Die);
+        builtin
+            .die
+            .insert("G_FreeEdict", super::entity_services::free_q2_entity_die as Q2Die);
         source_callbacks.register(&builtin);
         for module in &modules {
             source_callbacks.register(&module.callbacks);
@@ -1088,7 +1104,9 @@ impl Q2GameServices {
 
     /// Live deathmatch flags (follows the engine hook when present).
     pub fn deathmatch_flags(&self) -> i32 {
-        self.deathmatch_flags.as_ref().map_or(self.options.deathmatch_flags, |flags| flags.read())
+        self.deathmatch_flags
+            .as_ref()
+            .map_or(self.options.deathmatch_flags, |flags| flags.read())
     }
 
     /// Look up an entity continuation (`entity`).

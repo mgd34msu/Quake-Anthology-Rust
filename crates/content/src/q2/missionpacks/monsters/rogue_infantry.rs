@@ -6,20 +6,18 @@ use qa_core::identity::ActorId;
 use qa_core::math::{add3, scale3};
 
 use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up,
-    rogue_monster_dodge,
+    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up, rogue_monster_dodge,
 };
 use super::tables::rogue_infantry::{infantry_frame, infantry_moves};
-use crate::q2::base::monsters::common::{HUMANOID_BOUNDS, damaged_skin, monster_shot};
+use crate::q2::base::monsters::common::{damaged_skin, monster_shot, HUMANOID_BOUNDS};
 use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, finish_dodge};
 use crate::q2::foundation::monsters::infantry::{
-    infantry_attack, infantry_callbacks, infantry_die, infantry_run, infantry_sight,
-    infantry_stand, infantry_walk, machine_gun,
+    infantry_attack, infantry_callbacks, infantry_die, infantry_run, infantry_sight, infantry_stand, infantry_walk,
+    machine_gun,
 };
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform, monster_flash,
-    monster_jump_finished,
+    blocked_check_jump, blocked_check_platform, monster_flash, monster_jump_finished, JumpNavigation, JumpResult,
 };
 use crate::q2::support::contracts::{PainReaction, TraceResult};
 
@@ -86,17 +84,7 @@ fn rogue_infantry_machine_gun(context: &mut MonsterContext) {
     };
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        3.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 3.0, 4.0, 300.0, 500.0, 0);
     monster_flash(context, 26, start, direction);
 }
 
@@ -202,9 +190,7 @@ fn rogue_infantry_blocked(context: &mut MonsterContext, distance: f64) -> bool {
     if rogue_blocked_check_shot(context, chance) {
         return true;
     }
-    if blocked_check_jump(context, distance, 192.0, 40.0, true, JumpNavigation::None)
-        != JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 192.0, 40.0, true, JumpNavigation::None) != JumpResult::None {
         let enemy = enemy_body(context);
         if let Some(enemy) = enemy {
             finish_dodge(context);
@@ -232,8 +218,7 @@ fn infantry_cock_gun(context: &mut MonsterContext) {
 
 /// Fire prep (`infantry_fire_prep`).
 fn infantry_fire_prep(context: &mut MonsterContext) {
-    let pause = context.game.host.now()
-        + (((context.game.random() * 32768.0).floor() as i64 & 15) + 4) as f64 * 0.1;
+    let pause = context.game.host.now() + (((context.game.random() * 32768.0).floor() as i64 & 15) + 4) as f64 * 0.1;
     context.state_mut().pause_time = pause;
 }
 
@@ -288,18 +273,12 @@ pub fn create_rogue_infantry_definition() -> Q2MonsterDefinition {
     definition.duck = Some(rogue_infantry_duck);
     definition.blocked = Some(rogue_infantry_blocked);
     let mut callbacks = infantry_callbacks();
-    callbacks.insert(
-        "infantry_run".to_string(),
-        MonsterHandler::Callback(rogue_infantry_run),
-    );
+    callbacks.insert("infantry_run".to_string(), MonsterHandler::Callback(rogue_infantry_run));
     callbacks.insert(
         "InfantryMachineGun".to_string(),
         MonsterHandler::Callback(rogue_infantry_machine_gun),
     );
-    callbacks.insert(
-        "monster_done_dodge".to_string(),
-        MonsterHandler::Callback(finish_dodge),
-    );
+    callbacks.insert("monster_done_dodge".to_string(), MonsterHandler::Callback(finish_dodge));
     callbacks.insert(
         "monster_duck_down".to_string(),
         MonsterHandler::Callback(rogue_duck_down),
@@ -308,10 +287,7 @@ pub fn create_rogue_infantry_definition() -> Q2MonsterDefinition {
         "monster_duck_hold".to_string(),
         MonsterHandler::Callback(rogue_duck_hold),
     );
-    callbacks.insert(
-        "monster_duck_up".to_string(),
-        MonsterHandler::Callback(rogue_duck_up),
-    );
+    callbacks.insert("monster_duck_up".to_string(), MonsterHandler::Callback(rogue_duck_up));
     callbacks.insert(
         "infantry_cock_gun".to_string(),
         MonsterHandler::Callback(infantry_cock_gun),
@@ -320,10 +296,7 @@ pub fn create_rogue_infantry_definition() -> Q2MonsterDefinition {
         "infantry_fire_prep".to_string(),
         MonsterHandler::Callback(infantry_fire_prep),
     );
-    callbacks.insert(
-        "infantry_fire".to_string(),
-        MonsterHandler::Callback(infantry_fire),
-    );
+    callbacks.insert("infantry_fire".to_string(), MonsterHandler::Callback(infantry_fire));
     callbacks.insert(
         "infantry_jump_now".to_string(),
         MonsterHandler::Callback(infantry_jump_now),

@@ -4,15 +4,11 @@
 //! (id Software, GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::alternate_fly::alternate_fly_step;
-use super::types::{
-    DeadThink, MonsterAi, MonsterAttackState, MonsterContext, MonsterLocomotion, SourceCombatMode,
-};
-use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2TraceRequest,
-};
+use super::types::{DeadThink, MonsterAi, MonsterAttackState, MonsterContext, MonsterLocomotion, SourceCombatMode};
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2TraceRequest};
 use crate::q2::support::contracts::{BodyState, TraceHit, TraceResult};
 
 /// Monster solid mask (`MASK_MONSTERSOLID`).
@@ -28,12 +24,22 @@ pub const FL_NOTARGET: i32 = 32;
 
 /// Monster solid mask with the rerelease bit (`monsterSolidMask`).
 pub fn monster_solid_mask(game: &Q2GameServices) -> i32 {
-    MASK_MONSTER_SOLID | if game.options.edition == Q2Edition::Rerelease { 0x40000000 } else { 0 }
+    MASK_MONSTER_SOLID
+        | if game.options.edition == Q2Edition::Rerelease {
+            0x40000000
+        } else {
+            0
+        }
 }
 
 /// Attack trace mask (`attackTraceMask`).
 pub fn attack_trace_mask(game: &Q2GameServices) -> i32 {
-    MASK_SHOT | if game.options.edition == Q2Edition::Rerelease { 0x40000000 } else { 0 }
+    MASK_SHOT
+        | if game.options.edition == Q2Edition::Rerelease {
+            0x40000000
+        } else {
+            0
+        }
 }
 
 /// Direction axes from Euler angles (`anglesVectors`).
@@ -66,8 +72,7 @@ pub fn vector_angles(direction: Vec3) -> Vec3 {
     } else {
         f64::from(direction.y).atan2(f64::from(direction.x)) * 180.0 / std::f64::consts::PI
     };
-    let pitch = f64::from(direction.z).atan2(f64::from(length3(vec3(direction.x, direction.y, 0.0))))
-        * 180.0
+    let pitch = f64::from(direction.z).atan2(f64::from(length3(vec3(direction.x, direction.y, 0.0)))) * 180.0
         / std::f64::consts::PI;
     vec3((-pitch) as f32, (if yaw < 0.0 { yaw + 360.0 } else { yaw }) as f32, 0.0)
 }
@@ -90,31 +95,58 @@ pub fn enemy_eye(context: &mut MonsterContext) -> Option<Vec3> {
     let body = enemy_body(context)?;
     let enemy = context.entity().enemy.clone();
     let observed = context.game.monster_target(enemy.as_ref())?;
-    Some(vec3(body.origin.x, body.origin.y, body.origin.z + observed.view_height as f32))
+    Some(vec3(
+        body.origin.x,
+        body.origin.y,
+        body.origin.z + observed.view_height as f32,
+    ))
 }
 
 /// Distance to the enemy (`targetDistance`).
 pub fn target_distance(context: &mut MonsterContext) -> f64 {
-    let Some(enemy) = enemy_body(context) else { return f64::INFINITY };
+    let Some(enemy) = enemy_body(context) else {
+        return f64::INFINITY;
+    };
     let actor = context.actor().clone();
     let body = context.game.body_of(actor);
     if context.game.options.edition == Q2Edition::Classic {
         return f64::from(length3(sub3(enemy.origin, body.origin)));
     }
     let axis = |a: f32, amin: f32, amax: f32, b: f32, bmin: f32, bmax: f32| -> f64 {
-        let (a, amin, amax, b, bmin, bmax) =
-            (f64::from(a), f64::from(amin), f64::from(amax), f64::from(b), f64::from(bmin), f64::from(bmax));
+        let (a, amin, amax, b, bmin, bmax) = (
+            f64::from(a),
+            f64::from(amin),
+            f64::from(amax),
+            f64::from(b),
+            f64::from(bmin),
+            f64::from(bmax),
+        );
         0.0f64.max(b + bmin - a - amax).max(a + amin - b - bmax)
     };
-    axis(body.origin.x, body.bounds.min.x, body.bounds.max.x, enemy.origin.x, enemy.bounds.min.x, enemy.bounds.max.x)
-        .hypot(axis(
-            body.origin.y, body.bounds.min.y, body.bounds.max.y, enemy.origin.y, enemy.bounds.min.y,
-            enemy.bounds.max.y,
-        ))
-        .hypot(axis(
-            body.origin.z, body.bounds.min.z, body.bounds.max.z, enemy.origin.z, enemy.bounds.min.z,
-            enemy.bounds.max.z,
-        ))
+    axis(
+        body.origin.x,
+        body.bounds.min.x,
+        body.bounds.max.x,
+        enemy.origin.x,
+        enemy.bounds.min.x,
+        enemy.bounds.max.x,
+    )
+    .hypot(axis(
+        body.origin.y,
+        body.bounds.min.y,
+        body.bounds.max.y,
+        enemy.origin.y,
+        enemy.bounds.min.y,
+        enemy.bounds.max.y,
+    ))
+    .hypot(axis(
+        body.origin.z,
+        body.bounds.min.z,
+        body.bounds.max.z,
+        enemy.origin.z,
+        enemy.bounds.min.z,
+        enemy.bounds.max.z,
+    ))
 }
 
 /// Whether an actor is visible (`visible`).
@@ -124,32 +156,47 @@ pub fn visible(context: &mut MonsterContext, actor: Option<&ActorId>) -> bool {
     let target_actor = match actor {
         Some(actor) => actor.clone(),
         None => {
-            let Some(enemy) = context.entity().enemy.clone() else { return false };
+            let Some(enemy) = context.entity().enemy.clone() else {
+                return false;
+            };
             enemy
         }
     };
-    let Some(target) = context.game.host.bodies().read(&target_actor) else { return false };
+    let Some(target) = context.game.host.bodies().read(&target_actor) else {
+        return false;
+    };
     let self_actor = context.actor().clone();
     let origin = context.game.body_of(self_actor.clone()).origin;
     let view_height = context.entity().view_height;
     let start = vec3(origin.x, origin.y, origin.z + view_height as f32);
-    let Some(observed) = context.game.monster_target(Some(&target_actor)) else { return false };
-    let end = vec3(target.origin.x, target.origin.y, target.origin.z + observed.view_height as f32);
-    context.game.host.trace(&Q2TraceRequest {
-        start,
-        end,
-        bounds: None,
-        ignore: Some(self_actor),
-        mask: MASK_OPAQUE,
-        exclude: Vec::new(),
-    })
-    .fraction
+    let Some(observed) = context.game.monster_target(Some(&target_actor)) else {
+        return false;
+    };
+    let end = vec3(
+        target.origin.x,
+        target.origin.y,
+        target.origin.z + observed.view_height as f32,
+    );
+    context
+        .game
+        .host
+        .trace(&Q2TraceRequest {
+            start,
+            end,
+            bounds: None,
+            ignore: Some(self_actor),
+            mask: MASK_OPAQUE,
+            exclude: Vec::new(),
+        })
+        .fraction
         == 1.0
 }
 
 /// Whether an actor is in front (`inFront`).
 pub fn in_front(context: &mut MonsterContext, actor: &ActorId) -> bool {
-    let Some(body) = context.game.host.bodies().read(actor) else { return false };
+    let Some(body) = context.game.host.bodies().read(actor) else {
+        return false;
+    };
     let self_actor = context.actor().clone();
     let origin = context.game.body_of(self_actor);
     f64::from(dot3(
@@ -188,7 +235,11 @@ pub fn clear_shot(context: &mut MonsterContext, offset: Vec3) -> bool {
     let start = project_flash(
         context,
         offset,
-        if rerelease { Some(vec3(angles.x, ideal_yaw as f32, 0.0)) } else { Some(angles) },
+        if rerelease {
+            Some(vec3(angles.x, ideal_yaw as f32, 0.0))
+        } else {
+            Some(angles)
+        },
     );
     let blind = rerelease
         && (context.state().attack_state == MonsterAttackState::Blind
@@ -205,13 +256,7 @@ pub fn clear_shot(context: &mut MonsterContext, offset: Vec3) -> bool {
 }
 
 /// One clear-shot trace (`clear` in `clearShot`).
-fn clear_shot_attempt(
-    context: &mut MonsterContext,
-    start: Vec3,
-    mask: i32,
-    end: Vec3,
-    rerelease: bool,
-) -> bool {
+fn clear_shot_attempt(context: &mut MonsterContext, start: Vec3, mask: i32, end: Vec3, rerelease: bool) -> bool {
     let self_actor = context.actor().clone();
     let trace = context.game.host.trace(&Q2TraceRequest {
         start,
@@ -302,13 +347,19 @@ pub fn check_bottom(context: &mut MonsterContext, origin: Vec3) -> bool {
         vec3(maximum.x, minimum.y, support + direction),
         vec3(maximum.x, maximum.y, support + direction),
     ];
-    if corners.iter().all(|point| context.game.host.point_contents(*point) == 1) {
+    if corners
+        .iter()
+        .all(|point| context.game.host.point_contents(*point) == 1)
+    {
         return true;
     }
     let rerelease = context.game.options.edition == Q2Edition::Rerelease;
-    let center =
-        vec3((minimum.x + maximum.x) * 0.5, (minimum.y + maximum.y) * 0.5, support);
-    let start = if rerelease { vec3(origin.x, origin.y, support) } else { center };
+    let center = vec3((minimum.x + maximum.x) * 0.5, (minimum.y + maximum.y) * 0.5, support);
+    let start = if rerelease {
+        vec3(origin.x, origin.y, support)
+    } else {
+        center
+    };
     let mask = monster_solid_mask(context.game);
     let middle = context.game.host.trace(&Q2TraceRequest {
         start,
@@ -347,7 +398,10 @@ pub fn check_bottom(context: &mut MonsterContext, origin: Vec3) -> bool {
             start: point,
             end: vec3(point.x, point.y, point.z + direction * 36.0),
             bounds: if rerelease {
-                Some(Bounds { min: scale3(quadrant, -1.0), max: quadrant })
+                Some(Bounds {
+                    min: scale3(quadrant, -1.0),
+                    max: quadrant,
+                })
             } else {
                 None
             },
@@ -363,13 +417,7 @@ pub fn check_bottom(context: &mut MonsterContext, origin: Vec3) -> bool {
 }
 
 /// Step toward a yaw (`walkMove`).
-pub fn walk_move(
-    context: &mut MonsterContext,
-    yaw: f64,
-    distance: f64,
-    commit: bool,
-    relink: bool,
-) -> bool {
+pub fn walk_move(context: &mut MonsterContext, yaw: f64, distance: f64, commit: bool, relink: bool) -> bool {
     let moved = source_move_step(context, yaw, distance, commit, relink);
     if commit && relink {
         context.consume_source_blocked();
@@ -378,13 +426,7 @@ pub fn walk_move(
 }
 
 /// One source movement step (`sourceMoveStep`).
-fn source_move_step(
-    context: &mut MonsterContext,
-    yaw: f64,
-    distance: f64,
-    commit: bool,
-    relink: bool,
-) -> bool {
+fn source_move_step(context: &mut MonsterContext, yaw: f64, distance: f64, commit: bool, relink: bool) -> bool {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
     let locomotion = context.state().locomotion;
@@ -443,10 +485,17 @@ fn source_move_step(
             return false;
         }
     }
-    let support_offset = if ceiling { body.bounds.max.z - 1.0 } else { body.bounds.min.z + 1.0 };
+    let support_offset = if ceiling {
+        body.bounds.max.z - 1.0
+    } else {
+        body.bounds.min.z + 1.0
+    };
     let feet = vec3(body.origin.x, body.origin.y, body.origin.z + support_offset);
     if context.game.host.point_contents(feet) & MASK_WATER == 0
-        && context.game.host.point_contents(vec3(trace.end.x, trace.end.y, trace.end.z + support_offset))
+        && context
+            .game
+            .host
+            .point_contents(vec3(trace.end.x, trace.end.y, trace.end.z + support_offset))
             & MASK_WATER
             != 0
     {
@@ -533,8 +582,7 @@ fn fly_move_step(
                 context.entity_mut().goal = enemy;
             }
             let goal = context.entity().goal.clone();
-            let goal_body =
-                goal.as_ref().and_then(|goal| context.game.host.bodies().read(goal));
+            let goal_body = goal.as_ref().and_then(|goal| context.game.host.bodies().read(goal));
             if let Some(goal_body) = goal_body {
                 let dz = f64::from(body.origin.z - goal_body.origin.z);
                 let stride = if context.game.options.edition == Q2Edition::Rerelease {
@@ -547,8 +595,7 @@ fn fly_move_step(
                     if dz > 40.0 {
                         end.z -= stride as f32;
                     }
-                    let swim_shallow =
-                        context.state().locomotion == MonsterLocomotion::Swim && !deep;
+                    let swim_shallow = context.state().locomotion == MonsterLocomotion::Swim && !deep;
                     if dz < 30.0 && !swim_shallow {
                         end.z += stride as f32;
                     }
@@ -574,12 +621,13 @@ fn fly_move_step(
             mask,
             exclude: Vec::new(),
         });
-        let enters_water = context.game.host.point_contents(vec3(
-            trace.end.x,
-            trace.end.y,
-            trace.end.z + body.bounds.min.z + 1.0,
-        )) & MASK_WATER
-            != 0;
+        let enters_water =
+            context
+                .game
+                .host
+                .point_contents(vec3(trace.end.x, trace.end.y, trace.end.z + body.bounds.min.z + 1.0))
+                & MASK_WATER
+                != 0;
         let locomotion = context.state().locomotion;
         if locomotion == MonsterLocomotion::Fly && !wet && enters_water
             || locomotion == MonsterLocomotion::Swim && !deep && !enters_water
@@ -672,7 +720,11 @@ pub fn chase_direction(context: &mut MonsterContext, goal: Vec3, distance: f64) 
     };
     if x != -1.0 && y != -1.0 {
         let diagonal = if x == 0.0 {
-            if y == 90.0 { 45.0 } else { 315.0 }
+            if y == 90.0 {
+                45.0
+            } else {
+                315.0
+            }
         } else if y == 90.0 {
             135.0
         } else {
@@ -684,8 +736,11 @@ pub fn chase_direction(context: &mut MonsterContext, goal: Vec3, distance: f64) 
     }
     let rogue = context.source_combat_rules() == SourceCombatMode::Rogue;
     let direction_roll = (context.game.random() * 4.0).floor() as i32;
-    if (if rogue { direction_roll & 1 != 0 } else { direction_roll != 0 })
-        || delta.y.abs() > delta.x.abs()
+    if (if rogue {
+        direction_roll & 1 != 0
+    } else {
+        direction_roll != 0
+    }) || delta.y.abs() > delta.x.abs()
     {
         std::mem::swap(&mut x, &mut y);
     }
@@ -696,11 +751,7 @@ pub fn chase_direction(context: &mut MonsterContext, goal: Vec3, distance: f64) 
         return true;
     }
     let actor = context.actor().clone();
-    if rogue
-        && is_live(context, &actor)
-        && health(context.game, Some(&actor)) > 0.0
-        && context.blocked(distance)
-    {
+    if rogue && is_live(context, &actor) && health(context.game, Some(&actor)) > 0.0 && context.blocked(distance) {
         return true;
     }
     if old != -1.0 && step_direction(context, old, distance) {
@@ -708,7 +759,11 @@ pub fn chase_direction(context: &mut MonsterContext, goal: Vec3, distance: f64) 
     }
     let descending = (context.game.random() * 2.0).floor() as i32 == 0;
     for index in 0..8 {
-        let yaw = if descending { 315.0 - index as f64 * 45.0 } else { index as f64 * 45.0 };
+        let yaw = if descending {
+            315.0 - index as f64 * 45.0
+        } else {
+            index as f64 * 45.0
+        };
         if yaw != turnaround && step_direction(context, yaw, distance) {
             return true;
         }
@@ -728,8 +783,7 @@ pub fn chase_direction(context: &mut MonsterContext, goal: Vec3, distance: f64) 
 /// Run frame AI (`runAi`).
 pub fn run_ai(context: &mut MonsterContext, ai: &MonsterAi, distance: f64) {
     let rogue = context.source_combat_rules() == SourceCombatMode::Rogue;
-    let extended =
-        context.game.options.edition == Q2Edition::Rerelease || rogue;
+    let extended = context.game.options.edition == Q2Edition::Rerelease || rogue;
     match ai {
         MonsterAi::None => {}
         MonsterAi::Turn => {
@@ -812,8 +866,7 @@ fn run_ai_charge(context: &mut MonsterContext, distance: f64, rogue: bool, exten
     if context.game.options.edition == Q2Edition::Rerelease {
         if let Some(enemy) = enemy.as_ref() {
             if visible(context, None) {
-                context.state_mut().blind_fire_target =
-                    add3(enemy.origin, scale3(enemy.velocity, -0.1));
+                context.state_mut().blind_fire_target = add3(enemy.origin, scale3(enemy.velocity, -0.1));
             }
         }
     }
@@ -829,7 +882,10 @@ fn run_ai_charge(context: &mut MonsterContext, distance: f64, rogue: bool, exten
             let tesla = rogue
                 && context.game.options.edition == Q2Edition::Classic
                 && enemy_actor.as_ref().is_some_and(|enemy| {
-                    context.game.entity(enemy).is_some_and(|target| target.classname == "tesla")
+                    context
+                        .game
+                        .entity(enemy)
+                        .is_some_and(|target| target.classname == "tesla")
                 });
             let side = if tesla {
                 0.0
@@ -880,8 +936,7 @@ fn run_ai_stand(context: &mut MonsterContext, distance: f64, rogue: bool) {
             if let Some(enemy) = enemy.as_ref() {
                 let actor = context.actor().clone();
                 let origin = context.game.body_of(actor).origin;
-                context.state_mut().ideal_yaw =
-                    f64::from(vector_angles(sub3(enemy.origin, origin)).y);
+                context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(enemy.origin, origin)).y);
             }
             let actor = context.actor().clone();
             let yaw = f64::from(context.game.body_of(actor).angles.y);
@@ -950,10 +1005,13 @@ fn run_ai_run(context: &mut MonsterContext, distance: f64, rogue: bool, extended
             let duck = context.game.host.now() + 0.5;
             context.state_mut().next_duck_time = duck;
             let owned = context.game.owned_of(actor.clone());
-            context.game.set_combat_traits(&owned, &crate::q2::support::contracts::CombatTraitChanges {
-                can_take_damage: Some(true),
-                ..crate::q2::support::contracts::CombatTraitChanges::default()
-            });
+            context.game.set_combat_traits(
+                &owned,
+                &crate::q2::support::contracts::CombatTraitChanges {
+                    can_take_damage: Some(true),
+                    ..crate::q2::support::contracts::CombatTraitChanges::default()
+                },
+            );
             let mut moved = context.game.body_of(actor.clone());
             let normal = context.state().normal_height;
             moved.bounds.max.z = normal as f32;
@@ -967,8 +1025,17 @@ fn run_ai_run(context: &mut MonsterContext, distance: f64, rogue: bool, extended
     if context.state().sound_target.is_some() {
         let actor = context.actor().clone();
         let origin = context.game.body_of(actor).origin;
-        let target = context.state().sound_target.as_ref().map(|sound| sound.origin).unwrap_or(origin);
-        let close = if context.game.options.edition == Q2Edition::Classic { 64.0 } else { 32.0 };
+        let target = context
+            .state()
+            .sound_target
+            .as_ref()
+            .map(|sound| sound.origin)
+            .unwrap_or(origin);
+        let close = if context.game.options.edition == Q2Edition::Classic {
+            64.0
+        } else {
+            32.0
+        };
         if f64::from(length3(sub3(origin, target))) < close {
             context.state_mut().stand_ground = true;
             context.state_mut().temporary_stand_ground = true;
@@ -1140,23 +1207,25 @@ fn set_flies(context: &mut MonsterContext, on: bool) {
     }
     let actor = context.actor().clone();
     let origin = context.game.body_of(actor.clone()).origin;
-    context.game.host_emit(crate::q2::foundation::host::Q2PresentationEvent::Sound(
-        crate::q2::foundation::host::Q2SoundEvent {
-            actor: Some(actor.clone()),
-            origin,
-            path: "infantry/inflies1.wav".to_string(),
-            channel: 0,
-            volume: 1.0,
-            attenuation: 1.0,
-            reliable: false,
-            loop_: if on {
-                crate::q2::foundation::host::Q2SoundLoop::Start
-            } else {
-                crate::q2::foundation::host::Q2SoundLoop::Stop
+    context
+        .game
+        .host_emit(crate::q2::foundation::host::Q2PresentationEvent::Sound(
+            crate::q2::foundation::host::Q2SoundEvent {
+                actor: Some(actor.clone()),
+                origin,
+                path: "infantry/inflies1.wav".to_string(),
+                channel: 0,
+                volume: 1.0,
+                attenuation: 1.0,
+                reliable: false,
+                loop_: if on {
+                    crate::q2::foundation::host::Q2SoundLoop::Start
+                } else {
+                    crate::q2::foundation::host::Q2SoundLoop::Stop
+                },
+                loop_owner: None,
             },
-            loop_owner: None,
-        },
-    ));
+        ));
     context.game.show(actor);
 }
 
@@ -1170,8 +1239,7 @@ pub fn monster_dead_think(context: &mut MonsterContext) {
         } else if flies_time.is_some_and(|time| time < context.game.host.now()) {
             let on = (context.entity().effects & 0x4000) == 0;
             set_flies(context, on);
-            context.state_mut().flies_time =
-                Some(if on { context.game.host.now() + 60.0 } else { f64::MAX });
+            context.state_mut().flies_time = Some(if on { context.game.host.now() + 60.0 } else { f64::MAX });
         }
     }
     let last_frame = context.state().current_move.last_frame;

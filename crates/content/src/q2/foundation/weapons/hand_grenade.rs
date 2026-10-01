@@ -110,9 +110,17 @@ pub fn calculate_hand_throw(input: HandThrowInput) -> HandProjectileSpec {
     let (start, direction) = (input.project)(
         angles,
         if rerelease {
-            Vec3 { x: 2.0, y: 0.0, z: -14.0 }
+            Vec3 {
+                x: 2.0,
+                y: 0.0,
+                z: -14.0,
+            }
         } else {
-            Vec3 { x: 8.0, y: 8.0, z: -8.0 }
+            Vec3 {
+                x: 8.0,
+                y: 8.0,
+                z: -8.0,
+            }
         },
     );
     let fuse = input.fuse_deadline - input.now;

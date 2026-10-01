@@ -7,8 +7,8 @@ use qa_core::identity::ActorId;
 use crate::q2::foundation::host::{Q2GameServices, Q2PresentationEvent};
 
 use super::types::{
-    Q2CtfElection, Q2CtfElectionKind, Q2CtfEvent, Q2CtfGhost, Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry,
-    Q2CtfPlayingTeam, Q2CtfPrintLevel, ctf_name, ctf_player, ctf_print, ctf_team_name,
+    ctf_name, ctf_player, ctf_print, ctf_team_name, Q2CtfElection, Q2CtfElectionKind, Q2CtfEvent, Q2CtfGhost,
+    Q2CtfHooks, Q2CtfMatchPhase, Q2CtfMenuAction, Q2CtfMenuEntry, Q2CtfPlayingTeam, Q2CtfPrintLevel,
 };
 
 /// CTF match actions (`Q2CtfMatchActions`).
@@ -118,7 +118,12 @@ impl Q2CtfMatch {
             },
         );
         ctf_player(game, &entity).ghost_code = Some(code);
-        ctf_print(game, &format!("Your ghost code is **** {code} ****\n"), Some(entity.clone()), Q2CtfPrintLevel::Chat);
+        ctf_print(
+            game,
+            &format!("Your ghost code is **** {code} ****\n"),
+            Some(entity.clone()),
+            Q2CtfPrintLevel::Chat,
+        );
         ctf_print(
             game,
             &format!("If you lose connection, rejoin with your score intact by typing \"ghost {code}\".\n"),
@@ -174,7 +179,12 @@ impl Q2CtfMatch {
             player.score = ghost.score;
         }
         let name = ctf_name(game, &entity);
-        ctf_print(game, &format!("{name} has been reinstated to {} team.\n", ctf_team_name(ghost.team)), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} has been reinstated to {} team.\n", ctf_team_name(ghost.team)),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         true
     }
 
@@ -185,12 +195,21 @@ impl Q2CtfMatch {
             (state.team, state.ready)
         };
         let phase = game.ctf.match_state.phase;
-        if team == 0 || ready && phase != Q2CtfMatchPhase::Setup || !ready && phase != Q2CtfMatchPhase::Setup && phase != Q2CtfMatchPhase::Pregame || is_ready == ready {
+        if team == 0
+            || ready && phase != Q2CtfMatchPhase::Setup
+            || !ready && phase != Q2CtfMatchPhase::Setup && phase != Q2CtfMatchPhase::Pregame
+            || is_ready == ready
+        {
             return false;
         }
         ctf_player(game, &entity).ready = ready;
         let name = ctf_name(game, &entity);
-        ctf_print(game, &format!("{name} is {}.\n", if ready { "ready" } else { "no longer ready" }), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} is {}.\n", if ready { "ready" } else { "no longer ready" }),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         if !ready && phase == Q2CtfMatchPhase::Pregame {
             game.ctf.match_state.phase = Q2CtfMatchPhase::Setup;
             let setup = game.ctf.rules.setup_minutes;
@@ -220,7 +239,12 @@ impl Q2CtfMatch {
                 game.ctf.match_state.phase = Q2CtfMatchPhase::Pregame;
                 let start = game.ctf.rules.start_seconds;
                 game.ctf.match_state.match_time = game.now() + start;
-                ctf_print(game, "All players are ready. Match starting.\n", None, Q2CtfPrintLevel::Chat);
+                ctf_print(
+                    game,
+                    "All players are ready. Match starting.\n",
+                    None,
+                    Q2CtfPrintLevel::Chat,
+                );
             }
         }
         true
@@ -285,7 +309,9 @@ impl Q2CtfMatch {
         let mut two = 0;
         for actor in game.host.players() {
             let team = game.ctf.states.get(&actor).map(|state| state.team);
-            let score = (self.hooks.player)(actor.clone(), game).map(|player| player.score).unwrap_or(0);
+            let score = (self.hooks.player)(actor.clone(), game)
+                .map(|player| player.score)
+                .unwrap_or(0);
             if team == Some(1) {
                 one += score;
             } else if team == Some(2) {
@@ -327,7 +353,13 @@ impl Q2CtfMatch {
     }
 
     /// Begin an election (`beginElection`).
-    pub fn begin_election(&self, entity: ActorId, game: &mut Q2GameServices, kind: Q2CtfElectionKind, map: &str) -> bool {
+    pub fn begin_election(
+        &self,
+        entity: ActorId,
+        game: &mut Q2GameServices,
+        kind: Q2CtfElectionKind,
+        map: &str,
+    ) -> bool {
         if game.ctf.match_state.election.is_some() {
             return false;
         }
@@ -364,7 +396,12 @@ impl Q2CtfMatch {
             needed,
             expires: game.now() + 20.0,
         });
-        ctf_print(game, &format!("{message}\nType YES or NO to vote on this request.\n"), None, Q2CtfPrintLevel::Chat);
+        ctf_print(
+            game,
+            &format!("{message}\nType YES or NO to vote on this request.\n"),
+            None,
+            Q2CtfPrintLevel::Chat,
+        );
         true
     }
 
@@ -385,7 +422,13 @@ impl Q2CtfMatch {
                 entry.votes += 1;
             }
         }
-        let votes = game.ctf.match_state.election.as_ref().map(|entry| entry.votes).unwrap_or(0);
+        let votes = game
+            .ctf
+            .match_state
+            .election
+            .as_ref()
+            .map(|entry| entry.votes)
+            .unwrap_or(0);
         if votes >= election.needed {
             game.ctf.match_state.election = None;
             match election.kind {
@@ -397,13 +440,23 @@ impl Q2CtfMatch {
                             state.admin = true;
                         }
                         let name = ctf_name(game, &election.target);
-                        ctf_print(game, &format!("{name} has become an admin.\n"), None, Q2CtfPrintLevel::High);
+                        ctf_print(
+                            game,
+                            &format!("{name} has become an admin.\n"),
+                            None,
+                            Q2CtfPrintLevel::High,
+                        );
                     }
                 }
             }
         } else {
             let left = 0.max((election.expires - game.now()).trunc() as i32);
-            ctf_print(game, &format!("Votes: {votes} Needed: {} Time left: {left}s\n", election.needed), None, Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                &format!("Votes: {votes} Needed: {} Time left: {left}s\n", election.needed),
+                None,
+                Q2CtfPrintLevel::High,
+            );
         }
         true
     }
@@ -411,9 +464,20 @@ impl Q2CtfMatch {
     /// Check match rules (`checkRules`).
     pub fn check_rules(&self, game: &mut Q2GameServices) -> bool {
         let now = game.now();
-        if game.ctf.match_state.election.as_ref().is_some_and(|election| election.expires <= now) {
+        if game
+            .ctf
+            .match_state
+            .election
+            .as_ref()
+            .is_some_and(|election| election.expires <= now)
+        {
             game.ctf.match_state.election = None;
-            ctf_print(game, "Election timed out and has been cancelled.\n", None, Q2CtfPrintLevel::Chat);
+            ctf_print(
+                game,
+                "Election timed out and has been cancelled.\n",
+                None,
+                Q2CtfPrintLevel::Chat,
+            );
         }
         let phase = game.ctf.match_state.phase;
         if phase == Q2CtfMatchPhase::None {
@@ -464,7 +528,11 @@ impl Q2CtfMatch {
                     }
                 }
             }
-            let prefix = if game.ctf.rules.competition < 3 { format!("{clock} ") } else { String::new() };
+            let prefix = if game.ctf.rules.competition < 3 {
+                format!("{clock} ")
+            } else {
+                String::new()
+            };
             return format!("{prefix}SETUP: {waiting} not ready");
         }
         if phase == Q2CtfMatchPhase::Pregame {
@@ -479,11 +547,18 @@ impl Q2CtfMatch {
     /// Open admin controls (`admin`).
     pub fn admin(&self, entity: ActorId, game: &mut Q2GameServices, password: &str) -> bool {
         let is_admin = ctf_player(game, &entity).admin;
-        let password_ok = !password.is_empty() && !game.ctf.rules.admin_password.is_empty() && game.ctf.rules.admin_password == password;
+        let password_ok = !password.is_empty()
+            && !game.ctf.rules.admin_password.is_empty()
+            && game.ctf.rules.admin_password == password;
         if !is_admin && password_ok {
             ctf_player(game, &entity).admin = true;
             let name = ctf_name(game, &entity);
-            ctf_print(game, &format!("{name} has become an admin.\n"), None, Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                &format!("{name} has become an admin.\n"),
+                None,
+                Q2CtfPrintLevel::High,
+            );
         }
         if !ctf_player(game, &entity).admin {
             return self.begin_election(entity, game, Q2CtfElectionKind::Admin, "");
@@ -495,12 +570,23 @@ impl Q2CtfMatch {
                 actor: entity,
                 title: "Administration Menu".to_string(),
                 entries: vec![
-                    Q2CtfMenuEntry { label: "Settings".to_string(), action: Some(Q2CtfMenuAction::AdminSettings) },
                     Q2CtfMenuEntry {
-                        label: if phase == Q2CtfMatchPhase::Setup { "Force start match" } else { "Switch to match setup" }.to_string(),
+                        label: "Settings".to_string(),
+                        action: Some(Q2CtfMenuAction::AdminSettings),
+                    },
+                    Q2CtfMenuEntry {
+                        label: if phase == Q2CtfMatchPhase::Setup {
+                            "Force start match"
+                        } else {
+                            "Switch to match setup"
+                        }
+                        .to_string(),
                         action: Some(Q2CtfMenuAction::AdminStart),
                     },
-                    Q2CtfMenuEntry { label: "Cancel".to_string(), action: Some(Q2CtfMenuAction::Close) },
+                    Q2CtfMenuEntry {
+                        label: "Cancel".to_string(),
+                        action: Some(Q2CtfMenuAction::Close),
+                    },
                 ],
             },
         );
@@ -546,7 +632,12 @@ impl Q2CtfMatch {
             | if values.quad_drop { 16384 } else { 0 };
         (self.hooks.set_deathmatch_flags)(game, flags);
         let name = ctf_name(game, &entity);
-        ctf_print(game, &format!("{name} changed match settings.\n"), None, Q2CtfPrintLevel::High);
+        ctf_print(
+            game,
+            &format!("{name} changed match settings.\n"),
+            None,
+            Q2CtfPrintLevel::High,
+        );
         true
     }
 
@@ -566,15 +657,32 @@ impl Q2CtfMatch {
             instant_weapons: rules.instant_weapons,
             match_lock: rules.match_lock,
         };
-        (self.hooks.emit)(game, Q2CtfEvent::AdminSettings { actor: entity, settings });
+        (self.hooks.emit)(
+            game,
+            Q2CtfEvent::AdminSettings {
+                actor: entity,
+                settings,
+            },
+        );
     }
 
     /// Warp to a map (`warp`).
     pub fn warp(&self, entity: ActorId, game: &mut Q2GameServices, requested: &str) -> bool {
-        let map = game.ctf.rules.warp_list.iter().find(|value| value.to_lowercase() == requested.to_lowercase()).cloned();
+        let map = game
+            .ctf
+            .rules
+            .warp_list
+            .iter()
+            .find(|value| value.to_lowercase() == requested.to_lowercase())
+            .cloned();
         let Some(map) = map else {
             let list = game.ctf.rules.warp_list.join(" ");
-            ctf_print(game, &format!("Available levels: {list}\n"), Some(entity), Q2CtfPrintLevel::High);
+            ctf_print(
+                game,
+                &format!("Available levels: {list}\n"),
+                Some(entity),
+                Q2CtfPrintLevel::High,
+            );
             return false;
         };
         if ctf_player(game, &entity).admin {
@@ -591,7 +699,11 @@ impl Q2CtfMatch {
         }
         let slot = number.parse::<i32>().unwrap_or(0) - 1;
         for actor in game.host.players() {
-            if (self.hooks.player)(actor.clone(), game).map(|player| player.slot).unwrap_or(-2) == slot {
+            if (self.hooks.player)(actor.clone(), game)
+                .map(|player| player.slot)
+                .unwrap_or(-2)
+                == slot
+            {
                 (self.hooks.kick)(actor, game);
                 return true;
             }

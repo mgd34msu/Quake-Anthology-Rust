@@ -7,11 +7,12 @@
 use std::collections::HashMap;
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
+use super::super::items::{add_player_power_cells, flush_player_power_cells};
 use super::ballistics::{
-    NoiseKind, check_dodge, fire_bfg, fire_blaster, fire_bullet, fire_grenade, fire_hit,
-    fire_rail, fire_rocket, fire_shotgun, player_noise, register_ballistics_callbacks,
+    check_dodge, fire_bfg, fire_blaster, fire_bullet, fire_grenade, fire_hit, fire_rail, fire_rocket, fire_shotgun,
+    player_noise, register_ballistics_callbacks, NoiseKind,
 };
 use super::checkpoint::{
     Q2BlasterCauseEntry, Q2NoiseCheckpoint, Q2SilencerEntry, Q2WeaponInputEntry, Q2WeaponNoiseEntry,
@@ -19,32 +20,28 @@ use super::checkpoint::{
 };
 use super::damage::q2_weapon_damage_multiplier;
 use super::generic_frame::{
-    ClassicFrameHooks, GenericFrameState, Q2ClassicFrameInput, Q2GenericDefinition,
-    Q2RereleaseFrameInput, RereleaseFrameHooks, millisecond_sum, step_q2_classic_frame,
-    step_q2_rerelease_frame,
+    millisecond_sum, step_q2_classic_frame, step_q2_rerelease_frame, ClassicFrameHooks, GenericFrameState,
+    Q2ClassicFrameInput, Q2GenericDefinition, Q2RereleaseFrameInput, RereleaseFrameHooks,
 };
-use super::super::items::{add_player_power_cells, flush_player_power_cells};
 use super::hand_grenade::{
-    HandGrenadeTempo, HandProjectileSpec, HandThrowInput, calculate_hand_throw, hand_deadline,
-    hand_fuse_deadline, hand_recovery_seconds,
+    calculate_hand_throw, hand_deadline, hand_fuse_deadline, hand_recovery_seconds, HandGrenadeTempo,
+    HandProjectileSpec, HandThrowInput,
 };
 use super::presentation::{
-    Q2AnimationRateInput, Q2PowerupSoundInput, q2_attack_frames, q2_powerup_sound,
-    q2_reverse_frames, q2_weapon_animation_rate, set_q2_weapon_recoil,
+    q2_attack_frames, q2_powerup_sound, q2_reverse_frames, q2_weapon_animation_rate, set_q2_weapon_recoil,
+    Q2AnimationRateInput, Q2PowerupSoundInput,
 };
-use super::projection::{Q2ActorView, project_q2_actor};
+use super::projection::{project_q2_actor, Q2ActorView};
 use super::types::{
-    LagToken, Mod, PLAYER_CONTENTS, Q2GrenadeAdjustment, Q2HandReservation, Q2NoiseRecord,
-    Q2WeaponDefinition, Q2WeaponEvent, Q2WeaponInput, Q2WeaponName, Q2WeaponOwner, Q2WeaponPhase,
-    Q2WeaponState, PlayerAnimationPriority, PrimaryHandoff, WeaponBeamEffect, WeaponEngine,
-    WeaponHand,
+    LagToken, Mod, PlayerAnimationPriority, PrimaryHandoff, Q2GrenadeAdjustment, Q2HandReservation, Q2NoiseRecord,
+    Q2WeaponDefinition, Q2WeaponEvent, Q2WeaponInput, Q2WeaponName, Q2WeaponOwner, Q2WeaponPhase, Q2WeaponState,
+    WeaponBeamEffect, WeaponEngine, WeaponHand, PLAYER_CONTENTS,
 };
 use super::vectors::angle_vectors;
 use crate::contract::{InventoryEntry, ItemId};
 use crate::q2::foundation::checkpoint::{restore_q2_actor, save_q2_actor};
 use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop,
-    Q2TraceRequest,
+    Q2Edition, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
 };
 use crate::q2::support::contracts::TraceHit;
 
@@ -88,12 +85,7 @@ pub trait Q2WeaponExtension {
     ///
     /// The donor checks for a think hook and returns; `false` is the
     /// missing hook, `true` a handled frame.
-    fn think(
-        &mut self,
-        _context: &Q2WeaponContext,
-        _game: &mut Q2GameServices,
-        _state: &mut Q2WeaponState,
-    ) -> bool {
+    fn think(&mut self, _context: &Q2WeaponContext, _game: &mut Q2GameServices, _state: &mut Q2WeaponState) -> bool {
         false
     }
     /// Throw a held grenade, reporting whether the extension handled it.
@@ -234,11 +226,7 @@ pub fn weapon_flash(context: &Q2WeaponContext, game: &mut Q2GameServices, flash:
 
 /// Read ammo (`ammo`, shared with weapon extensions).
 pub fn weapon_ammo(context: &Q2WeaponContext, game: &mut Q2GameServices) -> f64 {
-    read_ammo(
-        game,
-        context.owner.actor.id(),
-        &context.definition,
-    )
+    read_ammo(game, context.owner.actor.id(), &context.definition)
 }
 
 /// Damage multiplier (`multiplier`, shared with weapon extensions).
@@ -247,21 +235,12 @@ pub fn weapon_multiplier(context: &Q2WeaponContext, game: &mut Q2GameServices) -
 }
 
 /// Handle missing ammo (`noAmmo`, shared with weapon extensions).
-pub fn weapon_no_ammo(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    sound: bool,
-) {
+pub fn weapon_no_ammo(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, sound: bool) {
     no_ammo(context, game, state, sound);
 }
 
 /// Consume ammo (`consume`, shared with weapon extensions).
-pub fn weapon_consume(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+pub fn weapon_consume(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     use_ammo(context, game, state);
 }
 
@@ -292,12 +271,7 @@ pub fn weapon_continues_attack(context: &Q2WeaponContext, state: &Q2WeaponState)
 }
 
 /// Set the loop sound (`setLoop`, shared with weapon extensions).
-pub fn weapon_set_loop(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    path: &str,
-) {
+pub fn weapon_set_loop(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, path: &str) {
     set_loop(context, game, state, path);
 }
 
@@ -307,20 +281,12 @@ pub fn weapon_powerup_sound(context: &Q2WeaponContext, game: &mut Q2GameServices
 }
 
 /// Step the classic frame (`genericClassic`, shared with weapon extensions).
-pub fn weapon_generic_classic(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+pub fn weapon_generic_classic(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     generic_classic(context, game, state);
 }
 
 /// Step the rerelease frame (`genericRerelease`, shared with weapon extensions).
-pub fn weapon_generic_rerelease(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+pub fn weapon_generic_rerelease(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     generic_rerelease(context, game, state);
 }
 
@@ -354,12 +320,7 @@ pub fn weapon_emit(game: &mut Q2GameServices, event: &Q2WeaponEvent) {
 }
 
 /// Begin lag compensation (`lagCompensation.begin`, shared with weapon extensions).
-pub fn weapon_lag_begin(
-    game: &mut Q2GameServices,
-    owner: &ActorId,
-    start: Vec3,
-    direction: Vec3,
-) -> Option<LagToken> {
+pub fn weapon_lag_begin(game: &mut Q2GameServices, owner: &ActorId, start: Vec3, direction: Vec3) -> Option<LagToken> {
     lag_begin(game, owner, start, direction)
 }
 
@@ -369,11 +330,7 @@ pub fn weapon_lag_end(game: &mut Q2GameServices, token: Option<LagToken>) {
 }
 
 /// Target eligibility (`hooks.canTarget`, shared with weapon extensions).
-pub fn weapon_can_target(
-    game: &mut Q2GameServices,
-    attacker: Option<&ActorId>,
-    target: &ActorId,
-) -> bool {
+pub fn weapon_can_target(game: &mut Q2GameServices, attacker: Option<&ActorId>, target: &ActorId) -> bool {
     let mut engine = game.weapons.engine.take();
     let allowed = engine
         .as_mut()
@@ -403,7 +360,11 @@ fn with_weapon_state<R>(
     owner: &ActorId,
     f: impl FnOnce(&mut Q2GameServices, &mut Q2WeaponState) -> R,
 ) -> R {
-    let mut state = game.weapons.states.remove(owner).unwrap_or_else(|| Q2WeaponState::new(None));
+    let mut state = game
+        .weapons
+        .states
+        .remove(owner)
+        .unwrap_or_else(|| Q2WeaponState::new(None));
     let out = f(game, &mut state);
     game.weapons.states.insert(owner.clone(), state);
     out
@@ -426,13 +387,12 @@ fn read_ammo(game: &mut Q2GameServices, owner: &ActorId, definition: &Q2WeaponDe
 }
 
 /// Register a weapon extension (`registerExtension`).
-pub fn register_weapon_extension(
-    game: &mut Q2GameServices,
-    extension: Box<dyn Q2WeaponExtension>,
-) {
+pub fn register_weapon_extension(game: &mut Q2GameServices, extension: Box<dyn Q2WeaponExtension>) {
     register_ballistics_callbacks(game);
     let name = extension.definition().name.clone();
-    game.weapons.definitions.insert(name.clone(), extension.definition().clone());
+    game.weapons
+        .definitions
+        .insert(name.clone(), extension.definition().clone());
     game.weapons.extensions.insert(name, extension);
 }
 
@@ -469,12 +429,7 @@ fn use_ammo(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2
 }
 
 /// Consume counted ammo (`consume(context, count)`).
-fn use_ammo_count(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    count: f64,
-) {
+fn use_ammo_count(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, count: f64) {
     consume_ammo(context, game, state, count, true);
 }
 
@@ -489,7 +444,9 @@ fn consume_ammo(
     if infinite && context.input.infinite_ammo {
         return;
     }
-    let Some(ammo) = context.definition.ammo.clone() else { return };
+    let Some(ammo) = context.definition.ammo.clone() else {
+        return;
+    };
     if state.hand_reservation != Q2HandReservation::None {
         return;
     }
@@ -525,13 +482,16 @@ pub fn animate_player(
     if !context.input.animate_player {
         return;
     }
-    weapon_emit(game, &Q2WeaponEvent::PlayerAnimation {
-        actor: context.owner.actor.id().clone(),
-        priority,
-        first,
-        last,
-        reset_time: context.rerelease,
-    });
+    weapon_emit(
+        game,
+        &Q2WeaponEvent::PlayerAnimation {
+            actor: context.owner.actor.id().clone(),
+            priority,
+            first,
+            last,
+            reset_time: context.rerelease,
+        },
+    );
 }
 
 /// Attack animation (`attackAnimation`).
@@ -573,11 +533,7 @@ fn powerup_sound(context: &Q2WeaponContext, game: &mut Q2GameServices) {
 }
 
 /// Animation frame time (`animationTime`).
-fn animation_time(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) -> f64 {
+fn animation_time(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) -> f64 {
     let rate = q2_weapon_animation_rate(&Q2AnimationRateInput {
         quick_switch: context.input.quick_switch,
         frame_seconds: game.host.frame_seconds(),
@@ -593,10 +549,13 @@ fn animation_time(
     } else {
         native
     };
-    state.gun_rate = if interval == native { f64::from(rate) } else { 1.0 / interval };
+    state.gun_rate = if interval == native {
+        f64::from(rate)
+    } else {
+        1.0 / interval
+    };
     interval
 }
-
 
 /// Prepare a drop (`prepareDrop`).
 fn prepare_drop(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
@@ -628,40 +587,52 @@ fn project_weapon(
 
 /// Present the view weapon (`present`).
 fn present(owner: &Q2WeaponOwner, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
-    let definition = state.weapon.as_ref().and_then(|weapon| game.weapons.definitions.get(weapon));
+    let definition = state
+        .weapon
+        .as_ref()
+        .and_then(|weapon| game.weapons.definitions.get(weapon));
     let (kick_origin, kick_angles) =
         super::presentation::q2_weapon_recoil(state, game.options.edition, game.host.now());
-    weapon_emit(game, &Q2WeaponEvent::ViewWeapon {
-        actor: owner.actor.id().clone(),
-        weapon: state.weapon.clone(),
-        model: if state.primary_handoff == PrimaryHandoff::Holstered {
-            String::new()
-        } else {
-            state.view_model.clone().or_else(|| definition.map(|definition| definition.view_model.clone())).unwrap_or_default()
+    weapon_emit(
+        game,
+        &Q2WeaponEvent::ViewWeapon {
+            actor: owner.actor.id().clone(),
+            weapon: state.weapon.clone(),
+            model: if state.primary_handoff == PrimaryHandoff::Holstered {
+                String::new()
+            } else {
+                state
+                    .view_model
+                    .clone()
+                    .or_else(|| definition.map(|definition| definition.view_model.clone()))
+                    .unwrap_or_default()
+            },
+            player_model: definition.map(|definition| definition.player_model).unwrap_or(0),
+            frame: state.frame,
+            skin: state.view_skin,
+            rate: state.gun_rate,
+            kick_origin,
+            kick_angles,
         },
-        player_model: definition.map(|definition| definition.player_model).unwrap_or(0),
-        frame: state.frame,
-        skin: state.view_skin,
-        rate: state.gun_rate,
-        kick_origin,
-        kick_angles,
-    });
+    );
 }
 
 /// Fire the readied weapon (`fire`).
 fn fire_weapon(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     if game.weapons.extensions.contains_key(&context.definition.name) {
         let name = context.definition.name.clone();
-        let mut extension =
-            game.weapons.extensions.remove(&name).expect("weapon extension");
+        let mut extension = game.weapons.extensions.remove(&name).expect("weapon extension");
         extension.fire(context, game, state);
         game.weapons.extensions.insert(name, extension);
         return;
     }
     match context.definition.name.as_str() {
         "blaster" => {
-            let damage =
-                if context.rerelease || game.options.mode == Q2Mode::Deathmatch { 15.0 } else { 10.0 };
+            let damage = if context.rerelease || game.options.mode == Q2Mode::Deathmatch {
+                15.0
+            } else {
+                10.0
+            };
             fire_blaster_weapon(context, game, state, vec3(0.0, 0.0, 0.0), damage, false, 8);
             if !context.rerelease {
                 state.frame += 1;
@@ -762,15 +733,16 @@ impl RereleaseFrameHooks for FrameHooks<'_> {
 }
 
 /// Report no ammo (`noAmmo`).
-fn no_ammo(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    sound: bool,
-) {
+fn no_ammo(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, sound: bool) {
     let owner = context.owner.actor.id().clone();
     if sound && context.now >= state.empty_sound_time {
-        game.sound(&owner, "weapons/noammo.wav", if context.rerelease { 1 } else { 2 }, 1.0, 1.0);
+        game.sound(
+            &owner,
+            "weapons/noammo.wav",
+            if context.rerelease { 1 } else { 2 },
+            1.0,
+            1.0,
+        );
         state.empty_sound_time = context.now + 1.0;
     }
     state.pending.clone_from(&fallback_weapon(context, game));
@@ -787,28 +759,28 @@ fn fallback_weapon(context: &Q2WeaponContext, game: &mut Q2GameServices) -> Opti
         return None;
     }
     let order: &[&str] = if context.rerelease {
-                &[
-                    "railgun",
-                    "hyperblaster",
-                    "chaingun",
-                    "machinegun",
-                    "supershotgun",
-                    "shotgun",
-                    "rocketlauncher",
-                    "grenadelauncher",
-                    "blaster",
-                ]
-            } else {
-                &[
-                    "railgun",
-                    "hyperblaster",
-                    "chaingun",
-                    "machinegun",
-                    "supershotgun",
-                    "shotgun",
-                    "blaster",
-                ]
-            };
+        &[
+            "railgun",
+            "hyperblaster",
+            "chaingun",
+            "machinegun",
+            "supershotgun",
+            "shotgun",
+            "rocketlauncher",
+            "grenadelauncher",
+            "blaster",
+        ]
+    } else {
+        &[
+            "railgun",
+            "hyperblaster",
+            "chaingun",
+            "machinegun",
+            "supershotgun",
+            "shotgun",
+            "blaster",
+        ]
+    };
     for name in order {
         if let Some(found) = fallback_candidate(context, game, name) {
             return Some(found);
@@ -818,31 +790,21 @@ fn fallback_weapon(context: &Q2WeaponContext, game: &mut Q2GameServices) -> Opti
 }
 
 /// One fallback candidate.
-fn fallback_candidate(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    name: &str,
-) -> Option<Q2WeaponName> {
+fn fallback_candidate(context: &Q2WeaponContext, game: &mut Q2GameServices, name: &str) -> Option<Q2WeaponName> {
     let definition = require_definition(game, Some(&name.to_string()));
     let owner = context.owner.actor.id();
     if name != "blaster" && game.host.inventory().count(owner, &definition.item) == 0.0 {
         return None;
     }
-    if definition.ammo.as_ref().is_some_and(|ammo| {
-        game.host.inventory().count(owner, ammo) < f64::from(definition.quantity)
-    }) {
+    if definition
+        .ammo
+        .as_ref()
+        .is_some_and(|ammo| game.host.inventory().count(owner, ammo) < f64::from(definition.quantity))
+    {
         return None;
     }
     Some(name.to_string())
 }
-
-
-
-
-
-
-
-
 
 /// Keep attacking (`continuesAttack`).
 fn continues_attack(context: &Q2WeaponContext, state: &Q2WeaponState) -> bool {
@@ -855,12 +817,7 @@ fn spread_random(game: &mut Q2GameServices) -> f64 {
 }
 
 /// Set the weapon loop sound (`setLoop`).
-fn set_loop(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    path: &str,
-) {
+fn set_loop(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, path: &str) {
     if state.loop_sound == path {
         return;
     }
@@ -914,12 +871,7 @@ fn damage_multiplier(context: &Q2WeaponContext, game: &mut Q2GameServices) -> f6
 }
 
 /// Begin lag compensation (`hooks.lagCompensation.begin`).
-fn lag_begin(
-    game: &mut Q2GameServices,
-    owner: &ActorId,
-    start: Vec3,
-    direction: Vec3,
-) -> Option<LagToken> {
+fn lag_begin(game: &mut Q2GameServices, owner: &ActorId, start: Vec3, direction: Vec3) -> Option<LagToken> {
     let mut engine = game.weapons.engine.take();
     let token = engine
         .as_mut()
@@ -982,29 +934,17 @@ fn fire_blaster_weapon(
         start,
         direction,
         damage * multiplier,
-        if context.rerelease && !hyper {
-            1500.0
-        } else {
-            1000.0
-        },
+        if context.rerelease && !hyper { 1500.0 } else { 1000.0 },
         effects,
         hyper,
-        if hyper {
-            Mod::HYPERBLASTER
-        } else {
-            Mod::BLASTER
-        },
+        if hyper { Mod::HYPERBLASTER } else { Mod::BLASTER },
     );
     muzzle_flash(context, game, if hyper { 14 } else { 0 });
     player_noise(game, &owner, start, NoiseKind::Weapon);
 }
 
 /// Fire the hyperblaster (`hyperblaster`).
-fn fire_hyperblaster(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_hyperblaster(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     let damage = if game.options.mode == Q2Mode::Deathmatch {
         15.0
@@ -1014,37 +954,21 @@ fn fire_hyperblaster(
     if context.rerelease {
         state.frame = if state.frame > 20 { 6 } else { state.frame + 1 };
         if state.frame == 12 {
-            if read_ammo(game, &owner, &context.definition) > 0.0
-                && continues_attack(context, state)
-            {
+            if read_ammo(game, &owner, &context.definition) > 0.0 && continues_attack(context, state) {
                 state.frame = 6;
             } else {
                 game.sound(&owner, "weapons/hyprbd1a.wav", 0, 1.0, 1.0);
             }
         }
         let spinning = (6..=11).contains(&state.frame);
-        set_loop(
-            context,
-            game,
-            state,
-            if spinning {
-                "weapons/hyprbl1a.wav"
-            } else {
-                ""
-            },
-        );
+        set_loop(context, game, state, if spinning { "weapons/hyprbl1a.wav" } else { "" });
         if continues_attack(context, state) && spinning {
             if read_ammo(game, &owner, &context.definition) < 1.0 {
                 no_ammo(context, game, state, true);
                 return;
             }
-            let rotation =
-                f64::from(state.frame - 5) * 2.0 * std::f64::consts::PI / 6.0;
-            let offset = vec3(
-                (-4.0 * rotation.sin()) as f32,
-                (4.0 * rotation.cos()) as f32,
-                0.0,
-            );
+            let rotation = f64::from(state.frame - 5) * 2.0 * std::f64::consts::PI / 6.0;
+            let offset = vec3((-4.0 * rotation.sin()) as f32, (4.0 * rotation.cos()) as f32, 0.0);
             fire_blaster_weapon(
                 context,
                 game,
@@ -1068,13 +992,8 @@ fn fire_hyperblaster(
         if read_ammo(game, &owner, &context.definition) < 1.0 {
             no_ammo(context, game, state, true);
         } else {
-            let rotation =
-                f64::from(state.frame - 5) * 2.0 * std::f64::consts::PI / 6.0;
-            let offset = vec3(
-                (-4.0 * rotation.sin()) as f32,
-                0.0,
-                (4.0 * rotation.cos()) as f32,
-            );
+            let rotation = f64::from(state.frame - 5) * 2.0 * std::f64::consts::PI / 6.0;
+            let offset = vec3((-4.0 * rotation.sin()) as f32, 0.0, (4.0 * rotation.cos()) as f32);
             fire_blaster_weapon(
                 context,
                 game,
@@ -1082,11 +1001,7 @@ fn fire_hyperblaster(
                 offset,
                 damage,
                 true,
-                if state.frame == 6 || state.frame == 9 {
-                    64
-                } else {
-                    0
-                },
+                if state.frame == 6 || state.frame == 9 { 64 } else { 0 },
             );
             use_ammo(context, game, state);
             attack_animation(context, game, 1);
@@ -1103,11 +1018,7 @@ fn fire_hyperblaster(
 }
 
 /// Fire the machinegun (`machinegun`).
-fn fire_machinegun(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_machinegun(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     if !continues_attack(context, state) {
         state.machinegun_shots = 0;
@@ -1149,14 +1060,7 @@ fn fire_machinegun(
         }
         (vec3(ox as f32, oy as f32, oz as f32), angles)
     };
-    set_q2_weapon_recoil(
-        state,
-        game.options.edition,
-        context.now,
-        kick_origin,
-        kick_angles,
-        None,
-    );
+    set_q2_weapon_recoil(state, game.options.edition, context.now, kick_origin, kick_angles, None);
     let angles = if context.rerelease {
         context.input.angles
     } else {
@@ -1167,8 +1071,7 @@ fn fire_machinegun(
     } else {
         vec3(0.0, 8.0, -8.0)
     };
-    let (start, direction) =
-        project_weapon(&context.owner, game, &context.input, angles, offset);
+    let (start, direction) = project_weapon(&context.owner, game, &context.input, angles, offset);
     let token = if context.rerelease {
         lag_begin(game, &owner, start, direction)
     } else {
@@ -1198,11 +1101,7 @@ fn fire_machinegun(
 }
 
 /// Fire the chaingun (`chaingun`).
-fn fire_chaingun(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_chaingun(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     if context.rerelease && state.frame > 31 {
         state.frame = 5;
@@ -1216,10 +1115,7 @@ fn fire_chaingun(
             set_loop(context, game, state, "");
             return;
         }
-        if state.frame == 21
-            && continues_attack(context, state)
-            && read_ammo(game, &owner, &context.definition) > 0.0
-        {
+        if state.frame == 21 && continues_attack(context, state) && read_ammo(game, &owner, &context.definition) > 0.0 {
             state.frame = 15;
         } else {
             state.frame += 1;
@@ -1281,14 +1177,7 @@ fn fire_chaingun(
             vec3(ax as f32, ay as f32, az as f32),
         )
     };
-    set_q2_weapon_recoil(
-        state,
-        game.options.edition,
-        context.now,
-        kick_origin,
-        kick_angles,
-        None,
-    );
+    set_q2_weapon_recoil(state, game.options.edition, context.now, kick_origin, kick_angles, None);
     let initial = project_weapon(
         &context.owner,
         game,
@@ -1355,13 +1244,7 @@ fn fire_shotgun_weapon(
     } else {
         vec3(0.0, 8.0, -8.0)
     };
-    let (start, direction) = project_weapon(
-        &context.owner,
-        game,
-        &context.input,
-        context.input.angles,
-        offset,
-    );
+    let (start, direction) = project_weapon(&context.owner, game, &context.input, context.input.angles, offset);
     let forward = angle_vectors(context.input.angles).forward;
     set_q2_weapon_recoil(
         state,
@@ -1386,13 +1269,7 @@ fn fire_shotgun_weapon(
                 context.input.angles.z,
             );
             let (pellet_start, pellet_direction) = if context.rerelease {
-                project_weapon(
-                    &context.owner,
-                    game,
-                    &context.input,
-                    angles,
-                    vec3(0.0, 0.0, -8.0),
-                )
+                project_weapon(&context.owner, game, &context.input, angles, vec3(0.0, 0.0, -8.0))
             } else {
                 (start, angle_vectors(angles).forward)
             };
@@ -1434,11 +1311,7 @@ fn fire_shotgun_weapon(
 }
 
 /// Fire the grenade launcher (`grenadeLauncher`).
-fn fire_grenade_launcher(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_grenade_launcher(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     let angles = if context.rerelease {
         vec3(
@@ -1454,8 +1327,7 @@ fn fire_grenade_launcher(
     } else {
         vec3(8.0, 8.0, -8.0)
     };
-    let (start, direction) =
-        project_weapon(&context.owner, game, &context.input, angles, offset);
+    let (start, direction) = project_weapon(&context.owner, game, &context.input, angles, offset);
     let forward = angle_vectors(context.input.angles).forward;
     set_q2_weapon_recoil(
         state,
@@ -1467,8 +1339,7 @@ fn fire_grenade_launcher(
     );
     let multiplier = damage_multiplier(context, game);
     let adjustment = if context.rerelease {
-        let right =
-            (-0.9999999403953552 + game.random() * 1.9999999403953552) * 10.0;
+        let right = (-0.9999999403953552 + game.random() * 1.9999999403953552) * 10.0;
         let up = 200.0 + (-0.9999999403953552 + game.random() * 1.9999999403953552) * 10.0;
         Some(Q2GrenadeAdjustment {
             right,
@@ -1501,11 +1372,7 @@ fn fire_grenade_launcher(
 }
 
 /// Fire the rocket launcher (`rocketLauncher`).
-fn fire_rocket_launcher(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_rocket_launcher(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     let damage = 100.0 + (game.random() * 20.0).floor();
     let (start, direction) = project_weapon(
@@ -1544,11 +1411,7 @@ fn fire_rocket_launcher(
 }
 
 /// Fire the railgun (`railgun`).
-fn fire_railgun(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_railgun(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     let (start, direction) = project_weapon(
         &context.owner,
@@ -1598,11 +1461,7 @@ fn fire_railgun(
 }
 
 /// Fire the BFG (`bfg`).
-fn fire_bfg_weapon(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn fire_bfg_weapon(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let owner = context.owner.actor.id().clone();
     if state.frame == 9 {
         muzzle_flash(context, game, 12);
@@ -1667,15 +1526,8 @@ fn fire_bfg_weapon(
 }
 
 /// Throw a hand grenade (`throwGrenade`).
-fn throw_grenade_launch(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    held: bool,
-) {
-    if context.definition.name == "grenades"
-        && state.hand_reservation == Q2HandReservation::None
-    {
+fn throw_grenade_launch(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, held: bool) {
+    if context.definition.name == "grenades" && state.hand_reservation == Q2HandReservation::None {
         return;
     }
     let owner = context.owner.actor.id().clone();
@@ -1691,9 +1543,7 @@ fn throw_grenade_launch(
     let throw_owner = context.owner.clone();
     let throw_input = context.input.clone();
     let spec = {
-        let mut project = |angles: Vec3, offset: Vec3| {
-            project_weapon(&throw_owner, game, &throw_input, angles, offset)
-        };
+        let mut project = |angles: Vec3, offset: Vec3| project_weapon(&throw_owner, game, &throw_input, angles, offset);
         calculate_hand_throw(HandThrowInput {
             edition,
             angles: context.input.angles,
@@ -1740,7 +1590,6 @@ fn throw_grenade_launch(
     }
 }
 
-
 /// Weapon selection (`Q2WeaponSelection`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Q2WeaponSelection {
@@ -1758,12 +1607,20 @@ pub enum Q2WeaponSelection {
 
 /// Look up a weapon definition (`definition`).
 pub fn weapon_definition(game: &Q2GameServices, name: &str) -> Q2WeaponDefinition {
-    game.weapons.definitions.get(name).cloned().unwrap_or_else(|| panic!("Q2 weapon is not registered: {name}"))
+    game.weapons
+        .definitions
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("Q2 weapon is not registered: {name}"))
 }
 
 /// Look up a weapon definition by classname (`definitionFromClassname`).
 pub fn definition_from_classname(game: &Q2GameServices, classname: &str) -> Option<Q2WeaponDefinition> {
-    game.weapons.definitions.values().find(|definition| definition.classname == classname).cloned()
+    game.weapons
+        .definitions
+        .values()
+        .find(|definition| definition.classname == classname)
+        .cloned()
 }
 
 /// Registered weapon definitions (`registeredDefinitions`), sorted by name.
@@ -1785,7 +1642,10 @@ pub fn bind_player_weapon(game: &mut Q2GameServices, owner: &OwnedActor, state: 
 
 /// Build an owner handle with live view height.
 fn weapon_owner(game: &Q2GameServices, owner: &OwnedActor) -> Q2WeaponOwner {
-    Q2WeaponOwner { actor: owner.clone(), view_height: f64::from(game.require_entity(owner.id()).view_height) }
+    Q2WeaponOwner {
+        actor: owner.clone(),
+        view_height: f64::from(game.require_entity(owner.id()).view_height),
+    }
 }
 
 /// Build a weapon context (`context`).
@@ -1815,7 +1675,12 @@ pub fn request_weapon(
     name: &str,
     allow_empty: bool,
 ) -> Q2WeaponSelection {
-    let snapshot = game.weapons.states.get(owner.id()).cloned().expect("Q2 player weapon state is not bound");
+    let snapshot = game
+        .weapons
+        .states
+        .get(owner.id())
+        .cloned()
+        .expect("Q2 player weapon state is not bound");
     let mut name = name.to_string();
     let rules: Vec<(String, Q2WeaponSelectionRule)> = game
         .weapons
@@ -1853,26 +1718,34 @@ pub fn request_weapon(
 
 /// Request a holster (`requestHolster`).
 pub fn request_holster(game: &mut Q2GameServices, owner: &OwnedActor) {
-    let state = game.weapons.states.get_mut(owner.id()).expect("Q2 player weapon state is not bound");
+    let state = game
+        .weapons
+        .states
+        .get_mut(owner.id())
+        .expect("Q2 player weapon state is not bound");
     if state.primary_handoff != PrimaryHandoff::Active {
         return;
     }
-    state.primary_handoff = if state.weapon.is_none() { PrimaryHandoff::Holstered } else { PrimaryHandoff::Holstering };
+    state.primary_handoff = if state.weapon.is_none() {
+        PrimaryHandoff::Holstered
+    } else {
+        PrimaryHandoff::Holstering
+    };
     state.pending = None;
 }
 
 /// Whether the weapon is holstered (`isHolstered`).
 pub fn is_holstered(game: &Q2GameServices, owner: &ActorId) -> bool {
-    game.weapons.states.get(owner).expect("Q2 player weapon state is not bound").primary_handoff == PrimaryHandoff::Holstered
+    game.weapons
+        .states
+        .get(owner)
+        .expect("Q2 player weapon state is not bound")
+        .primary_handoff
+        == PrimaryHandoff::Holstered
 }
 
 /// Resume the primary weapon (`resumePrimary`).
-pub fn resume_primary(
-    game: &mut Q2GameServices,
-    owner: &OwnedActor,
-    input: &Q2WeaponInput,
-    name: Option<&str>,
-) {
+pub fn resume_primary(game: &mut Q2GameServices, owner: &OwnedActor, input: &Q2WeaponInput, name: Option<&str>) {
     if !game.weapons.states.contains_key(owner.id()) {
         panic!("Q2 player weapon state is not bound");
     }
@@ -1897,8 +1770,16 @@ fn resume_primary_inner(
     }
     let holder = weapon_owner(game, owner);
     let requested = name.map(str::to_string).or_else(|| state.weapon.clone());
-    let definition = requested.as_ref().and_then(|requested| game.weapons.definitions.get(requested).cloned());
-    let alive = game.host.combat().read(owner.id()).map(|combat| combat.health).unwrap_or(0.0) > 0.0;
+    let definition = requested
+        .as_ref()
+        .and_then(|requested| game.weapons.definitions.get(requested).cloned());
+    let alive = game
+        .host
+        .combat()
+        .read(owner.id())
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        > 0.0;
     state.pending = None;
     if alive {
         let ready = match definition {
@@ -1915,7 +1796,13 @@ fn resume_primary_inner(
             _ => false,
         };
         if !ready {
-            match weapon_context(game, &holder, state, input, super::ballistics::silencer_shots(game, owner.id()) > 0) {
+            match weapon_context(
+                game,
+                &holder,
+                state,
+                input,
+                super::ballistics::silencer_shots(game, owner.id()) > 0,
+            ) {
                 Some(context) => no_ammo(&context, game, state, false),
                 None => state.pending = Some("blaster".to_string()),
             }
@@ -1930,7 +1817,11 @@ pub fn can_drop_weapon(game: &mut Q2GameServices, owner: &OwnedActor, name: &str
         return false;
     }
     let definition = weapon_definition(game, name);
-    let state = game.weapons.states.get(owner.id()).expect("Q2 player weapon state is not bound");
+    let state = game
+        .weapons
+        .states
+        .get(owner.id())
+        .expect("Q2 player weapon state is not bound");
     let count = game.host.inventory().count(owner.id(), &definition.item);
     count > 0.0 && !((state.weapon.as_deref() == Some(name) || state.pending.as_deref() == Some(name)) && count == 1.0)
 }
@@ -1947,19 +1838,21 @@ pub fn tick_player_weapon(game: &mut Q2GameServices, owner: &OwnedActor, input: 
 }
 
 /// Run the weapon turn with live state (`tick`).
-fn tick_inner(
-    game: &mut Q2GameServices,
-    owner: &OwnedActor,
-    input: &Q2WeaponInput,
-    state: &mut Q2WeaponState,
-) {
+fn tick_inner(game: &mut Q2GameServices, owner: &OwnedActor, input: &Q2WeaponInput, state: &mut Q2WeaponState) {
     let now = game.host.now();
     state.latched_attack |= input.latched_attack;
     if input.spectator {
         return;
     }
     let holder = weapon_owner(game, owner);
-    if game.host.combat().read(owner.id()).map(|combat| combat.health).unwrap_or(0.0) < 1.0 {
+    if game
+        .host
+        .combat()
+        .read(owner.id())
+        .map(|combat| combat.health)
+        .unwrap_or(0.0)
+        < 1.0
+    {
         if state.grenade_time != 0.0
             && (if state.weapon.as_deref() == Some("grenades") {
                 state.hand_reservation != Q2HandReservation::None
@@ -1997,7 +1890,12 @@ fn tick_inner(
     if game.weapons.source_rules == Some(super::WeaponSourceRules::Lmctf) {
         let silenced = super::ballistics::silencer_shots(game, owner.id()) > 0;
         if let Some(context) = weapon_context(game, &holder, state, input, silenced) {
-            let post = game.weapons.match_hooks.lmctf.expect("lmctf weapon hooks").post_native_think;
+            let post = game
+                .weapons
+                .match_hooks
+                .lmctf
+                .expect("lmctf weapon hooks")
+                .post_native_think;
             if post(&context, game) {
                 run_weapon_think(game, &holder, state, input, classic_silenced);
             }
@@ -2079,7 +1977,10 @@ fn extension_think(
 
 /// Whether an extension implements the held hook.
 fn extension_has_held(game: &Q2GameServices, name: &str) -> bool {
-    game.weapons.extensions.get(name).is_some_and(|extension| extension.has_held())
+    game.weapons
+        .extensions
+        .get(name)
+        .is_some_and(|extension| extension.has_held())
 }
 
 /// Fire a held throw (`fireHeld`).
@@ -2097,15 +1998,15 @@ fn fire_held(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q
 }
 
 /// Change the weapon (`changeWeapon`).
-fn change_weapon(
-    owner: &Q2WeaponOwner,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    input: &Q2WeaponInput,
-) {
+fn change_weapon(owner: &Q2WeaponOwner, game: &mut Q2GameServices, state: &mut Q2WeaponState, input: &Q2WeaponInput) {
     let rerelease = game.options.edition == Q2Edition::Rerelease;
     let actor = owner.actor.id().clone();
-    let health = game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0);
+    let health = game
+        .host
+        .combat()
+        .read(&actor)
+        .map(|combat| combat.health)
+        .unwrap_or(0.0);
     if state.primary_handoff == PrimaryHandoff::Active
         && rerelease
         && health > 0.0
@@ -2120,7 +2021,10 @@ fn change_weapon(
         } else {
             rerelease
                 || state.primary_handoff == PrimaryHandoff::Holstering
-                    && state.weapon.as_ref().is_some_and(|weapon| extension_has_held(game, weapon))
+                    && state
+                        .weapon
+                        .as_ref()
+                        .is_some_and(|weapon| extension_has_held(game, weapon))
         };
         if flush {
             let silenced = super::ballistics::silencer_shots(game, &actor) > 0;
@@ -2189,7 +2093,12 @@ fn shell_context(
         .weapon
         .as_ref()
         .and_then(|weapon| game.weapons.definitions.get(weapon))
-        .or_else(|| state.pending.as_ref().and_then(|pending| game.weapons.definitions.get(pending)))
+        .or_else(|| {
+            state
+                .pending
+                .as_ref()
+                .and_then(|pending| game.weapons.definitions.get(pending))
+        })
         .or_else(|| game.weapons.definitions.get("blaster"))
         .expect("weapon definition")
         .clone();
@@ -2204,11 +2113,7 @@ fn shell_context(
 }
 
 /// Reserve a hand grenade (`reserveHandGrenade`).
-fn reserve_hand_grenade(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) -> bool {
+fn reserve_hand_grenade(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) -> bool {
     if state.hand_reservation != Q2HandReservation::None {
         return false;
     }
@@ -2224,7 +2129,11 @@ fn reserve_hand_grenade(
     }
     let before = read_ammo(game, &owner, &context.definition);
     let owned = game.owned_of(owner.clone());
-    if !game.host.inventory().consume(&owned, &"q2:ammo_grenades".to_string(), 1.0) {
+    if !game
+        .host
+        .inventory()
+        .consume(&owned, &"q2:ammo_grenades".to_string(), 1.0)
+    {
         return false;
     }
     state.hand_reservation = Q2HandReservation::Finite;
@@ -2239,11 +2148,7 @@ fn reserve_hand_grenade(
 }
 
 /// Cancel hand preparation (`cancelHandPreparation`).
-fn cancel_hand_preparation(
-    owner: &Q2WeaponOwner,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn cancel_hand_preparation(owner: &Q2WeaponOwner, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     let reservation = std::mem::replace(&mut state.hand_reservation, Q2HandReservation::None);
     if reservation == Q2HandReservation::Finite
         && state.grenade_time == 0.0
@@ -2257,7 +2162,9 @@ fn cancel_hand_preparation(
             .find(|entry| entry.item == "q2:ammo_grenades")
             .expect("Reserved hand grenade lost its canonical inventory entry");
         let count = entry.count + 1.0;
-        game.host.inventory().configure(&owner.actor, &InventoryEntry { count, ..entry });
+        game.host
+            .inventory()
+            .configure(&owner.actor, &InventoryEntry { count, ..entry });
         ammo_changed(game, owner.actor.id(), &"q2:ammo_grenades".to_string());
     }
 }
@@ -2280,11 +2187,7 @@ fn generic_classic(context: &Q2WeaponContext, game: &mut Q2GameServices, state: 
 }
 
 /// Run one classic generic frame (`genericClassicFrame`).
-fn generic_classic_frame(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-) {
+fn generic_classic_frame(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     if state.primary_handoff == PrimaryHandoff::Holstered {
         return;
     }
@@ -2296,7 +2199,11 @@ fn generic_classic_frame(
         attack: context.input.attack,
         change_requested: state.pending.is_some() || state.primary_handoff == PrimaryHandoff::Holstering,
     };
-    let mut hooks = FrameHooks { game, state, context: context.clone() };
+    let mut hooks = FrameHooks {
+        game,
+        state,
+        context: context.clone(),
+    };
     step_q2_classic_frame(&definition, &input, &mut hooks);
 }
 
@@ -2315,7 +2222,11 @@ fn generic_rerelease(context: &Q2WeaponContext, game: &mut Q2GameServices, state
         holster: context.input.holster,
         weapon_thunk: context.input.weapon_thunk,
     };
-    let mut hooks = FrameHooks { game, state, context: context.clone() };
+    let mut hooks = FrameHooks {
+        game,
+        state,
+        context: context.clone(),
+    };
     step_q2_rerelease_frame(&definition, &input, &mut hooks);
 }
 
@@ -2381,22 +2292,31 @@ fn throw_classic(
     }
     let actor = owner.actor.id().clone();
     if state.frame == throwing.map(|throwing| throwing.sound_frame).unwrap_or(5) {
-        let sound = throwing.map(|throwing| throwing.cock_sound.clone()).unwrap_or_else(|| "weapons/hgrena1b.wav".to_string());
+        let sound = throwing
+            .map(|throwing| throwing.cock_sound.clone())
+            .unwrap_or_else(|| "weapons/hgrena1b.wav".to_string());
         game.sound(&actor, &sound, 1, 1.0, 1.0);
     }
     if state.frame == throwing.map(|throwing| throwing.hold_frame).unwrap_or(11) {
         if state.grenade_time == 0.0 {
             state.grenade_time = hand_fuse_deadline(context.now, Q2Edition::Classic);
-            let sound = throwing.map(|throwing| throwing.hold_sound.clone()).unwrap_or_else(|| "weapons/hgrenc1b.wav".to_string());
+            let sound = throwing
+                .map(|throwing| throwing.hold_sound.clone())
+                .unwrap_or_else(|| "weapons/hgrenc1b.wav".to_string());
             set_loop(context, game, state, &sound);
         }
-        if throwing.is_none_or(|throwing| throwing.explode) && !state.grenade_blew_up && context.now >= state.grenade_time {
+        if throwing.is_none_or(|throwing| throwing.explode)
+            && !state.grenade_blew_up
+            && context.now >= state.grenade_time
+        {
             set_loop(context, game, state, "");
             match throwing {
                 None => throw_grenade_launch(context, game, state, true),
                 Some(throwing) => (throwing.fire)(context, game, state, true),
             }
-            if throwing.is_none() && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor)) {
+            if throwing.is_none()
+                && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor))
+            {
                 return;
             }
             state.grenade_blew_up = true;
@@ -2419,7 +2339,9 @@ fn throw_classic(
             None => throw_grenade_launch(context, game, state, false),
             Some(throwing) => (throwing.fire)(context, game, state, throwing.release_held),
         }
-        if throwing.is_none() && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor)) {
+        if throwing.is_none()
+            && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor))
+        {
             return;
         }
     }
@@ -2449,8 +2371,12 @@ fn throw_rerelease(
     let idle_ready = if throwing.is_none() { idle_last + 1 } else { idle_first };
     let sound_frame = throwing.map(|throwing| throwing.sound_frame).unwrap_or(5);
     let hold_frame = throwing.map(|throwing| throwing.hold_frame).unwrap_or(11);
-    let cock_sound = throwing.map(|throwing| throwing.cock_sound.as_str()).unwrap_or("weapons/hgrena1b.wav");
-    let hold_sound = throwing.map(|throwing| throwing.hold_sound.as_str()).unwrap_or("weapons/hgrenc1b.wav");
+    let cock_sound = throwing
+        .map(|throwing| throwing.cock_sound.as_str())
+        .unwrap_or("weapons/hgrena1b.wav");
+    let hold_sound = throwing
+        .map(|throwing| throwing.hold_sound.as_str())
+        .unwrap_or("weapons/hgrenc1b.wav");
     let explodes = throwing.is_none_or(|throwing| throwing.explode);
     if state.primary_handoff == PrimaryHandoff::Holstering {
         if state.think_time <= context.now || input.instant_switch {
@@ -2538,7 +2464,9 @@ fn throw_rerelease(
                 Some(throwing) => (throwing.fire)(context, game, state, true),
             }
             let actor = owner.actor.id().clone();
-            if throwing.is_none() && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor)) {
+            if throwing.is_none()
+                && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor))
+            {
                 return;
             }
             state.grenade_blew_up = true;
@@ -2566,13 +2494,25 @@ fn throw_rerelease(
                 Some(throwing) => (throwing.fire)(context, game, state, false),
             }
             let actor = owner.actor.id().clone();
-            if throwing.is_none() && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor)) {
+            if throwing.is_none()
+                && (state.weapon.as_deref() != Some(definition.name.as_str()) || !game.host.actors().is_live(&actor))
+            {
                 return;
             }
             state.grenade_finished = millisecond_sum(context.now, wait);
             let (first, last) = if input.ducked { (159, 162) } else { (119, 112) };
             // The donor passes (119, 112) for standing, preserving the reversed range.
-            animate_player(context, game, if input.ducked { PlayerAnimationPriority::Attack } else { PlayerAnimationPriority::Reverse }, first, last);
+            animate_player(
+                context,
+                game,
+                if input.ducked {
+                    PlayerAnimationPriority::Attack
+                } else {
+                    PlayerAnimationPriority::Reverse
+                },
+                first,
+                last,
+            );
         }
     }
     let interval = animation_time(context, game, state);

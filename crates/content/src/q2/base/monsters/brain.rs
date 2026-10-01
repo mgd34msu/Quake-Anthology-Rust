@@ -8,14 +8,13 @@ use qa_core::identity::ActorId;
 use qa_core::math::vec3;
 
 use super::common::{
-    HUMANOID_BOUNDS, begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler,
-    standard_gib,
+    begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler, standard_gib, HUMANOID_BOUNDS,
 };
 use super::tables::brain::brain_moves;
 use crate::contract::{InventoryEntry, PoweredProtectionState};
 use crate::q2::foundation::monsters::ai::set_duck;
 use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, bind_shared_power_cells,
+    bind_shared_power_cells, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
@@ -42,7 +41,11 @@ fn screen(context: &mut MonsterContext, active: bool) {
             },
         );
     }
-    let cells = context.game.host.inventory().count(&actor, &"q2:monster-power".to_string());
+    let cells = context
+        .game
+        .host
+        .inventory()
+        .count(&actor, &"q2:monster-power".to_string());
     let owned = context.game.owned_of(actor.clone());
     context.game.host.combat().set_powered_protection(
         &owned,
@@ -141,15 +144,7 @@ fn brain_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 fn brain_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     context.entity_mut().effects = 0;
     screen(context, false);
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        4,
-        "models/objects/gibs/head2/tris.md2",
-        1.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 4, "models/objects/gibs/head2/tris.md2", 1.0) || context.state().dead {
         return;
     }
     let first = context.game.random() <= 0.5;
@@ -210,13 +205,7 @@ fn brain_hit_right(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let side = context.game.body_of(actor.clone()).bounds.max.x;
     let damage = 15.0 + (context.game.random() * 5.0).floor();
-    if fire_hit(
-        actor.clone(),
-        &mut *context.game,
-        vec3(80.0, side, 8.0),
-        damage,
-        40.0,
-    ) {
+    if fire_hit(actor.clone(), &mut *context.game, vec3(80.0, side, 8.0), damage, 40.0) {
         context.game.sound(&actor, "brain/melee3.wav", 1, 1.0, 1.0);
     }
 }
@@ -227,13 +216,7 @@ fn brain_hit_left(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let side = context.game.body_of(actor.clone()).bounds.min.x;
     let damage = 15.0 + (context.game.random() * 5.0).floor();
-    if fire_hit(
-        actor.clone(),
-        &mut *context.game,
-        vec3(80.0, side, 8.0),
-        damage,
-        40.0,
-    ) {
+    if fire_hit(actor.clone(), &mut *context.game, vec3(80.0, side, 8.0), damage, 40.0) {
         context.game.sound(&actor, "brain/melee3.wav", 1, 1.0, 1.0);
     }
 }
@@ -251,13 +234,7 @@ fn brain_tentacle_attack(context: &mut MonsterContext) {
     let fire_hit = context.weapons.fire_hit;
     let actor = context.actor().clone();
     let damage = 10.0 + (context.game.random() * 5.0).floor();
-    let hit = fire_hit(
-        actor.clone(),
-        &mut *context.game,
-        vec3(80.0, 0.0, 8.0),
-        damage,
-        -600.0,
-    );
+    let hit = fire_hit(actor.clone(), &mut *context.game, vec3(80.0, 0.0, 8.0), damage, -600.0);
     if hit && context.game.options.skill > 0 {
         context.entity_mut().spawnflags |= 65536;
     }
@@ -301,27 +278,15 @@ pub fn brain_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(brain_initialize));
     definition.restore = Some(MonsterHandler::Callback(bind_power_armor));
     definition.callbacks = HashMap::from([
-        (
-            "brain_stand".to_string(),
-            move_handler("brain_move_stand"),
-        ),
+        ("brain_stand".to_string(), move_handler("brain_move_stand")),
         ("brain_run".to_string(), MonsterHandler::Callback(brain_run)),
         (
             "brain_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
         ),
-        (
-            "brain_duck_down".to_string(),
-            MonsterHandler::Callback(brain_duck_down),
-        ),
-        (
-            "brain_duck_hold".to_string(),
-            MonsterHandler::Callback(brain_duck_hold),
-        ),
-        (
-            "brain_duck_up".to_string(),
-            MonsterHandler::Callback(brain_duck_up),
-        ),
+        ("brain_duck_down".to_string(), MonsterHandler::Callback(brain_duck_down)),
+        ("brain_duck_hold".to_string(), MonsterHandler::Callback(brain_duck_hold)),
+        ("brain_duck_up".to_string(), MonsterHandler::Callback(brain_duck_up)),
         (
             "brain_swing_right".to_string(),
             sound_handler("brain/melee1.wav", 4, 1.0),
@@ -330,14 +295,8 @@ pub fn brain_definition() -> Q2MonsterDefinition {
             "brain_swing_left".to_string(),
             sound_handler("brain/melee2.wav", 4, 1.0),
         ),
-        (
-            "brain_hit_right".to_string(),
-            MonsterHandler::Callback(brain_hit_right),
-        ),
-        (
-            "brain_hit_left".to_string(),
-            MonsterHandler::Callback(brain_hit_left),
-        ),
+        ("brain_hit_right".to_string(), MonsterHandler::Callback(brain_hit_right)),
+        ("brain_hit_left".to_string(), MonsterHandler::Callback(brain_hit_left)),
         (
             "brain_chest_open".to_string(),
             MonsterHandler::Callback(brain_chest_open),

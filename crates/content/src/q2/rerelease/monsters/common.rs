@@ -1,22 +1,17 @@
 //! Rerelease shared monster routines (`src/content/q2/rerelease/monsters/common.ts`).
 
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::q2::foundation::host::Q2Edition;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, attack_trace_mask, change_yaw, enemy_body, finish_dodge, health,
-    monster_solid_mask, vector_angles,
+    angles_vectors, attack_trace_mask, change_yaw, enemy_body, finish_dodge, health, monster_solid_mask, vector_angles,
 };
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, PlatformPhase,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, PlatformPhase};
 use crate::q2::support::contracts::{AttackCause, TraceContact, TraceHit, TraceResult};
 use crate::q2::support::misc::Q2RereleaseRandomSource;
 
 /// Rerelease RNG (`rereleaseRandom`).
-pub fn rerelease_random<'x, 'a>(
-    context: &'x mut MonsterContext<'a>,
-) -> &'x mut dyn Q2RereleaseRandomSource {
+pub fn rerelease_random<'x, 'a>(context: &'x mut MonsterContext<'a>) -> &'x mut dyn Q2RereleaseRandomSource {
     context
         .game
         .host
@@ -57,10 +52,7 @@ pub fn calculate_pitch_to_fire(
         if mortar && pitch >= -30.0 {
             break;
         }
-        let mut velocity = scale3(
-            angles_vectors(vec3(angles.x, angles.y, pitch)).forward,
-            speed as f32,
-        );
+        let mut velocity = scale3(angles_vectors(vec3(angles.x, angles.y, pitch)).forward, speed as f32);
         let mut origin = start;
         let mut remaining = seconds;
         while remaining > 0.0 {
@@ -94,14 +86,11 @@ pub fn calculate_pitch_to_fire(
             let enemy = context.entity().enemy.clone();
             let hit_enemy = matches!(&trace.hit, TraceHit::Actor { actor } if Some(actor) == enemy.as_ref());
             let hit_player = matches!(&trace.hit, TraceHit::Actor { actor } if context.game.host.is_player(actor));
-            if hit_enemy || hit_player
-                || normal.z >= 0.7 && distance < 128.0 * 128.0 && distance < best_distance
-            {
+            if hit_enemy || hit_player || normal.z >= 0.7 && distance < 128.0 * 128.0 && distance < best_distance {
                 best_pitch = pitch;
                 best_distance = distance;
             }
-            if destroy_on_touch || trace_contents(&trace) & (0x2000000 | 0x4000000 | 0x40000000) != 0
-            {
+            if destroy_on_touch || trace_contents(&trace) & (0x2000000 | 0x4000000 | 0x40000000) != 0 {
                 break;
             }
         }
@@ -123,9 +112,7 @@ pub fn chainfist(context: &mut MonsterContext) -> bool {
 
 /// Whether pain reacts (`reactsToPain`).
 pub fn reacts_to_pain(context: &mut MonsterContext) -> bool {
-    !context.state().ducked
-        && !context.state().combat_point
-        && (context.game.options.skill < 3 || chainfist(context))
+    !context.state().ducked && !context.state().combat_point && (context.game.options.skill < 3 || chainfist(context))
 }
 
 /// Whether to gib (`checkGib`).
@@ -212,10 +199,7 @@ pub fn predict_aim(
     };
     let mut target = add3(enemy.origin, scale3(enemy.velocity, (time - offset) as f32));
     if rerelease {
-        let facing = dot3(
-            normalize3(direction),
-            normalize3(sub3(target, start)),
-        );
+        let facing = dot3(normalize3(direction), normalize3(sub3(target, start)));
         let blocked = context
             .game
             .host
@@ -293,7 +277,9 @@ pub fn blocked_check_platform(context: &mut MonsterContext, distance: f64) -> bo
     }
     let Some(platform) = platform else { return false };
     let platform_entity = context.game.entities.get(&platform).cloned();
-    let Some(platform_entity) = platform_entity else { return false };
+    let Some(platform_entity) = platform_entity else {
+        return false;
+    };
     if !platform_entity.classname.starts_with("func_plat") {
         return false;
     }
@@ -303,11 +289,9 @@ pub fn blocked_check_platform(context: &mut MonsterContext, distance: f64) -> bo
     let phase = context.platform_state(&platform);
     let standing = body.ground.as_ref() == Some(&platform);
     let trigger = if above {
-        standing && phase == Some(PlatformPhase::Bottom)
-            || !standing && phase == Some(PlatformPhase::Top)
+        standing && phase == Some(PlatformPhase::Bottom) || !standing && phase == Some(PlatformPhase::Top)
     } else {
-        standing && phase == Some(PlatformPhase::Top)
-            || !standing && phase == Some(PlatformPhase::Bottom)
+        standing && phase == Some(PlatformPhase::Top) || !standing && phase == Some(PlatformPhase::Bottom)
     };
     if trigger {
         use_callback(platform, &mut *context.game, Some(actor.clone()), Some(actor));
@@ -439,11 +423,7 @@ pub fn blocked_check_jump(
         if blocked {
             return JumpResult::None;
         }
-        let base = if rerelease {
-            min_z
-        } else {
-            f64::from(body.bounds.min.z)
-        };
+        let base = if rerelease { min_z } else { f64::from(body.bounds.min.z) };
         let end = vec3(ahead.x, ahead.y, (base - drop_height - 1.0) as f32);
         let mask = monster_solid_mask(context.game);
         let trace = context.game.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
@@ -467,11 +447,7 @@ pub fn blocked_check_jump(
                 mask,
                 exclude: Vec::new(),
             });
-            let probe = vec3(
-                deep.end.x,
-                deep.end.y,
-                deep.end.z + body.bounds.min.z + 49.0,
-            );
+            let probe = vec3(deep.end.x, deep.end.y, deep.end.z + body.bounds.min.z + 49.0);
             if context.game.host.point_contents(probe) & 56 != 0 {
                 return JumpResult::None;
             }
@@ -495,11 +471,7 @@ pub fn blocked_check_jump(
     if up && jump_height != 0.0 {
         let mask = monster_solid_mask(context.game);
         let trace = context.game.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
-            start: vec3(
-                ahead.x,
-                ahead.y,
-                body.origin.z + body.bounds.max.z + jump_height as f32,
-            ),
+            start: vec3(ahead.x, ahead.y, body.origin.z + body.bounds.max.z + jump_height as f32),
             end: ahead,
             bounds: None,
             ignore: Some(context.actor().clone()),

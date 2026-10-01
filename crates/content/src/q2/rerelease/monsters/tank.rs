@@ -3,34 +3,28 @@
 //! ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use super::common::{
-    blocked_check_platform, chainfist, check_gib, monster_flash, predict_aim,
-    predicted_direction, reacts_to_pain,
+    blocked_check_platform, chainfist, check_gib, monster_flash, predict_aim, predicted_direction, reacts_to_pain,
 };
 use super::tables::tank::{tank_frame, tank_moves};
 use crate::q2::base::monsters::tank::tank_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SpawnFn, Q2TraceRequest, SpawnModule,
+    Q2Edition, Q2EffectEvent, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SpawnFn, Q2TraceRequest,
+    SpawnModule,
 };
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, clear_shot, corpse, enemy_body, enemy_eye, health, project_flash,
-    vector_angles, visible,
+    angles_vectors, clear_shot, corpse, enemy_body, enemy_eye, health, project_flash, vector_angles, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::missionpacks::monsters::types::mission_weapons;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit};
 
 /// Blind aim (`blindAim`).
 fn tank_blind_aim(context: &mut MonsterContext, start: Vec3, target: Vec3, right: Vec3) -> Option<Vec3> {
@@ -142,18 +136,15 @@ fn rerelease_tank_attack(context: &mut MonsterContext) {
         context.state_mut().pain_time = now + 5.0;
         return;
     }
-    let range = length3(sub3(
-        enemy.origin,
-        context.game.body_of(actor).origin,
-    ));
+    let range = length3(sub3(enemy.origin, context.game.body_of(actor).origin));
     let choice = context.game.random();
     if range <= 250.0 {
         let enemy_id = context.entity().enemy.clone();
-        let tesla = enemy_id.as_ref().and_then(|id| context.game.entity(id)).is_some_and(|target| {
-            target.classname == "tesla_mine"
-        });
-        let machinegun =
-            !tesla && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, 8));
+        let tesla = enemy_id
+            .as_ref()
+            .and_then(|id| context.game.entity(id))
+            .is_some_and(|target| target.classname == "tesla_mine");
+        let machinegun = !tesla && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, 8));
         if machinegun && choice < if range <= 125.0 { 0.5 } else { 0.25 } {
             context.set_move("tank_move_attack_chain", true);
             return;
@@ -348,10 +339,7 @@ fn rerelease_tank_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             arm_entity.angular_velocity = spin;
             arm_entity.skin /= 2;
             let mut moved = context.game.body_of(arm.clone());
-            moved.origin = add3(
-                body.origin,
-                add3(scale3(axes.right, -16.0), scale3(axes.up, 23.0)),
-            );
+            moved.origin = add3(body.origin, add3(scale3(axes.right, -16.0), scale3(axes.up, 23.0)));
             moved.velocity = add3(scale3(axes.up, 100.0), scale3(axes.right, -120.0));
             moved.angles = vec3(body.angles.x, body.angles.y, -90.0);
             context.game.write_body(arm, &moved, true);
@@ -408,9 +396,8 @@ fn tank_reattack_blaster(context: &mut MonsterContext) {
         return;
     }
     let enemy = context.entity().enemy.clone();
-    let again = visible(context, None)
-        && health(&mut *context.game, enemy.as_ref()) > 0.0
-        && context.game.random() <= 0.6;
+    let again =
+        visible(context, None) && health(&mut *context.game, enemy.as_ref()) > 0.0 && context.game.random() <= 0.6;
     context.set_move(
         if again {
             "tank_move_reattack_blast"
@@ -429,9 +416,8 @@ fn tank_refire_rocket(context: &mut MonsterContext) {
         return;
     }
     let enemy = context.entity().enemy.clone();
-    let again = health(&mut *context.game, enemy.as_ref()) > 0.0
-        && visible(context, None)
-        && context.game.random() <= 0.4;
+    let again =
+        health(&mut *context.game, enemy.as_ref()) > 0.0 && visible(context, None) && context.game.random() <= 0.4;
     context.set_move(
         if again {
             "tank_move_attack_fire_rocket"
@@ -468,7 +454,17 @@ fn tank_blaster(context: &mut MonsterContext) {
         return;
     };
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 30.0, 800.0, 8, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        30.0,
+        800.0,
+        8,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, id, start, direction);
 }
 
@@ -499,9 +495,7 @@ fn tank_rocket(context: &mut MonsterContext) {
     let manual = context.state().manual_steering;
     let mut target = if manual {
         context.state().blind_fire_target
-    } else if context.game.random() < 0.66
-        || start.z < enemy.origin.z + enemy.bounds.min.z
-    {
+    } else if context.game.random() < 0.66 || start.z < enemy.origin.z + enemy.bounds.min.z {
         enemy_eye(context).unwrap_or(enemy.origin)
     } else {
         vec3(
@@ -552,11 +546,7 @@ fn tank_rocket(context: &mut MonsterContext) {
             speed,
             70.0,
             50.0,
-            Some(if authored_accel != 0.0 {
-                authored_accel
-            } else {
-                0.075
-            }),
+            Some(if authored_accel != 0.0 { authored_accel } else { 0.075 }),
         );
     } else {
         let fire_rocket = context.weapons.fire_rocket;
@@ -601,14 +591,8 @@ pub fn create_rerelease_tank_definitions() -> Vec<Q2MonsterDefinition> {
         ("tank_blind_check", MonsterHandler::Callback(tank_blind_check)),
         ("tank_dead", MonsterHandler::Callback(tank_dead)),
         ("tank_shrink", MonsterHandler::Callback(tank_shrink)),
-        (
-            "tank_reattack_blaster",
-            MonsterHandler::Callback(tank_reattack_blaster),
-        ),
-        (
-            "tank_refire_rocket",
-            MonsterHandler::Callback(tank_refire_rocket),
-        ),
+        ("tank_reattack_blaster", MonsterHandler::Callback(tank_reattack_blaster)),
+        ("tank_refire_rocket", MonsterHandler::Callback(tank_refire_rocket)),
         ("TankBlaster", MonsterHandler::Callback(tank_blaster)),
         ("TankRocket", MonsterHandler::Callback(tank_rocket)),
         ("TankMachineGun", MonsterHandler::Callback(tank_machine_gun)),
@@ -690,7 +674,9 @@ fn tank_stand_item_name(_classname: &str) -> Option<String> {
 /// Create the rerelease tank stand module (`rereleaseTankStandModule`).
 pub fn rerelease_tank_stand_module() -> SpawnModule {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert("rerelease.tank_stand.Think_TankStand", think_tank_stand);
+    callbacks
+        .think
+        .insert("rerelease.tank_stand.Think_TankStand", think_tank_stand);
     callbacks.use_.insert("rerelease.tank_stand.Use_Boss3", use_tank_stand);
     let spawn: Q2SpawnFn = spawn_tank_stand;
     SpawnModule {

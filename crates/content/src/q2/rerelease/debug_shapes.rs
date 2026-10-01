@@ -5,7 +5,7 @@
 
 use qa_core::math::Vec4;
 
-use crate::q2::support::misc::{DebugShape, debug_shape_lines};
+use crate::q2::support::misc::{debug_shape_lines, DebugShape};
 
 use super::types::Q2RereleaseEvent;
 
@@ -22,12 +22,7 @@ pub fn rerelease_debug_lifetime(seconds: f64) -> u32 {
 }
 
 /// Build a debug-shape event (`q2DebugShape`).
-pub fn q2_debug_shape(
-    shape: &DebugShape,
-    color: Vec4,
-    lifetime_seconds: f64,
-    depth_test: bool,
-) -> Q2RereleaseEvent {
+pub fn q2_debug_shape(shape: &DebugShape, color: Vec4, lifetime_seconds: f64, depth_test: bool) -> Q2RereleaseEvent {
     Q2RereleaseEvent::DebugShapes {
         lines: debug_shape_lines(shape, color, depth_test),
         lifetime_milliseconds: rerelease_debug_lifetime(lifetime_seconds),

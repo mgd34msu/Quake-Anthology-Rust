@@ -4,12 +4,11 @@
 //! authoritative.
 
 use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
-use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3, Bounds, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2GameServices, Q2Mode, Q2MotionKind, Q2Solid, Q2SpawnFn, Q2Think, Q2Touch,
-    Q2TraceRequest, SpawnModule,
+    Q2GameServices, Q2Mode, Q2MotionKind, Q2Solid, Q2SpawnFn, Q2Think, Q2Touch, Q2TraceRequest, SpawnModule,
 };
 use crate::q2::foundation::items::{Q2ItemDefinition, Q2ItemKindData, Q2ItemModule};
 use crate::q2::foundation::weapons::vectors::angle_vectors;
@@ -67,7 +66,9 @@ impl Default for TagRuntime {
 pub fn tag_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
     callbacks.think.insert("Tag_Respawn", tag_respawn as Q2Think);
-    callbacks.think.insert("Tag_MakeTouchable", tag_make_touchable as Q2Think);
+    callbacks
+        .think
+        .insert("Tag_MakeTouchable", tag_make_touchable as Q2Think);
     callbacks.touch.insert("Tag_TouchItem", tag_touch_item as Q2Touch);
     callbacks
 }
@@ -167,10 +168,18 @@ impl Q2Tag {
     pub fn restore(&self, game: &mut Q2GameServices, saved: Q2TagCheckpoint) {
         let _ = self;
         game.tag.token = saved.token.map(|saved| {
-            game.host.actors().resolve_saved(saved).map(|owned| owned.id().clone()).unwrap_or_else(|| game.host.actors().reference_saved(saved))
+            game.host
+                .actors()
+                .resolve_saved(saved)
+                .map(|owned| owned.id().clone())
+                .unwrap_or_else(|| game.host.actors().reference_saved(saved))
         });
         game.tag.owner = saved.owner.map(|saved| {
-            game.host.actors().resolve_saved(saved).map(|owned| owned.id().clone()).unwrap_or_else(|| game.host.actors().reference_saved(saved))
+            game.host
+                .actors()
+                .resolve_saved(saved)
+                .map(|owned| owned.id().clone())
+                .unwrap_or_else(|| game.host.actors().reference_saved(saved))
         });
         game.tag.count = saved.count;
     }
@@ -252,7 +261,13 @@ impl Q2Tag {
                 change = 5.0;
                 let means = means_of_death & !0x8000000u32 as i32;
                 if [49, 53, 54, 55].contains(&means)
-                    || game.host.combat().read(attacker).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+                    || game
+                        .host
+                        .combat()
+                        .read(attacker)
+                        .map(|combat| combat.health)
+                        .unwrap_or(0.0)
+                        <= 0.0
                 {
                     self.drop(victim, game);
                 } else {
@@ -268,10 +283,19 @@ impl Q2Tag {
     /// Grant a token bonus (`bonus`).
     fn bonus(&self, entity: &ActorId, game: &mut Q2GameServices) {
         let _ = self;
-        let health = game.host.combat().read(entity).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(entity)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         let maximum = {
             let max_health = game.require_entity(entity).max_health;
-            if max_health == 0.0 { 100.0 } else { max_health }
+            if max_health == 0.0 {
+                100.0
+            } else {
+                max_health
+            }
         };
         if health < maximum {
             let owned = game.owned_of(entity.clone());
@@ -306,15 +330,15 @@ impl Q2Tag {
         }
         let body = game.body_of(entity.clone());
         let forward = angle_vectors(
-            game.host.player_view_state(entity).map(|state| state.view_angles).unwrap_or(body.angles),
+            game.host
+                .player_view_state(entity)
+                .map(|state| state.view_angles)
+                .unwrap_or(body.angles),
         )
         .forward;
         let trace = game.host.trace(&Q2TraceRequest {
             start: body.origin,
-            end: add3(
-                add3(body.origin, scale3(forward, 24.0)),
-                vec3(0.0, 0.0, -16.0),
-            ),
+            end: add3(add3(body.origin, scale3(forward, 24.0)), vec3(0.0, 0.0, -16.0)),
             bounds: Some(Bounds {
                 min: vec3(-15.0, -15.0, -15.0),
                 max: vec3(15.0, 15.0, 15.0),
@@ -334,7 +358,9 @@ impl Q2Tag {
         game.show(token.clone());
         game.schedule(token, 1.0, tag_make_touchable as Q2Think);
         let owned = game.owned_of(entity.clone());
-        game.host.inventory().consume(&owned, &"q2:dm_tag_token".to_string(), 1.0);
+        game.host
+            .inventory()
+            .consume(&owned, &"q2:dm_tag_token".to_string(), 1.0);
     }
 }
 
@@ -378,10 +404,17 @@ fn tag_respawn(entity: ActorId, game: &mut Q2GameServices) {
 fn tag_make_touchable(entity: ActorId, game: &mut Q2GameServices) {
     game.require_entity_mut(&entity).touch = Some(tag_touch_item as Q2Touch);
     let token = game.tag.token.clone();
-    let Some(token) = token.as_ref().and_then(|token| game.entity(token).map(|entity| entity.actor.id().clone())) else {
+    let Some(token) = token
+        .as_ref()
+        .and_then(|token| game.entity(token).map(|entity| entity.actor.id().clone()))
+    else {
         return;
     };
     let origin = game.body_of(entity).origin;
-    let delay = if game.host.point_contents(origin) & 24 != 0 { 3.0 } else { 30.0 };
+    let delay = if game.host.point_contents(origin) & 24 != 0 {
+        3.0
+    } else {
+        30.0
+    };
     game.schedule(token, delay, tag_respawn as Q2Think);
 }

@@ -5,38 +5,73 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::common::{
-    begin_death, damaged_skin, finish_corpse_default, monster_muzzle, monster_shot, move_handler,
-    sound_handler,
+    begin_death, damaged_skin, finish_corpse_default, monster_muzzle, monster_shot, move_handler, sound_handler,
 };
 use super::tables::medic::{medic_frame, medic_moves};
-use crate::q2::foundation::host::{
-    Q2MonsterBeam, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2MonsterBeam, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    MASK_SHOT, angles_vectors, health, project_flash, set_duck, vector_angles, visible,
+    angles_vectors, health, project_flash, set_duck, vector_angles, visible, MASK_SHOT,
 };
 use crate::q2::foundation::monsters::perception::{default_check_attack, found_target};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at,
-};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit, TraceResult};
 
 /// Cable offsets (`cableOffsets`).
 const CABLE_OFFSETS: [Vec3; 10] = [
-    Vec3 { x: 45.0, y: -9.2, z: 15.5 },
-    Vec3 { x: 48.4, y: -9.7, z: 15.2 },
-    Vec3 { x: 47.8, y: -9.8, z: 15.8 },
-    Vec3 { x: 47.3, y: -9.3, z: 14.3 },
-    Vec3 { x: 45.4, y: -10.1, z: 13.1 },
-    Vec3 { x: 41.9, y: -12.7, z: 12.0 },
-    Vec3 { x: 37.8, y: -15.8, z: 11.2 },
-    Vec3 { x: 34.3, y: -18.4, z: 10.7 },
-    Vec3 { x: 32.7, y: -19.7, z: 10.4 },
-    Vec3 { x: 32.7, y: -19.7, z: 10.4 },
+    Vec3 {
+        x: 45.0,
+        y: -9.2,
+        z: 15.5,
+    },
+    Vec3 {
+        x: 48.4,
+        y: -9.7,
+        z: 15.2,
+    },
+    Vec3 {
+        x: 47.8,
+        y: -9.8,
+        z: 15.8,
+    },
+    Vec3 {
+        x: 47.3,
+        y: -9.3,
+        z: 14.3,
+    },
+    Vec3 {
+        x: 45.4,
+        y: -10.1,
+        z: 13.1,
+    },
+    Vec3 {
+        x: 41.9,
+        y: -12.7,
+        z: 12.0,
+    },
+    Vec3 {
+        x: 37.8,
+        y: -15.8,
+        z: 11.2,
+    },
+    Vec3 {
+        x: 34.3,
+        y: -18.4,
+        z: 10.7,
+    },
+    Vec3 {
+        x: 32.7,
+        y: -19.7,
+        z: 10.4,
+    },
+    Vec3 {
+        x: 32.7,
+        y: -19.7,
+        z: 10.4,
+    },
 ];
 
 /// Find a patient (`patient`).
@@ -47,7 +82,12 @@ fn patient(context: &mut MonsterContext) -> Option<ActorId> {
     let mut best_health = 0.0;
     for candidate in context.game.host.nearby(origin, 1024.0) {
         let entity = context.game.entities.get(&candidate).cloned();
-        let good_guy = context.game.monsters.states.get(&candidate).is_some_and(|state| state.good_guy);
+        let good_guy = context
+            .game
+            .monsters
+            .states
+            .get(&candidate)
+            .is_some_and(|state| state.good_guy);
         let Some(entity) = entity else { continue };
         if candidate == actor
             || entity.server_flags & 4 == 0
@@ -142,14 +182,7 @@ fn medic_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
         return;
     }
     let first = context.game.random() < 0.5;
-    context.set_move(
-        if first {
-            "medic_move_pain1"
-        } else {
-            "medic_move_pain2"
-        },
-        false,
-    );
+    context.set_move(if first { "medic_move_pain1" } else { "medic_move_pain2" }, false);
     let actor = context.actor().clone();
     context.game.sound(
         &actor,
@@ -169,7 +202,11 @@ fn medic_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     let actor = context.actor().clone();
     let enemy = context.entity().enemy.clone();
     if let Some(enemy) = enemy {
-        let owned = context.game.entities.get(&enemy).and_then(|target| target.owner.clone());
+        let owned = context
+            .game
+            .entities
+            .get(&enemy)
+            .and_then(|target| target.owner.clone());
         if owned.as_ref() == Some(&actor) {
             context.game.require_entity_mut(&enemy).owner = None;
         }
@@ -301,9 +338,7 @@ fn medic_cable_attack(context: &mut MonsterContext) {
         mask: MASK_SHOT,
         exclude: Vec::new(),
     });
-    if trace.fraction != 1.0
-        && !matches!(&trace.hit, TraceHit::Actor { actor: hit } if *hit == enemy)
-    {
+    if trace.fraction != 1.0 && !matches!(&trace.hit, TraceHit::Actor { actor: hit } if *hit == enemy) {
         return;
     }
     if frame == medic_frame::ATTACK43 {
@@ -412,18 +447,9 @@ pub fn create_medic_definition() -> Q2MonsterDefinition {
             "medic_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
         ),
-        (
-            "medic_duck_down".to_string(),
-            MonsterHandler::Callback(medic_duck_down),
-        ),
-        (
-            "medic_duck_hold".to_string(),
-            MonsterHandler::Callback(medic_duck_hold),
-        ),
-        (
-            "medic_duck_up".to_string(),
-            MonsterHandler::Callback(medic_duck_up),
-        ),
+        ("medic_duck_down".to_string(), MonsterHandler::Callback(medic_duck_down)),
+        ("medic_duck_hold".to_string(), MonsterHandler::Callback(medic_duck_hold)),
+        ("medic_duck_up".to_string(), MonsterHandler::Callback(medic_duck_up)),
         (
             "medic_hook_launch".to_string(),
             sound_handler("medic/medatck2.wav", 1, 1.0),
@@ -432,10 +458,7 @@ pub fn create_medic_definition() -> Q2MonsterDefinition {
             "medic_hook_retract".to_string(),
             MonsterHandler::Callback(medic_hook_retract),
         ),
-        (
-            "medic_continue".to_string(),
-            MonsterHandler::Callback(medic_continue),
-        ),
+        ("medic_continue".to_string(), MonsterHandler::Callback(medic_continue)),
         (
             "medic_fire_blaster".to_string(),
             MonsterHandler::Callback(medic_fire_blaster),

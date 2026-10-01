@@ -3,38 +3,38 @@
 //! Quake II rogue/m_carrier.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
-use super::spawn::{
-    create_rogue_monster, find_rogue_spawn_point, rogue_spawn_callbacks,
-    rogue_spawn_grow,
-};
+use super::spawn::{create_rogue_monster, find_rogue_spawn_point, rogue_spawn_callbacks, rogue_spawn_grow};
 use super::tables::rogue_carrier::{carrier_frame, carrier_moves};
 use super::types::mission_services;
 use crate::q2::base::monsters::boss_common::{boss_explode, with_boss_explosion_callbacks};
-use crate::q2::base::monsters::common::{
-    damaged_skin, finish_corpse, monster_loop_sound, move_handler, sound_handler,
-};
+use crate::q2::base::monsters::common::{damaged_skin, finish_corpse, monster_loop_sound, move_handler, sound_handler};
 use crate::q2::foundation::host::{Q2Mode, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, health, in_front, project_flash,
-    target_distance, vector_angles,
-};
-use crate::q2::foundation::monsters::perception::found_target;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion,
-    MonsterSpawner, Q2MonsterDefinition, record_at,
+    angles_vectors, enemy_body, enemy_eye, health, in_front, project_flash, target_distance, vector_angles,
 };
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::rerelease::monsters::common::{monster_flash, predicted_direction};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TraceHit,
+use crate::q2::foundation::monsters::perception::found_target;
+use crate::q2::foundation::monsters::types::{
+    record_at, MonsterAttackState, MonsterContext, MonsterHandler, MonsterLocomotion, MonsterSpawner,
+    Q2MonsterDefinition,
 };
+use crate::q2::rerelease::monsters::common::{monster_flash, predicted_direction};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit};
 
 /// Flyer bounds (`flyerBounds`).
 const FLYER_BOUNDS: Bounds = Bounds {
-    min: Vec3 { x: -16.0, y: -16.0, z: -24.0 },
-    max: Vec3 { x: 16.0, y: 16.0, z: 16.0 },
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 16.0,
+    },
 };
 
 /// Enemy relation (`relation`).
@@ -49,7 +49,11 @@ struct CarrierRelation {
 
 /// Enemy relation (`relation`).
 fn carrier_relation(context: &mut MonsterContext, actor: &ActorId) -> CarrierRelation {
-    let none = CarrierRelation { front: false, back: false, below: false };
+    let none = CarrierRelation {
+        front: false,
+        back: false,
+        below: false,
+    };
     let Some(target) = context.game.host.bodies().read(actor) else {
         return none;
     };
@@ -90,7 +94,11 @@ fn carrier_rocket(context: &mut MonsterContext) {
         let direction = if predictive {
             predicted_direction(context, start, 750.0, false, -0.3 + index as f64 * 0.15)
         } else {
-            let aimed = vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z - if index == 0 || index == 3 { 15.0 } else { 0.0 });
+            let aimed = vec3(
+                enemy.origin.x,
+                enemy.origin.y,
+                enemy.origin.z - if index == 0 || index == 3 { 15.0 } else { 0.0 },
+            );
             Some(normalize3(add3(
                 normalize3(sub3(aimed, start)),
                 scale3(right, spread as f32),
@@ -117,9 +125,7 @@ fn carrier_rocket(context: &mut MonsterContext) {
 /// Coop check (`coopCheck`).
 fn carrier_coop_check(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    if context.game.options.mode != Q2Mode::Coop
-        || context.entity().wait > context.game.host.now()
-    {
+    if context.game.options.mode != Q2Mode::Coop || context.entity().wait > context.game.host.now() {
         return;
     }
     let mut targets = Vec::new();
@@ -178,17 +184,7 @@ fn carrier_machine_gun(context: &mut MonsterContext) {
         ));
         let fire_bullet = context.weapons.fire_bullet;
         let actor = context.actor().clone();
-        fire_bullet(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            6.0,
-            4.0,
-            900.0,
-            500.0,
-            0,
-        );
+        fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 900.0, 500.0, 0);
         monster_flash(context, flash, start, direction);
     }
 }
@@ -209,7 +205,9 @@ fn carrier_spawn(context: &mut MonsterContext) {
         body_angles,
         if time == 2 { "monster_kamikaze" } else { "monster_flyer" },
     );
-    context.game.sound(&actor, "medic_commander/monsterspawn1.wav", 4, 1.0, 0.0);
+    context
+        .game
+        .sound(&actor, "medic_commander/monsterspawn1.wav", 4, 1.0, 0.0);
     context.state_mut().monster_slots -= 1;
     let now = context.game.host.now();
     context.game.require_entity_mut(&child).next_think = Some(now);
@@ -435,9 +433,7 @@ fn carrier_check_attack(context: &mut MonsterContext) -> bool {
     let enemy_origin = enemy_state.origin;
     let origin = context.game.body_of(actor.clone()).origin;
     context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(enemy_origin, origin)).y);
-    if (direction.back || !direction.front && direction.below)
-        && context.game.host.now() >= context.entity().wait
-    {
+    if (direction.back || !direction.front && direction.below) && context.game.host.now() >= context.entity().wait {
         let wait = context.game.host.now() + 2.0;
         context.entity_mut().wait = wait;
         context.attack();
@@ -453,9 +449,10 @@ fn carrier_check_attack(context: &mut MonsterContext) -> bool {
         context.state_mut().attack_state = MonsterAttackState::Missile;
         return true;
     }
-    let solid_none = context.game.entity(&enemy_id).is_some_and(|enemy| {
-        enemy.solid == crate::q2::foundation::host::Q2Solid::None
-    });
+    let solid_none = context
+        .game
+        .entity(&enemy_id)
+        .is_some_and(|enemy| enemy.solid == crate::q2::foundation::host::Q2Solid::None);
     let stand_ground = context.state().stand_ground;
     let chance = if stand_ground {
         0.4
@@ -658,10 +655,7 @@ fn carrier_reattack_gren(context: &mut MonsterContext) {
     carrier_coop_check(context);
     let enemy = context.entity().enemy.clone();
     let again = match enemy {
-        Some(enemy) => {
-            in_front(context, &enemy)
-                && context.entity().timestamp + 1.3 > context.game.host.now()
-        }
+        Some(enemy) => in_front(context, &enemy) && context.entity().timestamp + 1.3 > context.game.host.now(),
         None => false,
     };
     context.set_move(

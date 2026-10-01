@@ -5,11 +5,10 @@
 use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::common::{
-    alive_enemy, begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler,
-    standard_gib,
+    alive_enemy, begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler, standard_gib,
 };
 use super::tables::mutant::{mutant_frame, mutant_moves};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
@@ -17,9 +16,7 @@ use crate::q2::foundation::host::{Q2GameServices, Q2Touch};
 use crate::q2::foundation::monsters::ai::{
     angles_vectors, check_bottom, enemy_body, fly_check, health, target_distance,
 };
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TouchContact};
 
 /// Mutant touch source (`source`).
@@ -173,8 +170,7 @@ fn mutant_check_attack(context: &mut MonsterContext) -> bool {
     let enemy_minimum = f64::from(enemy.origin.z) + f64::from(enemy.bounds.min.z);
     let enemy_size = f64::from(enemy.bounds.max.z) - f64::from(enemy.bounds.min.z);
     if f64::from(body.origin.z) + f64::from(body.bounds.min.z) > enemy_minimum + 0.75 * enemy_size
-        || f64::from(body.origin.z) + f64::from(body.bounds.max.z)
-            < enemy_minimum + 0.25 * enemy_size
+        || f64::from(body.origin.z) + f64::from(body.bounds.max.z) < enemy_minimum + 0.25 * enemy_size
     {
         return false;
     }
@@ -225,15 +221,7 @@ fn mutant_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 
 /// Die (`die`).
 fn mutant_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        4,
-        "models/objects/gibs/head2/tris.md2",
-        1.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 4, "models/objects/gibs/head2/tris.md2", 1.0) || context.state().dead {
         return;
     }
     context.entity_mut().skin = 1;
@@ -263,7 +251,9 @@ fn mutant_idle_loop(context: &mut MonsterContext) {
 fn mutant_step(context: &mut MonsterContext) {
     let n = ((context.game.random() * 3.0).floor() + 1.0) as i32 % 3;
     let actor = context.actor().clone();
-    context.game.sound(&actor, &format!("mutant/step{}.wav", n + 1), 2, 1.0, 1.0);
+    context
+        .game
+        .sound(&actor, &format!("mutant/step{}.wav", n + 1), 2, 1.0, 1.0);
 }
 
 /// Hit left (`mutant_hit_left`).
@@ -279,8 +269,7 @@ fn mutant_hit_right(context: &mut MonsterContext) {
 /// Check refire (`mutant_check_refire`).
 fn mutant_check_refire(context: &mut MonsterContext) {
     if alive_enemy(context)
-        && (context.game.options.skill == 3 && context.game.random() < 0.5
-            || target_distance(context) < 80.0)
+        && (context.game.options.skill == 3 && context.game.random() < 0.5 || target_distance(context) < 80.0)
     {
         context.state_mut().next_frame = mutant_frame::ATTACK09;
     }
@@ -379,34 +368,16 @@ pub fn create_mutant_definition(source: MutantSource) -> Q2MonsterDefinition {
         MutantSource::Rogue => MonsterHandler::Callback(mutant_jump_takeoff_rogue),
     };
     definition.callbacks = HashMap::from([
-        (
-            "mutant_stand".to_string(),
-            move_handler("mutant_move_stand"),
-        ),
-        (
-            "mutant_walk".to_string(),
-            move_handler("mutant_move_start_walk"),
-        ),
-        (
-            "mutant_walk_loop".to_string(),
-            move_handler("mutant_move_walk"),
-        ),
-        (
-            "mutant_run".to_string(),
-            MonsterHandler::Callback(mutant_run),
-        ),
+        ("mutant_stand".to_string(), move_handler("mutant_move_stand")),
+        ("mutant_walk".to_string(), move_handler("mutant_move_start_walk")),
+        ("mutant_walk_loop".to_string(), move_handler("mutant_move_walk")),
+        ("mutant_run".to_string(), MonsterHandler::Callback(mutant_run)),
         (
             "mutant_idle_loop".to_string(),
             MonsterHandler::Callback(mutant_idle_loop),
         ),
-        (
-            "mutant_step".to_string(),
-            MonsterHandler::Callback(mutant_step),
-        ),
-        (
-            "mutant_hit_left".to_string(),
-            MonsterHandler::Callback(mutant_hit_left),
-        ),
+        ("mutant_step".to_string(), MonsterHandler::Callback(mutant_step)),
+        ("mutant_hit_left".to_string(), MonsterHandler::Callback(mutant_hit_left)),
         (
             "mutant_hit_right".to_string(),
             MonsterHandler::Callback(mutant_hit_right),
@@ -420,10 +391,7 @@ pub fn create_mutant_definition(source: MutantSource) -> Q2MonsterDefinition {
             "mutant_check_landing".to_string(),
             MonsterHandler::Callback(mutant_check_landing),
         ),
-        (
-            "mutant_dead".to_string(),
-            MonsterHandler::Callback(mutant_dead),
-        ),
+        ("mutant_dead".to_string(), MonsterHandler::Callback(mutant_dead)),
     ]);
     definition
 }

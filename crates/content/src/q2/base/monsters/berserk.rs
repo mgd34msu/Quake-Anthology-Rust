@@ -6,14 +6,9 @@ use std::collections::HashMap;
 
 use qa_core::math::vec3;
 
-use super::common::{
-    HUMANOID_BOUNDS, begin_death, damaged_skin, finish_corpse_default, move_handler,
-    sound_handler,
-};
+use super::common::{begin_death, damaged_skin, finish_corpse_default, move_handler, sound_handler, HUMANOID_BOUNDS};
 use super::tables::berserk::berserk_moves;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 /// Run (`run`).
@@ -119,26 +114,14 @@ pub fn berserk_definition() -> Q2MonsterDefinition {
     definition.search = Some(sound_handler("berserk/bersrch1.wav", 2, 1.0));
     definition.pain = Some(berserk_pain);
     definition.callbacks = HashMap::from([
-        (
-            "berserk_stand".to_string(),
-            move_handler("berserk_move_stand"),
-        ),
-        (
-            "berserk_run".to_string(),
-            MonsterHandler::Callback(berserk_run),
-        ),
+        ("berserk_stand".to_string(), move_handler("berserk_move_stand")),
+        ("berserk_run".to_string(), MonsterHandler::Callback(berserk_run)),
         (
             "berserk_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
         ),
-        (
-            "berserk_fidget".to_string(),
-            MonsterHandler::Callback(berserk_fidget),
-        ),
-        (
-            "berserk_swing".to_string(),
-            sound_handler("berserk/attack.wav", 1, 1.0),
-        ),
+        ("berserk_fidget".to_string(), MonsterHandler::Callback(berserk_fidget)),
+        ("berserk_swing".to_string(), sound_handler("berserk/attack.wav", 1, 1.0)),
         (
             "berserk_attack_spike".to_string(),
             MonsterHandler::Callback(berserk_attack_spike),
@@ -147,10 +130,7 @@ pub fn berserk_definition() -> Q2MonsterDefinition {
             "berserk_attack_club".to_string(),
             MonsterHandler::Callback(berserk_attack_club),
         ),
-        (
-            "berserk_strike".to_string(),
-            MonsterHandler::Callback(berserk_strike),
-        ),
+        ("berserk_strike".to_string(), MonsterHandler::Callback(berserk_strike)),
     ]);
     definition
 }

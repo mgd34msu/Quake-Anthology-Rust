@@ -4,32 +4,29 @@
 //! Weapon_Generic.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2Solid,
-    Q2TraceRequest,
+    Q2Edition, Q2EffectEvent, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
 };
 use crate::q2::foundation::weapons::ballistics::{weapon_player_noise, NoiseKind};
 use crate::q2::foundation::weapons::player::{
-    Q2ThrowDefinition, Q2WeaponContext, Q2WeaponExtension, Q2WeaponSelectionRule, animate_player,
-    attack_animation,
-    register_weapon_extension, set_fallback_order, weapon_ammo, weapon_consume,
-    weapon_consume_infinite, weapon_continues_attack, weapon_emit, weapon_firing_interval,
-    weapon_flash, weapon_generic_classic, weapon_generic_rerelease, weapon_kick,
-    weapon_lag_begin, weapon_lag_end, weapon_multiplier, weapon_no_ammo, weapon_powerup_sound,
-    weapon_project, weapon_set_loop, weapon_throw_classic, weapon_throw_rerelease,
+    animate_player, attack_animation, register_weapon_extension, set_fallback_order, weapon_ammo, weapon_consume,
+    weapon_consume_infinite, weapon_continues_attack, weapon_emit, weapon_firing_interval, weapon_flash,
+    weapon_generic_classic, weapon_generic_rerelease, weapon_kick, weapon_lag_begin, weapon_lag_end, weapon_multiplier,
+    weapon_no_ammo, weapon_powerup_sound, weapon_project, weapon_set_loop, weapon_throw_classic,
+    weapon_throw_rerelease, Q2ThrowDefinition, Q2WeaponContext, Q2WeaponExtension, Q2WeaponSelectionRule,
 };
 use crate::q2::foundation::weapons::types::{
-    PlayerAnimationPriority, PrimaryHandoff, Q2WeaponDefinition, Q2WeaponEvent, Q2WeaponName,
-    Q2WeaponOwner, Q2WeaponPhase, Q2WeaponState, WeaponHand,
+    PlayerAnimationPriority, PrimaryHandoff, Q2WeaponDefinition, Q2WeaponEvent, Q2WeaponName, Q2WeaponOwner,
+    Q2WeaponPhase, Q2WeaponState, WeaponHand,
 };
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::{TraceContact, TraceHit};
 
 use super::super::projectiles::common::velocity;
 use super::super::projectiles::{mission_hooks, mission_projectiles, Q2MissionPackProjectiles};
-use super::super::types::{Q2_MISSION_PACK_DAMAGE, Q2MissionPack};
+use super::super::types::{Q2MissionPack, Q2_MISSION_PACK_DAMAGE};
 use super::definitions::{rogue_weapon_definitions, xatrix_weapon_definitions};
 
 /// Clamp a point into bounds (`closest`).
@@ -42,39 +39,45 @@ fn closest(point: Vec3, min: Vec3, max: Vec3) -> Vec3 {
 }
 
 /// Ionripper selection (`choose`, classic Xatrix over the hyperblaster).
-fn choose_ionripper(
-    owner: &Q2WeaponOwner,
-    game: &mut Q2GameServices,
-    state: &Q2WeaponState,
-) -> bool {
-    if game.host.inventory().count(owner.actor.id(), &"q2:weapon_boomer".to_string()) == 0.0 {
+fn choose_ionripper(owner: &Q2WeaponOwner, game: &mut Q2GameServices, state: &Q2WeaponState) -> bool {
+    if game
+        .host
+        .inventory()
+        .count(owner.actor.id(), &"q2:weapon_boomer".to_string())
+        == 0.0
+    {
         return false;
     }
     state.weapon.as_deref() == Some("hyperblaster")
 }
 
 /// Phalanx selection (`choose`, classic Xatrix over the railgun).
-fn choose_phalanx(
-    owner: &Q2WeaponOwner,
-    game: &mut Q2GameServices,
-    state: &Q2WeaponState,
-) -> bool {
-    if game.host.inventory().count(owner.actor.id(), &"q2:weapon_phalanx".to_string()) == 0.0 {
+fn choose_phalanx(owner: &Q2WeaponOwner, game: &mut Q2GameServices, state: &Q2WeaponState) -> bool {
+    if game
+        .host
+        .inventory()
+        .count(owner.actor.id(), &"q2:weapon_phalanx".to_string())
+        == 0.0
+    {
         return false;
     }
-    if game.host.inventory().count(owner.actor.id(), &"q2:ammo_slugs".to_string()) == 0.0 {
-        return game.host.inventory().count(owner.actor.id(), &"q2:ammo_magslug".to_string()) > 0.0;
+    if game
+        .host
+        .inventory()
+        .count(owner.actor.id(), &"q2:ammo_slugs".to_string())
+        == 0.0
+    {
+        return game
+            .host
+            .inventory()
+            .count(owner.actor.id(), &"q2:ammo_magslug".to_string())
+            > 0.0;
     }
     state.weapon.as_deref() == Some("railgun")
 }
 
 /// Throw entry for the shared throw drivers (`throwing.fire`).
-fn throw_fire(
-    context: &Q2WeaponContext,
-    game: &mut Q2GameServices,
-    state: &mut Q2WeaponState,
-    held: bool,
-) {
+fn throw_fire(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState, held: bool) {
     let projectiles = mission_projectiles(game);
     throw_mission_pack_weapon(&projectiles, context, game, state, held);
 }
@@ -94,7 +97,12 @@ fn throw_mission_pack_weapon(
         let duration: f64 = if trap { 5.0 } else { 3.0 };
         let minimum: f64 = if trap { 300.0 } else { 400.0 };
         let maximum: f64 = if trap { 700.0 } else { 800.0 };
-        let health = game.host.combat().read(&owner).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&owner)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         let speed = if health <= 0.0 {
             minimum
         } else {
@@ -106,13 +114,27 @@ fn throw_mission_pack_weapon(
         let (start, direction) = weapon_project(
             context,
             game,
-            if trap { vec3(8.0, 0.0, -8.0) } else { vec3(0.0, 0.0, -22.0) },
+            if trap {
+                vec3(8.0, 0.0, -8.0)
+            } else {
+                vec3(0.0, 0.0, -22.0)
+            },
             Some(angles),
         );
         state.grenade_time = 0.0;
         let multiplier = weapon_multiplier(context, game);
         if trap {
-            projectiles.fire_trap(owner, game, start, direction, 125.0 * multiplier, speed, 1.0, 165.0, held);
+            projectiles.fire_trap(
+                owner,
+                game,
+                start,
+                direction,
+                125.0 * multiplier,
+                speed,
+                1.0,
+                165.0,
+                held,
+            );
         } else {
             projectiles.fire_tesla(owner, game, start, direction, multiplier, speed);
         }
@@ -126,7 +148,17 @@ fn throw_mission_pack_weapon(
     let (start, direction) = weapon_project(context, game, vec3(8.0, 8.0, -8.0), None);
     let multiplier = weapon_multiplier(context, game);
     if trap {
-        projectiles.fire_trap(owner.clone(), game, start, direction, 125.0 * multiplier, speed, timer, 165.0, held);
+        projectiles.fire_trap(
+            owner.clone(),
+            game,
+            start,
+            direction,
+            125.0 * multiplier,
+            speed,
+            timer,
+            165.0,
+            held,
+        );
     } else {
         let side = if context.input.hand == WeaponHand::Left {
             4.0
@@ -182,7 +214,11 @@ impl Q2MissionPackWeaponExtension {
             context,
             game,
             vec3(8.0, if context.rerelease { 0.0 } else { 8.0 }, -8.0),
-            if context.rerelease { Some(angles) } else { Some(context.input.angles) },
+            if context.rerelease {
+                Some(angles)
+            } else {
+                Some(context.input.angles)
+            },
         );
         weapon_kick(
             context,
@@ -192,7 +228,8 @@ impl Q2MissionPackWeaponExtension {
             vec3(-1.0, 0.0, 0.0),
         );
         let multiplier = weapon_multiplier(context, game);
-        self.projectiles.fire_prox(owner, game, start, direction, multiplier, 600.0);
+        self.projectiles
+            .fire_prox(owner, game, start, direction, multiplier, 600.0);
         weapon_flash(context, game, if context.rerelease { 31 } else { 6 });
         if !context.rerelease {
             state.frame += 1;
@@ -219,8 +256,13 @@ impl Q2MissionPackWeaponExtension {
             vec3(-3.0, 0.0, 0.0),
         );
         let multiplier = weapon_multiplier(context, game);
-        let damage = (if game.options.mode == Q2Mode::Deathmatch { 30.0 } else { 50.0 }) * multiplier;
-        self.projectiles.fire_ion_ripper(owner, game, start, direction, damage, 500.0, 0x100000);
+        let damage = (if game.options.mode == Q2Mode::Deathmatch {
+            30.0
+        } else {
+            50.0
+        }) * multiplier;
+        self.projectiles
+            .fire_ion_ripper(owner, game, start, direction, damage, 500.0, 0x100000);
         weapon_flash(context, game, 16);
         if !context.rerelease {
             state.frame += 1;
@@ -242,7 +284,11 @@ impl Q2MissionPackWeaponExtension {
             context,
             game,
             vec3(0.0, 8.0, -8.0),
-            Some(if context.rerelease { angles } else { context.input.angles }),
+            Some(if context.rerelease {
+                angles
+            } else {
+                context.input.angles
+            }),
         );
         let direction = if context.rerelease {
             projected
@@ -348,7 +394,11 @@ impl Q2MissionPackWeaponExtension {
         if context.rerelease {
             weapon_powerup_sound(context, game);
         }
-        weapon_flash(context, game, if context.rerelease && state.frame == 7 { 32 } else { 30 });
+        weapon_flash(
+            context,
+            game,
+            if context.rerelease && state.frame == 7 { 32 } else { 30 },
+        );
         weapon_player_noise(game, &owner, start, NoiseKind::Weapon);
         if !context.rerelease {
             state.frame += 1;
@@ -407,8 +457,16 @@ impl Q2MissionPackWeaponExtension {
             _ => None,
         };
         let enemy = actor.filter(|actor| {
-            (game.host.is_monster(actor) || game.host.is_player(actor) || game.entity(actor).is_some_and(|entity| entity.damageable_target))
-                && game.host.combat().read(actor).map(|combat| combat.health).unwrap_or(0.0) > 0.0
+            (game.host.is_monster(actor)
+                || game.host.is_player(actor)
+                || game.entity(actor).is_some_and(|entity| entity.damageable_target))
+                && game
+                    .host
+                    .combat()
+                    .read(actor)
+                    .map(|combat| combat.health)
+                    .unwrap_or(0.0)
+                    > 0.0
         });
         weapon_kick(
             context,
@@ -419,13 +477,18 @@ impl Q2MissionPackWeaponExtension {
         );
         let multiplier = weapon_multiplier(context, game);
         let damage = (if context.rerelease {
-            if game.options.mode == Q2Mode::Deathmatch { 45.0 } else { 135.0 }
+            if game.options.mode == Q2Mode::Deathmatch {
+                45.0
+            } else {
+                135.0
+            }
         } else if game.options.mode == Q2Mode::Deathmatch {
             30.0
         } else {
             45.0
         }) * multiplier;
-        self.projectiles.fire_tracker(owner.clone(), game, start, direction, damage, 1000.0, enemy);
+        self.projectiles
+            .fire_tracker(owner.clone(), game, start, direction, damage, 1000.0, enemy);
         weapon_emit(
             game,
             &Q2WeaponEvent::Muzzleflash {
@@ -498,16 +561,9 @@ impl Q2MissionPackWeaponExtension {
     }
 
     /// Fire the rerelease chainfist (`chainfistRerelease`).
-    fn chainfist_rerelease(
-        &self,
-        context: &Q2WeaponContext,
-        game: &mut Q2GameServices,
-        state: &mut Q2WeaponState,
-    ) {
+    fn chainfist_rerelease(&self, context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
         let owner = context.owner.actor.id().clone();
-        if !weapon_continues_attack(context, state)
-            && (state.frame == 13 || state.frame == 23 || state.frame >= 32)
-        {
+        if !weapon_continues_attack(context, state) && (state.frame == 13 || state.frame == 23 || state.frame >= 32) {
             state.frame = 33;
             return;
         }
@@ -520,7 +576,11 @@ impl Q2MissionPackWeaponExtension {
         let mut hit = false;
         for actor in actors {
             if actor == owner
-                || !game.host.combat().read(&actor).is_some_and(|combat| combat.can_take_damage)
+                || !game
+                    .host
+                    .combat()
+                    .read(&actor)
+                    .is_some_and(|combat| combat.can_take_damage)
             {
                 continue;
             }
@@ -528,12 +588,10 @@ impl Q2MissionPackWeaponExtension {
                 continue;
             };
             let target = game.entity(&actor).map(|entity| entity.actor.id().clone());
-            if target.as_ref().is_some_and(|target| {
-                matches!(
-                    game.require_entity(target).solid,
-                    Q2Solid::None | Q2Solid::Trigger
-                )
-            }) {
+            if target
+                .as_ref()
+                .is_some_and(|target| matches!(game.require_entity(target).solid, Q2Solid::None | Q2Solid::Trigger))
+            {
                 continue;
             }
             let min = add3(body.origin, body.bounds.min);
@@ -558,12 +616,7 @@ impl Q2MissionPackWeaponExtension {
                 && max.y - 2.0 >= own_min.y + 2.0
                 && min.z + 2.0 <= own_max.z - 2.0
                 && max.z - 2.0 >= own_min.z + 2.0;
-            if !intersect
-                && dot3(
-                    normalize3(sub3(scale3(add3(min, max), 0.5), start)),
-                    direction,
-                ) < 0.7
-            {
+            if !intersect && dot3(normalize3(sub3(scale3(add3(min, max), 0.5), start)), direction) < 0.7 {
                 continue;
             }
             count += 1;
@@ -587,7 +640,11 @@ impl Q2MissionPackWeaponExtension {
                 actor,
                 owner.clone(),
                 Some(owner.clone()),
-                (if game.options.mode == Q2Mode::Deathmatch { 15.0 } else { 7.0 }) * multiplier,
+                (if game.options.mode == Q2Mode::Deathmatch {
+                    15.0
+                } else {
+                    7.0
+                }) * multiplier,
                 50.0,
                 direction,
                 point,
@@ -625,13 +682,7 @@ impl Q2MissionPackWeaponExtension {
         let owner = context.owner.actor.id().clone();
         let (start, direction) = weapon_project(context, game, vec3(0.0, 8.0, -4.0), None);
         let axes = angle_vectors(context.input.angles);
-        weapon_kick(
-            context,
-            game,
-            state,
-            scale3(axes.forward, -2.0),
-            vec3(-1.0, 0.0, 0.0),
-        );
+        weapon_kick(context, game, state, scale3(axes.forward, -2.0), vec3(-1.0, 0.0, 0.0));
         let trace = game.host.trace(&Q2TraceRequest {
             start,
             end: add3(start, scale3(direction, 64.0)),
@@ -646,26 +697,35 @@ impl Q2MissionPackWeaponExtension {
                 _ => None,
             };
             if target.as_ref().is_some_and(|target| {
-                game.host.combat().read(target).is_some_and(|combat| combat.can_take_damage)
+                game.host
+                    .combat()
+                    .read(target)
+                    .is_some_and(|combat| combat.can_take_damage)
             }) {
                 let target = target.expect("chainfist target is missing");
                 let body = game.body_of(owner.clone());
                 velocity(
                     game,
                     &owner,
-                    add3(
-                        add3(body.velocity, scale3(axes.forward, 75.0)),
-                        scale3(axes.up, 75.0),
-                    ),
+                    add3(add3(body.velocity, scale3(axes.forward, 75.0)), scale3(axes.up, 75.0)),
                     false,
                 );
                 let multiplier = weapon_multiplier(context, game);
-                let point = game.host.bodies().read(&target).map(|body| body.origin).unwrap_or(trace.end);
+                let point = game
+                    .host
+                    .bodies()
+                    .read(&target)
+                    .map(|body| body.origin)
+                    .unwrap_or(trace.end);
                 game.damage(
                     target,
                     owner.clone(),
                     Some(owner.clone()),
-                    (if game.options.mode == Q2Mode::Deathmatch { 30.0 } else { 15.0 }) * multiplier,
+                    (if game.options.mode == Q2Mode::Deathmatch {
+                        30.0
+                    } else {
+                        15.0
+                    }) * multiplier,
                     50.0,
                     Vec3::default(),
                     point,
@@ -695,12 +755,7 @@ impl Q2MissionPackWeaponExtension {
     }
 
     /// Step the extension frame (`think`).
-    fn think_frame(
-        &self,
-        context: &Q2WeaponContext,
-        game: &mut Q2GameServices,
-        state: &mut Q2WeaponState,
-    ) {
+    fn think_frame(&self, context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
         if context.definition.name == "trap" || context.definition.name == "tesla" {
             let trap = context.definition.name == "trap";
             if !trap && !context.rerelease {
@@ -715,7 +770,11 @@ impl Q2MissionPackWeaponExtension {
                 hold_frame: if trap { 11 } else { 1 },
                 fire_frame: if trap { 12 } else { 2 },
                 cock_sound: "weapons/trapcock.wav".to_string(),
-                hold_sound: if trap { "weapons/traploop.wav".to_string() } else { String::new() },
+                hold_sound: if trap {
+                    "weapons/traploop.wav".to_string()
+                } else {
+                    String::new()
+                },
                 explode: trap && !context.rerelease,
                 wrap_before_pause: !trap,
                 release_held: !trap,
@@ -823,15 +882,11 @@ impl Q2MissionPackWeaponExtension {
         if state.primary_handoff == PrimaryHandoff::Holstered {
             return;
         }
-        if context.definition.name == "etf_rifle"
-            && state.frame == 8
-            && weapon_continues_attack(context, state)
-        {
+        if context.definition.name == "etf_rifle" && state.frame == 8 && weapon_continues_attack(context, state) {
             state.frame = 6;
         }
         if context.definition.name == "chainfist" {
-            if weapon_continues_attack(context, state)
-                && (state.frame == 13 || state.frame == 23 || state.frame == 32)
+            if weapon_continues_attack(context, state) && (state.frame == 13 || state.frame == 23 || state.frame == 32)
             {
                 last_sequence = state.frame;
                 state.frame = 6;
@@ -860,12 +915,7 @@ impl Q2WeaponExtension for Q2MissionPackWeaponExtension {
         &self.definition
     }
 
-    fn fire(
-        &mut self,
-        context: &Q2WeaponContext,
-        game: &mut Q2GameServices,
-        state: &mut Q2WeaponState,
-    ) {
+    fn fire(&mut self, context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
         match context.definition.name.as_str() {
             "ionripper" => self.ion(context, game, state),
             "phalanx" => self.phalanx(context, game, state),
@@ -878,12 +928,7 @@ impl Q2WeaponExtension for Q2MissionPackWeaponExtension {
         }
     }
 
-    fn think(
-        &mut self,
-        context: &Q2WeaponContext,
-        game: &mut Q2GameServices,
-        state: &mut Q2WeaponState,
-    ) -> bool {
+    fn think(&mut self, context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) -> bool {
         self.think_frame(context, game, state);
         true
     }
@@ -948,9 +993,7 @@ impl Q2MissionPackWeapons {
                         requested: "hyperblaster".to_string(),
                         choose: choose_ionripper,
                     })
-                } else if edition == Q2Edition::Classic
-                    && pack == Q2MissionPack::Xatrix
-                    && definition.name == "phalanx"
+                } else if edition == Q2Edition::Classic && pack == Q2MissionPack::Xatrix && definition.name == "phalanx"
                 {
                     Some(Q2WeaponSelectionRule {
                         requested: "railgun".to_string(),

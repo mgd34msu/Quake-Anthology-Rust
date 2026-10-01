@@ -4,17 +4,13 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds, Vec3};
 
-use super::common::{
-    begin_death, damaged_skin, finish_corpse_default, monster_muzzle, move_handler, sound_handler,
-};
+use super::common::{begin_death, damaged_skin, finish_corpse_default, monster_muzzle, move_handler, sound_handler};
 use super::tables::gladiator::gladiator_moves;
 use crate::q2::foundation::monsters::ai::{enemy_eye, project_flash, target_distance};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 /// Run (`run`).
@@ -72,7 +68,14 @@ fn gladiator_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 
 /// Die (`die`).
 fn gladiator_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    begin_death(context, reaction, "gladiator/glddeth2.wav", "gladiator_move_death", 2, 4);
+    begin_death(
+        context,
+        reaction,
+        "gladiator/glddeth2.wav",
+        "gladiator_move_death",
+        2,
+        4,
+    );
 }
 
 /// Cleaver melee (`GaldiatorMelee`).
@@ -81,13 +84,7 @@ fn gladiator_melee_hit(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let side = context.game.body_of(actor.clone()).bounds.min.x;
     let damage = 20.0 + (context.game.random() * 5.0).floor();
-    let hit = fire_hit(
-        actor.clone(),
-        &mut *context.game,
-        vec3(80.0, side, -4.0),
-        damage,
-        300.0,
-    );
+    let hit = fire_hit(actor.clone(), &mut *context.game, vec3(80.0, side, -4.0), damage, 300.0);
     context.game.sound(
         &actor,
         if hit {
@@ -149,10 +146,7 @@ pub fn gladiator_definition() -> Q2MonsterDefinition {
     definition.search = Some(sound_handler("gladiator/gldsrch1.wav", 2, 2.0));
     definition.pain = Some(gladiator_pain);
     definition.callbacks = HashMap::from([
-        (
-            "gladiator_run".to_string(),
-            MonsterHandler::Callback(gladiator_run),
-        ),
+        ("gladiator_run".to_string(), MonsterHandler::Callback(gladiator_run)),
         (
             "gladiator_dead".to_string(),
             MonsterHandler::Callback(finish_corpse_default),
@@ -165,10 +159,7 @@ pub fn gladiator_definition() -> Q2MonsterDefinition {
             "GaldiatorMelee".to_string(),
             MonsterHandler::Callback(gladiator_melee_hit),
         ),
-        (
-            "GladiatorGun".to_string(),
-            MonsterHandler::Callback(gladiator_gun),
-        ),
+        ("GladiatorGun".to_string(), MonsterHandler::Callback(gladiator_gun)),
     ]);
     definition
 }

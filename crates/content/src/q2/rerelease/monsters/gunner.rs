@@ -5,27 +5,22 @@
 use qa_core::math::{add3, length3, normalize3, scale3, sub3};
 
 use super::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    calculate_pitch_to_fire, check_gib, monster_flash, monster_jump_finished,
-    predicted_direction, reacts_to_pain,
+    blocked_check_jump, blocked_check_platform, calculate_pitch_to_fire, check_gib, monster_flash,
+    monster_jump_finished, predicted_direction, reacts_to_pain, JumpNavigation, JumpResult,
 };
 use super::tables::flashes::rerelease_flash;
 use super::tables::gunner::{gunner_frame, gunner_moves};
 use crate::q2::base::monsters::gunner::gunner_definition;
 use crate::q2::foundation::host::Q2Edition;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health,
-    project_flash, set_duck, target_distance, vector_angles, visible,
+    angles_vectors, clear_shot, corpse, enemy_body, finish_dodge, health, project_flash, set_duck, target_distance,
+    vector_angles, visible,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Run (`run`).
 fn rerelease_gunner_run(context: &mut MonsterContext) {
@@ -68,8 +63,7 @@ fn gunner_grenade_check(context: &mut MonsterContext) -> bool {
     };
     let delta = sub3(target, start);
     length3(delta) >= 100.0
-        && calculate_pitch_to_fire(context, target, start, normalize3(delta), 600.0, 2.5, false, false)
-            .is_some()
+        && calculate_pitch_to_fire(context, target, start, normalize3(delta), 600.0, 2.5, false, false).is_some()
 }
 
 /// Grenade (`grenade`).
@@ -80,9 +74,7 @@ fn gunner_grenade(context: &mut MonsterContext) {
     };
     let blind = context.state().manual_steering;
     let current = context.game.require_entity(&actor).frame;
-    let (spread, mut id) = if current == gunner_frame::ATTAK105
-        || current == gunner_frame::ATTAK309
-    {
+    let (spread, mut id) = if current == gunner_frame::ATTAK105 || current == gunner_frame::ATTAK309 {
         (-0.1, 53)
     } else if current == gunner_frame::ATTAK108 || current == gunner_frame::ATTAK312 {
         (-0.05, 54)
@@ -224,17 +216,13 @@ fn rerelease_gunner_attack(context: &mut MonsterContext) {
     }
     let timestamp = context.game.require_entity(&actor).timestamp;
     if timestamp > context.game.host.now()
-        || target_distance(context) <= 175.0
-            && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, 45))
+        || target_distance(context) <= 175.0 && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, 45))
     {
         context.set_move("gunner_move_attack_chain", true);
         return;
     }
     let timestamp = context.game.require_entity(&actor).timestamp;
-    if timestamp <= context.game.host.now()
-        && context.game.random() <= 0.5
-        && gunner_grenade_check(context)
-    {
+    if timestamp <= context.game.host.now() && context.game.random() <= 0.5 && gunner_grenade_check(context) {
         let second = context.game.random() < 0.5;
         context.set_move(
             if second {
@@ -372,10 +360,7 @@ fn rerelease_gunner_duck(context: &mut MonsterContext, _eta: f64) -> bool {
 
 /// Sidestep (`sidestep`).
 fn rerelease_gunner_sidestep(context: &mut MonsterContext) -> bool {
-    if gunner_jumping(context)
-        || gunner_shooting(context)
-        || context.state().current_move.name == "gunner_move_pain1"
-    {
+    if gunner_jumping(context) || gunner_shooting(context) || context.state().current_move.name == "gunner_move_pain1" {
         return false;
     }
     if context.state().current_move.name != "gunner_move_run" {
@@ -411,10 +396,7 @@ fn rerelease_gunner_blocked(context: &mut MonsterContext, distance: f64) -> bool
 
 /// Fidget (`gunner_fidget`).
 fn gunner_fidget(context: &mut MonsterContext) {
-    if !context.state().stand_ground
-        && context.entity().enemy.is_none()
-        && context.game.random() <= 0.05
-    {
+    if !context.state().stand_ground && context.entity().enemy.is_none() && context.game.random() <= 0.05 {
         context.set_move("gunner_move_fidget", true);
     }
 }
@@ -463,9 +445,8 @@ fn gunner_fire(context: &mut MonsterContext) {
 /// Refire chain (`gunner_refire_chain`).
 fn gunner_refire_chain(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let again = health(&mut *context.game, enemy.as_ref()) > 0.0
-        && visible(context, None)
-        && context.game.random() <= 0.5;
+    let again =
+        health(&mut *context.game, enemy.as_ref()) > 0.0 && visible(context, None) && context.game.random() <= 0.5;
     context.set_move(
         if again {
             "gunner_move_fire_chain"
@@ -480,8 +461,7 @@ fn gunner_refire_chain(context: &mut MonsterContext) {
 fn gunner_jump_wait_land(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let frame = context.game.require_entity(&actor).frame;
-    let landed =
-        context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
+    let landed = context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
     context.state_mut().next_frame = frame + if landed { 1 } else { 0 };
 }
 
@@ -520,25 +500,13 @@ pub fn rerelease_gunner_definition() -> Q2MonsterDefinition {
         ("GunnerGrenade", MonsterHandler::Callback(gunner_grenade)),
         ("gunner_fidget", MonsterHandler::Callback(gunner_fidget)),
         ("gunner_shrink", MonsterHandler::Callback(gunner_shrink)),
-        (
-            "gunner_runandshoot",
-            MonsterHandler::Callback(gunner_run_and_shoot),
-        ),
-        (
-            "gunner_blind_check",
-            MonsterHandler::Callback(gunner_blind_check),
-        ),
+        ("gunner_runandshoot", MonsterHandler::Callback(gunner_run_and_shoot)),
+        ("gunner_blind_check", MonsterHandler::Callback(gunner_blind_check)),
         ("GunnerFire", MonsterHandler::Callback(gunner_fire)),
-        (
-            "gunner_refire_chain",
-            MonsterHandler::Callback(gunner_refire_chain),
-        ),
+        ("gunner_refire_chain", MonsterHandler::Callback(gunner_refire_chain)),
         ("gunner_jump_now", MonsterHandler::Callback(gunner_jump_now)),
         ("gunner_jump2_now", MonsterHandler::Callback(gunner_jump2_now)),
-        (
-            "gunner_jump_wait_land",
-            MonsterHandler::Callback(gunner_jump_wait_land),
-        ),
+        ("gunner_jump_wait_land", MonsterHandler::Callback(gunner_jump_wait_land)),
     ] {
         definition.callbacks.insert(name.to_string(), handler);
     }

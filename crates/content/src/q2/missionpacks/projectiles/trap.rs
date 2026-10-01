@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, ProjectileRole, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SoundEvent, Q2SoundLoop, Q2SpawnFields, Q2Think, Q2TraceRequest,
+    Q2Die, Q2Edition, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2SpawnFields, Q2Think, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::ai::change_yaw;
 use crate::q2::foundation::weapons::ballistics::weapon_player_noise;
@@ -19,17 +19,13 @@ use crate::q2::foundation::weapons::player::weapon_can_target;
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
 use crate::q2::support::contracts::CombatState;
 
-use super::common::{explode, free_projectile, publish_projectile, sight, velocity};
 use super::super::types::Q2_MISSION_PACK_DAMAGE;
+use super::common::{explode, free_projectile, publish_projectile, sight, velocity};
 use super::Q2MissionPackProjectiles;
 
 /// Cross product.
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    vec3(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    )
+    vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
 }
 
 /// Trap callbacks (merged over the nuke callbacks).
@@ -71,7 +67,11 @@ impl Q2MissionPackProjectiles {
                 .or_else(|| game.weapons.inputs.get(&owner).map(|input| input.gravity))
                 .unwrap_or(800.0);
             let trap_player = game.host.is_player(&owner);
-            let trap_collide = game.weapons.inputs.get(&owner).is_some_and(|input| !input.players_collide);
+            let trap_collide = game
+                .weapons
+                .inputs
+                .get(&owner)
+                .is_some_and(|input| !input.players_collide);
             let trap_until = game.host.now() + 30.0;
             {
                 let entity = game.require_entity_mut(&trap);
@@ -240,10 +240,7 @@ fn trap_gib(entity: ActorId, game: &mut Q2GameServices) {
         exclude: Vec::new(),
     });
     let mut moved = body.clone();
-    moved.origin = add3(
-        trace.end,
-        scale3(normalize3(delta), (15.0 * frame_seconds) as f32),
-    );
+    moved.origin = add3(trace.end, scale3(normalize3(delta), (15.0 * frame_seconds) as f32));
     moved.angles = vec3(body.angles.x, body.angles.y + degrees as f32, body.angles.z);
     game.write_body(entity.clone(), &moved, true);
     game.schedule(entity, frame_seconds, trap_gib as Q2Think);
@@ -281,12 +278,24 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
             let mut values = BTreeMap::new();
             values.insert(
                 "count".to_string(),
-                format!("{}", game.host.combat().read(&entity).map(|combat| combat.mass).unwrap_or(0.0)),
+                format!(
+                    "{}",
+                    game.host
+                        .combat()
+                        .read(&entity)
+                        .map(|combat| combat.mass)
+                        .unwrap_or(0.0)
+                ),
             );
             values.insert("spawnflags".to_string(), "65536".to_string());
             values.insert(
                 "origin".to_string(),
-                format!("{} {} {}", body.origin.x, body.origin.y, body.origin.z + 24.0 * size as f32),
+                format!(
+                    "{} {} {}",
+                    body.origin.x,
+                    body.origin.y,
+                    body.origin.z + 24.0 * size as f32
+                ),
             );
             let food = game.spawn(Q2SpawnFields {
                 ordinal: -1,
@@ -335,7 +344,8 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
                 classname.starts_with("info_player_")
                     || classname == "misc_teleporter_dest"
                     || classname.starts_with("item_flag_")
-            }) && target.as_ref().is_some_and(|target| sight(game, target, &entity))
+            })
+            && target.as_ref().is_some_and(|target| sight(game, target, &entity))
         {
             explode(&entity, game, "explosion1");
             return;
@@ -345,13 +355,22 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
             || game.options.mode != Q2Mode::Deathmatch && game.host.is_player(&actor)
             || actor != trap_master.clone().unwrap_or(entity.clone())
                 && !weapon_can_target(game, trap_master.as_ref(), &actor)
-            || game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+            || game
+                .host
+                .combat()
+                .read(&actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                <= 0.0
             || target_body.is_none()
             || !sight(game, &entity, &actor)
         {
             continue;
         }
-        let distance = f64::from(length3(sub3(body.origin, target_body.expect("trap target body is missing").origin)));
+        let distance = f64::from(length3(sub3(
+            body.origin,
+            target_body.expect("trap target body is missing").origin,
+        )));
         if best.is_none() || distance < nearest {
             best = Some(actor);
             nearest = distance;
@@ -397,7 +416,12 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
             }));
         }
         if distance < 48.0 {
-            let mass = game.host.combat().read(&target_id).map(|combat| combat.mass).unwrap_or(0.0);
+            let mass = game
+                .host
+                .combat()
+                .read(&target_id)
+                .map(|combat| combat.mass)
+                .unwrap_or(0.0);
             if mass >= 400.0 {
                 explode(&entity, game, "explosion1");
                 return;
@@ -441,7 +465,15 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
                 &owned,
                 &crate::q2::support::contracts::CombatTraitChanges {
                     can_take_damage: None,
-                    mass: Some((mass / if game.options.mode == Q2Mode::Deathmatch { 4.0 } else { 10.0 }).trunc()),
+                    mass: Some(
+                        (mass
+                            / if game.options.mode == Q2Mode::Deathmatch {
+                                4.0
+                            } else {
+                                10.0
+                            })
+                        .trunc(),
+                    ),
                     invulnerable: None,
                     team: None,
                     no_knockback: None,
@@ -484,7 +516,8 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
             let axes = angle_vectors(body.angles);
             for index in 0..3 {
                 let gib = game.create("trap_gib", BTreeMap::new());
-                let radians = (120.0 * f64::from(index) + game.require_entity(&entity).delay) * std::f64::consts::PI / 180.0;
+                let radians =
+                    (120.0 * f64::from(index) + game.require_entity(&entity).delay) * std::f64::consts::PI / 180.0;
                 let rotated = add3(
                     add3(
                         scale3(axes.right, radians.cos() as f32),
@@ -498,7 +531,12 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
                     axes.forward,
                 );
                 let style = game.require_entity(&entity).style;
-                let mass = game.host.combat().read(&entity).map(|combat| combat.mass).unwrap_or(0.0);
+                let mass = game
+                    .host
+                    .combat()
+                    .read(&entity)
+                    .map(|combat| combat.mass)
+                    .unwrap_or(0.0);
                 {
                     let record = game.require_entity_mut(&gib);
                     record.model = if style == 1 {
@@ -548,7 +586,14 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
                 let mut values = BTreeMap::new();
                 values.insert(
                     "count".to_string(),
-                    format!("{}", game.host.combat().read(&entity).map(|combat| combat.mass).unwrap_or(0.0)),
+                    format!(
+                        "{}",
+                        game.host
+                            .combat()
+                            .read(&entity)
+                            .map(|combat| combat.mass)
+                            .unwrap_or(0.0)
+                    ),
                 );
                 values.insert("spawnflags".to_string(), "65536".to_string());
                 values.insert(
@@ -586,7 +631,13 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
     for actor in game.host.nearby(body.origin, 256.0) {
         if actor == entity
             || !game.host.is_player(&actor) && !game.host.is_monster(&actor)
-            || game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0) <= 0.0
+            || game
+                .host
+                .combat()
+                .read(&actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0)
+                <= 0.0
             || !sight(game, &entity, &actor)
         {
             continue;
@@ -620,14 +671,24 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
             let delta = sub3(body.origin, origin);
             let distance = f64::from(length3(delta).trunc());
             if game.host.is_player(&best) {
-                velocity(game, &best, add3(target_body.velocity, scale3(normalize3(delta), 250.0)), true);
+                velocity(
+                    game,
+                    &best,
+                    add3(target_body.velocity, scale3(normalize3(delta), 250.0)),
+                    true,
+                );
             } else {
                 let mut monster = (super::mission_hooks(game).monster)(best.clone(), game);
                 if let Some(monster) = monster.as_mut() {
                     monster.state_mut().ideal_yaw = f64::from(vector_angles(delta).y);
                     change_yaw(monster);
                 }
-                let angles = game.host.bodies().read(&best).map(|body| body.angles).unwrap_or(target_body.angles);
+                let angles = game
+                    .host
+                    .bodies()
+                    .read(&best)
+                    .map(|body| body.angles)
+                    .unwrap_or(target_body.angles);
                 velocity(game, &best, scale3(angle_vectors(angles).forward, 256.0), true);
             }
             game.sound(&entity, "weapons/trapsuck.wav", 2, 1.0, 2.0);
@@ -637,11 +698,12 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
                     explode(&entity, game, "explosion1");
                     return;
                 }
-                let style = if game.entity(&best).map(|entity| entity.classname.clone()).as_deref() == Some("monster_gekk") {
-                    1
-                } else {
-                    0
-                };
+                let style =
+                    if game.entity(&best).map(|entity| entity.classname.clone()).as_deref() == Some("monster_gekk") {
+                        1
+                    } else {
+                        0
+                    };
                 game.require_entity_mut(&entity).style = style;
                 game.damage(
                     best.clone(),
@@ -667,7 +729,15 @@ fn trap_think(entity: ActorId, game: &mut Q2GameServices) {
                     &owned,
                     &crate::q2::support::contracts::CombatTraitChanges {
                         can_take_damage: None,
-                        mass: Some((mass / if game.options.mode == Q2Mode::Deathmatch { 4.0 } else { 10.0 }).trunc()),
+                        mass: Some(
+                            (mass
+                                / if game.options.mode == Q2Mode::Deathmatch {
+                                    4.0
+                                } else {
+                                    10.0
+                                })
+                            .trunc(),
+                        ),
                         invulnerable: None,
                         team: None,
                         no_knockback: None,

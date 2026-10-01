@@ -8,14 +8,11 @@ use qa_core::math::{Bounds, Vec3};
 
 use super::boss_common::{boss_check_attack, boss_explode};
 use super::common::{
-    damaged_skin, finish_corpse, monster_loop_sound, monster_muzzle, monster_shot, move_handler,
-    sound_handler,
+    damaged_skin, finish_corpse, monster_loop_sound, monster_muzzle, monster_shot, move_handler, sound_handler,
 };
 use super::tables::boss2::boss2_moves;
 use crate::q2::foundation::monsters::ai::{in_front, target_distance};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition};
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Run (`run`).
@@ -114,9 +111,9 @@ fn boss2_dead(context: &mut MonsterContext) {
 /// Reattack (`boss2_reattack_mg`).
 fn boss2_reattack_mg(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let again = enemy.as_ref().is_some_and(|enemy| {
-        in_front(context, enemy) && context.game.random() <= 0.7
-    });
+    let again = enemy
+        .as_ref()
+        .is_some_and(|enemy| in_front(context, enemy) && context.game.random() <= 0.7);
     context.set_move(
         if again {
             "boss2_move_attack_mg"
@@ -135,17 +132,7 @@ fn boss2_machine_gun(context: &mut MonsterContext) {
             return;
         };
         let actor = context.actor().clone();
-        fire_bullet(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            6.0,
-            4.0,
-            300.0,
-            500.0,
-            0,
-        );
+        fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 300.0, 500.0, 0);
         monster_muzzle(context, flash as i32, direction, start);
     }
 }
@@ -158,16 +145,7 @@ fn boss2_rocket(context: &mut MonsterContext) {
             return;
         };
         let actor = context.actor().clone();
-        fire_rocket(
-            actor,
-            &mut *context.game,
-            start,
-            direction,
-            50.0,
-            500.0,
-            70.0,
-            50.0,
-        );
+        fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
         monster_muzzle(context, flash as i32, direction, start);
     }
 }
@@ -209,18 +187,9 @@ pub fn boss2_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(boss2_initialize));
     definition.callbacks = HashMap::from([
         ("boss2_run".to_string(), MonsterHandler::Callback(boss2_run)),
-        (
-            "boss2_attack_mg".to_string(),
-            move_handler("boss2_move_attack_mg"),
-        ),
-        (
-            "BossExplode".to_string(),
-            MonsterHandler::Callback(boss_explode),
-        ),
-        (
-            "boss2_dead".to_string(),
-            MonsterHandler::Callback(boss2_dead),
-        ),
+        ("boss2_attack_mg".to_string(), move_handler("boss2_move_attack_mg")),
+        ("BossExplode".to_string(), MonsterHandler::Callback(boss_explode)),
+        ("boss2_dead".to_string(), MonsterHandler::Callback(boss2_dead)),
         (
             "boss2_reattack_mg".to_string(),
             MonsterHandler::Callback(boss2_reattack_mg),
@@ -229,10 +198,7 @@ pub fn boss2_definition() -> Q2MonsterDefinition {
             "Boss2MachineGun".to_string(),
             MonsterHandler::Callback(boss2_machine_gun),
         ),
-        (
-            "Boss2Rocket".to_string(),
-            MonsterHandler::Callback(boss2_rocket),
-        ),
+        ("Boss2Rocket".to_string(), MonsterHandler::Callback(boss2_rocket)),
     ]);
     definition
 }

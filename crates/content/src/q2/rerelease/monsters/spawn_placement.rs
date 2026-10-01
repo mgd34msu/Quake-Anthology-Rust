@@ -3,16 +3,14 @@
 //! Quake II rerelease rogue/g_rogue_spawn.cpp, g_monster.cpp, m_move.cpp.
 //! Copyright (c) ZeniMax Media Inc. GPL-2.0-or-later.
 
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::numeric::{NumericOps, Q3_BINARY32_PROFILE};
 
 use crate::q2::foundation::host::{Q2GameServices, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::monster_solid_mask;
 use crate::q2::missionpacks::monsters::spawn::check_rogue_spawn_point;
 use crate::q2::support::contracts::TraceFamily;
-use crate::q2::support::movement::{
-    MovementVector, StuckResult, StuckTrace, fix_stuck_object,
-};
+use crate::q2::support::movement::{fix_stuck_object, MovementVector, StuckResult, StuckTrace};
 
 /// Movement vector (`movementVector`).
 fn movement_vector(v: Vec3) -> MovementVector {
@@ -71,32 +69,26 @@ pub fn find_rerelease_spawn_point(
     let mut origin = movement_vector(start);
     let mins = movement_vector(bounds.min);
     let maxs = movement_vector(bounds.max);
-    let result = fix_stuck_object(
-        &ops,
-        &mut origin,
-        &mins,
-        &maxs,
-        &mut |from, mins, maxs, end| {
-            let trace = game.host.trace(&Q2TraceRequest {
-                start: arena_vector(*from),
-                end: arena_vector(*end),
-                bounds: Some(Bounds {
-                    min: arena_vector(*mins),
-                    max: arena_vector(*maxs),
-                }),
-                ignore: None,
-                mask: monster_solid_mask(game),
-                exclude: Vec::new(),
-            });
-            if !matches!(trace.family, TraceFamily::Q2(_)) {
-                panic!("Rerelease monster placement requires Q2 trace fields");
-            }
-            StuckTrace {
-                start_solid: trace.start_solid,
-                endpos: movement_vector(trace.end),
-            }
-        },
-    );
+    let result = fix_stuck_object(&ops, &mut origin, &mins, &maxs, &mut |from, mins, maxs, end| {
+        let trace = game.host.trace(&Q2TraceRequest {
+            start: arena_vector(*from),
+            end: arena_vector(*end),
+            bounds: Some(Bounds {
+                min: arena_vector(*mins),
+                max: arena_vector(*maxs),
+            }),
+            ignore: None,
+            mask: monster_solid_mask(game),
+            exclude: Vec::new(),
+        });
+        if !matches!(trace.family, TraceFamily::Q2(_)) {
+            panic!("Rerelease monster placement requires Q2 trace fields");
+        }
+        StuckTrace {
+            start_solid: trace.start_solid,
+            endpos: movement_vector(trace.end),
+        }
+    });
     if result == StuckResult::NoGoodPosition {
         return None;
     }
@@ -156,7 +148,11 @@ pub fn check_rerelease_ground_spawn_point(
         origin.y + (bounds.min.y + bounds.max.y) * 0.5,
         bottom,
     );
-    let half = vec3((bounds.max.x - bounds.min.x) * 0.5 * 0.5, (bounds.max.y - bounds.min.y) * 0.5 * 0.5, 0.0);
+    let half = vec3(
+        (bounds.max.x - bounds.min.x) * 0.5 * 0.5,
+        (bounds.max.y - bounds.min.y) * 0.5 * 0.5,
+        0.0,
+    );
     let quadrant_bounds = Bounds {
         min: vec3(-half.x, -half.y, 0.0),
         max: half,

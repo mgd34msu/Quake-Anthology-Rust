@@ -3,13 +3,13 @@
 //! Quake II m_boss3.c. id Software, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 
 use super::tables::boss32::boss32_frame;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SpawnFn, Q2Think, Q2Use, SpawnModule,
+    Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SpawnFn, Q2Think, Q2Use,
+    SpawnModule,
 };
 
 /// Boss3 stand think (`think`).
@@ -81,13 +81,10 @@ pub fn spawn_boss3_stand(actor: ActorId, game: &mut Q2GameServices) -> bool {
 /// Boss3 stand module (`q2Boss3StandModule`).
 pub fn boss3_stand_module() -> SpawnModule {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks.think.insert(
-        "q2:base/Think_Boss3Stand",
-        boss3_stand_think as Q2Think,
-    );
     callbacks
-        .use_
-        .insert("q2:base/Use_Boss3", boss3_stand_use as Q2Use);
+        .think
+        .insert("q2:base/Think_Boss3Stand", boss3_stand_think as Q2Think);
+    callbacks.use_.insert("q2:base/Use_Boss3", boss3_stand_use as Q2Use);
     SpawnModule {
         spawn: spawn_boss3_stand as Q2SpawnFn,
         item_name: |_| None,

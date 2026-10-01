@@ -4,7 +4,7 @@
 //! GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, vec3};
+use qa_core::math::{add3, vec3, Vec3};
 
 use crate::q2::base::player::spawns::{q2_entities_named, q2_players_range, select_q2_spawn};
 use crate::q2::foundation::host::Q2GameServices;
@@ -14,7 +14,14 @@ use super::types::lmctf_player;
 /// Select the team spawn (`lmctfTeamSpawn`).
 pub fn lmctf_team_spawn(game: &mut Q2GameServices, entity: &ActorId) -> Option<ActorId> {
     let team = lmctf_player(game, entity).team;
-    let spots = q2_entities_named(game, if team == 1 { "info_player_red" } else { "info_player_blue" });
+    let spots = q2_entities_named(
+        game,
+        if team == 1 {
+            "info_player_red"
+        } else {
+            "info_player_blue"
+        },
+    );
     let mut best = None;
     let mut distance = 0.0;
     for spot in &spots {
@@ -34,7 +41,11 @@ pub fn select_lmctf_spawn(entity: ActorId, game: &mut Q2GameServices) -> (Vec3, 
     let Some(snapshot) = snapshot else {
         panic!("LMCTF spawn needs the admitted source player");
     };
-    let mut spot = if lmctf_player(game, &entity).spawn_state == 0 { lmctf_team_spawn(game, &entity) } else { None };
+    let mut spot = if lmctf_player(game, &entity).spawn_state == 0 {
+        lmctf_team_spawn(game, &entity)
+    } else {
+        None
+    };
     lmctf_player(game, &entity).spawn_state = 1;
     if spot.is_none() && !q2_entities_named(game, "info_player_deathmatch").is_empty() {
         let deathmatch = select_q2_spawn(game, &snapshot, "");

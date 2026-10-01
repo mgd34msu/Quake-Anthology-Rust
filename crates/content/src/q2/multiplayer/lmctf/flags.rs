@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
-use qa_core::math::{Bounds, Vec3, add3, length3, sub3, vec3};
+use qa_core::math::{add3, length3, sub3, vec3, Bounds, Vec3};
 
 use crate::contract::InventoryEntry;
 use crate::q2::base::player::spawns::q2_entities_named;
@@ -17,14 +17,25 @@ use crate::q2::foundation::items::{Q2ItemDefinition, Q2ItemKindData};
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::TouchContact;
 
-use super::super::ctf::types::{CTF_FLAGS, item_id, other_ctf_team};
+use super::super::ctf::types::{item_id, other_ctf_team, CTF_FLAGS};
 use super::types::{
-    LmctfHooks, LmctfPlayingTeam, lmctf_active, lmctf_flags_touchable, lmctf_name, lmctf_player, lmctf_print, lmctf_score, lmctf_stat,
-    lmctf_toss,
+    lmctf_active, lmctf_flags_touchable, lmctf_name, lmctf_player, lmctf_print, lmctf_score, lmctf_stat, lmctf_toss,
+    LmctfHooks, LmctfPlayingTeam,
 };
 
 /// LMCTF flag bounds.
-const FLAG_BOUNDS: Bounds = Bounds { min: Vec3 { x: -15.0, y: -15.0, z: -15.0 }, max: Vec3 { x: 15.0, y: 15.0, z: 33.0 } };
+const FLAG_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -15.0,
+        y: -15.0,
+        z: -15.0,
+    },
+    max: Vec3 {
+        x: 15.0,
+        y: 15.0,
+        z: 33.0,
+    },
+};
 
 /// LMCTF flag state (`state` result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,22 +77,32 @@ pub struct LmctfFlags {
 pub fn lmctf_flag_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
     callbacks.think.insert("lmctf:ctf_flagwave", lmctf_flag_wave as Q2Think);
-    callbacks.think.insert("lmctf:Drop_Flag_Think", lmctf_drop_flag_think as Q2Think);
-    callbacks.touch.insert("lmctf:ctf_flagtouch", lmctf_flag_touch as Q2Touch);
-    callbacks.touch.insert("lmctf:Flag_DropTouch", lmctf_flag_drop_touch as Q2Touch);
+    callbacks
+        .think
+        .insert("lmctf:Drop_Flag_Think", lmctf_drop_flag_think as Q2Think);
+    callbacks
+        .touch
+        .insert("lmctf:ctf_flagtouch", lmctf_flag_touch as Q2Touch);
+    callbacks
+        .touch
+        .insert("lmctf:Flag_DropTouch", lmctf_flag_drop_touch as Q2Touch);
     callbacks
 }
 
 /// Flag item pickup (`register` pickup).
 fn lmctf_flag_item_pickup(entity: ActorId, game: &mut Q2GameServices, player: OwnedActor) -> bool {
-    let flags = LmctfFlags { hooks: super::lmctf_hooks(game) };
+    let flags = LmctfFlags {
+        hooks: super::lmctf_hooks(game),
+    };
     flags.pickup(entity, game, player.id().clone());
     false
 }
 
 /// Flag item use (`register` use).
 fn lmctf_flag_item_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
-    let flags = LmctfFlags { hooks: super::lmctf_hooks(game) };
+    let flags = LmctfFlags {
+        hooks: super::lmctf_hooks(game),
+    };
     if game.entity(player.id()).is_none() || flags.carried(player.id(), game).is_none() {
         return false;
     }
@@ -91,7 +112,9 @@ fn lmctf_flag_item_use(player: OwnedActor, game: &mut Q2GameServices) -> bool {
 
 /// Flag wave think (`wave`).
 fn lmctf_flag_wave(flag: ActorId, game: &mut Q2GameServices) {
-    let flags = LmctfFlags { hooks: super::lmctf_hooks(game) };
+    let flags = LmctfFlags {
+        hooks: super::lmctf_hooks(game),
+    };
     if game.require_entity(&flag).solid != Q2Solid::None {
         let frame = game.require_entity(&flag).frame;
         game.require_entity_mut(&flag).frame = 173 + (frame - 172) % 16;
@@ -100,16 +123,30 @@ fn lmctf_flag_wave(flag: ActorId, game: &mut Q2GameServices) {
     game.schedule(flag.clone(), 0.1, lmctf_flag_wave as Q2Think);
     let record = game.require_entity(&flag);
     let (timestamp, owner) = (record.timestamp, record.owner.clone());
-    if timestamp != 0.0 && game.now() > timestamp + 30.0 && (owner.is_none() || owner.is_some_and(|owner| !lmctf_active(game, &owner))) {
+    if timestamp != 0.0
+        && game.now() > timestamp + 30.0
+        && (owner.is_none() || owner.is_some_and(|owner| !lmctf_active(game, &owner)))
+    {
         let team = flags.team(&flag, game);
-        flags.sound(flag.clone(), game, if team == 1 { "ctf/r_returned.wav" } else { "ctf/b_returned.wav" }, 0.8);
+        flags.sound(
+            flag.clone(),
+            game,
+            if team == 1 {
+                "ctf/r_returned.wav"
+            } else {
+                "ctf/b_returned.wav"
+            },
+            0.8,
+        );
         flags.reset(Some(flag), None, game);
     }
 }
 
 /// Flag touch (`touch`).
 fn lmctf_flag_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
-    let flags = LmctfFlags { hooks: super::lmctf_hooks(game) };
+    let flags = LmctfFlags {
+        hooks: super::lmctf_hooks(game),
+    };
     flags.pickup(entity, game, contact.other);
 }
 
@@ -118,7 +155,9 @@ fn lmctf_flag_drop_touch(entity: ActorId, game: &mut Q2GameServices, contact: To
     if game.require_entity(&entity).owner.as_ref() == Some(&contact.other) {
         return;
     }
-    let flags = LmctfFlags { hooks: super::lmctf_hooks(game) };
+    let flags = LmctfFlags {
+        hooks: super::lmctf_hooks(game),
+    };
     flags.pickup(entity, game, contact.other);
 }
 
@@ -164,10 +203,16 @@ impl LmctfFlags {
             .lmctf
             .flag_slots
             .iter()
-            .map(|(team, actor)| LmctfFlagSlot { team: *team, actor: SavedActorId::from(actor) })
+            .map(|(team, actor)| LmctfFlagSlot {
+                team: *team,
+                actor: SavedActorId::from(actor),
+            })
             .collect();
         flags.sort_by(|left, right| left.team.cmp(&right.team));
-        LmctfFlagsCheckpoint { flags, last_taken_sound: game.lmctf.flag_taken_sound }
+        LmctfFlagsCheckpoint {
+            flags,
+            last_taken_sound: game.lmctf.flag_taken_sound,
+        }
     }
 
     /// Restore flag slots (`restore`).
@@ -185,7 +230,11 @@ impl LmctfFlags {
     /// Read a team flag (`flag`).
     pub fn flag(&self, game: &mut Q2GameServices, team: LmctfPlayingTeam) -> Option<ActorId> {
         let actor = game.lmctf.flag_slots.get(&team).cloned()?;
-        if game.entity(&actor).is_some() { Some(actor) } else { None }
+        if game.entity(&actor).is_some() {
+            Some(actor)
+        } else {
+            None
+        }
     }
 
     /// Read the carried enemy flag (`carried`).
@@ -314,7 +363,10 @@ impl LmctfFlags {
 
     /// Spawn a team flag (`spawnFlag`).
     fn spawn_flag(&self, team: LmctfPlayingTeam, game: &mut Q2GameServices) {
-        if self.flag(game, team).is_some() || !matches!(game.options.mode, Q2Mode::Deathmatch) || game.lmctf.rules.ctf_flags & 256 != 0 {
+        if self.flag(game, team).is_some()
+            || !matches!(game.options.mode, Q2Mode::Deathmatch)
+            || game.lmctf.rules.ctf_flags & 256 != 0
+        {
             return;
         }
         let classname = if team == 1 { "info_flag_red" } else { "info_flag_blue" };
@@ -330,7 +382,16 @@ impl LmctfFlags {
                 }
             }
             if spot.is_none() {
-                spot = q2_entities_named(game, if team == 1 { "info_player_start" } else { "target_changelevel" }).into_iter().next();
+                spot = q2_entities_named(
+                    game,
+                    if team == 1 {
+                        "info_player_start"
+                    } else {
+                        "target_changelevel"
+                    },
+                )
+                .into_iter()
+                .next();
             }
             let Some(spot) = spot else {
                 return;
@@ -414,7 +475,11 @@ impl LmctfFlags {
     /// Announce to teams (`announce`).
     fn announce(&self, game: &mut Q2GameServices, team: LmctfPlayingTeam, own: &str, other: &str) {
         for actor in game.host.players() {
-            let message = if game.lmctf.states.get(&actor).map(|state| state.team) == Some(team) { own } else { other };
+            let message = if game.lmctf.states.get(&actor).map(|state| state.team) == Some(team) {
+                own
+            } else {
+                other
+            };
             lmctf_print(game, message, Some(actor));
         }
     }
@@ -437,19 +502,32 @@ impl LmctfFlags {
             record.touch = Some(lmctf_flag_drop_touch as Q2Touch);
         }
         game.schedule(flag.clone(), 1.0, lmctf_drop_flag_think as Q2Think);
-        let angles = game.host.player_view_state(&player).map(|view| view.view_angles).unwrap_or_else(|| game.body_of(player.clone()).angles);
+        let angles = game
+            .host
+            .player_view_state(&player)
+            .map(|view| view.view_angles)
+            .unwrap_or_else(|| game.body_of(player.clone()).angles);
         lmctf_toss(flag.clone(), player.clone(), game, angle_vectors(angles).forward);
         game.require_entity_mut(&flag).timestamp = game.now();
         lmctf_stat(game, &player, "flag-lost", 1);
         lmctf_score(game, &player, 0, "FC LostFlag", None);
         let team = self.team(&flag, game);
         let name = lmctf_name(game, &player);
-        lmctf_print(game, &format!("{name} lost the {} flag.\n", if team == 1 { "red" } else { "blue" }), None);
+        lmctf_print(
+            game,
+            &format!("{name} lost the {} flag.\n", if team == 1 { "red" } else { "blue" }),
+            None,
+        );
     }
 
     /// Pick up a flag (`pickup`).
     pub fn pickup(&self, flag: ActorId, game: &mut Q2GameServices, actor: ActorId) -> bool {
-        let health = game.host.combat().read(&actor).map(|combat| combat.health).unwrap_or(0.0);
+        let health = game
+            .host
+            .combat()
+            .read(&actor)
+            .map(|combat| combat.health)
+            .unwrap_or(0.0);
         if !lmctf_flags_touchable(game)
             || !lmctf_active(game, &actor)
             || health <= 0.0
@@ -472,11 +550,25 @@ impl LmctfFlags {
                     self.capture_flag(flag, game, actor, team);
                 }
             } else {
-                self.sound(flag.clone(), game, if team == 1 { "ctf/r_returned.wav" } else { "ctf/b_returned.wav" }, 0.8);
+                self.sound(
+                    flag.clone(),
+                    game,
+                    if team == 1 {
+                        "ctf/r_returned.wav"
+                    } else {
+                        "ctf/b_returned.wav"
+                    },
+                    0.8,
+                );
                 lmctf_stat(game, &actor, "returns", 1);
                 lmctf_score(game, &actor, 1, "F Return", None);
                 lmctf_player(game, &actor).return_flag_time = now;
-                self.announce(game, team, &format!("{name} returned your flag!\n"), &format!("{name} returned the {color} flag.\n"));
+                self.announce(
+                    game,
+                    team,
+                    &format!("{name} returned your flag!\n"),
+                    &format!("{name} returned the {color} flag.\n"),
+                );
                 let actors: Vec<ActorId> = game.lmctf.states.keys().cloned().collect();
                 for other in actors {
                     let assist = game
@@ -488,7 +580,11 @@ impl LmctfFlags {
                     if let Some((_, kill_time)) = assist {
                         if now < kill_time + 6.0 {
                             let helper = lmctf_name(game, &other);
-                            lmctf_print(game, &format!("{helper} helped {name} return the {color} flag.\n"), None);
+                            lmctf_print(
+                                game,
+                                &format!("{helper} helped {name} return the {color} flag.\n"),
+                                None,
+                            );
                             lmctf_score(game, &other, 1, "F Return Assist", None);
                             lmctf_stat(game, &other, "assists", 1);
                             if let Some(member) = game.lmctf.states.get_mut(&other) {
@@ -509,15 +605,38 @@ impl LmctfFlags {
             record.effects |= 0x100;
             record.render_flags |= if team == 2 { 1024 } else { 4096 };
         }
-        self.announce(game, team, &format!("{name} stole your flag!\n"), &format!("{name} stole the {color} flag.\n"));
+        self.announce(
+            game,
+            team,
+            &format!("{name} stole your flag!\n"),
+            &format!("{name} stole the {color} flag.\n"),
+        );
         lmctf_stat(game, &actor, "flag-taken", 1);
         lmctf_score(game, &actor, 0, "F Pickup", None);
         if self.at_home(&flag, game) {
             game.sound(&flag, "ctf/flagtk.wav", 0, 0.7, 1.0);
-            self.sound(flag.clone(), game, if team == 1 { "ctf/r_stolen.wav" } else { "ctf/b_stolen.wav" }, 0.8);
+            self.sound(
+                flag.clone(),
+                game,
+                if team == 1 {
+                    "ctf/r_stolen.wav"
+                } else {
+                    "ctf/b_stolen.wav"
+                },
+                0.8,
+            );
         } else if now > game.lmctf.flag_taken_sound + 8.0 {
             game.lmctf.flag_taken_sound = now;
-            self.sound(flag.clone(), game, if team == 1 { "ctf/r_stolen.wav" } else { "ctf/b_stolen.wav" }, 0.8);
+            self.sound(
+                flag.clone(),
+                game,
+                if team == 1 {
+                    "ctf/r_stolen.wav"
+                } else {
+                    "ctf/b_stolen.wav"
+                },
+                0.8,
+            );
         }
         {
             let record = game.require_entity_mut(&flag);
@@ -531,8 +650,22 @@ impl LmctfFlags {
         game.require_entity_mut(&actor).model3 = model;
         game.show(actor.clone());
         let owned = game.owned_of(actor.clone());
-        if !game.host.inventory().entries(&actor).iter().any(|entry| entry.item == "q2:flag") {
-            game.host.inventory().configure(&owned, &InventoryEntry { item: item_id("q2:flag"), count: 0.0, capacity: 32767.0, count_policy: None });
+        if !game
+            .host
+            .inventory()
+            .entries(&actor)
+            .iter()
+            .any(|entry| entry.item == "q2:flag")
+        {
+            game.host.inventory().configure(
+                &owned,
+                &InventoryEntry {
+                    item: item_id("q2:flag"),
+                    count: 0.0,
+                    capacity: 32767.0,
+                    count_policy: None,
+                },
+            );
         }
         game.host.inventory().give(&owned, &item_id("q2:flag"), 1.0);
         game.host_emit(Q2PresentationEvent::Pickup {
@@ -559,7 +692,11 @@ impl LmctfFlags {
             &format!("{name} captured your flag!\n"),
             &format!("{name} captured the {color} flag.\n"),
         );
-        let assists = [("kill_carrier_time", 6.0, "FC Frag Assist", "killing the flag carrier"), ("return_flag_time", 3.0, "F Return Assist", "returning the flag"), ("defend_flag_time", 2.0, "F Defend Assist", "defending the flag")];
+        let assists = [
+            ("kill_carrier_time", 6.0, "FC Frag Assist", "killing the flag carrier"),
+            ("return_flag_time", 3.0, "F Return Assist", "returning the flag"),
+            ("defend_flag_time", 2.0, "F Defend Assist", "defending the flag"),
+        ];
         let actors: Vec<ActorId> = game.lmctf.states.keys().cloned().collect();
         for actor in actors {
             if game.lmctf.states.get(&actor).map(|state| state.team) != Some(team) {
@@ -592,7 +729,12 @@ impl LmctfFlags {
             }
         }
         let skin = game.lmctf.rules.skin_set;
-        self.sound(home.clone(), game, &format!("ctf/{}score{}.wav", if team == 1 { "red" } else { "blue" }, skin + 1), 1.0);
+        self.sound(
+            home.clone(),
+            game,
+            &format!("ctf/{}score{}.wav", if team == 1 { "red" } else { "blue" }, skin + 1),
+            1.0,
+        );
         let origin = game.body_of(home).origin;
         game.host_emit(Q2PresentationEvent::Effect(Q2EffectEvent {
             effect: "bfg-explosion".to_string(),
@@ -649,7 +791,11 @@ impl LmctfFlags {
     /// Score a frag (`frag`).
     pub fn frag(&self, victim: ActorId, attacker: ActorId, game: &mut Q2GameServices) {
         let source_team = game.lmctf.states.get(&attacker).map(|state| state.team);
-        let target = game.lmctf.states.get(&victim).map(|state| (state.team, state.hit_carrier_time));
+        let target = game
+            .lmctf
+            .states
+            .get(&victim)
+            .map(|state| (state.team, state.hit_carrier_time));
         let (Some(source_team), Some((target_team, hit_time))) = (source_team, target) else {
             return;
         };
@@ -692,17 +838,25 @@ impl LmctfFlags {
                         }
                     }
                 }
-                let carrier = enemy.as_ref().and_then(|enemy| game.require_entity(enemy).owner.clone());
+                let carrier = enemy
+                    .as_ref()
+                    .and_then(|enemy| game.require_entity(enemy).owner.clone());
                 if let Some(carrier) = carrier {
                     if carrier != attacker && lmctf_active(game, &carrier) {
                         if now < hit_time + 2.0 {
                             let name = lmctf_name(game, &attacker);
                             lmctf_score(game, &attacker, 3, "FC Def", None);
                             lmctf_stat(game, &attacker, "defense-carrier", 1);
-                            lmctf_print(game, &format!("{name} defends the {color} flag carrier from an aggressive enemy.\n"), None);
+                            lmctf_print(
+                                game,
+                                &format!("{name} defends the {color} flag carrier from an aggressive enemy.\n"),
+                                None,
+                            );
                         } else {
                             let origin = game.body_of(carrier).origin;
-                            if length3(sub3(attacker_origin, origin)) < 500.0 || length3(sub3(victim_origin, origin)) < 500.0 {
+                            if length3(sub3(attacker_origin, origin)) < 500.0
+                                || length3(sub3(victim_origin, origin)) < 500.0
+                            {
                                 let name = lmctf_name(game, &attacker);
                                 lmctf_score(game, &attacker, 2, "FC Def", None);
                                 lmctf_stat(game, &attacker, "defense-carrier", 1);

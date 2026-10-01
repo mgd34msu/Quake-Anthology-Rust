@@ -4,12 +4,10 @@
 
 use std::collections::HashMap;
 
-use qa_core::math::{Bounds, Vec3, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds, Vec3};
 
 use super::boss_common::boss_explode;
-use super::common::{
-    damaged_skin, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler,
-};
+use super::common::{damaged_skin, finish_corpse, monster_muzzle, monster_shot, move_handler, sound_handler};
 use super::tables::supertank::{supertank_frame, supertank_moves};
 use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_eye, target_distance, visible};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
@@ -48,16 +46,11 @@ fn supertank_search(context: &mut MonsterContext) {
 /// Pain (`pain`).
 fn supertank_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     damaged_skin(context);
-    if context.game.host.now() < context.state().pain_time
-        || reaction.damage <= 25.0 && context.game.random() < 0.2
-    {
+    if context.game.host.now() < context.state().pain_time || reaction.damage <= 25.0 && context.game.random() < 0.2 {
         return;
     }
     let frame = context.entity().frame;
-    if context.game.options.skill >= 2
-        && frame >= supertank_frame::ATTAK2_1
-        && frame <= supertank_frame::ATTAK2_14
-    {
+    if context.game.options.skill >= 2 && frame >= supertank_frame::ATTAK2_1 && frame <= supertank_frame::ATTAK2_14 {
         return;
     }
     let now = context.game.host.now();
@@ -152,16 +145,7 @@ fn supertank_rocket(context: &mut MonsterContext) {
     };
     let fire_rocket = context.weapons.fire_rocket;
     let actor = context.actor().clone();
-    fire_rocket(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        50.0,
-        500.0,
-        70.0,
-        50.0,
-    );
+    fire_rocket(actor, &mut *context.game, start, direction, 50.0, 500.0, 70.0, 50.0);
     monster_muzzle(context, flash as i32, direction, start);
 }
 
@@ -184,17 +168,7 @@ fn supertank_machine_gun(context: &mut MonsterContext) {
         .unwrap_or(axes.forward);
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        6.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 6.0, 4.0, 300.0, 500.0, 0);
     monster_muzzle(context, flash, direction, start);
 }
 
@@ -231,22 +205,10 @@ pub fn supertank_definition() -> Q2MonsterDefinition {
     definition.search = Some(MonsterHandler::Callback(supertank_search));
     definition.pain = Some(supertank_pain);
     definition.callbacks = HashMap::from([
-        (
-            "supertank_run".to_string(),
-            MonsterHandler::Callback(supertank_run),
-        ),
-        (
-            "TreadSound".to_string(),
-            sound_handler("bosstank/btkengn1.wav", 4, 1.0),
-        ),
-        (
-            "BossExplode".to_string(),
-            MonsterHandler::Callback(boss_explode),
-        ),
-        (
-            "supertank_dead".to_string(),
-            MonsterHandler::Callback(supertank_dead),
-        ),
+        ("supertank_run".to_string(), MonsterHandler::Callback(supertank_run)),
+        ("TreadSound".to_string(), sound_handler("bosstank/btkengn1.wav", 4, 1.0)),
+        ("BossExplode".to_string(), MonsterHandler::Callback(boss_explode)),
+        ("supertank_dead".to_string(), MonsterHandler::Callback(supertank_dead)),
         (
             "supertank_reattack1".to_string(),
             MonsterHandler::Callback(supertank_reattack1),

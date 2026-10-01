@@ -6,14 +6,11 @@ use super::super::common::check_gib;
 use super::super::tables::insane::{insane_frame, insane_moves};
 use crate::q2::base::monsters::insane::insane_definition;
 use crate::q2::foundation::monsters::ai::{corpse, health};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::types::{
-    DeadThink, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
-    record_at,
+    record_at, DeadThink, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
 };
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Crawling (`crawling`).
 fn insane_crawling(frame: i32) -> bool {
@@ -77,7 +74,9 @@ fn insane_vocalize(context: &mut MonsterContext, scream: bool) {
     } else {
         7
     };
-    context.game.sound(&actor, &format!("insane/insane{sample}.wav"), 2, 1.0, 2.0);
+    context
+        .game
+        .sound(&actor, &format!("insane/insane{sample}.wav"), 2, 1.0, 2.0);
     let now = context.game.host.now();
     context.state_mut().attack_finished = now + 1.0 + context.game.random() * 2.0;
 }
@@ -140,21 +139,15 @@ fn rerelease_insane_pain(context: &mut MonsterContext, _reaction: &PainReaction)
     } else {
         100
     };
-    context.game.sound(
-        &actor,
-        &format!("player/male/pain{band}_{variant}.wav"),
-        2,
-        1.0,
-        2.0,
-    );
+    context
+        .game
+        .sound(&actor, &format!("player/male/pain{band}_{variant}.wav"), 2, 1.0, 2.0);
     let entity = context.game.require_entity(&actor);
     let (spawnflags, frame) = (entity.spawnflags, entity.frame);
     context.set_move(
         if spawnflags & 8 != 0 {
             "insane_move_struggle_cross"
-        } else if insane_crawling(frame)
-            || (frame >= insane_frame::STAND1 && frame <= insane_frame::STAND40)
-        {
+        } else if insane_crawling(frame) || (frame >= insane_frame::STAND1 && frame <= insane_frame::STAND40) {
             "insane_move_crawl_pain"
         } else {
             "insane_move_stand_pain"
@@ -205,7 +198,9 @@ fn rerelease_insane_die(context: &mut MonsterContext, reaction: &DeathReaction) 
         return;
     }
     let variant = 1 + (context.game.random() * 4.0).floor() as i32;
-    context.game.sound(&actor, &format!("player/male/death{variant}.wav"), 2, 1.0, 2.0);
+    context
+        .game
+        .sound(&actor, &format!("player/male/death{variant}.wav"), 2, 1.0, 2.0);
     context.state_mut().dead = true;
     context.state_mut().can_take_damage = true;
     let owned = context.game.owned_of(actor.clone());

@@ -7,10 +7,8 @@ use qa_core::math::{add3, sub3, vec3};
 use crate::q2::foundation::host::{
     Q2EffectEvent, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
 };
-use crate::q2::foundation::monsters::ai::{
-    enemy_body, enemy_eye, health, target_distance, vector_angles,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::ai::{enemy_body, enemy_eye, health, target_distance, vector_angles};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::types::{
     MonsterAttackState, MonsterContext, MonsterLocomotion, Q2MonsterDefinition,
 };
@@ -34,19 +32,13 @@ pub fn stop_loop(context: &mut MonsterContext) {
 }
 
 /// Boss attack check (`bossCheckAttack`).
-pub fn boss_check_attack(
-    context: &mut MonsterContext,
-    hover: bool,
-    allow_non_solid: bool,
-) -> bool {
+pub fn boss_check_attack(context: &mut MonsterContext, hover: bool, allow_non_solid: bool) -> bool {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor.clone());
     let enemy_body = enemy_body(context);
     let eye = enemy_eye(context);
     let enemy = context.entity().enemy.clone();
-    let (Some(enemy_body), Some(eye), Some(enemy)) =
-        (enemy_body, eye, enemy.as_ref())
-    else {
+    let (Some(enemy_body), Some(eye), Some(enemy)) = (enemy_body, eye, enemy.as_ref()) else {
         return false;
     };
     if health(&mut *context.game, Some(enemy)) > 0.0 {
@@ -82,10 +74,7 @@ pub fn boss_check_attack(
         return true;
     }
     let now = context.game.host.now();
-    if !context.state().has_ranged_attack
-        || now < context.state().attack_finished
-        || distance >= 1000.0
-    {
+    if !context.state().has_ranged_attack || now < context.state().attack_finished || distance >= 1000.0 {
         return false;
     }
     let chance = if context.state().stand_ground {
@@ -184,10 +173,7 @@ fn advance_boss_explosion(context: &mut MonsterContext) {
         context.state_mut().gibbed = true;
         return;
     }
-    let (ox, oy) = POSITIONS
-        .get(index as usize)
-        .copied()
-        .unwrap_or((0, 0));
+    let (ox, oy) = POSITIONS.get(index as usize).copied().unwrap_or((0, 0));
     let actor = context.actor().clone();
     let origin = add3(
         context.game.body_of(actor.clone()).origin,
@@ -220,22 +206,15 @@ pub fn boss_explode(context: &mut MonsterContext) {
 }
 
 /// Attach boss explosion callbacks (`withBossExplosionCallbacks`).
-pub fn with_boss_explosion_callbacks(
-    mut definition: Q2MonsterDefinition,
-) -> Q2MonsterDefinition {
+pub fn with_boss_explosion_callbacks(mut definition: Q2MonsterDefinition) -> Q2MonsterDefinition {
     let mut callbacks = definition.source_callbacks.take().unwrap_or_default();
-    callbacks
-        .think
-        .insert("q2:BossExplode", boss_explosion_think);
+    callbacks.think.insert("q2:BossExplode", boss_explosion_think);
     definition.source_callbacks = Some(callbacks);
     definition
 }
 
 /// Boss explosion think (`q2:BossExplode`).
-pub fn boss_explosion_think(
-    actor: qa_core::identity::ActorId,
-    game: &mut crate::q2::foundation::host::Q2GameServices,
-) {
+pub fn boss_explosion_think(actor: qa_core::identity::ActorId, game: &mut crate::q2::foundation::host::Q2GameServices) {
     if !game.monsters.states.contains_key(&actor) {
         panic!("Boss explosion has no restored source monster context");
     }

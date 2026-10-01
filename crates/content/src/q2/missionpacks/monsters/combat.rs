@@ -5,16 +5,14 @@
 use std::rc::Rc;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, dot3, normalize3, scale3, sub3};
+use qa_core::math::{dot3, normalize3, scale3, sub3, Vec3};
 
 use super::state::rogue_state;
 use super::types::Q2MissionPackMonsterServices;
 use crate::q2::foundation::host::{Q2Edition, Q2Entity, Q2GameServices};
 use crate::q2::foundation::monsters::ai::{angles_vectors, health, visible};
 use crate::q2::foundation::monsters::perception::found_target;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, Q2MonsterSourceCombatHooks, SourceMoveOutcome,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, Q2MonsterSourceCombatHooks, SourceMoveOutcome};
 use crate::q2::support::contracts::CombatTraitChanges;
 
 /// Tesla classname for the edition.
@@ -110,9 +108,7 @@ impl RogueCombatHooks {
 }
 
 /// Create rogue combat hooks (`createRogueCombatHooks`).
-pub fn create_rogue_combat_hooks(
-    services: Rc<dyn Q2MissionPackMonsterServices>,
-) -> RogueCombatHooks {
+pub fn create_rogue_combat_hooks(services: Rc<dyn Q2MissionPackMonsterServices>) -> RogueCombatHooks {
     RogueCombatHooks::new(services)
 }
 
@@ -126,13 +122,12 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
 
     fn before_react(&mut self, context: &mut MonsterContext, attacker: &ActorId) -> bool {
         let actor = context.actor().clone();
-        let inflictor = context
-            .entity()
-            .last_attack
-            .clone()
-            .and_then(|attack| attack.inflictor);
+        let inflictor = context.entity().last_attack.clone().and_then(|attack| attack.inflictor);
         let tesla = tesla_class(context.game);
-        let tesla_hit = inflictor.as_ref().and_then(|inflictor| context.game.entities.get(inflictor)).is_some_and(|entity| entity.classname == tesla);
+        let tesla_hit = inflictor
+            .as_ref()
+            .and_then(|inflictor| context.game.entities.get(inflictor))
+            .is_some_and(|entity| entity.classname == tesla);
         if tesla_hit {
             let inflictor = inflictor.expect("tesla inflictor");
             let marked = self.services.mark_tesla_area(&actor, &inflictor);
@@ -207,8 +202,7 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
                 random.time_milliseconds(3000, 5000)
             };
             let now = context.game.host.now();
-            rogue_state(&mut *context.game, &actor).react_to_damage_time =
-                now + delay as f64 / 1000.0;
+            rogue_state(&mut *context.game, &actor).react_to_damage_time = now + delay as f64 / 1000.0;
         }
         false
     }
@@ -221,8 +215,7 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
 
     fn recover_enemy(&mut self, context: &mut MonsterContext) -> Option<ActorId> {
         let actor = context.actor().clone();
-        let candidate =
-            rogue_state(&mut *context.game, &actor).last_player_enemy.clone();
+        let candidate = rogue_state(&mut *context.game, &actor).last_player_enemy.clone();
         let Some(candidate) = candidate else { return None };
         if health(&mut *context.game, Some(&candidate)) <= 0.0 {
             return None;
@@ -231,11 +224,7 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
         Some(candidate)
     }
 
-    fn before_move(
-        &mut self,
-        context: &mut MonsterContext,
-        displacement: Vec3,
-    ) -> SourceMoveOutcome {
+    fn before_move(&mut self, context: &mut MonsterContext, displacement: Vec3) -> SourceMoveOutcome {
         let actor = context.actor().clone();
         if health(&mut *context.game, Some(&actor)) <= 0.0 {
             return SourceMoveOutcome::Move { displacement };
@@ -278,48 +267,32 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
 
     fn accepts_ground_move(&mut self, context: &mut MonsterContext, origin: Vec3) -> bool {
         let actor = context.actor().clone();
-        if health(&mut *context.game, Some(&actor)) <= 0.0
-            || rogue_state(&mut *context.game, &actor).bad_area.is_some()
+        if health(&mut *context.game, Some(&actor)) <= 0.0 || rogue_state(&mut *context.game, &actor).bad_area.is_some()
         {
             return true;
         }
         let area = self.services.bad_area_entity(&actor, Some(origin));
         let Some(area) = area else { return true };
-        let owner = context
-            .game
-            .entities
-            .get(&area)
-            .and_then(|entity| entity.owner.clone());
+        let owner = context.game.entities.get(&area).and_then(|entity| entity.owner.clone());
         let Some(owner) = owner else { return false };
-        let owner_class = context
-            .game
-            .entities
-            .get(&owner)
-            .map(|entity| entity.classname.clone());
+        let owner_class = context.game.entities.get(&owner).map(|entity| entity.classname.clone());
         let tesla = tesla_class(context.game);
         if owner_class.as_deref() == Some(tesla) {
             let enemy = context.entity().enemy.clone();
             let strike = match enemy {
                 None => true,
                 Some(enemy) => {
-                    let class = context
-                        .game
-                        .entities
-                        .get(&enemy)
-                        .map(|entity| entity.classname.clone());
+                    let class = context.game.entities.get(&enemy).map(|entity| entity.classname.clone());
                     match class {
                         None => true,
                         Some(class) => {
                             // The donor keeps the original "telsa" typo here.
-                            let expected =
-                                if context.game.options.edition == Q2Edition::Classic {
-                                    "telsa"
-                                } else {
-                                    "tesla_mine"
-                                };
-                            class != expected
-                                && (!context.game.host.is_player(&enemy)
-                                    || !visible(context, None))
+                            let expected = if context.game.options.edition == Q2Edition::Classic {
+                                "telsa"
+                            } else {
+                                "tesla_mine"
+                            };
+                            class != expected && (!context.game.host.is_player(&enemy) || !visible(context, None))
                         }
                     }
                 }

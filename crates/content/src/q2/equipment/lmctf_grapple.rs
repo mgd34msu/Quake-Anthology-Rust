@@ -6,23 +6,21 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, ProjectileRole, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
-    Q2SoundLoop, Q2Think, Q2Touch, Q2TraceRequest,
+    Q2Die, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2Think, Q2Touch, Q2TraceRequest,
 };
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
 use crate::q2::support::contracts::{
-    BodyAttachment, BodyFollow, CombatState, DeathReaction, TouchContact, TraceHit,
-    WeaponBehaviorLaunch,
+    BodyAttachment, BodyFollow, CombatState, DeathReaction, TouchContact, TraceHit, WeaponBehaviorLaunch,
 };
 
 use super::grapple_services::{
-    grapple_body, grapple_velocity, GrappleAnchor, GrappleCableEvent, GrappleHand, GrappleHooks,
-    LmctfGrappleState,
+    grapple_body, grapple_velocity, GrappleAnchor, GrappleCableEvent, GrappleHand, GrappleHooks, LmctfGrappleState,
 };
 use super::{lmctf_handle, lmctf_state_mut};
 
@@ -104,16 +102,8 @@ impl LmctfGrappleEquipment {
         if let Some(body) = body {
             if body.ground.is_some() {
                 let previous = (self.hooks.previous_velocity)(player.clone(), game);
-                (self.hooks.set_previous_velocity)(
-                    player.clone(),
-                    vec3(previous.x, previous.y, 0.0),
-                    game,
-                );
-                grapple_velocity(
-                    player.clone(),
-                    game,
-                    vec3(body.velocity.x, body.velocity.y, 0.0),
-                );
+                (self.hooks.set_previous_velocity)(player.clone(), vec3(previous.x, previous.y, 0.0), game);
+                grapple_velocity(player.clone(), game, vec3(body.velocity.x, body.velocity.y, 0.0));
             }
         }
         (self.released)(player.clone(), game);
@@ -124,10 +114,7 @@ impl LmctfGrappleEquipment {
             state.hook.clone()
         };
         lmctf_state_mut(game, player).hook = None;
-        if let Some(hook) = hook.and_then(|hook| {
-            game.entity(&hook)
-                .map(|entity| entity.actor.id().clone())
-        }) {
+        if let Some(hook) = hook.and_then(|hook| game.entity(&hook).map(|entity| entity.actor.id().clone())) {
             game.cancel_actor(hook.clone());
             game.require_entity_mut(&hook).enemy = None;
             let owned = game.owned_of(hook.clone());
@@ -181,11 +168,7 @@ impl LmctfGrappleEquipment {
         lmctf_state_mut(game, owner.clone()).hook_state = 2;
         if (self.policy.can_damage)(contact.other.clone(), game) {
             let frame = (game.host.now() * 10.0).round() as i32;
-            let repeated = game
-                .require_entity(&hook)
-                .enemy
-                .as_ref()
-                == Some(&contact.other);
+            let repeated = game.require_entity(&hook).enemy.as_ref() == Some(&contact.other);
             if !repeated || frame % 7 == 0 && frame != game.require_entity(&hook).count {
                 let amount = if repeated { 1.0 } else { 8.0 };
                 if (self.policy.player_hit)(contact.other.clone(), game) {
@@ -242,10 +225,7 @@ impl LmctfGrappleEquipment {
                 self.abort(owner, game);
                 return;
             };
-            let offset = sub3(
-                game.body_of(hook.clone()).origin,
-                add3(body.origin, body.bounds.min),
-            );
+            let offset = sub3(game.body_of(hook.clone()).origin, add3(body.origin, body.bounds.min));
             game.require_entity_mut(&hook).enemy = Some(contact.other.clone());
             game.require_entity_mut(&hook).pos1 = offset;
             game.set_solid(hook.clone(), Q2Solid::Trigger);
@@ -269,13 +249,7 @@ impl LmctfGrappleEquipment {
     }
 
     /// Launch a hook (`launch`).
-    fn launch(
-        &self,
-        player: ActorId,
-        game: &mut Q2GameServices,
-        start: Vec3,
-        direction: Vec3,
-    ) -> ActorId {
+    fn launch(&self, player: ActorId, game: &mut Q2GameServices, start: Vec3, direction: Vec3) -> ActorId {
         let hook = game.create("noclass", BTreeMap::new());
         let angles = vector_angles(direction);
         lmctf_state_mut(game, player.clone()).hook = Some(hook.clone());
@@ -380,10 +354,7 @@ impl LmctfGrappleEquipment {
             GrappleHand::Right => 8.0,
         };
         let start = add3(
-            add3(
-                add3(body.origin, scale3(basis.forward, 8.0)),
-                scale3(basis.right, side),
-            ),
+            add3(add3(body.origin, scale3(basis.forward, 8.0)), scale3(basis.right, side)),
             vec3(0.0, 0.0, pose.view_height as f32 - 8.0),
         );
         if lmctf_state_mut(game, player.clone()).hook_state == 0 {
@@ -404,8 +375,7 @@ impl LmctfGrappleEquipment {
             return;
         }
         let hooked = lmctf_state_mut(game, player.clone()).hook.clone();
-        let hook =
-            hooked.and_then(|hook| game.entity(&hook).map(|entity| entity.actor.id().clone()));
+        let hook = hooked.and_then(|hook| game.entity(&hook).map(|entity| entity.actor.id().clone()));
         let Some(hook) = hook else {
             lmctf_state_mut(game, player).hook_state = 0;
             return;
@@ -469,7 +439,11 @@ impl LmctfGrappleEquipment {
             .lmctf_states
             .get(&actor)
             .is_some_and(|state| state.hook_state == 2 && state.hook_length < 50.0);
-        if pulls { 0 } else { 1 }
+        if pulls {
+            0
+        } else {
+            1
+        }
     }
 }
 
@@ -588,9 +562,7 @@ pub fn lmctf_grapple_callbacks() -> Q2CallbackDefinitions {
     callbacks
         .think
         .insert("lmctf:Grapple_Bolt_Think", lmctf_hook_think as Q2Think);
-    callbacks
-        .touch
-        .insert("lmctf:hook_touch", lmctf_hook_touch as Q2Touch);
+    callbacks.touch.insert("lmctf:hook_touch", lmctf_hook_touch as Q2Touch);
     callbacks.die.insert("lmctf:hook_die", lmctf_hook_die as Q2Die);
     callbacks
 }

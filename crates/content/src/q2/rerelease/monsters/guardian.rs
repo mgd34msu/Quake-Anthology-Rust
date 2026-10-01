@@ -3,7 +3,7 @@
 //! ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, normalize3, sub3, vec3};
+use qa_core::math::{normalize3, sub3, vec3, Bounds};
 
 use super::beam::fire_monster_beam;
 use super::boss::{boss_explode, random_body_point};
@@ -11,18 +11,11 @@ use super::common::monster_flash;
 use super::tables::flashes::rerelease_flash;
 use super::tables::guardian::{guardian_frame, guardian_moves};
 use crate::q2::base::monsters::common::{move_handler, sound_handler};
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2GameServices, Q2PresentationEvent, Q2SoundEvent,
-    Q2SoundLoop,
-};
-use crate::q2::foundation::monsters::ai::{
-    enemy_eye, health, project_flash, target_distance, visible,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2GameServices, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop};
+use crate::q2::foundation::monsters::ai::{enemy_eye, health, project_flash, target_distance, visible};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::PainReaction;
 
@@ -64,11 +57,7 @@ fn spin_sound(context: &mut MonsterContext, start: bool) {
         volume: 1.0,
         attenuation: 1.0,
         reliable: false,
-        loop_: if start {
-            Q2SoundLoop::Start
-        } else {
-            Q2SoundLoop::Stop
-        },
+        loop_: if start { Q2SoundLoop::Start } else { Q2SoundLoop::Stop },
         loop_owner: None,
     }));
 }
@@ -142,8 +131,11 @@ fn guardian_fire_blaster(context: &mut MonsterContext) {
     };
     let actor = context.actor().clone();
     let flash = rerelease_flash::GUARDIAN_BLASTER;
-    let start =
-        project_flash(context, muzzle_offset(context.game.options.edition, flash as usize), None);
+    let start = project_flash(
+        context,
+        muzzle_offset(context.game.options.edition, flash as usize),
+        None,
+    );
     let target = vec3(
         eye.x + (context.game.random() * 2.0 - 1.0) as f32 * 5.0,
         eye.y + (context.game.random() * 2.0 - 1.0) as f32 * 5.0,
@@ -305,20 +297,14 @@ pub fn guardian_definition() -> Q2MonsterDefinition {
     definition.pain = Some(guardian_pain);
     for (name, handler) in [
         ("guardian_run", MonsterHandler::Callback(guardian_run)),
-        (
-            "guardian_footstep",
-            sound_handler("zortemp/step.wav", 4, 1.0),
-        ),
+        ("guardian_footstep", sound_handler("zortemp/step.wav", 4, 1.0)),
         ("BossExplode", MonsterHandler::Callback(boss_explode)),
         ("guardian_atk1", MonsterHandler::Callback(guardian_atk1)),
         ("guardian_atk1_charge", MonsterHandler::Callback(guardian_atk1_charge)),
         ("guardian_atk1_finish", MonsterHandler::Callback(guardian_atk1_finish)),
         ("guardian_atk2", move_handler("guardian_move_atk2_fire")),
         ("guardian_atk2_out", move_handler("guardian_move_atk2_out")),
-        (
-            "guardian_fire_blaster",
-            MonsterHandler::Callback(guardian_fire_blaster),
-        ),
+        ("guardian_fire_blaster", MonsterHandler::Callback(guardian_fire_blaster)),
         ("guardian_laser_fire", MonsterHandler::Callback(guardian_laser_fire)),
         ("guardian_kick", MonsterHandler::Callback(guardian_kick)),
         ("guardian_dead", MonsterHandler::Callback(guardian_dead)),

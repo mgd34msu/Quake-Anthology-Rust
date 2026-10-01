@@ -6,13 +6,11 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, vec3};
+use qa_core::math::{add3, vec3, Bounds, Vec3};
 
 use super::rogue_common::source_trace_world;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2GameServices, Q2MotionKind, Q2Solid, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2GameServices, Q2MotionKind, Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::monster_solid_mask;
 use crate::q2::foundation::monsters::spawn_summoned_monster;
 use crate::q2::support::contracts::TraceFamily;
@@ -103,18 +101,11 @@ pub fn check_rogue_ground_spawn_point(
     }
     let min = add3(trace.end, bounds.min);
     let max = add3(trace.end, bounds.max);
-    let corners = [
-        (min.x, min.y),
-        (min.x, max.y),
-        (max.x, min.y),
-        (max.x, max.y),
-    ];
+    let corners = [(min.x, min.y), (min.x, max.y), (max.x, min.y), (max.x, max.y)];
     if corners.iter().all(|(x, y)| {
-        game.host.point_contents(vec3(
-            *x,
-            *y,
-            if gravity > 0.0 { max.z + 1.0 } else { min.z - 1.0 },
-        )) == 1
+        game.host
+            .point_contents(vec3(*x, *y, if gravity > 0.0 { max.z + 1.0 } else { min.z - 1.0 }))
+            == 1
     }) {
         return true;
     }
@@ -133,11 +124,7 @@ pub fn check_rogue_ground_spawn_point(
     }
     let mid = trace.end.z + if gravity < 0.0 { bounds.min.z } else { -bounds.max.z };
     start = vec3(start.x, start.y, if gravity < 0.0 { min.z } else { max.z });
-    stop = vec3(
-        stop.x,
-        stop.y,
-        start.z + if gravity < 0.0 { -36.0 } else { 36.0 },
-    );
+    stop = vec3(stop.x, stop.y, start.z + if gravity < 0.0 { -36.0 } else { 36.0 });
     for (x, y) in corners {
         let trace = game.host.trace(&Q2TraceRequest {
             start: vec3(x, y, start.z),
@@ -160,12 +147,7 @@ pub fn check_rogue_ground_spawn_point(
 }
 
 /// Create a rogue monster (`createRogueMonster`).
-pub fn create_rogue_monster(
-    game: &mut Q2GameServices,
-    origin: Vec3,
-    angles: Vec3,
-    classname: &str,
-) -> ActorId {
+pub fn create_rogue_monster(game: &mut Q2GameServices, origin: Vec3, angles: Vec3, classname: &str) -> ActorId {
     let actor = game.create(classname, BTreeMap::new());
     let mut moved = game.body_of(actor.clone());
     moved.origin = origin;

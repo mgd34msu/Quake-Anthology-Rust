@@ -3,7 +3,7 @@
 //! Original Rogue p_client.c lava-level cooperative spawn selection.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, scale3, sub3};
+use qa_core::math::{add3, length3, scale3, sub3, Vec3};
 
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode, Q2SpawnFn, SpawnModule};
 
@@ -41,13 +41,8 @@ impl Q2RoguePlayerSpawns {
                 continue;
             }
             let body = game.body_of(lava.clone());
-            let center = add3(
-                body.origin,
-                scale3(add3(body.bounds.min, body.bounds.max), 0.5),
-            );
-            if game.host.point_contents(center) & 56 != 0
-                && body.origin.z + body.bounds.max.z > lava_top
-            {
+            let center = add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5));
+            if game.host.point_contents(center) & 56 != 0 && body.origin.z + body.bounds.max.z > lava_top {
                 lava_top = body.origin.z + body.bounds.max.z;
                 highest_lava = Some(lava);
             }
@@ -76,7 +71,13 @@ impl Q2RoguePlayerSpawns {
             for player in game.host.players() {
                 let body = game.host.bodies().read(&player);
                 if body.is_some()
-                    && game.host.combat().read(&player).map(|combat| combat.health).unwrap_or(0.0) > 0.0
+                    && game
+                        .host
+                        .combat()
+                        .read(&player)
+                        .map(|combat| combat.health)
+                        .unwrap_or(0.0)
+                        > 0.0
                 {
                     let body = body.expect("rogue lava player body is missing");
                     distance = distance.min(f64::from(length3(sub3(origin, body.origin))));
@@ -89,10 +90,7 @@ impl Q2RoguePlayerSpawns {
         }
         let selected = selected?;
         let body = game.body_of(selected);
-        Some((
-            add3(body.origin, Vec3 { x: 0.0, y: 0.0, z: 9.0 }),
-            body.angles,
-        ))
+        Some((add3(body.origin, Vec3 { x: 0.0, y: 0.0, z: 9.0 }), body.angles))
     }
 }
 

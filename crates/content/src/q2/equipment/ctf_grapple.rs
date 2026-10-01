@@ -6,27 +6,26 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
 
 use crate::contract::{ArmorState, PoweredProtectionState, ProjectileRole, RegularArmorState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
-    Q2Die, Q2Edition, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SoundEvent, Q2SoundLoop, Q2Touch, Q2TraceRequest,
+    Q2Die, Q2Edition, Q2EffectEvent, Q2GameServices, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent,
+    Q2SoundLoop, Q2Touch, Q2TraceRequest,
 };
 use crate::q2::foundation::weapons::projection::{project_q2_actor, q2_actor_shot_mask, Q2ActorView};
 use crate::q2::foundation::weapons::types::WeaponHand;
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
-use qa_core::math::Plane;
 use crate::q2::support::contracts::{
-    AttackCause, BodyAttachment, BodyFollow, CombatState, CombatTraitChanges, DeathReaction,
-    EnvironmentHazard, Q2BspPlane, TouchContact, TouchSurface, TraceFamily, TraceHit,
-    TraceResult, WeaponBehaviorLaunch,
+    AttackCause, BodyAttachment, BodyFollow, CombatState, CombatTraitChanges, DeathReaction, EnvironmentHazard,
+    Q2BspPlane, TouchContact, TouchSurface, TraceFamily, TraceHit, TraceResult, WeaponBehaviorLaunch,
 };
+use qa_core::math::Plane;
 
 use super::grapple_services::{
-    grapple_body, grapple_velocity, CtfGrapplePhase, CtfGrappleState, GrappleAnchor, GrappleCableEvent,
-    GrappleHand, GrappleHooks, GrappleNoise,
+    grapple_body, grapple_velocity, CtfGrapplePhase, CtfGrappleState, GrappleAnchor, GrappleCableEvent, GrappleHand,
+    GrappleHooks, GrappleNoise,
 };
 use super::{ctf_handle, ctf_state_mut};
 
@@ -114,14 +113,7 @@ impl Q2CtfGrappleEquipment {
     }
 
     /// Play a grapple sound (`sound`).
-    pub fn sound(
-        &self,
-        entity: ActorId,
-        owner: ActorId,
-        game: &mut Q2GameServices,
-        file: &str,
-        reliable: bool,
-    ) {
+    pub fn sound(&self, entity: ActorId, owner: ActorId, game: &mut Q2GameServices, file: &str, reliable: bool) {
         let origin = grapple_body(entity.clone(), game).origin;
         let volume = (self.hooks.volume)(owner, game);
         game.host.emit(Q2PresentationEvent::Sound(Q2SoundEvent {
@@ -144,10 +136,7 @@ impl Q2CtfGrappleEquipment {
             .ctf_states
             .get(&player)
             .and_then(|source| source.grapple.clone())
-            .and_then(|grapple| {
-                game.entity(&grapple)
-                    .map(|entity| entity.actor.id().clone())
-            });
+            .and_then(|grapple| game.entity(&grapple).map(|entity| entity.actor.id().clone()));
         if let Some(hook) = hook {
             self.reset_hook(hook, game);
             return;
@@ -160,8 +149,12 @@ impl Q2CtfGrappleEquipment {
         }
         source.grapple = None;
         source.grapple_state = CtfGrapplePhase::Fly;
-        source.grapple_release_time =
-            game.host.now() + if game.options.edition == Q2Edition::Rerelease { 1.0 } else { 0.0 };
+        source.grapple_release_time = game.host.now()
+            + if game.options.edition == Q2Edition::Rerelease {
+                1.0
+            } else {
+                0.0
+            };
         Self::restore_knockback(player.clone(), game);
         if game.options.edition == Q2Edition::Classic {
             (self.hooks.set_grapple_prediction)(player, false, game);
@@ -194,8 +187,12 @@ impl Q2CtfGrappleEquipment {
             .expect("Q2 CTF grapple state is missing");
         source.grapple = None;
         source.grapple_state = CtfGrapplePhase::Fly;
-        source.grapple_release_time =
-            game.host.now() + if game.options.edition == Q2Edition::Rerelease { 1.0 } else { 0.0 };
+        source.grapple_release_time = game.host.now()
+            + if game.options.edition == Q2Edition::Rerelease {
+                1.0
+            } else {
+                0.0
+            };
         Self::restore_knockback(owner.clone(), game);
         set_hook_loop(hook.clone(), game, "");
         if game.options.edition == Q2Edition::Classic {
@@ -454,12 +451,7 @@ impl Q2CtfGrappleEquipment {
         source.grapple_state = CtfGrapplePhase::Fly;
         game.set_solid(hook.clone(), Q2Solid::Box);
         game.set_motion_kind(hook.clone(), Q2MotionKind::FlyMissile);
-        let trajectory = launch_trajectory(
-            game,
-            hook.clone(),
-            owner.clone(),
-            "q2:weapon_grapple".to_string(),
-        );
+        let trajectory = launch_trajectory(game, hook.clone(), owner.clone(), "q2:weapon_grapple".to_string());
         if let Some(update) = trajectory.as_ref() {
             game.project_trajectory(hook.clone(), update);
         }
@@ -482,10 +474,7 @@ impl Q2CtfGrappleEquipment {
                 };
                 add3(launch_origin, scale3(back, -10.0))
             } else {
-                let normal = trace
-                    .q2()
-                    .map(|fields| fields.source_plane.normal)
-                    .unwrap_or_default();
+                let normal = trace.q2().map(|fields| fields.source_plane.normal).unwrap_or_default();
                 add3(trace.end, normal)
             };
             let mut moved = game.body_of(hook.clone());
@@ -674,10 +663,7 @@ impl Q2CtfGrappleEquipment {
             GrappleHand::Right => 16.0,
         };
         let start = add3(
-            add3(
-                add3(origin, scale3(axes.forward, 16.0)),
-                scale3(axes.right, side),
-            ),
+            add3(add3(origin, scale3(axes.forward, 16.0)), scale3(axes.right, side)),
             vec3(0.0, 0.0, pose.view_height as f32 - 8.0),
         );
         if length3(sub3(start, end)) < 64.0 {
@@ -701,10 +687,7 @@ impl Q2CtfGrappleEquipment {
             .ctf_states
             .get(&player)
             .and_then(|state| state.grapple.clone())
-            .and_then(|grapple| {
-                game.entity(&grapple)
-                    .map(|entity| entity.actor.id().clone())
-            });
+            .and_then(|grapple| game.entity(&grapple).map(|entity| entity.actor.id().clone()));
         let Some(hook) = hook else {
             return;
         };
@@ -881,9 +864,7 @@ fn ctf_grapple_die(hook: ActorId, game: &mut Q2GameServices, reaction: DeathReac
 /// CTF grapple callbacks (`callbacks`).
 pub fn ctf_grapple_callbacks() -> Q2CallbackDefinitions {
     let mut callbacks = Q2CallbackDefinitions::default();
-    callbacks
-        .touch
-        .insert("CTFGrappleTouch", ctf_grapple_touch as Q2Touch);
+    callbacks.touch.insert("CTFGrappleTouch", ctf_grapple_touch as Q2Touch);
     callbacks.die.insert("grapple_die", ctf_grapple_die as Q2Die);
     callbacks
 }

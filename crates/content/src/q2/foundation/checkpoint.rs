@@ -18,10 +18,12 @@ pub fn save_q2_actor(actor: Option<&ActorId>) -> Option<SavedActorId> {
 /// Restore an actor reference through the checkpoint domain
 /// (`restoreQ2Actor`).
 pub fn restore_q2_actor(game: &mut Q2GameServices, actor: SavedActorId) -> OwnedActor {
-    game.host
-        .actors()
-        .resolve_saved(actor)
-        .unwrap_or_else(|| panic!("Q2 checkpoint references missing actor {}:{}", actor.slot, actor.generation))
+    game.host.actors().resolve_saved(actor).unwrap_or_else(|| {
+        panic!(
+            "Q2 checkpoint references missing actor {}:{}",
+            actor.slot, actor.generation
+        )
+    })
 }
 
 /// Attack provenance checkpoint (`Q2AttackCheckpoint`).

@@ -6,12 +6,8 @@ use qa_core::math::{dot3, sub3, vec3};
 use super::state::rogue_state;
 use crate::q2::base::monsters::parasite::parasite_drain_reachable;
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2TraceRequest};
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, finish_dodge, health, project_flash, visible,
-};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext,
-};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, finish_dodge, health, project_flash, visible};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext};
 use crate::q2::support::contracts::{CombatTraitChanges, TraceHit, TraceResult};
 
 /// Whether a trace hit only the world (`sourceTraceWorld`).
@@ -89,11 +85,7 @@ pub fn rogue_blocked_check_shot(context: &mut MonsterContext, chance: f64) -> bo
     } else {
         "tesla"
     };
-    let enemy_class = context
-        .game
-        .entities
-        .get(&enemy)
-        .map(|entity| entity.classname.clone());
+    let enemy_class = context.game.entities.get(&enemy).map(|entity| entity.classname.clone());
     if !visible(context, None) || enemy_class.as_deref() != Some(tesla) {
         return false;
     }

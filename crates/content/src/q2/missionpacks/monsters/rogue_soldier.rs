@@ -3,29 +3,23 @@
 //! Original Rogue m_soldier.c behavior. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, normalize3, scale3, sub3};
+use qa_core::math::{add3, dot3, normalize3, scale3, sub3, Bounds, Vec3};
 
 use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up,
-    rogue_monster_dodge,
+    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up, rogue_monster_dodge,
 };
 use super::state::rogue_state;
 use super::tables::rogue_soldier::{soldier_frame, soldier_moves};
-use crate::q2::base::monsters::common::{
-    HUMANOID_BOUNDS, finish_corpse, finish_corpse_default,
-};
+use crate::q2::base::monsters::common::{finish_corpse, finish_corpse_default, HUMANOID_BOUNDS};
 use crate::q2::foundation::host::Q2TraceRequest;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, finish_dodge, health, project_flash, target_distance,
-    vector_angles, visible,
+    angles_vectors, enemy_body, enemy_eye, finish_dodge, health, project_flash, target_distance, vector_angles, visible,
 };
+use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::soldier::{
     soldier_callbacks, soldier_die, soldier_run, soldier_stand, soldier_walk,
 };
-use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition, record_at,
-};
+use crate::q2::foundation::monsters::types::{record_at, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{blocked_check_platform, monster_flash};
 use crate::q2::support::contracts::{PainReaction, TraceHit, TraceResult};
 
@@ -106,37 +100,26 @@ fn rogue_soldier_fire(context: &mut MonsterContext, input: i32) {
     let fire = context.weapons;
     let actor = context.actor().clone();
     if skin <= 1 {
-        (fire.fire_blaster)(actor, &mut *context.game, start, aim, 5.0, 600.0, 8, false, crate::q2::foundation::weapons::types::Mod::BLASTER);
-    } else if skin <= 3 {
-        (fire.fire_shotgun)(
+        (fire.fire_blaster)(
             actor,
             &mut *context.game,
             start,
             aim,
-            2.0,
-            1.0,
-            1000.0,
-            500.0,
-            12,
-            0,
+            5.0,
+            600.0,
+            8,
+            false,
+            crate::q2::foundation::weapons::types::Mod::BLASTER,
         );
+    } else if skin <= 3 {
+        (fire.fire_shotgun)(actor, &mut *context.game, start, aim, 2.0, 1.0, 1000.0, 500.0, 12, 0);
     } else {
         if !context.state().hold_frame {
-            let wait = context.game.host.now()
-                + (3.0 + ((context.game.random() * 32768.0).floor() as i64 % 8) as f64) * 0.1;
+            let wait =
+                context.game.host.now() + (3.0 + ((context.game.random() * 32768.0).floor() as i64 % 8) as f64) * 0.1;
             context.entity_mut().wait = wait;
         }
-        (fire.fire_bullet)(
-            actor,
-            &mut *context.game,
-            start,
-            aim,
-            2.0,
-            4.0,
-            300.0,
-            500.0,
-            0,
-        );
+        (fire.fire_bullet)(actor, &mut *context.game, start, aim, 2.0, 4.0, 300.0, 500.0, 0);
         let hold = context.game.host.now() < context.entity().wait;
         context.state_mut().hold_frame = hold;
     }
@@ -162,8 +145,13 @@ fn rogue_soldier_duck_inner(context: &mut MonsterContext, eta: f64) {
         false,
     );
     let now = context.game.host.now();
-    context.state_mut().duck_wait =
-        now + eta + if skill == 0 || !simple { 1.0 } else { 0.1 * f64::from(3 - skill) };
+    context.state_mut().duck_wait = now
+        + eta
+        + if skill == 0 || !simple {
+            1.0
+        } else {
+            0.1 * f64::from(3 - skill)
+        };
 }
 
 /// Sidestep (`sidestep`).
@@ -186,13 +174,10 @@ fn rogue_soldier_refire(context: &mut MonsterContext, first: bool, blaster: bool
     }
     let enemy = context.entity().enemy.clone();
     let skin = context.entity().skin;
-    if enemy.is_none() || (skin <= 1) != blaster || health(&mut *context.game, enemy.as_ref()) <= 0.0
-    {
+    if enemy.is_none() || (skin <= 1) != blaster || health(&mut *context.game, enemy.as_ref()) <= 0.0 {
         return;
     }
-    if context.game.options.skill == 3 && context.game.random() < 0.5
-        || target_distance(context) < 80.0
-    {
+    if context.game.options.skill == 3 && context.game.random() < 0.5 || target_distance(context) < 80.0 {
         context.state_mut().next_frame = if first {
             soldier_frame::ATTAK102
         } else {
@@ -294,9 +279,7 @@ fn rogue_soldier_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     if context.game.host.now() < context.state().pain_time {
         let current = context.state().current_move.name.clone();
         if airborne
-            && (current == "soldier_move_pain1"
-                || current == "soldier_move_pain2"
-                || current == "soldier_move_pain3")
+            && (current == "soldier_move_pain1" || current == "soldier_move_pain2" || current == "soldier_move_pain3")
         {
             if context.state().ducked {
                 rogue_duck_up(context);
@@ -407,10 +390,7 @@ fn soldier_fire8(context: &mut MonsterContext) {
 
 /// Fire while running (`soldier_fire_run`).
 fn soldier_fire_run(context: &mut MonsterContext) {
-    if context.entity().skin <= 1
-        && context.entity().enemy.is_some()
-        && visible(context, None)
-    {
+    if context.entity().skin <= 1 && context.entity().enemy.is_some() && visible(context, None) {
         rogue_soldier_fire(context, 0);
     }
 }
@@ -494,130 +474,93 @@ fn soldier_stop_charge(context: &mut MonsterContext) {
 
 /// Create rogue soldier definitions (`createRogueSoldierDefinitions`).
 pub fn create_rogue_soldier_definitions() -> Vec<Q2MonsterDefinition> {
-    [
-        "monster_soldier_light",
-        "monster_soldier",
-        "monster_soldier_ss",
-    ]
-    .into_iter()
-    .map(|classname| {
-        let mut definition = Q2MonsterDefinition::new(
-            classname,
-            "soldier",
-            "models/monsters/soldier/tris.md2",
-            if classname == "monster_soldier_light" {
-                20.0
-            } else if classname == "monster_soldier" {
-                30.0
-            } else {
-                40.0
-            },
-            -30.0,
-            100.0,
-            HUMANOID_BOUNDS,
-            1.0,
-            "soldier_move_stand1",
-            soldier_moves(),
-            MonsterHandler::Callback(rogue_soldier_stand),
-            MonsterHandler::Callback(soldier_walk),
-            MonsterHandler::Callback(rogue_soldier_run),
-            MonsterHandler::Callback(rogue_soldier_attack),
-            soldier_die,
-        );
-        definition.blind_fire = classname == "monster_soldier_light";
-        definition.initialize = Some(MonsterHandler::Callback(rogue_soldier_stand));
-        definition.sight = Some(MonsterHandler::Callback(rogue_soldier_sight));
-        definition.pain = Some(rogue_soldier_pain);
-        definition.dodge = Some(rogue_soldier_dodge);
-        definition.duck = Some(rogue_soldier_duck);
-        definition.blocked = Some(rogue_soldier_blocked);
-        let mut callbacks = soldier_callbacks();
-        callbacks.insert(
-            "soldier_run".to_string(),
-            MonsterHandler::Callback(rogue_soldier_run),
-        );
-        callbacks.insert(
-            "monster_done_dodge".to_string(),
-            MonsterHandler::Callback(finish_dodge),
-        );
-        callbacks.insert(
-            "monster_duck_down".to_string(),
-            MonsterHandler::Callback(rogue_duck_down),
-        );
-        callbacks.insert(
-            "monster_duck_hold".to_string(),
-            MonsterHandler::Callback(rogue_duck_hold),
-        );
-        callbacks.insert(
-            "monster_duck_up".to_string(),
-            MonsterHandler::Callback(rogue_duck_up),
-        );
-        callbacks.insert(
-            "soldier_stop_charge".to_string(),
-            MonsterHandler::Callback(soldier_stop_charge),
-        );
-        callbacks.insert(
-            "soldier_fire1".to_string(),
-            MonsterHandler::Callback(soldier_fire1),
-        );
-        callbacks.insert(
-            "soldier_fire2".to_string(),
-            MonsterHandler::Callback(soldier_fire2),
-        );
-        callbacks.insert(
-            "soldier_fire3".to_string(),
-            MonsterHandler::Callback(soldier_fire3),
-        );
-        callbacks.insert(
-            "soldier_fire4".to_string(),
-            MonsterHandler::Callback(soldier_fire4),
-        );
-        callbacks.insert(
-            "soldier_fire6".to_string(),
-            MonsterHandler::Callback(soldier_fire6),
-        );
-        callbacks.insert(
-            "soldier_fire7".to_string(),
-            MonsterHandler::Callback(soldier_fire7),
-        );
-        callbacks.insert(
-            "soldier_fire8".to_string(),
-            MonsterHandler::Callback(soldier_fire8),
-        );
-        callbacks.insert(
-            "soldier_fire_run".to_string(),
-            MonsterHandler::Callback(soldier_fire_run),
-        );
-        callbacks.insert(
-            "soldier_attack1_refire1".to_string(),
-            MonsterHandler::Callback(soldier_attack1_refire1),
-        );
-        callbacks.insert(
-            "soldier_attack1_refire2".to_string(),
-            MonsterHandler::Callback(soldier_attack1_refire2),
-        );
-        callbacks.insert(
-            "soldier_attack2_refire1".to_string(),
-            MonsterHandler::Callback(soldier_attack2_refire1),
-        );
-        callbacks.insert(
-            "soldier_attack2_refire2".to_string(),
-            MonsterHandler::Callback(soldier_attack2_refire2),
-        );
-        callbacks.insert(
-            "soldier_attack3_refire".to_string(),
-            MonsterHandler::Callback(soldier_attack3_refire),
-        );
-        callbacks.insert(
-            "soldier_attack6_refire".to_string(),
-            MonsterHandler::Callback(soldier_attack6_refire),
-        );
-        callbacks.insert(
-            "soldier_dead2".to_string(),
-            MonsterHandler::Callback(soldier_dead2),
-        );
-        definition.callbacks = callbacks;
-        definition
-    })
-    .collect()
+    ["monster_soldier_light", "monster_soldier", "monster_soldier_ss"]
+        .into_iter()
+        .map(|classname| {
+            let mut definition = Q2MonsterDefinition::new(
+                classname,
+                "soldier",
+                "models/monsters/soldier/tris.md2",
+                if classname == "monster_soldier_light" {
+                    20.0
+                } else if classname == "monster_soldier" {
+                    30.0
+                } else {
+                    40.0
+                },
+                -30.0,
+                100.0,
+                HUMANOID_BOUNDS,
+                1.0,
+                "soldier_move_stand1",
+                soldier_moves(),
+                MonsterHandler::Callback(rogue_soldier_stand),
+                MonsterHandler::Callback(soldier_walk),
+                MonsterHandler::Callback(rogue_soldier_run),
+                MonsterHandler::Callback(rogue_soldier_attack),
+                soldier_die,
+            );
+            definition.blind_fire = classname == "monster_soldier_light";
+            definition.initialize = Some(MonsterHandler::Callback(rogue_soldier_stand));
+            definition.sight = Some(MonsterHandler::Callback(rogue_soldier_sight));
+            definition.pain = Some(rogue_soldier_pain);
+            definition.dodge = Some(rogue_soldier_dodge);
+            definition.duck = Some(rogue_soldier_duck);
+            definition.blocked = Some(rogue_soldier_blocked);
+            let mut callbacks = soldier_callbacks();
+            callbacks.insert("soldier_run".to_string(), MonsterHandler::Callback(rogue_soldier_run));
+            callbacks.insert("monster_done_dodge".to_string(), MonsterHandler::Callback(finish_dodge));
+            callbacks.insert(
+                "monster_duck_down".to_string(),
+                MonsterHandler::Callback(rogue_duck_down),
+            );
+            callbacks.insert(
+                "monster_duck_hold".to_string(),
+                MonsterHandler::Callback(rogue_duck_hold),
+            );
+            callbacks.insert("monster_duck_up".to_string(), MonsterHandler::Callback(rogue_duck_up));
+            callbacks.insert(
+                "soldier_stop_charge".to_string(),
+                MonsterHandler::Callback(soldier_stop_charge),
+            );
+            callbacks.insert("soldier_fire1".to_string(), MonsterHandler::Callback(soldier_fire1));
+            callbacks.insert("soldier_fire2".to_string(), MonsterHandler::Callback(soldier_fire2));
+            callbacks.insert("soldier_fire3".to_string(), MonsterHandler::Callback(soldier_fire3));
+            callbacks.insert("soldier_fire4".to_string(), MonsterHandler::Callback(soldier_fire4));
+            callbacks.insert("soldier_fire6".to_string(), MonsterHandler::Callback(soldier_fire6));
+            callbacks.insert("soldier_fire7".to_string(), MonsterHandler::Callback(soldier_fire7));
+            callbacks.insert("soldier_fire8".to_string(), MonsterHandler::Callback(soldier_fire8));
+            callbacks.insert(
+                "soldier_fire_run".to_string(),
+                MonsterHandler::Callback(soldier_fire_run),
+            );
+            callbacks.insert(
+                "soldier_attack1_refire1".to_string(),
+                MonsterHandler::Callback(soldier_attack1_refire1),
+            );
+            callbacks.insert(
+                "soldier_attack1_refire2".to_string(),
+                MonsterHandler::Callback(soldier_attack1_refire2),
+            );
+            callbacks.insert(
+                "soldier_attack2_refire1".to_string(),
+                MonsterHandler::Callback(soldier_attack2_refire1),
+            );
+            callbacks.insert(
+                "soldier_attack2_refire2".to_string(),
+                MonsterHandler::Callback(soldier_attack2_refire2),
+            );
+            callbacks.insert(
+                "soldier_attack3_refire".to_string(),
+                MonsterHandler::Callback(soldier_attack3_refire),
+            );
+            callbacks.insert(
+                "soldier_attack6_refire".to_string(),
+                MonsterHandler::Callback(soldier_attack6_refire),
+            );
+            callbacks.insert("soldier_dead2".to_string(), MonsterHandler::Callback(soldier_dead2));
+            definition.callbacks = callbacks;
+            definition
+        })
+        .collect()
 }

@@ -12,9 +12,9 @@ pub mod types;
 pub use self::match_::Q2ProductMatch;
 pub use self::match_selection::source_q2_match_selection;
 pub use self::types::{
-    Q2ClassicProgram, Q2CompositionCommon, Q2CompositionEntityHooks, Q2CompositionEvent, Q2CompositionOptions,
-    Q2CompositionServices, Q2CvarSource, Q2DeathmatchFlagsHooks, Q2ForeignPowerups, Q2MatchSelection,
-    Q2RereleaseProgram, set_q2_info_value,
+    set_q2_info_value, Q2ClassicProgram, Q2CompositionCommon, Q2CompositionEntityHooks, Q2CompositionEvent,
+    Q2CompositionOptions, Q2CompositionServices, Q2CvarSource, Q2DeathmatchFlagsHooks, Q2ForeignPowerups,
+    Q2MatchSelection, Q2RereleaseProgram,
 };
 
 /// Arena runtime state for product composition.
@@ -27,7 +27,10 @@ pub struct CompositionRuntime {
 
 impl Default for CompositionRuntime {
     fn default() -> Self {
-        Self { services: None, active_rules: 0 }
+        Self {
+            services: None,
+            active_rules: 0,
+        }
     }
 }
 
@@ -42,7 +45,10 @@ impl std::fmt::Debug for CompositionRuntime {
 
 /// Session composition services.
 pub fn composition_services(game: &Q2GameServices) -> &Q2CompositionServices {
-    game.composition.services.as_ref().expect("Q2 composition is not registered")
+    game.composition
+        .services
+        .as_ref()
+        .expect("Q2 composition is not registered")
 }
 
 /// Emit a composition event to the session.

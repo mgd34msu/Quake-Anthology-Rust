@@ -3,34 +3,28 @@
 //! Quake II rogue/m_stalker.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::rogue_common::rogue_blocked_check_shot;
 use super::tables::rogue_stalker::{stalker_frame, stalker_moves};
 use super::types::{mission_services, mission_weapons};
 use crate::q2::base::monsters::common::{
-    alive_enemy, begin_death, damaged_skin, finish_corpse, move_handler,
-    sound_handler,
+    alive_enemy, begin_death, damaged_skin, finish_corpse, move_handler, sound_handler,
 };
+use crate::q2::foundation::host::Q2MotionKind;
 use crate::q2::foundation::host::Q2TraceRequest;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, attack_trace_mask, change_yaw, enemy_body, finish_dodge,
-    health, monster_solid_mask, project_flash, vector_angles, visible,
+    angles_vectors, attack_trace_mask, change_yaw, enemy_body, finish_dodge, health, monster_solid_mask, project_flash,
+    vector_angles, visible,
 };
 use crate::q2::foundation::monsters::perception::found_target;
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, MonsterSpawner,
-    Q2MonsterDefinition,
+    MonsterAttackState, MonsterContext, MonsterHandler, MonsterSpawner, Q2MonsterDefinition,
 };
-use crate::q2::foundation::host::Q2MotionKind;
 use crate::q2::rerelease::monsters::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    monster_flash, monster_jump_finished,
+    blocked_check_jump, blocked_check_platform, monster_flash, monster_jump_finished, JumpNavigation, JumpResult,
 };
-use crate::q2::support::contracts::{
-    DeathReaction, PainReaction, TraceContact, TraceFamily, TraceHit,
-    TraceResult,
-};
+use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceContact, TraceFamily, TraceHit, TraceResult};
 
 /// Ceiling (`ceiling`).
 fn stalker_ceiling(context: &mut MonsterContext) -> bool {
@@ -68,13 +62,14 @@ pub fn stalker_transition_ok(context: &mut MonsterContext, spawned_by_widow: boo
     let end = vec3(
         body.origin.x,
         body.origin.y,
-        body.origin.z + if on_ceiling {
-            -384.0
-        } else if spawned_by_widow {
-            256.0
-        } else {
-            180.0
-        },
+        body.origin.z
+            + if on_ceiling {
+                -384.0
+            } else if spawned_by_widow {
+                256.0
+            } else {
+                180.0
+            },
     );
     let mask = monster_solid_mask(&*context.game);
     let trace = context.game.host.trace(&Q2TraceRequest {
@@ -144,10 +139,7 @@ pub fn stalker_jump_angles(start: Vec3, end: Vec3, velocity: f64) -> (f64, f64) 
         (vertical / horizontal).atan() * if delta.z > 0.0 { -1.0 } else { 1.0 }
     };
     let first = (distance * 800.0 * angle.cos().powi(2) / velocity.powi(2) - angle.sin()).asin();
-    (
-        (first - angle) / 2.0,
-        (std::f64::consts::PI - first - angle) / 2.0,
-    )
+    ((first - angle) / 2.0, (std::f64::consts::PI - first - angle) / 2.0)
 }
 
 /// Transition (`transition`).
@@ -238,10 +230,7 @@ fn stalker_pounce(context: &mut MonsterContext, destination: Vec3) -> bool {
     let Some(enemy_id) = enemy_id else {
         return false;
     };
-    if stalker_ceiling(context)
-        || enemy.ground.is_none()
-        || context.game.host.point_contents(destination) & 56 != 0
-    {
+    if stalker_ceiling(context) || enemy.ground.is_none() || context.game.host.point_contents(destination) & 56 != 0 {
         return false;
     }
     let enemy_state = context.game.monsters.states.get(&enemy_id).cloned();
@@ -266,7 +255,13 @@ fn stalker_pounce(context: &mut MonsterContext, destination: Vec3) -> bool {
         (enemy.bounds.max.x, enemy.bounds.max.y),
         (enemy.bounds.min.x, enemy.bounds.max.y),
     ] {
-        if context.game.host.point_contents(vec3(cx, cy, enemy.bounds.min.z - 0.25)) & 3 == 0 {
+        if context
+            .game
+            .host
+            .point_contents(vec3(cx, cy, enemy.bounds.min.z - 0.25))
+            & 3
+            == 0
+        {
             return false;
         }
     }
@@ -281,7 +276,11 @@ fn stalker_pounce(context: &mut MonsterContext, destination: Vec3) -> bool {
         return false;
     }
     let mut high = delta.z >= 32.0;
-    let target = vec3(destination.x, destination.y, destination.z + if high { 32.0 } else { 0.0 });
+    let target = vec3(
+        destination.x,
+        destination.y,
+        destination.z + if high { 32.0 } else { 0.0 },
+    );
     let mask = monster_solid_mask(&*context.game);
     let trace = context.game.host.trace(&Q2TraceRequest {
         start: body.origin,
@@ -291,9 +290,7 @@ fn stalker_pounce(context: &mut MonsterContext, destination: Vec3) -> bool {
         mask,
         exclude: Vec::new(),
     });
-    if trace.fraction < 1.0
-        && !matches!(&trace.hit, TraceHit::Actor { actor } if *actor == enemy_id)
-    {
+    if trace.fraction < 1.0 && !matches!(&trace.hit, TraceHit::Actor { actor } if *actor == enemy_id) {
         high = true;
     }
     let mut velocity = 400.1;
@@ -314,11 +311,7 @@ fn stalker_pounce(context: &mut MonsterContext, destination: Vec3) -> bool {
     let gravity = mission_services(&*context.game).gravity();
     let mut moved = body;
     let flat = scale3(forward, (velocity * chosen.cos()) as f32);
-    moved.velocity = vec3(
-        flat.x,
-        flat.y,
-        (velocity * chosen.sin() + 0.5 * gravity * 0.1) as f32,
-    );
+    moved.velocity = vec3(flat.x, flat.y, (velocity * chosen.sin() + 0.5 * gravity * 0.1) as f32);
     context.game.write_body(actor, &moved, true);
     true
 }
@@ -350,10 +343,7 @@ fn stalker_shoot(context: &mut MonsterContext) {
     let mut direction = sub3(enemy.origin, start);
     let mut end = enemy.origin;
     if context.game.random() < 0.2 + 0.1 * f64::from(context.game.options.skill) {
-        end = add3(
-            enemy.origin,
-            scale3(enemy.velocity, length3(direction) / 1000.0),
-        );
+        end = add3(enemy.origin, scale3(enemy.velocity, length3(direction) / 1000.0));
         direction = sub3(end, start);
     }
     let mask = attack_trace_mask(&*context.game);
@@ -365,9 +355,7 @@ fn stalker_shoot(context: &mut MonsterContext) {
         mask,
         exclude: Vec::new(),
     });
-    if trace_world(context, &trace)
-        || matches!(&trace.hit, TraceHit::Actor { actor } if *actor == enemy_id)
-    {
+    if trace_world(context, &trace) || matches!(&trace.hit, TraceHit::Actor { actor } if *actor == enemy_id) {
         let weapons = mission_weapons(&*context.game);
         weapons.fire_blaster2(actor, &mut *context.game, start, direction, 15.0, 800.0, 8);
         monster_flash(context, 144, start, direction);
@@ -531,9 +519,7 @@ fn stalker_dodge(
     _direct: bool,
 ) {
     let actor = context.actor().clone();
-    if context.game.body_of(actor.clone()).ground.is_none()
-        || health(&mut *context.game, Some(&actor)) <= 0.0
-    {
+    if context.game.body_of(actor.clone()).ground.is_none() || health(&mut *context.game, Some(&actor)) <= 0.0 {
         return;
     }
     if context.entity().enemy.is_none() {
@@ -570,9 +556,7 @@ fn stalker_blocked(context: &mut MonsterContext, distance: f64) -> bool {
         stalker_pounce(context, enemy.origin);
         return true;
     }
-    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None)
-        != JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 256.0, 68.0, true, JumpNavigation::None) != JumpResult::None {
         let actor = context.actor().clone();
         let above = enemy.origin.z >= context.game.body_of(actor).origin.z;
         context.set_move(
@@ -726,8 +710,14 @@ pub fn create_stalker_definition() -> Q2MonsterDefinition {
         ("stalker_shoot_attack", MonsterHandler::Callback(stalker_shoot)),
         ("stalker_shoot_attack2", MonsterHandler::Callback(stalker_shoot_attack2)),
         ("stalker_swing_attack", MonsterHandler::Callback(stalker_swing_attack)),
-        ("stalker_jump_straightup", MonsterHandler::Callback(stalker_jump_straightup)),
-        ("stalker_jump_wait_land", MonsterHandler::Callback(stalker_jump_wait_land)),
+        (
+            "stalker_jump_straightup",
+            MonsterHandler::Callback(stalker_jump_straightup),
+        ),
+        (
+            "stalker_jump_wait_land",
+            MonsterHandler::Callback(stalker_jump_wait_land),
+        ),
         ("stalker_jump_up", MonsterHandler::Callback(stalker_jump_up)),
         ("stalker_jump_down", MonsterHandler::Callback(stalker_jump_down)),
         ("monster_done_dodge", MonsterHandler::Callback(finish_dodge)),

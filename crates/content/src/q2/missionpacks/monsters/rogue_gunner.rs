@@ -7,8 +7,7 @@ use qa_core::identity::ActorId;
 use qa_core::math::{add3, length3, normalize3, scale3, sub3};
 
 use super::rogue_common::{
-    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up,
-    rogue_monster_dodge,
+    rogue_blocked_check_shot, rogue_duck_down, rogue_duck_hold, rogue_duck_up, rogue_monster_dodge,
 };
 use super::state::rogue_state;
 use super::tables::rogue_gunner::{gunner_frame, gunner_moves};
@@ -16,16 +15,12 @@ use crate::q2::base::monsters::common::{damaged_skin, monster_shot};
 use crate::q2::base::monsters::gunner::{gunner_definition, gunner_run};
 use crate::q2::foundation::host::Q2TraceRequest;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, finish_dodge, project_flash, target_distance,
-    vector_angles, visible,
+    angles_vectors, enemy_body, finish_dodge, project_flash, target_distance, vector_angles, visible,
 };
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::rerelease::monsters::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform,
-    monster_flash, monster_jump_finished,
+    blocked_check_jump, blocked_check_platform, monster_flash, monster_jump_finished, JumpNavigation, JumpResult,
 };
 use crate::q2::support::contracts::{PainReaction, TraceHit, TraceResult};
 
@@ -65,8 +60,7 @@ fn grenade_check(context: &mut MonsterContext) -> bool {
         exclude: Vec::new(),
     });
     let enemy_id = context.entity().enemy.clone();
-    trace.fraction == 1.0
-        || matches!(&trace.hit, TraceHit::Actor { actor } if Some(actor) == enemy_id.as_ref())
+    trace.fraction == 1.0 || matches!(&trace.hit, TraceHit::Actor { actor } if Some(actor) == enemy_id.as_ref())
 }
 
 /// Grenade (`grenade`).
@@ -254,9 +248,7 @@ fn rogue_gunner_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     damaged_skin(context);
     finish_dodge(context);
     let actor = context.actor().clone();
-    if context.game.body_of(actor).ground.is_none()
-        || context.game.host.now() < context.state().pain_time
-    {
+    if context.game.body_of(actor).ground.is_none() || context.game.host.now() < context.state().pain_time {
         return;
     }
     let now = context.game.host.now();
@@ -301,14 +293,7 @@ fn rogue_gunner_dodge(
     trace: Option<&TraceResult>,
     _direct: bool,
 ) {
-    rogue_monster_dodge(
-        context,
-        attacker,
-        eta,
-        trace,
-        Some(gunner_duck),
-        Some(gunner_sidestep),
-    );
+    rogue_monster_dodge(context, attacker, eta, trace, Some(gunner_duck), Some(gunner_sidestep));
 }
 
 /// Duck slot (`duck`).
@@ -323,23 +308,14 @@ fn rogue_gunner_blocked(context: &mut MonsterContext, distance: f64) -> bool {
     if rogue_blocked_check_shot(context, chance) || blocked_check_platform(context, distance) {
         return true;
     }
-    if blocked_check_jump(context, distance, 192.0, 40.0, true, JumpNavigation::None)
-        == JumpResult::None
-    {
+    if blocked_check_jump(context, distance, 192.0, 40.0, true, JumpNavigation::None) == JumpResult::None {
         return false;
     }
     if let Some(enemy) = enemy_body(context) {
         finish_dodge(context);
         let actor = context.actor().clone();
         let above = enemy.origin.z > context.game.body_of(actor).origin.z;
-        context.set_move(
-            if above {
-                "gunner_move_jump2"
-            } else {
-                "gunner_move_jump"
-            },
-            false,
-        );
+        context.set_move(if above { "gunner_move_jump2" } else { "gunner_move_jump" }, false);
     }
     true
 }
@@ -355,17 +331,7 @@ fn gunner_fire(context: &mut MonsterContext) {
     };
     let fire_bullet = context.weapons.fire_bullet;
     let actor = context.actor().clone();
-    fire_bullet(
-        actor,
-        &mut *context.game,
-        start,
-        direction,
-        3.0,
-        4.0,
-        300.0,
-        500.0,
-        0,
-    );
+    fire_bullet(actor, &mut *context.game, start, direction, 3.0, 4.0, 300.0, 500.0, 0);
     monster_flash(context, flash, start, direction);
 }
 
@@ -392,8 +358,7 @@ fn gunner_jump2_now(context: &mut MonsterContext) {
 /// Jump wait land (`gunner_jump_wait_land`).
 fn gunner_jump_wait_land(context: &mut MonsterContext) {
     let actor = context.actor().clone();
-    let landed =
-        context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
+    let landed = context.game.body_of(actor).ground.is_some() || monster_jump_finished(context);
     let next = context.entity().frame + if landed { 1 } else { 0 };
     context.state_mut().next_frame = next;
 }
@@ -409,14 +374,12 @@ pub fn create_rogue_gunner_definition() -> Q2MonsterDefinition {
     definition.dodge = Some(rogue_gunner_dodge);
     definition.duck = Some(rogue_gunner_duck);
     definition.blocked = Some(rogue_gunner_blocked);
-    definition.callbacks.insert(
-        "gunner_run".to_string(),
-        MonsterHandler::Callback(rogue_gunner_run),
-    );
-    definition.callbacks.insert(
-        "monster_done_dodge".to_string(),
-        MonsterHandler::Callback(finish_dodge),
-    );
+    definition
+        .callbacks
+        .insert("gunner_run".to_string(), MonsterHandler::Callback(rogue_gunner_run));
+    definition
+        .callbacks
+        .insert("monster_done_dodge".to_string(), MonsterHandler::Callback(finish_dodge));
     definition.callbacks.insert(
         "gunner_duck_down".to_string(),
         MonsterHandler::Callback(gunner_duck_down),
@@ -425,26 +388,22 @@ pub fn create_rogue_gunner_definition() -> Q2MonsterDefinition {
         "monster_duck_hold".to_string(),
         MonsterHandler::Callback(rogue_duck_hold),
     );
-    definition.callbacks.insert(
-        "monster_duck_up".to_string(),
-        MonsterHandler::Callback(rogue_duck_up),
-    );
-    definition.callbacks.insert(
-        "GunnerGrenade".to_string(),
-        MonsterHandler::Callback(gunner_grenade),
-    );
-    definition.callbacks.insert(
-        "GunnerFire".to_string(),
-        MonsterHandler::Callback(gunner_fire),
-    );
+    definition
+        .callbacks
+        .insert("monster_duck_up".to_string(), MonsterHandler::Callback(rogue_duck_up));
+    definition
+        .callbacks
+        .insert("GunnerGrenade".to_string(), MonsterHandler::Callback(gunner_grenade));
+    definition
+        .callbacks
+        .insert("GunnerFire".to_string(), MonsterHandler::Callback(gunner_fire));
     definition.callbacks.insert(
         "gunner_blind_check".to_string(),
         MonsterHandler::Callback(gunner_blind_check),
     );
-    definition.callbacks.insert(
-        "gunner_jump_now".to_string(),
-        MonsterHandler::Callback(gunner_jump_now),
-    );
+    definition
+        .callbacks
+        .insert("gunner_jump_now".to_string(), MonsterHandler::Callback(gunner_jump_now));
     definition.callbacks.insert(
         "gunner_jump2_now".to_string(),
         MonsterHandler::Callback(gunner_jump2_now),

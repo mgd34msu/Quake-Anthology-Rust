@@ -3,15 +3,13 @@
 //! Quake II g_trigger.c environmental triggers.
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, scale3, vec3};
+use qa_core::math::{scale3, vec3, Vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::checkpoint::restore_q2_actor;
 use crate::q2::foundation::entity_services::js_round;
 use crate::q2::foundation::fields::{integer_field, movedir, number_field};
-use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
-};
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop};
 use crate::q2::support::contracts::TouchContact;
 
 use super::types::Q2BaseEntityHooks;
@@ -71,9 +69,7 @@ fn hooks(game: &Q2GameServices) -> Q2BaseEntityHooks {
 /// Trigger push touch (`pushTouch`).
 fn trigger_push_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchContact) {
     let other = contact.other.clone();
-    let is_grenade = game
-        .entity(&other)
-        .is_some_and(|entity| entity.classname == "grenade");
+    let is_grenade = game.entity(&other).is_some_and(|entity| entity.classname == "grenade");
     let health = game.host.combat().read(&other).map_or(0.0, |state| state.health);
     if is_grenade || health > 0.0 {
         let entity = game.require_entity(&actor);
@@ -125,8 +121,7 @@ fn trigger_hurt_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchC
     }
     let (spawnflags, damage) = (entity.spawnflags, entity.damage);
     let frame_seconds = game.host.frame_seconds();
-    game.require_entity_mut(&actor).timestamp =
-        now + if spawnflags & 16 != 0 { 1.0 } else { frame_seconds };
+    game.require_entity_mut(&actor).timestamp = now + if spawnflags & 16 != 0 { 1.0 } else { frame_seconds };
     if spawnflags & 4 == 0 && (js_round(now / frame_seconds) as i64) % 10 == 0 {
         game.host.emit(Q2PresentationEvent::Sound(Q2SoundEvent {
             actor: Some(other.clone()),
@@ -200,12 +195,7 @@ fn trigger_monsterjump_touch(actor: ActorId, game: &mut Q2GameServices, contact:
 }
 
 /// Trigger hurt use (`hurtUse`).
-fn trigger_hurt_use(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    _other: Option<ActorId>,
-    _activator: Option<ActorId>,
-) {
+fn trigger_hurt_use(actor: ActorId, game: &mut Q2GameServices, _other: Option<ActorId>, _activator: Option<ActorId>) {
     let entity = game.require_entity_mut(&actor);
     entity.solid = if entity.solid == Q2Solid::None {
         Q2Solid::Trigger
@@ -295,11 +285,7 @@ pub fn spawn_trigger(actor: ActorId, game: &mut Q2GameServices) -> bool {
             true
         }
         "trigger_gravity" => {
-            let has_gravity = game
-                .require_entity(&actor)
-                .spawn
-                .values
-                .contains_key("gravity");
+            let has_gravity = game.require_entity(&actor).spawn.values.contains_key("gravity");
             if !has_gravity {
                 game.host.diagnostic("trigger_gravity without gravity set");
                 game.remove_actor(actor);
@@ -307,11 +293,7 @@ pub fn spawn_trigger(actor: ActorId, game: &mut Q2GameServices) -> bool {
             }
             init_trigger(actor.clone(), game);
             let gravity = if game.options.edition == Q2Edition::Classic {
-                f64::from(integer_field(
-                    &game.require_entity(&actor).spawn.clone(),
-                    "gravity",
-                    0,
-                ))
+                f64::from(integer_field(&game.require_entity(&actor).spawn.clone(), "gravity", 0))
             } else {
                 number_field(&game.require_entity(&actor).spawn.clone(), "gravity", 0.0)
             };

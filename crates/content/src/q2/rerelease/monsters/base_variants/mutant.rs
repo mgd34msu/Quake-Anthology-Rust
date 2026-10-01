@@ -6,25 +6,20 @@ use qa_core::identity::ActorId;
 use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3};
 
 use super::super::common::{
-    JumpNavigation, JumpResult, blocked_check_jump, blocked_check_platform, check_gib,
-    monster_jump_finished, reacts_to_pain,
+    blocked_check_jump, blocked_check_platform, check_gib, monster_jump_finished, reacts_to_pain, JumpNavigation,
+    JumpResult,
 };
 use super::super::tables::mutant::{mutant_frame, mutant_moves};
 use crate::q2::base::monsters::common::alive_enemy;
-use crate::q2::base::monsters::mutant::{MutantSource, create_mutant_definition};
+use crate::q2::base::monsters::mutant::{create_mutant_definition, MutantSource};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::Q2GameServices;
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, check_bottom, corpse, enemy_body, health, target_distance,
-    walk_move,
+    angles_vectors, check_bottom, corpse, enemy_body, health, target_distance, walk_move,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction, TouchContact,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TouchContact};
 
 /// Hit (`hit`).
 fn mutant_hit(context: &mut MonsterContext, right: bool) {
@@ -349,7 +344,9 @@ fn rerelease_mutant_blocked(context: &mut MonsterContext, distance: f64) -> bool
 fn mutant_step(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let variant = (context.game.random() * 3.0).floor() as i32 + 1;
-    context.game.sound(&actor, &format!("mutant/step{variant}.wav"), 4, 1.0, 1.0);
+    context
+        .game
+        .sound(&actor, &format!("mutant/step{variant}.wav"), 4, 1.0, 1.0);
 }
 
 /// Check refire (`mutant_check_refire`).
@@ -408,8 +405,7 @@ fn mutant_check_landing(context: &mut MonsterContext) {
 fn mutant_jump_wait_land(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let frame = context.game.require_entity(&actor).frame;
-    let waiting =
-        !monster_jump_finished(context) && context.game.body_of(actor).ground.is_none();
+    let waiting = !monster_jump_finished(context) && context.game.body_of(actor).ground.is_none();
     context.state_mut().next_frame = if waiting { frame } else { frame + 1 };
 }
 
@@ -439,8 +435,12 @@ pub fn create_rerelease_mutant_definition() -> Q2MonsterDefinition {
     let mut source_callbacks = Q2CallbackDefinitions::default();
     source_callbacks.touch.insert("mutant_jump_touch", mutant_touch);
     definition.source_callbacks = Some(source_callbacks);
-    definition.ai.insert("ai_move_slide_right".to_string(), mutant_slide_right);
-    definition.ai.insert("ai_move_slide_left".to_string(), mutant_slide_left);
+    definition
+        .ai
+        .insert("ai_move_slide_right".to_string(), mutant_slide_right);
+    definition
+        .ai
+        .insert("ai_move_slide_left".to_string(), mutant_slide_left);
     definition.check_attack = Some(rerelease_mutant_check_attack);
     definition.pain = Some(rerelease_mutant_pain);
     definition.die = rerelease_mutant_die;
@@ -449,24 +449,12 @@ pub fn create_rerelease_mutant_definition() -> Q2MonsterDefinition {
         ("mutant_step", MonsterHandler::Callback(mutant_step)),
         ("mutant_hit_left", MonsterHandler::Callback(mutant_hit_left)),
         ("mutant_hit_right", MonsterHandler::Callback(mutant_hit_right)),
-        (
-            "mutant_check_refire",
-            MonsterHandler::Callback(mutant_check_refire),
-        ),
-        (
-            "mutant_jump_takeoff",
-            MonsterHandler::Callback(mutant_jump_takeoff),
-        ),
-        (
-            "mutant_check_landing",
-            MonsterHandler::Callback(mutant_check_landing),
-        ),
+        ("mutant_check_refire", MonsterHandler::Callback(mutant_check_refire)),
+        ("mutant_jump_takeoff", MonsterHandler::Callback(mutant_jump_takeoff)),
+        ("mutant_check_landing", MonsterHandler::Callback(mutant_check_landing)),
         ("mutant_jump_down", MonsterHandler::Callback(mutant_jump_down)),
         ("mutant_jump_up", MonsterHandler::Callback(mutant_jump_up)),
-        (
-            "mutant_jump_wait_land",
-            MonsterHandler::Callback(mutant_jump_wait_land),
-        ),
+        ("mutant_jump_wait_land", MonsterHandler::Callback(mutant_jump_wait_land)),
         ("mutant_shrink", MonsterHandler::Callback(mutant_shrink)),
         ("monster_dead", MonsterHandler::Callback(mutant_monster_dead)),
     ] {

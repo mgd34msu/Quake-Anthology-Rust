@@ -7,64 +7,254 @@
 
 use qa_core::math::Vec3;
 
-use crate::contract::{
-    ContentDigest, ModelAttachmentDefinition, ModelAttachmentTarget, ModelTransform,
-};
+use crate::contract::{ContentDigest, ModelAttachmentDefinition, ModelAttachmentTarget, ModelTransform};
 
 /// Shared male grip.
 const GRIP_MALE: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (-2.5316379070281982_f64 as f32), y: (-9.270092010498047_f64 as f32), z: (4.795251846313477_f64 as f32) },
-    axis: [Vec3 { x: (0.9701912999153137_f64 as f32), y: (-0.16778743267059326_f64 as f32), z: (-0.17486034333705902_f64 as f32) }, Vec3 { x: (0.16538193821907043_f64 as f32), y: (0.9858221411705017_f64 as f32), z: (-0.02834496460855007_f64 as f32) }, Vec3 { x: (0.17713716626167297_f64 as f32), y: (-0.0014186727348715067_f64 as f32), z: (0.9841850996017456_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (-2.5316379070281982_f64 as f32),
+        y: (-9.270092010498047_f64 as f32),
+        z: (4.795251846313477_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (0.9701912999153137_f64 as f32),
+            y: (-0.16778743267059326_f64 as f32),
+            z: (-0.17486034333705902_f64 as f32),
+        },
+        Vec3 {
+            x: (0.16538193821907043_f64 as f32),
+            y: (0.9858221411705017_f64 as f32),
+            z: (-0.02834496460855007_f64 as f32),
+        },
+        Vec3 {
+            x: (0.17713716626167297_f64 as f32),
+            y: (-0.0014186727348715067_f64 as f32),
+            z: (0.9841850996017456_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared maleJoint grip.
 const GRIP_MALE_JOINT: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (3.670729637145996_f64 as f32), y: (6.094974517822266_f64 as f32), z: (0.8551912307739258_f64 as f32) },
-    axis: [Vec3 { x: (0_f64 as f32), y: (1_f64 as f32), z: (-9.313225746154785e-09_f64 as f32) }, Vec3 { x: (-1.862645149230957e-09_f64 as f32), y: (2.3283064365386963e-09_f64 as f32), z: (-1_f64 as f32) }, Vec3 { x: (-1_f64 as f32), y: (0_f64 as f32), z: (0_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (3.670729637145996_f64 as f32),
+        y: (6.094974517822266_f64 as f32),
+        z: (0.8551912307739258_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (0_f64 as f32),
+            y: (1_f64 as f32),
+            z: (-9.313225746154785e-09_f64 as f32),
+        },
+        Vec3 {
+            x: (-1.862645149230957e-09_f64 as f32),
+            y: (2.3283064365386963e-09_f64 as f32),
+            z: (-1_f64 as f32),
+        },
+        Vec3 {
+            x: (-1_f64 as f32),
+            y: (0_f64 as f32),
+            z: (0_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared maleClassic grip.
 const GRIP_MALE_CLASSIC: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (-2.198841094970703_f64 as f32), y: (-9.209379196166992_f64 as f32), z: (5.1354217529296875_f64 as f32) },
-    axis: [Vec3 { x: (0.9739808440208435_f64 as f32), y: (-0.16668719053268433_f64 as f32), z: (-0.15354691445827484_f64 as f32) }, Vec3 { x: (0.12157008051872253_f64 as f32), y: (0.9560694098472595_f64 as f32), z: (-0.26674318313598633_f64 as f32) }, Vec3 { x: (0.19126416742801666_f64 as f32), y: (0.24113602936267853_f64 as f32), z: (0.9514575004577637_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (-2.198841094970703_f64 as f32),
+        y: (-9.209379196166992_f64 as f32),
+        z: (5.1354217529296875_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (0.9739808440208435_f64 as f32),
+            y: (-0.16668719053268433_f64 as f32),
+            z: (-0.15354691445827484_f64 as f32),
+        },
+        Vec3 {
+            x: (0.12157008051872253_f64 as f32),
+            y: (0.9560694098472595_f64 as f32),
+            z: (-0.26674318313598633_f64 as f32),
+        },
+        Vec3 {
+            x: (0.19126416742801666_f64 as f32),
+            y: (0.24113602936267853_f64 as f32),
+            z: (0.9514575004577637_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared female grip.
 const GRIP_FEMALE: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (1.5657100677490234_f64 as f32), y: (-5.886165618896484_f64 as f32), z: (1.9254425764083862_f64 as f32) },
-    axis: [Vec3 { x: (0.9919583797454834_f64 as f32), y: (0.036155037581920624_f64 as f32), z: (-0.12129008769989014_f64 as f32) }, Vec3 { x: (-0.03602835536003113_f64 as f32), y: (0.9993454813957214_f64 as f32), z: (0.003238283796235919_f64 as f32) }, Vec3 { x: (0.12132780998945236_f64 as f32), y: (0.0011576636461541057_f64 as f32), z: (0.992611825466156_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (1.5657100677490234_f64 as f32),
+        y: (-5.886165618896484_f64 as f32),
+        z: (1.9254425764083862_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (0.9919583797454834_f64 as f32),
+            y: (0.036155037581920624_f64 as f32),
+            z: (-0.12129008769989014_f64 as f32),
+        },
+        Vec3 {
+            x: (-0.03602835536003113_f64 as f32),
+            y: (0.9993454813957214_f64 as f32),
+            z: (0.003238283796235919_f64 as f32),
+        },
+        Vec3 {
+            x: (0.12132780998945236_f64 as f32),
+            y: (0.0011576636461541057_f64 as f32),
+            z: (0.992611825466156_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared femaleJoint grip.
 const GRIP_FEMALE_JOINT: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (3.9060494899749756_f64 as f32), y: (6.173057556152344_f64 as f32), z: (-0.7284674644470215_f64 as f32) },
-    axis: [Vec3 { x: (-7.450580596923828e-09_f64 as f32), y: (1_f64 as f32), z: (5.820766091346741e-11_f64 as f32) }, Vec3 { x: (0_f64 as f32), y: (4.132743924856186e-09_f64 as f32), z: (-1_f64 as f32) }, Vec3 { x: (-1_f64 as f32), y: (-7.450580596923828e-09_f64 as f32), z: (0_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (3.9060494899749756_f64 as f32),
+        y: (6.173057556152344_f64 as f32),
+        z: (-0.7284674644470215_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (-7.450580596923828e-09_f64 as f32),
+            y: (1_f64 as f32),
+            z: (5.820766091346741e-11_f64 as f32),
+        },
+        Vec3 {
+            x: (0_f64 as f32),
+            y: (4.132743924856186e-09_f64 as f32),
+            z: (-1_f64 as f32),
+        },
+        Vec3 {
+            x: (-1_f64 as f32),
+            y: (-7.450580596923828e-09_f64 as f32),
+            z: (0_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared femaleClassic grip.
 const GRIP_FEMALE_CLASSIC: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (1.8566161394119263_f64 as f32), y: (-5.973968029022217_f64 as f32), z: (2.301879405975342_f64 as f32) },
-    axis: [Vec3 { x: (0.99488365650177_f64 as f32), y: (0.030664639547467232_f64 as f32), z: (-0.09626106172800064_f64 as f32) }, Vec3 { x: (-0.013402743265032768_f64 as f32), y: (0.9844618439674377_f64 as f32), z: (0.17508633434772491_f64 as f32) }, Vec3 { x: (0.10013430565595627_f64 as f32), y: (-0.17290037870407104_f64 as f32), z: (0.9798359870910645_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (1.8566161394119263_f64 as f32),
+        y: (-5.973968029022217_f64 as f32),
+        z: (2.301879405975342_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (0.99488365650177_f64 as f32),
+            y: (0.030664639547467232_f64 as f32),
+            z: (-0.09626106172800064_f64 as f32),
+        },
+        Vec3 {
+            x: (-0.013402743265032768_f64 as f32),
+            y: (0.9844618439674377_f64 as f32),
+            z: (0.17508633434772491_f64 as f32),
+        },
+        Vec3 {
+            x: (0.10013430565595627_f64 as f32),
+            y: (-0.17290037870407104_f64 as f32),
+            z: (0.9798359870910645_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared male40Joint grip.
 const GRIP_MALE40_JOINT: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (3.6707301139831543_f64 as f32), y: (6.094974040985107_f64 as f32), z: (0.8551921844482422_f64 as f32) },
-    axis: [Vec3 { x: (-2.9802322387695312e-08_f64 as f32), y: (1_f64 as f32), z: (7.310882210731506e-08_f64 as f32) }, Vec3 { x: (-5.587935447692871e-09_f64 as f32), y: (3.213062882423401e-08_f64 as f32), z: (-0.9999999403953552_f64 as f32) }, Vec3 { x: (-0.9999999403953552_f64 as f32), y: (0_f64 as f32), z: (-3.3527612686157227e-08_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (3.6707301139831543_f64 as f32),
+        y: (6.094974040985107_f64 as f32),
+        z: (0.8551921844482422_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (-2.9802322387695312e-08_f64 as f32),
+            y: (1_f64 as f32),
+            z: (7.310882210731506e-08_f64 as f32),
+        },
+        Vec3 {
+            x: (-5.587935447692871e-09_f64 as f32),
+            y: (3.213062882423401e-08_f64 as f32),
+            z: (-0.9999999403953552_f64 as f32),
+        },
+        Vec3 {
+            x: (-0.9999999403953552_f64 as f32),
+            y: (0_f64 as f32),
+            z: (-3.3527612686157227e-08_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Shared female99Joint grip.
 const GRIP_FEMALE99_JOINT: ModelTransform = ModelTransform {
-    origin: Vec3 { x: (3.9060494899749756_f64 as f32), y: (6.173057556152344_f64 as f32), z: (-0.7284660339355469_f64 as f32) },
-    axis: [Vec3 { x: (-5.21540641784668e-08_f64 as f32), y: (0.9999999403953552_f64 as f32), z: (1.2773671187460423e-07_f64 as f32) }, Vec3 { x: (-6.984919309616089e-09_f64 as f32), y: (5.6315911933779716e-08_f64 as f32), z: (-1_f64 as f32) }, Vec3 { x: (-1_f64 as f32), y: (-7.450580596923828e-09_f64 as f32), z: (-5.51808625459671e-08_f64 as f32) }],
-    scale: Vec3 { x: (1_f64 as f32), y: (1_f64 as f32), z: (1_f64 as f32) },
+    origin: Vec3 {
+        x: (3.9060494899749756_f64 as f32),
+        y: (6.173057556152344_f64 as f32),
+        z: (-0.7284660339355469_f64 as f32),
+    },
+    axis: [
+        Vec3 {
+            x: (-5.21540641784668e-08_f64 as f32),
+            y: (0.9999999403953552_f64 as f32),
+            z: (1.2773671187460423e-07_f64 as f32),
+        },
+        Vec3 {
+            x: (-6.984919309616089e-09_f64 as f32),
+            y: (5.6315911933779716e-08_f64 as f32),
+            z: (-1_f64 as f32),
+        },
+        Vec3 {
+            x: (-1_f64 as f32),
+            y: (-7.450580596923828e-09_f64 as f32),
+            z: (-5.51808625459671e-08_f64 as f32),
+        },
+    ],
+    scale: Vec3 {
+        x: (1_f64 as f32),
+        y: (1_f64 as f32),
+        z: (1_f64 as f32),
+    },
 };
 
 /// Compact attachment row: digest, optional mesh vertex triple, grip index.
@@ -79,125 +269,601 @@ struct WeaponAttachmentRow {
 
 /// Q2 weapon attachments sorted by digest.
 const Q2_WEAPON_ATTACHMENTS: &[WeaponAttachmentRow] = &[
-    WeaponAttachmentRow { digest: "sha256:0090cbf7d7712ecc1715b83a07665adfb438cbf2d206b17b0e22ffc140d382f8", vertices: Some([6, 198, 207]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:01f300b4460c74184b4e75a8fad50c6a7ad6234e2a7ac2acc4306db4632c1259", vertices: Some([5, 81, 103]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:0355570303c72b087534ab34fc1d679477935426f9fd7cac1a1e579dbdbf2def", vertices: Some([54, 181, 182]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:0807bfb253b23170644d48be575d41515b2aa531c44fb1f33d608b60af024718", vertices: Some([5, 81, 103]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:0a6f9063367e830fc5d9f9f9ea6c1420ceacac49587a7ae4cbf6acd3d93922c9", vertices: Some([126, 128, 131]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:0b7429bc39dc45331e959db217e809f200aabfa0c021615f8b5216b287aefb11", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:0c915db364d5b054443cce87acf9819b8dd320009bba439a88b6191f11f3d7dc", vertices: Some([82, 93, 110]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:1135778e614edb2bcb89de14a143a13e68380ab5015021d64c748b05a2642e41", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:11d3f96add65da06a2143a2d7bb07976c650926909964ec2ccc1f811df50761d", vertices: Some([87, 112, 121]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:156e3e14c7a2d269934ad64779564ef866a59dd36f36ec402bf5d7d45f1ebded", vertices: Some([7, 21, 51]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:1591ad8e838e3e697944215fe80710248cee783a3dd365e9f1ddd36cb7db6cbe", vertices: Some([82, 84, 111]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:15e37bb1287df241f7ac845a08cf6ac7bad9e07a97ff994100c60839e7585ecc", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:180447ef2205ddc36c5fffdda3d1a63329f2196ca41d3fbbd21aa1eb49ff685b", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:1abd354dbe844d97761a4fad9f7e9b848df25300e39aa8e241e171488f3e42d7", vertices: Some([82, 93, 110]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:1c17590bafa6a01fe671fd5df9f092363665cc894e10474f26f1d96272d0af33", vertices: Some([54, 181, 182]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:1d97628476c03f8994577b3f65eeff20e8e248bea34c4d1d16c6be8f404d8d62", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:1de9d1ead8db63f061af2b1535f4d5901f3eb5616da5596dbbfeb3e4dc72c4ed", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:21539f5f8b7c9c7af91a278d7283e24cfa44402b6d6a9715cf110bac58ada0ba", vertices: Some([10, 35, 41]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:21d0179345d5fb8010a56bed51a5fe513a858607ced1ebe968704c755906e549", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:22af6579f102f6d8dd326ff59556cf72dda6643161a3c1b7b42a8d5fa60a7bde", vertices: Some([20, 23, 174]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:32da1dc2301a18e6c6b562584b58ae46782835e48a45356db36893ef96c72350", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:32e4effc4d859237a6b0fbd5ebd2c0854f4705fb3baa577dc63f7f47d1e60e44", vertices: Some([0, 23, 24]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:338a5839d2e520faa0c42732296984a8560f4df62472202dffe1df3477cbcbdb", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:3ddd4604cedac3fdc17fef2419b884673f6ed6808f8a523955a4a2d4f23284ac", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:414a0ea1504c149bf046668fa634eb0303964ede042bf7420a63e9bd935520ba", vertices: Some([8, 44, 55]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:44480ded746b8116930a080359ef35b16c5b34f35c59c574988142205831fa27", vertices: Some([36, 70, 81]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:467995c58f1fc5377a53549a80c756ea52acec6c619442eefbfab5d5b2b5b5d0", vertices: Some([8, 102, 106]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:4a052927e34237e69391cd9fb98e868726cb19b9bcf63c24bae12108f5d3b929", vertices: Some([8, 102, 106]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:4ada1e8d6874644cccb6f6d68a5016209a7a1b1009a1a9b417c1efb83c194075", vertices: Some([7, 21, 51]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:4c767fcb65b6131e3f16f59ff40891bd162f8d76dfc9c5b9f2a005ff4c2ca4ba", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:4d35337051d7b48d21f8605f3652b1be5fde163434c4a886f3e5ba45df0faaac", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:50ff1ccca45c74a5fbfce1b7750c0a44443be18ada7bf5d3da551f3d91d13689", vertices: Some([7, 29, 33]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:51ac2040388da250bfc471038ab9f20b8c05c9fb977b2d749b6113e51d36fa24", vertices: Some([2, 8, 39]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:56d164f5046f6b83b620713d2d6384c581edf8e8e5beeecd0109d2ff2ebfd1f1", vertices: Some([22, 57, 64]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:57762bbf8d747af13dca4c918bc7e2f216f410a188fafec21983ce7d00e93861", vertices: Some([73, 114, 138]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:5808e32c6c2d1c48344b8235973234fecbdf345e93ddef9b08607ec44c0a54b5", vertices: Some([22, 57, 64]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:5a546188a6e3ab4e664ccac8457256c5c01903ed3c1156915e707458b9381026", vertices: Some([87, 112, 121]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:5a86e86513e4b451736cd107856816cf071bc63c506bf7b5265023e5b807f2b3", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:5c87a585a4178c7f3af9ea7907cbe6e0673b2c77f2b2206d6fb804cff12af5c2", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:5defea1d45beae4fb176800f0a166ea9405f28d9a34645c8eb3f14334d4f5ea6", vertices: None, grip: 6 },
-    WeaponAttachmentRow { digest: "sha256:5ee925da0b9cc6098a3b4e14abf3f47bfb6712b7e2331a12808f5397f1904a4a", vertices: Some([87, 118, 123]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:5f1ed6c46a9e2b1e1985916c0cae69f9373ce5c44ffaa6258401d3bffdd40527", vertices: Some([80, 93, 106]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:62489b3793e6f754bccfe4638eb9a6c530c6341a13d10ffee05de84c43f606d1", vertices: Some([3, 67, 94]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:645ab70efa2aa6b1dbe83f822dc9abb4c1b86a67c64ddd5bacf88a68d3cf209f", vertices: Some([42, 69, 79]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:671f3e2cca7dbdd963d720818b507251ca6a701c54f3f29741887c44f48a90dd", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:685864eb33da60f48c5c19cc39304695e5d96c7a4e6b9b113c06006d002ba1b3", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:685f089f4d2c843b246a68a59ba4492ef3eaf3318153ee41be99c552e031f7d4", vertices: Some([10, 127, 130]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:69000d5158cdb4df28ea600cebbc379cce39b9cc35ad5e3e105fe4dc657ec7a3", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:692b61779ef8f33cc6cc8db699566a07df85e597cb66a7a695285d656b702c18", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:6966853fb42a452e9d7d64165265f6f714429d497115a746dacdda51fbb6d8ce", vertices: Some([41, 67, 68]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:6aba815fe8748f6333b7ff80f896d4fc976c4de7003eb1b50dcf35d5d84354c6", vertices: Some([7, 23, 34]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:6ca26afe240beff2feaf66d51649215c69eefe8d1771a341ae145ce05a1009f5", vertices: Some([4, 79, 178]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:6eee297a2b37ca6fb15c636867b45090666859f2a1102b13f9c60e89b9fbb0ba", vertices: None, grip: 7 },
-    WeaponAttachmentRow { digest: "sha256:702efcd42a9661419cbb36ad8790bb164eca8dd5e3639cfa0d68be97691ffed0", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:73f67c7af2853aed67b94ecda07c8a48bcc5f2452423439a6c0a1b56f355659b", vertices: Some([13, 16, 97]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:7555e0430ff2ed7ffb6bea1ab65eba5e0e04c829166c2215c2a849db04ab3911", vertices: Some([36, 59, 75]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:7a055147003a8b25079786c70e820604850c5f791147a6678821ab0ba56ed7eb", vertices: Some([80, 93, 106]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:7ba6dfd3ff6eadfa629fb0932724a3454e9adcd97a220d92b88d8281a4d22709", vertices: Some([29, 90, 95]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:80f1cfa4bce5066c5038f5482e630d9be11c45ac1a85e4346d3ea5e2c1888374", vertices: Some([36, 70, 81]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:83e538c9ca8664a1ace624bfae0aef47049ceff019f64e09baafe4fb9a3906b9", vertices: Some([126, 128, 131]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:8b494f82ec11808a6129d1914355b874031ba8c290b5d6a66000d68c55da9bbf", vertices: Some([34, 35, 95]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:8d1684ad6391d5f93f4990ff18f9e862c5ccea33610cb6e77a80eba227fc3fd1", vertices: Some([0, 11, 29]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:9070c3608064899cd0e793b1569be3d203e9132c33d11d550d9d193fe7a89951", vertices: Some([82, 93, 110]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:9275720d065ed004833647d944b97edb7a6d400fe3b66bbf56cae4e32d09c478", vertices: Some([13, 135, 161]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:927d1e07e92eaff6dbd4121f510267746bc9033fff8573a1f269ca70f6d2eed8", vertices: Some([149, 156, 300]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:9619677c0ed3040eed10cbb5a5d211fed46ccfd167f8eb8c4b4070090de8b27e", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:9823b9ccc3803f956ed182e77dba420b07fa439996773be65281834bea93dd1a", vertices: Some([36, 37, 66]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:9aad55746cecd765568dcac00156ae98add7f6436f55dc453a171b2752fedf08", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:9b6eed54114e295887e09dec06e5c60a7b8606ba75ae31c423e62b4a9c37644f", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:a66ba6a201c31a82b2b9e443123bba88968cedd9dc774182d8c22659aa0044dc", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:ae8330db3742a3c89e240027e5fde1805305937f3a8c9afabb6e2a81b3c0230f", vertices: Some([36, 37, 66]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:b1d3c78722594d99d40d650914c4f9bfed27e34d210743b99576d299e4b700c7", vertices: Some([2, 26, 34]), grip: 2 },
-    WeaponAttachmentRow { digest: "sha256:b454c4f9b947dcd0bc76f3c34e85bb9f14539cd1d520faf56dd0d0aa319f1c79", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:b504936c4c5419548833632a4daa9d3d39b368521453c67c299043a39348f2d6", vertices: Some([81, 104, 111]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:b7d11386659722abd9a7592010b4b76abe20d969b6601080e2aabfb946a30eb2", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:bb29b19ba3e9104a97ec8ccf332bf85b6d22b8e8b71af079a1d47c68d3baa585", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:be2b96c10cd02ff367026b2fc8a5e3bac50ccf143e6a3b77c98ccf403454ea35", vertices: Some([54, 181, 182]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:bf2eee4f3d5ba00da87e6dbc229c1c7492de339fcb5e8a78fa9e196a89b3b9a8", vertices: Some([25, 29, 90]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:c1579cd5cc588d1ccc6d2d88d6e73edf06f7cbaaadc79001fe37f8d62cdf8bc4", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:c67fe7cb4f755cac86783ed7c60c83313fe37dfd2790febd7a84e9e243d72fa4", vertices: Some([7, 29, 33]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:c7c10642cd2204f6abdb117da3fb37f1a3c4273b6d3d586c93ffdd7b844c35e7", vertices: Some([20, 23, 174]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:cd531d27e73a13f75c865f1765d5bb00c18de91116e1911aae7a3bb988f0582e", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:ce0c9f5e4431302be3b7abbfdbd4ecc96f3e8015ff5c59083c5162b47c2af44f", vertices: Some([13, 26, 34]), grip: 5 },
-    WeaponAttachmentRow { digest: "sha256:ce1d4fa285a57ac379aa13d0f52ba9b112e2ccd94fb95eb46ac5015b1b57c461", vertices: Some([37, 42, 57]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:ce3cc8ca60f96db9b23b42ba63670d8e68085d7a954086983e411bbe78418473", vertices: Some([34, 35, 95]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:d04983b71bf0344879edeeadf82fd402387987df1db6187c27cc005a2446fd8c", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:d14e6475d4bbe7fb9db312c98d60b83b940cfe5b8eeb963575fce523e992f6a9", vertices: Some([68, 71, 85]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:d203b8f73632af834d1760d63f3b625be7f535feb4d75f6c73e0b1e2f89d655c", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:d298dcdb469b6eb8c4b3348763fb0c82081038a111392c93bdfd9668e80c1795", vertices: Some([36, 59, 75]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:d6df8f529b2fe188258e043475fff8d0f78c2a7834377155c7838a7ba4159cd6", vertices: Some([14, 30, 35]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:d7218a9f908d5cdf5686224bde01a4168c7660c0c634cc4ad7c4d36f4655fa46", vertices: Some([37, 42, 57]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:d81192a7db289c3480121afd867e03105c3c35db51a1cde34afd953be44fff5a", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:d8929d1cd5e6cb8ce16410bf53cdd2dfe19721105c4cff17ea445c9b487e28da", vertices: Some([7, 23, 34]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:d90122a85dd167a35732b23b2a4ec94750129779c619244fe8a421c3051fc823", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:dd7da7b6988f24eaaf945062c096b04c8a91ef8fc437c75d5fce602ce8dc18b9", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:ddd7a9752a6e5fb0a9f3f2409fbffca71535f45b0b2ed07c921251efe5fc8004", vertices: Some([80, 93, 106]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:e0b5130f85d535d0990f169401467512b97d95eed72672df808ed94ce407c719", vertices: Some([30, 38, 68]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:e2149301a4e8cb0d23f7615abc4372dc8e862b932cb6c66270d769344bfccb46", vertices: Some([37, 42, 57]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:e23bba47f77f222d1c0684e879a92230bf96eacafe9993e7d8c6d45838bde9f5", vertices: Some([30, 38, 68]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:e389c40788620e9845c55deb3aff742f5a4460db2f4a93defb7e3858f45ebf74", vertices: Some([41, 69, 81]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:e60e14103852d1079080f8dff714238567726596f982bc4bacbd845f26590458", vertices: None, grip: 4 },
-    WeaponAttachmentRow { digest: "sha256:e66e9297814dadc07f949f4f5a6e2df8595e63391ca048656157c0cf7d91da17", vertices: Some([13, 16, 97]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:e7005c4fedd0cebacac144da368e7b4310db0e7422af5e0a398cec484251568e", vertices: Some([81, 104, 111]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:e71f1871813276ee8cb8849b1a83170f9bb0a016b6b7fc185599dc71eede65d8", vertices: Some([8, 44, 55]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:e8a4615b37d86a2fdaa6cc3abf7b12f93b6fc8755e86dc29dce8e3691c66eda7", vertices: Some([2, 26, 34]), grip: 2 },
-    WeaponAttachmentRow { digest: "sha256:ec3f99acf7c9bf7b0ce04c5eb1c0def21ac6e8ae34e03e96cdde88af17d381a2", vertices: Some([82, 84, 111]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:eca0849e8142930306f6d9521284af0133b7e578c7dc7f35e5411a3861782b66", vertices: Some([74, 138, 148]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:ed70cd5a30fc113f934b440be06736c37ad0b82228c5f5a19a0a8c603c841689", vertices: Some([74, 138, 148]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:ee5610ad0175df970fde5d50f49e23f370a7e43e49233bb5f9e639fe226fc50b", vertices: Some([13, 135, 161]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:eeab1be05acc5eff568cf90d793a6f6394b332883e80b9ebc8019cb30b7cb602", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:f55926d7cae2d2f93fba88aa794e8b27abc345a39db6cd4e576a4dc95a757134", vertices: Some([54, 181, 182]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:f74348a1ceb113f0622337ec098ac014ab6c3c3c12d67469773795a462f27c29", vertices: Some([41, 67, 68]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:f78d6b660e00ff1bba3634cd132a7ab8cd8b40a9cdc0e476c96be2ab62b3fa2a", vertices: None, grip: 1 },
-    WeaponAttachmentRow { digest: "sha256:f8d8b0a56ef0397b7ce5c50917dc00cb8ff161fa21aa6c8d9864483415249ad1", vertices: Some([10, 127, 130]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:fad6bbf39320d8d244b0f64aa4b0d6382a8bec2d6b4c9c616669dc867f1defbe", vertices: Some([68, 149, 156]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:fbfdb043b58abe5f84cb09b7ba008698be8c764cd4debda1c3007aa04614b97f", vertices: Some([87, 118, 123]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:fd0ac88955dc79d2cd6b9320c02452f3b6272c50b0fa8cb88f8bdd94d86da577", vertices: Some([37, 42, 57]), grip: 3 },
-    WeaponAttachmentRow { digest: "sha256:fea9f1a8d526072db78351f0816059be53b3253757ced527b164d7e0bd262005", vertices: Some([73, 114, 138]), grip: 0 },
-    WeaponAttachmentRow { digest: "sha256:ffe43152810fb211fcc4ed41270fd590c275e8d72dacd77a587f87b4ac64c636", vertices: Some([2, 8, 39]), grip: 3 },
+    WeaponAttachmentRow {
+        digest: "sha256:0090cbf7d7712ecc1715b83a07665adfb438cbf2d206b17b0e22ffc140d382f8",
+        vertices: Some([6, 198, 207]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:01f300b4460c74184b4e75a8fad50c6a7ad6234e2a7ac2acc4306db4632c1259",
+        vertices: Some([5, 81, 103]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:0355570303c72b087534ab34fc1d679477935426f9fd7cac1a1e579dbdbf2def",
+        vertices: Some([54, 181, 182]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:0807bfb253b23170644d48be575d41515b2aa531c44fb1f33d608b60af024718",
+        vertices: Some([5, 81, 103]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:0a6f9063367e830fc5d9f9f9ea6c1420ceacac49587a7ae4cbf6acd3d93922c9",
+        vertices: Some([126, 128, 131]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:0b7429bc39dc45331e959db217e809f200aabfa0c021615f8b5216b287aefb11",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:0c915db364d5b054443cce87acf9819b8dd320009bba439a88b6191f11f3d7dc",
+        vertices: Some([82, 93, 110]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1135778e614edb2bcb89de14a143a13e68380ab5015021d64c748b05a2642e41",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:11d3f96add65da06a2143a2d7bb07976c650926909964ec2ccc1f811df50761d",
+        vertices: Some([87, 112, 121]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:156e3e14c7a2d269934ad64779564ef866a59dd36f36ec402bf5d7d45f1ebded",
+        vertices: Some([7, 21, 51]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1591ad8e838e3e697944215fe80710248cee783a3dd365e9f1ddd36cb7db6cbe",
+        vertices: Some([82, 84, 111]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:15e37bb1287df241f7ac845a08cf6ac7bad9e07a97ff994100c60839e7585ecc",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:180447ef2205ddc36c5fffdda3d1a63329f2196ca41d3fbbd21aa1eb49ff685b",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1abd354dbe844d97761a4fad9f7e9b848df25300e39aa8e241e171488f3e42d7",
+        vertices: Some([82, 93, 110]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1c17590bafa6a01fe671fd5df9f092363665cc894e10474f26f1d96272d0af33",
+        vertices: Some([54, 181, 182]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1d97628476c03f8994577b3f65eeff20e8e248bea34c4d1d16c6be8f404d8d62",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:1de9d1ead8db63f061af2b1535f4d5901f3eb5616da5596dbbfeb3e4dc72c4ed",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:21539f5f8b7c9c7af91a278d7283e24cfa44402b6d6a9715cf110bac58ada0ba",
+        vertices: Some([10, 35, 41]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:21d0179345d5fb8010a56bed51a5fe513a858607ced1ebe968704c755906e549",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:22af6579f102f6d8dd326ff59556cf72dda6643161a3c1b7b42a8d5fa60a7bde",
+        vertices: Some([20, 23, 174]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:32da1dc2301a18e6c6b562584b58ae46782835e48a45356db36893ef96c72350",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:32e4effc4d859237a6b0fbd5ebd2c0854f4705fb3baa577dc63f7f47d1e60e44",
+        vertices: Some([0, 23, 24]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:338a5839d2e520faa0c42732296984a8560f4df62472202dffe1df3477cbcbdb",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:3ddd4604cedac3fdc17fef2419b884673f6ed6808f8a523955a4a2d4f23284ac",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:414a0ea1504c149bf046668fa634eb0303964ede042bf7420a63e9bd935520ba",
+        vertices: Some([8, 44, 55]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:44480ded746b8116930a080359ef35b16c5b34f35c59c574988142205831fa27",
+        vertices: Some([36, 70, 81]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:467995c58f1fc5377a53549a80c756ea52acec6c619442eefbfab5d5b2b5b5d0",
+        vertices: Some([8, 102, 106]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:4a052927e34237e69391cd9fb98e868726cb19b9bcf63c24bae12108f5d3b929",
+        vertices: Some([8, 102, 106]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:4ada1e8d6874644cccb6f6d68a5016209a7a1b1009a1a9b417c1efb83c194075",
+        vertices: Some([7, 21, 51]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:4c767fcb65b6131e3f16f59ff40891bd162f8d76dfc9c5b9f2a005ff4c2ca4ba",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:4d35337051d7b48d21f8605f3652b1be5fde163434c4a886f3e5ba45df0faaac",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:50ff1ccca45c74a5fbfce1b7750c0a44443be18ada7bf5d3da551f3d91d13689",
+        vertices: Some([7, 29, 33]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:51ac2040388da250bfc471038ab9f20b8c05c9fb977b2d749b6113e51d36fa24",
+        vertices: Some([2, 8, 39]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:56d164f5046f6b83b620713d2d6384c581edf8e8e5beeecd0109d2ff2ebfd1f1",
+        vertices: Some([22, 57, 64]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:57762bbf8d747af13dca4c918bc7e2f216f410a188fafec21983ce7d00e93861",
+        vertices: Some([73, 114, 138]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5808e32c6c2d1c48344b8235973234fecbdf345e93ddef9b08607ec44c0a54b5",
+        vertices: Some([22, 57, 64]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5a546188a6e3ab4e664ccac8457256c5c01903ed3c1156915e707458b9381026",
+        vertices: Some([87, 112, 121]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5a86e86513e4b451736cd107856816cf071bc63c506bf7b5265023e5b807f2b3",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5c87a585a4178c7f3af9ea7907cbe6e0673b2c77f2b2206d6fb804cff12af5c2",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5defea1d45beae4fb176800f0a166ea9405f28d9a34645c8eb3f14334d4f5ea6",
+        vertices: None,
+        grip: 6,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5ee925da0b9cc6098a3b4e14abf3f47bfb6712b7e2331a12808f5397f1904a4a",
+        vertices: Some([87, 118, 123]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:5f1ed6c46a9e2b1e1985916c0cae69f9373ce5c44ffaa6258401d3bffdd40527",
+        vertices: Some([80, 93, 106]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:62489b3793e6f754bccfe4638eb9a6c530c6341a13d10ffee05de84c43f606d1",
+        vertices: Some([3, 67, 94]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:645ab70efa2aa6b1dbe83f822dc9abb4c1b86a67c64ddd5bacf88a68d3cf209f",
+        vertices: Some([42, 69, 79]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:671f3e2cca7dbdd963d720818b507251ca6a701c54f3f29741887c44f48a90dd",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:685864eb33da60f48c5c19cc39304695e5d96c7a4e6b9b113c06006d002ba1b3",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:685f089f4d2c843b246a68a59ba4492ef3eaf3318153ee41be99c552e031f7d4",
+        vertices: Some([10, 127, 130]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:69000d5158cdb4df28ea600cebbc379cce39b9cc35ad5e3e105fe4dc657ec7a3",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:692b61779ef8f33cc6cc8db699566a07df85e597cb66a7a695285d656b702c18",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:6966853fb42a452e9d7d64165265f6f714429d497115a746dacdda51fbb6d8ce",
+        vertices: Some([41, 67, 68]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:6aba815fe8748f6333b7ff80f896d4fc976c4de7003eb1b50dcf35d5d84354c6",
+        vertices: Some([7, 23, 34]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:6ca26afe240beff2feaf66d51649215c69eefe8d1771a341ae145ce05a1009f5",
+        vertices: Some([4, 79, 178]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:6eee297a2b37ca6fb15c636867b45090666859f2a1102b13f9c60e89b9fbb0ba",
+        vertices: None,
+        grip: 7,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:702efcd42a9661419cbb36ad8790bb164eca8dd5e3639cfa0d68be97691ffed0",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:73f67c7af2853aed67b94ecda07c8a48bcc5f2452423439a6c0a1b56f355659b",
+        vertices: Some([13, 16, 97]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:7555e0430ff2ed7ffb6bea1ab65eba5e0e04c829166c2215c2a849db04ab3911",
+        vertices: Some([36, 59, 75]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:7a055147003a8b25079786c70e820604850c5f791147a6678821ab0ba56ed7eb",
+        vertices: Some([80, 93, 106]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:7ba6dfd3ff6eadfa629fb0932724a3454e9adcd97a220d92b88d8281a4d22709",
+        vertices: Some([29, 90, 95]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:80f1cfa4bce5066c5038f5482e630d9be11c45ac1a85e4346d3ea5e2c1888374",
+        vertices: Some([36, 70, 81]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:83e538c9ca8664a1ace624bfae0aef47049ceff019f64e09baafe4fb9a3906b9",
+        vertices: Some([126, 128, 131]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:8b494f82ec11808a6129d1914355b874031ba8c290b5d6a66000d68c55da9bbf",
+        vertices: Some([34, 35, 95]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:8d1684ad6391d5f93f4990ff18f9e862c5ccea33610cb6e77a80eba227fc3fd1",
+        vertices: Some([0, 11, 29]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9070c3608064899cd0e793b1569be3d203e9132c33d11d550d9d193fe7a89951",
+        vertices: Some([82, 93, 110]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9275720d065ed004833647d944b97edb7a6d400fe3b66bbf56cae4e32d09c478",
+        vertices: Some([13, 135, 161]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:927d1e07e92eaff6dbd4121f510267746bc9033fff8573a1f269ca70f6d2eed8",
+        vertices: Some([149, 156, 300]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9619677c0ed3040eed10cbb5a5d211fed46ccfd167f8eb8c4b4070090de8b27e",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9823b9ccc3803f956ed182e77dba420b07fa439996773be65281834bea93dd1a",
+        vertices: Some([36, 37, 66]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9aad55746cecd765568dcac00156ae98add7f6436f55dc453a171b2752fedf08",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:9b6eed54114e295887e09dec06e5c60a7b8606ba75ae31c423e62b4a9c37644f",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:a66ba6a201c31a82b2b9e443123bba88968cedd9dc774182d8c22659aa0044dc",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ae8330db3742a3c89e240027e5fde1805305937f3a8c9afabb6e2a81b3c0230f",
+        vertices: Some([36, 37, 66]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:b1d3c78722594d99d40d650914c4f9bfed27e34d210743b99576d299e4b700c7",
+        vertices: Some([2, 26, 34]),
+        grip: 2,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:b454c4f9b947dcd0bc76f3c34e85bb9f14539cd1d520faf56dd0d0aa319f1c79",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:b504936c4c5419548833632a4daa9d3d39b368521453c67c299043a39348f2d6",
+        vertices: Some([81, 104, 111]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:b7d11386659722abd9a7592010b4b76abe20d969b6601080e2aabfb946a30eb2",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:bb29b19ba3e9104a97ec8ccf332bf85b6d22b8e8b71af079a1d47c68d3baa585",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:be2b96c10cd02ff367026b2fc8a5e3bac50ccf143e6a3b77c98ccf403454ea35",
+        vertices: Some([54, 181, 182]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:bf2eee4f3d5ba00da87e6dbc229c1c7492de339fcb5e8a78fa9e196a89b3b9a8",
+        vertices: Some([25, 29, 90]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:c1579cd5cc588d1ccc6d2d88d6e73edf06f7cbaaadc79001fe37f8d62cdf8bc4",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:c67fe7cb4f755cac86783ed7c60c83313fe37dfd2790febd7a84e9e243d72fa4",
+        vertices: Some([7, 29, 33]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:c7c10642cd2204f6abdb117da3fb37f1a3c4273b6d3d586c93ffdd7b844c35e7",
+        vertices: Some([20, 23, 174]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:cd531d27e73a13f75c865f1765d5bb00c18de91116e1911aae7a3bb988f0582e",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ce0c9f5e4431302be3b7abbfdbd4ecc96f3e8015ff5c59083c5162b47c2af44f",
+        vertices: Some([13, 26, 34]),
+        grip: 5,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ce1d4fa285a57ac379aa13d0f52ba9b112e2ccd94fb95eb46ac5015b1b57c461",
+        vertices: Some([37, 42, 57]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ce3cc8ca60f96db9b23b42ba63670d8e68085d7a954086983e411bbe78418473",
+        vertices: Some([34, 35, 95]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d04983b71bf0344879edeeadf82fd402387987df1db6187c27cc005a2446fd8c",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d14e6475d4bbe7fb9db312c98d60b83b940cfe5b8eeb963575fce523e992f6a9",
+        vertices: Some([68, 71, 85]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d203b8f73632af834d1760d63f3b625be7f535feb4d75f6c73e0b1e2f89d655c",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d298dcdb469b6eb8c4b3348763fb0c82081038a111392c93bdfd9668e80c1795",
+        vertices: Some([36, 59, 75]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d6df8f529b2fe188258e043475fff8d0f78c2a7834377155c7838a7ba4159cd6",
+        vertices: Some([14, 30, 35]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d7218a9f908d5cdf5686224bde01a4168c7660c0c634cc4ad7c4d36f4655fa46",
+        vertices: Some([37, 42, 57]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d81192a7db289c3480121afd867e03105c3c35db51a1cde34afd953be44fff5a",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d8929d1cd5e6cb8ce16410bf53cdd2dfe19721105c4cff17ea445c9b487e28da",
+        vertices: Some([7, 23, 34]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:d90122a85dd167a35732b23b2a4ec94750129779c619244fe8a421c3051fc823",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:dd7da7b6988f24eaaf945062c096b04c8a91ef8fc437c75d5fce602ce8dc18b9",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ddd7a9752a6e5fb0a9f3f2409fbffca71535f45b0b2ed07c921251efe5fc8004",
+        vertices: Some([80, 93, 106]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e0b5130f85d535d0990f169401467512b97d95eed72672df808ed94ce407c719",
+        vertices: Some([30, 38, 68]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e2149301a4e8cb0d23f7615abc4372dc8e862b932cb6c66270d769344bfccb46",
+        vertices: Some([37, 42, 57]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e23bba47f77f222d1c0684e879a92230bf96eacafe9993e7d8c6d45838bde9f5",
+        vertices: Some([30, 38, 68]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e389c40788620e9845c55deb3aff742f5a4460db2f4a93defb7e3858f45ebf74",
+        vertices: Some([41, 69, 81]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e60e14103852d1079080f8dff714238567726596f982bc4bacbd845f26590458",
+        vertices: None,
+        grip: 4,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e66e9297814dadc07f949f4f5a6e2df8595e63391ca048656157c0cf7d91da17",
+        vertices: Some([13, 16, 97]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e7005c4fedd0cebacac144da368e7b4310db0e7422af5e0a398cec484251568e",
+        vertices: Some([81, 104, 111]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e71f1871813276ee8cb8849b1a83170f9bb0a016b6b7fc185599dc71eede65d8",
+        vertices: Some([8, 44, 55]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:e8a4615b37d86a2fdaa6cc3abf7b12f93b6fc8755e86dc29dce8e3691c66eda7",
+        vertices: Some([2, 26, 34]),
+        grip: 2,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ec3f99acf7c9bf7b0ce04c5eb1c0def21ac6e8ae34e03e96cdde88af17d381a2",
+        vertices: Some([82, 84, 111]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:eca0849e8142930306f6d9521284af0133b7e578c7dc7f35e5411a3861782b66",
+        vertices: Some([74, 138, 148]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ed70cd5a30fc113f934b440be06736c37ad0b82228c5f5a19a0a8c603c841689",
+        vertices: Some([74, 138, 148]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ee5610ad0175df970fde5d50f49e23f370a7e43e49233bb5f9e639fe226fc50b",
+        vertices: Some([13, 135, 161]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:eeab1be05acc5eff568cf90d793a6f6394b332883e80b9ebc8019cb30b7cb602",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:f55926d7cae2d2f93fba88aa794e8b27abc345a39db6cd4e576a4dc95a757134",
+        vertices: Some([54, 181, 182]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:f74348a1ceb113f0622337ec098ac014ab6c3c3c12d67469773795a462f27c29",
+        vertices: Some([41, 67, 68]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:f78d6b660e00ff1bba3634cd132a7ab8cd8b40a9cdc0e476c96be2ab62b3fa2a",
+        vertices: None,
+        grip: 1,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:f8d8b0a56ef0397b7ce5c50917dc00cb8ff161fa21aa6c8d9864483415249ad1",
+        vertices: Some([10, 127, 130]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:fad6bbf39320d8d244b0f64aa4b0d6382a8bec2d6b4c9c616669dc867f1defbe",
+        vertices: Some([68, 149, 156]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:fbfdb043b58abe5f84cb09b7ba008698be8c764cd4debda1c3007aa04614b97f",
+        vertices: Some([87, 118, 123]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:fd0ac88955dc79d2cd6b9320c02452f3b6272c50b0fa8cb88f8bdd94d86da577",
+        vertices: Some([37, 42, 57]),
+        grip: 3,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:fea9f1a8d526072db78351f0816059be53b3253757ced527b164d7e0bd262005",
+        vertices: Some([73, 114, 138]),
+        grip: 0,
+    },
+    WeaponAttachmentRow {
+        digest: "sha256:ffe43152810fb211fcc4ed41270fd590c275e8d72dacd77a587f87b4ac64c636",
+        vertices: Some([2, 8, 39]),
+        grip: 3,
+    },
 ];
 
 /// Resolve a Q2 weapon attachment by content digest (`q2WeaponAttachment`).
@@ -222,7 +888,9 @@ pub fn q2_weapon_attachment(digest: &str) -> Option<ModelAttachmentDefinition> {
             reference_frame: 0.0,
             vertices: vec![[f64::from(a), f64::from(b), f64::from(c)]],
         },
-        None => ModelAttachmentTarget::Joint { name: "Weapon".to_string() },
+        None => ModelAttachmentTarget::Joint {
+            name: "Weapon".to_string(),
+        },
     };
     Some(ModelAttachmentDefinition {
         digest: ContentDigest(digest.to_string()),
@@ -237,13 +905,11 @@ mod tests {
 
     #[test]
     fn resolves_mesh_and_joint_rows() {
-        let mesh = q2_weapon_attachment(
-            "sha256:32e4effc4d859237a6b0fbd5ebd2c0854f4705fb3baa577dc63f7f47d1e60e44",
-        ).expect("mesh row");
+        let mesh = q2_weapon_attachment("sha256:32e4effc4d859237a6b0fbd5ebd2c0854f4705fb3baa577dc63f7f47d1e60e44")
+            .expect("mesh row");
         assert!(matches!(mesh.target, ModelAttachmentTarget::Mesh { .. }));
-        let joint = q2_weapon_attachment(
-            "sha256:cd531d27e73a13f75c865f1765d5bb00c18de91116e1911aae7a3bb988f0582e",
-        ).expect("joint row");
+        let joint = q2_weapon_attachment("sha256:cd531d27e73a13f75c865f1765d5bb00c18de91116e1911aae7a3bb988f0582e")
+            .expect("joint row");
         assert!(matches!(joint.target, ModelAttachmentTarget::Joint { .. }));
         assert!(q2_weapon_attachment("sha256:00").is_none());
         assert_eq!(Q2_WEAPON_ATTACHMENTS.len(), 119);

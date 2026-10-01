@@ -5,28 +5,24 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds};
 
 use super::dabeam::monster_dabeam;
 use super::tables::xatrix_fixbot::{fixbot_frame, fixbot_moves};
 use crate::q2::base::monsters::common::{
-    finish_corpse_default, monster_explode, monster_muzzle, monster_shot,
-    move_handler,
+    finish_corpse_default, monster_explode, monster_muzzle, monster_shot, move_handler,
 };
-use crate::q2::foundation::callbacks::{Q2CallbackDefinitions, free_q2_entity};
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2Entity, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
-};
+use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2Entity, Q2PresentationEvent, Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    MASK_SHOT, angles_vectors, change_yaw, health, in_front, monster_solid_mask,
-    project_flash, run_ai, vector_angles, visible,
+    angles_vectors, change_yaw, health, in_front, monster_solid_mask, project_flash, run_ai, vector_angles, visible,
+    MASK_SHOT,
 };
 use crate::q2::foundation::monsters::perception::found_target;
-use crate::q2::foundation::monsters::types::{
-    MonsterAi, MonsterContext, MonsterHandler, MonsterLocomotion,
-    Q2MonsterDefinition,
-};
 use crate::q2::foundation::monsters::respawn_monster;
+use crate::q2::foundation::monsters::types::{
+    MonsterAi, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
+};
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit};
 
@@ -86,10 +82,7 @@ fn fixbot_vertical_goal(context: &mut MonsterContext, landing: bool) {
     };
     let end = add3(
         body.origin,
-        scale3(
-            angles_vectors(body.angles).up,
-            if landing { -8096.0 } else { 128.0 },
-        ),
+        scale3(angles_vectors(body.angles).up, if landing { -8096.0 } else { 128.0 }),
     );
     let trace = context.game.host.trace(&Q2TraceRequest {
         start: body.origin,
@@ -193,10 +186,7 @@ fn fixbot_attack(context: &mut MonsterContext) {
 /// Walk (`walk`).
 fn fixbot_walk(context: &mut MonsterContext) {
     let goal = context.entity().goal.clone();
-    let target = goal
-        .as_ref()
-        .and_then(|goal| context.game.entity(goal))
-        .cloned();
+    let target = goal.as_ref().and_then(|goal| context.game.entity(goal)).cloned();
     let repair = match target {
         Some(target) if target.classname == "object_repair" => {
             let actor = context.actor().clone();
@@ -309,10 +299,7 @@ fn fixbot_roam_goal(context: &mut MonsterContext) {
         let angles = vec3(body.angles.x, body.angles.y + yaw, body.angles.z);
         let trace = context.game.host.trace(&Q2TraceRequest {
             start: body.origin,
-            end: add3(
-                body.origin,
-                scale3(angles_vectors(angles).forward, 8192.0),
-            ),
+            end: add3(body.origin, scale3(angles_vectors(angles).forward, 8192.0)),
             bounds: None,
             ignore: Some(actor.clone()),
             mask: MASK_SHOT,
@@ -409,8 +396,7 @@ fn fixbot_use_scanner(context: &mut MonsterContext) {
         }
         return;
     }
-    let Some(previous) = context.game.mission_monsters.fixbot_before_move.get(&actor).copied()
-    else {
+    let Some(previous) = context.game.mission_monsters.fixbot_before_move.get(&actor).copied() else {
         panic!("Fixbot scanner must follow source movement in the same frame");
     };
     let origin = context.game.body_of(actor).origin;
@@ -535,10 +521,7 @@ fn fixbot_fire_laser(context: &mut MonsterContext) {
     let body = context.game.body_of(actor.clone());
     let target_body = context.game.body_of(enemy_id.clone());
     let angles = vector_angles(sub3(target_body.origin, body.origin));
-    let origin = add3(
-        body.origin,
-        scale3(angles_vectors(angles).forward, 16.0),
-    );
+    let origin = add3(body.origin, scale3(angles_vectors(angles).forward, 16.0));
     monster_dabeam(
         &actor,
         &mut *context.game,
@@ -635,26 +618,23 @@ pub fn create_fixbot_definition() -> Q2MonsterDefinition {
     definition.ai.insert("ai_move2".to_string(), fixbot_ai_move2);
     definition.ai.insert("ai_movetogoal".to_string(), fixbot_ai_movetogoal);
     definition.ai.insert("ai_facing".to_string(), fixbot_ai_facing);
-    definition.callbacks.insert(
-        "fixbot_run".to_string(),
-        MonsterHandler::Callback(fixbot_run),
-    );
+    definition
+        .callbacks
+        .insert("fixbot_run".to_string(), MonsterHandler::Callback(fixbot_run));
     definition.callbacks.insert(
         "fixbot_dead".to_string(),
         MonsterHandler::Callback(finish_corpse_default),
     );
-    definition.callbacks.insert(
-        "fixbot_attack".to_string(),
-        MonsterHandler::Callback(fixbot_attack),
-    );
+    definition
+        .callbacks
+        .insert("fixbot_attack".to_string(), MonsterHandler::Callback(fixbot_attack));
     definition.callbacks.insert(
         "change_to_roam".to_string(),
         MonsterHandler::Callback(fixbot_change_to_roam),
     );
-    definition.callbacks.insert(
-        "roam_goal".to_string(),
-        MonsterHandler::Callback(fixbot_roam_goal),
-    );
+    definition
+        .callbacks
+        .insert("roam_goal".to_string(), MonsterHandler::Callback(fixbot_roam_goal));
     definition.callbacks.insert(
         "fly_vertical2".to_string(),
         MonsterHandler::Callback(fixbot_fly_vertical2),
@@ -663,14 +643,12 @@ pub fn create_fixbot_definition() -> Q2MonsterDefinition {
         "fly_vertical".to_string(),
         MonsterHandler::Callback(fixbot_fly_vertical),
     );
-    definition.callbacks.insert(
-        "use_scanner".to_string(),
-        MonsterHandler::Callback(fixbot_use_scanner),
-    );
-    definition.callbacks.insert(
-        "weldstate".to_string(),
-        MonsterHandler::Callback(fixbot_weldstate),
-    );
+    definition
+        .callbacks
+        .insert("use_scanner".to_string(), MonsterHandler::Callback(fixbot_use_scanner));
+    definition
+        .callbacks
+        .insert("weldstate".to_string(), MonsterHandler::Callback(fixbot_weldstate));
     definition.callbacks.insert(
         "fixbot_fire_welder".to_string(),
         MonsterHandler::Callback(fixbot_fire_welder),

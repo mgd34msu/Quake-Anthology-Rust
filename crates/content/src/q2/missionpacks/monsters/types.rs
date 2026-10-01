@@ -30,21 +30,11 @@ pub trait Q2MissionPackMonsterServices {
     /// Gravity.
     fn gravity(&self) -> f64;
     /// Move an entity linearly toward a destination, then run a think callback.
-    fn move_linear(
-        &self,
-        actor: &ActorId,
-        game: &mut Q2GameServices,
-        destination: Vec3,
-        done: Q2Think,
-    );
+    fn move_linear(&self, actor: &ActorId, game: &mut Q2GameServices, destination: Vec3, done: Q2Think);
     /// Whether an actor stands in a bad area.
     fn bad_area(&self, actor: &ActorId) -> bool;
     /// Bad-area entity for an actor.
-    fn bad_area_entity(
-        &self,
-        actor: &ActorId,
-        origin: Option<Vec3>,
-    ) -> Option<ActorId>;
+    fn bad_area_entity(&self, actor: &ActorId, origin: Option<Vec3>) -> Option<ActorId>;
     /// Mark a tesla area.
     fn mark_tesla_area(&self, owner: &ActorId, tesla: &ActorId) -> bool;
     /// Powerup windows for an actor.
@@ -151,9 +141,7 @@ pub trait Q2MissionPackMonsterWeapons {
 }
 
 /// Require the registered projectile provider.
-pub fn mission_weapons(
-    game: &Q2GameServices,
-) -> std::rc::Rc<dyn Q2MissionPackMonsterWeapons> {
+pub fn mission_weapons(game: &Q2GameServices) -> std::rc::Rc<dyn Q2MissionPackMonsterWeapons> {
     game.mission_monsters
         .weapons
         .clone()
@@ -161,9 +149,7 @@ pub fn mission_weapons(
 }
 
 /// Require the registered monster services.
-pub fn mission_services(
-    game: &Q2GameServices,
-) -> std::rc::Rc<dyn Q2MissionPackMonsterServices> {
+pub fn mission_services(game: &Q2GameServices) -> std::rc::Rc<dyn Q2MissionPackMonsterServices> {
     game.mission_monsters
         .services
         .clone()

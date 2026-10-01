@@ -4,12 +4,12 @@
 //! (GPL-2.0-or-later).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, scale3};
+use qa_core::math::{scale3, Vec3};
 
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
 use crate::q2::foundation::weapons::generic_frame::{
-    step_q2_classic_frame, step_q2_rerelease_frame, ClassicFrameHooks, Q2ClassicFrameInput,
-    Q2GenericDefinition, Q2GenericFrameState, Q2RereleaseFrameInput, RereleaseFrameHooks,
+    step_q2_classic_frame, step_q2_rerelease_frame, ClassicFrameHooks, Q2ClassicFrameInput, Q2GenericDefinition,
+    Q2GenericFrameState, Q2RereleaseFrameInput, RereleaseFrameHooks,
 };
 use crate::q2::foundation::weapons::types::{Q2WeaponDefinition, Q2WeaponPhase};
 use crate::q2::foundation::weapons::vectors::angle_vectors;
@@ -236,15 +236,8 @@ pub fn release_lmctf_grapple_weapon(state: &mut Q2GenericFrameState) {
 }
 
 /// Whether the CTF grapple weapon should reset (`ctfGrappleWeaponShouldReset`).
-pub fn ctf_grapple_weapon_should_reset(
-    state: &Q2GenericFrameState,
-    selected: bool,
-    change_requested: bool,
-) -> bool {
-    selected
-        && !change_requested
-        && state.phase != Q2WeaponPhase::Firing
-        && state.phase != Q2WeaponPhase::Activating
+pub fn ctf_grapple_weapon_should_reset(state: &Q2GenericFrameState, selected: bool, change_requested: bool) -> bool {
+    selected && !change_requested && state.phase != Q2WeaponPhase::Firing && state.phase != Q2WeaponPhase::Activating
 }
 
 /// Grapple weapon source (`GrappleWeaponSource`).
@@ -397,12 +390,7 @@ impl Q2GrappleWeapon {
     }
 
     /// Step the weapon (`step`).
-    pub fn step(
-        &self,
-        state: &mut GrappleWeaponState,
-        game: &mut Q2GameServices,
-        input: &GrappleStepInput,
-    ) {
+    pub fn step(&self, state: &mut GrappleWeaponState, game: &mut Q2GameServices, input: &GrappleStepInput) {
         if self.is_holstered(state) {
             return;
         }

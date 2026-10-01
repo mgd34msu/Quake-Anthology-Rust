@@ -8,13 +8,9 @@ use super::super::common::{check_gib, reacts_to_pain, rerelease_random};
 use super::super::tables::flipper::flipper_moves;
 use crate::q2::base::monsters::flipper::flipper_definition;
 use crate::q2::foundation::monsters::ai::{corpse, health};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Initialize (`initialize`).
 fn rerelease_flipper_initialize(context: &mut MonsterContext) {
@@ -138,9 +134,8 @@ pub fn rerelease_flipper_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(rerelease_flipper_initialize));
     definition.pain = Some(rerelease_flipper_pain);
     definition.die = rerelease_flipper_die;
-    definition.callbacks.insert(
-        "flipper_dead".to_string(),
-        MonsterHandler::Callback(flipper_dead),
-    );
+    definition
+        .callbacks
+        .insert("flipper_dead".to_string(), MonsterHandler::Callback(flipper_dead));
     definition
 }

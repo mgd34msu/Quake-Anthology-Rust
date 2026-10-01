@@ -6,7 +6,7 @@ use qa_core::identity::ActorId;
 
 use crate::q2::foundation::host::Q2GameServices;
 
-use super::types::{LmctfEvent, LmctfHooks, LmctfMenuEntry, lmctf_name, lmctf_player, lmctf_print};
+use super::types::{lmctf_name, lmctf_player, lmctf_print, LmctfEvent, LmctfHooks, LmctfMenuEntry};
 
 /// LMCTF vote checkpoint (`LmctfVote::capture`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -28,8 +28,13 @@ impl LmctfVote {
         let actors: Vec<ActorId> = game.lmctf.states.keys().cloned().collect();
         let mut out = Vec::new();
         for actor in actors {
-            let connected = (self.hooks.player)(actor.clone(), game).map(|player| player.connected).unwrap_or(false);
-            let is_player = game.entity(&actor).map(|entity| entity.classname == "player").unwrap_or(false);
+            let connected = (self.hooks.player)(actor.clone(), game)
+                .map(|player| player.connected)
+                .unwrap_or(false);
+            let is_player = game
+                .entity(&actor)
+                .map(|entity| entity.classname == "player")
+                .unwrap_or(false);
             if connected && is_player {
                 out.push(actor);
             }
@@ -42,14 +47,29 @@ impl LmctfVote {
         let ballot = lmctf_player(game, &actor).extra_flags;
         let entries = if game.lmctf.vote_started.is_none() {
             vec![
-                LmctfMenuEntry { label: "Skip to next map".to_string(), command: Some("lmctf-vote skip".to_string()) },
-                LmctfMenuEntry { label: "Vote:     Idle".to_string(), command: None },
+                LmctfMenuEntry {
+                    label: "Skip to next map".to_string(),
+                    command: Some("lmctf-vote skip".to_string()),
+                },
+                LmctfMenuEntry {
+                    label: "Vote:     Idle".to_string(),
+                    command: None,
+                },
             ]
         } else {
             vec![
-                LmctfMenuEntry { label: "Vote YES".to_string(), command: Some("voteyes".to_string()) },
-                LmctfMenuEntry { label: "Vote NO".to_string(), command: Some("voteno".to_string()) },
-                LmctfMenuEntry { label: "Vote:     Started".to_string(), command: None },
+                LmctfMenuEntry {
+                    label: "Vote YES".to_string(),
+                    command: Some("voteyes".to_string()),
+                },
+                LmctfMenuEntry {
+                    label: "Vote NO".to_string(),
+                    command: Some("voteno".to_string()),
+                },
+                LmctfMenuEntry {
+                    label: "Vote:     Started".to_string(),
+                    command: None,
+                },
                 LmctfMenuEntry {
                     label: if ballot & 64 != 0 {
                         "You have voted YES"
@@ -63,7 +83,14 @@ impl LmctfVote {
                 },
             ]
         };
-        (self.hooks.emit)(game, LmctfEvent::Menu { actor, title: "LMCTF Vote Menu".to_string(), entries });
+        (self.hooks.emit)(
+            game,
+            LmctfEvent::Menu {
+                actor,
+                title: "LMCTF Vote Menu".to_string(),
+                entries,
+            },
+        );
     }
 
     /// Start a vote (`start`).
@@ -75,7 +102,11 @@ impl LmctfVote {
             }
         }
         if players.len() < 4 {
-            lmctf_print(game, "You need at least four players on the server to initiate a vote\n", Some(actor.clone()));
+            lmctf_print(
+                game,
+                "You need at least four players on the server to initiate a vote\n",
+                Some(actor.clone()),
+            );
         } else if game.lmctf.vote_started.is_some() {
             lmctf_print(game, "Vote has already been started\n", Some(actor.clone()));
         } else {
@@ -98,7 +129,11 @@ impl LmctfVote {
         }
         let state = lmctf_player(game, &actor);
         state.extra_flags = state.extra_flags & !192 | if yes { 64 } else { 128 };
-        lmctf_print(game, &format!("You have voted {}\n", if yes { "YES" } else { "NO" }), Some(actor.clone()));
+        lmctf_print(
+            game,
+            &format!("You have voted {}\n", if yes { "YES" } else { "NO" }),
+            Some(actor.clone()),
+        );
         self.menu(actor, game);
     }
 
@@ -116,7 +151,12 @@ impl LmctfVote {
         let mut no = 0;
         let mut abstained = 0;
         for player in self.players(game) {
-            let flags = game.lmctf.states.get(&player).map(|state| state.extra_flags).unwrap_or(0);
+            let flags = game
+                .lmctf
+                .states
+                .get(&player)
+                .map(|state| state.extra_flags)
+                .unwrap_or(0);
             if flags & 64 != 0 {
                 yes += 1;
             } else if flags & 128 != 0 {
@@ -125,7 +165,11 @@ impl LmctfVote {
                 abstained += 1;
             }
         }
-        lmctf_print(game, &format!("VOTE RESULT: YES:{yes}  NO:{no}  Abstained:{abstained}\n"), None);
+        lmctf_print(
+            game,
+            &format!("VOTE RESULT: YES:{yes}  NO:{no}  Abstained:{abstained}\n"),
+            None,
+        );
         let total = yes + no;
         if total < 2 {
             lmctf_print(game, "Vote Fails: you need at least 2 ballots cast!\n", None);
@@ -136,16 +180,26 @@ impl LmctfVote {
             percentage += 1;
         }
         if percentage < 75 {
-            lmctf_print(game, &format!("Vote Fails with {} percent majority\n", 100 - percentage), None);
+            lmctf_print(
+                game,
+                &format!("Vote Fails with {} percent majority\n", 100 - percentage),
+                None,
+            );
             return;
         }
-        lmctf_print(game, &format!("Vote to skip level Passes with {percentage} percent majority\n"), None);
+        lmctf_print(
+            game,
+            &format!("Vote to skip level Passes with {percentage} percent majority\n"),
+            None,
+        );
         (self.hooks.end_level)(game, None);
     }
 
     /// Capture the vote (`capture`).
     pub fn capture(&self, game: &Q2GameServices) -> LmctfVoteCheckpoint {
-        LmctfVoteCheckpoint { started_at: game.lmctf.vote_started }
+        LmctfVoteCheckpoint {
+            started_at: game.lmctf.vote_started,
+        }
     }
 
     /// Restore the vote (`restore`).

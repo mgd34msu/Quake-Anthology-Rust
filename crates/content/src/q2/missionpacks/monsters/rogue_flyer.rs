@@ -2,7 +2,7 @@
 //!
 //! Original Rogue m_flyer.c behavior. ZeniMax Media, GPL-2.0-or-later.
 
-use qa_core::math::{Bounds, Vec3, add3, scale3, sub3, vec3};
+use qa_core::math::{add3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::rogue_common::{monster_mass, rogue_blocked_check_shot};
 use super::state::RogueFlyerNext;
@@ -11,9 +11,7 @@ use crate::q2::base::monsters::common::{monster_explode, monster_loop_sound, mov
 use crate::q2::base::monsters::flyer::{flyer_definition, flyer_pain};
 use crate::q2::foundation::host::{Q2EffectEvent, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{enemy_body, target_distance};
-use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::types::{MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::support::contracts::PainReaction;
 
 /// Run (`run`).
@@ -30,8 +28,9 @@ fn rogue_flyer_run(context: &mut MonsterContext) {
 /// Return a slot to the carrier commander (`returnSlot`).
 fn return_slot(context: &mut MonsterContext) {
     let commander = context.state().commander.clone();
-    let commander_entity =
-        commander.as_ref().and_then(|commander| context.game.entity(commander).cloned());
+    let commander_entity = commander
+        .as_ref()
+        .and_then(|commander| context.game.entity(commander).cloned());
     if let Some(commander_entity) = commander_entity {
         if commander_entity.classname == "monster_carrier" {
             let id = commander_entity.actor.id().clone();
@@ -121,11 +120,7 @@ fn rogue_flyer_attack(context: &mut MonsterContext) {
         return;
     }
     let skill = context.game.options.skill;
-    let chance = if skill == 0 {
-        0.0
-    } else {
-        1.0 - 0.5 / f64::from(skill)
-    };
+    let chance = if skill == 0 { 0.0 } else { 1.0 - 0.5 / f64::from(skill) };
     if context.game.random() > chance {
         context.state_mut().attack_state = MonsterAttackState::Straight;
         context.set_move("flyer_move_attack2", true);
@@ -193,8 +188,16 @@ fn kamikaze_initialize(context: &mut MonsterContext) {
 pub fn create_rogue_flyer_definitions() -> Vec<Q2MonsterDefinition> {
     let mut definition = flyer_definition();
     definition.bounds = Bounds {
-        min: Vec3 { x: -16.0, y: -16.0, z: -24.0 },
-        max: Vec3 { x: 16.0, y: 16.0, z: 16.0 },
+        min: Vec3 {
+            x: -16.0,
+            y: -16.0,
+            z: -24.0,
+        },
+        max: Vec3 {
+            x: 16.0,
+            y: 16.0,
+            z: 16.0,
+        },
     };
     definition.moves = flyer_moves();
     definition.run = MonsterHandler::Callback(rogue_flyer_run);
@@ -204,26 +207,22 @@ pub fn create_rogue_flyer_definitions() -> Vec<Q2MonsterDefinition> {
     definition.attack = MonsterHandler::Callback(rogue_flyer_attack);
     definition.pain = Some(rogue_flyer_pain);
     definition.blocked = Some(rogue_flyer_blocked);
-    definition.callbacks.insert(
-        "flyer_run".to_string(),
-        MonsterHandler::Callback(rogue_flyer_run),
-    );
-    definition.callbacks.insert(
-        "flyer_kamikaze".to_string(),
-        move_handler("flyer_move_kamikaze"),
-    );
+    definition
+        .callbacks
+        .insert("flyer_run".to_string(), MonsterHandler::Callback(rogue_flyer_run));
+    definition
+        .callbacks
+        .insert("flyer_kamikaze".to_string(), move_handler("flyer_move_kamikaze"));
     definition.callbacks.insert(
         "flyer_kamikaze_check".to_string(),
         MonsterHandler::Callback(kamikaze_check),
     );
-    definition.callbacks.insert(
-        "flyer_setstart".to_string(),
-        MonsterHandler::Callback(flyer_setstart),
-    );
-    definition.callbacks.insert(
-        "flyer_nextmove".to_string(),
-        MonsterHandler::Callback(flyer_nextmove),
-    );
+    definition
+        .callbacks
+        .insert("flyer_setstart".to_string(), MonsterHandler::Callback(flyer_setstart));
+    definition
+        .callbacks
+        .insert("flyer_nextmove".to_string(), MonsterHandler::Callback(flyer_nextmove));
     let mut kamikaze = definition.clone();
     kamikaze.classname = "monster_kamikaze".to_string();
     kamikaze.kind = "kamikaze".to_string();

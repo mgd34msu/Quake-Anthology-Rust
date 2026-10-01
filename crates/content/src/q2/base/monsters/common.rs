@@ -2,15 +2,11 @@
 //!
 //! Shared source monster callbacks. id Software Quake II, GPL-2.0-or-later.
 
-use qa_core::math::{Bounds, Vec3, add3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
-use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2MotionKind, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop,
-};
-use crate::q2::foundation::monsters::ai::{
-    angles_vectors, enemy_body, enemy_eye, health, project_flash,
-};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib, throw_head};
+use crate::q2::foundation::host::{Q2EffectEvent, Q2MotionKind, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop};
+use crate::q2::foundation::monsters::ai::{angles_vectors, enemy_body, enemy_eye, health, project_flash};
+use crate::q2::foundation::monsters::gibs::{throw_gib, throw_head, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler};
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction};
@@ -87,11 +83,7 @@ pub fn monster_muzzle(context: &mut MonsterContext, flash: i32, direction: Vec3,
 }
 
 /// Aim a flash at the enemy eye with velocity lead (`shot`).
-pub fn monster_shot(
-    context: &mut MonsterContext,
-    flash: usize,
-    lead: f64,
-) -> Option<(Vec3, Vec3)> {
+pub fn monster_shot(context: &mut MonsterContext, flash: usize, lead: f64) -> Option<(Vec3, Vec3)> {
     let enemy = enemy_body(context)?;
     let eye = enemy_eye(context)?;
     let edition = context.game.options.edition;

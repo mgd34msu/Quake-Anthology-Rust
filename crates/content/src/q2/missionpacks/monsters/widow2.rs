@@ -3,48 +3,75 @@
 //! Original Rogue m_widow2.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
-use super::power_armor::{PowerArmorKind, monster_power_armor};
+use super::power_armor::{monster_power_armor, PowerArmorKind};
 use super::spawn::rogue_spawn_callbacks;
 use super::state::rogue_state;
 use super::tables::rogue_widow2::{widow2_frame, widow2_moves};
 use super::types::{mission_services, mission_weapons};
 use super::widow_common::{
-    widow_clear_powerups, widow_power_think, widow_powerups, widow_project,
-    widow_restore_armor, widow_slots, widow_slots_left, widow_summon,
+    widow_clear_powerups, widow_power_think, widow_powerups, widow_project, widow_restore_armor, widow_slots,
+    widow_slots_left, widow_summon,
 };
 use super::widow_death::{
-    widow_debris_callbacks, widow_explode_think, widow_explosion,
-    widow_explosion_leg, widow_gib,
+    widow_debris_callbacks, widow_explode_think, widow_explosion, widow_explosion_leg, widow_gib,
 };
 use crate::q2::base::monsters::common::{damaged_skin, move_handler};
-use crate::q2::foundation::host::{
-    Q2MonsterBeam, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
-};
+use crate::q2::foundation::host::{Q2MonsterBeam, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2TraceRequest};
 use crate::q2::foundation::monsters::ai::{
-    angles_vectors, change_yaw, enemy_body, enemy_eye, health, in_front,
-    project_flash, target_distance, vector_angles,
+    angles_vectors, change_yaw, enemy_body, enemy_eye, health, in_front, project_flash, target_distance, vector_angles,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib, throw_head};
+use crate::q2::foundation::monsters::gibs::{throw_gib, throw_head, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::types::{
-    MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
-    record_at,
+    record_at, MonsterAttackState, MonsterContext, MonsterHandler, Q2MonsterDefinition,
 };
 use crate::q2::rerelease::monsters::common::{monster_flash, predicted_direction};
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit};
 
 /// Tongue offsets (`tongueOffsets`).
 const TONGUE_OFFSETS: [Vec3; 8] = [
-    Vec3 { x: 17.48, y: 0.10, z: 68.92 },
-    Vec3 { x: 17.47, y: 0.29, z: 68.91 },
-    Vec3 { x: 17.45, y: 0.53, z: 68.87 },
-    Vec3 { x: 17.42, y: 0.78, z: 68.81 },
-    Vec3 { x: 17.39, y: 1.02, z: 68.75 },
-    Vec3 { x: 17.37, y: 1.20, z: 68.70 },
-    Vec3 { x: 17.36, y: 1.24, z: 68.71 },
-    Vec3 { x: 17.37, y: 1.21, z: 68.72 },
+    Vec3 {
+        x: 17.48,
+        y: 0.10,
+        z: 68.92,
+    },
+    Vec3 {
+        x: 17.47,
+        y: 0.29,
+        z: 68.91,
+    },
+    Vec3 {
+        x: 17.45,
+        y: 0.53,
+        z: 68.87,
+    },
+    Vec3 {
+        x: 17.42,
+        y: 0.78,
+        z: 68.81,
+    },
+    Vec3 {
+        x: 17.39,
+        y: 1.02,
+        z: 68.75,
+    },
+    Vec3 {
+        x: 17.37,
+        y: 1.20,
+        z: 68.70,
+    },
+    Vec3 {
+        x: 17.36,
+        y: 1.24,
+        z: 68.71,
+    },
+    Vec3 {
+        x: 17.37,
+        y: 1.21,
+        z: 68.72,
+    },
 ];
 
 /// Tongue okay (`tongueOkay`).
@@ -95,11 +122,7 @@ fn widow2_beam(context: &mut MonsterContext) {
         let start = project_flash(context, muzzle_offset(edition, flash as usize), None);
         let angles = context.game.body_of(actor.clone()).angles;
         let pitch = vector_angles(sub3(enemy.origin, start)).x;
-        let aimed = vec3(
-            angles.x + pitch,
-            angles.y - (-40.0 + index as f32 * 8.0),
-            angles.z,
-        );
+        let aimed = vec3(angles.x + pitch, angles.y - (-40.0 + index as f32 * 8.0), angles.z);
         let direction = angles_vectors(aimed).forward;
         let weapons = mission_weapons(&*context.game);
         weapons.fire_heat_beam(
@@ -126,10 +149,7 @@ fn widow2_beam(context: &mut MonsterContext) {
     let start = project_flash(context, muzzle_offset(edition, flash as usize), None);
     let height = enemy_eye(context).map(|eye| eye.z).unwrap_or(enemy.origin.z) - enemy.origin.z;
     let pos2 = context.entity().pos2;
-    let direction = normalize3(sub3(
-        vec3(pos2.x, pos2.y, pos2.z + height - 10.0),
-        start,
-    ));
+    let direction = normalize3(sub3(vec3(pos2.x, pos2.y, pos2.z + height - 10.0), start));
     let weapons = mission_weapons(&*context.game);
     weapons.fire_heat_beam(
         actor,
@@ -154,7 +174,10 @@ fn widow2_tongue_pull(context: &mut MonsterContext) {
         widow2_run(context);
         return;
     };
-    let offset = *record_at(&TONGUE_OFFSETS, (context.entity().frame - widow2_frame::TONGS01) as usize);
+    let offset = *record_at(
+        &TONGUE_OFFSETS,
+        (context.entity().frame - widow2_frame::TONGS01) as usize,
+    );
     let start = widow_project(&actor, &mut *context.game, offset);
     if !tongue_okay(start, enemy.origin) {
         return;
@@ -237,7 +260,10 @@ fn widow2_check_attack(context: &mut MonsterContext) -> bool {
     context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(enemy.origin, origin)).y);
     if context.entity().timestamp < context.game.host.now()
         && distance < 300.0
-        && tongue_okay(widow_project(&actor, &mut *context.game, TONGUE_OFFSETS[0]), enemy.origin)
+        && tongue_okay(
+            widow_project(&actor, &mut *context.game, TONGUE_OFFSETS[0]),
+            enemy.origin,
+        )
     {
         if context.game.options.skill == 0 && (context.game.random() * 4.0).floor() as i32 != 0 {
             return false;
@@ -257,7 +283,10 @@ fn widow2_check_attack(context: &mut MonsterContext) -> bool {
         0.5
     };
     if context.game.random() < chance
-        || context.game.entity(&enemy_id).is_some_and(|enemy| enemy.solid == Q2Solid::None)
+        || context
+            .game
+            .entity(&enemy_id)
+            .is_some_and(|enemy| enemy.solid == Q2Solid::None)
     {
         context.state_mut().attack_state = MonsterAttackState::Missile;
         return true;
@@ -317,9 +346,7 @@ fn widow2_attack(context: &mut MonsterContext) {
         return;
     }
     widow_slots(context);
-    if (context.state().attack_state == MonsterAttackState::Blind || blocked)
-        && widow_slots_left(context) >= 2
-    {
+    if (context.state().attack_state == MonsterAttackState::Blind || blocked) && widow_slots_left(context) >= 2 {
         context.set_move("widow2_move_spawn", true);
         return;
     }
@@ -499,12 +526,7 @@ fn widow2_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             clipped,
             Q2GibOptions::default(),
         );
-        throw_head(
-            actor,
-            &mut *context.game,
-            "models/objects/gibs/head2/tris.md2",
-            clipped,
-        );
+        throw_head(actor, &mut *context.game, "models/objects/gibs/head2/tris.md2", clipped);
         context.state_mut().dead = true;
         context.state_mut().gibbed = true;
         return;
@@ -607,11 +629,7 @@ fn widow_disrupt(context: &mut MonsterContext) {
     let Some(direction) = direction else {
         return;
     };
-    let enemy_id = if locked {
-        context.entity().enemy.clone()
-    } else {
-        None
-    };
+    let enemy_id = if locked { context.entity().enemy.clone() } else { None };
     let weapons = mission_weapons(&*context.game);
     let actor = context.actor().clone();
     weapons.fire_tracker(
@@ -658,17 +676,27 @@ fn widow2_tongue(context: &mut MonsterContext) {
     let (Some(enemy), Some(enemy_id)) = (enemy, enemy_id) else {
         return;
     };
-    let offset =
-        *record_at(&TONGUE_OFFSETS, (context.entity().frame - widow2_frame::TONGS01) as usize);
+    let offset = *record_at(
+        &TONGUE_OFFSETS,
+        (context.entity().frame - widow2_frame::TONGS01) as usize,
+    );
     let start = widow_project(&actor, &mut *context.game, offset);
     if !tongue_okay(start, enemy.origin)
         && !tongue_okay(
             start,
-            vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z + enemy.bounds.max.z - 8.0),
+            vec3(
+                enemy.origin.x,
+                enemy.origin.y,
+                enemy.origin.z + enemy.bounds.max.z - 8.0,
+            ),
         )
         && !tongue_okay(
             start,
-            vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z + enemy.bounds.min.z + 8.0),
+            vec3(
+                enemy.origin.x,
+                enemy.origin.y,
+                enemy.origin.z + enemy.bounds.min.z + 8.0,
+            ),
         )
     {
         return;
@@ -801,8 +829,12 @@ pub fn create_widow2_definition() -> Q2MonsterDefinition {
     for (key, think) in rogue_spawn_callbacks().think {
         source_callbacks.think.insert(key, think);
     }
-    source_callbacks.think.insert("q2:rogue/widow2_powerups", widow_power_think);
-    source_callbacks.think.insert("q2:rogue/WidowExplode", widow_explode_think);
+    source_callbacks
+        .think
+        .insert("q2:rogue/widow2_powerups", widow_power_think);
+    source_callbacks
+        .think
+        .insert("q2:rogue/WidowExplode", widow_explode_think);
     definition.source_callbacks = Some(source_callbacks);
     definition.initialize = Some(MonsterHandler::Callback(widow2_initialize));
     definition.restore = Some(MonsterHandler::Callback(widow_restore_armor));
@@ -813,12 +845,21 @@ pub fn create_widow2_definition() -> Q2MonsterDefinition {
         ("Widow2Beam", MonsterHandler::Callback(widow2_beam)),
         ("Widow2SaveBeamTarget", MonsterHandler::Callback(widow2_save_beam)),
         ("Widow2StartSweep", MonsterHandler::Callback(widow2_save_beam)),
-        ("Widow2BeamTargetRemove", MonsterHandler::Callback(widow2_beam_target_remove)),
+        (
+            "Widow2BeamTargetRemove",
+            MonsterHandler::Callback(widow2_beam_target_remove),
+        ),
         ("widow2_attack_beam", move_handler("widow2_move_attack_beam")),
         ("widow2_reattack_beam", MonsterHandler::Callback(widow2_reattack_beam)),
-        ("Widow2SaveDisruptLoc", MonsterHandler::Callback(widow2_save_disrupt_loc)),
+        (
+            "Widow2SaveDisruptLoc",
+            MonsterHandler::Callback(widow2_save_disrupt_loc),
+        ),
         ("WidowDisrupt", MonsterHandler::Callback(widow_disrupt)),
-        ("widow2_disrupt_reattack", MonsterHandler::Callback(widow2_disrupt_reattack)),
+        (
+            "widow2_disrupt_reattack",
+            MonsterHandler::Callback(widow2_disrupt_reattack),
+        ),
         ("widow_start_spawn", MonsterHandler::Callback(widow_start_spawn)),
         ("widow2_ready_spawn", MonsterHandler::Callback(widow2_ready_spawn)),
         ("widow2_spawn_check", MonsterHandler::Callback(widow2_spawn_check)),
@@ -826,16 +867,40 @@ pub fn create_widow2_definition() -> Q2MonsterDefinition {
         ("Widow2TonguePull", MonsterHandler::Callback(widow2_tongue_pull)),
         ("Widow2Crunch", MonsterHandler::Callback(widow2_crunch)),
         ("Widow2Toss", MonsterHandler::Callback(widow2_toss)),
-        ("WidowExplosion1", MonsterHandler::Callback(|context| widow_explosion(context, vec3(23.74, -37.67, 76.96)))),
-        ("WidowExplosion2", MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.49, 36.92, 73.52)))),
-        ("WidowExplosion3", MonsterHandler::Callback(|context| widow_explosion(context, vec3(2.11, 0.05, 92.20)))),
-        ("WidowExplosion4", MonsterHandler::Callback(|context| widow_explosion(context, vec3(-28.04, -35.57, -77.56)))),
-        ("WidowExplosion5", MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76)))),
-        ("WidowExplosion6", MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76)))),
-        ("WidowExplosion7", MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76)))),
+        (
+            "WidowExplosion1",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(23.74, -37.67, 76.96))),
+        ),
+        (
+            "WidowExplosion2",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.49, 36.92, 73.52))),
+        ),
+        (
+            "WidowExplosion3",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(2.11, 0.05, 92.20))),
+        ),
+        (
+            "WidowExplosion4",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(-28.04, -35.57, -77.56))),
+        ),
+        (
+            "WidowExplosion5",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76))),
+        ),
+        (
+            "WidowExplosion6",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76))),
+        ),
+        (
+            "WidowExplosion7",
+            MonsterHandler::Callback(|context| widow_explosion(context, vec3(-20.11, -1.11, 40.76))),
+        ),
         ("WidowExplosionLeg", MonsterHandler::Callback(widow_explosion_leg)),
         ("WidowExplode", MonsterHandler::Callback(widow2_explode_callback)),
-        ("widow2_start_searching", MonsterHandler::Callback(widow2_start_searching)),
+        (
+            "widow2_start_searching",
+            MonsterHandler::Callback(widow2_start_searching),
+        ),
         ("widow2_keep_searching", MonsterHandler::Callback(widow2_keep_searching)),
         ("widow2_finaldeath", MonsterHandler::Callback(widow2_finaldeath)),
     ] {

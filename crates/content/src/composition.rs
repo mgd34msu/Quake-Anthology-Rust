@@ -673,9 +673,18 @@ pub fn q1_q2_supply_loadout() -> SupplyLoadout {
     SupplyLoadout {
         weapon: "q2:weapon_shotgun".to_string(),
         inventory: vec![
-            SupplyLoadoutEntry { item: "q2:weapon_blaster".to_string(), count: 1 },
-            SupplyLoadoutEntry { item: "q2:weapon_shotgun".to_string(), count: 1 },
-            SupplyLoadoutEntry { item: "q2:ammo_shells".to_string(), count: 25 },
+            SupplyLoadoutEntry {
+                item: "q2:weapon_blaster".to_string(),
+                count: 1,
+            },
+            SupplyLoadoutEntry {
+                item: "q2:weapon_shotgun".to_string(),
+                count: 1,
+            },
+            SupplyLoadoutEntry {
+                item: "q2:ammo_shells".to_string(),
+                count: 25,
+            },
         ],
     }
 }
@@ -803,7 +812,10 @@ pub fn register_selected_q2_mission_weapons(
         .filter(|item| definitions.iter().any(|definition| definition.item.as_str() == **item))
         .map(ToString::to_string)
         .collect();
-    SelectedQ2Arsenal { inventory_definitions, pickup_order }
+    SelectedQ2Arsenal {
+        inventory_definitions,
+        pickup_order,
+    }
 }
 
 #[cfg(test)]

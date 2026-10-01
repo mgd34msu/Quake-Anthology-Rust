@@ -3,27 +3,25 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
-use qa_core::math::{Vec3, add3, dot3, vec3};
+use qa_core::math::{add3, dot3, vec3, Vec3};
 
 use crate::contract::ItemId;
 use crate::q2::foundation::checkpoint::{restore_q2_attack, save_q2_actor, save_q2_attack};
 use crate::q2::foundation::host::{
-    Q2Edition, Q2Entity, Q2Mode, Q2ModelEvent, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SoundEvent, Q2SoundLoop, Q2SpawnFields,
+    Q2Edition, Q2Entity, Q2Mode, Q2ModelEvent, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop,
+    Q2SpawnFields,
 };
 use crate::q2::foundation::items::Q2PlayerPowerups;
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::{
-    BodyState, CombatState, CombatTraitChanges, DamageDecision, DamageFeedback, DamageReactionKind,
-    DeathReaction,
+    BodyState, CombatState, CombatTraitChanges, DamageDecision, DamageFeedback, DamageReactionKind, DeathReaction,
 };
 use crate::q2::support::tables::{Q2BodyTable, Q2CombatAuthority, Q2InventoryTable};
 
 use super::checkpoint::{Q2CharacterCheckpoint, Q2CharacterEntityFields, Q2PlayerStateCheckpoint};
 use super::environment::{q2_falling_damage, q2_world_effects};
 use super::types::{
-    Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerMovement, Q2PlayerRules,
-    Q2PlayerState, Q2PlayerView,
+    Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerMovement, Q2PlayerRules, Q2PlayerState, Q2PlayerView,
 };
 use super::view::{
     emit_player_effect, q2_build_view, q2_client_animation, q2_client_effects, q2_damage_feedback,
@@ -363,10 +361,7 @@ impl Q2CharacterActor {
         self.pain_index = checkpoint.pain_index;
         self.death_index = checkpoint.death_index;
         let mut state = checkpoint.state.state.clone();
-        state.chase_target = checkpoint
-            .state
-            .chase_target
-            .map(&mut *resolve_actor);
+        state.chase_target = checkpoint.state.chase_target.map(&mut *resolve_actor);
         self.state = state;
         self.rules = checkpoint.rules.clone();
         let entity = &mut self.entity;
@@ -404,11 +399,7 @@ impl Q2CharacterActor {
     pub fn pain(&mut self) {}
 
     /// Record damage feedback.
-    pub fn record_damage(
-        &mut self,
-        host: &mut dyn Q2CharacterHost,
-        decision: &DamageDecision,
-    ) {
+    pub fn record_damage(&mut self, host: &mut dyn Q2CharacterHost, decision: &DamageDecision) {
         self.entity.last_attack = Some(decision.request.attack.clone());
         if decision.reaction == DamageReactionKind::Death {
             return;
@@ -425,8 +416,7 @@ impl Q2CharacterActor {
         self.state.damage_blood += feedback.map_or(decision.applied_damage, |(_, _, blood, _)| blood);
         self.state.damage_armor += feedback.map_or(0.0, |(_, armor, _, _)| armor);
         self.state.damage_power_armor += feedback.map_or(0.0, |(power, _, _, _)| power);
-        self.state.damage_knockback +=
-            feedback.map_or(decision.request.knockback, |(_, _, _, knockback)| knockback);
+        self.state.damage_knockback += feedback.map_or(decision.request.knockback, |(_, _, _, knockback)| knockback);
         self.state.damage_from = decision.request.point;
         if feedback.map_or(0.0, |(power, _, _, _)| power) > 0.0 {
             self.state.power_armor_time = host.now() + 0.2;
@@ -460,8 +450,7 @@ impl Q2CharacterActor {
             self.state.killer_yaw = match killer {
                 None => f64::from(body.angles.y),
                 Some(killer) => {
-                    (f64::from(killer.origin.y - body.origin.y)
-                        .atan2(f64::from(killer.origin.x - body.origin.x))
+                    (f64::from(killer.origin.y - body.origin.y).atan2(f64::from(killer.origin.x - body.origin.x))
                         * 180.0
                         / std::f64::consts::PI
                         + 360.0)
@@ -489,10 +478,7 @@ impl Q2CharacterActor {
                     ),
                 );
                 let impulse = self.gib_velocity(host, reaction.pain.damage);
-                let velocity = add3(
-                    body.velocity,
-                    vec3(impulse.x * 0.5, impulse.y * 0.5, impulse.z * 0.5),
-                );
+                let velocity = add3(body.velocity, vec3(impulse.x * 0.5, impulse.y * 0.5, impulse.z * 0.5));
                 let spin = vec3(
                     (host.random() * 600.0) as f32,
                     (host.random() * 600.0) as f32,
@@ -586,11 +572,7 @@ impl Q2CharacterActor {
         host.emit(Q2PresentationEvent::Model(Q2ModelEvent {
             actor: self.actor.id().clone(),
             path: entity.model.clone(),
-            attached_models: vec![
-                entity.model2.clone(),
-                entity.model3.clone(),
-                entity.model4.clone(),
-            ],
+            attached_models: vec![entity.model2.clone(), entity.model3.clone(), entity.model4.clone()],
             frame: entity.frame,
             old_frame: entity.old_frame,
             scale: entity.scale,
@@ -612,15 +594,8 @@ impl Q2CharacterActor {
     pub fn begin_frame(&mut self, host: &mut dyn Q2CharacterHost) {
         if self.state.dead
             && host.now() > self.state.respawn_time
-            && (self.state.latched_buttons
-                & (if self.options.mode == Q2Mode::Deathmatch {
-                    1
-                } else {
-                    -1
-                })
-                != 0
-                || self.options.mode == Q2Mode::Deathmatch
-                    && self.options.deathmatch_flags & 1024 != 0)
+            && (self.state.latched_buttons & (if self.options.mode == Q2Mode::Deathmatch { 1 } else { -1 }) != 0
+                || self.options.mode == Q2Mode::Deathmatch && self.options.deathmatch_flags & 1024 != 0)
         {
             self.state.latched_buttons = 0;
             host.request_respawn(&self.actor);
@@ -667,12 +642,7 @@ impl Q2CharacterActor {
     }
 
     /// Set an animation.
-    pub fn set_animation(
-        &mut self,
-        priority: Q2CharacterAnimation,
-        first: i32,
-        last: i32,
-    ) {
+    pub fn set_animation(&mut self, priority: Q2CharacterAnimation, first: i32, last: i32) {
         self.state.animation_priority = match priority {
             Q2CharacterAnimation::Attack => 4,
             Q2CharacterAnimation::Pain => 3,

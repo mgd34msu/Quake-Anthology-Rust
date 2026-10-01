@@ -6,13 +6,11 @@ use std::collections::HashMap;
 
 use qa_core::math::{Bounds, Vec3};
 
-use super::common::{
-    HUMANOID_BOUNDS, finish_corpse, move_handler, sound_handler, standard_gib,
-};
+use super::common::{finish_corpse, move_handler, sound_handler, standard_gib, HUMANOID_BOUNDS};
 use super::tables::insane::{insane_frame, insane_moves};
 use crate::q2::foundation::monsters::ai::health;
 use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition, record_at,
+    record_at, MonsterContext, MonsterHandler, MonsterLocomotion, Q2MonsterDefinition,
 };
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
@@ -36,9 +34,7 @@ fn insane_stand(context: &mut MonsterContext) {
 
 /// Walk or run (`walking`).
 fn insane_walking(context: &mut MonsterContext, running: bool) {
-    if context.entity().spawnflags & 16 != 0
-        && context.entity().frame == insane_frame::CR_PAIN10
-    {
+    if context.entity().spawnflags & 16 != 0 && context.entity().frame == insane_frame::CR_PAIN10 {
         context.set_move("insane_move_down", true);
         return;
     }
@@ -158,13 +154,9 @@ fn insane_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     } else {
         100
     };
-    context.game.sound(
-        &actor,
-        &format!("player/male/pain{band}_{variant}.wav"),
-        2,
-        1.0,
-        2.0,
-    );
+    context
+        .game
+        .sound(&actor, &format!("player/male/pain{band}_{variant}.wav"), 2, 1.0, 2.0);
     if context.game.options.skill == 3 {
         return;
     }
@@ -179,26 +171,14 @@ fn insane_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 
 /// Die (`die`).
 fn insane_die(context: &mut MonsterContext, reaction: &DeathReaction) {
-    if standard_gib(
-        context,
-        reaction,
-        2,
-        4,
-        "models/objects/gibs/head2/tris.md2",
-        2.0,
-    ) || context.state().dead
-    {
+    if standard_gib(context, reaction, 2, 4, "models/objects/gibs/head2/tris.md2", 2.0) || context.state().dead {
         return;
     }
     let variant = 1 + (context.game.random() * 4.0).floor() as i32;
     let actor = context.actor().clone();
-    context.game.sound(
-        &actor,
-        &format!("player/male/death{variant}.wav"),
-        2,
-        1.0,
-        2.0,
-    );
+    context
+        .game
+        .sound(&actor, &format!("player/male/death{variant}.wav"), 2, 1.0, 2.0);
     context.state_mut().dead = true;
     context.state_mut().can_take_damage = true;
     let owned = context.game.owned_of(actor);
@@ -225,13 +205,9 @@ fn insane_scream(context: &mut MonsterContext) {
         (context.game.random() * 8.0).floor() as usize,
     );
     let actor = context.actor().clone();
-    context.game.sound(
-        &actor,
-        &format!("insane/insane{variant}.wav"),
-        2,
-        1.0,
-        2.0,
-    );
+    context
+        .game
+        .sound(&actor, &format!("insane/insane{variant}.wav"), 2, 1.0, 2.0);
 }
 
 /// Cross (`insane_cross`).
@@ -285,54 +261,21 @@ pub fn insane_definition() -> Q2MonsterDefinition {
     definition.initialize = Some(MonsterHandler::Callback(insane_initialize));
     definition.after_spawn = Some(MonsterHandler::Callback(insane_after_spawn));
     definition.callbacks = HashMap::from([
-        (
-            "insane_stand".to_string(),
-            MonsterHandler::Callback(insane_stand),
-        ),
-        (
-            "insane_walk".to_string(),
-            MonsterHandler::Callback(insane_walk),
-        ),
-        (
-            "insane_run".to_string(),
-            MonsterHandler::Callback(insane_run),
-        ),
-        (
-            "insane_dead".to_string(),
-            MonsterHandler::Callback(insane_dead),
-        ),
-        (
-            "insane_onground".to_string(),
-            move_handler("insane_move_down"),
-        ),
-        (
-            "insane_fist".to_string(),
-            sound_handler("insane/insane11.wav", 2, 2.0),
-        ),
-        (
-            "insane_shake".to_string(),
-            sound_handler("insane/insane5.wav", 2, 2.0),
-        ),
-        (
-            "insane_moan".to_string(),
-            sound_handler("insane/insane7.wav", 2, 2.0),
-        ),
-        (
-            "insane_scream".to_string(),
-            MonsterHandler::Callback(insane_scream),
-        ),
-        (
-            "insane_cross".to_string(),
-            MonsterHandler::Callback(insane_cross),
-        ),
+        ("insane_stand".to_string(), MonsterHandler::Callback(insane_stand)),
+        ("insane_walk".to_string(), MonsterHandler::Callback(insane_walk)),
+        ("insane_run".to_string(), MonsterHandler::Callback(insane_run)),
+        ("insane_dead".to_string(), MonsterHandler::Callback(insane_dead)),
+        ("insane_onground".to_string(), move_handler("insane_move_down")),
+        ("insane_fist".to_string(), sound_handler("insane/insane11.wav", 2, 2.0)),
+        ("insane_shake".to_string(), sound_handler("insane/insane5.wav", 2, 2.0)),
+        ("insane_moan".to_string(), sound_handler("insane/insane7.wav", 2, 2.0)),
+        ("insane_scream".to_string(), MonsterHandler::Callback(insane_scream)),
+        ("insane_cross".to_string(), MonsterHandler::Callback(insane_cross)),
         (
             "insane_checkdown".to_string(),
             MonsterHandler::Callback(insane_checkdown),
         ),
-        (
-            "insane_checkup".to_string(),
-            MonsterHandler::Callback(insane_checkup),
-        ),
+        ("insane_checkup".to_string(), MonsterHandler::Callback(insane_checkup)),
     ]);
     definition
 }

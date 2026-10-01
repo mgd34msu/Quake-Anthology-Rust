@@ -11,24 +11,16 @@ use super::super::tables::flashes::rerelease_flash;
 use crate::q2::base::monsters::boss2::boss2_definition;
 use crate::q2::base::monsters::boss_common::stop_loop;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
-use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2PresentationEvent,
-};
+use crate::q2::foundation::host::{Q2Edition, Q2EffectEvent, Q2PresentationEvent};
 use crate::q2::foundation::monsters::ai::{
     angles_vectors, enemy_body, health, in_front, project_flash, target_distance,
 };
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
 use crate::q2::foundation::monsters::muzzle::muzzle_offset;
-use crate::q2::foundation::monsters::perception::{
-    Q2AttackChanceProfile, check_attack_with_profile,
-};
-use crate::q2::foundation::monsters::types::{
-    MonsterContext, MonsterHandler, Q2MonsterDefinition,
-};
+use crate::q2::foundation::monsters::perception::{check_attack_with_profile, Q2AttackChanceProfile};
+use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
 use crate::q2::foundation::weapons::types::Mod;
-use crate::q2::support::contracts::{
-    CombatTraitChanges, DeathReaction, PainReaction,
-};
+use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction};
 
 /// Attack machine gun (`attackMachinegun`).
 fn boss2_attack_machinegun(context: &mut MonsterContext) {
@@ -57,11 +49,7 @@ fn boss2_fire_rocket(context: &mut MonsterContext, predictive: bool) {
         (80, 0.05, -0.025, false),
         (81, 0.1, -0.4, true),
     ] {
-        let start = project_flash(
-            context,
-            muzzle_offset(Q2Edition::Rerelease, flash as usize),
-            None,
-        );
+        let start = project_flash(context, muzzle_offset(Q2Edition::Rerelease, flash as usize), None);
         let direction = if predictive {
             predicted_direction(context, start, 750.0, false, lead)
         } else {
@@ -202,8 +190,7 @@ fn boss2_gib(context: &mut MonsterContext) {
             );
             if let Some(piece) = piece {
                 let scale = context.game.require_entity(&actor).scale;
-                context.game.require_entity_mut(&piece).scale =
-                    (if scale != 0.0 { scale } else { 1.0 }) * factor;
+                context.game.require_entity_mut(&piece).scale = (if scale != 0.0 { scale } else { 1.0 }) * factor;
                 context.game.show(piece);
             }
         }
@@ -345,8 +332,7 @@ fn rerelease_boss2_die(context: &mut MonsterContext, _reaction: &DeathReaction) 
 /// Reattack machine gun (`boss2_reattack_mg`).
 fn boss2_reattack_mg(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let again = enemy.as_ref().is_some_and(|enemy| in_front(context, enemy))
-        && context.game.random() <= 0.7;
+    let again = enemy.as_ref().is_some_and(|enemy| in_front(context, enemy)) && context.game.random() <= 0.7;
     if again {
         boss2_attack_machinegun(context);
     } else {
@@ -357,8 +343,8 @@ fn boss2_reattack_mg(context: &mut MonsterContext) {
 /// Rocket (`Boss2Rocket`).
 fn boss2_rocket(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
-    let predictive = enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy))
-        && context.game.random() < 0.9;
+    let predictive =
+        enemy.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy)) && context.game.random() < 0.9;
     boss2_fire_rocket(context, predictive);
 }
 
@@ -378,7 +364,9 @@ fn boss2_rocket64(context: &mut MonsterContext) {
     let mut start = vec3(muzzle.x, muzzle.y, muzzle.z + (10.0 * size) as f32);
     start = sub3(start, scale3(right, ((2 + count % 4 * 8) as f64 * size) as f32));
     let enemy_id = context.entity().enemy.clone();
-    let player = enemy_id.as_ref().is_some_and(|enemy| context.game.host.is_player(enemy));
+    let player = enemy_id
+        .as_ref()
+        .is_some_and(|enemy| context.game.host.is_player(enemy));
     let target = if player && context.game.random() < 0.9 {
         add3(
             enemy.origin,
@@ -415,15 +403,21 @@ fn boss2_hyper_blaster(context: &mut MonsterContext) {
         .and_then(|enemy| context.game.entity(enemy))
         .map(|target| target.view_height)
         .unwrap_or(22);
-    let target = vec3(
-        enemy.origin.x,
-        enemy.origin.y,
-        enemy.origin.z + view_height as f32,
-    );
+    let target = vec3(enemy.origin.x, enemy.origin.y, enemy.origin.z + view_height as f32);
     let direction = normalize3(sub3(target, start));
     let effects = if frame % 4 == 0 { 64 } else { 0 };
     let fire_blaster = context.weapons.fire_blaster;
-    fire_blaster(actor, &mut *context.game, start, direction, 2.0, 1000.0, effects, false, Mod::BLASTER);
+    fire_blaster(
+        actor,
+        &mut *context.game,
+        start,
+        direction,
+        2.0,
+        1000.0,
+        effects,
+        false,
+        Mod::BLASTER,
+    );
     monster_flash(context, id, start, direction);
 }
 
@@ -469,10 +463,7 @@ pub fn rerelease_boss2_definition() -> Q2MonsterDefinition {
     definition.die = rerelease_boss2_die;
     for (name, handler) in [
         ("BossExplode", MonsterHandler::Callback(boss_explode)),
-        (
-            "boss2_attack_mg",
-            MonsterHandler::Callback(boss2_attack_machinegun),
-        ),
+        ("boss2_attack_mg", MonsterHandler::Callback(boss2_attack_machinegun)),
         ("boss2_reattack_mg", MonsterHandler::Callback(boss2_reattack_mg)),
         (
             "Boss2PredictiveRocket",
@@ -480,19 +471,13 @@ pub fn rerelease_boss2_definition() -> Q2MonsterDefinition {
         ),
         ("Boss2Rocket", MonsterHandler::Callback(boss2_rocket)),
         ("Boss2Rocket64", MonsterHandler::Callback(boss2_rocket64)),
-        (
-            "boss2_firebullet_left",
-            MonsterHandler::Callback(boss2_firebullet_left),
-        ),
+        ("boss2_firebullet_left", MonsterHandler::Callback(boss2_firebullet_left)),
         (
             "boss2_firebullet_right",
             MonsterHandler::Callback(boss2_firebullet_right),
         ),
         ("Boss2MachineGun", MonsterHandler::Callback(boss2_machine_gun)),
-        (
-            "Boss2HyperBlaster",
-            MonsterHandler::Callback(boss2_hyper_blaster),
-        ),
+        ("Boss2HyperBlaster", MonsterHandler::Callback(boss2_hyper_blaster)),
         ("boss2_shrink", MonsterHandler::Callback(boss2_shrink)),
         ("boss2_dead", MonsterHandler::Callback(boss2_dead)),
     ] {

@@ -4,7 +4,7 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2TraceRequest};
-use crate::q2::foundation::weapons::types::{PLAYER_CONTENTS, PROJECTILE_MASK, SHOT_MASK, WeaponHand};
+use crate::q2::foundation::weapons::types::{WeaponHand, PLAYER_CONTENTS, PROJECTILE_MASK, SHOT_MASK};
 use crate::q2::foundation::weapons::vectors::{angle_vectors, vector_angles};
 use crate::q2::support::contracts::TraceFamily;
 
@@ -64,11 +64,14 @@ pub fn project_q2_actor(
         );
         return (start, axes.forward);
     }
-    let eye = add3(origin, Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: view.view_height as f32,
-    });
+    let eye = add3(
+        origin,
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: view.view_height as f32,
+        },
+    );
     let start = add3(
         add3(add3(eye, scale3(axes.forward, offset.x)), scale3(axes.right, side)),
         scale3(axes.up, offset.z),
