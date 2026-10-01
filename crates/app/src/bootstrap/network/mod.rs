@@ -5,6 +5,7 @@ pub mod gtv_source;
 pub mod q1;
 pub mod q1_client;
 pub mod q1_types;
+pub mod q2;
 pub mod q2_client_receiver;
 pub mod q2_demo;
 pub mod q2_downloads;

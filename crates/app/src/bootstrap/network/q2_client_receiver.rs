@@ -60,8 +60,8 @@ pub fn q2_receiver_protocol(protocol: &Q2ProtocolIdentity) -> ProtocolIdentity {
     }
 }
 
-/// Map a wire identity back to its recording identity.
-fn seed_protocol(protocol: &ProtocolIdentity) -> Result<Q2ProtocolIdentity, Q2ClientReceiverError> {
+/// Map a wire identity back to its application identity.
+pub(crate) fn seed_protocol(protocol: &ProtocolIdentity) -> Result<Q2ProtocolIdentity, Q2ClientReceiverError> {
     let unsupported =
         |version: u32| Q2ClientReceiverError::Message(format!("Unsupported recorded Q2 protocol {version}"));
     match *protocol {
@@ -203,8 +203,8 @@ impl<T: Q2ApplicationClientHost> Q2ClientReceiverHost for T {
 pub trait Q2ClientReceiverSource {
     /// Whether the source is a demo (no downloads, commands, or resets).
     fn is_demo(&self) -> bool;
-    /// Client downloads, when the source accepts them.
-    fn downloads(&mut self) -> Option<&mut dyn Q2ApplicationClientDownloads>;
+    /// Run a closure over the client downloads, when the source has them.
+    fn with_downloads<R>(&mut self, f: impl FnOnce(Option<&mut dyn Q2ApplicationClientDownloads>) -> R) -> R;
 }
 
 /// Demo receiver source (`{ kind: 'demo' }`).
@@ -216,8 +216,8 @@ impl Q2ClientReceiverSource for Q2DemoReceiverSource {
         true
     }
 
-    fn downloads(&mut self) -> Option<&mut dyn Q2ApplicationClientDownloads> {
-        None
+    fn with_downloads<R>(&mut self, f: impl FnOnce(Option<&mut dyn Q2ApplicationClientDownloads>) -> R) -> R {
+        f(None)
     }
 }
 
@@ -255,7 +255,7 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 /// Parse a signon number (`integer`).
-fn signon_integer(text: Option<&str>) -> Result<i32, Q2ClientReceiverError> {
+pub(crate) fn signon_integer(text: Option<&str>) -> Result<i32, Q2ClientReceiverError> {
     let Some(text) = text else {
         return Err(Q2ClientReceiverError::Message("Invalid Q2 signon number".to_string()));
     };
@@ -485,9 +485,11 @@ impl<H: Q2ClientReceiverHost, S: Q2ClientReceiverSource> Q2ClientReceiver<H, S> 
         self.loading_generation = self.loading_generation.wrapping_add(1);
         self.pending_game_state = None;
         if !self.source.is_demo() {
-            if let Some(downloads) = self.source.downloads() {
-                downloads.close();
-            }
+            self.source.with_downloads(|downloads| {
+                if let Some(downloads) = downloads {
+                    downloads.close();
+                }
+            });
         }
     }
 
@@ -514,10 +516,10 @@ impl<H: Q2ClientReceiverHost, S: Q2ClientReceiverSource> Q2ClientReceiver<H, S> 
         let preparation = if self.source.is_demo() {
             Q2DownloadPreparation::Ready
         } else {
-            match self.source.downloads() {
-                Some(downloads) => downloads.prepare(&state)?,
-                None => Q2DownloadPreparation::Ready,
-            }
+            self.source.with_downloads(|downloads| match downloads {
+                Some(downloads) => downloads.prepare(&state),
+                None => Ok(Q2DownloadPreparation::Ready),
+            })?
         };
         self.assert_current(generation, transport_closed)?;
         if self.pending_game_state.as_ref() != Some(&state) || preparation != Q2DownloadPreparation::Ready {
@@ -670,10 +672,10 @@ impl<H: Q2ClientReceiverHost, S: Q2ClientReceiverSource> Q2ClientReceiver<H, S> 
                         percent: *percent,
                         bytes: bytes.clone(),
                     };
-                    let outcome = match self.source.downloads() {
-                        Some(downloads) => downloads.receive(&block)?,
-                        None => Q2DownloadOutcome::Waiting,
-                    };
+                    let outcome = self.source.with_downloads(|downloads| match downloads {
+                        Some(downloads) => downloads.receive(&block),
+                        None => Ok(Q2DownloadOutcome::Waiting),
+                    })?;
                     if outcome == Q2DownloadOutcome::Complete {
                         let mut prepared = self.prepare_game_state(transport_closed)?;
                         actions.commands.append(&mut prepared.commands);
@@ -773,10 +775,11 @@ mod tests {
             false
         }
 
-        fn downloads(&mut self) -> Option<&mut dyn Q2ApplicationClientDownloads> {
-            self.downloads
+        fn with_downloads<R>(&mut self, f: impl FnOnce(Option<&mut dyn Q2ApplicationClientDownloads>) -> R) -> R {
+            f(self
+                .downloads
                 .as_mut()
-                .map(|downloads| downloads as &mut dyn Q2ApplicationClientDownloads)
+                .map(|downloads| downloads as &mut dyn Q2ApplicationClientDownloads))
         }
     }
 
