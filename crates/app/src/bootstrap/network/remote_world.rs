@@ -90,6 +90,16 @@ impl<C, S, K> RemoteWorldContent<C, S, K> {
         }
         self.scene.as_ref().ok_or(RemoteWorldError::NoWorld)
     }
+
+    /// Mutably borrow the scene queries, building them lazily from the content.
+    pub fn scene_mut(&mut self) -> Result<&mut S, RemoteWorldError> {
+        if self.scene.is_none() {
+            let loaded = self.loaded.as_ref().ok_or(RemoteWorldError::NoWorld)?;
+            let scene = (self.build)(loaded, self.collision.as_ref());
+            self.scene = Some(scene);
+        }
+        self.scene.as_mut().ok_or(RemoteWorldError::NoWorld)
+    }
 }
 
 impl<C: Debug, S: Debug, K: Debug> Debug for RemoteWorldContent<C, S, K> {

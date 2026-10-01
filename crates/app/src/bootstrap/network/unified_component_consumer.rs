@@ -80,6 +80,10 @@ pub trait UnifiedComponentHost {
     fn for_content(&self, content: &str) -> Result<MountedContent, UnifiedComponentConsumerError>;
     /// Writable user files.
     fn user_files(&mut self) -> &mut ModUserFiles;
+    /// Take extracted user files, when the host owns them.
+    fn take_files(&mut self) -> Option<ModUserFiles> {
+        None
+    }
 }
 
 /// Live scene assembled from a frame and retained reliable state.
@@ -195,6 +199,11 @@ pub struct UnifiedComponentConsumers {
 
 impl UnifiedComponentConsumers {
     /// Empty collection over a host.
+    /// Borrow the backing host.
+    pub fn host_mut(&mut self) -> &mut dyn UnifiedComponentHost {
+        &mut *self.host
+    }
+
     pub fn new(host: Box<dyn UnifiedComponentHost>) -> Self {
         Self {
             host,

@@ -860,7 +860,7 @@ fn decode_frame_value(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use qa_content::contract::{ArmorState, PoweredProtectionState, RegularArmorState};
     use qa_core::identity::{ClientId, IdentityOwner, SeatId, SessionId};
@@ -877,7 +877,7 @@ mod tests {
     use crate::persistence::recipe::fixture_recipe;
     use qa_world::save::shared::SavedNumericProfile;
 
-    struct Ledger {
+    pub(crate) struct Ledger {
         owner: IdentityOwner,
         world: Option<super::super::unified_types::UnifiedSceneWorld>,
         resource: ResolvedResourceReference,
@@ -918,7 +918,7 @@ mod tests {
         }
     }
 
-    fn ledger() -> Ledger {
+    pub(crate) fn ledger() -> Ledger {
         let recipe = fixture_recipe();
         Ledger {
             owner: IdentityOwner::create("test").unwrap(),
@@ -1097,7 +1097,7 @@ mod tests {
         }
     }
 
-    fn frame(ledger: &Ledger) -> UnifiedPresentationFrame {
+    pub(crate) fn frame(ledger: &Ledger) -> UnifiedPresentationFrame {
         let actor = ledger.owner.actor(1, 0);
         let session = ledger.owner.session().name().to_string();
         UnifiedPresentationFrame {
