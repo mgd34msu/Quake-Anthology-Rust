@@ -6,6 +6,8 @@
 
 use qa_content::contract::GameFamily;
 
+use crate::options::GameMode;
+
 /// Source match rules beyond standard play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MatchRules {
@@ -23,17 +25,6 @@ pub enum MatchRules {
     Horde,
 }
 
-/// Singleplayer, cooperative, or deathmatch play.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MatchMode {
-    /// Single player.
-    Singleplayer,
-    /// Cooperative.
-    Coop,
-    /// Deathmatch.
-    Deathmatch,
-}
-
 /// Selected source game and match configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchModeSelection {
@@ -44,7 +35,7 @@ pub struct MatchModeSelection {
     /// Campaign identifier.
     pub campaign: String,
     /// Play mode.
-    pub mode: MatchMode,
+    pub mode: GameMode,
     /// Match rules.
     pub rules: MatchRules,
 }
@@ -68,7 +59,7 @@ pub fn match_mode_unavailable(selection: &MatchModeSelection) -> Option<String> 
         if *family != GameFamily::Q1 || edition != "rerelease" || wrong_campaign {
             return Some("Horde requires Quake rerelease Dimension of the Machine or Dimension of the Past".to_owned());
         }
-        return if *mode == MatchMode::Deathmatch {
+        return if *mode == GameMode::Deathmatch {
             Some("Horde requires single player or cooperative mode".to_owned())
         } else {
             None
@@ -77,7 +68,7 @@ pub fn match_mode_unavailable(selection: &MatchModeSelection) -> Option<String> 
     if *family != GameFamily::Q2 {
         return Some("These match rules require a Quake II source game".to_owned());
     }
-    if *mode != MatchMode::Deathmatch {
+    if *mode != GameMode::Deathmatch {
         return Some("These match rules require deathmatch mode".to_owned());
     }
     if *rules == MatchRules::Ctf || *rules == MatchRules::Lmctf {
@@ -136,7 +127,7 @@ pub fn match_map_unavailable(selection: &MatchModeSelection, classnames: &[Strin
             return Some(format!("CTF map is missing: {}", missing.join(", ")));
         }
     }
-    if selection.mode == MatchMode::Deathmatch
+    if selection.mode == GameMode::Deathmatch
         && selection.rules != MatchRules::Deathball
         && !classnames.iter().any(|class| class == "info_player_deathmatch")
         && !(selection.family == GameFamily::Q3
@@ -157,7 +148,7 @@ mod tests {
             family,
             edition: "classic".to_owned(),
             campaign: "base".to_owned(),
-            mode: MatchMode::Deathmatch,
+            mode: GameMode::Deathmatch,
             rules,
         }
     }
@@ -176,12 +167,12 @@ mod tests {
             Some("These match rules require a Quake II source game")
         );
         selected.family = GameFamily::Q2;
-        selected.mode = MatchMode::Coop;
+        selected.mode = GameMode::Coop;
         assert_eq!(
             match_mode_unavailable(&selected).as_deref(),
             Some("These match rules require deathmatch mode")
         );
-        selected.mode = MatchMode::Deathmatch;
+        selected.mode = GameMode::Deathmatch;
         assert_eq!(match_mode_unavailable(&selected), None);
         selected.edition = "rerelease".to_owned();
         assert_eq!(
@@ -193,7 +184,7 @@ mod tests {
     #[test]
     fn horde_requires_rerelease_machine_or_past_without_deathmatch() {
         let mut selected = selection(GameFamily::Q1, MatchRules::Horde);
-        selected.mode = MatchMode::Coop;
+        selected.mode = GameMode::Coop;
         assert_eq!(
             match_mode_unavailable(&selected).as_deref(),
             Some("Horde requires Quake rerelease Dimension of the Machine or Dimension of the Past")
@@ -203,7 +194,7 @@ mod tests {
         assert_eq!(match_mode_unavailable(&selected), None);
         selected.campaign = "dopa".to_owned();
         assert_eq!(match_mode_unavailable(&selected), None);
-        selected.mode = MatchMode::Deathmatch;
+        selected.mode = GameMode::Deathmatch;
         assert_eq!(
             match_mode_unavailable(&selected).as_deref(),
             Some("Horde requires single player or cooperative mode")
@@ -235,7 +226,7 @@ mod tests {
         let mut selected = selection(GameFamily::Q1, MatchRules::Horde);
         selected.edition = "rerelease".to_owned();
         selected.campaign = "mg1".to_owned();
-        selected.mode = MatchMode::Coop;
+        selected.mode = GameMode::Coop;
         let reason = match_map_unavailable(&selected, &[]).expect("missing horde setup");
         assert_eq!(
             reason,

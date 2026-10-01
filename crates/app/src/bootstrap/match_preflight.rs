@@ -7,7 +7,8 @@
 //! skip validation, Q3 resolves the game type and checks objectives, and Q1/Q2
 //! map the match provider to rules and validate the map.
 
-use crate::bootstrap::match_modes::{match_map_unavailable, MatchMode, MatchModeSelection, MatchRules};
+use crate::bootstrap::match_modes::{match_map_unavailable, MatchModeSelection, MatchRules};
+use crate::options::GameMode;
 use qa_content::contract::GameFamily;
 use thiserror::Error;
 
@@ -82,7 +83,7 @@ pub struct PreflightSourceValue {
 
 /// Resolve the Q3 game type: last configured `g_gametype`, else singleplayer 2, else 0.
 #[must_use]
-pub fn preflight_q3_game_type(mode: MatchMode, source_values: &[PreflightSourceValue]) -> Option<i64> {
+pub fn preflight_q3_game_type(mode: GameMode, source_values: &[PreflightSourceValue]) -> Option<i64> {
     let mut configured: Option<&str> = None;
     for value in source_values {
         if value.name == "g_gametype" {
@@ -90,7 +91,7 @@ pub fn preflight_q3_game_type(mode: MatchMode, source_values: &[PreflightSourceV
         }
     }
     match configured {
-        None => Some(if mode == MatchMode::Singleplayer { 2 } else { 0 }),
+        None => Some(if mode == GameMode::Singleplayer { 2 } else { 0 }),
         Some(text) => text
             .parse::<f64>()
             .ok()
@@ -118,7 +119,7 @@ pub fn preflight_match_rules(provider: &str) -> MatchRules {
 /// validation. The Q3 objective outcome comes from the caller-owned adapter.
 pub fn preflight_application_match(
     content: &PreflightContent,
-    mode: MatchMode,
+    mode: GameMode,
     source_values: &[PreflightSourceValue],
     q3_objectives: &dyn Fn(&str, i64) -> PreflightQ3Objectives,
 ) -> Result<(), MatchPreflightError> {
@@ -192,18 +193,16 @@ mod tests {
             role: "server-game".to_owned(),
             typescript: false,
         });
-        assert!(
-            preflight_application_match(&guest, MatchMode::Deathmatch, &[], &|_, _| {
-                PreflightQ3Objectives::MissingObjectives {
-                    classnames: vec!["x".to_owned()],
-                }
-            })
-            .is_ok()
-        );
+        assert!(preflight_application_match(&guest, GameMode::Deathmatch, &[], &|_, _| {
+            PreflightQ3Objectives::MissingObjectives {
+                classnames: vec!["x".to_owned()],
+            }
+        })
+        .is_ok());
         let mut absent = content(GameFamily::Q2);
         absent.execution = None;
         assert!(
-            preflight_application_match(&absent, MatchMode::Singleplayer, &[], &|_, _| {
+            preflight_application_match(&absent, GameMode::Singleplayer, &[], &|_, _| {
                 PreflightQ3Objectives::Ready
             })
             .is_ok()
@@ -212,8 +211,8 @@ mod tests {
 
     #[test]
     fn resolves_q3_game_type_from_last_value_or_mode() {
-        assert_eq!(preflight_q3_game_type(MatchMode::Singleplayer, &[]), Some(2));
-        assert_eq!(preflight_q3_game_type(MatchMode::Deathmatch, &[]), Some(0));
+        assert_eq!(preflight_q3_game_type(GameMode::Singleplayer, &[]), Some(2));
+        assert_eq!(preflight_q3_game_type(GameMode::Deathmatch, &[]), Some(0));
         let values = [
             PreflightSourceValue {
                 name: "g_gametype".to_owned(),
@@ -224,13 +223,13 @@ mod tests {
                 value: "4".to_owned(),
             },
         ];
-        assert_eq!(preflight_q3_game_type(MatchMode::Singleplayer, &values), Some(4));
+        assert_eq!(preflight_q3_game_type(GameMode::Singleplayer, &values), Some(4));
     }
 
     #[test]
     fn reports_q3_objective_failures() {
         let q3 = content(GameFamily::Q3);
-        let err = preflight_application_match(&q3, MatchMode::Deathmatch, &[], &|program, game_type| {
+        let err = preflight_application_match(&q3, GameMode::Deathmatch, &[], &|program, game_type| {
             assert_eq!(program, "baseq3");
             assert_eq!(game_type, 0);
             PreflightQ3Objectives::MissingObjectives {
@@ -239,7 +238,7 @@ mod tests {
         })
         .expect_err("missing objectives");
         assert_eq!(err.to_string(), "Selected Q3 match map is missing: team_CTF_redflag");
-        let err = preflight_application_match(&q3, MatchMode::Deathmatch, &[], &|_, _| {
+        let err = preflight_application_match(&q3, GameMode::Deathmatch, &[], &|_, _| {
             PreflightQ3Objectives::UnsupportedMode { game_type: 9 }
         })
         .expect_err("unsupported mode");
@@ -256,7 +255,7 @@ mod tests {
         assert_eq!(preflight_match_rules("other"), MatchRules::Standard);
         let mut ctf = content(GameFamily::Q2);
         ctf.match_provider = "q2:ctf".to_owned();
-        let err = preflight_application_match(&ctf, MatchMode::Deathmatch, &[], &|_, _| PreflightQ3Objectives::Ready)
+        let err = preflight_application_match(&ctf, GameMode::Deathmatch, &[], &|_, _| PreflightQ3Objectives::Ready)
             .expect_err("missing flags");
         assert!(err.to_string().starts_with("CTF map is missing: "));
     }
