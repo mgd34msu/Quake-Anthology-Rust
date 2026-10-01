@@ -10,9 +10,11 @@ use qa_core::numeric::{bits_to_float32, float32_to_bits};
 
 use super::counters::CollisionCounters;
 use super::map_resource::{CollisionBoxHull, BODY_CONTENTS};
+use qa_core::math::{js_max_f32 as js_max, js_min_f32 as js_min};
+
 use super::world::{
-    empty_source_trace, js_max, js_min, source_trace_end, source_trace_view, CollisionWorld, ModelTransform,
-    SourceTracePlane, SourceTraceResult, TraceQuery, TraceResult, TraceShape,
+    empty_source_trace, source_trace_end, source_trace_view, CollisionWorld, ModelTransform, SourceTracePlane,
+    SourceTraceResult, TraceQuery, TraceResult, TraceShape,
 };
 use crate::error::WorldError;
 

@@ -83,6 +83,7 @@ dependencies = [
 name = "qa-bots"
 version = "0.1.0"
 dependencies = [
+ "qa-content",
  "qa-core",
  "qa-world",
  "thiserror",

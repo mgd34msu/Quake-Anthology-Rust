@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use qa_core::math::{add3, angles_to_axis, dot3, scale3, sub3, vec3, Bounds, Plane, Vec3};
+use qa_core::math::{js_max_f32 as js_max, js_min_f32 as js_min};
 
 use super::clip_models::{
     ClipState, SourceClipModels, TemporaryStorage, SOURCE_BOX_MODEL_HANDLE, SOURCE_CAPSULE_MODEL_HANDLE,
@@ -338,28 +339,6 @@ fn trace_lerp(from: Vec3, to: Vec3, fraction: f64) -> Vec3 {
         (f64::from(from.y) + fraction * (f64::from(to.y) - f64::from(from.y))) as f32,
         (f64::from(from.z) + fraction * (f64::from(to.z) - f64::from(from.z))) as f32,
     )
-}
-
-/// Donor `Math.min` over binary32 inputs, including NaN and signed-zero edges.
-pub(crate) fn js_min(a: f32, b: f32) -> f32 {
-    if a.is_nan() || b.is_nan() {
-        f32::NAN
-    } else if a == 0.0 && b == 0.0 {
-        -0.0
-    } else {
-        a.min(b)
-    }
-}
-
-/// Donor `Math.max` over binary32 inputs, including NaN and signed-zero edges.
-pub(crate) fn js_max(a: f32, b: f32) -> f32 {
-    if a.is_nan() || b.is_nan() {
-        f32::NAN
-    } else if a == 0.0 && b == 0.0 {
-        0.0
-    } else {
-        a.max(b)
-    }
 }
 
 /// Stationary capsule bounds with the donor's single rounding per component.
