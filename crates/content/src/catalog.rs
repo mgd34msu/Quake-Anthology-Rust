@@ -4,10 +4,13 @@
 //! `src/content/catalog/equipment.ts`, `src/content/catalog/monsters.ts`,
 //! `src/content/catalog/products.ts`, `src/content/catalog/source-program.ts`,
 //! `src/content/catalog/start-maps.ts`, `src/content/catalog/timing.ts`,
-//! `src/content/catalog/weapon-behavior-document.ts`, and
-//! `src/content/catalog/index.ts` (`~1000` lines combined). The two
-//! `launch.ts` re-export lines in `index.ts` are out of scope and dropped;
-//! nothing else in these files touches `launch`.
+//! `src/content/catalog/weapon-behavior-document.ts`,
+//! `src/content/catalog/weapon-hud.ts`, `src/content/catalog/weapons.ts`,
+//! and `src/content/catalog/index.ts` (`~1000` lines combined, plus the
+//! two weapon seam files in `catalog/weapon-hud.rs` and
+//! `catalog/weapons.rs`). The two `launch.ts` re-export lines in
+//! `index.ts` are out of scope and dropped; nothing else in these files
+//! touches `launch`.
 //!
 //! The compat seam extends this module with `src/content/catalog/launch.ts`,
 //! `src/content/catalog/weapon-behaviors.ts`,
@@ -18,8 +21,10 @@
 //! as caller-provided traits and snapshots (`LaunchWeaponSources`,
 //! `LaunchQvmCompatibility`, `QcWeaponProgramSnapshot`,
 //! `QvmWeaponBehaviorService`, `NativeWeaponBehaviorService`) instead of
-//! calling up the stack. Selected-arsenal adapters (`catalog/weapons.ts`)
-//! stay sibling-owned and arrive through [`LaunchWeaponSources`].
+//! calling up the stack. Selected-arsenal adapters (`catalog/weapons.ts`,
+//! `catalog/weapon-hud.ts`) live in [`weapons`] and [`weapon_hud`], and
+//! [`CatalogWeaponSources`] implements [`LaunchWeaponSources`] with them so
+//! launch resolution keeps one seam.
 //!
 //! The donor is async over Node file handles; this port is synchronous over
 //! `std::fs`. [`MountedContent`] drops at scope end, matching the donor's
@@ -70,6 +75,20 @@ pub use crate::monsters::{
 };
 /// Parsed JSON document value for catalog JSON inputs.
 pub use crate::value::SaveJson;
+
+/// Selected-arsenal HUD icons (donor `catalog/weapon-hud.ts`).
+pub mod weapon_hud;
+/// Selected-arsenal source adapters (donor `catalog/weapons.ts`).
+pub mod weapons;
+
+/// Selected-arsenal seam re-exports.
+pub use self::weapon_hud::{weapon_hud_icons, weapon_hud_resources, WeaponHudIcons};
+pub use self::weapons::{
+    admit_weapon_timing, canonical_weapon_source, q1_hipnotic_weapon_providers, q1_weapon_providers,
+    q2_registered_weapon_resources, q2_weapon_providers, selected_weapon_resources, selected_weapon_timing,
+    supports_selected_weapon_product, weapon_resources, CatalogWeaponSources, Q1HipnoticWeaponProviders,
+    Q1WeaponProviders, Q2WeaponProviders,
+};
 
 // `addons.ts` calls `containedFileParts`, whose donor `RangeError` text is
 // repeated here so mapping failures keep their donor message.
