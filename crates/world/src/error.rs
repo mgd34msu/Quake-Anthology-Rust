@@ -188,6 +188,12 @@ pub enum WorldError {
     /// Client slot generation is exhausted.
     #[error("Client slot generation is exhausted")]
     ClientGenerationExhausted,
+    /// Seat belongs to another client.
+    #[error("Seat belongs to another client")]
+    SeatForeignClient,
+    /// Seat is already bound to this client.
+    #[error("Seat is already bound")]
+    SeatAlreadyBound,
     /// Cycle in Quake clip-space BSP.
     #[error("Cycle in Quake clip-space BSP")]
     ClipCycle,

@@ -30,4 +30,7 @@ mod error;
 pub use error::WorldError;
 // Re-exports mirror `src/world/session/index.ts`.
 pub use clocks::SourceClock;
-pub use session::{EngineSession, ResourceScope, SessionClient, SessionMode, SessionResource, WorldLifetime};
+pub use session::{
+    ConnectionKind, ConnectionReplacement, EngineSession, ResourceScope, SessionClient, SessionConnection, SessionMode,
+    SessionResource, SessionSeat, WorldLifetime,
+};
