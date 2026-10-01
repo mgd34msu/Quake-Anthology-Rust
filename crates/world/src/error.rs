@@ -212,4 +212,13 @@ pub enum WorldError {
     /// Quake solid-cell capsule sweep did not converge.
     #[error("Quake solid-cell capsule sweep did not converge")]
     SweepDiverged,
+    /// Invalid mod operation registration or dispatch.
+    #[error("{0}")]
+    BadModOperation(String),
+    /// Invalid original pickup rule, selection, or consumption.
+    #[error("{0}")]
+    BadPickup(String),
+    /// Invalid weapon behavior attachment or checkpoint.
+    #[error("{0}")]
+    BadWeaponBehavior(String),
 }

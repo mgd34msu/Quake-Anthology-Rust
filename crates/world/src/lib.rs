@@ -7,6 +7,7 @@ pub mod client;
 pub mod clocks;
 pub mod collision;
 pub mod combat;
+pub mod gameplay;
 pub mod geometry;
 pub mod hull;
 pub mod inventory;
