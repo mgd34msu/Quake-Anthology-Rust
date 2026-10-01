@@ -978,70 +978,67 @@ pub fn write_held_weapon(value: &HeldWeaponDeclaration) -> SaveJson {
 /// Write player HUD state for the wire (mirrors `read_player_ui`).
 #[must_use]
 pub fn write_player_ui(value: &PlayerUi) -> SaveJson {
-    obj(vec![
-        (
-            "selectedArsenal",
-            value.selected_arsenal.map_or(SaveJson::Null, boolean),
-        ),
-        (
-            "nativeInventory",
-            value.native_inventory.as_ref().map_or(SaveJson::Null, |inventory| {
-                obj(vec![
+    let mut members: Vec<(&str, SaveJson)> = Vec::new();
+    if let Some(selected) = value.selected_arsenal {
+        members.push(("selectedArsenal", boolean(selected)));
+    }
+    if let Some(inventory) = value.native_inventory.as_ref() {
+        let mut native = vec![
+            (
+                "items",
+                arr(inventory
+                    .items
+                    .iter()
+                    .map(|item| {
+                        obj(vec![
+                            ("item", json_str(&item.item)),
+                            ("label", json_str(&item.label)),
+                            ("count", num(item.count)),
+                        ])
+                    })
+                    .collect()),
+            ),
+            (
+                "selected",
+                inventory
+                    .selected
+                    .as_ref()
+                    .map_or(SaveJson::Null, |selected| json_str(selected)),
+            ),
+        ];
+        if let Some(presentation) = inventory.presentation.as_ref() {
+            native.push(("presentation", {
+                let mut members = vec![
+                    ("source", write_provider(&presentation.source)),
                     (
-                        "items",
-                        arr(inventory
-                            .items
-                            .iter()
-                            .map(|item| {
-                                obj(vec![
-                                    ("item", json_str(&item.item)),
-                                    ("label", json_str(&item.label)),
-                                    ("count", num(item.count)),
-                                ])
-                            })
-                            .collect()),
-                    ),
-                    (
-                        "selected",
-                        inventory
-                            .selected
-                            .as_ref()
-                            .map_or(SaveJson::Null, |selected| json_str(selected)),
-                    ),
-                    (
-                        "presentation",
-                        inventory.presentation.as_ref().map_or(SaveJson::Null, |presentation| {
-                            let mut members = vec![
-                                ("source", write_provider(&presentation.source)),
-                                (
-                                    "kind",
-                                    json_str(match presentation.kind {
-                                        NativeInventoryKind::Weapon => "weapon",
-                                        NativeInventoryKind::Ammunition => "ammunition",
-                                        NativeInventoryKind::Item => "item",
-                                    }),
-                                ),
-                            ];
-                            match presentation.kind {
-                                NativeInventoryKind::Item => {
-                                    members.push((
-                                        "icon",
-                                        presentation.icon.as_ref().map_or(SaveJson::Null, write_item_icon),
-                                    ));
-                                }
-                                _ => {
-                                    if let Some(weapon) = &presentation.weapon {
-                                        members.push(("weapon", json_str(weapon)));
-                                    }
-                                }
-                            }
-                            obj(members)
+                        "kind",
+                        json_str(match presentation.kind {
+                            NativeInventoryKind::Weapon => "weapon",
+                            NativeInventoryKind::Ammunition => "ammunition",
+                            NativeInventoryKind::Item => "item",
                         }),
                     ),
-                ])
-            }),
-        ),
-        ("health", num(value.health)),
+                ];
+                match presentation.kind {
+                    NativeInventoryKind::Item => {
+                        members.push((
+                            "icon",
+                            presentation.icon.as_ref().map_or(SaveJson::Null, write_item_icon),
+                        ));
+                    }
+                    _ => {
+                        if let Some(weapon) = &presentation.weapon {
+                            members.push(("weapon", json_str(weapon)));
+                        }
+                    }
+                }
+                obj(members)
+            }));
+        }
+        members.push(("nativeInventory", obj(native)));
+    }
+    members.push(("health", num(value.health)));
+    members.extend([
         ("armor", write_contract_armor(&value.armor)),
         (
             "activeWeapon",
@@ -1134,7 +1131,8 @@ pub fn write_player_ui(value: &PlayerUi) -> SaveJson {
                 ])
             }),
         ),
-    ])
+    ]);
+    obj(members)
 }
 
 /// Write a presentation model for the wire (mirrors `read_model`).
