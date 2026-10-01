@@ -258,8 +258,11 @@ pub struct Q1Map<'a> {
     pub leaf_faces: Vec<u32>,
     /// Visibility data.
     pub visibility: &'a [u8],
-    /// Monochrome lighting.
-    pub lighting: &'a [u8],
+    /// Monochrome lighting (`monochromeLighting` in `src/formats/q1-map/types.ts`).
+    pub monochrome_lighting: &'a [u8],
+    /// Selected lighting (`lighting` on `Q1WorldGeometry` in
+    /// `src/contracts/scene.ts`): the `.lit` override wins, else monochrome.
+    pub lighting: BspLighting<'a>,
 }
 
 fn optional_offset(value: i32) -> Option<u32> {
@@ -899,7 +902,7 @@ pub fn select_lighting<'a>(
 impl<'a> Q1Map<'a> {
     /// Select this map's lighting, applying an external `.lit` override.
     pub fn selected_lighting(&self, lit: Option<&[u8]>) -> Result<BspLighting<'a>, BinaryError> {
-        select_lighting(self.lighting, None, lit, None)
+        select_lighting(self.monochrome_lighting, None, lit, None)
     }
 }
 
@@ -915,8 +918,20 @@ pub fn q1_entity_value<'a>(entity: &'a Q1Entity, key: &str) -> Option<&'a str> {
     value
 }
 
+/// BSP sidecar inputs (`Q1MapOptions` in `src/formats/q1-map/types.ts`).
+///
+/// The caller resolves mount priority; `None` selects the embedded lump,
+/// matching an absent options field in `readQ1Bsp`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Q1BspOptions<'a> {
+    /// Already resolved `.ent` replacement (`options.entities`).
+    pub entities: Option<&'a [u8]>,
+    /// Already resolved QLIT version 1 file (`options.lit`).
+    pub lit: Option<&'a [u8]>,
+}
+
 /// Read a Quake BSP map (`readQ1Bsp`, core geometry).
-pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str) -> Result<Q1Map<'a>, BinaryError> {
+pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) -> Result<Q1Map<'a>, BinaryError> {
     let mut reader = BinaryReader::new(data, source);
     let version = reader.u32()?;
     let format = match version {
@@ -975,10 +990,21 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str) -> Result<Q1Map<'a>, Binary
         reader.section(offset, length)
     };
     let (entities_offset, entities_length) = lump("entities");
-    let entities = BinaryReader::new(data, source)
-        .section(entities_offset, entities_length)?
-        .fixed_byte_string(entities_length)?;
-    let entity_list = parse_q1_entities(&entities, &format!("{source}:entities"))?;
+    let (entities, entity_list) = match options.entities {
+        Some(override_bytes) => {
+            let text =
+                BinaryReader::new(override_bytes, &format!("{source}:.ent")).fixed_byte_string(override_bytes.len())?;
+            let list = parse_q1_entities(&text, source)?;
+            (text, list)
+        }
+        None => {
+            let text = BinaryReader::new(data, source)
+                .section(entities_offset, entities_length)?
+                .fixed_byte_string(entities_length)?;
+            let list = parse_q1_entities(&text, &format!("{source}:entities"))?;
+            (text, list)
+        }
+    };
     let planes = read_planes(&mut section("planes")?)?;
     let mut vertex_reader = section("vertices")?;
     let mut vertices = Vec::new();
@@ -1011,7 +1037,10 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str) -> Result<Q1Map<'a>, Binary
     let (visibility_offset, visibility_length) = lump("visibility");
     let visibility = reader.view(visibility_offset, visibility_length)?;
     let (lighting_offset, lighting_length) = lump("lighting");
-    let lighting = reader.view(lighting_offset, lighting_length)?;
+    let monochrome_lighting = reader.view(lighting_offset, lighting_length)?;
+    // `selectLighting` with no BSPX RGB (core reader without BSPX) and no
+    // packed samples (Quake64 is rejected above).
+    let lighting = select_lighting(monochrome_lighting, None, options.lit, None)?;
     let map = Q1Map {
         format,
         source: source.to_string(),
@@ -1035,6 +1064,7 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str) -> Result<Q1Map<'a>, Binary
         surface_edges,
         leaf_faces,
         visibility,
+        monochrome_lighting,
         lighting,
     };
     validate_references(&map)?;
@@ -1059,7 +1089,13 @@ fn validate_references(map: &Q1Map<'_>) -> Result<(), BinaryError> {
             check_index(i64::from(info.texture), map.textures.len(), &source("miptex"))?;
         }
     }
-    let lighting_count = map.lighting.len();
+    // Donor `validateReferences`: face offsets validate against the wider of
+    // the monochrome lump and the selected lighting (no HDR samples here).
+    let selected_count = match &map.lighting {
+        BspLighting::Luminance8 { samples } => samples.len(),
+        BspLighting::Rgb8 { samples, .. } => samples.len() / 3,
+    };
+    let lighting_count = map.monochrome_lighting.len().max(selected_count);
     for face in &map.faces {
         check_index(i64::from(face.plane), map.planes.len(), &source("face plane"))?;
         check_index(
@@ -1250,7 +1286,7 @@ mod tests {
     #[test]
     fn bsp_round_trip() {
         let bytes = fixture();
-        let map = read_q1_bsp(&bytes, "<test>").unwrap();
+        let map = read_q1_bsp(&bytes, "<test>", Q1BspOptions::default()).unwrap();
         assert_eq!(map.format, BspFormat::Bsp29);
         assert_eq!(map.lumps.len(), 15);
         assert_eq!(map.entity_list.len(), 1);
@@ -1263,7 +1299,7 @@ mod tests {
         assert_eq!(map.edges.len(), 1);
         assert_eq!(map.surface_edges, vec![0]);
         assert!(map.textures.is_empty());
-        assert!(map.lighting.is_empty());
+        assert!(map.monochrome_lighting.is_empty());
     }
 
     #[test]
@@ -1285,16 +1321,16 @@ mod tests {
         let good = fixture();
         let mut bad_version = good.clone();
         bad_version[0] = 30;
-        assert!(read_q1_bsp(&bad_version, "<test>").is_err());
+        assert!(read_q1_bsp(&bad_version, "<test>", Q1BspOptions::default()).is_err());
         let mut quake64 = good.clone();
         quake64[0..4].copy_from_slice(&BSP_VERSION_QUAKE64.to_le_bytes());
-        assert!(read_q1_bsp(&quake64, "<test>").is_err());
+        assert!(read_q1_bsp(&quake64, "<test>", Q1BspOptions::default()).is_err());
         // Face plane index past the plane table.
         let mut bad_face = good.clone();
         // Header + entities + planes + vertices + texture info (skipping empties).
         let faces_offset = 124 + 30 + 20 + 24 + 40;
         bad_face[faces_offset] = 9;
-        assert!(read_q1_bsp(&bad_face, "<test>").is_err());
+        assert!(read_q1_bsp(&bad_face, "<test>", Q1BspOptions::default()).is_err());
     }
 
     fn lit_bytes(samples: &[u8]) -> Vec<u8> {
@@ -1364,7 +1400,7 @@ mod tests {
     #[test]
     fn map_applies_lit_override() {
         let bytes = fixture();
-        let map = read_q1_bsp(&bytes, "<test>").unwrap();
+        let map = read_q1_bsp(&bytes, "<test>", Q1BspOptions::default()).unwrap();
         assert!(matches!(
             map.selected_lighting(None).unwrap(),
             BspLighting::Luminance8 { .. }
@@ -1378,5 +1414,52 @@ mod tests {
             }
             other => panic!("expected lit rgb, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bsp_options_thread_ent_and_lit_sidecars() {
+        let bytes = fixture();
+        // Missing sidecars fall back to embedded entities and monochrome lighting.
+        let map = read_q1_bsp(&bytes, "<test>", Q1BspOptions::default()).unwrap();
+        assert!(matches!(map.lighting, BspLighting::Luminance8 { .. }));
+        assert_eq!(map.entity_list.len(), 1);
+        assert_eq!(q1_entity_value(&map.entity_list[0], "classname"), Some("worldspawn"));
+        // A .lit sidecar flips the selected lighting to RGB.
+        let lit = lit_bytes(&[1, 2, 3]);
+        let options = Q1BspOptions {
+            lit: Some(&lit),
+            ..Default::default()
+        };
+        let map = read_q1_bsp(&bytes, "<test>", options).unwrap();
+        match map.lighting {
+            BspLighting::Rgb8 { samples, source } => {
+                assert_eq!(source, LightingSource::Lit);
+                assert_eq!(samples.as_ref(), &[1, 2, 3]);
+            }
+            other => panic!("expected lit rgb, got {other:?}"),
+        }
+        // A .ent sidecar replaces the embedded entities.
+        let entities = b"{\n\"classname\" \"info_player_start\"\n}\n";
+        let options = Q1BspOptions {
+            entities: Some(entities),
+            ..Default::default()
+        };
+        let map = read_q1_bsp(&bytes, "<test>", options).unwrap();
+        assert_eq!(map.entity_list.len(), 1);
+        assert_eq!(
+            q1_entity_value(&map.entity_list[0], "classname"),
+            Some("info_player_start")
+        );
+        // Malformed sidecars fail like the donor.
+        let options = Q1BspOptions {
+            lit: Some(&lit_bytes(&[1, 2])),
+            ..Default::default()
+        };
+        assert!(read_q1_bsp(&bytes, "<test>", options).is_err());
+        let options = Q1BspOptions {
+            entities: Some(b"{ bad"),
+            ..Default::default()
+        };
+        assert!(read_q1_bsp(&bytes, "<test>", options).is_err());
     }
 }

@@ -533,7 +533,7 @@ pub fn q1_face_at_contact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bsp::{Edge, Face, IndexRange, Leaf, Node, NodeChild, WorldModel};
+    use crate::bsp::{BspLighting, Edge, Face, IndexRange, Leaf, Node, NodeChild, WorldModel};
 
     fn empty_map() -> Q1Map<'static> {
         Q1Map {
@@ -559,7 +559,8 @@ mod tests {
             surface_edges: Vec::new(),
             leaf_faces: Vec::new(),
             visibility: &[],
-            lighting: &[],
+            monochrome_lighting: &[],
+            lighting: BspLighting::Luminance8 { samples: &[] },
         }
     }
 

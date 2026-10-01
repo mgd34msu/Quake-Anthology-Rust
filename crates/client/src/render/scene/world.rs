@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use qa_content::bsp::{BspFormat, NodeChild as ContentChild};
+use qa_content::bsp::NodeChild as ContentChild;
 use qa_core::math::{cross3, dot3, normalize3, scale3, sub3, vec2, vec3, vec4, Bounds, Plane, Vec3, Vec4};
 
 use crate::materials::deform::{DeformGeometry, DeformView, ProjectionShadowContext, RendererNoise};
@@ -737,12 +737,14 @@ pub fn adapt_q1_build(
         surface_edges: map.surface_edges.clone(),
         edges: map.edges.iter().map(|edge| edge.vertices).collect(),
         vertices: map.vertices.iter().map(|vertex| to_vec3(*vertex)).collect(),
-        lighting: if map.lighting.is_empty() {
-            None
-        } else {
-            Some(BspLighting::Luminance8 {
-                samples: map.lighting.to_vec(),
-            })
+        lighting: match &map.lighting {
+            qa_content::bsp::BspLighting::Luminance8 { samples: [] } => None,
+            qa_content::bsp::BspLighting::Luminance8 { samples } => Some(BspLighting::Luminance8 {
+                samples: samples.to_vec(),
+            }),
+            qa_content::bsp::BspLighting::Rgb8 { samples, .. } => Some(BspLighting::Rgb8 {
+                samples: samples.to_vec(),
+            }),
         },
         decoupled: vec![None; map.faces.len()],
     };
@@ -755,7 +757,9 @@ pub fn adapt_q1_build(
             count: model.face_count.max(0) as usize,
         })
         .collect::<Vec<_>>();
-    let rgb = matches!(map.format, BspFormat::Bsp2 | BspFormat::Psb2);
+    // Donor `src/render/scene/geometry.ts`: Q1 sample offsets scale by 3 for
+    // RGB lighting, else 1 (`map.lighting.kind === "rgb8"`).
+    let rgb = matches!(map.lighting, qa_content::bsp::BspLighting::Rgb8 { .. });
     Ok((
         WorldBuildData::Legacy(LegacyBuildData {
             family: LegacyFamily::Q1,
@@ -3648,8 +3652,8 @@ mod tests {
     use crate::render::LightShadow;
     use crate::view::{CameraClip, Rect};
     use qa_content::bsp::{
-        BspFormat, ClipNode, Edge, Face, IndexRange, Leaf, Lump, Node, NodeChild, Plane as ContentPlane, Q1Entity,
-        Q1Map, TextureInfo, WorldModel,
+        BspFormat, BspLighting as ContentBspLighting, ClipNode, Edge, Face, IndexRange, Leaf, LightingSource, Lump,
+        Node, NodeChild, Plane as ContentPlane, Q1Entity, Q1Map, TextureInfo, WorldModel,
     };
     use qa_content::wad::MipTexture;
     use qa_core::identity::IdentityOwner;
@@ -3862,7 +3866,8 @@ mod tests {
             surface_edges: vec![0, 1, 2, 3],
             leaf_faces: vec![0, 1],
             visibility,
-            lighting,
+            monochrome_lighting: lighting,
+            lighting: ContentBspLighting::Luminance8 { samples: lighting },
         }
     }
 
@@ -3896,6 +3901,34 @@ mod tests {
             scene.surfaces()[1].data,
             WorldSurfaceData::Legacy { q1_sky: Some(_), .. }
         ));
+    }
+
+    #[test]
+    fn q1_selected_lighting_forwards_rgb_and_scale() {
+        let levels = q1_levels();
+        let visibility = [0b11u8];
+        let lighting = [128u8; 4];
+        let map = q1_map(&visibility, &lighting, &levels);
+        let (build, _, _) = adapt_q1_build(&map).expect("adapt");
+        let WorldBuildData::Legacy(data) = build else {
+            panic!("expected legacy build");
+        };
+        assert_eq!(data.lighting_scale, 1);
+        assert!(matches!(data.brush.lighting, Some(BspLighting::Luminance8 { .. })));
+        let mut lit_map = q1_map(&visibility, &lighting, &levels);
+        lit_map.lighting = ContentBspLighting::Rgb8 {
+            samples: std::borrow::Cow::Owned(vec![10, 20, 30, 40, 50, 60]),
+            source: LightingSource::Lit,
+        };
+        let (build, _, _) = adapt_q1_build(&lit_map).expect("adapt lit");
+        let WorldBuildData::Legacy(data) = build else {
+            panic!("expected legacy build");
+        };
+        assert_eq!(data.lighting_scale, 3);
+        match data.brush.lighting {
+            Some(BspLighting::Rgb8 { samples }) => assert_eq!(samples, vec![10, 20, 30, 40, 50, 60]),
+            other => panic!("expected rgb8 brush lighting, got {other:?}"),
+        }
     }
 
     #[test]
