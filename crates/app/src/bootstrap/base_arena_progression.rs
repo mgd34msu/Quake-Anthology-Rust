@@ -212,6 +212,11 @@ impl BaseArenaProgression {
         &self.cvars
     }
 
+    /// Mutably borrow the backing registry.
+    pub fn cvars_mut(&mut self) -> &mut CvarRegistry {
+        &mut self.cvars
+    }
+
     /// Borrow the level layout.
     #[must_use]
     pub fn catalog(&self) -> ArenaProgressionCatalog {
