@@ -54,6 +54,8 @@ pub mod team_arena_results;
 pub mod team_arena_scores;
 pub mod team_arena_skirmish;
 pub mod view_settings;
+pub mod weapon_behavior_selection;
+pub mod weapon_behavior_tool;
 pub mod weapon_behavior_tool_options;
 pub mod weapon_hud;
 pub mod weapon_view;
