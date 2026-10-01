@@ -10,7 +10,8 @@
 use std::rc::Rc;
 
 /// One diagnostic command body: borrowed services plus the invocation.
-type DiagnosticRun<Services> = Box<dyn Fn(&Services, DiagnosticInvocation<<Services as RendererDiagnosticServices>::Source>)>;
+type DiagnosticRun<Services> =
+    Box<dyn Fn(&Services, DiagnosticInvocation<<Services as RendererDiagnosticServices>::Source>)>;
 
 /// One resident renderer image row.
 #[derive(Debug, Clone, PartialEq)]
