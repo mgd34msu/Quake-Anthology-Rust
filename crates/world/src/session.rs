@@ -4,14 +4,17 @@
 //! registry, bodies, inventories, combat states, scheduler, and clock;
 //! releases actors in source order. Also carries the transition
 //! coordinator (`transitions.ts`) and a small dedicated-server command set
-//! parsed with the `qa-core` command text layer.
+//! parsed with the `qa-core` command text layer. Ports
+//! `src/world/session/resources.ts` (`ResourceScope`) and the
+//! `EngineSession` lifecycle surface from `src/world/session/session.ts`;
+//! seats, stepping, and presentations land with their owners.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_core::cmd::{tokenize_command, Dialect, TextMode};
-use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId, SavedActorId};
+use qa_core::identity::{ActorId, ClientId, IdentityOwner, OwnedActor, ProviderId, SavedActorId, SessionId};
 use qa_core::math::{Bounds, Vec3};
 use qa_core::time::{ClockProfile, FrameContext, FramePhase, SourceTime};
 
@@ -1211,6 +1214,284 @@ impl Drop for ResourceScope {
     }
 }
 
+// Engine session lifecycle (donor `src/world/session/session.ts`; lifecycle
+// surface only: `new`, `attachWorld`, `createClient`, `close`, plus the
+// `SessionClient` id. Connections, seats, stepping, and presentations land
+// with their owners. Rust ownership replaces two donor checks: an attached
+// simulation is moved into the session so it cannot attach twice, and the
+// simulation keeps its own internal registry owner until the full port
+// reconciles simulation identity with the session.
+
+/// Session mode: headless simulation or local play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    /// Headless simulation without local seats.
+    Headless,
+    /// Local play; seats attach through the seat-management surface.
+    Local,
+}
+
+/// A connected client handle with its own resource scope.
+pub struct SessionClient {
+    id: ClientId,
+    resources: ResourceScope,
+}
+
+impl SessionClient {
+    /// Wrap a minted client handle.
+    #[must_use]
+    pub fn new(id: ClientId) -> Self {
+        Self {
+            id,
+            resources: ResourceScope::new("Client resources"),
+        }
+    }
+
+    /// Client handle.
+    #[must_use]
+    pub fn id(&self) -> &ClientId {
+        &self.id
+    }
+
+    /// Whether the client is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.resources.is_closed()
+    }
+
+    /// Client resource scope.
+    #[must_use]
+    pub fn resources(&self) -> &ResourceScope {
+        &self.resources
+    }
+
+    /// Mutable client resource scope.
+    pub fn resources_mut(&mut self) -> &mut ResourceScope {
+        &mut self.resources
+    }
+
+    /// Release the client.
+    pub fn close(&mut self) -> Result<(), WorldError> {
+        self.resources.close()
+    }
+}
+
+impl SessionResource for SessionClient {
+    fn close(&mut self) -> Result<(), WorldError> {
+        SessionClient::close(self)
+    }
+}
+
+/// An attached world: one simulation plus its resource scope.
+pub struct WorldLifetime {
+    simulation: Simulation,
+    resources: ResourceScope,
+}
+
+impl WorldLifetime {
+    /// Attach a simulation to a fresh resource scope.
+    #[must_use]
+    pub fn new(simulation: Simulation) -> Self {
+        Self {
+            simulation,
+            resources: ResourceScope::new("World resources"),
+        }
+    }
+
+    /// Attached simulation.
+    #[must_use]
+    pub fn simulation(&self) -> &Simulation {
+        &self.simulation
+    }
+
+    /// Mutable attached simulation.
+    pub fn simulation_mut(&mut self) -> &mut Simulation {
+        &mut self.simulation
+    }
+
+    /// World resource scope.
+    #[must_use]
+    pub fn resources(&self) -> &ResourceScope {
+        &self.resources
+    }
+
+    /// Mutable world resource scope.
+    pub fn resources_mut(&mut self) -> &mut ResourceScope {
+        &mut self.resources
+    }
+
+    /// Whether the world is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.resources.is_closed()
+    }
+
+    /// Shut the world down: simulation first, then its resources.
+    pub fn close(&mut self) -> Result<(), WorldError> {
+        self.simulation.close();
+        self.resources.close()
+    }
+}
+
+impl SessionResource for WorldLifetime {
+    fn close(&mut self) -> Result<(), WorldError> {
+        WorldLifetime::close(self)
+    }
+}
+
+impl SessionResource for Simulation {
+    fn close(&mut self) -> Result<(), WorldError> {
+        Simulation::close(self);
+        Ok(())
+    }
+}
+
+fn collect_close(errors: &mut Vec<String>, context: &str, result: Result<(), WorldError>) {
+    if let Err(error) = result {
+        match error {
+            WorldError::CloseFailed { errors: members, name } => {
+                if members.is_empty() {
+                    errors.push(format!("{context}: failed to close {name}"));
+                } else {
+                    for member in members {
+                        errors.push(format!("{context}: {member}"));
+                    }
+                }
+            }
+            other => errors.push(format!("{context}: {other}")),
+        }
+    }
+}
+
+/// One session calls one simulation.
+pub struct EngineSession {
+    identity: IdentityOwner,
+    mode: SessionMode,
+    resources: ResourceScope,
+    clients: HashMap<u32, SessionClient>,
+    client_order: Vec<u32>,
+    generations: HashMap<u32, u32>,
+    current_world: Option<WorldLifetime>,
+}
+
+impl EngineSession {
+    /// Open a session; the identity authority moves into the session.
+    #[must_use]
+    pub fn new(identity: IdentityOwner, mode: SessionMode) -> Self {
+        Self {
+            identity,
+            mode,
+            resources: ResourceScope::new("Session resources"),
+            clients: HashMap::new(),
+            client_order: Vec::new(),
+            generations: HashMap::new(),
+            current_world: None,
+        }
+    }
+
+    /// Session handle.
+    #[must_use]
+    pub fn session(&self) -> &SessionId {
+        self.identity.session()
+    }
+
+    /// Session mode.
+    #[must_use]
+    pub fn mode(&self) -> SessionMode {
+        self.mode
+    }
+
+    /// Whether the session is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.resources.is_closed()
+    }
+
+    /// Attached world, if any.
+    #[must_use]
+    pub fn world(&self) -> Option<&WorldLifetime> {
+        self.current_world.as_ref()
+    }
+
+    /// Mutable attached world, if any.
+    pub fn world_mut(&mut self) -> Option<&mut WorldLifetime> {
+        self.current_world.as_mut()
+    }
+
+    /// Live client occupying a slot, if any.
+    #[must_use]
+    pub fn client_at(&self, slot: u32) -> Option<&SessionClient> {
+        self.clients.get(&slot).filter(|client| !client.is_closed())
+    }
+
+    /// Attach a simulation, closing the retired world. The replacement stays
+    /// installed even when the retired world fails to close.
+    pub fn attach_world(&mut self, simulation: Simulation) -> Result<(), WorldError> {
+        self.resources.assert_open()?;
+        let mut retired = self.current_world.replace(WorldLifetime::new(simulation));
+        if let Some(previous) = retired.as_mut() {
+            previous.close()?;
+        }
+        Ok(())
+    }
+
+    /// Create a client in a free slot, returning its minted handle. Callers
+    /// use [`EngineSession::client_at`] for access so the session stays
+    /// mutable; the donor returns the live object.
+    pub fn create_client(&mut self, slot: u32) -> Result<ClientId, WorldError> {
+        self.resources.assert_open()?;
+        if self.clients.get(&slot).is_some_and(|client| !client.is_closed()) {
+            return Err(WorldError::ClientSlotOccupied(slot));
+        }
+        let generation = match self.generations.get(&slot) {
+            None => 0,
+            Some(previous) => previous.checked_add(1).ok_or(WorldError::ClientGenerationExhausted)?,
+        };
+        let id = self.identity.client(slot, generation);
+        self.clients.insert(slot, SessionClient::new(id.clone()));
+        self.generations.insert(slot, generation);
+        if !self.client_order.contains(&slot) {
+            self.client_order.push(slot);
+        }
+        Ok(id)
+    }
+
+    /// Shut the session down: session cleanups, then the world, then clients
+    /// in reverse insertion order. Idempotent.
+    pub fn close(&mut self) -> Result<(), WorldError> {
+        if self.resources.is_closed() {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        collect_close(&mut errors, "session", self.resources.close());
+        if let Some(world) = self.current_world.as_mut() {
+            collect_close(&mut errors, "world", world.close());
+        }
+        for slot in self.client_order.iter().rev() {
+            if let Some(client) = self.clients.get_mut(slot) {
+                collect_close(&mut errors, &format!("client {}", slot), client.close());
+            }
+        }
+        self.clients.clear();
+        self.client_order.clear();
+        self.current_world = None;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(WorldError::CloseFailed {
+                name: "Session resources".to_string(),
+                errors,
+            })
+        }
+    }
+}
+
+impl SessionResource for EngineSession {
+    fn close(&mut self) -> Result<(), WorldError> {
+        EngineSession::close(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,5 +1675,85 @@ mod tests {
         scope.close().unwrap();
         assert!(*closed.borrow());
         assert!(handle.borrow().is_closed());
+    }
+
+    fn engine(mode: SessionMode) -> EngineSession {
+        EngineSession::new(IdentityOwner::create("test").unwrap(), mode)
+    }
+
+    fn headless_simulation() -> Simulation {
+        let (primary, profile) = q3();
+        Simulation::new("test", primary, profile, SourceTime::Milliseconds(0), 8).unwrap()
+    }
+
+    #[test]
+    fn engine_creates_generational_clients() {
+        let mut session = engine(SessionMode::Local);
+        assert_eq!(session.mode(), SessionMode::Local);
+        assert!(!session.is_closed());
+        let first = session.create_client(0).unwrap();
+        assert_eq!(first.slot(), 0);
+        assert_eq!(first.generation(), 0);
+        let second = session.create_client(1).unwrap();
+        assert_eq!(second.slot(), 1);
+        assert_eq!(session.client_at(0).unwrap().id(), &first);
+        assert_eq!(session.create_client(0).unwrap_err(), WorldError::ClientSlotOccupied(0));
+        assert!(session.client_at(2).is_none());
+        session.close().unwrap();
+        assert!(session.is_closed());
+        assert!(session.client_at(0).is_none());
+        session.close().unwrap();
+        let _ = second;
+    }
+
+    #[test]
+    fn engine_attaches_worlds_and_retires_old() {
+        let mut session = engine(SessionMode::Headless);
+        assert!(session.world().is_none());
+        session.attach_world(headless_simulation()).unwrap();
+        assert!(session.world().is_some());
+        let retired = Rc::new(RefCell::new(false));
+        let seen = retired.clone();
+        session
+            .world_mut()
+            .unwrap()
+            .resources_mut()
+            .defer(move || {
+                *seen.borrow_mut() = true;
+                Ok(())
+            })
+            .unwrap();
+        session.attach_world(headless_simulation()).unwrap();
+        assert!(*retired.borrow());
+        assert!(session.world().is_some());
+        session.close().unwrap();
+        assert!(session.world().is_none());
+        assert_eq!(
+            session.attach_world(headless_simulation()).unwrap_err(),
+            WorldError::ResourceClosed("Session resources".to_string())
+        );
+    }
+
+    #[test]
+    fn engine_close_aggregates_client_failures() {
+        let mut session = engine(SessionMode::Local);
+        session.create_client(0).unwrap();
+        session.create_client(1).unwrap();
+        session
+            .clients
+            .get_mut(&1)
+            .unwrap()
+            .resources_mut()
+            .defer(|| Err(WorldError::CommandUsage("client 1 cleanup".to_string())))
+            .unwrap();
+        let error = session.close().unwrap_err();
+        assert_eq!(
+            error,
+            WorldError::CloseFailed {
+                name: "Session resources".to_string(),
+                errors: vec!["client 1: client 1 cleanup".to_string()],
+            }
+        );
+        assert!(session.is_closed());
     }
 }
