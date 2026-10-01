@@ -13,10 +13,11 @@
 //! cameras (`src/camera/{application,spline}.ts`), and frame capture
 //! (`src/capture/index.ts`).
 //!
-//! Platform backends (windowing, graphics, real audio) stay out: this
-//! crate exposes traits plus headless implementations only. Image
-//! encoders for capture stay out with the deferred `qa-content` image
-//! formats; capture takes them as injected callbacks.
+//! Platform backends (windowing, graphics, real audio) live in
+//! `qa-platform`; this crate exposes traits plus headless
+//! implementations. Image encoders for capture are the real
+//! `qa-content` codecs, arriving as injected callbacks so tests and
+//! embedders can override them (see [`capture`] for the defaults).
 
 pub mod audio;
 pub mod camera;

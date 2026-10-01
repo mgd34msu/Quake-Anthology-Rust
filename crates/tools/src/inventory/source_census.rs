@@ -3,13 +3,10 @@
 //! Inventories pinned repositories: tracked files with hashes, submodule
 //! pins, per-file TypeScript functions, and a source-set fingerprint.
 //!
-//! Scope note: the donor pins thirteen repositories, ten of which live
-//! under a sibling source tree that is out of scope for this port. Those
-//! ten entries (`q1-original`, `q1-rerelease-qc`, `q1-ironwail`,
-//! `q2-lmctf-original`, `q2-original`, `q2-rerelease-game`, `q2-repro`,
-//! `q2-proto`, `q2-repro-game`, `q3-original`) are omitted here; the three
-//! TypeScript sibling checkouts are inventoried. Capture logic stays fully
-//! general over whatever specs are listed.
+//! All thirteen donor-pinned repositories are inventoried (three
+//! TypeScript implementation candidates plus ten original-reference
+//! checkouts); the specs below mirror donor `repositories` exactly.
+//! Capture logic stays fully general over whatever specs are listed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,7 +50,7 @@ pub struct RepositorySpec {
     pub expected_revision: String,
 }
 
-/// Pinned repository specifications (see module docs for the scope cut).
+/// Pinned repository specifications (mirrors donor `repositories` exactly).
 #[must_use]
 pub fn repositories() -> Vec<RepositorySpec> {
     [
@@ -74,6 +71,66 @@ pub fn repositories() -> Vec<RepositorySpec> {
             RepositoryRole::ImplementationCandidate,
             "../quake-3-ts",
             "8453c49824eb7a5ed5aee452f74e19336965d1f8",
+        ),
+        (
+            "q1-original",
+            RepositoryRole::OriginalReference,
+            "../qsrc/quake",
+            "bf4ac424ce754894ac8f1dae6a3981954bc9852d",
+        ),
+        (
+            "q1-rerelease-qc",
+            RepositoryRole::OriginalReference,
+            "../qsrc/quake-rerelease-qc",
+            "634eefab09a77eb7b5f5ca7078ba3d8784a91142",
+        ),
+        (
+            "q1-ironwail",
+            RepositoryRole::OriginalReference,
+            "../qsrc/ironwail",
+            "faeda400e3aeee6ec7da5e36c036653e0d201f94",
+        ),
+        (
+            "q2-lmctf-original",
+            RepositoryRole::OriginalReference,
+            "../qsrc/lmctf60",
+            "c518031380d2b59a41667c164353033aaa309e90",
+        ),
+        (
+            "q2-original",
+            RepositoryRole::OriginalReference,
+            "../qsrc/quake-2",
+            "372afde46e7defc9dd2d719a1732b8ace1fa096e",
+        ),
+        (
+            "q2-rerelease-game",
+            RepositoryRole::OriginalReference,
+            "../qsrc/quake2-rerelease-dll",
+            "8dc1fc9794c01ece06881e703851b768fb3994de",
+        ),
+        (
+            "q2-repro",
+            RepositoryRole::OriginalReference,
+            "../qsrc/q2repro",
+            "dafa004c6f0a3218f426dc661412ffdc1ed2a523",
+        ),
+        (
+            "q2-proto",
+            RepositoryRole::OriginalReference,
+            "../qsrc/q2repro/q2proto",
+            "a4f2c507c1f78c50bfabdad18e2715ed172a8210",
+        ),
+        (
+            "q2-repro-game",
+            RepositoryRole::OriginalReference,
+            "../qsrc/q2repro/subprojects/rerelease-game",
+            "e4e233a5f38bd0a7c2c143916723386051241091",
+        ),
+        (
+            "q3-original",
+            RepositoryRole::OriginalReference,
+            "../qsrc/quake-iii-arena",
+            "dbe4ddb10315479fc00086f08e25d968b4b43c49",
         ),
     ]
     .into_iter()
