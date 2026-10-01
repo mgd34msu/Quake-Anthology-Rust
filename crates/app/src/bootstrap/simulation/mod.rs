@@ -3,8 +3,12 @@
 pub mod actor_execution;
 pub mod arsenal;
 pub mod arsenal_intent;
+pub mod bot_arsenal;
 pub mod bot_commands;
 pub mod bot_knowledge_checkpoint;
+pub mod bot_q1_knowledge;
+pub mod bot_q2_knowledge;
+pub mod bot_q3_knowledge;
 pub mod bot_selected_knowledge;
 pub mod classic_guest_files;
 pub mod classic_guest_player;
