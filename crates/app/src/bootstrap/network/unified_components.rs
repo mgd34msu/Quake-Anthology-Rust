@@ -278,7 +278,9 @@ pub fn read_component_owner(reader: SaveReader) -> Result<PresentationOwner, Wor
     })
 }
 
-fn write_owner(owner: &PresentationOwner) -> SaveJson {
+/// Write a component owner.
+#[must_use]
+pub fn write_component_owner(owner: &PresentationOwner) -> SaveJson {
     obj(vec![
         (
             "provider",
@@ -396,7 +398,7 @@ fn write_commands(commands: &[QvmSceneCommand]) -> SaveJson {
 
 fn write_identity(identity: &UnifiedComponentIdentity) -> Vec<(&str, SaveJson)> {
     vec![
-        ("owner", write_owner(&identity.owner)),
+        ("owner", write_component_owner(&identity.owner)),
         (
             "identity",
             crate::persistence::mods::write_mod_identity(&identity.identity),
@@ -545,7 +547,7 @@ pub fn write_component_frames(frames: &UnifiedComponentFrames) -> Result<SaveJso
             }
         };
         sources.push(obj(vec![
-            ("owner", write_owner(&source.owner)),
+            ("owner", write_component_owner(&source.owner)),
             ("generation", int(source.generation)),
             ("abi", json_str(source.abi.text())),
             ("viewer", wire_actor(&source.viewer)),
@@ -695,7 +697,7 @@ mod tests {
 
     #[test]
     fn owner_round_trips() {
-        let encoded = write_owner(&owner());
+        let encoded = write_component_owner(&owner());
         let reader = SaveReader::new(&encoded);
         assert_eq!(read_component_owner(reader).unwrap(), owner());
     }
