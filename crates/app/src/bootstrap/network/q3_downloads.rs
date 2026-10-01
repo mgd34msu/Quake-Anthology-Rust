@@ -31,16 +31,13 @@ use std::time::SystemTime;
 use qa_content::archive::{open_archive, ArchiveEntry};
 use qa_content::catalog::{CatalogError, InstalledCatalog};
 use qa_content::contract::{
-    ArchiveFormat, ArchiveMount, ContentId, ContentMount, ContractError, GameFamily, MountId, ResolvedMountPlan,
-    ResourceId,
+    create_content_digest, ArchiveFormat, ContentId, ContentMount, ContractError, GameFamily, MountId,
+    ResolvedMountPlan, ResourceId,
 };
 use qa_content::hash::{hex_lower, Sha256};
 use qa_content::mounts::{MountError, MountedContent};
-use qa_net::common::session::{ContentDigest as NetContentDigest, SessionError};
-use qa_net::q3_content::{
-    register_q3_pak, Q3ArchiveMount, Q3ContentError, Q3ContentReferences, Q3MountIdentity, Q3MountedPak,
-    Q3ResolvedReference, Q3ResourceProvenance,
-};
+use qa_net::common::session::SessionError;
+use qa_net::q3_content::{register_q3_pak, Q3ContentError, Q3ContentReferences, Q3MountedPak};
 use qa_net::q3_net::{check_q3_download_name, Q3ArchiveEntry, Q3ArchiveHandle, Q3NetError};
 use thiserror::Error;
 
@@ -144,20 +141,7 @@ impl Q3ApplicationPackages {
                 .unwrap_or_default();
             let basename = strip_pk3_extension(&basename);
             let handle = archive_handle(&opened);
-            let registered = register_q3_pak(
-                Q3ArchiveMount {
-                    identity: Q3MountIdentity {
-                        id: archive.identity.id.as_str().to_string(),
-                        generation: archive.identity.generation,
-                    },
-                    archive_path: archive.archive_path.clone(),
-                    archive_digest: NetContentDigest::new(archive.archive_digest.as_str())?,
-                },
-                &handle,
-                game,
-                &basename,
-                checksum_feed,
-            )?;
+            let registered = register_q3_pak(archive.clone(), &handle, game, &basename, checksum_feed)?;
             members.insert(
                 (*id).clone(),
                 opened
@@ -191,7 +175,7 @@ impl Q3ApplicationPackages {
                 if product.expectation.family != GameFamily::Q3 {
                     continue;
                 }
-                self.references.opened(&to_q3_reference(&reference)?)?;
+                self.references.opened(&reference)?;
                 self.processed.insert(reference.id.clone());
             }
         }
@@ -206,7 +190,7 @@ impl Q3ApplicationPackages {
             .iter()
             .find(|pack| {
                 self.members
-                    .get(&MountId(pack.mount.identity.id.clone()))
+                    .get(&pack.mount.identity.id)
                     .is_some_and(|members| members.contains(&lowered))
             })
             .map(|pack| pack.pack.pure_checksum)
@@ -251,7 +235,7 @@ impl Q3ApplicationPackages {
             .check(&file)
             .map_err(|_| Q3DownloadError::Message("Download archive changed after opening".to_string()))?;
         let digest = hex_lower(&hash.finish());
-        if NetContentDigest::new(&digest)? != mounted.mount.archive_digest {
+        if create_content_digest(&digest)? != mounted.mount.archive_digest {
             return Err(Q3DownloadError::Message(
                 "Download archive changed after mount".to_string(),
             ));
@@ -317,34 +301,6 @@ fn provenance_content(provenance: &qa_content::contract::ResourceProvenance) -> 
         qa_content::contract::ResourceProvenance::Archive { mount, .. } => &mount.identity.content,
         qa_content::contract::ResourceProvenance::Loose { mount, .. } => &mount.identity.content,
     }
-}
-
-/// Convert a resolved reference to its Q3 mirror.
-fn to_q3_reference(
-    reference: &qa_content::contract::ResolvedResourceReference,
-) -> Result<Q3ResolvedReference, Q3DownloadError> {
-    let provenance = match &reference.provenance {
-        qa_content::contract::ResourceProvenance::Loose { .. } => Q3ResourceProvenance::Loose,
-        qa_content::contract::ResourceProvenance::Archive { mount, .. } => Q3ResourceProvenance::Archive {
-            mount: to_q3_mount(mount)?,
-        },
-    };
-    Ok(Q3ResolvedReference {
-        requested_path: reference.requested_path.clone(),
-        provenance,
-    })
-}
-
-/// Convert an archive mount to its Q3 mirror.
-fn to_q3_mount(mount: &ArchiveMount) -> Result<Q3ArchiveMount, Q3DownloadError> {
-    Ok(Q3ArchiveMount {
-        identity: Q3MountIdentity {
-            id: mount.identity.id.as_str().to_string(),
-            generation: mount.identity.generation,
-        },
-        archive_path: mount.archive_path.clone(),
-        archive_digest: NetContentDigest::new(mount.archive_digest.as_str())?,
-    })
 }
 
 /// Size/mtime/ctime fingerprint (donor `unchanged`).
