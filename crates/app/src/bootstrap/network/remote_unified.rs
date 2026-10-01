@@ -1455,9 +1455,8 @@ fn provider_id(provider: &str) -> qa_core::identity::ProviderId {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod support {
     use super::*;
-    use qa_content::contract::ContentDigest;
     use qa_core::identity::IdentityOwner;
     use std::cell::Cell;
 
@@ -1465,7 +1464,7 @@ mod tests {
     use crate::persistence::recipe::fixture_recipe;
 
     #[derive(Debug)]
-    struct TestContent {
+    pub(crate) struct TestContent {
         recipe: ExecutableRecipe,
     }
 
@@ -1520,7 +1519,7 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct TestScene {
+    pub(crate) struct TestScene {
         links: Vec<ActorId>,
         unlinks: Vec<ActorId>,
     }
@@ -1536,7 +1535,7 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct TestMedia {
+    pub(crate) struct TestMedia {
         received: Vec<UnifiedPresentationEvent>,
         local: f64,
     }
@@ -1560,7 +1559,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct TestPredictor {
+    pub(crate) struct TestPredictor {
         sample: Option<UnifiedPredictedPlayer>,
         submitted: Vec<UnifiedRemotePredictionCommand>,
     }
@@ -1578,14 +1577,14 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct TestHostState {
-        published: Vec<UnifiedOutput>,
-        commands: Vec<(String, Vec<String>)>,
-        disconnected: Vec<String>,
-        printed: Vec<String>,
+    pub(crate) struct TestHostState {
+        pub(crate) published: Vec<UnifiedOutput>,
+        pub(crate) commands: Vec<(String, Vec<String>)>,
+        pub(crate) disconnected: Vec<String>,
+        pub(crate) printed: Vec<String>,
     }
 
-    struct TestHost {
+    pub(crate) struct TestHost {
         state: Rc<RefCell<TestHostState>>,
         generation: Cell<u32>,
         sample: Option<UnifiedPredictedPlayer>,
@@ -1666,7 +1665,7 @@ mod tests {
         }
     }
 
-    fn harness() -> (UnifiedRemotePresentation<TestHost>, Rc<RefCell<TestHostState>>) {
+    pub(crate) fn harness() -> (UnifiedRemotePresentation<TestHost>, Rc<RefCell<TestHostState>>) {
         let state = Rc::new(RefCell::new(TestHostState::default()));
         let identity = IdentityOwner::create("test").unwrap();
         let seat = IdentityOwner::create("seat").unwrap().seat(0);
@@ -1685,20 +1684,17 @@ mod tests {
         (presentation, state)
     }
 
-    fn offer(epoch: u64) -> UnifiedControl {
+    pub(crate) fn offer(epoch: u64) -> UnifiedControl {
         UnifiedControl::Offer {
             epoch,
-            composition: UnifiedCompositionIdentity {
-                digest: ContentDigest("abc".to_string()),
-                recipe: fixture_recipe(),
-                sidecars: Vec::new(),
-            },
+            composition: super::super::unified_content::create_unified_composition(&fixture_recipe(), &[])
+                .expect("fixture composition"),
             mode: UnifiedServerMode::Deathmatch,
             max_clients: 8,
         }
     }
 
-    fn admitted(epoch: u64) -> UnifiedControl {
+    pub(crate) fn admitted(epoch: u64) -> UnifiedControl {
         UnifiedControl::Admitted {
             epoch,
             client: super::super::unified_control::UnifiedActorReference { slot: 0, generation: 1 },
@@ -1707,7 +1703,7 @@ mod tests {
         }
     }
 
-    fn frame_bytes(presentation: &UnifiedRemotePresentation<TestHost>, epoch: u64) -> Vec<u8> {
+    pub(crate) fn frame_bytes(presentation: &UnifiedRemotePresentation<TestHost>, epoch: u64) -> Vec<u8> {
         let ledger = frame_tests::ledger();
         let mut frame = frame_tests::frame(&ledger);
         frame.epoch = epoch;
@@ -1723,6 +1719,16 @@ mod tests {
         });
         super::super::unified_frame_codec::encode_unified_frame(&frame).unwrap()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::support::*;
+    use super::*;
+    use qa_core::identity::IdentityOwner;
+
+    use super::super::unified_frame_codec::tests as frame_tests;
+    use crate::persistence::recipe::fixture_recipe;
 
     #[test]
     fn offer_admits_world() {
@@ -1730,7 +1736,9 @@ mod tests {
         presentation.offer(&offer(3)).unwrap();
         assert_eq!(presentation.epoch(), 3);
         assert_eq!(presentation.loaded_epoch(), 3);
-        assert_eq!(presentation.composition_digest(), Some("abc"));
+        let expected = super::super::unified_content::create_unified_composition(&fixture_recipe(), &[])
+            .expect("fixture composition");
+        assert_eq!(presentation.composition_digest(), Some(expected.digest.as_str()));
         assert!(presentation.output().is_none());
         assert!(presentation.player().is_none());
         assert!(presentation.command_time_milliseconds().is_none());
