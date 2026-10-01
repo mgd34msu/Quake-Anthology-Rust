@@ -13,6 +13,7 @@ pub mod aas_reachability_spatial;
 pub mod aas_reachability_special;
 pub mod aas_reachability_types;
 pub mod aas_write;
+pub mod actor_body;
 pub mod behavior;
 pub mod collision_support;
 pub mod construct;
@@ -36,6 +37,7 @@ pub mod rerelease_path;
 pub mod runtime;
 pub mod save;
 pub mod scene;
+pub mod shared_scene;
 pub mod train;
 pub mod types;
 
