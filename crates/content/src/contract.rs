@@ -3,7 +3,7 @@
 //! Donors: `content.ts`, `mods.ts`, `equipment.ts`, `held-weapon.ts`,
 //! `model-attachment.ts`, `pickups.ts`, `original-pickups.ts`,
 //! `mod-callbacks.ts`, `native-mod-callbacks.ts`, `native-mod-items.ts`,
-//! `native-mod-region.ts`, `source-items.ts`. Identity handles live in
+//! `native-mod-region.ts`, `source-items.ts`, `presentation.ts`. Identity handles live in
 //! [`qa_core::identity`] (donor `identity.ts`). Types referenced from
 //! out-of-scope contracts are defined here structurally with their donor
 //! noted, since `qa-content` depends only on `qa-core`.
@@ -7040,6 +7040,77 @@ pub enum QvmGrappleCable {
     },
 }
 
+// Component presentation ownership (donor `presentation.ts`).
+
+/// A component activation, retained with its output across a world checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresentationOwner {
+    /// Owning provider.
+    pub provider: ProviderId,
+    /// Activation generation.
+    pub generation: u64,
+}
+
+/// Media request published by a component presentation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComponentPresentationMediaRequest {
+    /// Start music with an intro leading into a loop.
+    Music {
+        /// Intro track.
+        intro: String,
+        /// Loop track.
+        loop_track: String,
+    },
+    /// Stop music.
+    MusicStop,
+    /// Remap a shader with a time offset.
+    ShaderRemap {
+        /// Original shader.
+        original: String,
+        /// Replacement shader.
+        replacement: String,
+        /// Time offset.
+        time_offset: f64,
+    },
+}
+
+fn json_escape(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// Checkpoint key for an optional presentation owner (`presentationOwnerKey`).
+#[must_use]
+pub fn presentation_owner_key(owner: Option<&PresentationOwner>) -> String {
+    match owner {
+        None => "primary".to_string(),
+        Some(owner) => {
+            let mut key = String::from("[\"");
+            json_escape(
+                &format!("{}:{}", owner.provider.namespace, owner.provider.name),
+                &mut key,
+            );
+            key.push_str(&format!("\",{}]", owner.generation));
+            key
+        }
+    }
+}
+
+/// Whether an optional owner matches an activation (`samePresentationOwner`).
+#[must_use]
+pub fn same_presentation_owner(left: Option<&PresentationOwner>, right: &PresentationOwner) -> bool {
+    matches!(left, Some(left) if left.provider == right.provider && left.generation == right.generation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7158,5 +7229,31 @@ mod tests {
         let found = source_item_named(&items, "Shells", None).unwrap();
         assert!(matches!(found, SourceItemMatch::Match { exact: false, .. }));
         assert!(source_item_named(&items, "Nails", None).is_none());
+    }
+
+    #[test]
+    fn keys_and_matches_presentation_owners() {
+        assert_eq!(presentation_owner_key(None), "primary");
+        let owner = PresentationOwner {
+            provider: ProviderId::new("q3", "game"),
+            generation: 2,
+        };
+        assert_eq!(presentation_owner_key(Some(&owner)), "[\"q3:game\",2]");
+        assert!(same_presentation_owner(Some(&owner), &owner));
+        assert!(!same_presentation_owner(None, &owner));
+        let other = PresentationOwner {
+            provider: ProviderId::new("q3", "game"),
+            generation: 3,
+        };
+        assert!(!same_presentation_owner(Some(&other), &owner));
+        let foreign = PresentationOwner {
+            provider: ProviderId::new("q1", "game"),
+            generation: 2,
+        };
+        assert!(!same_presentation_owner(Some(&foreign), &owner));
+        assert!(matches!(
+            ComponentPresentationMediaRequest::MusicStop,
+            ComponentPresentationMediaRequest::MusicStop
+        ));
     }
 }
