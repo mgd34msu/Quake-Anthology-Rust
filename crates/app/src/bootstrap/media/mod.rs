@@ -6,3 +6,4 @@
 //! its donor provenance.
 
 pub mod q2_view;
+pub mod rerelease_presentation;
