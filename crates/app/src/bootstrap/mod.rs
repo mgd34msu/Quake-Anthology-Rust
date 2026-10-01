@@ -24,6 +24,7 @@ pub mod player_progress_library;
 pub mod player_service_status;
 pub mod player_userinfo;
 pub mod precache;
+pub mod presentation;
 pub mod presentation_scene;
 pub mod presentation_state;
 pub mod q1_client_commands;
