@@ -3,7 +3,8 @@
 //! Donors: `content.ts`, `mods.ts`, `equipment.ts`, `held-weapon.ts`,
 //! `model-attachment.ts`, `pickups.ts`, `original-pickups.ts`,
 //! `mod-callbacks.ts`, `native-mod-callbacks.ts`, `native-mod-items.ts`,
-//! `native-mod-region.ts`, `source-items.ts`, `presentation.ts`. Identity handles live in
+//! `native-mod-region.ts`, `source-items.ts`, `presentation.ts`,
+//! `mod-client-outputs.ts`, `source-match.ts`. Identity handles live in
 //! [`qa_core::identity`] (donor `identity.ts`). Types referenced from
 //! out-of-scope contracts are defined here structurally with their donor
 //! noted, since `qa-content` depends only on `qa-core`.
@@ -17,6 +18,7 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{Axis, Bounds, Vec3};
 use qa_core::numeric::NumericProfile;
 use qa_core::time::{ClockProfile, SourceTime};
+use qa_world::session::MissionGate;
 use thiserror::Error;
 
 /// Largest exactly representable integer (`Number.MAX_SAFE_INTEGER`).
@@ -7630,6 +7632,369 @@ impl<Scalar, Vector> SourceModClientOutputs<Scalar, Vector> {
     }
 }
 
+// Component match state (donor `src/world/session/mod-match.ts`).
+// Bindings borrow original source storage; the session retains no second
+// score or objective state.
+
+/// Borrowed live-actor surface used by match bindings (donor
+/// `SessionActorRegistry`; only the consulted surface is ported).
+pub trait SessionActorRegistry {
+    /// Whether an actor is live.
+    fn is_live(&self, actor: &ActorId) -> bool;
+    /// Resolve a live actor to its owned handle.
+    fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor>;
+}
+
+/// Live source match player borrowed from original storage.
+pub trait SourceMatchPlayer {
+    /// Owning provider.
+    fn owner(&self) -> &ProviderId;
+    /// Shared team identity.
+    fn team(&self) -> Option<String>;
+    /// Score.
+    fn score(&self) -> f64;
+    /// Assign the shared team.
+    fn set_team(&mut self, team: Option<String>);
+    /// Assign the score.
+    fn set_score(&mut self, score: f64);
+}
+
+/// Shared handle to a live source player.
+pub type MatchPlayerHandle = Rc<RefCell<dyn SourceMatchPlayer>>;
+/// Player resolver for one owner.
+pub type MatchPlayerResolver = Rc<dyn Fn(&ActorId) -> Option<MatchPlayerHandle>>;
+
+/// Live source objective state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceObjectiveState {
+    /// Objective stage.
+    pub stage: String,
+    /// Completion.
+    pub complete: bool,
+    /// Carrier actor.
+    pub carrier: Option<ActorId>,
+    /// Target actor.
+    pub target: Option<ActorId>,
+}
+
+/// Objective change request (completion is source-owned).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceObjectiveChange {
+    /// Objective stage.
+    pub stage: String,
+    /// Carrier actor.
+    pub carrier: Option<ActorId>,
+    /// Target actor.
+    pub target: Option<ActorId>,
+}
+
+/// Live source objective binding borrowed from its owner.
+pub trait SourceObjectiveBinding {
+    /// Owning provider.
+    fn owner(&self) -> &ProviderId;
+    /// Objective identity.
+    fn id(&self) -> &ObjectiveId;
+    /// Whether the objective gates campaign progress.
+    fn campaign_gate(&self) -> bool;
+    /// Whether the objective is a bot goal.
+    fn bot_goal(&self) -> bool;
+    /// Read the live state.
+    fn read(&self) -> SourceObjectiveState;
+    /// Apply a change request.
+    fn change(&self, request: SourceObjectiveChange);
+}
+
+/// Objective view with its bot-goal flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceObjectiveView {
+    /// Objective identity.
+    pub id: ObjectiveId,
+    /// Live state.
+    pub state: SourceObjectiveState,
+    /// Whether the objective is a bot goal.
+    pub bot_goal: bool,
+}
+
+/// Match services borrowed from admitted sources (donor `SourceMatchServices`).
+pub trait SourceMatchServices {
+    /// Resolve a live actor's player.
+    fn player(&self, actor: &ActorId) -> Result<Option<MatchPlayerHandle>, ContractError>;
+    /// Bind one owner's player resolver, returning its unbind.
+    fn bind_source(&self, owner: ProviderId, resolve: MatchPlayerResolver) -> Result<Box<dyn Fn()>, ContractError>;
+    /// Read one objective's live state.
+    fn objective(&self, id: &ObjectiveId) -> Option<SourceObjectiveState>;
+    /// Apply an objective change, returning the live state when still owned.
+    fn change_objective(
+        &self,
+        id: &ObjectiveId,
+        request: SourceObjectiveChange,
+    ) -> Result<Option<SourceObjectiveState>, ContractError>;
+    /// Bind one objective owner, returning its unbind.
+    fn bind_objective(&self, binding: Rc<dyn SourceObjectiveBinding>) -> Result<Box<dyn Fn()>, ContractError>;
+    /// Live views of every bound objective.
+    fn objectives(&self) -> Vec<SourceObjectiveView>;
+    /// Campaign gates with their satisfaction.
+    fn gates(&self) -> Vec<MissionGate>;
+}
+
+struct MatchStateInner {
+    actors: Box<dyn SessionActorRegistry>,
+    primary: MatchPlayerResolver,
+    sources: HashMap<ProviderId, (u64, MatchPlayerResolver)>,
+    channels: HashMap<ObjectiveId, Rc<dyn SourceObjectiveBinding>>,
+    next: u64,
+    closed: bool,
+}
+
+/// Match bindings over borrowed source storage.
+#[derive(Clone)]
+pub struct ModMatchState {
+    inner: Rc<RefCell<MatchStateInner>>,
+}
+
+impl ModMatchState {
+    /// Create match services over borrowed actors with a primary resolver.
+    pub fn new(actors: Box<dyn SessionActorRegistry>, primary: MatchPlayerResolver) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(MatchStateInner {
+                actors,
+                primary,
+                sources: HashMap::new(),
+                channels: HashMap::new(),
+                next: 0,
+                closed: false,
+            })),
+        }
+    }
+
+    fn read_binding(binding: &Rc<dyn SourceObjectiveBinding>, inner: &MatchStateInner) -> Option<SourceObjectiveState> {
+        let value = binding.read();
+        let current = !inner.closed
+            && inner
+                .channels
+                .get(binding.id())
+                .is_some_and(|current| Rc::ptr_eq(current, binding));
+        if !current {
+            return None;
+        }
+        Some(SourceObjectiveState {
+            stage: value.stage,
+            complete: value.complete,
+            carrier: value.carrier.filter(|actor| inner.actors.is_live(actor)),
+            target: value.target.filter(|actor| inner.actors.is_live(actor)),
+        })
+    }
+
+    /// Resolve a live actor's player.
+    pub fn player(&self, actor: &ActorId) -> Result<Option<MatchPlayerHandle>, ContractError> {
+        let (owned, resolver, primary) = {
+            let inner = self.inner.borrow();
+            if inner.closed || !inner.actors.is_live(actor) {
+                return Ok(None);
+            }
+            let owned = inner.actors.resolve_owned(actor);
+            let resolver = owned
+                .as_ref()
+                .and_then(|owned| inner.sources.get(owned.owner()).map(|(_, resolver)| resolver.clone()));
+            (owned, resolver, inner.primary.clone())
+        };
+        let found = resolver
+            .as_ref()
+            .and_then(|resolver| resolver(actor))
+            .or_else(|| primary(actor));
+        if let Some(handle) = &found {
+            let owner = handle.borrow().owner().clone();
+            let same = match &owned {
+                Some(owned) => owner == *owned.owner(),
+                None => false,
+            };
+            if !same {
+                return Err(invalid(
+                    "Match player belongs to another original actor owner".to_string(),
+                ));
+            }
+        }
+        Ok(found)
+    }
+
+    /// Bind one owner's player resolver, returning its unbind.
+    pub fn bind_source(&self, owner: ProviderId, resolve: MatchPlayerResolver) -> Result<Box<dyn Fn()>, ContractError> {
+        let id = {
+            let mut inner = self.inner.borrow_mut();
+            if inner.closed || inner.sources.contains_key(&owner) {
+                return Err(invalid(format!(
+                    "Match source {} is already bound or closed",
+                    provider_name(&owner)
+                )));
+            }
+            let id = inner.next;
+            inner.next += 1;
+            inner.sources.insert(owner.clone(), (id, resolve));
+            id
+        };
+        let inner = self.inner.clone();
+        Ok(Box::new(move || {
+            let mut inner = inner.borrow_mut();
+            if inner.sources.get(&owner).is_some_and(|(current, _)| *current == id) {
+                inner.sources.remove(&owner);
+            }
+        }))
+    }
+
+    /// Bind one objective owner, returning its unbind.
+    pub fn bind_objective(&self, binding: Rc<dyn SourceObjectiveBinding>) -> Result<Box<dyn Fn()>, ContractError> {
+        {
+            let mut inner = self.inner.borrow_mut();
+            if inner.closed {
+                return Err(invalid("Match objective owner is closed".to_string()));
+            }
+            if let Some(previous) = inner.channels.get(binding.id()) {
+                return Err(invalid(format!(
+                    "Objective {} is owned by {}; {} cannot claim it",
+                    binding.id(),
+                    provider_name(previous.owner()),
+                    provider_name(binding.owner()),
+                )));
+            }
+            inner.channels.insert(binding.id().clone(), binding.clone());
+        }
+        let inner = self.inner.clone();
+        let id = binding.id().clone();
+        Ok(Box::new(move || {
+            let mut inner = inner.borrow_mut();
+            if inner
+                .channels
+                .get(&id)
+                .is_some_and(|current| Rc::ptr_eq(current, &binding))
+            {
+                inner.channels.remove(&id);
+            }
+        }))
+    }
+
+    /// Read one objective's live state.
+    #[must_use]
+    pub fn objective(&self, id: &ObjectiveId) -> Option<SourceObjectiveState> {
+        let inner = self.inner.borrow();
+        let binding = inner.channels.get(id)?.clone();
+        Self::read_binding(&binding, &inner)
+    }
+
+    /// Apply an objective change, returning the live state when still owned.
+    pub fn change_objective(
+        &self,
+        id: &ObjectiveId,
+        request: SourceObjectiveChange,
+    ) -> Result<Option<SourceObjectiveState>, ContractError> {
+        let binding = {
+            let inner = self.inner.borrow();
+            let Some(binding) = inner.channels.get(id).cloned() else {
+                return Err(invalid(format!("Objective {id} has no admitted source owner")));
+            };
+            for actor in [&request.carrier, &request.target].into_iter().flatten() {
+                if !inner.actors.is_live(actor) {
+                    return Err(invalid("Objective change references a retired actor".to_string()));
+                }
+            }
+            binding
+        };
+        binding.change(request);
+        let inner = self.inner.borrow();
+        if inner
+            .channels
+            .get(id)
+            .is_some_and(|current| Rc::ptr_eq(current, &binding))
+        {
+            Ok(Self::read_binding(&binding, &inner))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Live views of every bound objective.
+    #[must_use]
+    pub fn objectives(&self) -> Vec<SourceObjectiveView> {
+        let inner = self.inner.borrow();
+        let bindings: Vec<Rc<dyn SourceObjectiveBinding>> = inner.channels.values().cloned().collect();
+        bindings
+            .into_iter()
+            .filter_map(|binding| {
+                Self::read_binding(&binding, &inner).map(|state| SourceObjectiveView {
+                    id: binding.id().clone(),
+                    state,
+                    bot_goal: binding.bot_goal(),
+                })
+            })
+            .collect()
+    }
+
+    /// Campaign gates with their satisfaction.
+    #[must_use]
+    pub fn gates(&self) -> Vec<MissionGate> {
+        let inner = self.inner.borrow();
+        let bindings: Vec<Rc<dyn SourceObjectiveBinding>> = inner
+            .channels
+            .values()
+            .filter(|binding| binding.campaign_gate())
+            .cloned()
+            .collect();
+        bindings
+            .into_iter()
+            .filter_map(|binding| {
+                Self::read_binding(&binding, &inner).map(|state| MissionGate {
+                    objective: binding.id().clone(),
+                    satisfied: state.complete,
+                })
+            })
+            .collect()
+    }
+
+    /// Release every binding. Idempotent.
+    pub fn close(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.closed {
+            return;
+        }
+        inner.closed = true;
+        inner.sources.clear();
+        inner.channels.clear();
+    }
+}
+
+impl SourceMatchServices for ModMatchState {
+    fn player(&self, actor: &ActorId) -> Result<Option<MatchPlayerHandle>, ContractError> {
+        ModMatchState::player(self, actor)
+    }
+
+    fn bind_source(&self, owner: ProviderId, resolve: MatchPlayerResolver) -> Result<Box<dyn Fn()>, ContractError> {
+        ModMatchState::bind_source(self, owner, resolve)
+    }
+
+    fn objective(&self, id: &ObjectiveId) -> Option<SourceObjectiveState> {
+        ModMatchState::objective(self, id)
+    }
+
+    fn change_objective(
+        &self,
+        id: &ObjectiveId,
+        request: SourceObjectiveChange,
+    ) -> Result<Option<SourceObjectiveState>, ContractError> {
+        ModMatchState::change_objective(self, id, request)
+    }
+
+    fn bind_objective(&self, binding: Rc<dyn SourceObjectiveBinding>) -> Result<Box<dyn Fn()>, ContractError> {
+        ModMatchState::bind_objective(self, binding)
+    }
+
+    fn objectives(&self) -> Vec<SourceObjectiveView> {
+        ModMatchState::objectives(self)
+    }
+
+    fn gates(&self) -> Vec<MissionGate> {
+        ModMatchState::gates(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8043,5 +8408,249 @@ mod tests {
         )
         .unwrap();
         assert!(!idle.enabled());
+    }
+
+    struct FakeActors {
+        live: HashSet<ActorId>,
+        owners: HashMap<ActorId, OwnedActor>,
+    }
+
+    impl SessionActorRegistry for FakeActors {
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+
+        fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
+            self.owners.get(actor).cloned()
+        }
+    }
+
+    struct FakePlayer {
+        owner: ProviderId,
+        team: Option<String>,
+        score: f64,
+    }
+
+    impl SourceMatchPlayer for FakePlayer {
+        fn owner(&self) -> &ProviderId {
+            &self.owner
+        }
+
+        fn team(&self) -> Option<String> {
+            self.team.clone()
+        }
+
+        fn score(&self) -> f64 {
+            self.score
+        }
+
+        fn set_team(&mut self, team: Option<String>) {
+            self.team = team;
+        }
+
+        fn set_score(&mut self, score: f64) {
+            self.score = score;
+        }
+    }
+
+    struct FakeObjective {
+        owner: ProviderId,
+        id: ObjectiveId,
+        campaign_gate: bool,
+        bot_goal: bool,
+        state: RefCell<SourceObjectiveState>,
+    }
+
+    impl SourceObjectiveBinding for FakeObjective {
+        fn owner(&self) -> &ProviderId {
+            &self.owner
+        }
+
+        fn id(&self) -> &ObjectiveId {
+            &self.id
+        }
+
+        fn campaign_gate(&self) -> bool {
+            self.campaign_gate
+        }
+
+        fn bot_goal(&self) -> bool {
+            self.bot_goal
+        }
+
+        fn read(&self) -> SourceObjectiveState {
+            self.state.borrow().clone()
+        }
+
+        fn change(&self, request: SourceObjectiveChange) {
+            let mut state = self.state.borrow_mut();
+            state.stage = request.stage;
+            state.carrier = request.carrier;
+            state.target = request.target;
+        }
+    }
+
+    #[test]
+    fn match_players_prefer_bound_sources() {
+        use qa_core::identity::IdentityOwner;
+
+        let ids = IdentityOwner::create("match").unwrap();
+        let actor = ids.actor(0, 0);
+        let retired = ids.actor(1, 0);
+        let owner = ProviderId::new("q3", "match");
+        let mut owners = HashMap::new();
+        owners.insert(actor.clone(), ids.owned_actor(&actor, owner.clone()).unwrap());
+        let actors = FakeActors {
+            live: HashSet::from([actor.clone()]),
+            owners,
+        };
+        let primary_player: MatchPlayerHandle = Rc::new(RefCell::new(FakePlayer {
+            owner: owner.clone(),
+            team: Some("red".to_string()),
+            score: 3.0,
+        }));
+        let primary = primary_player.clone();
+        let state = ModMatchState::new(Box::new(actors), Rc::new(move |_| Some(primary.clone())));
+        assert!(state.player(&retired).unwrap().is_none());
+        assert_eq!(state.player(&actor).unwrap().unwrap().borrow().score(), 3.0);
+        let bound_player: MatchPlayerHandle = Rc::new(RefCell::new(FakePlayer {
+            owner: owner.clone(),
+            team: None,
+            score: 9.0,
+        }));
+        let bound = bound_player.clone();
+        let unbind = state
+            .bind_source(owner.clone(), Rc::new(move |_| Some(bound.clone())))
+            .unwrap();
+        assert_eq!(state.player(&actor).unwrap().unwrap().borrow().score(), 9.0);
+        assert_eq!(
+            state
+                .bind_source(owner.clone(), Rc::new(|_| None))
+                .err()
+                .expect("duplicate source")
+                .to_string(),
+            "Match source q3:match is already bound or closed"
+        );
+        unbind();
+        unbind();
+        assert_eq!(state.player(&actor).unwrap().unwrap().borrow().score(), 3.0);
+        let foreign: MatchPlayerHandle = Rc::new(RefCell::new(FakePlayer {
+            owner: ProviderId::new("q1", "game"),
+            team: None,
+            score: 0.0,
+        }));
+        let unbind = state
+            .bind_source(owner, Rc::new(move |_| Some(foreign.clone())))
+            .unwrap();
+        assert_eq!(
+            state.player(&actor).err().expect("owner mismatch").to_string(),
+            "Match player belongs to another original actor owner"
+        );
+        unbind();
+        state.close();
+        assert!(state.player(&actor).unwrap().is_none());
+        state.close();
+    }
+
+    #[test]
+    fn match_objectives_track_live_bindings() {
+        use qa_core::identity::IdentityOwner;
+
+        let ids = IdentityOwner::create("objectives").unwrap();
+        let carrier = ids.actor(0, 0);
+        let gone = ids.actor(1, 0);
+        let owner = ProviderId::new("q1", "campaign");
+        let actors = FakeActors {
+            live: HashSet::from([carrier.clone()]),
+            owners: HashMap::new(),
+        };
+        let state = ModMatchState::new(Box::new(actors), Rc::new(|_| None));
+        let binding: Rc<dyn SourceObjectiveBinding> = Rc::new(FakeObjective {
+            owner: owner.clone(),
+            id: "q1:key".to_string(),
+            campaign_gate: true,
+            bot_goal: true,
+            state: RefCell::new(SourceObjectiveState {
+                stage: "taken".to_string(),
+                complete: true,
+                carrier: Some(carrier.clone()),
+                target: Some(gone.clone()),
+            }),
+        });
+        let unbind = state.bind_objective(binding).unwrap();
+        assert_eq!(
+            state
+                .bind_objective(Rc::new(FakeObjective {
+                    owner: ProviderId::new("q3", "match"),
+                    id: "q1:key".to_string(),
+                    campaign_gate: false,
+                    bot_goal: false,
+                    state: RefCell::new(SourceObjectiveState {
+                        stage: "open".to_string(),
+                        complete: false,
+                        carrier: None,
+                        target: None,
+                    }),
+                }))
+                .err()
+                .expect("duplicate objective")
+                .to_string(),
+            "Objective q1:key is owned by q1:campaign; q3:match cannot claim it"
+        );
+        let read = state.objective(&"q1:key".to_string()).unwrap();
+        assert_eq!(read.carrier, Some(carrier.clone()));
+        assert_eq!(read.target, None);
+        assert_eq!(
+            state
+                .change_objective(
+                    &"q1:key".to_string(),
+                    SourceObjectiveChange {
+                        stage: "dropped".to_string(),
+                        carrier: Some(gone.clone()),
+                        target: None,
+                    }
+                )
+                .expect_err("retired carrier")
+                .to_string(),
+            "Objective change references a retired actor"
+        );
+        let changed = state
+            .change_objective(
+                &"q1:key".to_string(),
+                SourceObjectiveChange {
+                    stage: "dropped".to_string(),
+                    carrier: None,
+                    target: Some(carrier.clone()),
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed.stage, "dropped");
+        assert_eq!(changed.target, Some(carrier));
+        assert_eq!(
+            state
+                .change_objective(
+                    &"q1:missing".to_string(),
+                    SourceObjectiveChange {
+                        stage: "x".to_string(),
+                        carrier: None,
+                        target: None
+                    }
+                )
+                .expect_err("missing objective")
+                .to_string(),
+            "Objective q1:missing has no admitted source owner"
+        );
+        let views = state.objectives();
+        assert_eq!(views.len(), 1);
+        assert!(views[0].bot_goal);
+        let gates = state.gates();
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].objective, "q1:key");
+        assert!(gates[0].satisfied);
+        unbind();
+        assert!(state.objective(&"q1:key".to_string()).is_none());
+        assert!(state.objectives().is_empty());
+        state.close();
     }
 }
