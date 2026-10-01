@@ -224,4 +224,7 @@ pub enum WorldError {
     /// Invalid source actor slot range, table, or lifetime.
     #[error("{0}")]
     BadSourceSlots(String),
+    /// Invalid Q3 collision record, index, map, or checkpoint.
+    #[error("{0}")]
+    BadCollisionRecord(String),
 }

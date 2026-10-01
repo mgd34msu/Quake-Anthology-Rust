@@ -6,6 +6,9 @@ use qa_core::math::{vec3, Bounds, Vec3};
 
 use crate::spatial::{CollisionFamily, CollisionShape};
 
+/// Quake III collision runtime ported from `src/world/collision/q3/*`.
+pub mod q3;
+
 /// Quake I move policy for traces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Q1Move {
