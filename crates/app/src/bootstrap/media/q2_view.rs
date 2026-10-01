@@ -1,6 +1,6 @@
 //! Rogue `p_view.c` and `g_sphere.c` presentation state.
 //!
-//! Port of donor `src/app/bootstrap/effects/q2-view.ts`
+//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/effects/q2-view.ts`
 //! (Copyright (C) Id Software, Inc. GPL-2.0-or-later).
 //!
 //! Infrared flicker, nuke-blind blending, and defender-sphere camera

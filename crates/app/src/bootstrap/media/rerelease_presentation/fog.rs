@@ -1,6 +1,6 @@
 //! Q2 rerelease fog transitions (`P_ForceFogTransition`, q2repro `V_FogParamsChanged`).
 //!
-//! Port of donor `src/app/bootstrap/rerelease-presentation/fog.ts`
+//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/rerelease-presentation/fog.ts`
 //! (GPL-2.0-or-later).
 //!
 //! Local events carry game floats; the wire message carries bytes and

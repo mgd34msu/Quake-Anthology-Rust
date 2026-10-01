@@ -1,6 +1,6 @@
 //! Source cgame effect producers joined to shared assets, collision, and drawing.
 //!
-//! Sync port of donor `src/app/bootstrap/effects/q3.ts`. The donor awaits
+//! Sync port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/effects/q3.ts`. The donor awaits
 //! asset-provider promises; this port resolves the same registrations through
 //! the synchronous [`Q3EffectHost`]. Engine services the donor imports
 //! (assets, world, collision) arrive as host methods; content systems
