@@ -36,7 +36,7 @@ fn disconnected_monster(_actor: ActorId, _game: &mut Q2GameServices) -> Option<M
 }
 
 /// Disconnected player-effect hook (drops the effect).
-fn disconnected_player_effect(_effect: Q2MissionPackPlayerEffect) {}
+fn disconnected_player_effect(_game: &Q2GameServices, _effect: Q2MissionPackPlayerEffect) {}
 
 /// Projectile hooks used before the session installs its own.
 pub fn disconnected_projectile_hooks() -> Q2MissionPackProjectileHooks {

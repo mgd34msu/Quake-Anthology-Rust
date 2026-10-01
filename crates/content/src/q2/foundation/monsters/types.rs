@@ -915,7 +915,7 @@ pub struct Q2MonsterHooks {
     /// Drop an authored item.
     pub drop_item: Option<fn(qa_core::identity::OwnedActor, &mut Q2GameServices, &str)>,
     /// Read platform state.
-    pub platform_state: Option<fn(&ActorId) -> Option<PlatformPhase>>,
+    pub platform_state: Option<fn(&Q2GameServices, &ActorId) -> Option<PlatformPhase>>,
     /// Look up an authored mission.
     pub mission: Option<MonsterMissionResolver>,
     /// Retarget a health bar (`transferHealthbarTarget`).
@@ -1167,7 +1167,11 @@ impl<'a> MonsterContext<'a> {
 
     /// Read platform state (`platformState`).
     pub fn platform_state(&self, actor: &ActorId) -> Option<PlatformPhase> {
-        self.game.monsters.hooks.platform_state.and_then(|read| read(actor))
+        self.game
+            .monsters
+            .hooks
+            .platform_state
+            .and_then(|read| read(self.game, actor))
     }
 
     /// Look up the authored mission (`hooks.mission`).

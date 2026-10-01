@@ -229,7 +229,7 @@ fn trigger_teleport_touch(entity: ActorId, game: &mut Q2GameServices, contact: T
     moved.velocity = Vec3::default();
     moved.angles = Vec3::default();
     game.write_body(player.clone(), &moved, false);
-    (mission_entity_hooks(game).teleport_player)(player.clone(), origin, body.angles);
+    (mission_entity_hooks(game).teleport_player)(player.clone(), game, origin, body.angles);
     game.host.emit(Q2PresentationEvent::EntityEvent {
         actor: player.clone(),
         event: 6,
@@ -343,15 +343,18 @@ fn use_target_steam(entity: ActorId, game: &mut Q2GameServices, other: Option<Ac
     let count = record.count;
     let style = record.style;
     let speed = record.speed;
-    (mission_entity_hooks(game).emit)(Q2MissionPackEntityEvent::Steam {
-        id: if wait > 100.0 { steam_id } else { -1 },
-        origin,
-        direction: movedir,
-        count,
-        color: style,
-        speed: speed.trunc() as i32,
-        milliseconds: if wait > 100.0 { wait.trunc() as i32 } else { 0 },
-    });
+    (mission_entity_hooks(game).emit)(
+        game,
+        Q2MissionPackEntityEvent::Steam {
+            id: if wait > 100.0 { steam_id } else { -1 },
+            origin,
+            direction: movedir,
+            count,
+            color: style,
+            speed: speed.trunc() as i32,
+            milliseconds: if wait > 100.0 { wait.trunc() as i32 } else { 0 },
+        },
+    );
 }
 
 /// Anger use (`angerUse`).

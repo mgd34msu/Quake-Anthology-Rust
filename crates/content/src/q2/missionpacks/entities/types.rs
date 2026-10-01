@@ -47,11 +47,11 @@ pub struct Q2MissionPackEntityHooks {
     /// Mover module.
     pub movers: Q2MoverModule,
     /// Teleport a player.
-    pub teleport_player: fn(ActorId, Vec3, Vec3),
+    pub teleport_player: fn(ActorId, &mut Q2GameServices, Vec3, Vec3),
     /// Anger a monster at a target.
     pub target_anger: fn(ActorId, ActorId, &mut Q2GameServices),
     /// Emit an entity event.
-    pub emit: fn(Q2MissionPackEntityEvent),
+    pub emit: fn(&Q2GameServices, Q2MissionPackEntityEvent),
 }
 
 /// Session entity hooks.

@@ -159,7 +159,7 @@ fn bound_module(game: &Q2GameServices) -> Q2RereleaseModule {
 }
 
 /// Rerelease pickup policy.
-fn rerelease_pickup_policy() -> Q2PickupPolicy {
+pub(crate) fn rerelease_pickup_policy() -> Q2PickupPolicy {
     Q2PickupPolicy {
         instanced_coop: Some(rerelease_instanced_coop),
         can_pickup: rerelease_can_pickup,
@@ -711,12 +711,12 @@ impl Q2RereleaseModule {
 }
 
 /// Instanced-coop policy.
-fn rerelease_instanced_coop(game: &mut Q2GameServices) -> bool {
+pub(crate) fn rerelease_instanced_coop(game: &mut Q2GameServices) -> bool {
     game.options.mode == Q2Mode::Coop && q2_uses_instanced_items(&game.rerelease.options)
 }
 
 /// Pickup policy: whether an item may be picked up (`canPickup`).
-fn rerelease_can_pickup(entity: ActorId, game: &mut Q2GameServices, player: ActorId) -> bool {
+pub(crate) fn rerelease_can_pickup(entity: ActorId, game: &mut Q2GameServices, player: ActorId) -> bool {
     let Some(state) = game.players.states.get(&player).cloned() else {
         return false;
     };
@@ -729,7 +729,7 @@ fn rerelease_can_pickup(entity: ActorId, game: &mut Q2GameServices, player: Acto
 }
 
 /// Pickup policy: before pickup (`beforePickup`).
-fn rerelease_before_pickup(entity: ActorId, game: &mut Q2GameServices, player: ActorId) -> bool {
+pub(crate) fn rerelease_before_pickup(entity: ActorId, game: &mut Q2GameServices, player: ActorId) -> bool {
     if !rerelease_can_pickup(entity.clone(), game, player) {
         return false;
     }
@@ -742,7 +742,7 @@ fn rerelease_before_pickup(entity: ActorId, game: &mut Q2GameServices, player: A
 }
 
 /// Pickup policy: before targets (`beforeTargets`).
-fn rerelease_before_targets(entity: ActorId, game: &mut Q2GameServices, player: ActorId, taken: bool) {
+pub(crate) fn rerelease_before_targets(entity: ActorId, game: &mut Q2GameServices, player: ActorId, taken: bool) {
     let Some(state) = game.players.states.get(&player).cloned() else {
         return;
     };
@@ -797,14 +797,14 @@ fn rerelease_before_targets(entity: ActorId, game: &mut Q2GameServices, player: 
 }
 
 /// Pickup policy: after pickup (`afterPickup`).
-fn rerelease_after_pickup(entity: ActorId, game: &mut Q2GameServices, _player: ActorId, _taken: bool) {
+pub(crate) fn rerelease_after_pickup(entity: ActorId, game: &mut Q2GameServices, _player: ActorId, _taken: bool) {
     if let Some(message) = game.rerelease.pickup_messages.remove(&entity) {
         game.require_entity_mut(&entity).message = message;
     }
 }
 
 /// Pickup policy: keep after pickup (`keepAfterPickup`).
-fn rerelease_keep_after_pickup(entity: ActorId, game: &mut Q2GameServices, _player: ActorId) -> bool {
+pub(crate) fn rerelease_keep_after_pickup(entity: ActorId, game: &mut Q2GameServices, _player: ActorId) -> bool {
     rerelease_instanced_coop(game) && game.require_entity(&entity).spawnflags & 0x20000 == 0
 }
 

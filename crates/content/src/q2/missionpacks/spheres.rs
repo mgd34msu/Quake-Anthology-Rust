@@ -36,9 +36,9 @@ pub struct Q2SphereHooks {
     /// Whether the hunter camera is enabled.
     pub hunter_camera: bool,
     /// Whether the match is in intermission.
-    pub intermission: fn() -> bool,
+    pub intermission: fn(&Q2GameServices) -> bool,
     /// Emit a player effect.
-    pub player_effect: fn(Q2MissionPackPlayerEffect),
+    pub player_effect: fn(&Q2GameServices, Q2MissionPackPlayerEffect),
 }
 
 /// Doppleganger sphere flag (`doppleFlag`).
@@ -68,12 +68,12 @@ pub fn sphere_callbacks() -> Q2CallbackDefinitions {
 }
 
 /// Disconnected intermission hook (never in intermission).
-fn disconnected_intermission() -> bool {
+fn disconnected_intermission(_game: &Q2GameServices) -> bool {
     false
 }
 
 /// Disconnected player-effect hook (drops the effect).
-fn disconnected_player_effect(_effect: Q2MissionPackPlayerEffect) {}
+fn disconnected_player_effect(_game: &Q2GameServices, _effect: Q2MissionPackPlayerEffect) {}
 
 /// Sphere hooks used before the session installs its own.
 pub fn disconnected_sphere_hooks() -> Q2SphereHooks {
@@ -262,12 +262,15 @@ fn sphere_expire(entity: ActorId, game: &mut Q2GameServices) {
             game.write_body(owner.clone(), &moved, true);
             game.set_motion_kind(owner.clone(), Q2MotionKind::Stationary);
             let body = game.body_of(owner.clone());
-            (mission_spheres(game).hooks.player_effect)(Q2MissionPackPlayerEffect::SphereCamera {
-                actor: owner,
-                sphere: None,
-                origin: body.origin,
-                angles: body.angles,
-            });
+            (mission_spheres(game).hooks.player_effect)(
+                game,
+                Q2MissionPackPlayerEffect::SphereCamera {
+                    actor: owner,
+                    sphere: None,
+                    origin: body.origin,
+                    angles: body.angles,
+                },
+            );
         }
     }
     explode(&entity, game, "explosion1");
@@ -659,12 +662,15 @@ fn hunter_pain(entity: ActorId, game: &mut Q2GameServices, reaction: PainReactio
     game.set_motion_kind(owner.clone(), Q2MotionKind::FlyMissile);
     game.show(owner.clone());
     game.set_solid(entity.clone(), Q2Solid::Box);
-    (mission_spheres(game).hooks.player_effect)(Q2MissionPackPlayerEffect::SphereCamera {
-        actor: owner,
-        sphere: Some(entity),
-        origin,
-        angles,
-    });
+    (mission_spheres(game).hooks.player_effect)(
+        game,
+        Q2MissionPackPlayerEffect::SphereCamera {
+            actor: owner,
+            sphere: Some(entity),
+            origin,
+            angles,
+        },
+    );
 }
 
 /// Defender think (`defenderThink`).
@@ -678,7 +684,7 @@ fn defender_think(entity: ActorId, game: &mut Q2GameServices) {
         game.remove_actor(entity);
         return;
     };
-    if (mission_spheres(game).hooks.intermission)()
+    if (mission_spheres(game).hooks.intermission)(game)
         || game
             .host
             .combat()
@@ -737,7 +743,7 @@ fn defender_think(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Hunter think (`hunterThink`).
 fn hunter_think(entity: ActorId, game: &mut Q2GameServices) {
-    if (mission_spheres(game).hooks.intermission)() {
+    if (mission_spheres(game).hooks.intermission)(game) {
         sphere_expire(entity, game);
         return;
     }
@@ -803,12 +809,15 @@ fn hunter_think(entity: ActorId, game: &mut Q2GameServices) {
         moved.bounds.max = Vec3::default();
         game.write_body(owner.clone(), &moved, true);
         game.set_motion_kind(owner.clone(), Q2MotionKind::FlyMissile);
-        (mission_spheres(game).hooks.player_effect)(Q2MissionPackPlayerEffect::SphereCamera {
-            actor: owner,
-            sphere: Some(entity.clone()),
-            origin: current.origin,
-            angles,
-        });
+        (mission_spheres(game).hooks.player_effect)(
+            game,
+            Q2MissionPackPlayerEffect::SphereCamera {
+                actor: owner,
+                sphere: Some(entity.clone()),
+                origin: current.origin,
+                angles,
+            },
+        );
     }
     if game.host.actors().is_live(&entity) {
         game.schedule(entity, 0.1, hunter_think as Q2Think);
@@ -817,7 +826,7 @@ fn hunter_think(entity: ActorId, game: &mut Q2GameServices) {
 
 /// Vengeance think (`vengeanceThink`).
 fn vengeance_think(entity: ActorId, game: &mut Q2GameServices) {
-    if (mission_spheres(game).hooks.intermission)() {
+    if (mission_spheres(game).hooks.intermission)(game) {
         sphere_expire(entity, game);
         return;
     }

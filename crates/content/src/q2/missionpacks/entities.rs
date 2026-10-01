@@ -109,11 +109,17 @@ mod tests {
 
     fn path_hook(_corner: ActorId, _game: &mut Q2GameServices, _other: ActorId) {}
 
-    fn teleport(_actor: ActorId, _origin: qa_core::math::Vec3, _angles: qa_core::math::Vec3) {}
+    fn teleport(
+        _actor: ActorId,
+        _game: &mut Q2GameServices,
+        _origin: qa_core::math::Vec3,
+        _angles: qa_core::math::Vec3,
+    ) {
+    }
 
     fn anger(_actor: ActorId, _target: ActorId, _game: &mut Q2GameServices) {}
 
-    fn emit(_event: Q2MissionPackEntityEvent) {}
+    fn emit(_game: &Q2GameServices, _event: Q2MissionPackEntityEvent) {}
 
     fn hooks() -> Q2MissionPackEntityHooks {
         Q2MissionPackEntityHooks {

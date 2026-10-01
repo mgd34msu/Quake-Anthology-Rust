@@ -7,10 +7,12 @@ use crate::q2::foundation::host::Q2GameServices;
 
 pub mod match_;
 pub mod match_selection;
+pub mod product;
 pub mod types;
 
 pub use self::match_::Q2ProductMatch;
 pub use self::match_selection::source_q2_match_selection;
+pub use self::product::{create_q2_product_runtime, Q2ProductExpansion, Q2ProductRerelease, Q2ProductRuntime};
 pub use self::types::{
     set_q2_info_value, Q2ClassicProgram, Q2CompositionCommon, Q2CompositionEntityHooks, Q2CompositionEvent,
     Q2CompositionOptions, Q2CompositionServices, Q2CvarSource, Q2DeathmatchFlagsHooks, Q2ForeignPowerups,
@@ -24,6 +26,8 @@ pub struct CompositionRuntime {
     pub services: Option<Q2CompositionServices>,
     /// Active rule flags.
     pub active_rules: i32,
+    /// Assembled product runtime.
+    pub product: Option<Q2ProductRuntime>,
 }
 
 impl std::fmt::Debug for CompositionRuntime {
@@ -31,6 +35,7 @@ impl std::fmt::Debug for CompositionRuntime {
         f.debug_struct("CompositionRuntime")
             .field("services", &self.services)
             .field("active_rules", &self.active_rules)
+            .field("product", &self.product)
             .finish()
     }
 }
@@ -46,4 +51,12 @@ pub fn composition_services(game: &Q2GameServices) -> &Q2CompositionServices {
 /// Emit a composition event to the session.
 pub fn composition_emit(game: &Q2GameServices, event: Q2CompositionEvent) {
     (composition_services(game).emit)(event);
+}
+
+/// Read the assembled product runtime from the arena.
+pub fn product_runtime(game: &Q2GameServices) -> &Q2ProductRuntime {
+    game.composition
+        .product
+        .as_ref()
+        .expect("Q2 product runtime is not registered")
 }

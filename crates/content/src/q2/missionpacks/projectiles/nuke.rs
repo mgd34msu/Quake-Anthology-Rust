@@ -131,10 +131,13 @@ impl Q2MissionPackProjectiles {
                         game.require_entity_mut(&target).flags |= 0x10000;
                     }
                 }
-                (self.hooks.player_effect)(Q2MissionPackPlayerEffect::NukeBlind {
-                    actor: actor.clone(),
-                    until: game.host.now() + 2.0,
-                });
+                (self.hooks.player_effect)(
+                    game,
+                    Q2MissionPackPlayerEffect::NukeBlind {
+                        actor: actor.clone(),
+                        until: game.host.now() + 2.0,
+                    },
+                );
                 blinded.push(actor.clone());
             }
             game.damage(
@@ -173,10 +176,13 @@ impl Q2MissionPackProjectiles {
             } else {
                 1.0
             };
-            (self.hooks.player_effect)(Q2MissionPackPlayerEffect::NukeBlind {
-                actor,
-                until: game.host.now() + duration,
-            });
+            (self.hooks.player_effect)(
+                game,
+                Q2MissionPackPlayerEffect::NukeBlind {
+                    actor,
+                    until: game.host.now() + duration,
+                },
+            );
         }
         if game.require_entity(&entity).damage > 400.0 {
             game.sound(&entity, "items/damage3.wav", 3, 1.0, 1.0);

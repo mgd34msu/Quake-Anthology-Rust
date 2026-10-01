@@ -1180,10 +1180,13 @@ fn tracker_pain(entity: ActorId, game: &mut Q2GameServices) {
     }
     if game.host.is_player(&enemy) {
         let hooks = super::mission_hooks(game);
-        (hooks.player_effect)(Q2MissionPackPlayerEffect::TrackerPain {
-            actor: enemy,
-            until: game.host.now() + interval,
-        });
+        (hooks.player_effect)(
+            game,
+            Q2MissionPackPlayerEffect::TrackerPain {
+                actor: enemy,
+                until: game.host.now() + interval,
+            },
+        );
     } else if let Some(target) = target {
         game.require_entity_mut(&target).effects |= 0x80000000u32 as i64;
         game.show(target);

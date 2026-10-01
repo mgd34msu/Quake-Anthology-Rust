@@ -308,7 +308,7 @@ fn teleporter_touch(actor: ActorId, game: &mut Q2GameServices, contact: TouchCon
     moved.velocity = zero;
     moved.angles = zero;
     game.host.bodies().write(&owned, &moved);
-    (hooks(game).teleport_player)(other.clone(), target_body.origin, target_body.angles);
+    (hooks(game).teleport_player)(other.clone(), game, target_body.origin, target_body.angles);
     let owner = game.require_entity(&actor).owner.clone();
     let source_origin = owner
         .as_ref()

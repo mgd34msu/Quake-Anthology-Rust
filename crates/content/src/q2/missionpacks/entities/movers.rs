@@ -754,11 +754,14 @@ fn force_wall_think(entity: ActorId, game: &mut Q2GameServices) {
     if game.require_entity(&entity).wait == 0.0 {
         let record = game.require_entity(&entity);
         let (pos1, pos2, style) = (record.pos1, record.pos2, record.style);
-        (mission_entity_hooks(game).emit)(Q2MissionPackEntityEvent::ForceWall {
-            start: pos1,
-            end: pos2,
-            color: style,
-        });
+        (mission_entity_hooks(game).emit)(
+            game,
+            Q2MissionPackEntityEvent::ForceWall {
+                start: pos1,
+                end: pos2,
+                color: style,
+            },
+        );
     }
     game.schedule(entity, 0.1, force_wall_think as Q2Think);
 }

@@ -8,6 +8,7 @@ use qa_core::math::{add3, length3, scale3, sub3, Vec3};
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode, Q2SpawnFn, SpawnModule};
 
 /// Rogue player spawns (`Q2RoguePlayerSpawns`).
+#[derive(Debug, Clone, Copy)]
 pub struct Q2RoguePlayerSpawns;
 
 impl Q2RoguePlayerSpawns {

@@ -279,7 +279,7 @@ pub type Q2PlayerCommandHook = fn(ActorId, &mut Q2GameServices, &str, &[String])
 #[derive(Debug, Clone, Copy)]
 pub struct Q2PlayerHooks {
     /// Quad-fire drop expiry.
-    pub quad_fire_drop_until: Option<fn(ActorId) -> f64>,
+    pub quad_fire_drop_until: Option<fn(ActorId, &Q2GameServices) -> f64>,
     /// Grant the selected arsenal.
     pub grant_selected_arsenal: Option<fn(ActorId, Q2ArsenalCategory) -> bool>,
     /// Give the selected item.
@@ -295,7 +295,7 @@ pub struct Q2PlayerHooks {
     /// Emit noise.
     pub noise: fn(ActorId, Vec3),
     /// Read weapon input.
-    pub weapon_input: fn(ActorId) -> Q2WeaponInput,
+    pub weapon_input: fn(ActorId, &mut Q2GameServices) -> Q2WeaponInput,
     /// Whether an address is banned.
     pub banned: fn(&str) -> bool,
     /// Score a death.

@@ -218,7 +218,7 @@ pub enum Q2PowerArmorKind {
 #[derive(Debug, Clone, Copy)]
 pub struct Q2ItemHooks {
     /// Weapon picked.
-    pub weapon_picked: fn(ActorId, ItemId, bool),
+    pub weapon_picked: fn(ActorId, &mut Q2GameServices, ItemId, bool),
     /// Silencer charges; other powerups use expiry seconds.
     pub silencer: fn(ActorId, f64),
     /// Power armor state.
@@ -1223,7 +1223,7 @@ fn grant_item(this: ActorId, game: &mut Q2GameServices, player: &OwnedActor, ite
                     add_player_power_cells(game, player.id(), given);
                 }
                 if *weapon_ammo && old == 0.0 {
-                    (item_hooks(game).weapon_picked)(player.id().clone(), item_id(item), true);
+                    (item_hooks(game).weapon_picked)(player.id().clone(), game, item_id(item), true);
                 }
             }
         }
@@ -1266,7 +1266,7 @@ fn grant_item(this: ActorId, game: &mut Q2GameServices, player: &OwnedActor, ite
                         add_player_power_cells(game, player.id(), given);
                     }
                 }
-                (item_hooks(game).weapon_picked)(player.id().clone(), id, previous == 0.0);
+                (item_hooks(game).weapon_picked)(player.id().clone(), game, id, previous == 0.0);
             } else {
                 let admission = game.items.pickup_admission.as_ref().expect("weapon admission");
                 if !admission.weapon(

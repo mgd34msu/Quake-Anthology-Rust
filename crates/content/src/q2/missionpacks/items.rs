@@ -57,11 +57,11 @@ pub struct Q2MissionPackItemsCheckpoint {
 #[derive(Debug, Clone, Copy)]
 pub struct Q2MissionPackItemHooks {
     /// Emit a player effect.
-    pub player_effect: fn(Q2MissionPackPlayerEffect),
+    pub player_effect: fn(&Q2GameServices, Q2MissionPackPlayerEffect),
 }
 
 /// Disconnected player-effect hook (drops the effect).
-fn disconnected_player_effect(_effect: Q2MissionPackPlayerEffect) {}
+fn disconnected_player_effect(_game: &Q2GameServices, _effect: Q2MissionPackPlayerEffect) {}
 
 /// Item hooks used before the session installs its own.
 pub fn disconnected_item_hooks() -> Q2MissionPackItemHooks {
@@ -617,7 +617,7 @@ impl Q2MissionPackItems {
 }
 
 /// Spawn entry for the module table.
-fn mission_item_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
+pub(crate) fn mission_item_spawn(entity: ActorId, game: &mut Q2GameServices) -> bool {
     let pack = game
         .mission_packs
         .items_pack
@@ -771,10 +771,13 @@ fn power_use(
         game.sound(player.id(), sound, 3, 1.0, 1.0);
     }
     if field == PowerField::Ir {
-        (game.mission_packs.item_hooks.player_effect)(Q2MissionPackPlayerEffect::Ir {
-            actor: player.id().clone(),
-            until: powers.ir_until,
-        });
+        (game.mission_packs.item_hooks.player_effect)(
+            game,
+            Q2MissionPackPlayerEffect::Ir {
+                actor: player.id().clone(),
+                until: powers.ir_until,
+            },
+        );
     }
     true
 }

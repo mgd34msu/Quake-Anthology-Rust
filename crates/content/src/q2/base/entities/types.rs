@@ -28,7 +28,7 @@ pub type Q2FireBlasterHook = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f
 pub type Q2FireRocketHook = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId;
 
 /// Teleport hook (`teleportPlayer`).
-pub type Q2TeleportPlayerHook = fn(ActorId, Vec3, Vec3);
+pub type Q2TeleportPlayerHook = fn(ActorId, &mut Q2GameServices, Vec3, Vec3);
 
 /// Push hook (`playerPush`).
 pub type Q2PlayerPushHook = fn(ActorId, Vec3);

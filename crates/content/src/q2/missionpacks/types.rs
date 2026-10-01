@@ -137,9 +137,9 @@ pub struct Q2MissionPackProjectileHooks {
     /// Strong mines.
     pub strong_mines: bool,
     /// Gravity override.
-    pub gravity: Option<fn() -> f64>,
+    pub gravity: Option<fn(&Q2GameServices) -> f64>,
     /// Resolve a monster context.
     pub monster: for<'a> fn(ActorId, &'a mut Q2GameServices) -> Option<MonsterContext<'a>>,
     /// Emit a player effect.
-    pub player_effect: fn(Q2MissionPackPlayerEffect),
+    pub player_effect: fn(&Q2GameServices, Q2MissionPackPlayerEffect),
 }

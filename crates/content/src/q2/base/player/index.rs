@@ -1687,7 +1687,7 @@ impl Q2Players {
         let quad = player_items(game).player_powerups(game, &actor).quad_until;
         let quad_fire = player_hooks(game)
             .quad_fire_drop_until
-            .map(|until| until(actor.clone()))
+            .map(|until| until(actor.clone(), game))
             .unwrap_or(0.0);
         let drop_quad = game.options.deathmatch_flags & 16384 != 0 && quad > now + 1.0;
         let drop_quad_fire = quad_fire > now + 1.0;
@@ -1829,7 +1829,7 @@ impl Q2Players {
             latched_buttons: state.latched_buttons,
             weapon_thunk: state.weapon_thunk,
         };
-        let input = (player_hooks(game).weapon_input)(actor.clone());
+        let input = (player_hooks(game).weapon_input)(actor.clone(), game);
         let owned = game.owned_of(actor.clone());
         early_q2_weapon_turn(&mut turn, &mut |latched| {
             tick_player_weapon(
@@ -1872,7 +1872,7 @@ impl Q2Players {
                 latched_buttons: state.latched_buttons,
                 weapon_thunk: state.weapon_thunk,
             };
-            let input = (player_hooks(game).weapon_input)(actor.clone());
+            let input = (player_hooks(game).weapon_input)(actor.clone(), game);
             let owned = game.owned_of(actor.clone());
             begin_q2_weapon_turn(&mut turn, allowed, &mut |latched| {
                 tick_player_weapon(

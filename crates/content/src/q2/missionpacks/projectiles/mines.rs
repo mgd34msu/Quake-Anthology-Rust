@@ -219,7 +219,7 @@ impl Q2MissionPackProjectiles {
         let gravity = if game.options.edition == Q2Edition::Rerelease && classname != "nuke" {
             self.hooks
                 .gravity
-                .map(|gravity| gravity())
+                .map(|gravity| gravity(game))
                 .or_else(|| game.weapons.inputs.get(owner).map(|input| input.gravity))
                 .unwrap_or(800.0)
                 / 800.0
