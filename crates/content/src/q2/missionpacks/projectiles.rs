@@ -1,4 +1,8 @@
-//! Mission-pack projectiles (`src/content/q2/missionpacks/projectiles`).
+//! Mission-pack projectiles barrel (`src/content/q2/missionpacks/projectiles/index.ts`).
+//!
+//! Pure re-export barrel: the merged projectile driver below is the Rust
+//! home of the donor trap.ts class, and the hooks type is re-exported
+//! from the mission-pack types module.
 
 pub mod bolts;
 pub mod common;
@@ -8,7 +12,8 @@ pub mod trap;
 
 use qa_core::identity::ActorId;
 
-use super::types::{Q2MissionPackPlayerEffect, Q2MissionPackProjectileHooks};
+use super::types::Q2MissionPackPlayerEffect;
+pub use super::types::Q2MissionPackProjectileHooks;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::Q2GameServices;
 use crate::q2::foundation::monsters::types::MonsterContext;
@@ -26,10 +31,7 @@ pub struct Q2MissionPackProjectiles {
 }
 
 /// Disconnected monster hook (resolves nothing).
-fn disconnected_monster(
-    _actor: ActorId,
-    _game: &mut Q2GameServices,
-) -> Option<MonsterContext<'_>> {
+fn disconnected_monster(_actor: ActorId, _game: &mut Q2GameServices) -> Option<MonsterContext<'_>> {
     None
 }
 
@@ -73,4 +75,33 @@ pub fn mission_projectile_callbacks() -> Q2CallbackDefinitions {
         callbacks.blocked.extend(extra.blocked);
     }
     callbacks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnected_hooks_drop_everything() {
+        let hooks: Q2MissionPackProjectileHooks = disconnected_projectile_hooks();
+        assert!(!hooks.strong_mines);
+        assert!(hooks.gravity.is_none());
+    }
+
+    #[test]
+    fn merged_callbacks_cover_all_projectile_families() {
+        let callbacks = mission_projectile_callbacks();
+        assert!(callbacks.think.contains_key("heat_think"));
+        assert!(callbacks.think.contains_key("Prox_Think"));
+        assert!(callbacks.touch.contains_key("ionripper_touch"));
+        assert!(callbacks.touch.contains_key("prox_land"));
+    }
+
+    #[test]
+    fn projectile_driver_carries_session_hooks() {
+        let driver = Q2MissionPackProjectiles {
+            hooks: disconnected_projectile_hooks(),
+        };
+        assert!(!driver.hooks.strong_mines);
+    }
 }
