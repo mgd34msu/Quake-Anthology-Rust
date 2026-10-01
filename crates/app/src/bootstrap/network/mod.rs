@@ -1,9 +1,12 @@
 //! Bootstrap network helpers (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/*`).
 
 pub mod client_download_policy;
+pub mod gtv_source;
 pub mod q1;
 pub mod q1_client;
 pub mod q1_types;
+pub mod q2_client_receiver;
+pub mod q2_demo;
 pub mod q2_downloads;
 pub mod q2_effects;
 pub mod q2_layout;
