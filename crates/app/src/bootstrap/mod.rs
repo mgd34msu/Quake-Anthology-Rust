@@ -7,6 +7,9 @@
 
 pub mod audio;
 pub mod audio_settings;
+pub mod base_arena_catalog;
+pub mod base_arena_postgame;
+pub mod base_arena_progression;
 pub mod component_client_save;
 pub mod controller_settings;
 pub mod demo_library;
