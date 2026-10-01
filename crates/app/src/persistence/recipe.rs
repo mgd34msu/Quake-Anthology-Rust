@@ -14,8 +14,8 @@ use qa_guest::checkpoint::{
 };
 use qa_world::save::shared::{
     identity_parts, read_character, read_clock, read_content_id, read_digest, read_numeric, read_ordering,
-    validate_content_id, write_character, write_clock, write_numeric, write_ordering, CharacterSelection, ProviderRef,
-    SavedNumericProfile,
+    valid_identity_part, validate_content_id, write_character, write_clock, write_numeric, write_ordering,
+    CharacterSelection, ProviderRef, SavedNumericProfile,
 };
 use qa_world::save::value::{arr, int, namespaced, obj, str, SaveJson, SaveReader};
 use qa_world::scheduler::FrameOrdering;
@@ -458,6 +458,189 @@ pub fn write_resource(resource: &ResolvedResourceReference) -> SaveJson {
     ])
 }
 
+/// Build a `mount:namespace:name` id (donor `createMountId`).
+pub fn create_mount_id(namespace: &str, name: &str) -> Result<String, PersistenceError> {
+    if !valid_identity_part(namespace) || !valid_identity_part(name) {
+        return Err(PersistenceError::BadSave(format!(
+            "expected a mount identity: mount:{namespace}:{name}"
+        )));
+    }
+    Ok(format!("mount:{namespace}:{name}"))
+}
+
+/// Build a `mount-plan:namespace:revision` id (donor `createMountPlanId`).
+pub fn create_mount_plan_id(namespace: &str, revision: &str) -> Result<String, PersistenceError> {
+    if !valid_identity_part(namespace) || !valid_identity_part(revision) {
+        return Err(PersistenceError::BadSave(format!(
+            "expected a mount-plan identity: mount-plan:{namespace}:{revision}"
+        )));
+    }
+    Ok(format!("mount-plan:{namespace}:{revision}"))
+}
+
+/// Borrow a mount identity.
+#[must_use]
+pub fn mount_identity(mount: &ContentMount) -> &MountIdentity {
+    match mount {
+        ContentMount::Archive { identity, .. } | ContentMount::Loose { identity, .. } => identity,
+    }
+}
+
+/// Whether a mount is archive-backed.
+#[must_use]
+pub fn mount_is_archive(mount: &ContentMount) -> bool {
+    matches!(mount, ContentMount::Archive { .. })
+}
+
+/// Archive details: format, archive path, archive digest.
+#[must_use]
+pub fn mount_archive_details(mount: &ContentMount) -> Option<(&str, &str, &str)> {
+    match mount {
+        ContentMount::Archive {
+            format,
+            archive_path,
+            archive_digest,
+            ..
+        } => Some((format, archive_path, archive_digest)),
+        ContentMount::Loose { .. } => None,
+    }
+}
+
+/// Clone a mount with a replacement identity and machine-independent path.
+///
+/// Archive mounts take the path as their archive path, loose mounts as
+/// their root path (donor `createUnifiedComposition` mount normalization).
+#[must_use]
+pub fn mount_relocated(mount: &ContentMount, identity: MountIdentity, path: String) -> ContentMount {
+    match mount {
+        ContentMount::Archive {
+            format, archive_digest, ..
+        } => ContentMount::Archive {
+            identity,
+            format: format.clone(),
+            archive_path: path,
+            archive_digest: archive_digest.clone(),
+        },
+        ContentMount::Loose { .. } => ContentMount::Loose {
+            identity,
+            root_path: path,
+        },
+    }
+}
+
+/// Borrow a provenance mount.
+#[must_use]
+pub fn provenance_mount(provenance: &ResourceProvenance) -> &ContentMount {
+    match provenance {
+        ResourceProvenance::Archive { mount, .. } | ResourceProvenance::Loose { mount, .. } => mount,
+    }
+}
+
+/// Borrow a resolution plan.
+#[must_use]
+pub fn resolution_plan(resolution: &ResourceResolution) -> &str {
+    match resolution {
+        ResourceResolution::DefaultOrder { plan, .. }
+        | ResourceResolution::PrefixOrder { plan, .. }
+        | ResourceResolution::Link { plan, .. } => plan,
+    }
+}
+
+/// Precedence rank (links carry no rank).
+#[must_use]
+pub fn resolution_rank(resolution: &ResourceResolution) -> u64 {
+    match resolution {
+        ResourceResolution::DefaultOrder { rank, .. } | ResourceResolution::PrefixOrder { rank, .. } => *rank,
+        ResourceResolution::Link { .. } => 0,
+    }
+}
+
+/// Whether a resolution won through a link.
+#[must_use]
+pub fn resolution_is_link(resolution: &ResourceResolution) -> bool {
+    matches!(resolution, ResourceResolution::Link { .. })
+}
+
+/// Rebind a resolved reference onto a replacement mount and plan.
+///
+/// Mirrors the unified composition's `resourceWithMount`: path shapes are
+/// validated, the provenance mount swaps only across matching mount kinds,
+/// link paths are validated, the resolution plan swaps, and the resource id
+/// is recomputed.
+pub fn rebind_resource_reference(
+    resource: &ResolvedResourceReference,
+    mount: ContentMount,
+    plan: String,
+) -> Result<ResolvedResourceReference, PersistenceError> {
+    resource_path(&resource.requested_path)?;
+    let member_path = match &resource.provenance {
+        ResourceProvenance::Archive { member_path, .. } | ResourceProvenance::Loose { member_path, .. } => member_path,
+    };
+    resource_path(member_path)?;
+    let kind_matches = matches!(
+        (&resource.provenance, &mount),
+        (ResourceProvenance::Archive { .. }, ContentMount::Archive { .. })
+            | (ResourceProvenance::Loose { .. }, ContentMount::Loose { .. })
+    );
+    if !kind_matches {
+        return Err(PersistenceError::BadSave(
+            "Unified resource mount kind differs".to_string(),
+        ));
+    }
+    let provenance = match &resource.provenance {
+        ResourceProvenance::Archive {
+            member_path,
+            member_index,
+            ..
+        } => ResourceProvenance::Archive {
+            mount: Box::new(mount),
+            member_path: member_path.clone(),
+            member_index: *member_index,
+        },
+        ResourceProvenance::Loose { member_path, .. } => ResourceProvenance::Loose {
+            mount: Box::new(mount),
+            member_path: member_path.clone(),
+        },
+    };
+    let resolution = match &resource.resolution {
+        ResourceResolution::DefaultOrder { rank, .. } => ResourceResolution::DefaultOrder { plan, rank: *rank },
+        ResourceResolution::PrefixOrder { prefix, rank, .. } => ResourceResolution::PrefixOrder {
+            plan,
+            prefix: prefix.clone(),
+            rank: *rank,
+        },
+        ResourceResolution::Link {
+            source_prefix,
+            target_path,
+            ..
+        } => {
+            let source = source_prefix.strip_suffix('/').unwrap_or(source_prefix);
+            resource_path(source)?;
+            resource_path(target_path)?;
+            ResourceResolution::Link {
+                plan,
+                source_prefix: source_prefix.clone(),
+                target_path: target_path.clone(),
+            }
+        }
+    };
+    let id = create_resource_id(
+        &resource.requested_path,
+        &provenance,
+        &resource.digest,
+        resource.byte_length,
+        &resolution,
+    )?;
+    Ok(ResolvedResourceReference {
+        id,
+        requested_path: resource.requested_path.clone(),
+        provenance,
+        digest: resource.digest.clone(),
+        byte_length: resource.byte_length,
+        resolution,
+    })
+}
+
 /// Prefix mount order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefixMountOrder {
@@ -789,6 +972,36 @@ pub enum ExecutionImplementation {
         /// ABI profile.
         profile: NativeCallAbi,
     },
+}
+
+/// Borrow an execution module artifact, if it has one.
+#[must_use]
+pub fn module_artifact(module: &ResolvedExecutionModule) -> Option<&ResolvedResourceReference> {
+    match &module.implementation {
+        ExecutionImplementation::Typescript { .. } => None,
+        ExecutionImplementation::Quakec { artifact }
+        | ExecutionImplementation::Qvm { artifact }
+        | ExecutionImplementation::Native { artifact, .. } => Some(artifact),
+    }
+}
+
+/// Rebind an execution module's artifact, leaving TypeScript modules unchanged.
+///
+/// Mirrors the unified composition's recipe rebind over execution modules.
+pub fn map_module_artifact<E>(
+    module: &ResolvedExecutionModule,
+    rebind: &mut impl FnMut(&ResolvedResourceReference) -> Result<ResolvedResourceReference, E>,
+) -> Result<ResolvedExecutionModule, E> {
+    let mut mapped = module.clone();
+    match &mut mapped.implementation {
+        ExecutionImplementation::Typescript { .. } => {}
+        ExecutionImplementation::Quakec { artifact }
+        | ExecutionImplementation::Qvm { artifact }
+        | ExecutionImplementation::Native { artifact, .. } => {
+            *artifact = rebind(artifact)?;
+        }
+    }
+    Ok(mapped)
 }
 
 fn api_kind(api: &GameApi) -> &'static str {
@@ -1430,6 +1643,12 @@ pub fn read_recipe(
     })
 }
 
+/// Test fixture recipe shared with network composition tests.
+#[cfg(test)]
+pub(crate) fn fixture_recipe() -> ExecutableRecipe {
+    tests::fixture_recipe()
+}
+
 /// Write an executable recipe.
 #[must_use]
 pub fn write_recipe(recipe: &ExecutableRecipe) -> SaveJson {
@@ -1696,5 +1915,99 @@ mod tests {
         }];
         // Overlapping QVM layout fields fail.
         assert!(read_recipe(SaveReader::new(&write_recipe(&bad)), &|_| None).is_err());
+    }
+
+    #[test]
+    fn unified_ids_validate_parts() {
+        assert_eq!(create_mount_id("unified", "0").unwrap(), "mount:unified:0");
+        assert_eq!(create_mount_plan_id("unified", "0").unwrap(), "mount-plan:unified:0");
+        assert!(create_mount_id("", "0").is_err());
+        assert!(create_mount_id("unified", "a/b").is_err());
+        assert!(create_mount_plan_id("unified", "..").is_err());
+    }
+
+    #[test]
+    fn rebind_swaps_mount_and_plan() {
+        let original = resource("maps/q3dm1.bsp");
+        let fresh = ContentMount::Loose {
+            identity: MountIdentity {
+                id: "mount:unified:0".to_string(),
+                content: "q3:classic:base:1".to_string(),
+                generation: 0,
+            },
+            root_path: "unified/0".to_string(),
+        };
+        let rebound = rebind_resource_reference(&original, fresh, "mount-plan:unified:0".to_string()).unwrap();
+        assert_eq!(resolution_plan(&rebound.resolution), "mount-plan:unified:0");
+        assert_eq!(resolution_rank(&rebound.resolution), 0);
+        assert!(!resolution_is_link(&rebound.resolution));
+        assert_ne!(rebound.id, original.id);
+        assert!(rebound.id.starts_with("resource:q3:classic:base:1:mount:unified:0:0:"));
+        assert_eq!(
+            mount_identity(provenance_mount(&rebound.provenance)).id,
+            "mount:unified:0"
+        );
+    }
+
+    #[test]
+    fn rebind_rejects_kind_mismatch() {
+        let original = resource("maps/q3dm1.bsp");
+        let archive = ContentMount::Archive {
+            identity: MountIdentity {
+                id: "mount:unified:0".to_string(),
+                content: "q3:classic:base:1".to_string(),
+                generation: 0,
+            },
+            format: "pak".to_string(),
+            archive_path: "unified/0.pak".to_string(),
+            archive_digest: format!("sha256:{}", "4".repeat(64)),
+        };
+        assert!(rebind_resource_reference(&original, archive, "mount-plan:unified:0".to_string()).is_err());
+    }
+
+    #[test]
+    fn module_artifact_mapping_skips_typescript() {
+        let typescript = ResolvedExecutionModule {
+            owner: provider_ref("q3:mod"),
+            role: "game".to_string(),
+            api: GameApi::Q1Netquake,
+            implementation: ExecutionImplementation::Typescript {
+                implementation: "mod.js".to_string(),
+            },
+        };
+        assert!(module_artifact(&typescript).is_none());
+        let mut calls = 0;
+        let mapped = map_module_artifact(&typescript, &mut |_| -> Result<_, PersistenceError> {
+            calls += 1;
+            unreachable!();
+        })
+        .unwrap();
+        assert_eq!(calls, 0);
+        assert_eq!(mapped, typescript);
+        let quakec = ResolvedExecutionModule {
+            owner: provider_ref("q3:mod"),
+            role: "game".to_string(),
+            api: GameApi::Q1Netquake,
+            implementation: ExecutionImplementation::Quakec {
+                artifact: resource("progs.dat"),
+            },
+        };
+        let mapped = map_module_artifact(&quakec, &mut |artifact| {
+            rebind_resource_reference(
+                artifact,
+                ContentMount::Loose {
+                    identity: MountIdentity {
+                        id: "mount:unified:0".to_string(),
+                        content: "q3:classic:base:1".to_string(),
+                        generation: 0,
+                    },
+                    root_path: "unified/0".to_string(),
+                },
+                "mount-plan:unified:0".to_string(),
+            )
+        })
+        .unwrap();
+        let artifact = module_artifact(&mapped).unwrap();
+        assert_eq!(resolution_plan(&artifact.resolution), "mount-plan:unified:0");
     }
 }

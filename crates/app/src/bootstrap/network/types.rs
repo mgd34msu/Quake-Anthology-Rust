@@ -183,6 +183,20 @@ impl WeaponAmmoStatus {
             low,
         }
     }
+
+    /// Borrow metered ammunition parts, if metered.
+    #[must_use]
+    pub fn finite_parts(&self) -> Option<(&str, f64, bool, bool)> {
+        match self {
+            Self::Finite {
+                item,
+                count,
+                has_ammo_to_start,
+                low,
+            } => Some((item, *count, *has_ammo_to_start, *low)),
+            Self::Unmetered => None,
+        }
+    }
 }
 
 /// Weapon status block (`PlayerUi['weaponStatus']`).

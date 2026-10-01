@@ -67,6 +67,7 @@ dependencies = [
 name = "qa-app"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "qa-bots",
  "qa-client",
  "qa-compat",

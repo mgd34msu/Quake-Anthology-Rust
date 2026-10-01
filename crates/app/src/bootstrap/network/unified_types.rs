@@ -14,7 +14,7 @@
 //! `finite()` stay `f64`; vectors reuse the `f32` [`qa_core::math`] types
 //! with the same `as` casts as [`qa_world::save::shared`].
 
-use qa_content::contract::ResolvedResourceReference;
+use crate::persistence::recipe::ResolvedResourceReference;
 use qa_core::identity::{ActorId, ClientId, SeatId, SessionId};
 use qa_core::math::{Bounds, Vec3, Vec4};
 use qa_core::time::{FrameContext, SourceTime};
@@ -347,8 +347,8 @@ pub enum UnifiedSceneLightStyle {
 /// Scene snapshot (donor `SceneSnapshot`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedSceneSnapshot {
-    /// Session handle.
-    pub session: SessionId,
+    /// Session name (`SessionId` has no public constructor outside its crate).
+    pub session: String,
     /// Scene time.
     pub time: SourceTime,
     /// Negotiated world.
@@ -368,8 +368,8 @@ pub struct UnifiedSceneSnapshot {
 /// World snapshot (donor `Snapshot`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedSnapshot {
-    /// Session handle.
-    pub session: SessionId,
+    /// Session name (`SessionId` has no public constructor outside its crate).
+    pub session: String,
     /// Frame context.
     pub frame: FrameContext,
     /// Live actors.

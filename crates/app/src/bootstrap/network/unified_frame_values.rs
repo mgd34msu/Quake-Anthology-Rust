@@ -21,7 +21,7 @@ use qa_content::paths::normalize_resource_path;
 use qa_core::identity::{ActorId, ProviderId};
 use qa_core::math::{Axis, Vec3, Vec4};
 use qa_world::save::shared::read_content_id;
-use qa_world::save::value::{boolean, int, namespaced, num, obj, str as json_str, SaveJson, SaveReader};
+use qa_world::save::value::{arr, boolean, int, namespaced, num, obj, str as json_str, SaveJson, SaveReader};
 use qa_world::WorldError;
 
 use super::types::{
@@ -786,6 +786,593 @@ pub fn write_native_camera_view(view: &NativeModCameraView) -> SaveJson {
         ]),
     ));
     SaveJson::Object(members)
+}
+
+/// Write a provider reference for the wire (mirrors the local provider read).
+#[must_use]
+pub fn write_provider(value: &ProviderReference) -> SaveJson {
+    obj(vec![
+        (
+            "provider",
+            json_str(&format!("{}:{}", value.provider.namespace, value.provider.name)),
+        ),
+        ("content", json_str(value.content.as_str())),
+    ])
+}
+
+/// Write regular armor for the wire (canonical nested layout).
+#[must_use]
+pub fn write_regular_armor(value: &qa_content::contract::RegularArmorState) -> SaveJson {
+    use qa_content::contract::RegularArmorState as Regular;
+    match value {
+        Regular::None => obj(vec![("kind", json_str("none"))]),
+        Regular::Source { points, item } => obj(vec![
+            ("kind", json_str("source")),
+            ("points", num(*points)),
+            ("item", item.as_ref().map_or(SaveJson::Null, |item| json_str(item))),
+        ]),
+        Regular::Q1 {
+            points,
+            absorption,
+            item,
+        } => obj(vec![
+            ("kind", json_str("q1")),
+            ("points", num(*points)),
+            ("absorption", num(*absorption)),
+            ("item", json_str(item)),
+        ]),
+        Regular::Q3 { points, protection } => obj(vec![
+            ("kind", json_str("q3")),
+            ("points", num(*points)),
+            ("protection", num(*protection)),
+        ]),
+        Regular::Q2 {
+            points,
+            normal_protection,
+            energy_protection,
+            item,
+        } => obj(vec![
+            ("kind", json_str("q2")),
+            ("points", num(*points)),
+            ("normalProtection", num(*normal_protection)),
+            ("energyProtection", num(*energy_protection)),
+            ("item", json_str(item)),
+        ]),
+    }
+}
+
+/// Write powered protection for the wire.
+#[must_use]
+pub fn write_powered_protection(value: &qa_content::contract::PoweredProtectionState) -> SaveJson {
+    use qa_content::contract::PoweredProtectionState as Powered;
+    match value {
+        Powered::None => obj(vec![("kind", json_str("none"))]),
+        Powered::Screen { cells } => obj(vec![("kind", json_str("screen")), ("cells", num(*cells))]),
+        Powered::Shield { cells } => obj(vec![("kind", json_str("shield")), ("cells", num(*cells))]),
+    }
+}
+
+/// Write armor for the wire.
+#[must_use]
+pub fn write_contract_armor(value: &qa_content::contract::ArmorState) -> SaveJson {
+    obj(vec![
+        ("regular", write_regular_armor(&value.regular)),
+        ("powered", write_powered_protection(&value.powered)),
+    ])
+}
+
+/// Write an inventory entry for the wire.
+#[must_use]
+pub fn write_contract_inventory_entry(value: &qa_content::contract::InventoryEntry) -> SaveJson {
+    let mut members = vec![
+        ("item", json_str(&value.item)),
+        ("count", num(value.count)),
+        ("capacity", num(value.capacity)),
+    ];
+    if let Some(policy) = &value.count_policy {
+        members.push((
+            "countPolicy",
+            match policy {
+                InventoryCountPolicy::Stack => obj(vec![("kind", json_str("stack"))]),
+                InventoryCountPolicy::SourceCounter(arithmetic) => obj(vec![
+                    ("kind", json_str("source-counter")),
+                    (
+                        "arithmetic",
+                        json_str(match arithmetic {
+                            SourceCounterArithmetic::Binary32 => "binary32",
+                            SourceCounterArithmetic::Binary64 => "binary64",
+                            SourceCounterArithmetic::Int32 => "int32",
+                        }),
+                    ),
+                ]),
+            },
+        ));
+    }
+    obj(members)
+}
+
+/// Write an item icon for the wire (mirrors `read_item_icon`).
+#[must_use]
+pub fn write_item_icon(value: &WeaponHudIcon) -> SaveJson {
+    match value {
+        WeaponHudIcon::Image { resource } => obj(vec![
+            ("kind", json_str("image")),
+            (
+                "resource",
+                obj(vec![
+                    ("content", json_str(resource.content.as_str())),
+                    ("path", json_str(&resource.path)),
+                ]),
+            ),
+        ]),
+        WeaponHudIcon::WadPicture { resource, lump } => obj(vec![
+            ("kind", json_str("wad-picture")),
+            (
+                "resource",
+                obj(vec![
+                    ("content", json_str(resource.content.as_str())),
+                    ("path", json_str(&resource.path)),
+                ]),
+            ),
+            ("lump", json_str(lump)),
+        ]),
+        WeaponHudIcon::Shader { content, name } => obj(vec![
+            ("kind", json_str("shader")),
+            ("content", json_str(content.as_str())),
+            ("name", json_str(name)),
+        ]),
+    }
+}
+
+/// Write a model grip for the wire.
+#[must_use]
+pub fn write_grip(value: &ModelTransform) -> SaveJson {
+    obj(vec![
+        (
+            "axis",
+            arr(vec![
+                write_vector(value.axis[0]),
+                write_vector(value.axis[1]),
+                write_vector(value.axis[2]),
+            ]),
+        ),
+        ("scale", write_vector(value.scale)),
+        ("origin", write_vector(value.origin)),
+    ])
+}
+
+/// Write a held weapon declaration for the wire.
+#[must_use]
+pub fn write_held_weapon(value: &HeldWeaponDeclaration) -> SaveJson {
+    match value {
+        HeldWeaponDeclaration::None => obj(vec![("kind", json_str("none"))]),
+        HeldWeaponDeclaration::Model(model) => {
+            let mut members = vec![
+                ("path", json_str(&model.path)),
+                ("referenceFrame", num(model.reference_frame)),
+                ("grip", write_grip(&model.grip)),
+            ];
+            if let Some(digest) = &model.digest {
+                members.push(("digest", json_str(digest.as_str())));
+            }
+            if let Some(fallback) = &model.fallback {
+                members.push(("fallback", json_str(fallback)));
+            }
+            if let Some(part) = &model.part {
+                members.push((
+                    "part",
+                    obj(vec![
+                        (
+                            "digests",
+                            arr(part.digests.iter().map(|digest| json_str(digest)).collect()),
+                        ),
+                        ("vertices", arr(part.vertices.iter().copied().map(num).collect())),
+                    ]),
+                ));
+            }
+            obj(vec![("kind", json_str("model")), ("model", obj(members))])
+        }
+    }
+}
+
+/// Write player HUD state for the wire (mirrors `read_player_ui`).
+#[must_use]
+pub fn write_player_ui(value: &PlayerUi) -> SaveJson {
+    obj(vec![
+        (
+            "selectedArsenal",
+            value.selected_arsenal.map_or(SaveJson::Null, boolean),
+        ),
+        (
+            "nativeInventory",
+            value.native_inventory.as_ref().map_or(SaveJson::Null, |inventory| {
+                obj(vec![
+                    (
+                        "items",
+                        arr(inventory
+                            .items
+                            .iter()
+                            .map(|item| {
+                                obj(vec![
+                                    ("item", json_str(&item.item)),
+                                    ("label", json_str(&item.label)),
+                                    ("count", num(item.count)),
+                                ])
+                            })
+                            .collect()),
+                    ),
+                    (
+                        "selected",
+                        inventory
+                            .selected
+                            .as_ref()
+                            .map_or(SaveJson::Null, |selected| json_str(selected)),
+                    ),
+                    (
+                        "presentation",
+                        inventory.presentation.as_ref().map_or(SaveJson::Null, |presentation| {
+                            let mut members = vec![
+                                ("source", write_provider(&presentation.source)),
+                                (
+                                    "kind",
+                                    json_str(match presentation.kind {
+                                        NativeInventoryKind::Weapon => "weapon",
+                                        NativeInventoryKind::Ammunition => "ammunition",
+                                        NativeInventoryKind::Item => "item",
+                                    }),
+                                ),
+                            ];
+                            match presentation.kind {
+                                NativeInventoryKind::Item => {
+                                    members.push((
+                                        "icon",
+                                        presentation.icon.as_ref().map_or(SaveJson::Null, write_item_icon),
+                                    ));
+                                }
+                                _ => {
+                                    if let Some(weapon) = &presentation.weapon {
+                                        members.push(("weapon", json_str(weapon)));
+                                    }
+                                }
+                            }
+                            obj(members)
+                        }),
+                    ),
+                ])
+            }),
+        ),
+        ("health", num(value.health)),
+        ("armor", write_contract_armor(&value.armor)),
+        (
+            "activeWeapon",
+            value
+                .active_weapon
+                .as_ref()
+                .map_or(SaveJson::Null, |weapon| json_str(weapon)),
+        ),
+        (
+            "ammo",
+            value.ammo.as_ref().map_or(SaveJson::Null, |ammo| {
+                obj(vec![("item", json_str(&ammo.item)), ("count", num(ammo.count))])
+            }),
+        ),
+        (
+            "inventory",
+            arr(value.inventory.iter().map(write_contract_inventory_entry).collect()),
+        ),
+        (
+            "arsenalWarning",
+            json_str(match value.arsenal_warning {
+                ArsenalWarning::Low => "low",
+                ArsenalWarning::Empty => "empty",
+                ArsenalWarning::None => "none",
+            }),
+        ),
+        (
+            "powerups",
+            arr(value
+                .powerups
+                .iter()
+                .map(|powerup| {
+                    obj(vec![
+                        ("item", json_str(&powerup.item)),
+                        ("label", json_str(&powerup.label)),
+                        ("remainingSeconds", num(powerup.remaining_seconds)),
+                    ])
+                })
+                .collect()),
+        ),
+        (
+            "items",
+            arr(value
+                .items
+                .iter()
+                .map(|item| {
+                    obj(vec![
+                        ("id", json_str(&item.id)),
+                        ("label", json_str(&item.label)),
+                        (
+                            "kind",
+                            json_str(match item.kind {
+                                PlayerArsenalKind::Weapon => "weapon",
+                                PlayerArsenalKind::Powerup => "powerup",
+                            }),
+                        ),
+                        ("sourceOrdinal", num(item.source_ordinal)),
+                        ("owned", boolean(item.owned)),
+                        ("hasAmmo", boolean(item.has_ammo)),
+                        ("count", item.count.map_or(SaveJson::Null, num)),
+                        ("warningCount", num(item.warning_count)),
+                    ])
+                })
+                .collect()),
+        ),
+        (
+            "weaponStatus",
+            value.weapon_status.as_ref().map_or(SaveJson::Null, |status| {
+                obj(vec![
+                    ("source", write_provider(&status.source)),
+                    ("item", json_str(&status.item)),
+                    ("label", json_str(&status.label)),
+                    (
+                        "ammo",
+                        match &status.ammo {
+                            WeaponAmmoStatus::Unmetered => obj(vec![("kind", json_str("unmetered"))]),
+                            WeaponAmmoStatus::Finite { .. } => {
+                                let (item, count, has_ammo_to_start, low) =
+                                    status.ammo.finite_parts().expect("finite ammo has parts");
+                                obj(vec![
+                                    ("kind", json_str("finite")),
+                                    ("item", json_str(item)),
+                                    ("count", num(count)),
+                                    ("hasAmmoToStart", boolean(has_ammo_to_start)),
+                                    ("low", boolean(low)),
+                                ])
+                            }
+                        },
+                    ),
+                ])
+            }),
+        ),
+    ])
+}
+
+/// Write a presentation model for the wire (mirrors `read_model`).
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn write_presentation_model(value: &PresentationModel) -> SaveJson {
+    let mut members = vec![
+        ("actor", wire_actor(&value.actor)),
+        ("content", json_str(value.content.as_str())),
+        (
+            "family",
+            json_str(match value.family {
+                PresentationFamily::Q1 => "q1",
+                PresentationFamily::Q2 => "q2",
+                PresentationFamily::Q3 => "q3",
+            }),
+        ),
+        ("path", json_str(&value.path)),
+        ("frame", int(value.frame)),
+        ("oldFrame", int(value.old_frame)),
+        ("skin", int(value.skin)),
+        ("effects", int(value.effects)),
+        ("renderFlags", int(value.render_flags)),
+        ("origin", write_vector(value.origin)),
+        ("angles", write_vector(value.angles)),
+        ("scale", num(value.scale)),
+        ("visible", boolean(value.visible)),
+        ("viewWeapon", boolean(value.view_weapon)),
+    ];
+    if let Some(replaces) = value.replaces_body {
+        members.push(("replacesBody", boolean(replaces)));
+    }
+    if value.render_owner.is_some() {
+        members.push(("renderOwner", json_str("source-client")));
+    }
+    if let Some(held) = &value.held_weapon {
+        members.push(("heldWeapon", write_held_weapon(held)));
+    }
+    if let Some(native) = value.native_held_weapon {
+        members.push(("nativeHeldWeapon", boolean(native)));
+    }
+    if let Some(item) = &value.weapon_item {
+        members.push(("weaponItem", json_str(item)));
+    }
+    if let Some(flare) = &value.flare {
+        members.push((
+            "flare",
+            obj(vec![
+                ("image", json_str(&flare.image)),
+                ("fadeStart", num(flare.fade_start)),
+                ("fadeEnd", num(flare.fade_end)),
+                ("scale", num(flare.scale)),
+                ("color", write_vector(flare.color)),
+                ("rimColor", flare.rim_color.map_or(SaveJson::Null, write_vector)),
+                ("lockAngle", boolean(flare.lock_angle)),
+            ]),
+        ));
+    }
+    if let Some(back_lerp) = value.back_lerp {
+        members.push(("backLerp", num(back_lerp)));
+    }
+    if let Some(skin_path) = &value.skin_path {
+        members.push((
+            "skinPath",
+            skin_path.as_ref().map_or(SaveJson::Null, |path| json_str(path)),
+        ));
+    }
+    if let Some(skin) = &value.indexed_skin {
+        members.push((
+            "indexedSkin",
+            obj(vec![
+                ("name", json_str(&skin.name)),
+                ("width", int(skin.width)),
+                ("height", int(skin.height)),
+                ("pixels", SaveJson::Bytes(skin.pixels.clone())),
+            ]),
+        ));
+    }
+    if let Some(colors) = &value.player_colors {
+        members.push((
+            "playerColors",
+            obj(vec![("top", int(colors.top)), ("bottom", int(colors.bottom))]),
+        ));
+    }
+    if let Some(origin) = value.previous_origin {
+        members.push(("previousOrigin", write_vector(origin)));
+    }
+    if let Some(beam) = &value.model_beam {
+        members.push(("modelBeam", obj(vec![("segmentLength", num(beam.segment_length))])));
+    }
+    if let Some(beam) = &value.shader_beam {
+        members.push((
+            "shaderBeam",
+            obj(vec![
+                ("path", json_str(&beam.path)),
+                ("end", write_vector(beam.end)),
+                ("width", int(beam.width)),
+            ]),
+        ));
+    }
+    if let Some(attachments) = &value.model_attachments {
+        members.push((
+            "modelAttachments",
+            arr(attachments
+                .iter()
+                .map(|entry| obj(vec![("path", json_str(&entry.path)), ("tag", json_str(&entry.tag))]))
+                .collect()),
+        ));
+    }
+    if let Some(anchor) = &value.model_anchor {
+        members.push((
+            "modelAnchor",
+            obj(vec![
+                ("path", json_str(&anchor.path)),
+                ("tag", json_str(&anchor.tag)),
+                ("offset", write_vector(anchor.offset)),
+                (
+                    "fovOffset",
+                    obj(vec![
+                        ("above", int(anchor.fov_offset.above)),
+                        ("scale", num(anchor.fov_offset.scale)),
+                    ]),
+                ),
+            ]),
+        ));
+    }
+    if let Some(cable) = &value.q3_grapple_cable {
+        members.push((
+            "q3GrappleCable",
+            obj(vec![
+                ("owner", wire_actor(&cable.owner)),
+                ("ownerOrigin", write_vector(cable.owner_origin)),
+                ("ownerAngles", write_vector(cable.owner_angles)),
+                ("viewHeight", num(cable.view_height)),
+                ("offhand", boolean(cable.offhand)),
+                ("attached", boolean(cable.attached)),
+                ("flight", json_str(&cable.flight)),
+                ("pull", json_str(&cable.pull)),
+                ("hold", json_str(&cable.hold)),
+                ("segmentLength", int(cable.segment_length)),
+            ]),
+        ));
+    }
+    if let Some(alpha) = value.alpha {
+        members.push(("alpha", num(alpha)));
+    }
+    if let Some(weapon) = &value.q3_weapon {
+        members.push((
+            "q3Weapon",
+            obj(vec![
+                ("timeMilliseconds", num(weapon.time_milliseconds)),
+                ("torsoAnimation", int(weapon.torso_animation)),
+                (
+                    "lastFireMilliseconds",
+                    weapon.last_fire_milliseconds.map_or(SaveJson::Null, num),
+                ),
+                ("firing", boolean(weapon.firing)),
+                ("horizontalSpeed", num(weapon.horizontal_speed)),
+                ("bobCycle", num(weapon.bob_cycle)),
+                ("weapon", int(weapon.weapon)),
+            ]),
+        ));
+    }
+    obj(members)
+}
+
+/// Write a character view for the wire (mirrors `read_character_view`).
+#[must_use]
+pub fn write_character_view(value: &UnifiedCharacterView) -> SaveJson {
+    let mut members = vec![
+        ("actor", wire_actor(&value.actor)),
+        ("origin", write_vector(value.origin)),
+        ("angles", write_vector(value.angles)),
+        ("velocity", write_vector(value.velocity)),
+        ("movementDirection", int(value.movement_direction)),
+        (
+            "animation",
+            obj(vec![
+                ("kind", json_str("q3")),
+                ("legs", num(value.animation.legs)),
+                ("torso", num(value.animation.torso)),
+                ("legsTimerMilliseconds", num(value.animation.legs_timer_milliseconds)),
+                ("torsoTimerMilliseconds", num(value.animation.torso_timer_milliseconds)),
+            ]),
+        ),
+        ("sourceFlags", int(value.source_flags)),
+        ("powerups", int(value.powerups)),
+        (
+            "team",
+            value.team.map_or(SaveJson::Null, |team| {
+                json_str(match team {
+                    UnifiedCharacterTeam::Red => "red",
+                    UnifiedCharacterTeam::Blue => "blue",
+                })
+            }),
+        ),
+        ("color", write_color(value.color)),
+    ];
+    if let Some(scale) = value.scale {
+        members.push(("scale", num(scale)));
+    }
+    if let Some(opacity) = value.opacity {
+        members.push(("opacity", num(opacity)));
+    }
+    obj(members)
+}
+
+/// Write world text for the wire (mirrors `read_world_text`).
+#[must_use]
+pub fn write_world_text(value: &WorldText) -> SaveJson {
+    let mut members = vec![
+        ("content", json_str(value.content.as_str())),
+        ("text", json_str(&value.text)),
+        ("origin", write_vector(value.origin)),
+        ("color", write_color(value.color)),
+        ("cellSize", num(value.cell_size)),
+        (
+            "orientation",
+            match value.orientation {
+                WorldTextOrientation::Billboard => obj(vec![("kind", json_str("billboard"))]),
+                WorldTextOrientation::Fixed { angles } => {
+                    obj(vec![("kind", json_str("fixed")), ("angles", write_vector(angles))])
+                }
+            },
+        ),
+        ("depthTest", boolean(value.depth_test)),
+        (
+            "font",
+            json_str(match value.font {
+                WorldTextFont::Classic => "classic",
+                WorldTextFont::Selected => "selected",
+            }),
+        ),
+    ];
+    if let Some(factor) = value.distance_cull_factor {
+        members.push(("distanceCullFactor", num(factor)));
+    }
+    obj(members)
 }
 
 #[cfg(test)]
