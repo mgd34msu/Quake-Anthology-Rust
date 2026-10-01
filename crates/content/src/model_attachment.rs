@@ -3,6 +3,8 @@
 //! Donor: `src/content/model-attachment.ts`. Declaration files (`JSON.parse`
 //! over fatal UTF-8 in the donor) decode through the shared
 //! [`crate::value::parse_save_json`] via [`parse_declaration_json`].
+//! Contract-side definition shape (`ModelAttachmentDefinition`):
+//! `/home/buzzkill/Projects/quake-typescript/src/contracts/model-attachment.ts`.
 
 use qa_core::math::{cross3, dot3, Vec3};
 use thiserror::Error;

@@ -1,5 +1,6 @@
 //! Instance-owned source RNG: glibc TYPE_3 plus the Q2 rerelease MT19937.
 //! glibc portion adapted from the Q3 donor; see donor `random.ts` header.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/random.ts`.
 
 use thiserror::Error;
 

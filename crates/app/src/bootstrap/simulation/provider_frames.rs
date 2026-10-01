@@ -1,4 +1,5 @@
 //! Project the shared-world interval into a source callback's clock.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/provider-frames.ts`.
 
 use qa_core::time::{ClockProfile, FrameContext, SourceTime};
 

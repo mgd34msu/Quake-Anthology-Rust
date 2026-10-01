@@ -1,4 +1,5 @@
 //! One actor's source weapon selection; each bound source owns its traversal.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/weapon-slot.ts`.
 
 use std::cell::Cell;
 use std::collections::HashMap;

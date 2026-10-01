@@ -8,6 +8,8 @@
 //! [`qa_core::identity`] (donor `identity.ts`). Types referenced from
 //! out-of-scope contracts are defined here structurally with their donor
 //! noted, since `qa-content` depends only on `qa-core`.
+//! Absolute donor for equipment types (`SharedGrappleControl` and the
+//! `equipment.ts` selections): `/home/buzzkill/Projects/quake-typescript/src/contracts/equipment.ts`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

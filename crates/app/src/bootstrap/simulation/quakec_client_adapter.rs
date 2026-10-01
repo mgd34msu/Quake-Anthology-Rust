@@ -1,4 +1,5 @@
 //! Translate physical commands into the source QC ABI.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-client-adapter.ts`.
 
 use qa_net::common::commands::UserCommand;
 
