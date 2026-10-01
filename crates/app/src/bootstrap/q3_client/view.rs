@@ -9,6 +9,7 @@
 use qa_client::render::SceneEntity;
 use qa_client::view::{CameraClip, SceneCamera};
 use qa_content::q3::presentation::ref_entity::{Q3AdmittedRefEntity, RefEntity};
+use qa_content::q3::presentation::scene::PresentSceneEntity;
 use qa_core::math::Vec3;
 
 /// Standard-narrow aspect the original weapon framing expects.
@@ -52,6 +53,23 @@ pub fn offset_q3_view_entity(entity: &SceneEntity, delta: Option<Vec3>) -> Scene
     if let Some(plane) = result.shadow_plane {
         result.shadow_plane = Some(plane + delta.z);
     }
+    result
+}
+
+/// Keep a presented model entity attached to its translated camera.
+///
+/// Presented entities carry no attachments, so the donor's recursion has no
+/// target here.
+#[must_use]
+pub fn offset_q3_view_presented_entity(entity: &PresentSceneEntity, delta: Option<Vec3>) -> PresentSceneEntity {
+    let Some(delta) = delta else {
+        return entity.clone();
+    };
+    let mut result = entity.clone();
+    result.origin = add(result.origin, delta);
+    result.previous_origin = add(result.previous_origin, delta);
+    result.lighting_origin = add(result.lighting_origin, delta);
+    result.shadow_plane += delta.z;
     result
 }
 
@@ -280,5 +298,40 @@ mod tests {
     fn reference_portal_is_unchanged() {
         let source = Q3AdmittedRefEntity::Entity(RefEntity::Portal(create_portal_entity()));
         assert_eq!(offset_q3_view_reference(&source, Some(vec3(9.0, 9.0, 9.0))), source);
+    }
+
+    #[test]
+    fn presented_entity_offsets_pose() {
+        use qa_content::q3::presentation::ref_entity::{PresentResource, SceneModel};
+        use qa_content::q3::presentation::scene::PresentEntityModel;
+        use qa_core::math::vec4;
+
+        let entity = PresentSceneEntity {
+            actor: None,
+            resource: PresentResource::new("models/box.md3"),
+            model: PresentEntityModel::Decoded(qa_content::q3::presentation::ref_entity::Q3DecodedModel::Framed {
+                frames: Vec::new(),
+            }),
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: axis(),
+            previous_origin: vec3(4.0, 5.0, 6.0),
+            frame: 0,
+            previous_frame: 0,
+            back_lerp: 0.0,
+            skin: 0,
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+            shader_time: 0.0,
+            render_flags: 0,
+            lighting_origin: vec3(7.0, 8.0, 9.0),
+            shadow_plane: 2.0,
+        };
+        assert_eq!(offset_q3_view_presented_entity(&entity, None), entity);
+        let moved = offset_q3_view_presented_entity(&entity, Some(vec3(1.0, 1.0, 1.0)));
+        assert_eq!(moved.origin, vec3(2.0, 3.0, 4.0));
+        assert_eq!(moved.previous_origin, vec3(5.0, 6.0, 7.0));
+        assert_eq!(moved.lighting_origin, vec3(8.0, 9.0, 10.0));
+        assert_eq!(moved.shadow_plane, 3.0);
+        assert_eq!(moved.model, entity.model);
+        let _ = SceneModel::default_model();
     }
 }
