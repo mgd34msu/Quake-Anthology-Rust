@@ -7,3 +7,4 @@ pub mod output_settings;
 pub mod playlist;
 pub mod playlist_settings;
 pub mod q2_events;
+pub mod q3;
