@@ -14,6 +14,7 @@ pub mod archive;
 pub mod bsp;
 pub mod bsp2;
 pub mod bsp3;
+pub mod bspx;
 pub mod catalog;
 pub mod common;
 pub mod composition;

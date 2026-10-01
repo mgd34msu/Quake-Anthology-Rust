@@ -9,9 +9,10 @@
 //! from the input; decoded records are owned. Lighting selection follows
 //! `selectLighting` in `src/formats/q1-map/index.ts`: an external `.lit`
 //! file wins over BSPX RGB samples, Quake64 packed samples, and the
-//! monochrome lump (`readQ1Lit`, `BspLighting`). BSPX geometry stays out
-//! of scope, and Quake64 map geometry stays rejected with an explicit
-//! error; only its packed lighting samples are understood.
+//! monochrome lump (`readQ1Lit`, `BspLighting`). Q1 BSPX geometry and the
+//! map queries live in [`crate::bspx`]; Quake64 map geometry stays
+//! rejected with an explicit error, and only its packed lighting samples
+//! are understood.
 
 use std::borrow::Cow;
 
