@@ -3,6 +3,8 @@
 //! Donor provenance:
 //! `src/content/composition/expansion-supply.ts`,
 //! `src/content/composition/expansion-source-supply.ts`,
+//! `src/content/composition/q1-q2-supply.ts`,
+//! `src/content/composition/q2-expansion-arsenal.ts`,
 //! `src/content/composition/q2-q1-supply.ts`,
 //! `src/content/composition/q2-q3-supply.ts`,
 //! `src/content/composition/q3-q1-supply.ts`,
@@ -18,7 +20,18 @@ use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::ProviderId;
 
-use crate::contract::{InventoryEntry, ItemId, PickupOwner, PickupRoute, PickupSupplyProfile};
+use crate::contract::{
+    InventoryEntry, ItemId, PickupOwner, PickupRoute, PickupSelection, PickupSupplyProfile,
+};
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
+use crate::q2::foundation::items::q2_base_weapon_inventory;
+use crate::q2::foundation::weapons::definitions::base_weapons;
+use crate::q2::foundation::weapons::player::{registered_weapon_definitions, set_fallback_order};
+use crate::q2::foundation::weapons::types::Q2WeaponName;
+use crate::q2::missionpacks::items::q2_mission_weapon_inventory;
+use crate::q2::missionpacks::projectiles::{mission_projectile_callbacks, mission_projectiles};
+use crate::q2::missionpacks::types::{Q2MissionPack, Q2MissionPackProjectileHooks};
+use crate::q2::missionpacks::weapons::player::Q2MissionPackWeapons;
 
 /// Expansion equipment set selectable in mixed-game supply
 /// (`ExpansionSupply` in `expansion-supply.ts`).
@@ -716,6 +729,49 @@ pub fn q1_q3_supply_profile() -> PickupSupplyProfile {
     }
 }
 
+/// Cross-game pickup preference uses base weapon progression, not native
+/// Q2 pickup autoswitch rules (`q1Q2PickupSelect` in `q1-q2-supply.ts`).
+#[must_use]
+pub fn q1_q2_pickup_select(current: Option<&ItemId>, incoming: &ItemId, selection: PickupSelection) -> bool {
+    if selection != PickupSelection::Better {
+        return selection == PickupSelection::Always;
+    }
+    let weapons = base_weapons();
+    let next = weapons.iter().position(|weapon| &weapon.definition.item == incoming);
+    let previous = current.map(|current| weapons.iter().position(|weapon| &weapon.definition.item == current));
+    if next.is_none() || current.is_some() && previous.is_none_or(|position| position.is_none()) {
+        panic!("Cross-game Q2 pickup ranking requires base weapons");
+    }
+    next > previous.unwrap_or(None)
+}
+
+/// Cross-game supply policy from base Q1 pickups to the recipient's base
+/// Q2 pools (`Q1_Q2_SUPPLY_PROFILE` in `q1-q2-supply.ts`).
+#[must_use]
+pub fn q1_q2_supply_profile() -> PickupSupplyProfile {
+    PickupSupplyProfile {
+        id: "composition:q1-base-q2-supply".to_string(),
+        ammo: vec![
+            route("q1:ammo/shells", &["q2:ammo_shells"]),
+            route("q1:ammo/nails", &["q2:ammo_bullets"]),
+            route("q1:ammo/rockets", &["q2:ammo_rockets", "q2:ammo_grenades"]),
+            route("q1:ammo/cells", &["q2:ammo_cells"]),
+        ],
+        weapon_owners: Vec::new(),
+        ammo_owners: Vec::new(),
+        weapons: vec![
+            route("q1:weapon/axe", &["q2:weapon_blaster"]),
+            route("q1:weapon/shotgun", &["q2:weapon_shotgun"]),
+            route("q1:weapon/supershotgun", &["q2:weapon_supershotgun"]),
+            route("q1:weapon/nailgun", &["q2:weapon_machinegun"]),
+            route("q1:weapon/supernailgun", &["q2:weapon_chaingun"]),
+            route("q1:weapon/grenadelauncher", &["q2:weapon_grenadelauncher"]),
+            route("q1:weapon/rocketlauncher", &["q2:weapon_rocketlauncher"]),
+            route("q1:weapon/lightning", &["q2:weapon_hyperblaster"]),
+        ],
+    }
+}
+
 /// Hipnotic weapon grants layered onto the Q1-to-Q3 profile
 /// (`Q1_HIPNOTIC_SUPPLY_PROFILE` in `q1-hipnotic-supply.ts`): ammo routes
 /// collapse to self-destinations and weapon routes become self plus the
@@ -819,6 +875,146 @@ pub fn q1_q3_supply_loadout(provider: ProviderId, product: Q3SupplyProduct) -> Q
         time_milliseconds: 0,
         ammo,
     }
+}
+
+/// Starting weapon plus inventory for the Q1-to-Q2 composition
+/// (`q1Q2SupplyLoadout` in `q1-q2-supply.ts`).
+#[must_use]
+pub fn q1_q2_supply_loadout() -> SupplyLoadout {
+    SupplyLoadout {
+        weapon: "q2:weapon_shotgun".to_string(),
+        inventory: vec![
+            SupplyLoadoutEntry { item: "q2:weapon_blaster".to_string(), count: 1 },
+            SupplyLoadoutEntry { item: "q2:weapon_shotgun".to_string(), count: 1 },
+            SupplyLoadoutEntry { item: "q2:ammo_shells".to_string(), count: 25 },
+        ],
+    }
+}
+
+/// Selected Q2 program (`SelectedQ2Program` in `q2-expansion-arsenal.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SelectedQ2Program {
+    /// Base Q2.
+    Baseq2,
+    /// Xatrix.
+    Xatrix,
+    /// Rogue.
+    Rogue,
+    /// Machinegames 2.
+    Mg2,
+}
+
+/// One selected-arsenal inventory definition
+/// (`registerSelectedQ2MissionWeapons` entry).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedQ2InventoryDefinition {
+    /// Granted item.
+    pub item: ItemId,
+    /// Pool capacity.
+    pub capacity: f64,
+}
+
+/// Selected mission arsenal (`registerSelectedQ2MissionWeapons` result).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedQ2Arsenal {
+    /// Base plus pack inventory definitions.
+    pub inventory_definitions: Vec<SelectedQ2InventoryDefinition>,
+    /// Registered pickup order, weakest first.
+    pub pickup_order: Vec<ItemId>,
+}
+
+/// Shared pickup preference, weakest first. This is a composition policy,
+/// not native Q2 autoswitch (`pickupOrder` in `q2-expansion-arsenal.ts`).
+const SELECTED_Q2_PICKUP_ORDER: &[&str] = &[
+    "q2:weapon_blaster",
+    "q2:weapon_chainfist",
+    "q2:weapon_shotgun",
+    "q2:weapon_supershotgun",
+    "q2:weapon_machinegun",
+    "q2:weapon_etf_rifle",
+    "q2:weapon_chaingun",
+    "q2:ammo_grenades",
+    "q2:ammo_trap",
+    "q2:ammo_tesla",
+    "q2:weapon_grenadelauncher",
+    "q2:weapon_proxlauncher",
+    "q2:weapon_rocketlauncher",
+    "q2:weapon_hyperblaster",
+    "q2:weapon_boomer",
+    "q2:weapon_plasmabeam",
+    "q2:weapon_railgun",
+    "q2:weapon_phalanx",
+    "q2:weapon_disintegrator",
+    "q2:weapon_bfg",
+];
+
+/// Register the selected mission weapons (`registerSelectedQ2MissionWeapons`
+/// in `q2-expansion-arsenal.ts`).
+pub fn register_selected_q2_mission_weapons(
+    game: &mut Q2GameServices,
+    program: SelectedQ2Program,
+    hooks: Q2MissionPackProjectileHooks,
+) -> SelectedQ2Arsenal {
+    let edition = game.options.edition;
+    let packs: &[Q2MissionPack] = if edition == Q2Edition::Rerelease {
+        &[Q2MissionPack::Xatrix, Q2MissionPack::Rogue]
+    } else if program == SelectedQ2Program::Xatrix {
+        &[Q2MissionPack::Xatrix]
+    } else if program == SelectedQ2Program::Rogue {
+        &[Q2MissionPack::Rogue]
+    } else {
+        &[]
+    };
+    game.mission_packs.projectile_hooks = hooks;
+    let extensions = Q2MissionPackWeapons::new(mission_projectiles(game));
+    for pack in packs {
+        extensions.register(game, *pack, edition);
+    }
+    game.source_callbacks.register(&mission_projectile_callbacks());
+    if edition == Q2Edition::Rerelease {
+        set_fallback_order(
+            game,
+            [
+                "disintegrator",
+                "railgun",
+                "heatbeam",
+                "ionripper",
+                "hyperblaster",
+                "etf_rifle",
+                "chaingun",
+                "machinegun",
+                "supershotgun",
+                "shotgun",
+                "phalanx",
+                "rocketlauncher",
+                "grenadelauncher",
+                "proxlauncher",
+                "chainfist",
+                "blaster",
+            ]
+            .into_iter()
+            .map(Q2WeaponName::from)
+            .collect(),
+        );
+    }
+    let definitions = registered_weapon_definitions(game);
+    let mut inventory_definitions: Vec<SelectedQ2InventoryDefinition> = q2_base_weapon_inventory()
+        .into_iter()
+        .map(|(item, capacity)| SelectedQ2InventoryDefinition { item, capacity })
+        .collect();
+    for pack in packs {
+        inventory_definitions.extend(
+            q2_mission_weapon_inventory(*pack)
+                .into_iter()
+                .map(|(item, capacity)| SelectedQ2InventoryDefinition { item, capacity }),
+        );
+    }
+    let pickup_order: Vec<ItemId> = SELECTED_Q2_PICKUP_ORDER
+        .iter()
+        .filter(|item| definitions.iter().any(|definition| definition.item.as_str() == **item))
+        .map(ToString::to_string)
+        .collect();
+    SelectedQ2Arsenal { inventory_definitions, pickup_order }
 }
 
 #[cfg(test)]
