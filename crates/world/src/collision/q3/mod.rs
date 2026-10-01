@@ -8,6 +8,7 @@
 pub mod allocation;
 pub mod checksum;
 pub mod counters;
+pub mod patch;
 pub mod polylib;
 pub mod settings;
 
@@ -16,6 +17,10 @@ pub use allocation::{
 };
 pub use checksum::{block_checksum, collision_checksum, collision_lump_checksum, CollisionChecksumLump};
 pub use counters::CollisionCounters;
+pub use patch::{
+    generate_patch_collide, position_in_patch, trace_patch, CollisionDebugHost, CollisionDebugSurface, PatchAllocSite,
+    PatchAllocator, PatchBorder, PatchCollide, PatchFacet, PatchHit, PatchPlane, PatchShape,
+};
 pub use polylib::{
     ClipSplit, CollisionWinding, CollisionWindingLibrary, CollisionWindingMemory, WindingSide, MAX_MAP_BOUNDS,
     ON_EPSILON,
