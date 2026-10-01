@@ -19,6 +19,7 @@ pub mod component_media;
 pub mod component_scene;
 pub mod config_scripts;
 pub mod console;
+pub mod content;
 pub mod controller_settings;
 pub mod cvar_archives;
 pub mod demo_commands;
