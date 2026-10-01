@@ -8,15 +8,12 @@
 //! `Q3PlayerState` mirror; unified commands reuse the `qa-net` actor
 //! command.
 //!
-//! Two out-of-scope donors are shimmed minimally, following the
-//! `weapon_view`/`q1_session_actions` precedent: `Q3ServerState`
-//! (donor `./server-state.ts`) appears only as the
-//! [`Q3SourceServerState`] seam its home will implement, and the
-//! source presentation state/models (donor `./presentation.ts`) are
-//! declared here as [`Q3SourcePresentationState`]/[`Q3SourceModel`]
-//! with exactly the fields that donor computes, so the runtime can
-//! implement its `sourceState`/`presentations` readers without
-//! touching the presentation home.
+//! The server state home has landed: [`Q3ServerState`] is re-exported from
+//! `super::server_state` (donor `./server-state.ts`). The source
+//! presentation state/models (donor `./presentation.ts`) are still declared
+//! here as [`Q3SourcePresentationState`]/[`Q3SourceModel`] with exactly the
+//! fields that donor computes; the presentation home rewires them when it
+//! lands.
 //!
 //! Entity handles straddle the two `qa-content` entity cores until
 //! the content lanes unify them: records-bound callbacks take
@@ -52,8 +49,6 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 use qa_guest::qvm::player_record::QvmPlayerState;
 use qa_net::common::commands::ActorCommand;
-use qa_world::save::value::{SaveJson, SaveReader};
-use qa_world::WorldError;
 
 use super::super::q3_ballistics::Q3WeaponBehaviorPort;
 use crate::bootstrap::q3_client::visibility::ApplicationQ3SceneQueries;
@@ -189,18 +184,9 @@ impl Q3SourceBots {
     }
 }
 
-/// Engine-owned storage shared by the selected game and its network
-/// host (minimal `Q3ServerState` seam from donor `./server-state.ts`,
-/// out of scope: only the capture/restore/server-info surface the
-/// runtime consumes is named).
-pub trait Q3SourceServerState {
-    /// Capture the save image.
-    fn capture_save_state(&self) -> SaveJson;
-    /// Restore the save image.
-    fn restore_save_state(&self, reader: SaveReader) -> Result<(), WorldError>;
-    /// Current server info string.
-    fn server_info(&self) -> String;
-}
+/// Engine-owned storage shared by the selected game and its network host,
+/// re-exported from its real home (donor `./server-state.ts`).
+pub use super::server_state::Q3ServerState;
 
 /// Mover actor access owned by the session (donor
 /// `Pick<MoverActorAccess, "observe" | "write" | "link" | "release">`).
@@ -248,7 +234,7 @@ pub trait Q3SourceHost: MovementHost {
         None
     }
     /// Engine-owned server storage.
-    fn server_state(&self) -> Rc<dyn Q3SourceServerState>;
+    fn server_state(&self) -> Rc<Q3ServerState>;
     /// Session mover actors.
     fn mover_actors(&self) -> Rc<dyn Q3SourceMoverActors>;
     /// Whether primary attack is allowed.
