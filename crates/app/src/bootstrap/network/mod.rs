@@ -1,6 +1,8 @@
 //! Bootstrap network helpers (donor `src/app/bootstrap/network/*`).
 
 pub mod client_download_policy;
+pub mod q1;
+pub mod q1_client;
 pub mod q1_types;
 pub mod q2_downloads;
 pub mod q2_effects;

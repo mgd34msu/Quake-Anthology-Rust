@@ -586,12 +586,23 @@ pub enum ApplicationNetworkRole {
     Client,
 }
 
+/// Application network failure (`ApplicationNetwork` rejections).
+///
+/// The donor's endpoints are `async` and reject with `Error`s; the sync
+/// ports return this error with the donor message text intact.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ApplicationNetworkError {
+    /// Endpoint failure with donor text.
+    #[error("{0}")]
+    Message(String),
+}
+
 /// Demo recording tap (`ApplicationNetwork['serverRecording' | ...]`).
 pub trait ApplicationNetworkRecording {
     /// Recording seed.
-    fn seed(&self) -> DemoRecordingSeed;
+    fn seed(&self) -> Result<DemoRecordingSeed, ApplicationNetworkError>;
     /// Attach a sink; the returned closure detaches it.
-    fn attach(&mut self, sink: Box<dyn DemoRecordingSink>) -> Box<dyn FnOnce()>;
+    fn attach(&mut self, sink: Box<dyn DemoRecordingSink>) -> Result<Box<dyn FnOnce() + '_>, ApplicationNetworkError>;
 }
 
 /// Application network endpoint (`ApplicationNetwork`).
@@ -620,13 +631,18 @@ pub trait ApplicationNetwork {
     /// Selected wire.
     fn wire(&self) -> WireSelection;
     /// Poll before the application's only authoritative simulation step.
-    fn poll(&mut self, now_milliseconds: u64) -> Vec<ActorCommand>;
+    fn poll(&mut self, now_milliseconds: u64) -> Result<Vec<ActorCommand>, ApplicationNetworkError>;
     /// Submit local input (a remote client sends; it never applies input
     /// to a second server).
-    fn submit(&mut self, commands: &[ActorCommand], now_milliseconds: u64);
+    fn submit(&mut self, commands: &[ActorCommand], now_milliseconds: u64) -> Result<(), ApplicationNetworkError>;
     /// Publish after the simulation step and after source presentation
     /// events are drained.
-    fn publish(&mut self, output: &SimulationOutput, events: &[NetworkPresentationEvent], now_milliseconds: u64);
+    fn publish(
+        &mut self,
+        output: &SimulationOutput,
+        events: &[NetworkPresentationEvent],
+        now_milliseconds: u64,
+    ) -> Result<(), ApplicationNetworkError>;
     /// Close the endpoint.
     fn close(&mut self);
 }
