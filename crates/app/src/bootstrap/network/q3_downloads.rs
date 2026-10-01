@@ -31,15 +31,15 @@ use std::time::SystemTime;
 use qa_content::archive::{open_archive, ArchiveEntry};
 use qa_content::catalog::{CatalogError, InstalledCatalog};
 use qa_content::contract::{
-    ArchiveFormat, ArchiveMount, ContentId, ContentMount, ContractError, GameFamily, MountId,
-    ResourceId, ResolvedMountPlan,
+    ArchiveFormat, ArchiveMount, ContentId, ContentMount, ContractError, GameFamily, MountId, ResolvedMountPlan,
+    ResourceId,
 };
 use qa_content::hash::{hex_lower, Sha256};
 use qa_content::mounts::{MountError, MountedContent};
 use qa_net::common::session::{ContentDigest as NetContentDigest, SessionError};
 use qa_net::q3_content::{
-    register_q3_pak, Q3ArchiveMount, Q3ContentError, Q3ContentReferences, Q3MountedPak,
-    Q3MountIdentity, Q3ResolvedReference, Q3ResourceProvenance,
+    register_q3_pak, Q3ArchiveMount, Q3ContentError, Q3ContentReferences, Q3MountIdentity, Q3MountedPak,
+    Q3ResolvedReference, Q3ResourceProvenance,
 };
 use qa_net::q3_net::{check_q3_download_name, Q3ArchiveEntry, Q3ArchiveHandle, Q3NetError};
 use thiserror::Error;
@@ -105,10 +105,7 @@ pub struct Q3ApplicationPackages {
 
 impl Q3ApplicationPackages {
     /// Register the selected pk3 mounts and seed references (`open`).
-    pub fn open(
-        content: &Q3CatalogMounts<'_>,
-        checksum_feed: i32,
-    ) -> Result<Self, Q3DownloadError> {
+    pub fn open(content: &Q3CatalogMounts<'_>, checksum_feed: i32) -> Result<Self, Q3DownloadError> {
         let mounts: HashMap<&MountId, &ContentMount> = content
             .plan
             .mounts
@@ -139,9 +136,7 @@ impl Q3ApplicationPackages {
                 .next_back()
                 .unwrap_or("");
             if game.is_empty() {
-                return Err(Q3DownloadError::Message(
-                    "Q3 archive has no game directory".to_string(),
-                ));
+                return Err(Q3DownloadError::Message("Q3 archive has no game directory".to_string()));
             }
             let basename = Path::new(&archive.archive_path)
                 .file_name()
@@ -185,11 +180,7 @@ impl Q3ApplicationPackages {
     }
 
     /// Record opened resources from the caller's mount sets (`collect`).
-    pub fn collect(
-        &mut self,
-        mounts: &[&MountedContent],
-        catalog: &InstalledCatalog,
-    ) -> Result<(), Q3DownloadError> {
+    pub fn collect(&mut self, mounts: &[&MountedContent], catalog: &InstalledCatalog) -> Result<(), Q3DownloadError> {
         for mounts in mounts {
             for reference in mounts.opened_resources() {
                 if self.processed.contains(&reference.id) {
@@ -226,20 +217,16 @@ impl Q3ApplicationPackages {
     /// Invalid names fail; unmounted names return `None`. Mount identity
     /// guards the retained bytes: the digest must match the mount, and the
     /// size/mtime/ctime fingerprint must survive hashing.
-    pub fn open_download(
-        &self,
-        name: &str,
-    ) -> Result<Option<Box<dyn Q3DownloadReadFile>>, Q3DownloadError> {
+    pub fn open_download(&self, name: &str) -> Result<Option<Box<dyn Q3DownloadReadFile>>, Q3DownloadError> {
         check_q3_download_name(name)?;
         let mounted = self.packs.iter().find(|pack| {
-            format!("{}/{}.pk3", pack.pack.game, pack.pack.basename).to_lowercase()
-                == name.to_lowercase()
+            format!("{}/{}.pk3", pack.pack.game, pack.pack.basename).to_lowercase() == name.to_lowercase()
         });
         let Some(mounted) = mounted else {
             return Ok(None);
         };
-        let file = File::open(&mounted.mount.archive_path)
-            .map_err(|error| Q3DownloadError::Filesystem(error.to_string()))?;
+        let file =
+            File::open(&mounted.mount.archive_path).map_err(|error| Q3DownloadError::Filesystem(error.to_string()))?;
         let original = file
             .metadata()
             .map_err(|error| Q3DownloadError::Filesystem(error.to_string()))?;
@@ -255,9 +242,7 @@ impl Q3ApplicationPackages {
             let end = (offset + HASH_CHUNK_BYTES as u64).min(size);
             let count = read_at(&file, &mut buffer[..(end - offset) as usize], offset)?;
             if count == 0 {
-                return Err(Q3DownloadError::Message(
-                    "Truncated mounted download".to_string(),
-                ));
+                return Err(Q3DownloadError::Message("Truncated mounted download".to_string()));
             }
             hash.update(&buffer[..count]);
             offset += count as u64;
@@ -327,9 +312,7 @@ pub(crate) fn archive_handle(opened: &qa_content::archive::OpenArchive) -> Q3Arc
 }
 
 /// Content identity behind a resource provenance.
-fn provenance_content(
-    provenance: &qa_content::contract::ResourceProvenance,
-) -> &ContentId {
+fn provenance_content(provenance: &qa_content::contract::ResourceProvenance) -> &ContentId {
     match provenance {
         qa_content::contract::ResourceProvenance::Archive { mount, .. } => &mount.identity.content,
         qa_content::contract::ResourceProvenance::Loose { mount, .. } => &mount.identity.content,
@@ -342,11 +325,9 @@ fn to_q3_reference(
 ) -> Result<Q3ResolvedReference, Q3DownloadError> {
     let provenance = match &reference.provenance {
         qa_content::contract::ResourceProvenance::Loose { .. } => Q3ResourceProvenance::Loose,
-        qa_content::contract::ResourceProvenance::Archive { mount, .. } => {
-            Q3ResourceProvenance::Archive {
-                mount: to_q3_mount(mount)?,
-            }
-        }
+        qa_content::contract::ResourceProvenance::Archive { mount, .. } => Q3ResourceProvenance::Archive {
+            mount: to_q3_mount(mount)?,
+        },
     };
     Ok(Q3ResolvedReference {
         requested_path: reference.requested_path.clone(),
@@ -512,12 +493,7 @@ mod tests {
         )
         .expect("open");
         assert!(packages.open_download("../evil.pk3").is_err());
-        assert!(
-            packages
-                .open_download("baseq3/missing.pk3")
-                .expect("lookup")
-                .is_none()
-        );
+        assert!(packages.open_download("baseq3/missing.pk3").expect("lookup").is_none());
     }
 
     #[test]

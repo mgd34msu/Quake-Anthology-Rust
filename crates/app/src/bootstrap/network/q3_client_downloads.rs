@@ -24,13 +24,10 @@ use qa_content::archive::open_archive;
 use qa_content::catalog::RemoteContentBase;
 use qa_content::contract::ArchiveFormat;
 use qa_net::q3_net::{
-    check_q3_download_name, compare_q3_packages, q3_archive_checksums, DownloadBlock, Q3NetError,
-    Q3ServerPak,
+    check_q3_download_name, compare_q3_packages, q3_archive_checksums, DownloadBlock, Q3NetError, Q3ServerPak,
 };
 use qa_net::q3_pak_references::ServerPak;
-use qa_net::services::downloads::{
-    DownloadError, DownloadSink, ProtocolDownloadExpectation, SinkExpectation,
-};
+use qa_net::services::downloads::{DownloadError, DownloadSink, ProtocolDownloadExpectation, SinkExpectation};
 use thiserror::Error;
 
 use super::client_download_policy::{
@@ -103,12 +100,14 @@ fn parent_of(path: &Path) -> PathBuf {
 
 /// Final path component, `node:path` `basename` spelling.
 fn file_name(path: &Path) -> Option<String> {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
+    path.file_name().map(|name| name.to_string_lossy().into_owned())
 }
 
 /// Download permission callback.
 pub type Q3DownloadPermissionFn<'a> = Box<dyn Fn(&ClientDownloadRequest) -> bool + 'a>;
+
+/// Progress callback.
+pub type Q3DownloadProgressFn<'a> = Box<dyn FnMut(&str, i32, i32) + 'a>;
 
 /// Client download bindings (`Q3ApplicationDownloadBindings`).
 pub struct Q3DownloadBindings<'a> {
@@ -121,7 +120,7 @@ pub struct Q3DownloadBindings<'a> {
     /// Send a packet.
     pub send_packet: Box<dyn FnMut() + 'a>,
     /// Report progress.
-    pub progress: Box<dyn FnMut(&str, i32, i32) + 'a>,
+    pub progress: Q3DownloadProgressFn<'a>,
     /// Refresh the mounted package catalog; the next gamestate owns
     /// map/pure/module initialization.
     pub reload_packages: Box<dyn FnMut() -> Result<(), Q3ClientDownloadError> + 'a>,
@@ -196,10 +195,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
                 received: self.sink.as_ref().map_or(0, |sink| sink.byte_length()),
                 total: Some(u64::from(self.size.max(0) as u32)),
                 percent: if self.size > 0 {
-                    Some(
-                        self.sink.as_ref().map_or(0, |sink| sink.byte_length()) as f64 * 100.0
-                            / f64::from(self.size),
-                    )
+                    Some(self.sink.as_ref().map_or(0, |sink| sink.byte_length()) as f64 * 100.0 / f64::from(self.size))
                 } else {
                     None
                 },
@@ -229,7 +225,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
 
     /// Whether package downloads are permitted.
     fn package_permitted(&self) -> bool {
-        self.bindings.permission.as_ref().map_or(true, |permission| {
+        self.bindings.permission.as_ref().is_none_or(|permission| {
             permission(&ClientDownloadRequest {
                 transport: ClientDownloadTransport::Native,
                 category: ClientDownloadCategory::Package,
@@ -262,7 +258,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
             return Ok(false);
         }
         self.queue = self.paused.take().unwrap_or_default().into();
-        Ok(self.start_next()?)
+        self.start_next()
     }
 
     /// Queue missing referenced packages; true suspends game
@@ -293,8 +289,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
             .collect();
         // The existence callback cannot fail, so a mapping failure parks
         // here and raises after the comparison, matching the donor throw.
-        let mapping_error: Rc<RefCell<Option<Q3ClientDownloadError>>> =
-            Rc::new(RefCell::new(None));
+        let mapping_error: Rc<RefCell<Option<Q3ClientDownloadError>>> = Rc::new(RefCell::new(None));
         let list = compare_q3_packages(
             &converted,
             loaded_checksums,
@@ -321,9 +316,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
         let mut index = 1;
         while index < fields.len() {
             let (Some(remote), Some(local)) = (fields.get(index), fields.get(index + 1)) else {
-                return Err(Q3ClientDownloadError::Message(
-                    "Incomplete Q3 package pair".to_string(),
-                ));
+                return Err(Q3ClientDownloadError::Message("Incomplete Q3 package pair".to_string()));
             };
             check_q3_download_name(remote)?;
             check_q3_download_name(local)?;
@@ -361,7 +354,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
             });
             index += 2;
         }
-        Ok(self.start_next()?)
+        self.start_next()
     }
 
     /// Map a wire path through the owner mounts.
@@ -540,11 +533,7 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
     }
 
     /// Validate and publish the staged package (donor `publishTemporary`).
-    fn publish_temporary(
-        &mut self,
-        temporary: &str,
-        destination: &str,
-    ) -> Result<(), Q3ClientDownloadError> {
+    fn publish_temporary(&mut self, temporary: &str, destination: &str) -> Result<(), Q3ClientDownloadError> {
         let request = self.current.clone();
         let generation = self.generation;
         let Some(request) = request else {
@@ -573,8 +562,8 @@ impl<'a> Q3ApplicationClientDownloads<'a> {
         sink.inspect_staged(|staged| {
             let outcome = (|| -> Result<(), Q3ClientDownloadError> {
                 let archive = open_archive(staged, Some(ArchiveFormat::Pk3))?;
-                let (checksum, _) = q3_archive_checksums(&archive_handle(&archive), 0)
-                    .map_err(Q3ClientDownloadError::from)?;
+                let (checksum, _) =
+                    q3_archive_checksums(&archive_handle(&archive), 0).map_err(Q3ClientDownloadError::from)?;
                 archive.close();
                 if checksum != expected {
                     return Err(Q3ClientDownloadError::Message(
@@ -653,7 +642,9 @@ mod tests {
         }
 
         fn publish_temporary(&mut self, temporary: &str, destination: &str) {
-            self.trace.borrow_mut().push(format!("publish:{temporary}>{destination}"));
+            self.trace
+                .borrow_mut()
+                .push(format!("publish:{temporary}>{destination}"));
         }
 
         fn reliable(&mut self, text: &str) {
@@ -665,9 +656,7 @@ mod tests {
         }
 
         fn progress(&mut self, name: &str, count: i32, size: i32) {
-            self.trace
-                .borrow_mut()
-                .push(format!("progress:{name}:{count}:{size}"));
+            self.trace.borrow_mut().push(format!("progress:{name}:{count}:{size}"));
         }
 
         fn completed(&mut self) {
@@ -696,10 +685,7 @@ mod tests {
         dir
     }
 
-    fn script_queue(
-        trace: Rc<RefCell<Vec<String>>>,
-        root: PathBuf,
-    ) -> Q3ApplicationClientDownloads<'static> {
+    fn script_queue(trace: Rc<RefCell<Vec<String>>>, root: PathBuf) -> Q3ApplicationClientDownloads<'static> {
         let trace_reliable = Rc::clone(&trace);
         let trace_progress = Rc::clone(&trace);
         let trace_packet = Rc::clone(&trace);
@@ -803,31 +789,19 @@ mod tests {
         let owner = RemoteContentRoots {
             base_write_root: dir.join("family").join("base"),
             write_root: dir.join("family").join("game"),
-            selection: qa_content::catalog::remote_content_selection(
-                RemoteContentBase::Q3Baseq3,
-                "mission",
-            )
-            .expect("selection"),
+            selection: qa_content::catalog::remote_content_selection(RemoteContentBase::Q3Baseq3, "mission")
+                .expect("selection"),
             content_directory: "mission".to_string(),
             loose_root: None,
             corpus_root: dir.join("corpus"),
         };
-        assert_eq!(
-            q3_download_path("mission/a.pk3", &owner).expect("mapped"),
-            "game/a.pk3"
-        );
-        assert_eq!(
-            q3_download_path("baseq3/b.pk3", &owner).expect("mapped"),
-            "base/b.pk3"
-        );
+        assert_eq!(q3_download_path("mission/a.pk3", &owner).expect("mapped"), "game/a.pk3");
+        assert_eq!(q3_download_path("baseq3/b.pk3", &owner).expect("mapped"), "base/b.pk3");
         assert_eq!(
             q3_download_path("other/c.pk3", &owner).expect("passthrough"),
             "other/c.pk3"
         );
-        assert_eq!(
-            q3_download_path("lone.pk3", &owner).expect("flat"),
-            "lone.pk3"
-        );
+        assert_eq!(q3_download_path("lone.pk3", &owner).expect("flat"), "lone.pk3");
         assert!(q3_download_path("../evil.pk3", &owner).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -838,11 +812,8 @@ mod tests {
         let owner = RemoteContentRoots {
             base_write_root: dir.join("a").join("base"),
             write_root: dir.join("b").join("game"),
-            selection: qa_content::catalog::remote_content_selection(
-                RemoteContentBase::Q2ClassicBaseq2,
-                "",
-            )
-            .expect("selection"),
+            selection: qa_content::catalog::remote_content_selection(RemoteContentBase::Q2ClassicBaseq2, "")
+                .expect("selection"),
             content_directory: "baseq2".to_string(),
             loose_root: None,
             corpus_root: dir.join("corpus"),
