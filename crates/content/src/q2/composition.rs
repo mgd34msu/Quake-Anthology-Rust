@@ -8,11 +8,16 @@ use crate::q2::foundation::host::Q2GameServices;
 pub mod match_;
 pub mod match_selection;
 pub mod product;
+pub mod save;
 pub mod types;
 
 pub use self::match_::Q2ProductMatch;
 pub use self::match_selection::source_q2_match_selection;
 pub use self::product::{create_q2_product_runtime, Q2ProductExpansion, Q2ProductRerelease, Q2ProductRuntime};
+pub use self::save::{
+    capture_q2_product, restore_q2_product, Q2ProductCheckpoint, Q2ProductExpansionCheckpoint,
+    Q2ProductMatchCheckpoint, Q2ProductRereleaseCheckpoint,
+};
 pub use self::types::{
     set_q2_info_value, Q2ClassicProgram, Q2CompositionCommon, Q2CompositionEntityHooks, Q2CompositionEvent,
     Q2CompositionOptions, Q2CompositionServices, Q2CvarSource, Q2DeathmatchFlagsHooks, Q2ForeignPowerups,
