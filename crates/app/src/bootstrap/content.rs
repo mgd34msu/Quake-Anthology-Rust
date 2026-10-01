@@ -16,17 +16,17 @@
 //! preparation, QVM compatibility, mods/weapons/grapple selection, guest
 //! sources) arrive through [`Q3ProductPreparer`], [`LaunchQvmCompatibility`],
 //! and [`ApplicationContentPreparer`]. BSP bytes live in a caller-provided
-//! arena (`map_bytes`) because the decoded worlds borrow them. The `.lit`
-//! sidecar retains its archive identity in [`ApplicationMapSidecar`]; the
-//! format reader has no lighting-override input, so applying it awaits the
-//! formats lane (the `.ent` override applies post-parse).
+//! arena (`map_bytes`) because the decoded worlds borrow them. The `.ent`
+//! and `.lit` sidecars retain their archive identity in
+//! [`ApplicationMapSidecar`] and thread into [`read_q1_bsp`] through
+//! [`Q1BspOptions`], mirroring the donor's `readQ1Bsp` options.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use qa_content::bsp::{parse_q1_entities, read_q1_bsp, Q1Map};
+use qa_content::bsp::{read_q1_bsp, Q1BspOptions, Q1Map};
 use qa_content::bsp2::{read_q2_bsp, to_q2_world_geometry, Q2DecodedMap, Q2MapResources};
 use qa_content::bsp3::{decode_q3_world, Q3DecodedWorld};
 use qa_content::catalog::weapons::CatalogWeaponSources;
@@ -52,7 +52,7 @@ use qa_content::mounts::{
 use qa_content::paths::{find_content_path, PathComparison};
 use qa_content::user_data::{default_user_content_root, user_product_directory};
 use qa_content::{classify_bsp, BspKind};
-use qa_core::binary::{BinaryError, BinaryReader};
+use qa_core::binary::BinaryError;
 use qa_core::identity::ProviderId;
 use qa_core::time::ClockProfile;
 use thiserror::Error;
@@ -2251,14 +2251,13 @@ where
                 });
                 (entities, lit)
             };
-            let mut parsed = read_q1_bsp(geometry, &map)?;
-            if let Some(entities) = entities {
-                let mut reader = BinaryReader::new(&entities.bytes, &format!("{map}:.ent"));
-                parsed.entities = reader.fixed_byte_string(entities.bytes.len())?;
-                parsed.entity_list = parse_q1_entities(&parsed.entities, &map)?;
-            }
-            drop(lit);
-            ApplicationWorld::Q1(parsed)
+            // Donor `loadApplicationContent`: missing sidecars stay absent from
+            // the reader options (`...(lit === null ? {} : { lit: lit.bytes })`).
+            let bsp_options = Q1BspOptions {
+                entities: entities.as_ref().map(|found| found.bytes.as_slice()),
+                lit: lit.as_ref().map(|found| found.bytes.as_slice()),
+            };
+            ApplicationWorld::Q1(read_q1_bsp(geometry, &map, bsp_options)?)
         }
         BspKind::Q2 => {
             let raw = read_q2_bsp(geometry, &map)?;
