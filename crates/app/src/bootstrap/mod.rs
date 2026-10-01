@@ -16,6 +16,7 @@ pub mod effects;
 pub mod frame_clock;
 pub mod loading;
 pub mod local_lobby;
+pub mod media;
 pub mod menu_art;
 pub mod network;
 pub mod player_progress;
