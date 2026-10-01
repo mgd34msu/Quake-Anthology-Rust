@@ -8,6 +8,7 @@ pub mod mod_callbacks;
 pub mod mod_client_checkpoint;
 pub mod native_q2_rerelease_save;
 pub mod provider_frames;
+pub mod q3_ballistics;
 pub mod quakec_client_adapter;
 pub mod random;
 pub mod source_transition;
