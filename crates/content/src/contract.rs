@@ -12,13 +12,17 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-use qa_core::identity::{ActorId, OwnedActor, ProviderId};
+use qa_core::cmd::{command_text_tail, tokenize_command, Dialect, TextMode};
+use qa_core::cmd_buffer::CommandOrigin;
+use qa_core::cvar::CvarRegistry;
+use qa_core::identity::{ActorId, OwnedActor, ProviderId, SessionId};
 use qa_core::math::{Axis, Bounds, Vec3};
 use qa_core::numeric::NumericProfile;
 use qa_core::time::{ClockProfile, SourceTime};
-use qa_world::session::MissionGate;
+use qa_world::session::{MissionGate, ResourceScope, SessionResource};
+use qa_world::WorldError;
 use thiserror::Error;
 
 /// Largest exactly representable integer (`Number.MAX_SAFE_INTEGER`).
@@ -7995,6 +7999,567 @@ impl SourceMatchServices for ModMatchState {
     }
 }
 
+// Component command routing (donor `src/world/session/mod-commands.ts`).
+// One registry belongs to one prepared world; the application supplies its
+// staged or published buffer. Producer instances are `u64` tokens (donor
+// `symbol`s); script reads are synchronous.
+
+/// Game-module producer tag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModCommandProducer {
+    /// Admitted module identity.
+    pub module: ModuleIdentity,
+    /// Owning instance token.
+    pub instance: u64,
+}
+
+/// Command source with an optional game-module producer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModCommandSource {
+    /// Owning session.
+    pub session: SessionId,
+    /// Input origin.
+    pub origin: CommandOrigin,
+    /// Game-module producer, when the call comes from a bound component.
+    pub producer: Option<ModCommandProducer>,
+}
+
+/// Cvar registry bound to its owning session (`qa-core` registries are
+/// session-agnostic; the donor registry carries its context).
+pub struct ModCommandCvars {
+    /// Owning session.
+    pub session: SessionId,
+    /// Registry.
+    pub registry: Rc<RefCell<CvarRegistry>>,
+}
+
+/// Component command handler, called only for its own entries.
+pub type ModCommandInvokeFn = Rc<dyn Fn(&ModCommandInvocation) -> bool>;
+/// Component script reader, synchronous.
+pub type ModCommandReadScriptFn = Rc<dyn Fn(&str) -> Option<String>>;
+
+/// One component's command binding.
+pub struct ModCommandBinding {
+    /// Component selection.
+    pub selection: ModSelection,
+    /// Admitted module identity.
+    pub module: ModuleIdentity,
+    /// Component cvars.
+    pub cvars: ModCommandCvars,
+    /// Declared command names, if any.
+    pub names: Option<Vec<String>>,
+    /// Command handler.
+    pub invoke: ModCommandInvokeFn,
+    /// Script reader.
+    pub read_script: Option<ModCommandReadScriptFn>,
+}
+
+/// One command invocation routed to a component.
+#[derive(Debug, Clone)]
+pub struct ModCommandInvocation {
+    /// Argument vector.
+    pub argv: Vec<String>,
+    /// Raw text after the first token.
+    pub args_text: String,
+    /// Invocation source.
+    pub source: ModCommandSource,
+    /// Dispatch dialect.
+    pub dialect: Dialect,
+    active: Cell<bool>,
+}
+
+impl ModCommandInvocation {
+    /// Create an active invocation.
+    #[must_use]
+    pub fn new(argv: Vec<String>, args_text: String, source: ModCommandSource, dialect: Dialect) -> Self {
+        Self {
+            argv,
+            args_text,
+            source,
+            dialect,
+            active: Cell::new(true),
+        }
+    }
+
+    /// Fail once the invocation frame retires.
+    pub fn assert_active(&self) -> Result<(), ContractError> {
+        if self.active.get() {
+            Ok(())
+        } else {
+            Err(invalid("Command invocation is no longer active".to_string()))
+        }
+    }
+
+    /// Retire the invocation frame.
+    pub fn retire(&self) {
+        self.active.set(false);
+    }
+}
+
+/// Staged or published command buffer behind one registry. Wiring to the
+/// `qa-core` buffer awaits its producer surface; tests and callers supply
+/// implementations of this donor surface.
+pub trait ModCommandBuffer {
+    /// Owning session.
+    fn session(&self) -> &SessionId;
+    /// Fallback execution source, if any.
+    fn execution_source(&self) -> Option<ModCommandSource>;
+    /// Queue text behind the pending program.
+    fn append(&mut self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError>;
+    /// Queue text ahead of the pending program.
+    fn insert(&mut self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError>;
+    /// Execute text immediately, returning the executed count.
+    fn execute_now(
+        &mut self,
+        text: Option<&str>,
+        source: &ModCommandSource,
+        dialect: Dialect,
+    ) -> Result<usize, ContractError>;
+    /// Discard one producer's queued text.
+    fn discard_producer(&mut self, instance: u64);
+}
+
+/// Shared command buffer handle.
+pub type ModCommandBufferHandle = Rc<RefCell<dyn ModCommandBuffer>>;
+/// Staged or published buffer supplier.
+pub type ModCommandsBufferFn = Rc<dyn Fn() -> Option<ModCommandBufferHandle>>;
+
+/// Pending queue direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    /// Queue behind the pending program.
+    Append,
+    /// Queue ahead of the pending program.
+    Insert,
+}
+
+struct PendingCommand {
+    kind: PendingKind,
+    text: String,
+    source: ModCommandSource,
+    dialect: Dialect,
+}
+
+struct CommandEntry {
+    binding: ModCommandBinding,
+    port: Rc<RefCell<ModCommandPort>>,
+}
+
+struct CommandEntryView {
+    cvars: Rc<RefCell<CvarRegistry>>,
+    names: Option<Vec<String>>,
+    invoke: ModCommandInvokeFn,
+    read_script: Option<ModCommandReadScriptFn>,
+}
+
+struct CommandsInner {
+    context: ModCommandSource,
+    commands: ModCommandsBufferFn,
+    entries: HashMap<u64, CommandEntry>,
+    selections: HashMap<String, u64>,
+    pending: Vec<PendingCommand>,
+    next_instance: u64,
+}
+
+/// Component command registry for one prepared world.
+#[derive(Clone)]
+pub struct ModCommands {
+    inner: Rc<RefCell<CommandsInner>>,
+}
+
+impl ModCommands {
+    /// Create a registry; `commands` supplies the staged or published buffer.
+    pub fn new(context: ModCommandSource, commands: ModCommandsBufferFn) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(CommandsInner {
+                context,
+                commands,
+                entries: HashMap::new(),
+                selections: HashMap::new(),
+                pending: Vec::new(),
+                next_instance: 0,
+            })),
+        }
+    }
+
+    fn submit(
+        &self,
+        kind: PendingKind,
+        text: &str,
+        source: &ModCommandSource,
+        dialect: Dialect,
+    ) -> Result<(), ContractError> {
+        let commands = {
+            let inner = self.inner.borrow();
+            if source.session != inner.context.session {
+                return Err(invalid("Staged command belongs to another session".to_string()));
+            }
+            (inner.commands)()
+        };
+        match commands {
+            None => {
+                self.inner.borrow_mut().pending.push(PendingCommand {
+                    kind,
+                    text: text.to_string(),
+                    source: source.clone(),
+                    dialect,
+                });
+                Ok(())
+            }
+            Some(buffer) => {
+                self.flush()?;
+                match kind {
+                    PendingKind::Append => buffer.borrow_mut().append(text, source, dialect),
+                    PendingKind::Insert => buffer.borrow_mut().insert(text, source, dialect),
+                }
+            }
+        }
+    }
+
+    /// Queue text behind the pending program.
+    pub fn append(&self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError> {
+        self.submit(PendingKind::Append, text, source, dialect)
+    }
+
+    /// Queue text ahead of the pending program.
+    pub fn insert(&self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError> {
+        self.submit(PendingKind::Insert, text, source, dialect)
+    }
+
+    /// Drain queued text into the prepared buffer.
+    pub fn flush(&self) -> Result<(), ContractError> {
+        if self.inner.borrow().pending.is_empty() {
+            return Ok(());
+        }
+        let commands = (self.inner.borrow().commands)();
+        let Some(buffer) = commands else {
+            return Err(invalid(
+                "Source commands require the candidate's prepared command buffer".to_string(),
+            ));
+        };
+        let pending = std::mem::take(&mut self.inner.borrow_mut().pending);
+        for entry in pending {
+            match entry.kind {
+                PendingKind::Append => buffer.borrow_mut().append(&entry.text, &entry.source, entry.dialect)?,
+                PendingKind::Insert => buffer.borrow_mut().insert(&entry.text, &entry.source, entry.dialect)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind one component's commands, owned by `resources`.
+    pub fn bind(
+        &self,
+        binding: ModCommandBinding,
+        resources: Rc<RefCell<ResourceScope>>,
+    ) -> Result<Rc<RefCell<ModCommandPort>>, ContractError> {
+        resources
+            .borrow_mut()
+            .assert_open()
+            .map_err(|error| invalid(error.to_string()))?;
+        let key = mod_selection_key(&binding.selection)?;
+        if binding.module.id != mod_instance_provider(&binding.selection)? {
+            return Err(invalid(
+                "Mod commands require their component's module identity".to_string(),
+            ));
+        }
+        let mut inner = self.inner.borrow_mut();
+        if binding.cvars.session != inner.context.session {
+            return Err(invalid("Mod command cvars belong to another session".to_string()));
+        }
+        if inner.selections.contains_key(&key) {
+            return Err(invalid(format!("Mod commands are already bound: {key}")));
+        }
+        let instance = inner.next_instance;
+        inner.next_instance += 1;
+        let port = Rc::new(RefCell::new(ModCommandPort {
+            producer: ModCommandProducer {
+                module: binding.module.clone(),
+                instance,
+            },
+            key: key.clone(),
+            cvars: binding.cvars.registry.clone(),
+            resources: resources.clone(),
+            resources_name: resources.borrow().name().to_string(),
+            commands: inner.commands.clone(),
+            registry: Rc::downgrade(&self.inner),
+            buffers: RefCell::new(Vec::new()),
+            closed: Cell::new(false),
+        }));
+        inner.entries.insert(
+            instance,
+            CommandEntry {
+                binding,
+                port: port.clone(),
+            },
+        );
+        inner.selections.insert(key, instance);
+        drop(inner);
+        resources
+            .borrow_mut()
+            .own(port.clone())
+            .map_err(|error| invalid(error.to_string()))?;
+        Ok(port)
+    }
+
+    fn entry(&self, source: &ModCommandSource) -> Result<Option<CommandEntryView>, ContractError> {
+        let Some(producer) = source.producer.as_ref() else {
+            return Ok(None);
+        };
+        let inner = self.inner.borrow();
+        if source.session != inner.context.session {
+            return Err(invalid("Mod command source belongs to another session".to_string()));
+        }
+        let Some(entry) = inner.entries.get(&producer.instance) else {
+            return Err(invalid(
+                "Mod command producer is no longer bound to this world".to_string(),
+            ));
+        };
+        let expected = &entry.binding.module;
+        if producer.module.id != expected.id
+            || producer.module.artifact_path != expected.artifact_path
+            || producer.module.digest != expected.digest
+            || producer.module.revision != expected.revision
+        {
+            return Err(invalid(
+                "Mod command source differs from its admitted module".to_string(),
+            ));
+        }
+        Ok(Some(CommandEntryView {
+            cvars: entry.binding.cvars.registry.clone(),
+            names: entry.binding.names.clone(),
+            invoke: entry.binding.invoke.clone(),
+            read_script: entry.binding.read_script.clone(),
+        }))
+    }
+
+    /// Resolve the registry backing a source.
+    pub fn cvars(&self, source: &ModCommandSource) -> Result<Option<Rc<RefCell<CvarRegistry>>>, ContractError> {
+        Ok(self.entry(source)?.map(|view| view.cvars))
+    }
+
+    /// Whether a source's producer is still bound.
+    pub fn active(&self, source: &ModCommandSource) -> Result<bool, ContractError> {
+        let Some(producer) = source.producer.as_ref() else {
+            return Ok(false);
+        };
+        if !self.inner.borrow().entries.contains_key(&producer.instance) {
+            return Ok(false);
+        }
+        Ok(self.entry(source)?.is_some())
+    }
+
+    /// Whether a source handles a command name.
+    pub fn handles(&self, name: &str, source: &ModCommandSource) -> Result<bool, ContractError> {
+        Ok(self.entry(source)?.and_then(|view| view.names).is_some_and(|names| {
+            names
+                .iter()
+                .any(|command| command.to_lowercase() == name.to_lowercase())
+        }))
+    }
+
+    /// Read a script through a source's binding.
+    pub fn read_script(&self, name: &str, source: &ModCommandSource) -> Result<Option<String>, ContractError> {
+        let Some(view) = self.entry(source)? else {
+            return Ok(None);
+        };
+        let Some(read) = view.read_script else { return Ok(None) };
+        Ok(read(name))
+    }
+
+    /// Dispatch an invocation to its source's binding.
+    pub fn invoke(&self, command: &ModCommandInvocation) -> Result<bool, ContractError> {
+        command.assert_active()?;
+        let Some(view) = self.entry(&command.source)? else {
+            return Ok(false);
+        };
+        Ok((view.invoke)(command))
+    }
+
+    /// Execute text immediately through one selection's port.
+    pub fn execute(
+        &self,
+        selection: &ModSelection,
+        text: &str,
+        caller: &ModCommandSource,
+    ) -> Result<usize, ContractError> {
+        let key = mod_selection_key(selection)?;
+        let port = {
+            let inner = self.inner.borrow();
+            let Some(instance) = inner.selections.get(&key) else {
+                return Err(invalid(format!("Mod commands are unavailable: {key}")));
+            };
+            inner.entries.get(instance).map(|entry| entry.port.clone())
+        };
+        let Some(port) = port else {
+            return Err(invalid(format!("Mod commands are unavailable: {key}")));
+        };
+        let executed = port.borrow().execute_now(Some(text), Some(caller));
+        executed
+    }
+}
+
+/// One component's command port.
+pub struct ModCommandPort {
+    producer: ModCommandProducer,
+    key: String,
+    cvars: Rc<RefCell<CvarRegistry>>,
+    resources: Rc<RefCell<ResourceScope>>,
+    resources_name: String,
+    commands: ModCommandsBufferFn,
+    registry: Weak<RefCell<CommandsInner>>,
+    buffers: RefCell<Vec<ModCommandBufferHandle>>,
+    closed: Cell<bool>,
+}
+
+impl ModCommandPort {
+    /// Port producer tag.
+    #[must_use]
+    pub fn producer(&self) -> &ModCommandProducer {
+        &self.producer
+    }
+
+    fn registry_handle(&self) -> Result<ModCommands, ContractError> {
+        self.registry
+            .upgrade()
+            .map(|inner| ModCommands { inner })
+            .ok_or_else(|| invalid("Mod command producer is no longer bound to this world".to_string()))
+    }
+
+    fn current(&self) -> Result<Option<ModCommandBufferHandle>, ContractError> {
+        {
+            let resources = self
+                .resources
+                .try_borrow()
+                .map_err(|_| invalid(format!("{} is closed", self.resources_name)))?;
+            resources.assert_open().map_err(|error| invalid(error.to_string()))?;
+        }
+        if self.closed.get() {
+            return Err(invalid(format!("Mod commands are closed: {}", self.key)));
+        }
+        let session = {
+            let registry = self.registry_handle()?;
+            let session = registry.inner.borrow().context.session.clone();
+            session
+        };
+        let Some(buffer) = (self.commands)() else {
+            return Ok(None);
+        };
+        if buffer.borrow().session() != &session {
+            return Err(invalid("Mod command buffer belongs to another session".to_string()));
+        }
+        let mut tracked = self.buffers.borrow_mut();
+        if !tracked.iter().any(|known| Rc::ptr_eq(known, &buffer)) {
+            tracked.push(buffer.clone());
+        }
+        Ok(Some(buffer))
+    }
+
+    fn source(
+        &self,
+        buffer: Option<&ModCommandBufferHandle>,
+        caller: Option<&ModCommandSource>,
+    ) -> Result<ModCommandSource, ContractError> {
+        let registry = self.registry_handle()?;
+        let context = registry.inner.borrow().context.clone();
+        let base = caller
+            .cloned()
+            .or_else(|| buffer.and_then(|buffer| buffer.borrow().execution_source()));
+        let base = base.unwrap_or(context.clone());
+        if base.session != context.session {
+            return Err(invalid("Mod command caller belongs to another session".to_string()));
+        }
+        Ok(ModCommandSource {
+            session: base.session,
+            origin: base.origin,
+            producer: Some(self.producer.clone()),
+        })
+    }
+
+    fn dialect(&self) -> Dialect {
+        self.cvars.borrow().dialect()
+    }
+
+    /// Queue text behind the pending program.
+    pub fn append(&self, text: &str, caller: Option<&ModCommandSource>) -> Result<(), ContractError> {
+        let buffer = self.current()?;
+        let source = self.source(buffer.as_ref(), caller)?;
+        let dialect = self.dialect();
+        self.registry_handle()?.append(text, &source, dialect)
+    }
+
+    /// Queue text ahead of the pending program.
+    pub fn insert(&self, text: &str, caller: Option<&ModCommandSource>) -> Result<(), ContractError> {
+        let buffer = self.current()?;
+        let source = self.source(buffer.as_ref(), caller)?;
+        let dialect = self.dialect();
+        self.registry_handle()?.insert(text, &source, dialect)
+    }
+
+    /// Execute text immediately.
+    pub fn execute_now(&self, text: Option<&str>, caller: Option<&ModCommandSource>) -> Result<usize, ContractError> {
+        let buffer = self.current()?;
+        let Some(buffer) = buffer else {
+            return Err(invalid(
+                "Immediate mod commands require the candidate's prepared command buffer".to_string(),
+            ));
+        };
+        let source = self.source(Some(&buffer), caller)?;
+        let dialect = self.dialect();
+        let registry = self.registry_handle()?;
+        registry.flush()?;
+        let executed = buffer.borrow_mut().execute_now(text, &source, dialect);
+        executed
+    }
+
+    /// Unbind the port, discarding its queued text. Idempotent.
+    pub fn close(&self) {
+        if self.closed.get() {
+            return;
+        }
+        self.closed.set(true);
+        let Some(inner) = self.registry.upgrade() else { return };
+        {
+            let mut state = inner.borrow_mut();
+            state.entries.remove(&self.producer.instance);
+            state.selections.remove(&self.key);
+            state.pending.retain(|entry| {
+                entry
+                    .source
+                    .producer
+                    .as_ref()
+                    .is_none_or(|producer| producer.instance != self.producer.instance)
+            });
+        }
+        let mut buffers = self.buffers.borrow_mut();
+        if let Some(current) = (self.commands)() {
+            if !buffers.iter().any(|known| Rc::ptr_eq(known, &current)) {
+                buffers.push(current);
+            }
+        }
+        for buffer in buffers.iter() {
+            buffer.borrow_mut().discard_producer(self.producer.instance);
+        }
+    }
+}
+
+impl SessionResource for ModCommandPort {
+    fn close(&mut self) -> Result<(), WorldError> {
+        ModCommandPort::close(self);
+        Ok(())
+    }
+}
+
+/// Read a `modcmd` console line into its selection and command text.
+pub fn read_mod_command(raw: &str) -> Result<(ModSelection, String), ContractError> {
+    let tokens = tokenize_command(raw, Dialect::Q3, TextMode::Source).map_err(|error| invalid(error.to_string()))?;
+    let text = command_text_tail(raw, Dialect::Q3, 2).map_err(|error| invalid(error.to_string()))?;
+    match (tokens.argv.get(1), text.is_empty()) {
+        (Some(selected), false) => Ok((read_mod_selection(selected)?, text)),
+        _ => Err(invalid("Usage: modcmd PRODUCT/COMPONENT_ID <command>".to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8652,5 +9217,275 @@ mod tests {
         assert!(state.objective(&"q1:key".to_string()).is_none());
         assert!(state.objectives().is_empty());
         state.close();
+    }
+
+    #[derive(Default)]
+    struct BufferLogs {
+        appended: Vec<(String, ModCommandSource, Dialect)>,
+        inserted: Vec<(String, ModCommandSource, Dialect)>,
+        executed: Vec<(Option<String>, ModCommandSource, Dialect)>,
+        discarded: Vec<u64>,
+    }
+
+    struct FakeBuffer {
+        session: SessionId,
+        logs: Rc<RefCell<BufferLogs>>,
+    }
+
+    impl ModCommandBuffer for FakeBuffer {
+        fn session(&self) -> &SessionId {
+            &self.session
+        }
+
+        fn execution_source(&self) -> Option<ModCommandSource> {
+            None
+        }
+
+        fn append(&mut self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError> {
+            self.logs
+                .borrow_mut()
+                .appended
+                .push((text.to_string(), source.clone(), dialect));
+            Ok(())
+        }
+
+        fn insert(&mut self, text: &str, source: &ModCommandSource, dialect: Dialect) -> Result<(), ContractError> {
+            self.logs
+                .borrow_mut()
+                .inserted
+                .push((text.to_string(), source.clone(), dialect));
+            Ok(())
+        }
+
+        fn execute_now(
+            &mut self,
+            text: Option<&str>,
+            source: &ModCommandSource,
+            dialect: Dialect,
+        ) -> Result<usize, ContractError> {
+            self.logs
+                .borrow_mut()
+                .executed
+                .push((text.map(str::to_string), source.clone(), dialect));
+            Ok(1)
+        }
+
+        fn discard_producer(&mut self, instance: u64) {
+            self.logs.borrow_mut().discarded.push(instance);
+        }
+    }
+
+    fn command_fixture() -> (ModCommands, Rc<RefCell<BufferLogs>>, ModCommandSource) {
+        use qa_core::identity::IdentityOwner;
+
+        let ids = IdentityOwner::create("mod-commands").unwrap();
+        let context = ModCommandSource {
+            session: ids.session().clone(),
+            origin: CommandOrigin::ServerConsole,
+            producer: None,
+        };
+        let logs = Rc::new(RefCell::new(BufferLogs::default()));
+        let buffer: ModCommandBufferHandle = Rc::new(RefCell::new(FakeBuffer {
+            session: context.session.clone(),
+            logs: logs.clone(),
+        }));
+        let registry = ModCommands::new(context.clone(), Rc::new(move || Some(buffer.clone())));
+        (registry, logs, context)
+    }
+
+    fn command_binding(
+        id: &str,
+        dialect: Dialect,
+        context: &ModCommandSource,
+        seen: Rc<RefCell<Vec<String>>>,
+    ) -> ModCommandBinding {
+        let selection = ModSelection {
+            product: "source".to_string(),
+            id: id.to_string(),
+        };
+        let registry = Rc::new(RefCell::new(CvarRegistry::new(dialect)));
+        registry.borrow_mut().register("value", id, 0).unwrap();
+        ModCommandBinding {
+            selection: selection.clone(),
+            module: ModuleIdentity {
+                id: mod_instance_provider(&selection).unwrap(),
+                artifact_path: "game.dll".to_string(),
+                digest: create_content_digest(&"a".repeat(64)).unwrap(),
+                revision: "original".to_string(),
+            },
+            cvars: ModCommandCvars {
+                session: context.session.clone(),
+                registry,
+            },
+            names: Some(vec!["original".to_string()]),
+            invoke: Rc::new(move |command: &ModCommandInvocation| {
+                seen.borrow_mut().push(command.argv[0].clone());
+                command.argv[0] == "original"
+            }),
+            read_script: Some(Rc::new(|name: &str| {
+                if name == "autoexec.cfg" {
+                    Some("echo hi".to_string())
+                } else {
+                    None
+                }
+            })),
+        }
+    }
+
+    #[test]
+    fn mod_ports_route_through_producer_sources() {
+        let (registry, logs, context) = command_fixture();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let resources = Rc::new(RefCell::new(ResourceScope::new("first")));
+        let port = registry
+            .bind(
+                command_binding("a", Dialect::Q3, &context, seen.clone()),
+                resources.clone(),
+            )
+            .unwrap();
+        port.borrow().append("wait\n", None).unwrap();
+        port.borrow().insert("echo early\n", None).unwrap();
+        assert_eq!(port.borrow().execute_now(Some("version"), None).unwrap(), 1);
+        {
+            let logs = logs.borrow();
+            assert_eq!(logs.appended.len(), 1);
+            assert_eq!(logs.appended[0].0, "wait\n");
+            assert_eq!(logs.appended[0].2, Dialect::Q3);
+            assert_eq!(logs.inserted.len(), 1);
+            assert_eq!(logs.executed.len(), 1);
+            let producer = logs.appended[0].1.producer.as_ref().unwrap();
+            assert_eq!(producer.instance, port.borrow().producer().instance);
+            assert_eq!(logs.appended[0].1.session, context.session);
+        }
+        let source = ModCommandSource {
+            session: context.session.clone(),
+            origin: CommandOrigin::ServerConsole,
+            producer: Some(port.borrow().producer().clone()),
+        };
+        assert!(registry.active(&source).unwrap());
+        assert!(registry.handles("ORIGINAL", &source).unwrap());
+        assert!(!registry.handles("other", &source).unwrap());
+        let cvars = registry.cvars(&source).unwrap().unwrap();
+        assert_eq!(cvars.borrow().variable_string("value"), "a");
+        assert_eq!(
+            registry.read_script("autoexec.cfg", &source).unwrap(),
+            Some("echo hi".to_string())
+        );
+        let command =
+            ModCommandInvocation::new(vec!["original".to_string()], String::new(), source.clone(), Dialect::Q3);
+        assert!(registry.invoke(&command).unwrap());
+        assert_eq!(*seen.borrow(), vec!["original".to_string()]);
+        let retired =
+            ModCommandInvocation::new(vec!["original".to_string()], String::new(), source.clone(), Dialect::Q3);
+        retired.retire();
+        assert_eq!(
+            registry.invoke(&retired).expect_err("retired invocation").to_string(),
+            "Command invocation is no longer active"
+        );
+        assert_eq!(
+            registry
+                .execute(
+                    &ModSelection {
+                        product: "source".to_string(),
+                        id: "a".to_string()
+                    },
+                    "status",
+                    &context
+                )
+                .unwrap(),
+            1
+        );
+        port.borrow().close();
+        assert!(!registry.active(&source).unwrap());
+        assert_eq!(
+            port.borrow()
+                .append("stale\n", None)
+                .expect_err("closed port")
+                .to_string(),
+            "Mod commands are closed: source/a"
+        );
+        assert_eq!(logs.borrow().discarded, vec![port.borrow().producer().instance]);
+        resources.borrow_mut().close().unwrap();
+    }
+
+    #[test]
+    fn mod_commands_reject_foreign_bindings_and_queue_staged() {
+        use qa_core::identity::IdentityOwner;
+
+        let (registry, logs, context) = command_fixture();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let resources = Rc::new(RefCell::new(ResourceScope::new("scope")));
+        registry
+            .bind(
+                command_binding("a", Dialect::Q3, &context, seen.clone()),
+                resources.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .bind(
+                    command_binding("a", Dialect::Q3, &context, seen.clone()),
+                    resources.clone()
+                )
+                .err()
+                .expect("duplicate bind")
+                .to_string(),
+            "Mod commands are already bound: source/a"
+        );
+        let mut foreign = command_binding("b", Dialect::Q3, &context, seen.clone());
+        foreign.module.id = ProviderId::new("mod", "other");
+        assert_eq!(
+            registry
+                .bind(foreign, resources.clone())
+                .err()
+                .expect("foreign module")
+                .to_string(),
+            "Mod commands require their component's module identity"
+        );
+        let other = IdentityOwner::create("other").unwrap();
+        let mut crossed = command_binding("c", Dialect::Q3, &context, seen);
+        crossed.cvars.session = other.session().clone();
+        assert_eq!(
+            registry
+                .bind(crossed, resources.clone())
+                .err()
+                .expect("foreign cvars")
+                .to_string(),
+            "Mod command cvars belong to another session"
+        );
+        let staged = ModCommands::new(context.clone(), Rc::new(|| None));
+        let pending = ModCommandSource {
+            session: context.session.clone(),
+            origin: CommandOrigin::ServerConsole,
+            producer: None,
+        };
+        staged.append("deferred\n", &pending, Dialect::Q3).unwrap();
+        assert_eq!(
+            staged.flush().expect_err("missing buffer").to_string(),
+            "Source commands require the candidate's prepared command buffer"
+        );
+        let (selection, text) = read_mod_command("modcmd source/a status").unwrap();
+        assert_eq!(selection.id, "a");
+        assert_eq!(text, "status");
+        assert_eq!(
+            read_mod_command("modcmd").expect_err("usage").to_string(),
+            "Usage: modcmd PRODUCT/COMPONENT_ID <command>"
+        );
+        assert_eq!(
+            registry
+                .execute(
+                    &ModSelection {
+                        product: "source".to_string(),
+                        id: "missing".to_string()
+                    },
+                    "status",
+                    &context
+                )
+                .expect_err("missing selection")
+                .to_string(),
+            "Mod commands are unavailable: source/missing"
+        );
+        resources.borrow_mut().close().unwrap();
+        assert_eq!(logs.borrow().discarded.len(), 1);
     }
 }
