@@ -25,3 +25,5 @@ pub mod triggers;
 mod error;
 
 pub use error::WorldError;
+// Re-exports mirror `src/world/session/index.ts`.
+pub use session::{ResourceScope, SessionResource};

@@ -171,4 +171,21 @@ pub enum WorldError {
     /// Server is closed.
     #[error("Server is closed")]
     ServerClosed,
+    /// Resource scope is closed.
+    #[error("{0} is closed")]
+    ResourceClosed(String),
+    /// Closing a resource scope failed; member messages are kept in `errors`.
+    #[error("Failed to close {name}")]
+    CloseFailed {
+        /// Scope name.
+        name: String,
+        /// Member failure messages, in reverse-acquisition order.
+        errors: Vec<String>,
+    },
+    /// Client slot is occupied.
+    #[error("Client slot {0} is occupied")]
+    ClientSlotOccupied(u32),
+    /// Client slot generation is exhausted.
+    #[error("Client slot generation is exhausted")]
+    ClientGenerationExhausted,
 }

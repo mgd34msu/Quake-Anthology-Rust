@@ -1098,6 +1098,119 @@ impl TransitionCoordinator {
     }
 }
 
+// Session resources (donor `src/world/session/resources.ts`).
+
+/// A closable session resource.
+pub trait SessionResource {
+    /// Release the resource; closing twice succeeds without running cleanups again.
+    fn close(&mut self) -> Result<(), WorldError>;
+}
+
+/// Reverse-acquisition cleanup scope: cleanups run last-in-first-out, like
+/// the Q3 host's deferred resource cleanup.
+pub struct ResourceScope {
+    name: String,
+    cleanups: Vec<Box<dyn FnOnce() -> Result<(), WorldError>>>,
+    closed: bool,
+}
+
+impl ResourceScope {
+    /// Open a scope.
+    #[must_use]
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            cleanups: Vec::new(),
+            closed: false,
+        }
+    }
+
+    /// Scope name used in failure messages.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether the scope is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Fail when the scope is closed.
+    pub fn assert_open(&self) -> Result<(), WorldError> {
+        if self.closed {
+            return Err(WorldError::ResourceClosed(self.name.clone()));
+        }
+        Ok(())
+    }
+
+    /// Defer a cleanup to scope close.
+    pub fn defer<F>(&mut self, cleanup: F) -> Result<(), WorldError>
+    where
+        F: FnOnce() -> Result<(), WorldError> + 'static,
+    {
+        self.assert_open()?;
+        self.cleanups.push(Box::new(cleanup));
+        Ok(())
+    }
+
+    /// Own a shared resource: its close runs at scope close, after later
+    /// cleanups. Returns the same handle. Callers must not hold a borrow of
+    /// the resource across scope close.
+    pub fn own<T>(&mut self, resource: Rc<RefCell<T>>) -> Result<Rc<RefCell<T>>, WorldError>
+    where
+        T: SessionResource + 'static,
+    {
+        self.assert_open()?;
+        let owned = resource.clone();
+        self.cleanups.push(Box::new(move || owned.borrow_mut().close()));
+        Ok(resource)
+    }
+
+    /// Run cleanups last-in-first-out, aggregating failures. Idempotent.
+    pub fn close(&mut self) -> Result<(), WorldError> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        let mut errors = Vec::new();
+        while let Some(cleanup) = self.cleanups.pop() {
+            if let Err(error) = cleanup() {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(WorldError::CloseFailed {
+                name: self.name.clone(),
+                errors,
+            })
+        }
+    }
+}
+
+impl SessionResource for ResourceScope {
+    fn close(&mut self) -> Result<(), WorldError> {
+        ResourceScope::close(self)
+    }
+}
+
+impl Drop for ResourceScope {
+    /// Backstop: run unclaimed cleanups without reporting failures.
+    /// Prefer explicit [`ResourceScope::close`] so failures surface.
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        while let Some(cleanup) = self.cleanups.pop() {
+            let _ = cleanup();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1216,5 +1329,70 @@ mod tests {
             coordinator.commit(&travel, &mut |_| {}),
             Err(WorldError::TransitionStale)
         );
+    }
+
+    #[test]
+    fn resource_scope_closes_last_in_first_out() {
+        let mut scope = ResourceScope::new("test");
+        let order = Rc::new(RefCell::new(Vec::new()));
+        for name in ["first", "second", "third"] {
+            let order = order.clone();
+            scope
+                .defer(move || {
+                    order.borrow_mut().push(name);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        scope.close().unwrap();
+        assert_eq!(*order.borrow(), vec!["third", "second", "first"]);
+        assert!(scope.is_closed());
+        scope.close().unwrap();
+        assert_eq!(order.borrow().len(), 3);
+    }
+
+    #[test]
+    fn resource_scope_aggregates_close_failures() {
+        let mut scope = ResourceScope::new("flaky");
+        scope
+            .defer(|| Err(WorldError::CommandUsage("first failure".to_string())))
+            .unwrap();
+        scope.defer(|| Ok(())).unwrap();
+        scope
+            .defer(|| Err(WorldError::CommandUsage("second failure".to_string())))
+            .unwrap();
+        let error = scope.close().unwrap_err();
+        assert_eq!(
+            error,
+            WorldError::CloseFailed {
+                name: "flaky".to_string(),
+                errors: vec!["second failure".to_string(), "first failure".to_string()],
+            }
+        );
+        assert_eq!(error.to_string(), "Failed to close flaky");
+        assert_eq!(
+            scope.defer(|| Ok(())),
+            Err(WorldError::ResourceClosed("flaky".to_string()))
+        );
+    }
+
+    #[test]
+    fn resource_scope_owns_shared_resources() {
+        let mut scope = ResourceScope::new("owner");
+        let owned = Rc::new(RefCell::new(ResourceScope::new("child")));
+        let closed = Rc::new(RefCell::new(false));
+        let seen = closed.clone();
+        owned
+            .borrow_mut()
+            .defer(move || {
+                *seen.borrow_mut() = true;
+                Ok(())
+            })
+            .unwrap();
+        let handle = scope.own(owned).unwrap();
+        assert!(!handle.borrow().is_closed());
+        scope.close().unwrap();
+        assert!(*closed.borrow());
+        assert!(handle.borrow().is_closed());
     }
 }
