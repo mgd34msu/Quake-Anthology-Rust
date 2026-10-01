@@ -10,6 +10,8 @@ use std::io::Write;
 
 use qa_client::render::NullRenderer;
 
+use qa_content::catalog::{discover_installed_content, DiscoverContentOptions, ProductAvailability};
+
 use crate::application::Application;
 use crate::error::AppError;
 use crate::options::{parse_application_command, ApplicationCommand, HELP, WEAPON_BEHAVIOR_HELP};
@@ -61,33 +63,27 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
     }
 }
 
-/// List the corpus-root directory entries (provisional: catalog discovery
-/// is not ported yet, so this reports raw directory names).
+/// List installed content discovered beneath the corpus root.
 fn list_content(corpus_root: &str, stdout: &mut dyn Write) {
     let _ = writeln!(stdout, "corpus root: {corpus_root}");
-    let entries = std::fs::read_dir(corpus_root).map(|entries| {
-        let mut names: Vec<String> = entries
-            .filter_map(|entry| entry.ok())
-            .map(|entry| {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    format!("{name}/")
-                } else {
-                    name
+    match discover_installed_content(&DiscoverContentOptions::new(corpus_root.into())) {
+        Ok(catalog) => {
+            for product in &catalog.products {
+                let status = match &product.availability {
+                    ProductAvailability::Installed => "installed".to_string(),
+                    ProductAvailability::Missing { requirements } => {
+                        format!("missing: {}", requirements.join(", "))
+                    }
+                    ProductAvailability::Unresolved { reason } => format!("unresolved: {reason}"),
+                };
+                let _ = writeln!(stdout, "{} [{}]", product.expectation.id, status);
+                for archive in &product.archives {
+                    let _ = writeln!(stdout, "  {}", archive.path);
                 }
-            })
-            .collect();
-        names.sort();
-        names
-    });
-    match entries {
-        Ok(names) => {
-            for name in names {
-                let _ = writeln!(stdout, "{name}");
             }
         }
-        Err(_) => {
-            let _ = writeln!(stdout, "(missing or unreadable; catalog discovery is not ported yet)");
+        Err(error) => {
+            let _ = writeln!(stdout, "(catalog discovery failed: {error})");
         }
     }
 }
@@ -143,10 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn list_content_reports_corpus_root() {
-        let (code, stdout, _) = run_text(&["--list-content", "--content-root", "/nonexistent-qa-muse"]);
+    fn list_content_reports_catalog_products() {
+        let root = std::env::temp_dir().join("qa-muse-list-content");
+        let _ = std::fs::create_dir_all(&root);
+        let root = root.to_string_lossy().into_owned();
+        let (code, stdout, _) = run_text(&["--list-content", "--content-root", root.as_str()]);
         assert_eq!(code, 0);
-        assert!(stdout.contains("corpus root: /nonexistent-qa-muse"), "{stdout}");
-        assert!(stdout.contains("not ported yet"), "{stdout}");
+        assert!(stdout.contains(format!("corpus root: {root}").as_str()), "{stdout}");
+        assert!(stdout.contains("q1-classic-id1"), "{stdout}");
+        assert!(!stdout.contains("not ported yet"), "{stdout}");
     }
 }

@@ -38,6 +38,15 @@ pub enum CollisionRole {
     Trigger,
 }
 
+/// Quake III entity/owner numbering behind pass-through traces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Q3Owner {
+    /// Entity number.
+    pub entity_number: i32,
+    /// Owner number (`1023` unowned).
+    pub owner_number: i32,
+}
+
 /// Collision record attached to a linked body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActorCollision {
@@ -57,6 +66,8 @@ pub struct ActorCollision {
     pub dead_monster: bool,
     /// Rerelease corpse policy: point attacks hit; bodies pass through.
     pub q1_corpse: bool,
+    /// Quake III entity/owner numbering, when linked from Q3 content.
+    pub q3_owner: Option<Q3Owner>,
 }
 
 /// Linked body plus its collision record.
@@ -384,6 +395,7 @@ mod tests {
                 monster: false,
                 dead_monster: false,
                 q1_corpse: false,
+                q3_owner: None,
             },
         )
     }

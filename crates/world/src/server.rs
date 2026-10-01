@@ -481,6 +481,7 @@ impl<L: ServerLogic> Server<L> {
                     monster: false,
                     dead_monster: false,
                     q1_corpse: false,
+                    q3_owner: None,
                 },
             );
         }

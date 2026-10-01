@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+qa-content = { workspace = true }
 qa-core = { workspace = true }
 qa-world = { workspace = true }
