@@ -82,7 +82,7 @@ fn match_teleport(actor: ActorId, game: &mut Q2GameServices, origin: Vec3, angle
 
 /// Chase as a match player (`chase`).
 fn match_chase(actor: ActorId, game: &mut Q2GameServices) {
-    if game.players.states.get(&actor).is_none() || game.entity(&actor).is_none() {
+    if !game.players.states.contains_key(&actor) || game.entity(&actor).is_none() {
         panic!("Match chase requires an admitted player");
     }
     match_players(game).chase(actor, game, 1, true);

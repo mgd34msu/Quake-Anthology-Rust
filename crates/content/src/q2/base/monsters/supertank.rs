@@ -50,7 +50,7 @@ fn supertank_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         return;
     }
     let frame = context.entity().frame;
-    if context.game.options.skill >= 2 && frame >= supertank_frame::ATTAK2_1 && frame <= supertank_frame::ATTAK2_14 {
+    if context.game.options.skill >= 2 && (supertank_frame::ATTAK2_1..=supertank_frame::ATTAK2_14).contains(&frame) {
         return;
     }
     let now = context.game.host.now();

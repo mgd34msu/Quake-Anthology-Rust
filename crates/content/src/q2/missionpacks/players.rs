@@ -47,9 +47,7 @@ impl Q2RoguePlayerSpawns {
                 highest_lava = Some(lava);
             }
         }
-        if highest_lava.is_none() {
-            return None;
-        }
+        highest_lava.as_ref()?;
         lava_top += 64.0;
         let mut count = 0;
         let mut lowest = 999999.0f32;
@@ -70,17 +68,17 @@ impl Q2RoguePlayerSpawns {
             let mut distance: f64 = 9999999.0;
             for player in game.host.players() {
                 let body = game.host.bodies().read(&player);
-                if body.is_some()
-                    && game
+                if let Some(body) = body {
+                    if game
                         .host
                         .combat()
                         .read(&player)
                         .map(|combat| combat.health)
                         .unwrap_or(0.0)
                         > 0.0
-                {
-                    let body = body.expect("rogue lava player body is missing");
-                    distance = distance.min(f64::from(length3(sub3(origin, body.origin))));
+                    {
+                        distance = distance.min(f64::from(length3(sub3(origin, body.origin))));
+                    }
                 }
             }
             if distance > 32.0 && origin.z < lowest {

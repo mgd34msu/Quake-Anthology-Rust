@@ -231,8 +231,8 @@ fn proboscis_hit(
     let body = game.body_of(tip.clone());
     let target = game.host.bodies().read(&other);
     let owner_enemy = game.require_entity(&owner).enemy.clone();
-    let position = if target.is_some() && (game.host.is_player(&other) || owner_enemy == Some(other.clone())) {
-        let target = target.expect("proboscis target");
+    let target = target.filter(|_| game.host.is_player(&other) || owner_enemy == Some(other.clone()));
+    let position = if let Some(target) = target {
         let position = if start_solid {
             point
         } else {
@@ -350,8 +350,8 @@ fn proboscis_think(tip: ActorId, game: &mut Q2GameServices) {
         return;
     }
     let enemy = game.require_entity(&tip).enemy.clone();
-    if style == 1 && enemy.is_some() {
-        let enemy = enemy.expect("proboscis enemy");
+    let enemy = enemy.filter(|_| style == 1);
+    if let Some(enemy) = enemy {
         let target = game.host.bodies().read(&enemy);
         let combat = game.host.combat().read(&enemy);
         let drainable = match (&target, &combat) {

@@ -20,7 +20,7 @@ pub fn q2_rerelease_color(value: &str) -> i32 {
     if !value.contains(' ') {
         return native_atoi(value).unwrap_or_else(|_| panic!("Native numbers require byte characters"));
     }
-    let tokens: Vec<&str> = value.trim().split_whitespace().collect();
+    let tokens: Vec<&str> = value.split_whitespace().collect();
     let mut components = [0.0, 0.0, 0.0, 1.0];
     for (index, component) in components.iter_mut().enumerate() {
         if let Some(token) = tokens.get(index) {

@@ -425,12 +425,12 @@ impl Q2MoverModule {
         game.movers.doors = HashMap::new();
         game.movers.trains = HashMap::new();
         for saved in &checkpoint.doors {
-            let actor = restore_mover_actor(game, saved.actor.clone());
-            let master = restore_mover_actor(game, saved.master.clone());
+            let actor = restore_mover_actor(game, saved.actor);
+            let master = restore_mover_actor(game, saved.master);
             let team = saved
                 .team
                 .iter()
-                .map(|member| restore_mover_actor(game, member.clone()))
+                .map(|member| restore_mover_actor(game, *member))
                 .collect();
             game.movers.doors.insert(
                 actor,
@@ -453,11 +453,11 @@ impl Q2MoverModule {
             );
         }
         for saved in &checkpoint.trains {
-            let actor = restore_mover_actor(game, saved.actor.clone());
+            let actor = restore_mover_actor(game, saved.actor);
             let destination = saved
                 .destination
                 .as_ref()
-                .map(|destination| restore_mover_actor(game, destination.clone()));
+                .map(|destination| restore_mover_actor(game, *destination));
             game.movers.trains.insert(
                 actor,
                 TrainState {
@@ -965,7 +965,7 @@ fn spawn_door(this: ActorId, game: &mut Q2GameServices) {
             debounce: 0.0,
         },
     );
-    if game.require_entity(&this).spawn.values.get("team").is_none() {
+    if !game.require_entity(&this).spawn.values.contains_key("team") {
         game.require_entity_mut(&this).team_master = Some(this.clone());
     }
     if water {

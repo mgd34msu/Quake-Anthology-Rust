@@ -430,7 +430,7 @@ pub fn create_rerelease_chick_definitions() -> Vec<Q2MonsterDefinition> {
         175.0,
         -70.0,
         200.0,
-        base.bounds.clone(),
+        base.bounds,
         1.0,
         &base.initial_move,
         chick_moves(),

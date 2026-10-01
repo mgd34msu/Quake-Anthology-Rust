@@ -112,13 +112,13 @@ fn soldierh_fire(context: &mut MonsterContext, index: usize) {
         ));
     }
     if skin < 2 {
-        let weapons = mission_weapons(&mut *context.game);
+        let weapons = mission_weapons(&*context.game);
         weapons.fire_ion_ripper(actor, &mut *context.game, start, direction, 5.0, 600.0, 0x100000);
         monster_muzzle(context, flash as i32, direction, start);
         return;
     }
     if skin < 4 {
-        let weapons = mission_weapons(&mut *context.game);
+        let weapons = mission_weapons(&*context.game);
         weapons.fire_blue_blaster(actor, &mut *context.game, start, direction, 1.0, 600.0, 0x400000);
         monster_muzzle(context, 17, direction, start);
         return;
@@ -155,7 +155,7 @@ fn soldierh_fire(context: &mut MonsterContext, index: usize) {
 /// Hyper refire (`hyperRefire`).
 fn soldierh_hyper_refire_inner(context: &mut MonsterContext, second: bool) {
     let skin = context.entity().skin;
-    if skin < 2 || skin >= 4 {
+    if !(2..4).contains(&skin) {
         return;
     }
     if context.game.random() < 0.7 {
@@ -392,7 +392,7 @@ fn soldierh_walk1_random(context: &mut MonsterContext) {
 /// Hyper sound (`soldierh_hyper_sound`).
 fn soldierh_hyper_sound(context: &mut MonsterContext) {
     let skin = context.entity().skin;
-    if skin >= 2 && skin < 4 {
+    if (2..4).contains(&skin) {
         let actor = context.actor().clone();
         context.game.sound(&actor, "weapons/hyprbl1a.wav", 0, 1.0, 1.0);
     }

@@ -57,7 +57,6 @@ pub trait Q2ActorRegistry {
 /// arena directly. Behavior matches the donor: entity continuations,
 /// monster contexts, perception state and source-slot cooldowns all
 /// observe the release exactly once.
-
 /// Shared body table surface used by Q2 (`SharedBodyTable`).
 pub trait Q2BodyTable {
     /// Create a body record.

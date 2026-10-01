@@ -238,23 +238,23 @@ impl std::fmt::Debug for Q2CompositionCommon {
 pub enum Q2CompositionOptions {
     /// Classic composition.
     Classic {
-        /// Shared options.
-        common: Q2CompositionCommon,
+        /// Shared options (boxed: the common block is ~1KB).
+        common: Box<Q2CompositionCommon>,
         /// Program.
         program: Q2ClassicProgram,
     },
     /// Rerelease composition.
     Rerelease {
-        /// Shared options.
-        common: Q2CompositionCommon,
+        /// Shared options (boxed: the common block is ~1KB).
+        common: Box<Q2CompositionCommon>,
         /// Program.
         program: Q2RereleaseProgram,
         /// Rerelease hooks.
         rerelease_hooks: Q2RereleaseHooks,
         /// Rerelease option overrides.
         rerelease_options: Option<Q2RereleaseOptions>,
-        /// Campaign state override.
-        campaign: Option<Q2RereleaseCampaignState>,
+        /// Campaign state override (boxed: the state is 160 bytes).
+        campaign: Option<Box<Q2RereleaseCampaignState>>,
     },
 }
 

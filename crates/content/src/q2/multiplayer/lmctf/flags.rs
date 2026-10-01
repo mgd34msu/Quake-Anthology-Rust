@@ -208,7 +208,7 @@ impl LmctfFlags {
                 actor: SavedActorId::from(actor),
             })
             .collect();
-        flags.sort_by(|left, right| left.team.cmp(&right.team));
+        flags.sort_by_key(|left| left.team);
         LmctfFlagsCheckpoint {
             flags,
             last_taken_sound: game.lmctf.flag_taken_sound,

@@ -84,7 +84,7 @@ fn gunner_grenade(context: &mut MonsterContext) {
         context.state_mut().manual_steering = false;
         (0.1, 56)
     };
-    if current >= gunner_frame::ATTAK301 && current <= gunner_frame::ATTAK324 {
+    if (gunner_frame::ATTAK301..=gunner_frame::ATTAK324).contains(&current) {
         id = rerelease_flash::GUNNER_GRENADE2_1 + 56 - id;
     }
     let seen = visible(context, None);
@@ -475,7 +475,7 @@ pub fn rerelease_gunner_definition() -> Q2MonsterDefinition {
         175.0,
         -70.0,
         200.0,
-        base.bounds.clone(),
+        base.bounds,
         f64::from(1.15f32),
         "gunner_move_stand",
         gunner_moves(),

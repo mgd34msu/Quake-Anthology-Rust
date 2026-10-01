@@ -216,7 +216,7 @@ impl Q2MonsterSourceCombatHooks for RogueCombatHooks {
     fn recover_enemy(&mut self, context: &mut MonsterContext) -> Option<ActorId> {
         let actor = context.actor().clone();
         let candidate = rogue_state(&mut *context.game, &actor).last_player_enemy.clone();
-        let Some(candidate) = candidate else { return None };
+        let candidate = candidate?;
         if health(&mut *context.game, Some(&candidate)) <= 0.0 {
             return None;
         }

@@ -58,7 +58,7 @@ fn boss5_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         return;
     }
     let frame = context.entity().frame;
-    if context.game.options.skill >= 2 && frame >= boss5_frame::ATTAK2_1 && frame <= boss5_frame::ATTAK2_14 {
+    if context.game.options.skill >= 2 && (boss5_frame::ATTAK2_1..=boss5_frame::ATTAK2_14).contains(&frame) {
         return;
     }
     let now = context.game.host.now();

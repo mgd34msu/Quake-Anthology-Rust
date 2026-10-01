@@ -79,6 +79,12 @@ pub struct PendingMonsterDamage {
     pub attack: Option<crate::q2::support::contracts::AttackProvenance>,
 }
 
+/// External path-follower factory.
+pub type Q2PathFollowerFactory = Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2PathFollower>>>;
+
+/// External combat-follower factory.
+pub type Q2CombatFollowerFactory = Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2CombatFollower>>>;
+
 /// Monster arena runtime.
 pub struct MonsterRuntime {
     /// Definitions by classname.
@@ -106,9 +112,9 @@ pub struct MonsterRuntime {
     /// Ballistics bundle.
     pub weapons: self::types::MonsterWeapons,
     /// External path follower factory.
-    pub external_path_follower: Option<Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2PathFollower>>>>,
+    pub external_path_follower: Option<Q2PathFollowerFactory>,
     /// External combat follower factory.
-    pub external_combat_follower: Option<Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2CombatFollower>>>>,
+    pub external_combat_follower: Option<Q2CombatFollowerFactory>,
     /// Flyer follow-up move (one shared slot per game, like the donor).
     pub flyer_next: Option<self::types::MonsterFlyerNext>,
     /// Shared power-armor cell stores by actor (`bindPowerArmorCells`).
@@ -1307,8 +1313,7 @@ fn start_monster(context: &mut MonsterContext) {
             if !spawn_dead {
                 context.stand();
             }
-        } else {
-            let target = target.expect("mission goal body");
+        } else if let Some(target) = target {
             let actor = context.actor().clone();
             let origin = context.game.body_of(actor.clone()).origin;
             let yaw = f64::from(ai::vector_angles(sub3(target.origin, origin)).y);
@@ -2355,7 +2360,7 @@ pub fn register_monster(
     for movement in &definition.moves {
         for frame in &movement.frames {
             if let MonsterAi::Source(name) = &frame.ai {
-                if definition.ai.get(name).is_none() {
+                if !definition.ai.contains_key(name) {
                     panic!("Missing Q2 source AI {name}");
                 }
             }
@@ -2372,7 +2377,7 @@ pub fn register_monster(
             }
         }
         for callback in callbacks.into_iter().flatten() {
-            if definition.callbacks.get(&callback).is_none() && shared_callback(&callback).is_none() {
+            if !definition.callbacks.contains_key(&callback) && shared_callback(&callback).is_none() {
                 panic!("Q2 move {} references missing callback {callback}", movement.name);
             }
         }

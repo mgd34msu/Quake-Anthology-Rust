@@ -269,6 +269,12 @@ pub struct Q2SpawnPlacement {
     pub angles: Vec3,
 }
 
+/// Score-a-death hook function.
+pub type Q2PlayerScoreHook = fn(ActorId, Option<ActorId>, &mut Q2GameServices, i32, i32, ActorId);
+
+/// Client-command hook function.
+pub type Q2PlayerCommandHook = fn(ActorId, &mut Q2GameServices, &str, &[String]) -> bool;
+
 /// Player hooks (`Q2PlayerHooks`).
 #[derive(Debug, Clone, Copy)]
 pub struct Q2PlayerHooks {
@@ -293,7 +299,7 @@ pub struct Q2PlayerHooks {
     /// Whether an address is banned.
     pub banned: fn(&str) -> bool,
     /// Score a death.
-    pub score: Option<fn(ActorId, Option<ActorId>, &mut Q2GameServices, i32, i32, ActorId)>,
+    pub score: Option<Q2PlayerScoreHook>,
     /// React to a spawn.
     pub player_spawned: Option<fn(ActorId, &mut Q2GameServices)>,
     /// React to persistent inventory setup.
@@ -309,7 +315,7 @@ pub struct Q2PlayerHooks {
     /// React to a disconnect.
     pub disconnect: Option<fn(ActorId, &mut Q2GameServices)>,
     /// Handle a client command.
-    pub command: Option<fn(ActorId, &mut Q2GameServices, &str, &[String]) -> bool>,
+    pub command: Option<Q2PlayerCommandHook>,
 }
 
 /// Player rules (`Q2PlayerRules`).

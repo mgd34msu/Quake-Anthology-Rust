@@ -647,9 +647,9 @@ impl Q2Ctf {
 
     /// Select a spawn (`selectSpawn`).
     pub fn select_spawn(&self, entity: ActorId, game: &mut Q2GameServices) -> Option<(Vec3, Vec3)> {
-        let (team, spawn_state) = match game.ctf.states.get(&entity) {
-            Some(state) => (state.team, state.spawn_state),
-            None => return None,
+        let (team, spawn_state) = {
+            let state = game.ctf.states.get(&entity)?;
+            (state.team, state.spawn_state)
         };
         if team == 0 {
             return None;

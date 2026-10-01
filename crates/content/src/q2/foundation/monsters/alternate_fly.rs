@@ -108,7 +108,8 @@ fn pitch(v: Vec3) -> f32 {
 
 fn slerp(from: Vec3, to: Vec3, t: f32) -> Vec3 {
     let product = dot(from, to);
-    let (a, b) = if !(product.abs() > 0.9995) {
+    let near_parallel = product.abs().partial_cmp(&0.9995) == Some(std::cmp::Ordering::Greater);
+    let (a, b) = if !near_parallel {
         let angle = product.acos();
         let sine = angle.sin();
         (((1.0 - t) * angle).sin() / sine, (t * angle).sin() / sine)
@@ -182,7 +183,7 @@ fn ideal_hover(input: &mut AlternateFlyInput, services: &mut dyn AlternateFlySer
     let random = services.random();
     let theta = random.float_max(f64::from(2.0 * PI));
     let phi = if fly_above {
-        (0.7 + random.float_max(f64::from(0.3))).acos()
+        (0.7 + random.float_max(0.3)).acos()
     } else if fly_buzzard || medic {
         random.float_unit().acos()
     } else {
@@ -309,7 +310,7 @@ pub fn steer_alternate_fly(
         y: -cosine,
         z: -0.0,
     };
-    if obstruction.fraction < f64::from(0.25) {
+    if obstruction.fraction < 0.25 {
         let visible_position = |height: f32, end_height: f32, services: &mut dyn AlternateFlyServices| {
             let start = add(
                 input.body.origin,

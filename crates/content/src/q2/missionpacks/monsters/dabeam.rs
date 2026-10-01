@@ -22,7 +22,7 @@ fn beam_hit(entity: ActorId, game: &mut Q2GameServices) {
     let end = add3(origin, scale3(movedir, 2048.0));
     let mut start = origin;
     let mut ignore = entity.clone();
-    let mut endpoint = end;
+    let mut endpoint: Vec3;
     loop {
         let trace: TraceResult = game.host.trace(&Q2TraceRequest {
             start,

@@ -489,9 +489,9 @@ impl Q2CharacterActor {
                     model: "models/objects/gibs/sm_meat/tris.md2".to_string(),
                     origin,
                     velocity: vec3(
-                        velocity.x.max(-300.0).min(300.0),
-                        velocity.y.max(-300.0).min(300.0),
-                        velocity.z.max(200.0).min(500.0),
+                        velocity.x.clamp(-300.0, 300.0),
+                        velocity.y.clamp(-300.0, 300.0),
+                        velocity.z.clamp(200.0, 500.0),
                     ),
                     angular_velocity: spin,
                     expires_at,

@@ -89,7 +89,7 @@ fn carrier_rocket(context: &mut MonsterContext) {
     for index in 0..4 {
         let flash = 191 + index;
         let edition = context.game.options.edition;
-        let start = project_flash(context, muzzle_offset(edition, flash as usize), None);
+        let start = project_flash(context, muzzle_offset(edition, flash), None);
         let spread = *record_at(&[0.4, 0.025, -0.025, -0.4], index);
         let direction = if predictive {
             predicted_direction(context, start, 750.0, false, -0.3 + index as f64 * 0.15)
@@ -571,7 +571,7 @@ fn carrier_grenade(context: &mut MonsterContext) {
         ),
         scale3(axes.up, up_spread as f32),
     );
-    let clipped = vec3(aim.x, aim.y, aim.z.max(-0.5).min(0.15));
+    let clipped = vec3(aim.x, aim.y, aim.z.clamp(-0.5, 0.15));
     let fire_grenade = context.weapons.fire_grenade;
     let actor = context.actor().clone();
     fire_grenade(

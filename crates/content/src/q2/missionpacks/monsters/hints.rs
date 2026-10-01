@@ -703,7 +703,7 @@ pub fn capture_rogue_hints(game: &mut Q2GameServices) -> RogueHintsCheckpoint {
         .filter(|(actor, _)| game.host.actors().is_live(actor))
         .map(|(actor, node)| (actor.clone(), node.clone()))
         .collect();
-    nodes.sort_by(|a, b| (a.0.slot(), a.0.generation()).cmp(&(b.0.slot(), b.0.generation())));
+    nodes.sort_by_key(|a| (a.0.slot(), a.0.generation()));
     let mut monsters: Vec<(ActorId, HintPursuerState)> = game
         .mission_monsters
         .hints
@@ -712,7 +712,7 @@ pub fn capture_rogue_hints(game: &mut Q2GameServices) -> RogueHintsCheckpoint {
         .filter(|(actor, _)| game.host.actors().is_live(actor))
         .map(|(actor, state)| (actor.clone(), state.clone()))
         .collect();
-    monsters.sort_by(|a, b| (a.0.slot(), a.0.generation()).cmp(&(b.0.slot(), b.0.generation())));
+    monsters.sort_by_key(|a| (a.0.slot(), a.0.generation()));
     let starts: Vec<SavedActorId> = game
         .mission_monsters
         .hints
@@ -785,7 +785,7 @@ pub fn restore_rogue_hints(game: &mut Q2GameServices, checkpoint: &RogueHintsChe
 fn reference(game: &mut Q2GameServices, saved: &SavedActorId) -> ActorId {
     game.host
         .actors()
-        .resolve_saved(saved.clone())
+        .resolve_saved(*saved)
         .map(|owned| owned.id().clone())
-        .unwrap_or_else(|| game.host.actors().reference_saved(saved.clone()))
+        .unwrap_or_else(|| game.host.actors().reference_saved(*saved))
 }

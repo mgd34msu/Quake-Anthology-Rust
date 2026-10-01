@@ -50,7 +50,7 @@ fn valid_classic(game: Q2NativeGame, id: i32) -> bool {
 pub fn canonical_cause_from_native(native: &Q2NativeCause) -> Option<i32> {
     match *native {
         Q2NativeCause::Classic { game, value } => {
-            if value < 0 || value > FRIENDLY_FIRE + 55 {
+            if !(0..=FRIENDLY_FIRE + 55).contains(&value) {
                 return None;
             }
             let friendly = value & FRIENDLY_FIRE != 0;
@@ -67,7 +67,7 @@ pub fn canonical_cause_from_native(native: &Q2NativeCause) -> Option<i32> {
             )
         }
         Q2NativeCause::Rerelease { id, friendly_fire, .. } => {
-            if id < 0 || id > 58 {
+            if !(0..=58).contains(&id) {
                 return None;
             }
             let mapped = if id < 22 {
@@ -88,7 +88,7 @@ pub fn canonical_cause_from_native(native: &Q2NativeCause) -> Option<i32> {
 
 /// Convert a canonical cause to native (`nativeCauseFromCanonical`).
 pub fn native_cause_from_canonical(profile: &Q2NativeCauseProfile, canonical: i32) -> Option<Q2NativeCause> {
-    if canonical < 0 || canonical > FRIENDLY_FIRE + 58 {
+    if !(0..=FRIENDLY_FIRE + 58).contains(&canonical) {
         return None;
     }
     let friendly = canonical & FRIENDLY_FIRE != 0;

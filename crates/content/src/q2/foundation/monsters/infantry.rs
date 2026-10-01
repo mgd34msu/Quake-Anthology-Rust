@@ -208,7 +208,7 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
         return;
     }
     let frame = context.entity().frame;
-    let running = rerelease && frame >= rerelease_infantry::RUN201 && frame <= rerelease_infantry::RUN208;
+    let running = rerelease && (rerelease_infantry::RUN201..=rerelease_infantry::RUN208).contains(&frame);
     let normal = if rerelease {
         frame == rerelease_infantry::ATTAK103
             || frame == rerelease_infantry::ATTAK311
@@ -233,12 +233,11 @@ pub(crate) fn machine_gun(context: &mut MonsterContext) {
     let start = project_flash(context, muzzle_offset(edition, flash as usize), None);
     let actor = context.actor().clone();
     let mut forward = angles_vectors(context.game.body_of(actor.clone()).angles).forward;
-    if normal && enemy.is_some() {
+    if let Some(enemy) = enemy.filter(|_| normal) {
         let enemy_actor = context.entity().enemy.clone();
         let observed = context.game.monster_target(enemy_actor.as_ref());
         let Some(observed) = observed else { return };
         let height = observed.view_height as f32;
-        let enemy = enemy.expect("enemy body");
         if !rerelease {
             forward = normalize3(sub3(
                 add3(add3(enemy.origin, scale3(enemy.velocity, -0.2)), vec3(0.0, 0.0, height)),
@@ -579,9 +578,9 @@ fn infantry_fire(context: &mut MonsterContext) {
         }
     } else {
         let frame = context.entity().frame;
-        if frame >= rerelease_infantry::ATTAK101 && frame <= rerelease_infantry::ATTAK115
-            || frame >= rerelease_infantry::ATTAK301 && frame <= rerelease_infantry::ATTAK315
-            || frame >= rerelease_infantry::ATTAK401 && frame <= rerelease_infantry::ATTAK424
+        if (rerelease_infantry::ATTAK101..=rerelease_infantry::ATTAK115).contains(&frame)
+            || (rerelease_infantry::ATTAK301..=rerelease_infantry::ATTAK315).contains(&frame)
+            || (rerelease_infantry::ATTAK401..=rerelease_infantry::ATTAK424).contains(&frame)
         {
             let hold = context.game.host.now() < context.state().fire_wait;
             context.state_mut().hold_frame = hold;

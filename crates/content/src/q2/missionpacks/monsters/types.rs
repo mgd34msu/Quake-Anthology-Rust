@@ -44,6 +44,7 @@ pub trait Q2MissionPackMonsterServices {
 /// Mission-pack monster projectile provider (`Q2MissionPackMonsterWeapons`).
 pub trait Q2MissionPackMonsterWeapons {
     /// Fire an ion ripper bolt.
+    #[allow(clippy::too_many_arguments)]
     fn fire_ion_ripper(
         &self,
         owner: ActorId,
@@ -55,6 +56,7 @@ pub trait Q2MissionPackMonsterWeapons {
         effects: i64,
     ) -> ActorId;
     /// Fire a blue blaster bolt.
+    #[allow(clippy::too_many_arguments)]
     fn fire_blue_blaster(
         &self,
         owner: ActorId,
@@ -93,6 +95,7 @@ pub trait Q2MissionPackMonsterWeapons {
         radius_damage: f64,
     ) -> ActorId;
     /// Fire a blue-blaster variant bolt.
+    #[allow(clippy::too_many_arguments)]
     fn fire_blaster2(
         &self,
         owner: ActorId,
@@ -116,6 +119,7 @@ pub trait Q2MissionPackMonsterWeapons {
         enemy: Option<ActorId>,
     ) -> ActorId;
     /// Fire a flechette.
+    #[allow(clippy::too_many_arguments)]
     fn fire_flechette(
         &self,
         owner: ActorId,

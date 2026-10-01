@@ -268,51 +268,51 @@ fn trap_rerelease(entity: ActorId, game: &mut Q2GameServices) {
             if game.require_entity(&entity).wait < 19.0 {
                 game.require_entity_mut(&entity).frame += 1;
             }
-        } else if {
+        } else {
             game.require_entity_mut(&entity).frame += 1;
-            game.require_entity(&entity).frame == 8
-        } {
-            game.schedule(entity.clone(), 1.0, free_projectile);
-            game.require_entity_mut(&entity).effects &= !0x2000000;
-            let size = 1.0 + (game.require_entity(&entity).accel - 100.0) / 300.0;
-            let mut values = BTreeMap::new();
-            values.insert(
-                "count".to_string(),
-                format!(
-                    "{}",
-                    game.host
-                        .combat()
-                        .read(&entity)
-                        .map(|combat| combat.mass)
-                        .unwrap_or(0.0)
-                ),
-            );
-            values.insert("spawnflags".to_string(), "65536".to_string());
-            values.insert(
-                "origin".to_string(),
-                format!(
-                    "{} {} {}",
-                    body.origin.x,
-                    body.origin.y,
-                    body.origin.z + 24.0 * size as f32
-                ),
-            );
-            let food = game.spawn(Q2SpawnFields {
-                ordinal: -1,
-                classname: "item_foodcube".to_string(),
-                values,
-            });
-            game.require_entity_mut(&food).scale = size;
-            let mut moved = game.body_of(food.clone());
-            moved.angles = vec3(0.0, (game.host.random() * 360.0) as f32, 0.0);
-            moved.velocity = vec3(0.0, 0.0, 400.0);
-            game.write_body(food.clone(), &moved, true);
-            if let Some(think) = game.require_entity(&food).think {
-                think(food.clone(), game);
+            if game.require_entity(&entity).frame == 8 {
+                game.schedule(entity.clone(), 1.0, free_projectile);
+                game.require_entity_mut(&entity).effects &= !0x2000000;
+                let size = 1.0 + (game.require_entity(&entity).accel - 100.0) / 300.0;
+                let mut values = BTreeMap::new();
+                values.insert(
+                    "count".to_string(),
+                    format!(
+                        "{}",
+                        game.host
+                            .combat()
+                            .read(&entity)
+                            .map(|combat| combat.mass)
+                            .unwrap_or(0.0)
+                    ),
+                );
+                values.insert("spawnflags".to_string(), "65536".to_string());
+                values.insert(
+                    "origin".to_string(),
+                    format!(
+                        "{} {} {}",
+                        body.origin.x,
+                        body.origin.y,
+                        body.origin.z + 24.0 * size as f32
+                    ),
+                );
+                let food = game.spawn(Q2SpawnFields {
+                    ordinal: -1,
+                    classname: "item_foodcube".to_string(),
+                    values,
+                });
+                game.require_entity_mut(&food).scale = size;
+                let mut moved = game.body_of(food.clone());
+                moved.angles = vec3(0.0, (game.host.random() * 360.0) as f32, 0.0);
+                moved.velocity = vec3(0.0, 0.0, 400.0);
+                game.write_body(food.clone(), &moved, true);
+                if let Some(think) = game.require_entity(&food).think {
+                    think(food.clone(), game);
+                }
+                game.cancel_actor(food.clone());
+                game.show(food.clone());
+                game.sound(&food, "misc/fhit3.wav", 2, 1.0, 1.0);
             }
-            game.cancel_actor(food.clone());
-            game.show(food.clone());
-            game.sound(&food, "misc/fhit3.wav", 2, 1.0, 1.0);
         }
         game.show(entity);
         return;

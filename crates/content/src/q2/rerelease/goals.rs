@@ -342,7 +342,7 @@ impl Q2RereleaseGoals {
             game,
             Q2RereleaseEvent::MissionStatus {
                 actor: player,
-                icon_visible: help_changed >= 1 && help_changed <= 2 && (now * 1000.0).trunc() as i64 % 1000 < 500,
+                icon_visible: (1..=2).contains(&help_changed) && (now * 1000.0).trunc() as i64 % 1000 < 500,
             },
         );
     }

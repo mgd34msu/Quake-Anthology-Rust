@@ -4,19 +4,13 @@
 //! rerelease `g_weapon.cpp`, `p_weapon.cpp` (GPL-2.0-or-later). All
 //! damage is admitted by the session combat authority.
 
-use std::collections::HashMap;
-
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Vec3};
+use qa_core::math::{add3, scale3, vec3, Vec3};
 
 use super::super::items::{add_player_power_cells, flush_player_power_cells};
 use super::ballistics::{
-    check_dodge, fire_bfg, fire_blaster, fire_bullet, fire_grenade, fire_hit, fire_rail, fire_rocket, fire_shotgun,
-    player_noise, register_ballistics_callbacks, NoiseKind,
-};
-use super::checkpoint::{
-    Q2BlasterCauseEntry, Q2NoiseCheckpoint, Q2SilencerEntry, Q2WeaponInputEntry, Q2WeaponNoiseEntry,
-    Q2WeaponStateEntry, Q2WeaponsCheckpoint,
+    fire_bfg, fire_blaster, fire_bullet, fire_grenade, fire_rail, fire_rocket, fire_shotgun, player_noise,
+    register_ballistics_callbacks, NoiseKind,
 };
 use super::damage::q2_weapon_damage_multiplier;
 use super::generic_frame::{
@@ -24,8 +18,7 @@ use super::generic_frame::{
     Q2ClassicFrameInput, Q2GenericDefinition, Q2RereleaseFrameInput, RereleaseFrameHooks,
 };
 use super::hand_grenade::{
-    calculate_hand_throw, hand_deadline, hand_fuse_deadline, hand_recovery_seconds, HandGrenadeTempo,
-    HandProjectileSpec, HandThrowInput,
+    calculate_hand_throw, hand_fuse_deadline, hand_recovery_seconds, HandGrenadeTempo, HandThrowInput,
 };
 use super::presentation::{
     q2_attack_frames, q2_powerup_sound, q2_reverse_frames, q2_weapon_animation_rate, set_q2_weapon_recoil,
@@ -33,17 +26,12 @@ use super::presentation::{
 };
 use super::projection::{project_q2_actor, Q2ActorView};
 use super::types::{
-    LagToken, Mod, PlayerAnimationPriority, PrimaryHandoff, Q2GrenadeAdjustment, Q2HandReservation, Q2NoiseRecord,
-    Q2WeaponDefinition, Q2WeaponEvent, Q2WeaponInput, Q2WeaponName, Q2WeaponOwner, Q2WeaponPhase, Q2WeaponState,
-    WeaponBeamEffect, WeaponEngine, WeaponHand, PLAYER_CONTENTS,
+    LagToken, Mod, PlayerAnimationPriority, PrimaryHandoff, Q2GrenadeAdjustment, Q2HandReservation, Q2WeaponDefinition,
+    Q2WeaponEvent, Q2WeaponInput, Q2WeaponName, Q2WeaponOwner, Q2WeaponPhase, Q2WeaponState,
 };
 use super::vectors::angle_vectors;
 use crate::contract::{InventoryEntry, ItemId};
-use crate::q2::foundation::checkpoint::{restore_q2_actor, save_q2_actor};
-use crate::q2::foundation::host::{
-    Q2Edition, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop, Q2TraceRequest,
-};
-use crate::q2::support::contracts::TraceHit;
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode, Q2PresentationEvent, Q2SoundEvent, Q2SoundLoop};
 
 /// Weapon context (`Q2WeaponContext`).
 ///
@@ -558,7 +546,7 @@ fn animation_time(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &
 }
 
 /// Prepare a drop (`prepareDrop`).
-fn prepare_drop(context: &Q2WeaponContext, game: &mut Q2GameServices, state: &mut Q2WeaponState) {
+fn prepare_drop(context: &Q2WeaponContext, _game: &mut Q2GameServices, state: &mut Q2WeaponState) {
     if context.input.holster {
         state.primary_handoff = PrimaryHandoff::Holstering;
     }

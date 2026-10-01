@@ -155,7 +155,7 @@ fn hover_fire_blaster(context: &mut MonsterContext) {
     let daedalus = monster_mass(context) >= 200.0;
     let actor = context.actor().clone();
     if daedalus {
-        let weapons = mission_weapons(&mut *context.game);
+        let weapons = mission_weapons(&*context.game);
         weapons.fire_blaster2(actor, &mut *context.game, start, direction, 1.0, 1000.0, 8);
     } else {
         let effects = if context.entity().frame == hover_frame::ATTAK104 {

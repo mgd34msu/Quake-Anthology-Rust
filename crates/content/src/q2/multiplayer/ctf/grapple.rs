@@ -146,6 +146,7 @@ impl Q2CtfGrapple {
     }
 
     /// Fire a grapple (`fireGrapple`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_grapple(
         &self,
         player: ActorId,

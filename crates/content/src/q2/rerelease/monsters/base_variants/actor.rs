@@ -236,13 +236,8 @@ fn rerelease_actor_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     let now = context.game.host.now();
     context.state_mut().pain_time = now + 3.0;
     let attacker = reaction.attacker.clone();
-    if attacker.is_some()
-        && attacker
-            .as_ref()
-            .is_some_and(|attacker| context.game.host.is_player(attacker))
-        && context.game.random() < 0.4
-    {
-        let attacker = attacker.expect("actor attacker");
+    let attacker = attacker.filter(|attacker| context.game.host.is_player(attacker) && context.game.random() < 0.4);
+    if let Some(attacker) = attacker {
         if let Some(other) = context.game.host.bodies().read(&attacker) {
             let origin = context.game.body_of(actor.clone()).origin;
             context.state_mut().ideal_yaw = f64::from(vector_angles(sub3(other.origin, origin)).y);

@@ -717,7 +717,7 @@ fn visual_candidate(context: &mut MonsterContext, actor: &ActorId) -> bool {
     if distance >= 1000.0 || observed.light_level.is_some_and(|light| light <= 5.0) || !visible(context, Some(actor)) {
         return false;
     }
-    if distance >= 80.0 && distance < 500.0 {
+    if (80.0..500.0).contains(&distance) {
         let shown_state = context.game.monsters.states.get(actor).map(|state| state.show_hostile);
         let shown = shown_state
             .or_else(|| context.game.monsters.perception.hostile.get(actor).copied())

@@ -73,13 +73,13 @@ fn jorg_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         return;
     }
     let frame = context.entity().frame;
-    if frame >= boss31_frame::ATTAK101 && frame <= boss31_frame::ATTAK108 && context.game.random() <= 0.005 {
+    if (boss31_frame::ATTAK101..=boss31_frame::ATTAK108).contains(&frame) && context.game.random() <= 0.005 {
         return;
     }
-    if frame >= boss31_frame::ATTAK109 && frame <= boss31_frame::ATTAK114 && context.game.random() <= 0.00005 {
+    if (boss31_frame::ATTAK109..=boss31_frame::ATTAK114).contains(&frame) && context.game.random() <= 0.00005 {
         return;
     }
-    if frame >= boss31_frame::ATTAK201 && frame <= boss31_frame::ATTAK208 && context.game.random() <= 0.005 {
+    if (boss31_frame::ATTAK201..=boss31_frame::ATTAK208).contains(&frame) && context.game.random() <= 0.005 {
         return;
     }
     let now = context.game.host.now();

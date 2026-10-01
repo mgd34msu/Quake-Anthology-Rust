@@ -165,6 +165,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire an ion ripper (`fireIonRipper`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_ion_ripper(
         &self,
         owner: ActorId,
@@ -209,6 +210,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a blue blaster (`fireBlueBlaster`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_blue_blaster(
         &self,
         owner: ActorId,
@@ -242,6 +244,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a heat rocket (`fireHeatRocket`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_heat_rocket(
         &self,
         owner: ActorId,
@@ -287,6 +290,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire plasma (`firePlasma`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_plasma(
         &self,
         owner: ActorId,
@@ -330,6 +334,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a flechette (`fireFlechette`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_flechette(
         &self,
         owner: ActorId,
@@ -377,6 +382,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a blaster2 bolt (`fireBlaster2`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_blaster2(
         &self,
         owner: ActorId,
@@ -421,6 +427,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a tracker (`fireTracker`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_tracker(
         &self,
         owner: ActorId,
@@ -472,6 +479,7 @@ impl Q2MissionPackProjectiles {
     }
 
     /// Fire a heat beam (`fireHeatBeam`).
+    #[allow(clippy::too_many_arguments)]
     pub fn fire_heat_beam(
         &self,
         owner: ActorId,
@@ -775,8 +783,7 @@ fn heat_think_rerelease(entity: ActorId, game: &mut Q2GameServices) {
     let target = acquire.as_ref().and_then(|actor| game.host.bodies().read(actor));
     if target.is_none() {
         game.require_entity_mut(&entity).enemy = None;
-    } else {
-        let target = target.expect("heat target is missing");
+    } else if let Some(target) = target {
         if !matches!(game.host.weapon_behavior(), Some(port) if port.controls_trajectory(&entity)) {
             let mut desired = normalize3(sub3(target.origin, origin));
             let movedir = game.require_entity(&entity).movedir;
@@ -1234,8 +1241,7 @@ fn tracker_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchConta
         if live {
             let target_body = game.host.bodies().read(&contact.other);
             let flags = game.entity(&contact.other).map(|entity| entity.flags).unwrap_or(0);
-            if target_body.is_some() && flags & 3 == 0 {
-                let target_body = target_body.expect("tracker target body is missing");
+            if let Some(target_body) = target_body.filter(|_| flags & 3 == 0) {
                 velocity(
                     game,
                     &contact.other,

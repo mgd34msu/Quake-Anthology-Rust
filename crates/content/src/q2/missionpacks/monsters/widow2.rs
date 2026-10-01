@@ -115,7 +115,7 @@ fn widow2_beam(context: &mut MonsterContext) {
         return;
     };
     let frame = context.entity().frame;
-    if frame >= widow2_frame::SPAWN04 && frame <= widow2_frame::SPAWN14 {
+    if (widow2_frame::SPAWN04..=widow2_frame::SPAWN14).contains(&frame) {
         let index = frame - widow2_frame::SPAWN04;
         let flash = 200 + index;
         let edition = context.game.options.edition;
@@ -139,7 +139,7 @@ fn widow2_beam(context: &mut MonsterContext) {
     }
     widow2_save_beam(context);
     let frame = context.entity().frame;
-    let firing = frame >= widow2_frame::FIREB05 && frame <= widow2_frame::FIREB09;
+    let firing = (widow2_frame::FIREB05..=widow2_frame::FIREB09).contains(&frame);
     let flash = if firing {
         195 + frame - widow2_frame::FIREB05
     } else {

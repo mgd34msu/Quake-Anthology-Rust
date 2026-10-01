@@ -324,7 +324,7 @@ impl Q2HandGrenadeEquipment {
                 HandGrenadeActorCheckpoint {
                     actor: saved,
                     config: state.config.clone(),
-                    action: state.action.clone(),
+                    action: state.action,
                 },
             );
         }
@@ -346,7 +346,7 @@ impl Q2HandGrenadeEquipment {
         let mut next: HashMap<ActorId, HandGrenadeEquipmentState> = HashMap::new();
         for saved in checkpoint.actors.values() {
             check_loadout(&saved.config);
-            let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
+            let actor = restore_q2_actor(game, saved.actor).id().clone();
             if game.host.bodies().read(&actor).is_none() || game.host.inventory().entries(&actor).is_empty() {
                 panic!("Hand grenade checkpoint owner is missing shared state");
             }
@@ -366,7 +366,7 @@ impl Q2HandGrenadeEquipment {
                 actor,
                 HandGrenadeEquipmentState {
                     config: saved.config.clone(),
-                    action: saved.action.clone(),
+                    action: saved.action,
                 },
             );
         }

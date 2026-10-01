@@ -217,9 +217,9 @@ fn shambler_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         return;
     }
     let frame = context.entity().frame;
-    let attacking = (frame >= shambler_frame::SMASH01 && frame <= shambler_frame::SMASH12)
-        || (frame >= shambler_frame::SWINGL01 && frame <= shambler_frame::SWINGL09)
-        || (frame >= shambler_frame::SWINGR01 && frame <= shambler_frame::SWINGR09);
+    let attacking = (shambler_frame::SMASH01..=shambler_frame::SMASH12).contains(&frame)
+        || (shambler_frame::SWINGL01..=shambler_frame::SWINGL09).contains(&frame)
+        || (shambler_frame::SWINGR01..=shambler_frame::SWINGR09).contains(&frame);
     if context.game.options.skill >= 2 && attacking {
         return;
     }

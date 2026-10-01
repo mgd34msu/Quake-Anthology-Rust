@@ -73,14 +73,13 @@ fn turret_walk(context: &mut MonsterContext) {
 fn turret_aim(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let enemy = context.entity().enemy.clone();
-    if enemy.is_none()
+    if (enemy.is_none()
         || enemy
             .as_ref()
-            .is_some_and(|enemy| *enemy == context.game.host.world_actor())
+            .is_some_and(|enemy| *enemy == context.game.host.world_actor()))
+        && !context.find_target()
     {
-        if !context.find_target() {
-            return;
-        }
+        return;
     }
     if context.entity().frame < turret_frame::ACTIVE01 {
         turret_ready(context);

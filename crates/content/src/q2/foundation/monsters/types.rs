@@ -832,6 +832,28 @@ impl Default for MonsterState {
     }
 }
 
+/// Monster shotgun ballistics function.
+pub type MonsterFireShotgun = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32, i32);
+
+/// Monster blaster ballistics function.
+pub type MonsterFireBlaster = fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId;
+
+/// Monster grenade ballistics function.
+pub type MonsterFireGrenade = fn(
+    ActorId,
+    &mut Q2GameServices,
+    Vec3,
+    Vec3,
+    f64,
+    f64,
+    f64,
+    f64,
+    bool,
+    bool,
+    bool,
+    Option<Q2GrenadeAdjustment>,
+) -> ActorId;
+
 /// Monster ballistics bundle (`MonsterWeapons`).
 ///
 /// Eight bound ballistics functions; `Copy` so every transient context
@@ -841,28 +863,15 @@ pub struct MonsterWeapons {
     /// Fire a bullet.
     pub fire_bullet: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32),
     /// Fire shotgun pellets.
-    pub fire_shotgun: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32, i32),
+    pub fire_shotgun: MonsterFireShotgun,
     /// Fire a blaster bolt.
-    pub fire_blaster: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId,
+    pub fire_blaster: MonsterFireBlaster,
     /// Melee hit.
     pub fire_hit: fn(ActorId, &mut Q2GameServices, Vec3, f64, f64) -> bool,
     /// Fire a rocket.
     pub fire_rocket: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId,
     /// Fire a grenade.
-    pub fire_grenade: fn(
-        ActorId,
-        &mut Q2GameServices,
-        Vec3,
-        Vec3,
-        f64,
-        f64,
-        f64,
-        f64,
-        bool,
-        bool,
-        bool,
-        Option<Q2GrenadeAdjustment>,
-    ) -> ActorId,
+    pub fire_grenade: MonsterFireGrenade,
     /// Fire a rail slug.
     pub fire_rail: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64),
     /// Fire a BFG projectile.
@@ -897,27 +906,20 @@ pub trait Q2MonsterHintHooks {
     fn stop(&mut self, context: &mut MonsterContext);
 }
 
+/// Authored-mission lookup function.
+pub type MonsterMissionResolver = Box<dyn Fn(&ActorId) -> Option<Box<dyn MonsterMission>>>;
+
 /// Constructor hooks (`Q2MonsterHooks`).
+#[derive(Default)]
 pub struct Q2MonsterHooks {
     /// Drop an authored item.
     pub drop_item: Option<fn(qa_core::identity::OwnedActor, &mut Q2GameServices, &str)>,
     /// Read platform state.
     pub platform_state: Option<fn(&ActorId) -> Option<PlatformPhase>>,
     /// Look up an authored mission.
-    pub mission: Option<Box<dyn Fn(&ActorId) -> Option<Box<dyn MonsterMission>>>>,
+    pub mission: Option<MonsterMissionResolver>,
     /// Retarget a health bar (`transferHealthbarTarget`).
     pub healthbar_transfer: Option<fn(ActorId, ActorId, &mut Q2GameServices)>,
-}
-
-impl Default for Q2MonsterHooks {
-    fn default() -> Self {
-        Self {
-            drop_item: None,
-            platform_state: None,
-            mission: None,
-            healthbar_transfer: None,
-        }
-    }
 }
 
 /// Monster context facade (`MonsterContext`).
@@ -1165,12 +1167,7 @@ impl<'a> MonsterContext<'a> {
 
     /// Read platform state (`platformState`).
     pub fn platform_state(&self, actor: &ActorId) -> Option<PlatformPhase> {
-        self.game
-            .monsters
-            .hooks
-            .platform_state
-            .map(|read| read(actor))
-            .flatten()
+        self.game.monsters.hooks.platform_state.and_then(|read| read(actor))
     }
 
     /// Look up the authored mission (`hooks.mission`).

@@ -303,7 +303,7 @@ impl Q2Lmctf {
                 extra_flags: state.extra_flags,
             });
         }
-        players.sort_by(|left, right| left.slot.cmp(&right.slot));
+        players.sort_by_key(|left| left.slot);
         LmctfTravel {
             rules: game.lmctf.rules.clone(),
             countdown: game
@@ -511,9 +511,7 @@ impl Q2Lmctf {
         let totals = self.team_totals(game);
         let team = if red < blue {
             1
-        } else if blue < red {
-            2
-        } else if totals[0] > totals[1] {
+        } else if blue < red || totals[0] > totals[1] {
             2
         } else {
             1

@@ -811,6 +811,7 @@ pub fn fire_hit(owner: ActorId, game: &mut Q2GameServices, aim: Vec3, damage: f6
 }
 
 /// Spawn a projectile (`projectile`).
+#[allow(clippy::too_many_arguments)]
 fn projectile(
     game: &mut Q2GameServices,
     owner: &ActorId,
@@ -881,7 +882,7 @@ fn launch_behavior(
     role: crate::contract::ProjectileRole,
 ) -> Option<crate::q2::support::contracts::WeaponTrajectoryUpdate> {
     let owner = game.require_entity(projectile).owner.clone();
-    let Some(owner) = owner else { return None };
+    let owner = owner?;
     if !game.host.is_player(&owner) {
         return None;
     }

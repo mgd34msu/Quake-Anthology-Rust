@@ -2,6 +2,7 @@
 
 use super::types::{Q2BaseWeaponDefinition, Q2BaseWeaponName, Q2WeaponDefinition};
 
+#[allow(clippy::too_many_arguments)]
 fn definition(
     name: Q2BaseWeaponName,
     item: &str,

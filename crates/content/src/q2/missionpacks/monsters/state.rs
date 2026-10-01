@@ -121,7 +121,7 @@ pub fn capture_mission_monsters(game: &mut Q2GameServices) -> MissionPackMonster
         .filter(|(actor, _)| game.host.actors().is_live(actor))
         .map(|(actor, state)| (actor.clone(), state.clone()))
         .collect();
-    live.sort_by(|a, b| (a.0.slot(), a.0.generation()).cmp(&(b.0.slot(), b.0.generation())));
+    live.sort_by_key(|a| (a.0.slot(), a.0.generation()));
     for (actor, state) in live {
         let Some(saved) = save_q2_actor(Some(&actor)) else {
             continue;
@@ -162,21 +162,12 @@ pub fn restore_mission_monsters(game: &mut Q2GameServices, checkpoint: &MissionP
     game.mission_monsters.widow_shots_fired = checkpoint.widow_shots_fired;
     game.mission_monsters.widow_damage_multiplier = checkpoint.widow_damage_multiplier;
     for saved in &checkpoint.actors {
-        let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
-        let healer = saved.healer.clone().map(|id| game.host.actors().reference_saved(id));
-        let bad_medic1 = saved
-            .bad_medic1
-            .clone()
-            .map(|id| game.host.actors().reference_saved(id));
-        let bad_medic2 = saved
-            .bad_medic2
-            .clone()
-            .map(|id| game.host.actors().reference_saved(id));
-        let last_player_enemy = saved
-            .last_player_enemy
-            .clone()
-            .map(|id| game.host.actors().reference_saved(id));
-        let bad_area = saved.bad_area.clone().map(|id| game.host.actors().reference_saved(id));
+        let actor = restore_q2_actor(game, saved.actor).id().clone();
+        let healer = saved.healer.map(|id| game.host.actors().reference_saved(id));
+        let bad_medic1 = saved.bad_medic1.map(|id| game.host.actors().reference_saved(id));
+        let bad_medic2 = saved.bad_medic2.map(|id| game.host.actors().reference_saved(id));
+        let last_player_enemy = saved.last_player_enemy.map(|id| game.host.actors().reference_saved(id));
+        let bad_area = saved.bad_area.map(|id| game.host.actors().reference_saved(id));
         game.mission_monsters.rogue.insert(
             actor,
             RogueMonsterState {

@@ -567,7 +567,7 @@ fn gunner_cmdr_fire(context: &mut MonsterContext) {
     }
     let actor = context.actor().clone();
     let frame_now = context.entity().frame;
-    let id = if frame_now >= frame::C_ATTACK401 && frame_now <= frame::C_ATTACK505 {
+    let id = if (frame::C_ATTACK401..=frame::C_ATTACK505).contains(&frame_now) {
         rerelease_flash::GUNCMDR_CHAINGUN_2
     } else {
         rerelease_flash::GUNCMDR_CHAINGUN_1

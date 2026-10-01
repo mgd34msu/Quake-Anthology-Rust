@@ -104,7 +104,7 @@ fn rerelease_parasite_attack(context: &mut MonsterContext) {
 fn parasite_charge_proboscis(context: &mut MonsterContext, distance: f64) {
     let actor = context.actor().clone();
     let frame = context.game.require_entity(&actor).frame;
-    let trailed = frame >= parasite_frame::BREAK01 && frame <= parasite_frame::BREAK32;
+    let trailed = (parasite_frame::BREAK01..=parasite_frame::BREAK32).contains(&frame);
     run_ai(
         context,
         if trailed { &MonsterAi::Move } else { &MonsterAi::Charge },

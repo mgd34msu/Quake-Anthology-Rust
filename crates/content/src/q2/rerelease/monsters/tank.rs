@@ -13,8 +13,7 @@ use crate::q2::base::monsters::tank::tank_definition;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::fields::number_field;
 use crate::q2::foundation::host::{
-    Q2Edition, Q2EffectEvent, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SpawnFn, Q2TraceRequest,
-    SpawnModule,
+    Q2Edition, Q2EffectEvent, Q2Mode, Q2MotionKind, Q2PresentationEvent, Q2SpawnFn, Q2TraceRequest, SpawnModule,
 };
 use crate::q2::foundation::monsters::ai::{
     angles_vectors, clear_shot, corpse, enemy_body, enemy_eye, health, project_flash, vector_angles, visible,
@@ -185,8 +184,8 @@ fn rerelease_tank_pain(context: &mut MonsterContext, reaction: &PainReaction) {
             return;
         }
         let frame = context.game.require_entity(&actor).frame;
-        if (frame >= tank_frame::ATTAK301 && frame <= tank_frame::ATTAK330)
-            || (frame >= tank_frame::ATTAK101 && frame <= tank_frame::ATTAK116)
+        if (tank_frame::ATTAK301..=tank_frame::ATTAK330).contains(&frame)
+            || (tank_frame::ATTAK101..=tank_frame::ATTAK116).contains(&frame)
         {
             return;
         }

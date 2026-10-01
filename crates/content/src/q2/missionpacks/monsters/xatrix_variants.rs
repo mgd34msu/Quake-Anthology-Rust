@@ -37,7 +37,7 @@ pub const XATRIX_BRAIN_RIGHT_EYE: [Vec3; 11] = [
     Vec3 {
         x: -1.07639,
         y: 0.23837,
-        z: 33.386372,
+        z: 33.386_37,
     },
     Vec3 {
         x: -1.3355,
@@ -62,27 +62,27 @@ pub const XATRIX_BRAIN_RIGHT_EYE: [Vec3; 11] = [
     Vec3 {
         x: -7.01755,
         y: 3.26247,
-        z: 30.552521,
+        z: 30.552_52,
     },
     Vec3 {
         x: -7.91574,
         y: 0.6388,
-        z: 33.176189,
+        z: 33.176_19,
     },
     Vec3 {
         x: -3.91539,
         y: 8.28573,
-        z: 33.976349,
+        z: 33.976_35,
     },
     Vec3 {
         x: -0.91354,
         y: 10.93303,
-        z: 34.141811,
+        z: 34.141_81,
     },
     Vec3 {
         x: -0.3699,
         y: 8.9239,
-        z: 34.189079,
+        z: 34.189_08,
     },
 ];
 
@@ -91,17 +91,17 @@ pub const XATRIX_BRAIN_LEFT_EYE: [Vec3; 11] = [
     Vec3 {
         x: -3.36471,
         y: 0.32775,
-        z: 33.938381,
+        z: 33.938_38,
     },
     Vec3 {
         x: -5.14045,
         y: 0.49348,
-        z: 32.659851,
+        z: 32.659_85,
     },
     Vec3 {
         x: -5.34198,
         y: 5.64698,
-        z: 31.277901,
+        z: 31.277_9,
     },
     Vec3 {
         x: -4.13448,
@@ -116,12 +116,12 @@ pub const XATRIX_BRAIN_LEFT_EYE: [Vec3; 11] = [
     Vec3 {
         x: -8.61084,
         y: 2.52965,
-        z: 29.251591,
+        z: 29.251_59,
     },
     Vec3 {
         x: -9.23136,
         y: 0.09328,
-        z: 29.747959,
+        z: 29.747_96,
     },
     Vec3 {
         x: -11.00411,
@@ -131,7 +131,7 @@ pub const XATRIX_BRAIN_LEFT_EYE: [Vec3; 11] = [
     Vec3 {
         x: -7.87831,
         y: 7.64819,
-        z: 33.148151,
+        z: 33.148_15,
     },
     Vec3 {
         x: -4.94737,
@@ -164,7 +164,7 @@ fn xatrix_brain_attack(context: &mut MonsterContext) {
         return;
     }
     let distance = target_distance(context);
-    if distance >= 80.0 && distance < 500.0 {
+    if (80.0..500.0).contains(&distance) {
         if context.game.random() < 0.5 {
             context.set_move("brain_move_attack3", true);
         } else {

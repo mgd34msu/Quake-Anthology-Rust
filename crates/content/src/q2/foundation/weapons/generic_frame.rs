@@ -329,26 +329,26 @@ pub fn step_q2_rerelease_frame(
         }
         return;
     }
-    if hooks.frame_state().phase() == Q2WeaponPhase::Activating {
-        if hooks.frame_state().think_time() <= now || input.instant_switch {
-            let think = millisecond_sum(now, hooks.animation_time());
-            hooks.frame_state().set_think_time(think);
-            if hooks.frame_state().frame() == definition.activate_last || input.instant_switch {
-                hooks.frame_state().set_phase(Q2WeaponPhase::Ready);
-                hooks.frame_state().set_frame(idle_first);
-                hooks.frame_state().set_fire_buffered(false);
-                let finished = if input.instant_switch {
-                    0.0
-                } else {
-                    millisecond_sum(now, hooks.animation_time())
-                };
-                hooks.frame_state().set_fire_finished(finished);
+    if hooks.frame_state().phase() == Q2WeaponPhase::Activating
+        && (hooks.frame_state().think_time() <= now || input.instant_switch)
+    {
+        let think = millisecond_sum(now, hooks.animation_time());
+        hooks.frame_state().set_think_time(think);
+        if hooks.frame_state().frame() == definition.activate_last || input.instant_switch {
+            hooks.frame_state().set_phase(Q2WeaponPhase::Ready);
+            hooks.frame_state().set_frame(idle_first);
+            hooks.frame_state().set_fire_buffered(false);
+            let finished = if input.instant_switch {
+                0.0
             } else {
-                let frame = hooks.frame_state().frame();
-                hooks.frame_state().set_frame(frame + 1);
-            }
-            return;
+                millisecond_sum(now, hooks.animation_time())
+            };
+            hooks.frame_state().set_fire_finished(finished);
+        } else {
+            let frame = hooks.frame_state().frame();
+            hooks.frame_state().set_frame(frame + 1);
         }
+        return;
     }
     if (input.change_requested || !input.instant_switch && input.holster)
         && hooks.frame_state().phase() != Q2WeaponPhase::Firing

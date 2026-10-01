@@ -60,7 +60,7 @@ fn supertank_gib(context: &mut MonsterContext) {
     }
     let entity = context.game.require_entity_mut(&actor);
     entity.sound = String::new();
-    entity.skin = entity.skin / 2;
+    entity.skin /= 2;
     for _ in 0..2 {
         throw_gib(
             actor.clone(),
@@ -229,7 +229,7 @@ fn supertank_pain(context: &mut MonsterContext, reaction: &PainReaction) {
             return;
         }
         let frame = context.game.require_entity(&actor).frame;
-        if frame >= supertank_frame::ATTAK2_1 && frame <= supertank_frame::ATTAK2_14 {
+        if (supertank_frame::ATTAK2_1..=supertank_frame::ATTAK2_14).contains(&frame) {
             return;
         }
     }

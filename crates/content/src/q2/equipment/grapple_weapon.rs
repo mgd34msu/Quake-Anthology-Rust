@@ -463,7 +463,10 @@ impl GrappleStepDriver<'_> {
             presentation: self.presentation,
         };
         match self.source {
-            GrappleWeaponSource::Ctf { edition, .. } if edition == Q2Edition::Rerelease => {
+            GrappleWeaponSource::Ctf {
+                edition: Q2Edition::Rerelease,
+                ..
+            } => {
                 step_q2_rerelease_frame(&self.definition, &self.frame_input, &mut hooks);
             }
             GrappleWeaponSource::Ctf { .. } => {

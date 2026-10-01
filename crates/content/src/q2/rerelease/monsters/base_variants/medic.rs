@@ -151,7 +151,7 @@ pub fn rerelease_medic_reinforcements(fields: &BTreeMap<String, String>) -> Vec<
     value
         .split(';')
         .map(|entry| {
-            let mut parts = entry.trim().split_whitespace();
+            let mut parts = entry.split_whitespace();
             let classname = parts.next().unwrap_or("").to_string();
             let strength = parts.next().unwrap_or("0").parse::<i32>().unwrap_or(0);
             MedicReinforcement { classname, strength }
@@ -348,8 +348,8 @@ fn medic_abort(context: &mut MonsterContext, change_frame: bool, gib: bool, mark
             rogue.bad_medic1 = Some(actor.clone());
         }
     }
-    if target.is_some() && gib {
-        let target = target.expect("medic target");
+    let target = target.filter(|_| gib);
+    if let Some(target) = target {
         let threshold = context
             .game
             .monsters
@@ -425,8 +425,13 @@ fn medic_find_dead(context: &mut MonsterContext) -> Option<ActorId> {
             }
         }
         let dead_think = context.game.source_callbacks.resolve_think(Some("monster_dead_think"));
+        let awaiting_dead_think = match (target.think, dead_think) {
+            (None, None) => true,
+            (Some(current), Some(dead)) => std::ptr::fn_addr_eq(current, dead),
+            _ => false,
+        };
         if health(&mut *context.game, Some(&candidate)) > 0.0
-            || target.next_think.is_some() && target.think != dead_think
+            || target.next_think.is_some() && !awaiting_dead_think
             || !visible(context, Some(&candidate))
         {
             continue;
@@ -796,7 +801,7 @@ fn medic_reinforcement_list(context: &mut MonsterContext) -> Vec<Reinforcement> 
             Reinforcement {
                 classname: entry.classname,
                 strength: entry.strength,
-                bounds: definition.bounds.clone(),
+                bounds: definition.bounds,
             }
         })
         .collect()

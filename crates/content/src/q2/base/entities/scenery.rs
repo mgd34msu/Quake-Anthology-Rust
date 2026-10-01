@@ -660,7 +660,7 @@ pub fn capture_scenery(game: &mut Q2GameServices) -> Q2BaseSceneryCheckpoint {
         let saved = SavedActorId::from(&actor);
         if let Some(state) = game.base_entities.animations.get(&actor).copied() {
             animations.push(Q2AnimationEntry {
-                actor: saved.clone(),
+                actor: saved,
                 first: state.first,
                 end: state.end,
             });
@@ -680,7 +680,7 @@ pub fn restore_scenery(game: &mut Q2GameServices, checkpoint: &Q2BaseSceneryChec
     game.base_entities.animations = std::collections::HashMap::new();
     game.base_entities.clocks = std::collections::HashMap::new();
     for entry in &checkpoint.animations {
-        let actor = restore_q2_actor(game, entry.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, entry.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 scenery");
         }
@@ -693,7 +693,7 @@ pub fn restore_scenery(game: &mut Q2GameServices, checkpoint: &Q2BaseSceneryChec
         );
     }
     for entry in &checkpoint.clocks {
-        let actor = restore_q2_actor(game, entry.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, entry.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 scenery");
         }

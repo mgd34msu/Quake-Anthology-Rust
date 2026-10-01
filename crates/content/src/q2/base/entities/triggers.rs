@@ -246,7 +246,7 @@ pub fn capture_triggers(game: &mut Q2GameServices) -> Vec<Q2WindTimeEntry> {
 pub fn restore_triggers(game: &mut Q2GameServices, checkpoint: &[Q2WindTimeEntry]) {
     game.base_entities.wind_times = std::collections::HashMap::new();
     for entry in checkpoint {
-        let actor = restore_q2_actor(game, entry.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, entry.actor).id().clone();
         game.base_entities.wind_times.insert(actor, entry.until);
     }
 }

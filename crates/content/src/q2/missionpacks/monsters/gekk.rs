@@ -832,8 +832,7 @@ fn gekk_reloogie(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
     if health(&mut *context.game, enemy.as_ref()) >= 0.0
         && context.game.random() > 0.7
-        && distance >= 80.0
-        && distance < 500.0
+        && (80.0..500.0).contains(&distance)
     {
         context.set_move("gekk_move_spit", true);
     }

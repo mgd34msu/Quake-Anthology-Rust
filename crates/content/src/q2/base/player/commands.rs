@@ -462,9 +462,9 @@ fn list_players_command(context: &mut Q2PlayerContext, _args: &[String], command
         })
         .collect();
     if command == "players" {
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows.sort_by_key(|left| left.0);
     } else {
-        rows.sort_by(|left, right| left.1.cmp(&right.1));
+        rows.sort_by_key(|left| left.1);
     }
     let mut message = String::new();
     for (score, _slot, entered_at, name, spectator, ping) in &rows {

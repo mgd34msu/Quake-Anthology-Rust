@@ -146,8 +146,8 @@ fn rogue_tank_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     }
     let frame = context.entity().frame;
     if context.game.options.skill >= 2
-        && (frame >= tank_frame::ATTAK301 && frame <= tank_frame::ATTAK330
-            || frame >= tank_frame::ATTAK101 && frame <= tank_frame::ATTAK116)
+        && ((tank_frame::ATTAK301..=tank_frame::ATTAK330).contains(&frame)
+            || (tank_frame::ATTAK101..=tank_frame::ATTAK116).contains(&frame))
     {
         return;
     }

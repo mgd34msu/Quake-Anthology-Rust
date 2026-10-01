@@ -107,10 +107,8 @@ fn plan_rerelease_obituary(
     let mut ops = Vec::new();
     let source = if suicide {
         Some(format!("$g_mod_self_{}", cause_name(SELF, means).unwrap_or("default")))
-    } else if let Some(generic) = cause_name(GENERIC, means) {
-        Some(format!("$g_mod_generic_{generic}"))
     } else {
-        None
+        cause_name(GENERIC, means).map(|generic| format!("$g_mod_generic_{generic}"))
     };
     if let Some(source) = source {
         if mode == Q2Mode::Deathmatch && !no_point_loss {

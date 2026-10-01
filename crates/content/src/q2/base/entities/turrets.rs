@@ -507,10 +507,7 @@ pub fn capture_turrets(game: &mut Q2GameServices) -> Q2TurretsCheckpoint {
     for actor in actors {
         let saved = SavedActorId::from(&actor);
         if let Some(state) = game.base_entities.breaches.get(&actor).copied() {
-            breaches.push(Q2BreachEntry {
-                actor: saved.clone(),
-                state,
-            });
+            breaches.push(Q2BreachEntry { actor: saved, state });
         }
         if let Some(state) = game.base_entities.drivers.get(&actor).cloned() {
             let monster_die = game
@@ -536,14 +533,14 @@ pub fn restore_turrets(game: &mut Q2GameServices, checkpoint: &Q2TurretsCheckpoi
     game.base_entities.breaches = std::collections::HashMap::new();
     game.base_entities.drivers = std::collections::HashMap::new();
     for saved in &checkpoint.breaches {
-        let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, saved.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 turret entity");
         }
         game.base_entities.breaches.insert(actor, saved.state);
     }
     for saved in &checkpoint.drivers {
-        let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, saved.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 turret entity");
         }
@@ -554,7 +551,6 @@ pub fn restore_turrets(game: &mut Q2GameServices, checkpoint: &Q2TurretsCheckpoi
         };
         let breach = saved
             .breach
-            .clone()
             .and_then(|breach| game.host.actors().resolve_saved(breach).map(|owned| owned.id().clone()));
         game.base_entities.drivers.insert(
             actor,

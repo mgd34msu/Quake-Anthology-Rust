@@ -34,14 +34,13 @@ impl Q2GameServices {
     pub fn load_source(&mut self, source: &str) -> Q2SpawnReport {
         let fields = parse_q2_entities(source, self.options.edition);
         let mut replacements: HashMap<i32, MonsterDefinitionReference> = HashMap::new();
-        if self.monster_admission.is_some() {
+        if let Some(admission) = self.monster_admission.as_ref() {
             for field in &fields {
                 if inhibit_q2_spawn(field, &self.options)
                     || self.options.mode == Q2Mode::Deathmatch && field.classname.starts_with("monster_")
                 {
                     continue;
                 }
-                let admission = self.monster_admission.as_ref().expect("admission");
                 if let Some(definition) = (admission.resolve)(&field.classname, field) {
                     replacements.insert(field.ordinal, definition);
                 }

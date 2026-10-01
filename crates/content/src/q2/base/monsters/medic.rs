@@ -369,10 +369,9 @@ fn medic_cable_attack(context: &mut MonsterContext) {
         crate::q2::foundation::monsters::respawn_monster(&mut *context.game, enemy.clone());
         context.game.require_entity_mut(&enemy).owner = None;
         let think = context.game.require_entity(&enemy).think;
-        if think.is_some() {
+        if let Some(think) = think {
             let now = context.game.host.now();
             context.game.require_entity_mut(&enemy).next_think = Some(now);
-            let think = think.expect("medic revive think");
             think(enemy.clone(), &mut *context.game);
         }
         if let Some(state) = context.game.monsters.states.get_mut(&enemy) {

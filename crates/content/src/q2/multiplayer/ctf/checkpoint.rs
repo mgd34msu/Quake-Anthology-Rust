@@ -151,7 +151,7 @@ pub fn capture_q2_ctf(game: &Q2GameServices) -> Q2CtfCheckpoint {
             carrier_defense: ghost.carrier_defense,
         })
         .collect();
-    ghosts.sort_by(|left, right| left.code.cmp(&right.code));
+    ghosts.sort_by_key(|left| left.code);
     let mut players: Vec<Q2CtfPlayerCheckpoint> = game
         .ctf
         .states

@@ -96,8 +96,8 @@ fn insane_dead(context: &mut MonsterContext) {
 /// Whether crawling (`crawling`).
 fn insane_crawling(context: &mut MonsterContext) -> bool {
     let frame = context.entity().frame;
-    frame >= insane_frame::CRAWL1 && frame <= insane_frame::CRAWL9
-        || frame >= insane_frame::STAND99 && frame <= insane_frame::STAND160
+    (insane_frame::CRAWL1..=insane_frame::CRAWL9).contains(&frame)
+        || (insane_frame::STAND99..=insane_frame::STAND160).contains(&frame)
 }
 
 /// Initialize (`initialize`).

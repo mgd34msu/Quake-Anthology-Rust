@@ -601,7 +601,7 @@ impl Q2MissionPackItems {
             .filter(|(actor, _)| game.host.actors().is_live(actor))
             .filter_map(|(actor, state)| save_q2_actor(Some(actor)).map(|saved| (saved, *state)))
             .collect();
-        powers.sort_by(|left, right| (left.0.slot, left.0.generation).cmp(&(right.0.slot, right.0.generation)));
+        powers.sort_by_key(|left| (left.0.slot, left.0.generation));
         Q2MissionPackItemsCheckpoint { powers }
     }
 

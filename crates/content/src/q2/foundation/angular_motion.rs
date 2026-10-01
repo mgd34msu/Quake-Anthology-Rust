@@ -82,7 +82,7 @@ pub fn capture_angular_motion(game: &mut Q2GameServices) -> Q2AngularMotionCheck
 pub fn restore_angular_motion(game: &mut Q2GameServices, checkpoint: &Q2AngularMotionCheckpoint) {
     game.movers.angular_moves = HashMap::new();
     for saved in checkpoint {
-        let owned = restore_q2_actor(game, saved.actor.clone());
+        let owned = restore_q2_actor(game, saved.actor);
         let done = game.source_callbacks.resolve_think(Some(&saved.done));
         let Some(done) = done.filter(|_| game.entity(owned.id()).is_some()) else {
             panic!("Q2 angular move checkpoint has no actor or end function");

@@ -46,9 +46,10 @@ use super::view::{
 };
 
 /// Player intermission (`Q2Players[intermission]`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Q2Intermission {
     /// Playing.
+    #[default]
     Playing,
     /// Intermission.
     Intermission {
@@ -61,12 +62,6 @@ pub enum Q2Intermission {
         /// Landmark.
         landmark: Option<Q2LandmarkCarry>,
     },
-}
-
-impl Default for Q2Intermission {
-    fn default() -> Self {
-        Q2Intermission::Playing
-    }
 }
 
 /// Spawn placement solution (`spawnPlacement` result).
@@ -375,6 +370,12 @@ pub type Q2PlayerBuildViewOverride = fn(ActorId, &mut Q2GameServices, i32, bool)
 /// Damage-feedback override function.
 pub type Q2PlayerDamageFeedbackOverride = fn(ActorId, &mut Q2GameServices, i32) -> (i32, i32);
 
+/// Spawn-placement override function.
+pub type Q2PlayerSpawnPlacementOverride = fn(ActorId, &mut Q2GameServices, Option<Q2LandmarkCarry>) -> Q2SpawnSolution;
+
+/// Put-in-server override function.
+pub type Q2PlayerPutInServerOverride = fn(ActorId, &mut Q2GameServices, bool, Option<Q2LandmarkCarry>);
+
 /// Player behavior overrides (`Q2Players` subclass hooks).
 ///
 /// The donor `Q2Players` dispatches these methods virtually, so edition
@@ -412,11 +413,11 @@ pub struct Q2PlayerOverrides {
     /// Update-bob override.
     pub update_bob: Option<fn(ActorId, &mut Q2GameServices)>,
     /// Spawn-placement override.
-    pub spawn_placement: Option<fn(ActorId, &mut Q2GameServices, Option<Q2LandmarkCarry>) -> Q2SpawnSolution>,
+    pub spawn_placement: Option<Q2PlayerSpawnPlacementOverride>,
     /// Kill-box override.
     pub kill_box: Option<fn(ActorId, &mut Q2GameServices) -> bool>,
     /// Put-in-server override.
-    pub put_in_server: Option<fn(ActorId, &mut Q2GameServices, bool, Option<Q2LandmarkCarry>)>,
+    pub put_in_server: Option<Q2PlayerPutInServerOverride>,
     /// Begin-intermission override.
     pub begin_intermission: Option<fn(&mut Q2GameServices, String, Option<Q2LandmarkCarry>)>,
     /// Before-exit-level override.
@@ -733,7 +734,7 @@ impl Q2Players {
         };
         game.players.states = std::collections::HashMap::new();
         for entry in &checkpoint.players {
-            let actor = restore_q2_actor(game, entry.actor.clone()).id().clone();
+            let actor = restore_q2_actor(game, entry.actor).id().clone();
             if game.entity(&actor).is_none() {
                 panic!("Q2 player checkpoint references missing source wrapper");
             }
@@ -741,7 +742,6 @@ impl Q2Players {
             state.chase_target = entry
                 .state
                 .chase_target
-                .clone()
                 .map(|saved| game.host.actors().reference_saved(saved));
             game.players.states.insert(actor, state);
         }
@@ -894,9 +894,9 @@ impl Q2Players {
         let spectator = game.options.mode == Q2Mode::Deathmatch
             && userinfo_value(&clipped, "spectator").is_some_and(|value| !value.is_empty() && value != "0");
         let fov_value = parse_command_int(userinfo_value(&clipped, "fov").as_deref());
-        let fov = if game.options.mode == Q2Mode::Deathmatch && game.options.deathmatch_flags & 32768 != 0 {
-            90
-        } else if fov_value < 1 {
+        let fov = if (game.options.mode == Q2Mode::Deathmatch && game.options.deathmatch_flags & 32768 != 0)
+            || fov_value < 1
+        {
             90
         } else {
             fov_value.min(160)
@@ -2320,7 +2320,7 @@ impl Q2Players {
                 .filter(|(_, state)| state.connected && !state.spectator)
                 .map(|(id, state)| (id.clone(), state.slot))
                 .collect();
-            candidates.sort_by(|left, right| left.1.cmp(&right.1));
+            candidates.sort_by_key(|left| left.1);
             let index = candidates
                 .iter()
                 .position(|(id, _)| Some(id) == target.as_ref())

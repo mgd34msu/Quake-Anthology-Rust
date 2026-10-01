@@ -714,17 +714,18 @@ fn defender_think(entity: ActorId, game: &mut Q2GameServices) {
             && sight(game, &entity, &enemy)
         {
             let origin = game.body_of(entity.clone()).origin;
-            let target = target.expect("sphere target is missing");
-            mission_projectiles(game).fire_blaster2(
-                owner,
-                game,
-                add3(origin, vec3(0.0, 0.0, 2.0)),
-                normalize3(sub3(target.origin, origin)),
-                10.0,
-                1000.0,
-                8,
-            );
-            game.require_entity_mut(&entity).delay = game.host.now() + 0.4;
+            if let Some(target) = target {
+                mission_projectiles(game).fire_blaster2(
+                    owner,
+                    game,
+                    add3(origin, vec3(0.0, 0.0, 2.0)),
+                    normalize3(sub3(target.origin, origin)),
+                    10.0,
+                    1000.0,
+                    8,
+                );
+                game.require_entity_mut(&entity).delay = game.host.now() + 0.4;
+            }
         }
     }
     sphere_fly(entity.clone(), game);
@@ -773,7 +774,7 @@ fn hunter_think(entity: ActorId, game: &mut Q2GameServices) {
     let mut moved = game.body_of(entity.clone());
     moved.angles = vec3(
         body.angles.x,
-        ((f64::from(body.angles.y) + delta.max(-40.0).min(40.0) + 360.0) % 360.0) as f32,
+        ((f64::from(body.angles.y) + delta.clamp(-40.0, 40.0) + 360.0) % 360.0) as f32,
         body.angles.z,
     );
     game.write_body(entity.clone(), &moved, true);

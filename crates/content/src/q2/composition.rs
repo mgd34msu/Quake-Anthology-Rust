@@ -18,20 +18,12 @@ pub use self::types::{
 };
 
 /// Arena runtime state for product composition.
+#[derive(Default)]
 pub struct CompositionRuntime {
     /// Session services.
     pub services: Option<Q2CompositionServices>,
     /// Active rule flags.
     pub active_rules: i32,
-}
-
-impl Default for CompositionRuntime {
-    fn default() -> Self {
-        Self {
-            services: None,
-            active_rules: 0,
-        }
-    }
 }
 
 impl std::fmt::Debug for CompositionRuntime {

@@ -786,10 +786,7 @@ pub fn capture_movers(game: &mut Q2GameServices) -> Q2BaseMoversCheckpoint {
     for actor in actors {
         let saved = SavedActorId::from(&actor);
         if let Some(state) = game.base_entities.platforms.get(&actor).copied() {
-            platforms.push(Q2PlatformEntry {
-                actor: saved.clone(),
-                state,
-            });
+            platforms.push(Q2PlatformEntry { actor: saved, state });
         }
         if let Some(state) = game.base_entities.secrets.get(&actor).copied() {
             secrets.push(Q2SecretEntry { actor: saved, state });
@@ -808,14 +805,14 @@ pub fn restore_movers(game: &mut Q2GameServices, checkpoint: &Q2BaseMoversCheckp
     game.base_entities.platforms = std::collections::HashMap::new();
     game.base_entities.secrets = std::collections::HashMap::new();
     for saved in &checkpoint.platforms {
-        let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, saved.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 base mover");
         }
         game.base_entities.platforms.insert(actor, saved.state);
     }
     for saved in &checkpoint.secrets {
-        let actor = restore_q2_actor(game, saved.actor.clone()).id().clone();
+        let actor = restore_q2_actor(game, saved.actor).id().clone();
         if game.entity(&actor).is_none() {
             panic!("Missing saved Q2 base mover");
         }

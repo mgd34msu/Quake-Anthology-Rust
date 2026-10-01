@@ -159,24 +159,24 @@ fn rerelease_flyer_attack(context: &mut MonsterContext) {
     } else {
         context.set_move("flyer_move_attack2", true);
     }
-    if !context.state().fly_pinned
-        && rerelease_random(context).integer_max(2) != 0
-        && enemy.is_some()
-        && visible(context, None)
-    {
-        context.state_mut().fly_pinned = true;
-        let position_time = context.state().fly_position_time;
-        context.state_mut().fly_position_time = position_time + 1.7;
-        let body = context.game.body_of(actor);
-        let random = context.game.random();
-        let reposition = rerelease_random(context).integer_max(2) != 0;
-        let enemy_origin = enemy.expect("flyer attack enemy").origin;
-        let ideal = if reposition {
-            add3(body.origin, scale3(body.velocity, random as f32))
-        } else {
-            add3(context.state().fly_ideal_position, enemy_origin)
-        };
-        context.state_mut().fly_ideal_position = ideal;
+    if !context.state().fly_pinned && rerelease_random(context).integer_max(2) != 0 {
+        if let Some(enemy) = enemy {
+            if visible(context, None) {
+                context.state_mut().fly_pinned = true;
+                let position_time = context.state().fly_position_time;
+                context.state_mut().fly_position_time = position_time + 1.7;
+                let body = context.game.body_of(actor);
+                let random = context.game.random();
+                let reposition = rerelease_random(context).integer_max(2) != 0;
+                let enemy_origin = enemy.origin;
+                let ideal = if reposition {
+                    add3(body.origin, scale3(body.velocity, random as f32))
+                } else {
+                    add3(context.state().fly_ideal_position, enemy_origin)
+                };
+                context.state_mut().fly_ideal_position = ideal;
+            }
+        }
     }
 }
 

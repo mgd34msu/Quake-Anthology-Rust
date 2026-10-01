@@ -39,7 +39,7 @@ pub struct Q2TagCheckpoint {
 }
 
 /// Arena runtime state for tag.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TagRuntime {
     /// Session hooks.
     pub hooks: Option<Q2TagHooks>,
@@ -49,17 +49,6 @@ pub struct TagRuntime {
     pub owner: Option<ActorId>,
     /// Kill count.
     pub count: i32,
-}
-
-impl Default for TagRuntime {
-    fn default() -> Self {
-        Self {
-            hooks: None,
-            token: None,
-            owner: None,
-            count: 0,
-        }
-    }
 }
 
 /// Tag callbacks (`Q2Tag::callbacks`).

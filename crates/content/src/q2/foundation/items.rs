@@ -1956,17 +1956,16 @@ fn observe_supply_at(
         if entity.spawn.values.contains_key("team") || item_hooks(game).random_respawn.is_some() {
             return Some(inactive());
         }
-        return Some(if entity.think == Some(respawn_item) && entity.next_think.is_some() {
-            PickupSupplyObservation {
-                actor: pickup,
-                offer,
-                availability: PickupAvailability::Respawning {
-                    at_seconds: entity.next_think.expect("respawn time"),
-                },
+        if entity.think == Some(respawn_item) {
+            if let Some(at_seconds) = entity.next_think {
+                return Some(PickupSupplyObservation {
+                    actor: pickup,
+                    offer,
+                    availability: PickupAvailability::Respawning { at_seconds },
+                });
             }
-        } else {
-            inactive()
-        });
+        }
+        return Some(inactive());
     }
     if entity.touch != Some(touch_pickup) && entity.touch != Some(temporary_touch) {
         return Some(inactive());
@@ -2006,7 +2005,7 @@ fn observe_supply_at(
 fn preview_supply_at(game: &mut Q2GameServices, pickup: ActorId, recipient: ActorId) -> Option<PickupSupplyPreview> {
     let observation = observe_supply_at(game, pickup, recipient.clone())?;
     let offer = observation.offer.clone();
-    if game.items.pickup_admission.is_some() {
+    if let Some(admission) = game.items.pickup_admission.as_ref() {
         if let PickupSupplyOffer::Weapon(grant) = &offer {
             if grant.item == "q2:weapon_blaster" {
                 return Some(PickupSupplyPreview {
@@ -2016,7 +2015,6 @@ fn preview_supply_at(game: &mut Q2GameServices, pickup: ActorId, recipient: Acto
                 });
             }
         }
-        let admission = game.items.pickup_admission.as_ref().expect("supply admission");
         return Some(admission.preview(&recipient, &offer));
     }
     let mut inventory: Vec<InventoryEntry> = game.host.inventory().entries(&recipient);
@@ -2502,14 +2500,14 @@ fn give_ammo_count_at(player: &OwnedActor, game: &mut Q2GameServices, item_id: &
             panic!("Console ammo destination was not admitted");
         }
         let next = count.unwrap_or_else(|| entry.as_ref().map(|entry| entry.count).unwrap_or(0.0) + item.quantity);
-        if mapped && entry.is_some() {
-            let entry = entry.expect("ammo entry");
+        let admitted = if mapped { entry.as_ref() } else { None };
+        if let Some(entry) = admitted {
             let source_counter = matches!(entry.count_policy, Some(InventoryCountPolicy::SourceCounter(_)));
             game.host.inventory().configure(
                 player,
                 &InventoryEntry {
                     count: if source_counter { next } else { 0.0f64.max(next) },
-                    ..entry
+                    ..entry.clone()
                 },
             );
         } else {
@@ -2693,11 +2691,11 @@ impl Q2ItemModule {
         let mut pickups = Vec::new();
         let mut powers = Vec::new();
         let mut bindings = Vec::new();
-        for (actor, _) in &game.entities {
+        for actor in game.entities.keys() {
             let saved = SavedActorId::from(actor);
             if let Some(pickup) = game.items.pickups.get(actor) {
                 pickups.push(Q2PickupCheckpoint {
-                    actor: saved.clone(),
+                    actor: saved,
                     classname: pickup.item.classname.clone(),
                     targets_used: pickup.targets_used,
                     retained: pickup.retained,
@@ -2706,7 +2704,7 @@ impl Q2ItemModule {
             }
             if let Some(power) = game.items.powers.get(actor) {
                 powers.push(Q2PowerCheckpoint {
-                    actor: saved.clone(),
+                    actor: saved,
                     state: *power,
                 });
             }
@@ -2729,7 +2727,7 @@ impl Q2ItemModule {
         game.items.power_armor_bindings = HashSet::new();
         game.items.power_cube_count = checkpoint.power_cube_count;
         for saved in &checkpoint.pickups {
-            let owned = restore_q2_actor(game, saved.actor.clone());
+            let owned = restore_q2_actor(game, saved.actor);
             let entity = game.entity(owned.id()).cloned();
             let item = game.items.catalog.get(&saved.classname).cloned();
             match (entity, item) {
@@ -2748,11 +2746,11 @@ impl Q2ItemModule {
             }
         }
         for saved in &checkpoint.powers {
-            let owned = restore_q2_actor(game, saved.actor.clone());
+            let owned = restore_q2_actor(game, saved.actor);
             game.items.powers.insert(owned.id().clone(), saved.state);
         }
         for saved in &checkpoint.power_armor_bindings {
-            let owned = restore_q2_actor(game, saved.clone());
+            let owned = restore_q2_actor(game, *saved);
             bind_power_armor_at(&owned, game);
         }
     }

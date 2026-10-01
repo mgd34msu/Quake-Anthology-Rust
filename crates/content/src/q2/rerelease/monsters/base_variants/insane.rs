@@ -14,8 +14,8 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 
 /// Crawling (`crawling`).
 fn insane_crawling(frame: i32) -> bool {
-    (frame >= insane_frame::CRAWL1 && frame <= insane_frame::CRAWL9)
-        || (frame >= insane_frame::STAND99 && frame <= insane_frame::STAND160)
+    (insane_frame::CRAWL1..=insane_frame::CRAWL9).contains(&frame)
+        || (insane_frame::STAND99..=insane_frame::STAND160).contains(&frame)
 }
 
 /// Run (`run`).
@@ -29,7 +29,7 @@ fn rerelease_insane_run(context: &mut MonsterContext) {
     }
     let crawl = spawnflags & 4 != 0
         || insane_crawling(frame)
-        || (frame >= insane_frame::CR_PAIN2 && frame <= insane_frame::CR_PAIN10);
+        || (insane_frame::CR_PAIN2..=insane_frame::CR_PAIN10).contains(&frame);
     let normal = context.game.random() <= 0.5;
     context.set_move(
         if crawl {
@@ -147,7 +147,7 @@ fn rerelease_insane_pain(context: &mut MonsterContext, _reaction: &PainReaction)
     context.set_move(
         if spawnflags & 8 != 0 {
             "insane_move_struggle_cross"
-        } else if insane_crawling(frame) || (frame >= insane_frame::STAND1 && frame <= insane_frame::STAND40) {
+        } else if insane_crawling(frame) || (insane_frame::STAND1..=insane_frame::STAND40).contains(&frame) {
             "insane_move_crawl_pain"
         } else {
             "insane_move_stand_pain"

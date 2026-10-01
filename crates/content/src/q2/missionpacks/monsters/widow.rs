@@ -103,7 +103,7 @@ fn widow_blaster(context: &mut MonsterContext) {
         0
     };
     let frame = context.entity().frame;
-    if frame >= widow_frame::SPAWN05 && frame <= widow_frame::SPAWN13 {
+    if (widow_frame::SPAWN05..=widow_frame::SPAWN13).contains(&frame) {
         let index = frame - widow_frame::SPAWN05;
         let flash = 156 + index;
         let edition = context.game.options.edition;
@@ -119,7 +119,7 @@ fn widow_blaster(context: &mut MonsterContext) {
         monster_flash(context, flash, start, direction);
         return;
     }
-    if frame >= widow_frame::FIRED02A && frame <= widow_frame::FIRED20 {
+    if (widow_frame::FIRED02A..=widow_frame::FIRED20).contains(&frame) {
         context.state_mut().manual_steering = true;
         let torso = widow_torso(context);
         let frame = context.entity().frame;
@@ -165,7 +165,7 @@ fn widow_blaster(context: &mut MonsterContext) {
         monster_flash(context, flash, start, direction);
         return;
     }
-    if frame >= widow_frame::RUN01 && frame <= widow_frame::RUN08 {
+    if (widow_frame::RUN01..=widow_frame::RUN08).contains(&frame) {
         let flash = 183 + frame - widow_frame::RUN01;
         let edition = context.game.options.edition;
         let start = project_flash(context, muzzle_offset(edition, flash as usize), None);
@@ -190,7 +190,7 @@ fn widow_check_attack(context: &mut MonsterContext) -> bool {
     widow_powerups(context);
     let frame = context.entity().frame;
     if context.state().current_move.name == "widow_move_run"
-        && (frame >= widow_frame::WALK04 && frame <= widow_frame::WALK08 || frame == widow_frame::WALK12)
+        && ((widow_frame::WALK04..=widow_frame::WALK08).contains(&frame) || frame == widow_frame::WALK12)
     {
         return false;
     }
@@ -291,8 +291,8 @@ fn widow_attack(context: &mut MonsterContext) {
         return;
     }
     let frame = context.entity().frame;
-    let rail_frames = frame == widow_frame::WALK13 || frame >= widow_frame::WALK01 && frame <= widow_frame::WALK03;
-    let blaster_frames = frame >= widow_frame::WALK09 && frame <= widow_frame::WALK12;
+    let rail_frames = frame == widow_frame::WALK13 || (widow_frame::WALK01..=widow_frame::WALK03).contains(&frame);
+    let blaster_frames = (widow_frame::WALK09..=widow_frame::WALK12).contains(&frame);
     widow_slots(context);
     if (context.state().attack_state == MonsterAttackState::Blind || blocked) && widow_slots_left(context) >= 2 {
         context.set_move("widow_move_spawn", true);

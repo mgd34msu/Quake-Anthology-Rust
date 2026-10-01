@@ -493,7 +493,7 @@ pub fn create_rerelease_brain_definition() -> Q2MonsterDefinition {
         300.0,
         -150.0,
         400.0,
-        base.bounds.clone(),
+        base.bounds,
         1.0,
         &base.initial_move,
         brain_moves(),
