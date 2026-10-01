@@ -659,7 +659,7 @@ fn rerelease_restore_carry(actor: ActorId, game: &mut Q2GameServices, carry: Q2P
                     item: entry.item.clone(),
                     count: 0.0,
                     capacity: entry.capacity,
-                    count_policy: entry.count_policy.clone(),
+                    count_policy: entry.count_policy,
                 },
             );
         }
@@ -1009,7 +1009,7 @@ pub fn begin_rerelease_intermission(
                                 item: entry.item.clone(),
                                 count: 0.0,
                                 capacity: entry.capacity,
-                                count_policy: entry.count_policy.clone(),
+                                count_policy: entry.count_policy,
                             },
                         );
                     }
@@ -1119,7 +1119,7 @@ fn rerelease_before_exit_level(game: &mut Q2GameServices, map: String) {
                         item: entry.item.clone(),
                         count: 0.0,
                         capacity: entry.capacity,
-                        count_policy: entry.count_policy.clone(),
+                        count_policy: entry.count_policy,
                     },
                 );
             }

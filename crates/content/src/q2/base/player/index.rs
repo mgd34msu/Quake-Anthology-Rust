@@ -366,6 +366,17 @@ pub struct Q2Players {
     hooks: Q2PlayerHooks,
 }
 
+/// Obituary override function.
+pub type Q2PlayerObituaryOverride =
+    fn(ActorId, &mut Q2GameServices, Option<ActorId>) -> Option<String>;
+
+/// Build-view override function.
+pub type Q2PlayerBuildViewOverride =
+    fn(ActorId, &mut Q2GameServices, i32, bool) -> Q2PlayerView;
+
+/// Damage-feedback override function.
+pub type Q2PlayerDamageFeedbackOverride = fn(ActorId, &mut Q2GameServices, i32) -> (i32, i32);
+
 /// Player behavior overrides (`Q2Players` subclass hooks).
 ///
 /// The donor `Q2Players` dispatches these methods virtually, so edition
@@ -383,7 +394,7 @@ pub struct Q2PlayerOverrides {
     /// Restore-carry override.
     pub restore_carry: Option<fn(ActorId, &mut Q2GameServices, Q2PlayerCarry)>,
     /// Obituary override; `None` skips the base plain-text print.
-    pub obituary: Option<fn(ActorId, &mut Q2GameServices, Option<ActorId>) -> Option<String>>,
+    pub obituary: Option<Q2PlayerObituaryOverride>,
     /// Clear-death-inventory override.
     pub clear_death_inventory: Option<fn(ActorId, &mut Q2GameServices)>,
     /// Record-death override.
@@ -395,9 +406,9 @@ pub struct Q2PlayerOverrides {
     /// Falling-damage override.
     pub falling_damage: Option<fn(ActorId, &mut Q2GameServices)>,
     /// Build-view override.
-    pub build_view: Option<fn(ActorId, &mut Q2GameServices, i32, bool) -> Q2PlayerView>,
+    pub build_view: Option<Q2PlayerBuildViewOverride>,
     /// Damage-feedback override.
-    pub damage_feedback: Option<fn(ActorId, &mut Q2GameServices, i32) -> (i32, i32)>,
+    pub damage_feedback: Option<Q2PlayerDamageFeedbackOverride>,
     /// Client-animation override.
     pub client_animation: Option<fn(ActorId, &mut Q2GameServices)>,
     /// Update-bob override.

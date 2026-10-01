@@ -203,7 +203,7 @@ fn hurt_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact)
     if !damageable
         || !player
             && !monster
-            && target.as_ref().map(|target| target.damageable_target).unwrap_or(false) != true
+            && !target.as_ref().map(|target| target.damageable_target).unwrap_or(false)
             && target.as_ref().map(|target| target.classname.as_str()) != Some("misc_explobox")
     {
         return;

@@ -390,7 +390,7 @@ impl Q2RereleaseModule {
             .collect();
         Q2RereleaseModuleCheckpoint {
             version: 1,
-            world_fog: game.rerelease.world_fog.clone(),
+            world_fog: game.rerelease.world_fog,
             story: game.rerelease.story.clone(),
             sky: game.rerelease.sky.clone(),
             poi: game.rerelease.poi.clone().map(|poi| Q2RereleasePoiCheckpoint {
@@ -445,7 +445,7 @@ impl Q2RereleaseModule {
     /// Restore the module (`restore`).
     pub fn restore(&self, game: &mut Q2GameServices, checkpoint: &Q2RereleaseModuleCheckpoint) {
         self.restore_campaign(game, &checkpoint.campaign);
-        game.rerelease.world_fog = checkpoint.world_fog.clone();
+        game.rerelease.world_fog = checkpoint.world_fog;
         game.rerelease.story = checkpoint.story.clone();
         game.rerelease.sky = checkpoint.sky.clone();
         let poi = checkpoint.poi.clone().map(|poi| {
@@ -538,7 +538,7 @@ impl Q2RereleaseModule {
             .expect("Q2 rerelease player is not admitted")
             .awaiting_respawn;
         self.publish_item_visibility(game, actor.clone(), state.slot);
-        let world_fog = game.rerelease.world_fog.clone();
+        let world_fog = game.rerelease.world_fog;
         {
             let extra = game
                 .rerelease
@@ -634,7 +634,7 @@ impl Q2RereleaseModule {
             .get(&actor)
             .expect("Q2 rerelease player is not admitted")
             .awaiting_respawn;
-        let world_fog = game.rerelease.world_fog.clone();
+        let world_fog = game.rerelease.world_fog;
         {
             let extra = game
                 .rerelease

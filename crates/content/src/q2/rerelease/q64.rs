@@ -631,8 +631,8 @@ fn spawn_q64(entity: ActorId, game: &mut Q2GameServices) -> bool {
                 .rerelease
                 .q64_eyes
                 .get(&entity)
-                .expect("func_eye source state missing")
-                .clone();
+                .copied()
+                .expect("func_eye source state missing");
             let axes = angle_vectors(state.neutral_angles);
             game.require_entity_mut(&entity).movedir = axes.forward;
             let point = state.eye_position;
@@ -665,7 +665,7 @@ pub fn q64_capture(game: &Q2GameServices) -> super::checkpoint::Q2RereleaseQ64Ch
             .into_iter()
             .map(|actor| super::checkpoint::Q2RereleaseQ64EyeCheckpoint {
                 actor: SavedActorId::from(&actor),
-                state: game.rerelease.q64_eyes.get(&actor).expect("Q64 eye is missing").clone(),
+                state: game.rerelease.q64_eyes.get(&actor).copied().expect("Q64 eye is missing"),
             })
             .collect(),
         cameras: cameras
@@ -676,8 +676,8 @@ pub fn q64_capture(game: &Q2GameServices) -> super::checkpoint::Q2RereleaseQ64Ch
                     .rerelease
                     .q64_cameras
                     .get(&actor)
-                    .expect("Q64 camera is missing")
-                    .clone(),
+                    .copied()
+                    .expect("Q64 camera is missing"),
             })
             .collect(),
         dummies: dummies
@@ -688,8 +688,8 @@ pub fn q64_capture(game: &Q2GameServices) -> super::checkpoint::Q2RereleaseQ64Ch
                     .rerelease
                     .q64_dummies
                     .get(&actor)
-                    .expect("Q64 dummy is missing")
-                    .clone(),
+                    .copied()
+                    .expect("Q64 dummy is missing"),
             })
             .collect(),
     }
@@ -701,16 +701,16 @@ pub fn q64_restore(game: &mut Q2GameServices, checkpoint: &super::checkpoint::Q2
     game.rerelease.q64_eyes.clear();
     for entry in &checkpoint.eyes {
         let actor = restore_q2_actor(game, entry.actor).id().clone();
-        game.rerelease.q64_eyes.insert(actor, entry.state.clone());
+        game.rerelease.q64_eyes.insert(actor, entry.state);
     }
     game.rerelease.q64_cameras.clear();
     for entry in &checkpoint.cameras {
         let actor = restore_q2_actor(game, entry.actor).id().clone();
-        game.rerelease.q64_cameras.insert(actor, entry.state.clone());
+        game.rerelease.q64_cameras.insert(actor, entry.state);
     }
     game.rerelease.q64_dummies.clear();
     for entry in &checkpoint.dummies {
         let actor = restore_q2_actor(game, entry.actor).id().clone();
-        game.rerelease.q64_dummies.insert(actor, entry.state.clone());
+        game.rerelease.q64_dummies.insert(actor, entry.state);
     }
 }

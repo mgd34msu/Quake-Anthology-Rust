@@ -437,7 +437,7 @@ impl Q2RereleaseEntities {
             game,
             Q2RereleaseEvent::Fog {
                 actor: actor.clone(),
-                value: extra.wanted_fog.clone(),
+                value: extra.wanted_fog,
                 transition_milliseconds: if instant {
                     0.0
                 } else {
@@ -520,8 +520,7 @@ fn fog_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
         .get_mut(&contact.other)
         .expect("Q2 rerelease player is not admitted")
         .fog_transition = transition;
-    let value: Q2FogState;
-    if record.spawnflags & 16 != 0 {
+    let value = if record.spawnflags & 16 != 0 {
         let bounds = absolute_bounds(&entity, game);
         let center = scale3(add3(bounds.min, bounds.max), 0.5);
         let size = scale3(
@@ -543,25 +542,24 @@ fn fog_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchContact) 
         } else {
             f64::from(length3(sub3(distance, start)) / total).clamp(0.0, 1.0) as f64
         };
-        value = interpolate_q2_fog(
+        interpolate_q2_fog(
             &q2_rerelease_fog_fields(&values.spawn, true),
             &q2_rerelease_fog_fields(&values.spawn, false),
             fraction,
-        );
+        )
     } else {
         if record.spawnflags & 8 == 0 && length3(body.velocity) <= 0.0001 {
             return;
         }
         let on = record.spawnflags & 8 != 0 || dot3(normalize3(body.velocity), record.movedir) > 0.0;
-        value = q2_rerelease_fog_fields(&values.spawn, !on);
-    }
+        q2_rerelease_fog_fields(&values.spawn, !on)
+    };
     let wanted = game
         .rerelease
         .states
         .get(&contact.other)
         .expect("Q2 rerelease player is not admitted")
-        .wanted_fog
-        .clone();
+        .wanted_fog;
     game.rerelease
         .states
         .get_mut(&contact.other)
@@ -652,8 +650,8 @@ fn coop_relay_think(entity: ActorId, game: &mut Q2GameServices) {
     let active = eligible_players(game);
     let inside: Vec<ActorId> = active
         .iter()
-        .cloned()
         .filter(|player| intersects(&bounds, &absolute_bounds(player, game)))
+        .cloned()
         .collect();
     if inside.len() == active.len() {
         let first = game.host.players().first().cloned();
@@ -1089,10 +1087,9 @@ impl Q2RereleaseEntities {
             let visible = empty
                 || controller.spawnflags & 1 == 0
                 || target_origin.is_some_and(|target_origin| game.host.in_pvs(origin, target_origin));
-            let fraction = if empty || target.is_none() {
-                0.0
-            } else {
-                (health / target.as_ref().expect("target checked").max_health).clamp(0.0, 1.0)
+            let fraction = match (empty, target.as_ref()) {
+                (true, _) | (false, None) => 0.0,
+                (false, Some(target)) => (health / target.max_health).clamp(0.0, 1.0),
             };
             (self.hooks.emit)(
                 game,

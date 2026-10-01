@@ -260,10 +260,9 @@ pub fn source_actions(source: Option<&str>, values: &[(String, f64)]) -> String 
             if statement.is_empty() {
                 continue;
             }
-            if statement.ends_with("(self)") {
-                let callback = statement[..statement.len() - 6].to_string();
-                if is_word_text(&callback) {
-                    result.push(json_string(&callback));
+            if let Some(callback) = statement.strip_suffix("(self)") {
+                if is_word_text(callback) {
+                    result.push(json_string(callback));
                     continue;
                 }
             }
