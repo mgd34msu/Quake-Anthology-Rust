@@ -24,21 +24,21 @@ const WORLD_SLOT: usize = 1022;
 /// Null slot (donor `1023`).
 const NULL_SLOT: i32 = 1023;
 
-fn schema_max_health(schema: StatSchema) -> usize {
+pub(crate) fn schema_max_health(schema: StatSchema) -> usize {
     match schema {
         StatSchema::Base(layout) => layout.max_health as usize,
         StatSchema::Missionpack(layout) => layout.max_health as usize,
     }
 }
 
-fn schema_persistent_powerup(schema: StatSchema) -> Option<usize> {
+pub(crate) fn schema_persistent_powerup(schema: StatSchema) -> Option<usize> {
     match schema {
         StatSchema::Base(_) => None,
         StatSchema::Missionpack(layout) => Some(layout.persistent_powerup as usize),
     }
 }
 
-fn item_tag(product: Product, index: i32) -> i32 {
+pub(crate) fn item_tag(product: Product, index: i32) -> i32 {
     item_at(product, index)
         .unwrap_or_else(|_| panic!("Item index out of range: {index}"))
         .tag()

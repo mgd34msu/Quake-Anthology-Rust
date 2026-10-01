@@ -10,10 +10,9 @@
 //!
 //! The server state home has landed: [`Q3ServerState`] is re-exported from
 //! `super::server_state` (donor `./server-state.ts`). The source
-//! presentation state/models (donor `./presentation.ts`) are still declared
-//! here as [`Q3SourcePresentationState`]/[`Q3SourceModel`] with exactly the
-//! fields that donor computes; the presentation home rewires them when it
-//! lands.
+//! presentation state (donor `./presentation.ts`) is re-exported from
+//! `super::presentation`; source models are the hub
+//! [`SimulationPresentation`](super::super::types::SimulationPresentation).
 //!
 //! Entity handles straddle the two `qa-content` entity cores until
 //! the content lanes unify them: records-bound callbacks take
@@ -349,102 +348,11 @@ pub struct Q3SourceSessionCarry {
     pub clients: Vec<Q3SourceSessionClient>,
 }
 
-/// One copied source entity row (donor `Q3SourcePresentationState`
-/// entity word from `./presentation.ts`, out of scope).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationEntity {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Entity state snapshot.
-    pub state: EntityState,
-    /// World origin.
-    pub origin: Vec3,
-    /// Whether linked.
-    pub linked: bool,
-    /// Server flags.
-    pub server_flags: i32,
-    /// Single-client target.
-    pub single_client: i32,
-}
-
-/// One copied source client row (donor `Q3SourcePresentationState`
-/// client word).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationClient {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Client slot.
-    pub slot: i32,
-    /// Player state snapshot.
-    pub state: QvmPlayerState,
-}
-
-/// One copied configstring row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3SourcePresentationString {
-    /// Configstring index.
-    pub index: i32,
-    /// Configstring value.
-    pub value: String,
-}
-
-/// Copied source state for cgame/network consumers (donor
-/// `Q3SourcePresentationState`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationState {
-    /// Product.
-    pub product: Product,
-    /// Presentation time in milliseconds.
-    pub time: i32,
-    /// Copied entities.
-    pub entities: Vec<Q3SourcePresentationEntity>,
-    /// Copied clients.
-    pub clients: Vec<Q3SourcePresentationClient>,
-    /// Non-empty configstrings.
-    pub configstrings: Vec<Q3SourcePresentationString>,
-}
-
-/// Source model presentation for the shared renderer (minimal
-/// `SimulationPresentation` from donor `../types.ts`, out of scope:
-/// only the fields `q3PoolModels` writes are named).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourceModel {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Presenting content.
-    pub content: qa_content::contract::ContentId,
-    /// Render owner.
-    pub render_owner: Q3ModelOwner,
-    /// Model path.
-    pub path: String,
-    /// Current frame.
-    pub frame: i32,
-    /// Previous frame.
-    pub old_frame: i32,
-    /// Skin index.
-    pub skin: i32,
-    /// Effects flags.
-    pub effects: i32,
-    /// Render flags.
-    pub render_flags: i32,
-    /// World origin.
-    pub origin: Vec3,
-    /// World angles.
-    pub angles: Vec3,
-    /// Scale.
-    pub scale: f32,
-    /// Whether visible.
-    pub visible: bool,
-    /// Whether a view weapon.
-    pub view_weapon: bool,
-}
-
-/// Source model render owner (donor `"source-client"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Q3ModelOwner {
-    /// Source client.
-    SourceClient,
-}
+/// Copied source state for cgame/network consumers, re-exported from its
+/// real home (donor `./presentation.ts`).
+pub use super::presentation::{
+    Q3SourcePresentationClient, Q3SourcePresentationEntity, Q3SourcePresentationState, Q3SourcePresentationString,
+};
 
 #[cfg(test)]
 mod tests {
