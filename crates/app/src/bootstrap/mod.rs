@@ -52,6 +52,7 @@ pub mod q3_product;
 pub mod q3_rankings;
 pub mod q3_selected_weapon;
 pub mod qvm_grapple_selection;
+pub mod remote_application;
 pub mod remote_components;
 pub mod remote_seat_identities;
 pub mod remote_seat_pump;
