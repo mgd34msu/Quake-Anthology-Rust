@@ -7,6 +7,8 @@ pub mod q1_types;
 pub mod q2_downloads;
 pub mod q2_effects;
 pub mod q2_layout;
+pub mod q3_client_downloads;
+pub mod q3_downloads;
 pub mod q3_types;
 pub mod qw_camera;
 pub mod qw_server_types;

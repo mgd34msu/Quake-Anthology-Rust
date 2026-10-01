@@ -996,6 +996,73 @@ pub fn q2_game_callback<T>(callback: impl FnOnce() -> T) -> Result<T, Q2GameCall
     }
 }
 
+/// Leased self-referential connection cell.
+///
+/// `qa-net`'s Q3 connections borrow their bindings `&mut`, so an endpoint
+/// cannot own both pieces directly. The cell owns the bindings adapter on
+/// the heap and leases it to one connection at a time:
+///
+/// - construction leaks the adapter box and keeps the raw pointer;
+/// - [`build`](Self::build) drops any live connection before re-leasing;
+/// - `Drop` drops the connection first, then reclaims the box.
+///
+/// The adapter itself must be `'static` (shared state travels through
+/// `Rc` handles, never borrows), and callers must never touch the adapter
+/// except through [`build`](Self::build); all live state stays reachable
+/// through the shared handles. The raw pointer makes the cell `!Send` and
+/// `!Sync`, pinning endpoints to one thread like the donor event loop.
+pub struct Q3ConnectionCell<B, C> {
+    adapter: *mut B,
+    connection: Option<C>,
+}
+
+impl<B, C> Q3ConnectionCell<B, C> {
+    /// Own an adapter with no live connection.
+    pub fn new(adapter: B) -> Self {
+        Self {
+            adapter: Box::into_raw(Box::new(adapter)),
+            connection: None,
+        }
+    }
+
+    /// Drop any live connection, then build a fresh one over the adapter.
+    pub fn build(&mut self, make: impl FnOnce(&mut B) -> C) {
+        self.connection = None;
+        // SAFETY: the old connection (the only outstanding lease) was just
+        // dropped, and the pointer is uniquely owned, so re-leasing is
+        // exclusive. The adapter outlives the cell (see `Drop`).
+        let adapter = unsafe { &mut *self.adapter };
+        self.connection = Some(make(adapter));
+    }
+
+    /// Borrow the live connection, if any.
+    #[must_use]
+    pub fn connection(&self) -> Option<&C> {
+        self.connection.as_ref()
+    }
+
+    /// Mutably borrow the live connection, if any.
+    pub fn connection_mut(&mut self) -> Option<&mut C> {
+        self.connection.as_mut()
+    }
+
+    /// Drop the live connection, if any.
+    pub fn clear(&mut self) {
+        self.connection = None;
+    }
+}
+
+impl<B, C> Drop for Q3ConnectionCell<B, C> {
+    fn drop(&mut self) {
+        self.connection = None;
+        // SAFETY: the connection (the only lease) is gone and the pointer
+        // came from `Box::into_raw` exactly once, so reclaiming is sound.
+        unsafe {
+            drop(Box::from_raw(self.adapter));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
