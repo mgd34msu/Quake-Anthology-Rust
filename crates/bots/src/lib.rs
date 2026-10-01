@@ -29,6 +29,7 @@ pub mod md4;
 pub mod movement;
 pub mod movement_contract;
 pub mod nav;
+pub mod q1_collision;
 pub mod q2_collision;
 pub mod q3_collision;
 pub mod rerelease_path;
