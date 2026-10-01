@@ -4,9 +4,9 @@
 //! Donor provenance: `src/content` plus `src/formats` (including
 //! `src/formats/images`, ported to [`images`]).
 //!
-//! Quake64 (Q1 magic `0x51363420`) classifies as [`BspKind::Q1`] but stays
-//! rejected by the Q1 reader: packed lighting and BSPX extensions are out
-//! of scope, as before.
+//! Quake64 (Q1 magic `0x51363420`) classifies as [`BspKind::Q1`] but its
+//! map geometry stays rejected by the Q1 reader; only its packed lighting
+//! samples are understood. BSPX extensions read through [`bspx`].
 
 use qa_core::binary::{BinaryError, BinaryReader};
 

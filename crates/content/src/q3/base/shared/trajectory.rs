@@ -1,7 +1,8 @@
 //! Quake III base/shared: trajectory.
 //!
 //! Donor provenance: `src/content/q3/base/shared/trajectory.ts`
-//! plus `/home/buzzkill/Projects/quake-typescript/src/content/q3/trajectory.ts`.
+//! plus `/home/buzzkill/Projects/quake-typescript/src/content/q3/trajectory.ts`
+//! and `src/network/q3/state/trajectory.ts`.
 
 use qa_core::math::{add3, scale3, vec3, Vec3};
 
