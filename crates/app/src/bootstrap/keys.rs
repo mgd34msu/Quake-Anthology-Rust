@@ -2,8 +2,8 @@
 //!
 //! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/keys.ts` (`ApplicationKeyProfile`,
 //! `ApplicationKeys`). Synchronous port: key bytes live behind the local
-//! [`KeyProfileState`] trait (`Q3CdKeyState` is unported) and ConfigStores
-//! are the existing settings stores. The donor's self-borrowing
+//! [`KeyProfileState`] trait, implemented by `qa_core::q3_cd_key::Q3CdKeyState`,
+//! and ConfigStores are the existing settings stores. The donor's self-borrowing
 //! `authorization` field becomes caller-wired [`KeyAuthorizationKeys`] and
 //! [`KeyAuthorizationBindings`] adapters so the retained client keeps one
 //! descriptor for all native connections.
@@ -12,6 +12,7 @@ use qa_content::catalog::InstalledCatalog;
 use qa_content::contract::GameFamily;
 use qa_content::user_data::{default_user_content_root, user_product_directory};
 use qa_core::cvar::CvarRegistry;
+use qa_core::q3_cd_key::{Q3CdKeyFileError, Q3CdKeyState, Q3CdKeyUiWrites, Q3KeySlot};
 use qa_net::q3_client_authorization::{Q3CdKeyAuthorization, Q3ClientAuthorizationBindings};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -75,6 +76,74 @@ pub trait KeyProfileState: Default {
     ) -> Result<(), KeyError>;
     /// Fill the authorization key.
     fn read_authorization(&self, destination: &mut [u8]) -> Result<(), KeyError>;
+}
+
+/// Bridge [`UiKeyWrites`] to the core UI write sink.
+struct UiWritesBridge<'a> {
+    writes: &'a mut dyn UiKeyWrites,
+}
+
+impl Q3CdKeyUiWrites for UiWritesBridge<'_> {
+    fn copy(&mut self, bytes: &[u8]) {
+        self.writes.copy(bytes);
+    }
+
+    fn set_byte(&mut self, offset: usize, value: u8) {
+        self.writes.set_byte(offset, value);
+    }
+}
+
+/// Map a core key failure into a profile state failure.
+fn state_error(error: impl ToString) -> KeyError {
+    KeyError::State(error.to_string())
+}
+
+impl KeyProfileState for Q3CdKeyState {
+    fn read_file(&mut self, load_text: &dyn Fn(&str) -> Result<Option<String>, KeyError>) -> Result<(), KeyError> {
+        Q3CdKeyState::read_file(self, load_text)
+    }
+
+    fn append_file(&mut self, load_text: &dyn Fn(&str) -> Result<Option<String>, KeyError>) -> Result<(), KeyError> {
+        Q3CdKeyState::append_file(self, load_text).map_err(|error| match error {
+            Q3CdKeyFileError::Storage(error) => error,
+            Q3CdKeyFileError::Key(error) => state_error(error),
+        })
+    }
+
+    fn write_file(&mut self, dump: &dyn Fn(&str, &str) -> Result<(), KeyError>, offset: u32) -> Result<(), KeyError> {
+        let Some(slot) = Q3KeySlot::from_offset(offset) else {
+            return Err(KeyError::Profile(format!(
+                "Selected Q3 key file offset {offset} is not 0 or 16"
+            )));
+        };
+        Q3CdKeyState::write_file(self, dump, slot)
+    }
+
+    fn read_ui(
+        &self,
+        unique: i32,
+        game_directory: &str,
+        destination: &mut [u8],
+        writes: Option<&mut dyn UiKeyWrites>,
+    ) -> Result<(), KeyError> {
+        let mut bridge = writes.map(|writes| UiWritesBridge { writes });
+        let writes = bridge.as_mut().map(|bridge| bridge as &mut dyn Q3CdKeyUiWrites);
+        Q3CdKeyState::read_ui(self, unique, game_directory, destination, writes).map_err(state_error)
+    }
+
+    fn write_ui(
+        &mut self,
+        unique: i32,
+        game_directory: &str,
+        source: &[u8],
+        cvars: &Rc<RefCell<CvarRegistry>>,
+    ) -> Result<(), KeyError> {
+        Q3CdKeyState::write_ui(self, unique, game_directory, source, &mut cvars.borrow_mut()).map_err(state_error)
+    }
+
+    fn read_authorization(&self, destination: &mut [u8]) -> Result<(), KeyError> {
+        Q3CdKeyState::read_authorization(self, destination).map_err(state_error)
+    }
 }
 
 /// A prepared profile owns its UI view before it becomes the authorization profile.
@@ -457,5 +526,61 @@ mod tests {
         let mut bindings = KeyAuthorizationBindings::new(&mut keys);
         assert!(!bindings.demo_restricted());
         bindings.print("hello\n");
+    }
+
+    #[test]
+    fn q3_cd_key_state_delegates_profile_read_ui() {
+        let root = std::env::temp_dir().join(format!("qa-keys-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch");
+        let cvars = Rc::new(RefCell::new(CvarRegistry::new(qa_core::cmd::Dialect::Q3)));
+        let mut profile = ApplicationKeyProfile {
+            cvars: Rc::clone(&cvars),
+            game_directory: String::new(),
+            demo_restricted: false,
+            state: Q3CdKeyState::default(),
+            base: ConfigStore::new(root.clone()),
+            game: None,
+        };
+        let mut view = [0xFFu8; 17];
+        profile.read_ui(0, "", &mut view, None).expect("read default");
+        assert_eq!(&view[0..16], &[b' '; 16]);
+        assert_eq!(view[16], 0);
+
+        profile.write_ui(0, "", b"AAAAAAAAAAAAAAAA").expect("write key");
+        profile.read_ui(0, "", &mut view, None).expect("read written");
+        assert_eq!(&view[0..16], b"AAAAAAAAAAAAAAAA");
+        assert_eq!(view[16], 0);
+        assert_eq!(cvars.borrow_mut().take_modified_flags(), qa_core::cvar::flags::ARCHIVE);
+
+        let mut auth = [0u8; 33];
+        profile.read_authorization(&mut auth).expect("authorize");
+        assert_eq!(&auth[0..16], b"AAAAAAAAAAAAAAAA");
+
+        profile.save().expect("save");
+        let stored = std::fs::read_to_string(root.join("q3key")).expect("key file");
+        assert!(stored.starts_with("AAAAAAAAAAAAAAAA\n// generated by quake"));
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn prepare_constructs_q3_cd_key_state() {
+        let root = std::env::temp_dir().join(format!("qa-keys-prepare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let product_dir = root.join("baseq3");
+        std::fs::create_dir_all(&product_dir).expect("scratch");
+        std::fs::write(product_dir.join("q3key"), "LLLLLLLLLLLLLLLL\n").expect("seed key");
+        let keys = ApplicationKeys::<Q3CdKeyState>::new(Box::new(|_| {}));
+        let options = KeyProfileOptions {
+            product: "product".to_owned(),
+            user_content_root: Some(root.to_string_lossy().into_owned()),
+            demo_restricted: false,
+        };
+        let q3 = catalog(GameFamily::Q3);
+        let profile = keys.prepare(&options, &q3).expect("prepare").expect("profile");
+        let mut view = [0u8; 17];
+        profile.read_ui(0, "", &mut view, None).expect("read seeded");
+        assert_eq!(&view[0..16], b"LLLLLLLLLLLLLLLL");
+        std::fs::remove_dir_all(&root).expect("cleanup");
     }
 }
