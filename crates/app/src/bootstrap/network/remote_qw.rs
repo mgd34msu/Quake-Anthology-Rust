@@ -1,7 +1,8 @@
 //! QuakeWorld remote presentation.
 //!
-//! Port of `src/app/bootstrap/network/remote-qw.ts`. Decoded QuakeWorld
-//! protocol state is translated into NetQuake messages and shared with a
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/remote-qw.ts`
+//! (`QwRemotePresentation`). Decoded QuakeWorld protocol state is
+//! translated into NetQuake messages and shared with a
 //! [`Q1RemotePresentation`]; the QuakeWorld layer adds player-entity mapping,
 //! nail projectiles, userinfo scoreboard rows, spectator camera control, skin
 //! selection, client prediction, and brush linking.
