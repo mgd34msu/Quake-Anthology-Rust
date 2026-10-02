@@ -62,13 +62,23 @@
 //!
 //! Missing siblings (host seams, referenced but NOT ported here): `keys.ts`
 //! (the key profile is generic over the unported CD-key state and only
-//! forwards into the host-owned guest factory), `input.ts` (mouse-button
-//! mapping inlined), `assets.ts`, `audio.ts`, `q3-client/services.ts`,
-//! `q3-client/cinematics.ts`, `content/q3/presentation/client.ts` (native
-//! backend), `server-administration.ts` (operator state is never consumed by
-//! the donor client), and the QVM guest inputs (`Q3BrowserView`, guest
-//! cvars/input/client-state, connection, scalars) which the host factory
-//! captures directly. Bound canonically here: `component-bodies.ts`
+//! forwards into the host-owned guest factory), `assets.ts`,
+//! `content/q3/presentation/client.ts` (native backend), and the QVM guest
+//! inputs (`Q3BrowserView`, guest cvars/input/client-state, connection,
+//! scalars) which the host factory captures directly.
+//!
+//! Canonical siblings (ported; not host seams): `input.ts`
+//! (`crate::bootstrap::input::ApplicationInput`; the mouse-button mapping stays
+//! inlined), `audio.ts` (`crate::bootstrap::audio::application`),
+//! `q3-client/services.ts`
+//! (`crate::bootstrap::q3_client::services::ApplicationQ3Services`),
+//! `q3-client/cinematics.ts`
+//! (`crate::bootstrap::q3_client::cinematics::ApplicationQ3Cinematics`), and
+//! `server-administration.ts`
+//! (`crate::bootstrap::server_administration::SourceServerAdministration`,
+//! whose operator state the donor client never consumes).
+//!
+//! Bound canonically here: `component-bodies.ts`
 //! (`prepare` bodies; primary-body capture still mirrors locally because the
 //! client entity handle allocates host-side), `effects.ts` (effect frames),
 //! `frame-time.ts` plus `world/collision/q3/settings.ts` (frame-time sync),
