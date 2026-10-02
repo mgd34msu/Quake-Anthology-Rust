@@ -1,6 +1,6 @@
 //! QuakeWorld player skin selection and caching.
 //!
-//! Port of `src/app/bootstrap/network/qw-skins.ts` (`QwPlayerSkins`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/qw-skins.ts` (`QwPlayerSkins`,
 //! `Skin_Find`/`Skin_Cache` selection). The donor is async; this sync port
 //! resolves reads inline and caches decoded skins instead of promises.
 //! Hashing uses [`sha256_hex`](qa_content::hash::sha256_hex) (the donor's
@@ -122,6 +122,15 @@ impl QwPlayerSkins {
     /// Clear the cache (donor `clear`).
     pub fn clear(&mut self) {
         self.cache.clear();
+    }
+
+    /// Read the skin policy cvars (`noskins`, `baseskin`, `allskins`).
+    pub fn policy(&self) -> (i32, String, String) {
+        (
+            (self.options.noskins)(),
+            (self.options.baseskin)(),
+            (self.options.allskins)(),
+        )
     }
 
     /// Load, pad, and crop a skin (donor `load`).

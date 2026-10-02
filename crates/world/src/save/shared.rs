@@ -49,7 +49,9 @@ pub fn validate_content_id(value: &str) -> Result<(), WorldError> {
     Ok(())
 }
 
-fn valid_identity_part(part: &str) -> bool {
+/// Whether a colon-separated identity component is well formed.
+#[must_use]
+pub fn valid_identity_part(part: &str) -> bool {
     let mut chars = part.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphanumeric() => {}

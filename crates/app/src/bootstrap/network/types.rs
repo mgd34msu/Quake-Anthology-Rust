@@ -172,6 +172,33 @@ pub enum WeaponAmmoStatus {
     },
 }
 
+impl WeaponAmmoStatus {
+    /// Build a metered ammunition status.
+    #[must_use]
+    pub fn finite(item: String, count: f64, has_ammo_to_start: bool, low: bool) -> Self {
+        Self::Finite {
+            item,
+            count,
+            has_ammo_to_start,
+            low,
+        }
+    }
+
+    /// Borrow metered ammunition parts, if metered.
+    #[must_use]
+    pub fn finite_parts(&self) -> Option<(&str, f64, bool, bool)> {
+        match self {
+            Self::Finite {
+                item,
+                count,
+                has_ammo_to_start,
+                low,
+            } => Some((item, *count, *has_ammo_to_start, *low)),
+            Self::Unmetered => None,
+        }
+    }
+}
+
 /// Weapon status block (`PlayerUi['weaponStatus']`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponStatus {
