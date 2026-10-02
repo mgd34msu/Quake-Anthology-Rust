@@ -68,6 +68,8 @@ pub enum WeaponAmmoStatus {
         count: f64,
         /// Whether an attack can start.
         has_ammo_to_start: bool,
+        /// Whether the pool is at or below its warning threshold.
+        low: bool,
     },
 }
 
@@ -84,44 +86,8 @@ pub struct WeaponHudStatus {
     pub ammo: WeaponAmmoStatus,
 }
 
-/// HUD item kind. Absorbed from donor simulation types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerUiItemKind {
-    /// Weapon.
-    Weapon,
-    /// Powerup.
-    Powerup,
-}
-
-/// HUD item row. Absorbed from donor simulation types.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlayerUiItem {
-    /// Item id.
-    pub id: ItemId,
-    /// Display label.
-    pub label: String,
-    /// Row kind.
-    pub kind: PlayerUiItemKind,
-    /// Source ordering.
-    pub source_ordinal: f64,
-    /// Whether owned.
-    pub owned: bool,
-    /// Whether it has ammo.
-    pub has_ammo: bool,
-    /// Count, when counted.
-    pub count: Option<f64>,
-    /// Warning count.
-    pub warning_count: f64,
-}
-
-/// Active ammo readout. Absorbed from donor simulation types.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UiAmmo {
-    /// Ammo item.
-    pub item: ItemId,
-    /// Count.
-    pub count: f64,
-}
+/// HUD item types, canonicalized in the simulation types hub.
+pub use super::super::types::{PlayerUiItem, PlayerUiItemKind, UiAmmo};
 
 /// Arsenal-owned slice of the player HUD. Absorbed from donor simulation types.
 #[derive(Debug, Clone, PartialEq)]

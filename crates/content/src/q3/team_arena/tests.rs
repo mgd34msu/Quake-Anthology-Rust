@@ -2938,7 +2938,7 @@ impl ClientAdmissionHost for StubAdmissionHost {
         self.commands.clone()
     }
 
-    fn bots(&self) -> ClientBotServices {
+    fn bots(&self) -> ClientBotServices<'_> {
         ClientBotServices::Available {
             remove_queued_begin: Rc::new(|_| {}),
             connect: Rc::new(|_, _| true),

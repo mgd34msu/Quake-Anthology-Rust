@@ -8,15 +8,11 @@
 //! `Q3PlayerState` mirror; unified commands reuse the `qa-net` actor
 //! command.
 //!
-//! Two out-of-scope donors are shimmed minimally, following the
-//! `weapon_view`/`q1_session_actions` precedent: `Q3ServerState`
-//! (donor `./server-state.ts`) appears only as the
-//! [`Q3SourceServerState`] seam its home will implement, and the
-//! source presentation state/models (donor `./presentation.ts`) are
-//! declared here as [`Q3SourcePresentationState`]/[`Q3SourceModel`]
-//! with exactly the fields that donor computes, so the runtime can
-//! implement its `sourceState`/`presentations` readers without
-//! touching the presentation home.
+//! The server state home has landed: [`Q3ServerState`] is re-exported from
+//! `super::server_state` (donor `./server-state.ts`). The source
+//! presentation state (donor `./presentation.ts`) is re-exported from
+//! `super::presentation`; source models are the hub
+//! [`SimulationPresentation`](super::super::types::SimulationPresentation).
 //!
 //! Entity handles straddle the two `qa-content` entity cores until
 //! the content lanes unify them: records-bound callbacks take
@@ -52,8 +48,6 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 use qa_guest::qvm::player_record::QvmPlayerState;
 use qa_net::common::commands::ActorCommand;
-use qa_world::save::value::{SaveJson, SaveReader};
-use qa_world::WorldError;
 
 use super::super::q3_ballistics::Q3WeaponBehaviorPort;
 use crate::bootstrap::q3_client::visibility::ApplicationQ3SceneQueries;
@@ -141,12 +135,12 @@ pub trait Q3SourceEngine {
 }
 
 /// Bot console command callback.
-pub type Q3BotConsoleCommand = Rc<dyn Fn(&[String])>;
+pub type Q3BotConsoleCommand<'a> = Rc<dyn Fn(&[String]) + 'a>;
 
 /// Source bot services: admission bot services plus the match-level
 /// hooks the runtime drives.
 #[derive(Clone)]
-pub enum Q3SourceBots {
+pub enum Q3SourceBots<'a> {
     /// Bots unavailable.
     Unavailable {
         /// Reason.
@@ -155,24 +149,24 @@ pub enum Q3SourceBots {
     /// Bots available.
     Available {
         /// Remove a queued begin.
-        remove_queued_begin: Rc<dyn Fn(usize)>,
+        remove_queued_begin: Rc<dyn Fn(usize) + 'a>,
         /// Connect a bot.
-        connect: Rc<dyn Fn(usize, bool) -> bool>,
+        connect: Rc<dyn Fn(usize, bool) -> bool + 'a>,
         /// Shut down a bot client.
-        shutdown_client: Rc<dyn Fn(usize, bool)>,
+        shutdown_client: Rc<dyn Fn(usize, bool) + 'a>,
         /// Test AAS at an origin.
-        test_aas: Rc<dyn Fn(Vec3)>,
+        test_aas: Rc<dyn Fn(Vec3) + 'a>,
         /// Interbreed at match end.
-        interbreed_end_match: Rc<dyn Fn()>,
+        interbreed_end_match: Rc<dyn Fn() + 'a>,
         /// Run a bot console command.
-        console_command: Q3BotConsoleCommand,
+        console_command: Q3BotConsoleCommand<'a>,
     },
 }
 
-impl Q3SourceBots {
+impl<'a> Q3SourceBots<'a> {
     /// Admission-level bot services.
     #[must_use]
-    pub fn client_services(&self) -> ClientBotServices {
+    pub fn client_services(&self) -> ClientBotServices<'a> {
         match self {
             Self::Unavailable { reason } => ClientBotServices::Unavailable { reason: reason.clone() },
             Self::Available {
@@ -189,18 +183,9 @@ impl Q3SourceBots {
     }
 }
 
-/// Engine-owned storage shared by the selected game and its network
-/// host (minimal `Q3ServerState` seam from donor `./server-state.ts`,
-/// out of scope: only the capture/restore/server-info surface the
-/// runtime consumes is named).
-pub trait Q3SourceServerState {
-    /// Capture the save image.
-    fn capture_save_state(&self) -> SaveJson;
-    /// Restore the save image.
-    fn restore_save_state(&self, reader: SaveReader) -> Result<(), WorldError>;
-    /// Current server info string.
-    fn server_info(&self) -> String;
-}
+/// Engine-owned storage shared by the selected game and its network host,
+/// re-exported from its real home (donor `./server-state.ts`).
+pub use super::server_state::Q3ServerState;
 
 /// Mover actor access owned by the session (donor
 /// `Pick<MoverActorAccess, "observe" | "write" | "link" | "release">`).
@@ -248,7 +233,7 @@ pub trait Q3SourceHost: MovementHost {
         None
     }
     /// Engine-owned server storage.
-    fn server_state(&self) -> Rc<dyn Q3SourceServerState>;
+    fn server_state(&self) -> Rc<Q3ServerState>;
     /// Session mover actors.
     fn mover_actors(&self) -> Rc<dyn Q3SourceMoverActors>;
     /// Whether primary attack is allowed.
@@ -296,7 +281,7 @@ pub trait Q3SourceHost: MovementHost {
     /// Death animation sequence.
     fn death_animations(&self) -> Q3DeathAnimationSequence;
     /// Bot services.
-    fn bots(&self) -> Q3SourceBots;
+    fn bots(&self) -> Q3SourceBots<'static>;
     /// Current time in milliseconds.
     fn now(&self) -> i32;
     /// Schedule an actor think.
@@ -363,102 +348,11 @@ pub struct Q3SourceSessionCarry {
     pub clients: Vec<Q3SourceSessionClient>,
 }
 
-/// One copied source entity row (donor `Q3SourcePresentationState`
-/// entity word from `./presentation.ts`, out of scope).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationEntity {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Entity state snapshot.
-    pub state: EntityState,
-    /// World origin.
-    pub origin: Vec3,
-    /// Whether linked.
-    pub linked: bool,
-    /// Server flags.
-    pub server_flags: i32,
-    /// Single-client target.
-    pub single_client: i32,
-}
-
-/// One copied source client row (donor `Q3SourcePresentationState`
-/// client word).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationClient {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Client slot.
-    pub slot: i32,
-    /// Player state snapshot.
-    pub state: QvmPlayerState,
-}
-
-/// One copied configstring row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3SourcePresentationString {
-    /// Configstring index.
-    pub index: i32,
-    /// Configstring value.
-    pub value: String,
-}
-
-/// Copied source state for cgame/network consumers (donor
-/// `Q3SourcePresentationState`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourcePresentationState {
-    /// Product.
-    pub product: Product,
-    /// Presentation time in milliseconds.
-    pub time: i32,
-    /// Copied entities.
-    pub entities: Vec<Q3SourcePresentationEntity>,
-    /// Copied clients.
-    pub clients: Vec<Q3SourcePresentationClient>,
-    /// Non-empty configstrings.
-    pub configstrings: Vec<Q3SourcePresentationString>,
-}
-
-/// Source model presentation for the shared renderer (minimal
-/// `SimulationPresentation` from donor `../types.ts`, out of scope:
-/// only the fields `q3PoolModels` writes are named).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q3SourceModel {
-    /// Acting actor.
-    pub actor: ActorId,
-    /// Presenting content.
-    pub content: qa_content::contract::ContentId,
-    /// Render owner.
-    pub render_owner: Q3ModelOwner,
-    /// Model path.
-    pub path: String,
-    /// Current frame.
-    pub frame: i32,
-    /// Previous frame.
-    pub old_frame: i32,
-    /// Skin index.
-    pub skin: i32,
-    /// Effects flags.
-    pub effects: i32,
-    /// Render flags.
-    pub render_flags: i32,
-    /// World origin.
-    pub origin: Vec3,
-    /// World angles.
-    pub angles: Vec3,
-    /// Scale.
-    pub scale: f32,
-    /// Whether visible.
-    pub visible: bool,
-    /// Whether a view weapon.
-    pub view_weapon: bool,
-}
-
-/// Source model render owner (donor `"source-client"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Q3ModelOwner {
-    /// Source client.
-    SourceClient,
-}
+/// Copied source state for cgame/network consumers, re-exported from its
+/// real home (donor `./presentation.ts`).
+pub use super::presentation::{
+    Q3SourcePresentationClient, Q3SourcePresentationEntity, Q3SourcePresentationState, Q3SourcePresentationString,
+};
 
 #[cfg(test)]
 mod tests {
