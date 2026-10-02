@@ -73,7 +73,8 @@ use qa_world::session::SaveImage;
 
 use super::arsenal::selected::{ArsenalAmmoWarning, WeaponHudStatus};
 use super::powerup_timers::ActivePowerupTimer;
-use super::q3::types::{Q3SourceEntityEvent, Q3SourcePlayerEvent, Q3SourceSessionCarry};
+use super::q3::host::Q3SourceEvent;
+use super::q3::types::Q3SourceSessionCarry;
 use super::q3_ballistics::Q3SharedBallisticEvent;
 use super::weapon_slot::WeaponReference;
 use crate::debug::DebugLine;
@@ -171,41 +172,6 @@ pub struct Q3SelectedArsenalCheckpoint {
     pub last_fire_milliseconds: Option<i32>,
     /// Pending weapon use.
     pub pending_use: Option<ItemId>,
-}
-
-/// Mirror of `Q3SourceEvent` from donor
-/// `src/app/bootstrap/simulation/q3/host.ts` (canonical home:
-/// `crate::bootstrap::simulation::q3::host`); unify when it merges.
-#[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
-pub enum Q3SourceEvent {
-    /// Movie queued.
-    Cinematic {
-        /// Cinematic id.
-        id: i32,
-    },
-    /// Server connection.
-    Connect,
-    /// Server disconnect.
-    Disconnect,
-    /// Level travel.
-    Travel {
-        /// Destination map.
-        map: String,
-    },
-    /// Round restart.
-    Restart,
-    /// Demo recording.
-    Record {
-        /// Demo name.
-        name: String,
-    },
-    /// Demo playback stopped.
-    StopRecord,
-    /// Entity event.
-    Entity(Q3SourceEntityEvent),
-    /// Player event.
-    Player(Q3SourcePlayerEvent),
 }
 
 /// Mirror of `ApplicationBotNavigation` from donor

@@ -29,15 +29,15 @@ pub struct ClientAdmissionSettings {
 
 /// Bot services (`ClientBotServices`).
 #[derive(Clone)]
-pub enum ClientBotServices {
+pub enum ClientBotServices<'a> {
     /// Bots available.
     Available {
         /// Remove a queued begin.
-        remove_queued_begin: Rc<dyn Fn(usize)>,
+        remove_queued_begin: Rc<dyn Fn(usize) + 'a>,
         /// Connect a bot.
-        connect: Rc<dyn Fn(usize, bool) -> bool>,
+        connect: Rc<dyn Fn(usize, bool) -> bool + 'a>,
         /// Shut down a bot client.
-        shutdown_client: Rc<dyn Fn(usize, bool)>,
+        shutdown_client: Rc<dyn Fn(usize, bool) + 'a>,
     },
     /// Bots unavailable.
     Unavailable {
@@ -79,7 +79,7 @@ pub trait ClientAdmissionHost {
     /// Command services.
     fn commands(&self) -> Rc<dyn ClientAdmissionCommands>;
     /// Bot services.
-    fn bots(&self) -> ClientBotServices;
+    fn bots(&self) -> ClientBotServices<'_>;
     /// Admission settings.
     fn settings(&self) -> ClientAdmissionSettings;
     /// Raw userinfo for a client.

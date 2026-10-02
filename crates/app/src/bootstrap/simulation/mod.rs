@@ -16,6 +16,7 @@ pub mod bot_q3_knowledge;
 pub mod bot_rerelease_world;
 pub mod bot_selected_knowledge;
 pub mod bot_world;
+pub mod bots;
 pub mod classic_guest_files;
 pub mod classic_guest_player;
 pub mod classic_guest_services;

@@ -48,7 +48,7 @@ use qa_world::save::value::{arr, int, obj, str, SaveJson, SaveReader};
 use qa_world::WorldError;
 use thiserror::Error;
 
-use super::bot_arsenal::{create_bot_arsenal_binding, BotArsenalBinding};
+use super::bot_arsenal::{create_bot_arsenal_binding, BotArsenalBinding, BotArsenalError};
 use super::bot_q1_knowledge::Q1BotKnowledgeSimulation;
 use super::bot_q2_knowledge::Q2BotKnowledgeSimulation;
 use super::bot_q3_knowledge::Q3BotKnowledgeSimulation;
@@ -1032,6 +1032,32 @@ impl<S: BotWorldSimulation> SharedBotGame<S> {
     #[must_use]
     pub fn has_begun(&self, client: i32) -> bool {
         self.state.borrow().begun.contains(&client)
+    }
+
+    /// Client display name for an actor (donor `clientInfo(actor)?.name`).
+    #[must_use]
+    pub fn client_name(&self, actor: &ActorId) -> Option<String> {
+        self.state.borrow().client_info(Some(actor)).map(|info| info.name)
+    }
+
+    /// Restore the arsenal binding map (donor shared `knowledge.restoreCheckpoint`).
+    pub fn restore_binding(
+        &self,
+        reader: SaveReader<'_>,
+        actor: &dyn Fn(SavedActorId) -> ActorId,
+        weapon_handle: &dyn Fn(u32) -> i64,
+    ) -> Result<(), BotArsenalError> {
+        // Take/restore: the binding calls back into `actor_for_id`, so no
+        // borrow may be held across the call.
+        let mut binding = self
+            .state
+            .borrow_mut()
+            .binding
+            .take()
+            .expect("Shared bot arsenal binding is unavailable");
+        let outcome = binding.restore_binding(reader, actor, weapon_handle);
+        self.state.borrow_mut().binding = Some(binding);
+        outcome
     }
 
     fn observe_entity(&self, number: i32) -> BotObservedEntity {

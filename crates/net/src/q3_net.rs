@@ -2192,6 +2192,30 @@ impl ServerReliableCommands {
         }
     }
 
+    /// Restore a saved ring image, validating the donor
+    /// `RestoredBotReliableCommands` (`src/app/bootstrap/simulation/bots.ts`)
+    /// contract: sequence in `0..=0x7fffffff`, acknowledge in
+    /// `-0x80000000..=0x7fffffff`, exactly `MAX_RELIABLE_COMMANDS` slots of
+    /// at most 1023 characters with no NUL bytes.
+    pub fn restore_ring(sequence: i64, acknowledge: i64, slots: &[String]) -> Result<Self, Q3NetError> {
+        if !(0..=0x7fff_ffffi64).contains(&sequence)
+            || !(-0x8000_0000i64..=0x7fff_ffffi64).contains(&acknowledge)
+            || slots.len() != MAX_RELIABLE_COMMANDS
+        {
+            return Err(Q3NetError::Range("Invalid saved bot reliable command ring"));
+        }
+        if slots.iter().any(|text| text.len() > 1023 || text.contains('\0')) {
+            return Err(Q3NetError::Range("Invalid saved bot reliable command text"));
+        }
+        let mut ring = ReliableRing::new();
+        ring.current_sequence = sequence as i32;
+        ring.acknowledged_sequence = acknowledge as i32;
+        for (index, text) in slots.iter().enumerate() {
+            ring.slots[index] = text.clone();
+        }
+        Ok(Self { ring })
+    }
+
     /// Current sequence.
     #[must_use]
     pub fn sequence(&self) -> i32 {

@@ -135,12 +135,12 @@ pub trait Q3SourceEngine {
 }
 
 /// Bot console command callback.
-pub type Q3BotConsoleCommand = Rc<dyn Fn(&[String])>;
+pub type Q3BotConsoleCommand<'a> = Rc<dyn Fn(&[String]) + 'a>;
 
 /// Source bot services: admission bot services plus the match-level
 /// hooks the runtime drives.
 #[derive(Clone)]
-pub enum Q3SourceBots {
+pub enum Q3SourceBots<'a> {
     /// Bots unavailable.
     Unavailable {
         /// Reason.
@@ -149,24 +149,24 @@ pub enum Q3SourceBots {
     /// Bots available.
     Available {
         /// Remove a queued begin.
-        remove_queued_begin: Rc<dyn Fn(usize)>,
+        remove_queued_begin: Rc<dyn Fn(usize) + 'a>,
         /// Connect a bot.
-        connect: Rc<dyn Fn(usize, bool) -> bool>,
+        connect: Rc<dyn Fn(usize, bool) -> bool + 'a>,
         /// Shut down a bot client.
-        shutdown_client: Rc<dyn Fn(usize, bool)>,
+        shutdown_client: Rc<dyn Fn(usize, bool) + 'a>,
         /// Test AAS at an origin.
-        test_aas: Rc<dyn Fn(Vec3)>,
+        test_aas: Rc<dyn Fn(Vec3) + 'a>,
         /// Interbreed at match end.
-        interbreed_end_match: Rc<dyn Fn()>,
+        interbreed_end_match: Rc<dyn Fn() + 'a>,
         /// Run a bot console command.
-        console_command: Q3BotConsoleCommand,
+        console_command: Q3BotConsoleCommand<'a>,
     },
 }
 
-impl Q3SourceBots {
+impl<'a> Q3SourceBots<'a> {
     /// Admission-level bot services.
     #[must_use]
-    pub fn client_services(&self) -> ClientBotServices {
+    pub fn client_services(&self) -> ClientBotServices<'a> {
         match self {
             Self::Unavailable { reason } => ClientBotServices::Unavailable { reason: reason.clone() },
             Self::Available {
@@ -281,7 +281,7 @@ pub trait Q3SourceHost: MovementHost {
     /// Death animation sequence.
     fn death_animations(&self) -> Q3DeathAnimationSequence;
     /// Bot services.
-    fn bots(&self) -> Q3SourceBots;
+    fn bots(&self) -> Q3SourceBots<'_>;
     /// Current time in milliseconds.
     fn now(&self) -> i32;
     /// Schedule an actor think.
