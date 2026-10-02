@@ -2,6 +2,7 @@
 
 pub mod command_policy;
 pub mod guest_artifact;
+pub mod guest_bots;
 pub mod guest_movement;
 pub mod guest_player;
 pub mod guest_records;
