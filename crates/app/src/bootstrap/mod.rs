@@ -61,6 +61,7 @@ pub mod match_preflight;
 pub mod media;
 pub mod menu_art;
 pub mod menu_font;
+pub mod mod_presentation;
 pub mod mod_selection;
 pub mod model_loader;
 pub mod native_held_weapon;
