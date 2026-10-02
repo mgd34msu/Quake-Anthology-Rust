@@ -149,6 +149,21 @@ pub enum Q3ApplicationAdmission {
     },
 }
 
+impl Q3ApplicationPlayer {
+    /// Build a native-source player binding (donor `playerFor` native branch
+    /// in `simulation/network-q3.ts`; native bindings carry no admission
+    /// ordinal).
+    #[must_use]
+    pub fn for_native(client: ClientId, actor: ActorId, source_entity: i32) -> Self {
+        Self {
+            client,
+            actor,
+            source_entity,
+            admission: 0,
+        }
+    }
+}
+
 /// Guest output operations behind the running game (sync port of the
 /// donor's `Q3GuestOutput`).
 pub trait Q3GuestOutput {

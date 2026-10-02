@@ -980,7 +980,7 @@ mod tests {
     use super::*;
 
     use qa_core::identity::IdentityOwner;
-    
+
     #[test]
     fn userinfo_round_trip() {
         let values = parse_q2_userinfo("\\name\\player\\ip\\localhost");
