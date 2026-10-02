@@ -55,6 +55,10 @@ pub trait QvmClientInput {
     fn bindings(&self) -> Vec<InputBinding>;
     /// Bind an input to command text.
     fn bind(&mut self, input: PhysicalInput, command: &str);
+    /// Remove the binding for an input.
+    fn unbind(&mut self, input: &PhysicalInput);
+    /// Remove every binding.
+    fn unbind_all(&mut self);
     /// Clear transient states.
     fn clear_states(&mut self);
 }
@@ -426,6 +430,14 @@ mod tests {
         fn bind(&mut self, input: PhysicalInput, command: &str) {
             self.bindings
                 .insert(input, InputBindingTarget::Command(command.to_string()));
+        }
+
+        fn unbind(&mut self, input: &PhysicalInput) {
+            self.bindings.remove(input);
+        }
+
+        fn unbind_all(&mut self) {
+            self.bindings.clear();
         }
 
         fn clear_states(&mut self) {

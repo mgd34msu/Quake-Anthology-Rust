@@ -2859,6 +2859,24 @@ where
         active_seat_ids: Option<Vec<SeatId>>,
     ) -> Result<(), PreparedStartupError> {
         let active = active_seat_ids.unwrap_or_else(|| seats.iter().map(|seat| seat.id.clone()).collect());
+        self.publish_seats_inner(seats, active, false)
+    }
+
+    /// Publish seats, retaining previous seats missing from the new set.
+    pub fn publish_seats_retaining(
+        &mut self,
+        seats: Vec<PublishedSeat<I, M>>,
+        active_seat_ids: Vec<SeatId>,
+    ) -> Result<(), PreparedStartupError> {
+        self.publish_seats_inner(seats, active_seat_ids, true)
+    }
+
+    fn publish_seats_inner(
+        &mut self,
+        seats: Vec<PublishedSeat<I, M>>,
+        active: Vec<SeatId>,
+        retain_missing: bool,
+    ) -> Result<(), PreparedStartupError> {
         for id in &active {
             if !seats.iter().any(|seat| seat.id == *id) {
                 return Err(PreparedStartupError::Message(
@@ -2895,6 +2913,11 @@ where
                 }),
             }
         }
+        if retain_missing {
+            let mut kept: Vec<PreparedSeat<I, M>> = previous.into_values().collect();
+            kept.sort_by_key(|seat| seat.id.index());
+            retained.extend(kept);
+        }
         self.seats = retained;
         self.set_active_seats(active)?;
         Ok(())
@@ -2926,6 +2949,27 @@ where
             }
         }
         self.drain_notifications();
+    }
+
+    /// Apply configuration binding choices to a published seat.
+    pub fn apply_binding_choices(
+        &mut self,
+        seat: &SeatId,
+        overridden_keys: Vec<String>,
+        all_bindings_chosen: bool,
+        selected_bindings: Vec<InputBinding>,
+        authored_bindings: Option<Vec<InputBinding>>,
+    ) -> Result<(), PreparedStartupError> {
+        let Some(entry) = self.seats.iter_mut().find(|entry| entry.id == *seat) else {
+            return Err(PreparedStartupError::Message(
+                "Published configuration seat is missing".to_string(),
+            ));
+        };
+        entry.overridden_keys = overridden_keys.into_iter().collect();
+        entry.all_bindings_chosen = all_bindings_chosen;
+        entry.selected_bindings = Some(selected_bindings);
+        entry.authored_bindings = authored_bindings;
+        Ok(())
     }
 
     /// Adopt a new forwarding sink (donor `forwardCommands`).
