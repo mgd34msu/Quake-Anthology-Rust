@@ -81,6 +81,12 @@ impl<C, S, K> RemoteWorldContent<C, S, K> {
         self.scene = None;
     }
 
+    /// Drop the cached scene queries without replacing content (donor
+    /// same-content assignment, which nulls the queries).
+    pub fn reset_scene(&mut self) {
+        self.scene = None;
+    }
+
     /// Borrow the scene queries, building them lazily from the content.
     pub fn scene(&mut self) -> Result<&S, RemoteWorldError> {
         if self.scene.is_none() {
@@ -143,6 +149,26 @@ mod tests {
         assert!(world.has_content());
         assert_eq!(world.scene().unwrap(), "scene:map1");
         assert_eq!(world.scene().unwrap(), "scene:map1");
+    }
+
+    #[test]
+    fn reset_scene_rebuilds_queries() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let builds = Rc::new(Cell::new(0));
+        let counter = builds.clone();
+        let mut world = RemoteWorldContent::new(
+            Some("map1".to_string()),
+            move |content: &String, _: Option<&TestCollision>| {
+                counter.set(counter.get() + 1);
+                format!("scene:{content}")
+            },
+        );
+        assert_eq!(world.scene().unwrap(), "scene:map1");
+        assert_eq!(builds.get(), 1);
+        world.reset_scene();
+        assert_eq!(world.scene().unwrap(), "scene:map1");
+        assert_eq!(builds.get(), 2);
     }
 
     #[test]
