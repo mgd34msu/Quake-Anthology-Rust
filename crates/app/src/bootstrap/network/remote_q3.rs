@@ -7,19 +7,27 @@
 //! donor's receive order.
 //!
 //! Missing siblings (host-seam surface, documented per the lane rule):
-//! `./q3-client.ts` (`Q3ApplicationClientHost`) is not ported yet, so the
-//! presentation exposes the donor's client-host methods as inherent
-//! methods and implements only [`RemotePresentationAccess`]; the canonical
-//! trait adopts these methods when its lane lands. `../simulation/q3/guest-player.ts`
-//! (`q3GuestPlayerUi`) plus `network/q3/adapters.ts` (`toQ3PlayerState`)
-//! behind [`Q3RemoteHost::guest_player_ui`]; `network/q3/clock.ts`
-//! (`Q3ClientClock`) behind [`Q3RemoteClock`];
+//! `./q3-client.ts` is canonical
+//! [`Q3ApplicationClientHost`](super::q3_client::Q3ApplicationClientHost), so
+//! the presentation exposes the donor's client-host methods as inherent
+//! methods and implements only [`RemotePresentationAccess`].
+//! `../simulation/q3/guest-player.ts` (`q3GuestPlayerUi`) stays behind
+//! [`Q3RemoteHost::guest_player_ui`] for the sim unify; the
+//! `network/q3/adapters.ts` (`toQ3PlayerState`) step ahead of it is canonical
+//! [`to_q3_player_state`](qa_net::q3_adapters::to_q3_player_state), applied in
+//! [`Q3RemotePresentation::player_ui`]. `network/q3/clock.ts`
+//! (`Q3ClientClock`) is canonical
+//! [`Q3ClientClock`](qa_net::q3_clock::Q3ClientClock) (options
+//! [`Q3ClockOptions`](qa_net::q3_clock::Q3ClockOptions)), behind
+//! [`Q3RemoteClock`] with the host still building the clock;
 //! `../simulation/prediction/*` (`SelectedMovementPrediction`,
 //! `createPresentationMovementHost`, `PresentationPredictionAdapter`,
 //! `movementProfile`, `readPredictionSourceState`, `predictionSourceHit`)
 //! behind [`Q3RemotePrediction`], [`Q3RemoteHost::build_movement`], and the
 //! [`Q3PredictionBase`] mirror; `../q3-client.ts`
-//! (`ApplicationQ3ClientSource`) behind the [`Q3RemoteClientSource`]
+//! (`ApplicationQ3ClientSource`, canonical
+//! [`Q3RemoteSource`](crate::bootstrap::q3_client_app::Q3RemoteSource))
+//! behind the [`Q3RemoteClientSource`]
 //! mirror. The `presentationSourceCommand` / `relativeQ3SourceCommand`
 //! pair (`../simulation/q3-commands.ts`,
 //! `../simulation/prediction/presentation.ts`) is mirrored locally in
@@ -49,6 +57,8 @@ use qa_core::math::{Bounds, Vec3};
 use qa_core::time::{FrameContext, FramePhase, SourceTime};
 use qa_net::common::commands::{ActorCommand, UserCommand};
 use qa_net::q3::WireUserCommand;
+use qa_net::q3_adapters::{to_q3_player_state, Q3ContractPlayerState};
+use qa_net::q3_clock::Q3ClientClock;
 use qa_net::q3_net::{
     DownloadBlock, Gamestate, Q3ClientConnection, Q3NetError, Q3PlayerState, Snapshot, SnapshotStatus,
 };
@@ -124,6 +134,9 @@ pub trait Q3RemoteContent {
     fn world_geometry(&self) -> &str;
 }
 
+/// Clock advance options (canonical donor `Q3ClockOptions`).
+pub use qa_net::q3_clock::Q3ClockOptions;
+
 /// Client clock (donor `Q3ClientClock`).
 pub trait Q3RemoteClock {
     /// Current client time in milliseconds (donor `time`).
@@ -136,21 +149,22 @@ pub trait Q3RemoteClock {
     fn advance(&mut self, real_time_ms: f64, options: &Q3ClockOptions) -> Option<i32>;
 }
 
-/// Clock advance options (donor `Q3ClockOptions`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Q3ClockOptions {
-    /// Clock paused flag.
-    pub paused: bool,
-    /// Time nudge in milliseconds.
-    pub time_nudge: f64,
-    /// Timescale multiplier.
-    pub timescale: f64,
-    /// Demo playback flag.
-    pub demo: bool,
-    /// Frozen demo flag.
-    pub freeze_demo: bool,
-    /// Timedemo flag.
-    pub timedemo: bool,
+impl Q3RemoteClock for Q3ClientClock {
+    fn time(&self) -> i32 {
+        self.time
+    }
+
+    fn publish(&mut self, snapshot: &Snapshot) {
+        Q3ClientClock::publish(self, snapshot);
+    }
+
+    fn clear(&mut self) {
+        Q3ClientClock::clear(self);
+    }
+
+    fn advance(&mut self, real_time_ms: f64, options: &Q3ClockOptions) -> Option<i32> {
+        Q3ClientClock::advance(self, real_time_ms, options).unwrap_or_else(|error| panic!("{error}"))
+    }
 }
 
 /// Package downloads (donor `Q3RemotePresentationOptions['downloads']`).
@@ -316,9 +330,15 @@ pub trait Q3RemoteHost {
         None
     }
     /// Guest HUD state (donor `q3GuestPlayerUi(toQ3PlayerState(ps), source,
-    /// time, undefined, ps.product)`); the host applies the missing adapter
-    /// and UI builder to the wire player state.
-    fn guest_player_ui(&self, player: &Q3PlayerState, source: &ProviderReference, server_time_ms: i32) -> PlayerUi;
+    /// time, undefined, ps.product)`); the presentation converts the wire
+    /// player state with the canonical adapter and the host applies the
+    /// missing UI builder to the contract player state.
+    fn guest_player_ui(
+        &self,
+        player: &Q3ContractPlayerState,
+        source: &ProviderReference,
+        server_time_ms: i32,
+    ) -> PlayerUi;
 }
 
 /// Quake III remote presentation options (donor `Q3RemotePresentationOptions`).
@@ -838,8 +858,9 @@ impl<'conn, H: Q3RemoteHost> Q3RemotePresentation<'conn, H> {
             .first()
             .unwrap_or_else(|| panic!("Q3 remote has no native weapon provider"));
         let (namespace, provider) = source.provider.split_once(':').unwrap_or(("", ""));
+        let canonical = to_q3_player_state(ps);
         self.options.host.guest_player_ui(
-            ps,
+            &canonical,
             &ProviderReference {
                 provider: ProviderId::new(namespace, provider),
                 content: ContentId(source.content.clone()),
@@ -1452,14 +1473,14 @@ mod tests {
 
         fn guest_player_ui(
             &self,
-            player: &Q3PlayerState,
+            player: &Q3ContractPlayerState,
             _source: &ProviderReference,
             server_time_ms: i32,
         ) -> PlayerUi {
             PlayerUi {
                 selected_arsenal: None,
                 native_inventory: None,
-                health: f64::from(player.stats.get(0).unwrap_or(0)),
+                health: f64::from(player.stats.first().copied().unwrap_or(0)),
                 armor: qa_content::contract::ArmorState {
                     regular: qa_content::contract::RegularArmorState::None,
                     powered: qa_content::contract::PoweredProtectionState::None,
@@ -1763,6 +1784,22 @@ mod tests {
             Some("q3:weapon/machinegun")
         );
         assert!(captured.captured[0].1.is_empty());
+    }
+
+    #[test]
+    fn canonical_clock_satisfies_remote_clock() {
+        let mut clock = Q3ClientClock::new();
+        Q3RemoteClock::publish(&mut clock, &snapshot());
+        let options = Q3ClockOptions {
+            paused: false,
+            time_nudge: 0.0,
+            timescale: 1.0,
+            demo: false,
+            freeze_demo: false,
+            timedemo: false,
+        };
+        assert_eq!(Q3RemoteClock::advance(&mut clock, 5000.0, &options), Some(100));
+        assert_eq!(Q3RemoteClock::time(&clock), 100);
     }
 
     #[test]
