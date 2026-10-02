@@ -31,14 +31,22 @@
 //! - `Q3ProductPolicy` folds to its only consumed output, the map-command list
 //!   ([`PreparedStartupOptions::q3_map_commands`]).
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `console.ts`
-//! ([`StartupCvarRouting`]), `startup-config.ts` ([`PreparedStartupConfig`],
-//! [`StartupConfigFactory`]), `config-scripts.ts` ([`PreparedScriptFiles`]), `seat.ts`
-//! plus `mouse-settings.ts` ([`PreparedSeatDevice`], [`PreparedMouse`]),
-//! `gtv-commands.ts` and `shared-setting-cvars.ts` (registration hooks in
-//! [`PreparedStartupOptions`]), `server-administration.ts` (operator names in
-//! [`PreparedStartupOptions`]), and `q3-product-policy.ts` (map commands in
-//! [`PreparedStartupOptions`]). Seat binding storage reuses the ported
+//! Canonical host-seam bindings: [`CanonicalSlotRouting`] answers [`StartupCvarRouting`]
+//! from owned snapshots with canonical `console.ts` precedence;
+//! [`StartupScriptScope`]/[`StartupConfigScope`] are the canonical
+//! `startup-config.ts` scopes and [`StartupConfigParams`] converts to the canonical
+//! options; [`ConsoleScriptFiles`] implements [`PreparedScriptFiles`];
+//! [`CanonicalSeatDevice`] delegates [`PreparedSeatDevice`] to the canonical seat;
+//! [`CvarRegistry`] implements [`PreparedMouse`] through the canonical
+//! mouse-settings functions; [`canonical_gtv_register`],
+//! [`canonical_run_cvar_register`], [`canonical_operator_command_names`], and
+//! [`canonical_q3_map_commands`] build the `gtv-commands.ts`,
+//! `shared-setting-cvars.ts`, `server-administration.ts`, and
+//! `q3-product-policy.ts` options. [`PreparedStartupConfig`] and
+//! [`StartupConfigFactory`] stay host seams: the sync reentrancy fold drives
+//! configurations through `&self` plus per-call borrows, while the canonical
+//! `StartupConfig` owns its `'static` closures, so no safe adapter exists without
+//! changing the canonical type. Seat binding storage reuses the ported
 //! [`BindingTable`](qa_client::input::BindingTable); the weapon catalog behind
 //! `defaultBindings` arrives through
 //! [`PreparedStartupOptions::default_binding_items`].
@@ -54,9 +62,11 @@ use qa_client::input::commands::{
     CommandHandler as ClientCommandHandler, CommandInvocation as ClientInvocation, CommandOrigin as ClientOrigin,
     CommandRegistry,
 };
+use qa_client::input::mouse_settings::write_mouse_tuning;
+use qa_client::input::router::Seat;
 use qa_client::input::weapons::WeaponBindingItem;
 use qa_client::input::{physical_input_key, BindingTable, InputBinding, InputBindingTarget, PhysicalInput};
-use qa_core::cmd::{ascii_fold, Dialect};
+use qa_core::cmd::{ascii_fold, source_command_text, CmdError, Dialect};
 use qa_core::cmd_buffer::{
     BufferError, BufferOptions, BufferServices, CommandBuffer, CommandContext, CommandHandler, CommandOrigin,
     ForwardedCommand, FrameHooks, Invocation, ScriptCompletion, ScriptRead,
@@ -66,9 +76,16 @@ use qa_core::identity::{SeatId, SessionId};
 use thiserror::Error;
 
 use super::audio::commands::{CD_COMMAND_DOCUMENTATION, MUSIC_COMMAND_DOCUMENTATION};
+use super::config_scripts::{ConfigScriptError, ConsoleScriptFiles, ConsoleScriptMounts};
+use super::console::ConsoleError;
+use super::gtv_commands::register_gtv_cvars;
 use super::player_userinfo::register_player_userinfo;
 use super::q1_client_settings::{register_q1_view_commands, Q1ViewCommandGuard};
+use super::q3_map_command::{q3_map_command_policy_commands, Q3MapCommandPolicy};
+use super::server_administration::source_administration_command_names;
+use super::shared_setting_cvars::register_run_cvar;
 use super::startup_commands::{startup_command_phases, StartupCommandPhases, StartupCommandsError};
+use super::startup_config::{StartupConfigOptions, StartupScriptRead};
 use crate::settings::config::{MouseTuning, SeatSettings};
 
 /// Failure of a prepared-startup operation.
@@ -89,6 +106,21 @@ pub enum PreparedStartupError {
     /// Invariant violation (donor `throw new Error`).
     #[error("{0}")]
     Message(String),
+}
+
+impl From<CmdError> for PreparedStartupError {
+    fn from(error: CmdError) -> Self {
+        PreparedStartupError::Message(error.to_string())
+    }
+}
+
+impl From<ConsoleError> for PreparedStartupError {
+    fn from(error: ConsoleError) -> Self {
+        match error {
+            ConsoleError::Cvar(error) => PreparedStartupError::Cvar(error),
+            other => PreparedStartupError::Message(other.to_string()),
+        }
+    }
 }
 
 /// Slot address of one cvar registry owned by the startup object.
@@ -138,6 +170,255 @@ pub trait StartupCvarRouting {
     ) -> Result<RegistrySlot, PreparedStartupError>;
     /// Slots visible from `source`.
     fn visible_slots(&self, source: &CommandContext, seats: &[SeatRegistries]) -> Vec<RegistrySlot>;
+    /// Record a declaration made after routing construction (startup variables,
+    /// archives, deferred side effects). Routings over live registries ignore it;
+    /// snapshot routings keep their captures in sync.
+    fn note_declared(&self, _slot: RegistrySlot, _name: &str) {}
+}
+
+/// Fold a cvar name the way [`CvarRegistry::get`] keys it (Q3 folds case, other
+/// dialects are case-sensitive) so snapshots observe the same declarations as live
+/// `get` calls.
+fn fold_snapshot_name(dialect: Dialect, name: &str) -> String {
+    if dialect == Dialect::Q3 {
+        ascii_fold(name)
+    } else {
+        name.to_string()
+    }
+}
+
+/// Declaration snapshot of one registry the slot protocol cannot see.
+struct SnapshotNames {
+    dialect: Dialect,
+    names: RefCell<HashSet<String>>,
+}
+
+impl SnapshotNames {
+    /// Capture every declared name.
+    fn capture(registry: &CvarRegistry) -> Self {
+        let dialect = registry.dialect();
+        let names = registry
+            .snapshots(0)
+            .iter()
+            .map(|snapshot| fold_snapshot_name(dialect, &snapshot.name))
+            .collect();
+        Self {
+            dialect,
+            names: RefCell::new(names),
+        }
+    }
+
+    /// Whether the snapshot declares `name` (already validated).
+    fn declares(&self, name: &str) -> bool {
+        self.names.borrow().contains(&fold_snapshot_name(self.dialect, name))
+    }
+
+    /// Record a post-construction declaration.
+    fn note(&self, name: &str) {
+        self.names.borrow_mut().insert(fold_snapshot_name(self.dialect, name));
+    }
+}
+
+/// Canonical console cvar routing bound to slot answers (donor
+/// `ApplicationConsoleRouting`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/console.ts`).
+///
+/// Canonical [`ApplicationConsoleRouting`](super::console::ApplicationConsoleRouting)
+/// borrows every live registry, so it cannot be stored inside [`PreparedStartup`]
+/// next to the registries it routes over. This routing captures the same inputs as
+/// owned data instead: declaration snapshots of the registries the slot protocol
+/// cannot see (source, movement, shared) plus the owning session. Seat registries
+/// stay live through the [`SeatRegistries`] slice, so seat and mouse declarations
+/// are never stale. The fallback snapshot derives from the movement registry under
+/// the same alias rule [`PreparedStartup::new`] applies (movement aliases fallback
+/// when its dialect matches the source dialect, else fallback starts empty).
+///
+/// Owner precedence, the seat/movement conflict, and the remote-client, session,
+/// and closed guards match
+/// [`ConsoleCvarRouting`](super::console::ConsoleCvarRouting) exactly; failures
+/// reuse the canonical [`ConsoleError`] texts through the [`PreparedStartupError`]
+/// conversion. Per-seat registry session checks from the canonical owner have no
+/// slot-protocol counterpart (core registries carry no per-seat session) and stay a
+/// host construction invariant.
+///
+/// Construct after registering source-level cvars (server administration). The GTV
+/// probe in [`CanonicalSlotRouting::new`] covers the `mvd_*` names
+/// [`PreparedStartup::new`] registers after routing is moved in; later run
+/// declarations stay in sync through [`StartupCvarRouting::note_declared`].
+/// Rebuild after [`PreparedStartup::adopt`] swaps registries.
+pub struct CanonicalSlotRouting {
+    source: SnapshotNames,
+    movement: SnapshotNames,
+    fallback: SnapshotNames,
+    shared: Option<SnapshotNames>,
+    session: SessionId,
+    closed: Cell<bool>,
+}
+
+impl CanonicalSlotRouting {
+    /// Capture routing snapshots over the registries before they move into
+    /// [`PreparedStartup::new`]. The host source registry must use the buffer
+    /// dialect (the canonical console guard, upheld by construction here). GTV
+    /// names come from a probe registry through the canonical
+    /// [`register_gtv_cvars`](super::gtv_commands::register_gtv_cvars) so the
+    /// snapshot observes the names `new` registers after the move.
+    pub fn new(
+        source: &CvarRegistry,
+        movement: &CvarRegistry,
+        shared: Option<&CvarRegistry>,
+        session: SessionId,
+    ) -> Result<Self, PreparedStartupError> {
+        let captured = SnapshotNames::capture(source);
+        let mut probe = CvarRegistry::new(source.dialect());
+        register_gtv_cvars(&mut probe).map_err(|error| PreparedStartupError::Message(error.to_string()))?;
+        for snapshot in probe.snapshots(0) {
+            captured.note(&snapshot.name);
+        }
+        let fallback = if movement.dialect() == source.dialect() {
+            SnapshotNames::capture(movement)
+        } else {
+            SnapshotNames {
+                dialect: source.dialect(),
+                names: RefCell::new(HashSet::new()),
+            }
+        };
+        Ok(Self {
+            source: captured,
+            movement: SnapshotNames::capture(movement),
+            fallback,
+            shared: shared.map(SnapshotNames::capture),
+            session,
+            closed: Cell::new(false),
+        })
+    }
+
+    /// Retire the routing (canonical `close`).
+    pub fn close(&mut self) {
+        self.closed.set(true);
+    }
+
+    /// Index of the source seat in the live slice, if it is retained.
+    fn seat_index(source: &CommandContext, seats: &[SeatRegistries]) -> Option<usize> {
+        match root_origin(&source.origin) {
+            CommandOrigin::LocalSeat { seat, .. } => seats.iter().position(|candidate| candidate.id == *seat),
+            _ => None,
+        }
+    }
+
+    /// Index of the seat whose mouse registry answers, mirroring the canonical
+    /// input lookup: server consoles have none, seat sources take their own seat,
+    /// and other sources take the primary seat.
+    fn input_index(source: &CommandContext, seats: &[SeatRegistries]) -> Option<usize> {
+        match root_origin(&source.origin) {
+            CommandOrigin::ServerConsole => None,
+            CommandOrigin::LocalSeat { .. } => Self::seat_index(source, seats),
+            _ => {
+                if seats.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                }
+            }
+        }
+    }
+
+    /// Closed, foreign-session, and remote-client guards.
+    fn check_source(&self, source: &CommandContext) -> Result<(), PreparedStartupError> {
+        if self.closed.get() {
+            return Err(ConsoleError::Closed.into());
+        }
+        if source.session != self.session {
+            return Err(ConsoleError::ForeignSession.into());
+        }
+        if matches!(root_origin(&source.origin), CommandOrigin::RemoteClient { .. }) {
+            return Err(ConsoleError::RemoteClient.into());
+        }
+        Ok(())
+    }
+}
+
+impl StartupCvarRouting for CanonicalSlotRouting {
+    fn owner_slot(
+        &self,
+        name: &str,
+        source: &CommandContext,
+        seats: &[SeatRegistries],
+    ) -> Result<RegistrySlot, PreparedStartupError> {
+        self.check_source(source)?;
+        let name = source_command_text(name)?;
+        if self.shared.as_ref().is_some_and(|shared| shared.declares(&name)) {
+            return Ok(RegistrySlot::Shared);
+        }
+        if self.source.declares(&name) {
+            return Ok(RegistrySlot::Source);
+        }
+        let seat = Self::seat_index(source, seats);
+        if let Some(index) = Self::input_index(source, seats) {
+            if seats[index].mouse_cvars.get(&name).is_some() {
+                return Ok(RegistrySlot::SeatMouse(index));
+            }
+        }
+        let seat_has = seat.is_some_and(|index| seats[index].cvars.get(&name).is_some());
+        let movement_has = self.movement.declares(&name);
+        if seat_has && movement_has {
+            // Prepared seats and movement are always distinct registries, so joint
+            // declarations always conflict (canonical `seat !== movement` check).
+            return Err(ConsoleError::SeatMovementConflict(name).into());
+        }
+        if let Some(index) = seat {
+            if seat_has {
+                return Ok(RegistrySlot::Seat(index));
+            }
+        }
+        if movement_has {
+            return Ok(RegistrySlot::Movement);
+        }
+        if self.fallback.declares(&name) {
+            return Ok(RegistrySlot::Fallback);
+        }
+        if matches!(root_origin(&source.origin), CommandOrigin::ServerConsole) {
+            return Ok(RegistrySlot::Source);
+        }
+        if let Some(index) = seat {
+            return Ok(RegistrySlot::Seat(index));
+        }
+        Ok(RegistrySlot::Fallback)
+    }
+
+    fn visible_slots(&self, source: &CommandContext, seats: &[SeatRegistries]) -> Vec<RegistrySlot> {
+        if self.check_source(source).is_err() {
+            return Vec::new();
+        }
+        let mut slots = Vec::new();
+        if self.shared.is_some() {
+            slots.push(RegistrySlot::Shared);
+        }
+        if let Some(index) = Self::input_index(source, seats) {
+            slots.push(RegistrySlot::SeatMouse(index));
+        }
+        slots.push(RegistrySlot::Source);
+        if let Some(index) = Self::seat_index(source, seats) {
+            slots.push(RegistrySlot::Seat(index));
+        }
+        slots.push(RegistrySlot::Movement);
+        slots.push(RegistrySlot::Fallback);
+        slots
+    }
+
+    fn note_declared(&self, slot: RegistrySlot, name: &str) {
+        let validated = source_command_text(name).unwrap_or_else(|_| name.to_string());
+        match slot {
+            RegistrySlot::Source => self.source.note(&validated),
+            RegistrySlot::Movement => self.movement.note(&validated),
+            RegistrySlot::Fallback => self.fallback.note(&validated),
+            RegistrySlot::Shared => {
+                if let Some(shared) = self.shared.as_ref() {
+                    shared.note(&validated);
+                }
+            }
+            RegistrySlot::Seat(_) | RegistrySlot::SeatMouse(_) => {}
+        }
+    }
 }
 
 /// Live seat input device (donor `SeatInput` behavior surface, `seat.ts`).
@@ -157,6 +438,86 @@ pub trait PreparedSeatDevice {
     fn set_profile(&mut self, dialect: Dialect);
 }
 
+/// Canonical live seat device (donor `SeatInput`,
+/// `/home/buzzkill/Projects/quake-typescript/src/input/seat.ts`).
+///
+/// Delegates key state, held-command release, and the movement profile to the
+/// canonical [`Seat`]; the stored seat context sources release appends. Binding
+/// storage stays in the port-owned [`BindingTable`] per [`PreparedSeat`].
+pub struct CanonicalSeatDevice {
+    seat: Seat,
+    context: CommandContext,
+}
+
+impl CanonicalSeatDevice {
+    /// Wrap a canonical seat with the context release appends carry.
+    pub fn new(seat: Seat, context: CommandContext) -> Self {
+        Self { seat, context }
+    }
+
+    /// Wrapped seat.
+    pub fn seat(&self) -> &Seat {
+        &self.seat
+    }
+
+    /// Mutable wrapped seat.
+    pub fn seat_mut(&mut self) -> &mut Seat {
+        &mut self.seat
+    }
+}
+
+/// Forwards canonical release appends to the prepared append sink.
+struct ReleaseCommands<'a> {
+    append: &'a mut dyn FnMut(&str, &CommandContext),
+    context: CommandContext,
+}
+
+impl CommandRegistry for ReleaseCommands<'_> {
+    fn register_engine(&mut self, _name: &str, _handler: ClientCommandHandler) -> bool {
+        false
+    }
+
+    fn register(&mut self, _name: &str, _handler: ClientCommandHandler) -> bool {
+        false
+    }
+
+    fn unregister(&mut self, _name: &str) {}
+
+    fn exists(&self, _name: &str) -> bool {
+        false
+    }
+
+    fn append(&mut self, text: &str, _seat: &SeatId) {
+        (self.append)(text, &self.context);
+    }
+}
+
+impl PreparedSeatDevice for CanonicalSeatDevice {
+    fn dialect(&self) -> Dialect {
+        self.seat.dialect()
+    }
+
+    fn is_down(&self, input: &PhysicalInput) -> bool {
+        self.seat.is_down(input)
+    }
+
+    fn release(&mut self, time_ms: f64, append: &mut dyn FnMut(&str, &CommandContext)) {
+        let mut commands = ReleaseCommands {
+            append,
+            context: self.context.clone(),
+        };
+        self.seat.release(time_ms, &mut commands);
+    }
+
+    fn has_held_input(&self) -> bool {
+        self.seat.has_held_input()
+    }
+
+    fn set_profile(&mut self, dialect: Dialect) {
+        self.seat.set_profile(dialect).unwrap_or_else(|error| panic!("{error}"));
+    }
+}
+
 /// Seat mouse settings (donor `MouseSettings` behavior surface).
 pub trait PreparedMouse {
     /// Mouse cvar registry.
@@ -165,6 +526,64 @@ pub trait PreparedMouse {
     fn cvars_mut(&mut self) -> &mut CvarRegistry;
     /// Apply saved mouse tuning.
     fn write(&mut self, tuning: &MouseTuning);
+}
+
+/// Convert stored tuning to client tuning (donor `MouseTuning`,
+/// `/home/buzzkill/Projects/quake-typescript/src/input/mouse-settings.ts`).
+/// The stored and client tunings carry identical fields.
+pub fn client_mouse_tuning(value: &MouseTuning) -> qa_client::input::MouseTuning {
+    qa_client::input::MouseTuning {
+        sensitivity: value.sensitivity,
+        acceleration: value.acceleration,
+        filter: value.filter,
+        yaw: value.yaw,
+        pitch: value.pitch,
+        side: value.side,
+        forward: value.forward,
+        free_look: value.free_look,
+        look_spring: value.look_spring,
+        look_strafe: value.look_strafe,
+        invert_pitch: value.invert_pitch,
+    }
+}
+
+/// Convert client tuning back to stored tuning.
+pub fn app_mouse_tuning(value: &qa_client::input::MouseTuning) -> MouseTuning {
+    MouseTuning {
+        sensitivity: value.sensitivity,
+        acceleration: value.acceleration,
+        filter: value.filter,
+        yaw: value.yaw,
+        pitch: value.pitch,
+        side: value.side,
+        forward: value.forward,
+        look_spring: value.look_spring,
+        look_strafe: value.look_strafe,
+        free_look: value.free_look,
+        invert_pitch: value.invert_pitch,
+    }
+}
+
+impl PreparedMouse for CvarRegistry {
+    /// The registry is its own canonical mouse storage (donor
+    /// `MouseSettings#cvars`).
+    fn cvars(&self) -> &CvarRegistry {
+        self
+    }
+
+    fn cvars_mut(&mut self) -> &mut CvarRegistry {
+        self
+    }
+
+    /// Apply tuning through the canonical
+    /// [`write_mouse_tuning`](qa_client::input::mouse_settings::write_mouse_tuning).
+    /// Hosts register the mouse cvars first with the canonical
+    /// [`register_mouse_settings`](qa_client::input::mouse_settings::register_mouse_settings),
+    /// matching the donor constructor.
+    fn write(&mut self, tuning: &MouseTuning) {
+        let tuning = client_mouse_tuning(tuning);
+        write_mouse_tuning(self, &tuning).expect("mouse tuning values are always valid cvar text");
+    }
 }
 
 /// Console script files (donor `ConsoleScriptFiles`, `config-scripts.ts`).
@@ -177,22 +596,28 @@ pub trait PreparedScriptFiles {
     fn write_text(&mut self, path: &str, contents: &str) -> Result<(), String>;
 }
 
-/// Script read scope (donor `StartupScriptScope`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartupScriptScope {
-    /// Mounted content.
-    Mounted,
-    /// User configuration.
-    User,
-    /// Base loose files.
-    BaseLoose,
-    /// Game loose files.
-    GameLoose,
-    /// Loose files.
-    Loose,
-    /// Seat configuration.
-    Seat,
+impl<M: ConsoleScriptMounts> PreparedScriptFiles for ConsoleScriptFiles<M> {
+    /// Read through the canonical guarded reader; retired and remote reads observe
+    /// missing (callers already gate non-current contexts).
+    fn read_script(&self, name: &str, source: &CommandContext) -> Option<String> {
+        self.read(name, source).ok().flatten()
+    }
+
+    /// Write through the canonical serialized write into the product settings root.
+    fn write_text(&mut self, path: &str, contents: &str) -> Result<(), String> {
+        self.write(|| {
+            std::fs::write(self.root().join(path), contents).map_err(|error| ConfigScriptError::Io {
+                path: path.to_string(),
+                message: error.to_string(),
+            })
+        })
+        .map_err(|error| error.to_string())
+    }
 }
+
+/// Script read scope: canonical scope (donor `StartupScriptScope`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+pub use super::startup_config::StartupScriptScope;
 
 /// Startup configuration frame driver.
 ///
@@ -255,14 +680,9 @@ pub trait PreparedStartupConfig {
     fn execute_frame(&self, driver: &mut dyn StartupDriverApi) -> Result<bool, PreparedStartupError>;
 }
 
-/// Configuration scope (donor `StartupConfigOptions["scope"]`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartupConfigScope {
-    /// Source configuration (first seat).
-    Source,
-    /// Secondary-seat configuration.
-    Seat,
-}
+/// Configuration scope: canonical scope (donor `StartupConfigOptions["scope"]`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+pub use super::startup_config::StartupConfigScope;
 
 /// Parameters for one configuration (donor `StartupConfigOptions` minus the callbacks,
 /// which are port logic on [`StartupDriver`]/[`StartupApplier`]).
@@ -288,6 +708,34 @@ pub trait StartupConfigFactory {
     type Config: PreparedStartupConfig;
     /// Build one configuration.
     fn new_config(&mut self, params: &StartupConfigParams) -> Self::Config;
+}
+
+impl StartupConfigParams {
+    /// Convert to canonical options (donor `StartupConfigOptions`,
+    /// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+    /// `seat_index` is run bookkeeping with no canonical counterpart; seat scope
+    /// travels via `scope`.
+    pub fn into_canonical_options(
+        self,
+        read: StartupScriptRead,
+        apply_selected_defaults: Box<dyn FnMut()>,
+        apply_archive: Box<dyn FnMut()>,
+        apply_launch_options: Box<dyn FnMut()>,
+        replay_startup_variables: Option<Box<dyn FnMut()>>,
+    ) -> StartupConfigOptions {
+        StartupConfigOptions {
+            dialect: self.dialect,
+            context: self.context,
+            has_mod: self.has_mod,
+            scope: self.scope,
+            safe_mode: self.safe_mode,
+            read,
+            apply_selected_defaults,
+            apply_archive,
+            apply_launch_options,
+            replay_startup_variables,
+        }
+    }
 }
 
 /// Configuration callbacks owned by prepared-startup (donor `StartupConfigOptions`
@@ -322,6 +770,41 @@ pub type SeatContextFn = Rc<dyn Fn(&SeatId) -> Option<CommandContext>>;
 type DispatchLog = Rc<RefCell<Vec<(String, Option<String>)>>>;
 /// Run cvar registration (donor `registerRunCvar`, `shared-setting-cvars.ts`).
 pub type RunCvarRegisterFn = Rc<dyn Fn(&mut CvarRegistry, Dialect)>;
+
+/// Canonical GTV registration hook (donor `registerGtvCvars`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/gtv-commands.ts`).
+pub fn canonical_gtv_register() -> GtvRegisterFn {
+    Rc::new(|cvars| {
+        register_gtv_cvars(cvars).expect("GTV cvar names are always valid");
+    })
+}
+
+/// Canonical run-cvar registration hook (donor `registerRunCvar`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/shared-setting-cvars.ts`).
+pub fn canonical_run_cvar_register() -> RunCvarRegisterFn {
+    Rc::new(|cvars, dialect| {
+        register_run_cvar(cvars, dialect).expect("run cvar names are always valid");
+    })
+}
+
+/// Canonical operator command names (donor `sourceAdministrationCommandNames`,
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/server-administration.ts`).
+pub fn canonical_operator_command_names(dialect: Dialect) -> Vec<String> {
+    source_administration_command_names(dialect)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Canonical Q3 map commands for a product policy (donor `q3ProductMapCommands`,
+/// `/home/buzzkill/Projects/quake-typescript/src/core/q3-product-policy.ts`, via
+/// `q3-map-command.ts`).
+pub fn canonical_q3_map_commands(policy: Q3MapCommandPolicy) -> Vec<String> {
+    q3_map_command_policy_commands(policy)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
 
 /// Unwind script frames to the producing origin.
 fn root_origin(origin: &CommandOrigin) -> &CommandOrigin {
@@ -1365,6 +1848,7 @@ where
                 )));
             }
             registry.add_flags(&variable.name, flags::USER_CREATED)?;
+            self.routing.note_declared(slot, &variable.name);
         }
         Ok(())
     }
@@ -1416,14 +1900,29 @@ where
     fn try_apply_archive(&mut self) -> Result<(), PreparedStartupError> {
         if self.apply_first {
             apply_archive_entries(self.source, &self.archives.source)?;
+            for entry in &self.archives.source {
+                self.routing.note_declared(RegistrySlot::Source, &entry.name);
+            }
             if let Some(movement) = self.movement.as_deref_mut() {
                 apply_archive_entries(movement, &self.archives.movement)?;
+                for entry in &self.archives.movement {
+                    self.routing.note_declared(RegistrySlot::Movement, &entry.name);
+                }
             } else {
                 apply_archive_entries(self.fallback, &self.archives.movement)?;
+                for entry in &self.archives.movement {
+                    self.routing.note_declared(RegistrySlot::Fallback, &entry.name);
+                }
             }
             apply_archive_entries(self.fallback, &self.archives.fallback)?;
+            for entry in &self.archives.fallback {
+                self.routing.note_declared(RegistrySlot::Fallback, &entry.name);
+            }
             if let Some(shared) = self.shared.as_deref_mut() {
                 apply_archive_entries(shared, &self.archives.shared)?;
+                for entry in &self.archives.shared {
+                    self.routing.note_declared(RegistrySlot::Shared, &entry.name);
+                }
             }
         }
         let (Some(index), Some(saved)) = (self.apply_seat, self.apply_saved) else {
@@ -2301,6 +2800,7 @@ where
             match action {
                 PendingAction::SetPublic => {
                     let _ = self.source.set("public", "1", false);
+                    self.routing.note_declared(RegistrySlot::Source, "public");
                 }
             }
         }
@@ -4007,5 +4507,390 @@ mod tests {
         let other = test_owner();
         let mut startup = test_startup(&owner, Dialect::Q2Classic, 1, null_print(), null_forward());
         assert!(startup.set_active_seats(vec![other.seat(0)]).is_err());
+    }
+
+    #[test]
+    fn canonical_slot_routing_matches_console_owner() {
+        use crate::bootstrap::console::{
+            ApplicationConsoleRouting, ApplicationConsoleRoutingOptions, ApplicationConsoleServer, ConsoleCvarRouting,
+            ConsoleRegistry,
+        };
+
+        let owner = IdentityOwner::create("canonical-routing").unwrap();
+        let session = owner.session().clone();
+        let mut source = CvarRegistry::new(Dialect::Q3);
+        source.register("sv_hostname", "host", 0).unwrap();
+        source.register("MixedCase", "1", 0).unwrap();
+        let mut movement = CvarRegistry::new(Dialect::Q2Classic);
+        movement.register("movement_only", "2", 0).unwrap();
+        movement.register("clash", "movement", 0).unwrap();
+        let mut fallback = CvarRegistry::new(Dialect::Q3);
+        fallback.register("fallback_only", "0", 0).unwrap();
+        let mut shared = CvarRegistry::new(Dialect::Q3);
+        shared.register("shared_name", "shared", 0).unwrap();
+        let mut seat_cvars = CvarRegistry::new(Dialect::Q3);
+        seat_cvars.register("seat_only", "1", 0).unwrap();
+        seat_cvars.register("clash", "seat", 0).unwrap();
+        let mut mouse_cvars = CvarRegistry::new(Dialect::Q3);
+        mouse_cvars.register("sensitivity", "3", 0).unwrap();
+        let seat_id = owner.seat(0);
+        let seat_origin = CommandOrigin::LocalSeat {
+            seat: seat_id.clone(),
+            client: owner.client(0, 0),
+        };
+        let seat_context = CommandContext::new(session.clone(), seat_origin.clone());
+        let console_source = console_context(&owner);
+
+        let server_ref = ConsoleRegistry {
+            registry: &source,
+            session: session.clone(),
+            origin: CommandOrigin::ServerConsole,
+        };
+        let seat_ref = ConsoleRegistry {
+            registry: &seat_cvars,
+            session: session.clone(),
+            origin: seat_origin.clone(),
+        };
+        let input_ref = ConsoleRegistry {
+            registry: &mouse_cvars,
+            session: session.clone(),
+            origin: seat_origin.clone(),
+        };
+        let movement_ref = ConsoleRegistry {
+            registry: &movement,
+            session: session.clone(),
+            origin: CommandOrigin::ServerConsole,
+        };
+        let fallback_ref = ConsoleRegistry {
+            registry: &fallback,
+            session: session.clone(),
+            origin: CommandOrigin::ServerConsole,
+        };
+        let canonical = ApplicationConsoleRouting::new(ApplicationConsoleRoutingOptions {
+            fallback: fallback_ref,
+            source_dialect: Dialect::Q3,
+            server: Box::new(move || {
+                Some(ApplicationConsoleServer {
+                    cvars: server_ref.clone(),
+                    shared_names: Vec::new(),
+                })
+            }),
+            seat: Box::new(move |_| Some(seat_ref.clone())),
+            input: Some(Box::new(move |_| Some(input_ref.clone()))),
+            movement: Some(Box::new(move || Some(movement_ref.clone()))),
+            shared: Some(Box::new(|| Some(&shared))),
+        })
+        .unwrap();
+        let seats = [SeatRegistries {
+            id: seat_id.clone(),
+            context: seat_context.clone(),
+            cvars: &seat_cvars,
+            mouse_cvars: &mouse_cvars,
+        }];
+        // Non-aliased dialects leave the fallback snapshot empty, so seed the live
+        // fallback declaration the production run would create through notes.
+        let mut routing = CanonicalSlotRouting::new(&source, &movement, Some(&shared), session.clone()).unwrap();
+        routing.note_declared(RegistrySlot::Fallback, "fallback_only");
+        let slot_of = |registry: &CvarRegistry| {
+            if std::ptr::eq(registry, &source) {
+                RegistrySlot::Source
+            } else if std::ptr::eq(registry, &movement) {
+                RegistrySlot::Movement
+            } else if std::ptr::eq(registry, &fallback) {
+                RegistrySlot::Fallback
+            } else if std::ptr::eq(registry, &shared) {
+                RegistrySlot::Shared
+            } else if std::ptr::eq(registry, &seat_cvars) {
+                RegistrySlot::Seat(0)
+            } else if std::ptr::eq(registry, &mouse_cvars) {
+                RegistrySlot::SeatMouse(0)
+            } else {
+                panic!("unexpected canonical owner");
+            }
+        };
+        for name in [
+            "shared_name",
+            "sv_hostname",
+            "sensitivity",
+            "seat_only",
+            "movement_only",
+            "fallback_only",
+            "mixedcase",
+            "undeclared",
+        ] {
+            let expected = slot_of(canonical.owner(name, &seat_context).unwrap());
+            assert_eq!(
+                routing.owner_slot(name, &seat_context, &seats).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+        assert!(routing.owner_slot("clash", &seat_context, &seats).is_err());
+        assert!(canonical.owner("clash", &seat_context).is_err());
+        let expected_visible: Vec<RegistrySlot> = canonical
+            .visible(&seat_context)
+            .unwrap()
+            .iter()
+            .map(|registry| slot_of(registry))
+            .collect();
+        assert_eq!(routing.visible_slots(&seat_context, &seats), expected_visible);
+        let expected_console: Vec<RegistrySlot> = canonical
+            .visible(&console_source)
+            .unwrap()
+            .iter()
+            .map(|registry| slot_of(registry))
+            .collect();
+        assert_eq!(routing.visible_slots(&console_source, &seats), expected_console);
+        assert_eq!(
+            routing.owner_slot("sensitivity", &console_source, &seats).unwrap(),
+            RegistrySlot::SeatMouse(0)
+        );
+        assert_eq!(
+            routing.owner_slot("undeclared", &console_source, &seats).unwrap(),
+            RegistrySlot::Fallback
+        );
+        let remote = CommandContext::new(
+            session.clone(),
+            CommandOrigin::RemoteClient {
+                client: owner.client(1, 0),
+            },
+        );
+        assert!(routing.owner_slot("sv_hostname", &remote, &seats).is_err());
+        assert!(routing.visible_slots(&remote, &seats).is_empty());
+        routing.close();
+        assert!(routing.owner_slot("sv_hostname", &seat_context, &seats).is_err());
+    }
+
+    #[test]
+    fn canonical_slot_routing_probes_gtv_and_aliases_fallback() {
+        let owner = test_owner();
+        let session = owner.session().clone();
+        let source = CvarRegistry::new(Dialect::Q2Classic);
+        let mut movement = CvarRegistry::new(Dialect::Q2Classic);
+        movement.register("movement_only", "2", 0).unwrap();
+        movement.register("MixedCase", "1", 0).unwrap();
+        // Aliased dialects derive the fallback snapshot from movement.
+        let routing = CanonicalSlotRouting::new(&source, &movement, None, session.clone()).unwrap();
+        let seats: Vec<SeatRegistries> = Vec::new();
+        let console = console_context(&owner);
+        assert_eq!(
+            routing.owner_slot("mvd_username", &console, &seats).unwrap(),
+            RegistrySlot::Source
+        );
+        assert_eq!(
+            routing.owner_slot("movement_only", &console, &seats).unwrap(),
+            RegistrySlot::Movement
+        );
+        // Non-Q3 snapshots stay case-sensitive.
+        assert_ne!(
+            routing.owner_slot("mixedcase", &console, &seats).unwrap(),
+            RegistrySlot::Movement
+        );
+        // Run declarations after construction stay visible.
+        routing.note_declared(RegistrySlot::Source, "late_source_var");
+        assert_eq!(
+            routing.owner_slot("late_source_var", &console, &seats).unwrap(),
+            RegistrySlot::Source
+        );
+        assert_eq!(
+            routing.visible_slots(&console, &seats),
+            vec![RegistrySlot::Source, RegistrySlot::Movement, RegistrySlot::Fallback,]
+        );
+    }
+
+    #[test]
+    fn startup_config_params_convert_to_canonical_options() {
+        use crate::bootstrap::startup_config::StartupConfigScope as CanonicalScope;
+        let owner = test_owner();
+        let context = console_context(&owner);
+        let params = StartupConfigParams {
+            dialect: Dialect::Q3,
+            context: context.clone(),
+            scope: StartupConfigScope::Seat,
+            safe_mode: true,
+            has_mod: true,
+            seat_index: 2,
+        };
+        let options = params.into_canonical_options(
+            Box::new(|_, _, _| None),
+            Box::new(|| {}),
+            Box::new(|| {}),
+            Box::new(|| {}),
+            None,
+        );
+        assert_eq!(options.dialect, Dialect::Q3);
+        assert_eq!(options.scope, CanonicalScope::Seat);
+        assert!(options.safe_mode);
+        assert!(options.has_mod);
+        assert_eq!(options.context.session, context.session);
+        // The re-exported scopes name the canonical types.
+        let scope = StartupScriptScope::Seat;
+        let _: crate::bootstrap::startup_config::StartupScriptScope = scope;
+    }
+
+    #[test]
+    fn canonical_script_files_implements_prepared_files() {
+        use crate::bootstrap::config_scripts::{ConsoleScriptFiles, ConsoleScriptInputs, ConsoleScriptMounts};
+        use crate::settings::config::ConfigStore;
+
+        struct TestMounts;
+        impl ConsoleScriptMounts for TestMounts {}
+
+        let root = std::env::temp_dir().join(format!(
+            "qa-prepared-startup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let settings_root = root.join("product");
+        std::fs::create_dir_all(&settings_root).unwrap();
+        std::fs::write(settings_root.join("autoexec.cfg"), "product").unwrap();
+        let mut files = ConsoleScriptFiles::new(
+            ConsoleScriptInputs {
+                console_root: root.join("console"),
+                settings: ConfigStore::new(settings_root.clone()),
+                mounts: TestMounts,
+                legacy_config: None,
+            },
+            None,
+        );
+        let owner = test_owner();
+        let source = console_context(&owner);
+        assert_eq!(
+            PreparedScriptFiles::read_script(&files, "autoexec.cfg", &source).as_deref(),
+            Some("product")
+        );
+        assert_eq!(PreparedScriptFiles::read_script(&files, "missing.cfg", &source), None);
+        PreparedScriptFiles::write_text(&mut files, "written.cfg", "hello").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(settings_root.join("written.cfg")).unwrap(),
+            "hello"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canonical_seat_device_delegates_to_canonical_seat() {
+        use qa_client::input::commands::CommandRegistry;
+        use qa_client::input::router::{SeatInputEvent, UiCallback};
+
+        struct NullRegistry;
+        impl CommandRegistry for NullRegistry {
+            fn register_engine(&mut self, _name: &str, _handler: ClientCommandHandler) -> bool {
+                false
+            }
+            fn register(&mut self, _name: &str, _handler: ClientCommandHandler) -> bool {
+                false
+            }
+            fn unregister(&mut self, _name: &str) {}
+            fn exists(&self, _name: &str) -> bool {
+                false
+            }
+            fn append(&mut self, _text: &str, _seat: &SeatId) {}
+        }
+
+        let owner = test_owner();
+        let seat_id = owner.seat(0);
+        let ui: UiCallback = Box::new(|_, _| false);
+        let mut seat = Seat::new(seat_id.clone(), Dialect::Q3, ui);
+        seat.bind(InputBinding {
+            input: PhysicalInput::Key(97),
+            target: InputBindingTarget::Command("+jump".to_string()),
+        });
+        let mut registry = NullRegistry;
+        seat.input(
+            &SeatInputEvent::Key {
+                seat: seat_id.clone(),
+                time_ms: 100.0,
+                code: 97,
+                down: true,
+            },
+            &mut registry,
+        )
+        .unwrap();
+        let context = local_context(&owner);
+        let mut device = CanonicalSeatDevice::new(seat, context.clone());
+        assert_eq!(device.dialect(), Dialect::Q3);
+        assert!(device.is_down(&PhysicalInput::Key(97)));
+        assert!(device.has_held_input());
+        let collected = Rc::new(RefCell::new(Vec::new()));
+        let sink = collected.clone();
+        device.release(200.0, &mut |text, source| {
+            assert_eq!(source.session, context.session);
+            sink.borrow_mut().push(text.to_string());
+        });
+        assert!(collected.borrow().iter().any(|line| line.starts_with("-jump ")));
+        assert!(!device.has_held_input());
+        device.set_profile(Dialect::Q2Classic);
+        assert_eq!(device.dialect(), Dialect::Q2Classic);
+    }
+
+    #[test]
+    fn cvar_registry_implements_prepared_mouse() {
+        use qa_client::input::mouse_settings::register_mouse_settings;
+
+        let mut cvars = CvarRegistry::new(Dialect::Q3);
+        register_mouse_settings(&mut cvars).unwrap();
+        let tuning = MouseTuning {
+            sensitivity: 4.5,
+            acceleration: 0.1,
+            filter: true,
+            yaw: 0.03,
+            pitch: 0.025,
+            side: 0.9,
+            forward: 1.1,
+            look_spring: true,
+            look_strafe: false,
+            free_look: false,
+            invert_pitch: true,
+        };
+        PreparedMouse::write(&mut cvars, &tuning);
+        assert_eq!(cvars.variable_value("sensitivity"), 4.5_f32);
+        assert_eq!(cvars.get("m_pitch").unwrap().value, "-0.025");
+        assert_eq!(cvars.variable_string("freelook"), "0");
+        assert_eq!(PreparedMouse::cvars(&cvars).variable_string("sensitivity"), "4.5");
+        assert_eq!(app_mouse_tuning(&client_mouse_tuning(&tuning)), tuning);
+    }
+
+    #[test]
+    fn canonical_hooks_register_gtv_and_run_cvars() {
+        let gtv = canonical_gtv_register();
+        let mut q2 = CvarRegistry::new(Dialect::Q2Classic);
+        gtv(&mut q2);
+        assert_eq!(q2.variable_string("mvd_username"), "unnamed");
+        assert_eq!(q2.variable_string("mvd_password"), "");
+        let mut q3 = CvarRegistry::new(Dialect::Q3);
+        gtv(&mut q3);
+        assert!(q3.get("mvd_username").is_none());
+
+        let run = canonical_run_cvar_register();
+        let mut cvars = CvarRegistry::new(Dialect::Q3);
+        run(&mut cvars, Dialect::Q3);
+        assert!(["0", "1"].contains(&cvars.variable_string("cl_run").as_str()));
+    }
+
+    #[test]
+    fn canonical_option_helpers_match_siblings() {
+        assert_eq!(
+            canonical_operator_command_names(Dialect::Q3),
+            ["heartbeat", "addip", "removeip", "listip"]
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert!(canonical_operator_command_names(Dialect::Q1Netquake).is_empty());
+        assert_eq!(
+            canonical_q3_map_commands(Q3MapCommandPolicy::Retail),
+            ["map", "devmap", "spmap", "spdevmap"]
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            canonical_q3_map_commands(Q3MapCommandPolicy::PrereleaseDemo),
+            vec!["map".to_string()]
+        );
     }
 }
