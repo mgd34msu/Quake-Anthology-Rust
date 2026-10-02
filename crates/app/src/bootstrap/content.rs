@@ -10,9 +10,10 @@
 //! `resolveApplicationTravel`, `loadApplicationContent`).
 //! Async mounts/catalog access becomes sync calls. Q3 product policy is
 //! absorbed from `src/core/q3-product-policy.ts` (`Q3ApplicationProduct`,
-//! `q3ProductMapCommands`); the options lane has not ported the donor's
-//! `remoteContent`/`q3Product` option fields, so they travel in
-//! [`ApplicationContentOptions`]. Unported collaborators (Q3 product
+//! `q3ProductMapCommands`); the donor's `remoteContent`/`q3Product` option
+//! fields live on [`ApplicationOptions`](crate::options::ApplicationOptions)
+//! and [`ApplicationContentOptions`] mirrors them for the preparer seam.
+//! Unported collaborators (Q3 product
 //! preparation, QVM compatibility, mods/weapons/grapple selection, guest
 //! sources) arrive through [`Q3ProductPreparer`], [`LaunchQvmCompatibility`],
 //! and [`ApplicationContentPreparer`]. BSP bytes live in a caller-provided
@@ -342,26 +343,28 @@ pub struct ApplicationMapSidecar {
     pub resource: Option<qa_content::contract::ResolvedResourceReference>,
 }
 
-/// Donor `ApplicationOptions` fields the options lane has not ported yet,
-/// paired with the ported base options.
+/// Base options paired with the preparer seam's copies of the donor's
+/// `remoteContent`/`q3Product` fields. The copies mirror
+/// [`ApplicationOptions::remote_content`] and
+/// [`ApplicationOptions::q3_product`]; readers use the base fields.
 #[derive(Debug, Clone)]
 pub struct ApplicationContentOptions {
     /// Ported base options.
     pub base: ApplicationOptions,
-    /// Remote content selection (`remoteContent`).
+    /// Copy of [`ApplicationOptions::remote_content`].
     pub remote_content: Option<RemoteContentSelection>,
-    /// Q3 application product (`q3Product`).
+    /// Copy of [`ApplicationOptions::q3_product`].
     pub q3_product: Option<Q3ApplicationProduct>,
 }
 
 impl ApplicationContentOptions {
-    /// Wrap base options without extras.
+    /// Wrap base options, mirroring its `remoteContent`/`q3Product` fields.
     #[must_use]
     pub fn new(base: ApplicationOptions) -> Self {
         Self {
+            remote_content: base.remote_content.clone(),
+            q3_product: base.q3_product,
             base,
-            remote_content: None,
-            q3_product: None,
         }
     }
 }
@@ -1143,7 +1146,7 @@ where
     Q: Q3ProductPreparer,
     Q::Error: Into<ContentError>,
 {
-    let selection = match &options.remote_content {
+    let selection = match &options.base.remote_content {
         Some(remote) => Some(remote.clone()),
         None => match &options.base.network {
             Network::QwClient { .. } => Some(remote_content_selection(RemoteContentBase::Q1Quakeworld, "qw")?),
@@ -1258,11 +1261,10 @@ where
         ApplicationConfigurationRequest::Recipe { recipe } => recipe.map.entities.content.as_str().to_string(),
         ApplicationConfigurationRequest::Launch { preset, .. } => preset.map.entities.content.as_str().to_string(),
     };
-    let minimal = ApplicationContentOptions {
-        base: ApplicationOptions::default(),
-        remote_content: None,
+    let minimal = ApplicationContentOptions::new(ApplicationOptions {
         q3_product,
-    };
+        ..ApplicationOptions::default()
+    });
     let policy = q3
         .prepare_q3_application_product(catalog, &entities_content, &minimal)
         .map_err(Into::into)?;
@@ -2051,7 +2053,7 @@ where
     Q::Error: Into<ContentError>,
 {
     let mut options = options.clone();
-    if let Some(remote) = &options.remote_content {
+    if let Some(remote) = &options.base.remote_content {
         let (network_ok, recorded) = match remote.base {
             RemoteContentBase::Q1Quakeworld => {
                 (matches!(options.base.network, Network::QwClient { .. }), DemoFamily::Qw)
@@ -2077,7 +2079,7 @@ where
             products: None,
             generation: 0,
             discover_mods: application_discovers_mods(&options.base, restored_recipe.as_ref()),
-            remote_content: options.remote_content.clone(),
+            remote_content: options.base.remote_content.clone(),
         })?,
     };
     let restored_entities = restored_recipe
@@ -2089,11 +2091,11 @@ where
         .map_err(Into::into)?;
     catalog = prepared_product.catalog;
     if let Some(q3_product) = prepared_product.q3_product {
-        options.q3_product = Some(q3_product);
+        options.base.q3_product = Some(q3_product);
     }
     let mount_options = OpenMountOptions {
         pure: pure.clone(),
-        ..q3_mount_options(options.q3_product)
+        ..q3_mount_options(options.base.q3_product)
     };
     if let Some(source) = presentation_source {
         let recorded = match source.family {
@@ -2247,7 +2249,7 @@ where
             let entities_path = sidecar_path(&map, "ent");
             let lit_path = sidecar_path(&map, "lit");
             let (entities, lit) = {
-                let map_content = open_map_content(&catalog, &recipe, options.q3_product)?;
+                let map_content = open_map_content(&catalog, &recipe, options.base.q3_product)?;
                 let entities = map_content.open(&entities_path, |_| true)?;
                 let lit = map_content.open(&lit_path, |_| true)?;
                 map_sidecars.push(ApplicationMapSidecar {
@@ -2275,7 +2277,7 @@ where
             let mut seen = HashSet::new();
             let mut materials = HashMap::new();
             {
-                let map_content = open_map_content(&catalog, &recipe, options.q3_product)?;
+                let map_content = open_map_content(&catalog, &recipe, options.base.q3_product)?;
                 for texture in &raw.texture_info {
                     let path = format!("textures/{}.mat", texture.name);
                     if seen.insert(path.clone()) {
@@ -2411,7 +2413,7 @@ where
         pure,
         prepared_q3_game: prepared_q3,
         prepared_q2_game: prepared_q2,
-        q3_product: options.q3_product,
+        q3_product: options.base.q3_product,
         map_sidecars,
         mod_owners: Vec::new(),
         grapple_owner: None,
@@ -2686,7 +2688,7 @@ mod tests {
         ) -> Result<PreparedQ3Product, ContentError> {
             Ok(PreparedQ3Product {
                 catalog,
-                q3_product: options.q3_product,
+                q3_product: options.base.q3_product,
             })
         }
     }
@@ -3135,11 +3137,9 @@ mod tests {
     #[test]
     fn load_rejects_remote_mismatch() {
         let fixture = load_fixture("remote-mismatch");
-        let options = ApplicationContentOptions {
-            base: fixture.options.base.clone(),
-            remote_content: Some(remote_content_selection(RemoteContentBase::Q2ClassicBaseq2, "baseq2").unwrap()),
-            q3_product: None,
-        };
+        let mut base = fixture.options.base.clone();
+        base.remote_content = Some(remote_content_selection(RemoteContentBase::Q2ClassicBaseq2, "baseq2").unwrap());
+        let options = ApplicationContentOptions::new(base);
         let mut arena = WorldByteArena::default();
         let mut preparer = StubPreparer::default();
         let error = load_application_content(
@@ -3356,11 +3356,9 @@ mod tests {
 
         let seed = stock_catalog();
         let plan = q3_seed_plan();
-        let options = ApplicationContentOptions {
-            base: q3_base_options(),
-            remote_content: Some(remote_content_selection(RemoteContentBase::Q3Baseq3, "baseq3").expect("remote")),
-            q3_product: None,
-        };
+        let mut base = q3_base_options();
+        base.remote_content = Some(remote_content_selection(RemoteContentBase::Q3Baseq3, "baseq3").expect("remote"));
+        let options = ApplicationContentOptions::new(base);
         let mut arena = WorldByteArena::default();
         let mut preparer = StubPreparer::default();
         let result = Q3ClientContent::open_loaded(

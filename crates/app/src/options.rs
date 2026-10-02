@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use qa_content::catalog::RemoteContentSelection;
 use qa_core::cmd::{ascii_fold, command_separator_offset, source_command_text, tokenize_command, Dialect, TextMode};
 use qa_net::protocol::{q1, ProtocolIdentity};
 
@@ -129,6 +130,8 @@ pub enum GameMode {
     Deathmatch,
 }
 
+/// Q3 application product (donor `src/core/q3-product-policy.ts`).
+pub use crate::bootstrap::content::Q3ApplicationProduct;
 /// Match rules (canonical donor `src/app/bootstrap/match-modes.ts`).
 pub use crate::bootstrap::match_modes::MatchRules;
 
@@ -236,10 +239,14 @@ pub struct DisplayOverrides {
 pub struct ApplicationOptions {
     /// Alternate network transport.
     pub network_transport: Option<NetworkTransport>,
+    /// Q3 application product.
+    pub q3_product: Option<Q3ApplicationProduct>,
     /// `+command` startup lines.
     pub startup_commands: Vec<String>,
     /// Explicitly-set rules.
     pub explicit_rules: ExplicitRules,
+    /// Remote content selection.
+    pub remote_content: Option<RemoteContentSelection>,
     /// NetQuake host protocol.
     pub q1_protocol: Option<ProtocolIdentity>,
     /// Quake II client/server protocol.
@@ -312,8 +319,10 @@ impl Default for ApplicationOptions {
     fn default() -> Self {
         Self {
             network_transport: None,
+            q3_product: None,
             startup_commands: Vec::new(),
             explicit_rules: ExplicitRules::default(),
+            remote_content: None,
             q1_protocol: None,
             q2_protocol: None,
             server_profile_path: None,
