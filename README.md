@@ -115,9 +115,6 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-See [docs/PORT_PLAN.md](docs/PORT_PLAN.md) for the crate layout and
-design rules.
-
 ## License
 
 `GPL-2.0-or-later` (declared in `Cargo.toml`).
