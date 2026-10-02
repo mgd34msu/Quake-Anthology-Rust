@@ -42,7 +42,7 @@ use qa_client::input::commands::{
 use qa_client::input::gamepad::GamepadTuning;
 use qa_client::input::haptics::{HapticError, SeatHaptics};
 use qa_client::input::midi::MidiInputBoundary;
-use qa_client::input::mouse_settings::{read_mouse_tuning, register_mouse_settings, write_mouse_tuning};
+use qa_client::input::mouse_settings::{read_mouse_tuning, register_mouse_settings};
 use qa_client::input::router::{
     InputRouter, RouterControllers, RouterError, RouterWindow, Seat, SeatError, SeatFrame,
     SeatInputEvent as RouterSeatEvent, SeatRoute, UiCallback, UnhandledEvent,
@@ -2218,22 +2218,6 @@ fn live_controller_selection(value: &SavedControllerSelection) -> ControllerSele
         SavedControllerSelection::None => ControllerSelection::None,
         SavedControllerSelection::Device { guid, ordinal } => ControllerSelection::Device { guid, ordinal },
         SavedControllerSelection::Serial { guid, serial } => ControllerSelection::Serial { guid, serial },
-    }
-}
-
-impl PreparedMouse for CvarRegistry {
-    fn cvars(&self) -> &CvarRegistry {
-        self
-    }
-
-    fn cvars_mut(&mut self) -> &mut CvarRegistry {
-        self
-    }
-
-    fn write(&mut self, tuning: &SavedMouseTuning) {
-        // Donor mouse tuning assignment never fails; keep current values when
-        // a saved value does not apply.
-        let _ = write_mouse_tuning(self, &client_mouse_tuning(tuning));
     }
 }
 
