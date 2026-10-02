@@ -20,9 +20,10 @@
 //!   donor logic the factories need as callbacks: the session surface, movement
 //!   proxy, render gates, body capture, and the `q3:` provider wrapper contract is
 //!   documented on [`Q3NativeParams`] for the wiring lane.
-//! - Services, media, audio, the render pipeline, frame-time sync, and the cvar
-//!   mirror are host seams ([`Q3ClientServices`], [`Q3ClientMedia`],
-//!   [`Q3ClientAudio`], [`Q3RenderPipeline`], [`Q3FrameTime`], [`Q3CvarMirror`]).
+//! - Services, media, audio, and the render pipeline are host seams
+//!   ([`Q3ClientServices`], [`Q3ClientMedia`], [`Q3ClientAudio`],
+//!   [`Q3RenderPipeline`]). Frame-time sync and the cvar mirror bind the
+//!   canonical `frame-time`/`SharedCvarMirror` items directly.
 //!   Frame inputs (light merge, area-mask expansion, clear colors, portal loop,
 //!   effect merge) are computed in the port; the pipeline adapts them to the
 //!   redesigned render API.
@@ -33,12 +34,12 @@
 //!   session, mirror, and backends observe one object like the donor. `adoptCvars`
 //!   swaps contents in place, matching the donor dynamic `cvars` getter.
 //! - The local snapshot source is the real [`ApplicationQ3Source`]; entity
-//!   selection arrives host-built for now. The donor selector IS ported
-//!   (`super::q3_client::visibility::select_application_q3_snapshot`) but
-//!   wiring it needs `options.queries` plumbed plus app-to-visibility type
-//!   conversion at the snapshot read; tracked as a follow-up. Remote sources
-//!   are host trait objects. Local sources expose no system info, pings, or
-//!   sequences (the donor leaves them undefined too).
+//!   selection runs the ported donor selector
+//!   (`super::q3_client::visibility::select_application_q3_snapshot`) over
+//!   `options.queries`, with app-to-visibility type conversion at the
+//!   snapshot read. Remote sources are host trait objects. Local sources
+//!   expose no system info, pings, or sequences (the donor leaves them
+//!   undefined too).
 //! - There is no donor `q3-client/session.ts` file; the donor session surface
 //!   (`Q3PresentationSession`) comes from `content/q3/presentation/client.ts`
 //!   (ported as a trait) and is mirrored locally as [`Q3ClientSession`].
@@ -56,19 +57,23 @@
 //!   spread; the reopen closure is single-shot.
 //! - `ActorId` hides its session token, so the seat session and the
 //!   same-session probe arrive explicitly (`Q3ClientLocal.session`,
-//!   `Q3LocalOptions.same_session`); entity selection arrives shared because
-//!   options are retained for reopen.
+//!   `Q3LocalOptions.same_session`); sessionless cvar registries adopt the
+//!   seat session when the time-cvar mirror binds.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `component-bodies.ts`
-//! (body types are mirrored locally), `keys.ts`, `input.ts` (mouse-button mapping
-//! inlined), `assets.ts`, `audio.ts`, `effects.ts`, `frame-time.ts` and
-//! `world/collision/q3/settings.ts` (folded into [`Q3FrameTime`]),
-//! `q3-client/visibility.ts` (ported; entity-selection binding is a follow-up),
-//! `q3-client/services.ts`, `q3-client/cinematics.ts`,
-//! `content/q3/presentation/client.ts` (native backend), `server-administration.ts`
-//! (operator names are not consumed here), `core/cvars/mirror.ts`, and the QVM guest
-//! inputs (`Q3BrowserView`, guest cvars/input/client-state, connection, scalars)
-//! which the host factory captures directly.
+//! Missing siblings (host seams, referenced but NOT ported here): `keys.ts`
+//! (the key profile is generic over the unported CD-key state and only
+//! forwards into the host-owned guest factory), `input.ts` (mouse-button
+//! mapping inlined), `assets.ts`, `audio.ts`, `q3-client/services.ts`,
+//! `q3-client/cinematics.ts`, `content/q3/presentation/client.ts` (native
+//! backend), `server-administration.ts` (operator state is never consumed by
+//! the donor client), and the QVM guest inputs (`Q3BrowserView`, guest
+//! cvars/input/client-state, connection, scalars) which the host factory
+//! captures directly. Bound canonically here: `component-bodies.ts`
+//! (`prepare` bodies; primary-body capture still mirrors locally because the
+//! client entity handle allocates host-side), `effects.ts` (effect frames),
+//! `frame-time.ts` plus `world/collision/q3/settings.ts` (frame-time sync),
+//! `q3-client/visibility.ts` (entity selection), and `core/cvars/mirror.ts`
+//! (time-cvar mirror).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -105,21 +110,28 @@ use qa_content::q3::presentation::snapshots::{SnapshotCurrent, SnapshotSource};
 use qa_content::q3::presentation::state::PresentResult as PresentClientResult;
 use qa_core::cmd::Dialect;
 use qa_core::cmd_buffer::{CommandBuffer, CommandContext, CommandOrigin};
-use qa_core::cvar::{CvarRegistry, CvarSnapshot};
+use qa_core::cvar::{CvarRegistry, CvarSnapshot, SharedCvarMirror};
 use qa_core::identity::{ActorId, ClientId, SeatId, SessionId};
 use qa_core::math::{angles_to_axis, vec3, Axis, Bounds, Plane, Vec2, Vec3, Vec4};
 use qa_net::common::commands::{ActorCommand, UserCommand as NetUserCommand};
 use qa_net::q3_net::{
     Q3EntityState, Q3PlayerSlots, Q3PlayerState as NetPlayerState, Q3Trajectory, Snapshot as NetSnapshot,
 };
+use qa_world::collision::q3::settings::COLLISION_MAP_CVAR_DEFINITIONS;
 use thiserror::Error;
 
+use super::component_bodies::ComponentBody;
+use super::effects::application::ApplicationEffectFrame;
+use super::frame_time::{frame_time_cvar_names, refresh_frame_time_cvars, FrameTimeError};
 use super::q3_client::qvm::{QvmBodyPart, QvmHeldWeapon, QvmPresentationArtifacts};
 use super::q3_client::qvm_display::QvmDisplayRenderer;
 use super::q3_client::source::{
-    ApplicationQ3Source, ApplicationQ3SourceOptions, Q3SourceError, Q3SourcePresentationEvent, Q3SourceSelect,
+    ApplicationQ3Source, ApplicationQ3SourceOptions, Q3SourceError, Q3SourcePresentationEvent,
 };
 use super::q3_client::view::q3_weapon_camera;
+use super::q3_client::visibility::{
+    select_application_q3_snapshot, ApplicationQ3SceneQueries, ApplicationQ3SourceEntity,
+};
 use super::simulation::q3::types::Q3SourcePresentationState;
 use super::weapon_view::weapon_view_camera;
 use crate::bootstrap::audio::q3::Q3SeatAudioOperation;
@@ -133,6 +145,9 @@ pub enum Q3ClientError {
     /// Buffer failure.
     #[error(transparent)]
     Buffer(#[from] qa_core::cmd_buffer::BufferError),
+    /// Frame-time failure.
+    #[error(transparent)]
+    FrameTime(#[from] FrameTimeError),
     /// Source failure.
     #[error(transparent)]
     Source(#[from] Q3SourceError),
@@ -353,17 +368,6 @@ pub struct Q3SceneFlags {
     pub supplemental_view_weapon: bool,
 }
 
-/// Effect frame (donor `ApplicationEffectFrame` fields consumed here).
-#[derive(Debug, Clone, Default)]
-pub struct Q3EffectFrame {
-    /// Surface lights.
-    pub lights: Vec<SurfaceDynamicLight>,
-    /// Q3 dynamic lights.
-    pub q3_lights: Vec<Q3SceneLight>,
-    /// Extra scene operations.
-    pub operations: Vec<SceneOperation>,
-}
-
 /// Frame environment overrides (donor `frame` `environment`).
 #[derive(Debug, Clone, Default)]
 pub struct Q3FrameEnvironment {
@@ -392,13 +396,6 @@ pub struct Q3ClientModel {
     pub replaces_body: bool,
     /// Whether the model is visible.
     pub visible: bool,
-}
-
-/// Component body input (donor `ComponentBody` fields consumed here).
-#[derive(Debug, Clone)]
-pub struct Q3ComponentBody {
-    /// Acting actor.
-    pub actor: ActorId,
 }
 
 /// Prepared primary body (donor `PreparedPrimaryBody`).
@@ -788,25 +785,6 @@ pub trait Q3RenderPipeline {
     fn close(&mut self);
 }
 
-/// Frame-time sync (donor `frame-time.ts` plus `world/collision/q3/settings.ts`
-/// folded into one seam: collision-map registration has no other consumer).
-pub trait Q3FrameTime {
-    /// Frame-time cvar names for a dialect (system-info skip set).
-    fn frame_names(&self, dialect: Dialect) -> Vec<String>;
-    /// Mirrorable cvar names for a dialect (frame-time plus collision-map names).
-    fn mirror_names(&self, dialect: Dialect) -> Vec<String>;
-    /// Refresh time cvars from the client registry.
-    fn refresh_time_cvars(&self, time_cvars: &mut CvarRegistry, cvars: &mut CvarRegistry);
-}
-
-/// Cvar mirror (donor `SharedCvarMirror` surface consumed here).
-pub trait Q3CvarMirror {
-    /// Refresh mirrored values from owner into the mirror registry.
-    fn refresh(&mut self, owner: &CvarRegistry, mirror: &mut CvarRegistry);
-    /// Close the mirror.
-    fn close(self: Box<Self>) {}
-}
-
 /// Shared registries alias.
 pub type SharedCvars = Rc<RefCell<CvarRegistry>>;
 /// Host shader remap (sync fold of the donor async remap).
@@ -857,10 +835,6 @@ pub struct Q3ClientCommonOptions {
     pub server_settings: Option<Rc<dyn Fn() -> Vec<CvarSnapshot>>>,
     /// Current-world assertion, if any.
     pub assert_current: Option<Rc<dyn Fn()>>,
-    /// Frame-time sync.
-    pub frame_time: Rc<dyn Q3FrameTime>,
-    /// Cvar mirror factory.
-    pub create_mirror: Rc<dyn Fn(Vec<String>) -> Box<dyn Q3CvarMirror>>,
     /// Client media.
     pub media: Rc<dyn Q3ClientMedia>,
     /// Render pipeline.
@@ -894,8 +868,11 @@ pub struct Q3LocalOptions {
     pub source_actor: Rc<dyn Fn(i32) -> Option<ActorId>>,
     /// Prediction command adapter, if any (donor default otherwise).
     pub prediction_command: Option<Q3PredictionAdapter>,
-    /// Entity selection for the local source (shared: options are retained).
-    pub select: Rc<RefCell<Q3SourceSelect>>,
+    /// Scene queries for the ported visibility selector.
+    pub queries: Rc<dyn ApplicationQ3SceneQueries>,
+    /// World leaf count for the ported visibility selector (donor
+    /// `assets.world.map.leaves.length`; assets stay host-owned).
+    pub leaf_count: i32,
     /// Seat-session membership probe (donor `actor.session` comparison).
     pub same_session: Rc<dyn Fn(&ActorId) -> bool>,
     /// Round server settings probe, if any.
@@ -1115,8 +1092,6 @@ pub struct ApplicationQ3Client {
     registration: Rc<dyn Q3CommandRegistration>,
     server_settings_fn: Option<Rc<dyn Fn() -> Vec<CvarSnapshot>>>,
     assert_current: Option<Rc<dyn Fn()>>,
-    frame_time: Rc<dyn Q3FrameTime>,
-    create_mirror: Rc<dyn Fn(Vec<String>) -> Box<dyn Q3CvarMirror>>,
     media: Rc<dyn Q3ClientMedia>,
     pipeline: Rc<RefCell<dyn Q3RenderPipeline>>,
     command_buffer: Rc<RefCell<CommandBuffer>>,
@@ -1129,7 +1104,7 @@ pub struct ApplicationQ3Client {
     sampler: Rc<ModelLightSampler>,
     backend: Option<Q3ClientBackend>,
     services: Option<Box<dyn Q3ClientServices>>,
-    time_mirror: Option<Box<dyn Q3CvarMirror>>,
+    time_mirror: Option<SharedCvarMirror>,
     applied_time_system_info: Option<String>,
     shared_cvar_names: HashSet<String>,
     reopen_options: Option<ApplicationQ3ClientOptions>,
@@ -1194,17 +1169,36 @@ impl ApplicationQ3Client {
                     server_settings: local.server_settings.clone(),
                 });
                 let round_ref = round.clone();
+                let round_bounds = round.clone();
                 let prediction = local.prediction_command.clone();
                 let round_prediction = round.clone();
                 let console_close = options.common.local.console_close.clone();
                 let console_sink = options.common.commands.console.clone();
+                let select_queries = local.queries.clone();
+                let select_leaf_count = local.leaf_count;
+                let select_print = options.common.commands.print.clone();
                 let local_source = ApplicationQ3Source::new(ApplicationQ3SourceOptions {
                     actor: options.common.local.actor.clone(),
                     initial: local.initial.clone(),
-                    select: {
-                        let select = local.select.clone();
-                        Box::new(move |player, state| select.borrow_mut()(player, state))
-                    },
+                    select: Box::new(move |player, state| {
+                        let rows = visibility_source_rows(state);
+                        let print = select_print.clone();
+                        let mut emit = move |text: &str| print(text);
+                        select_application_q3_snapshot(
+                            player,
+                            &rows,
+                            select_queries.as_ref(),
+                            &|number| {
+                                round_bounds
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|round| (round.link_bounds)(number))
+                            },
+                            select_leaf_count,
+                            &mut emit,
+                        )
+                        .unwrap_or_else(|error| panic!("Q3 snapshot selection failed: {error}"))
+                    }),
                     source_actor: Box::new(move |number| {
                         round_ref
                             .borrow()
@@ -1334,8 +1328,6 @@ impl ApplicationQ3Client {
             registration: options.common.command_registration.clone(),
             server_settings_fn: options.common.server_settings.clone(),
             assert_current: options.common.assert_current.clone(),
-            frame_time: options.common.frame_time.clone(),
-            create_mirror: options.common.create_mirror.clone(),
             media: options.common.media.clone(),
             pipeline: options.common.pipeline.clone(),
             command_buffer: options.common.command_buffer.clone(),
@@ -1474,6 +1466,71 @@ fn retail_entity(source: &Q3EntityState) -> EntityState {
         torso_anim: source.torso_anim,
         generic1: source.generic1,
     }
+}
+
+/// Copy a vector into a network triple.
+fn to_triple(value: Vec3) -> [f32; 3] {
+    [value.x, value.y, value.z]
+}
+
+/// Convert a presentation trajectory to the network shape.
+fn transport_trajectory(source: &Trajectory) -> Q3Trajectory {
+    Q3Trajectory {
+        trajectory_type: source.trajectory_type as i32,
+        time: source.time,
+        duration: source.duration,
+        base: to_triple(source.base),
+        delta: to_triple(source.delta),
+    }
+}
+
+/// Convert a presentation entity state to the network shape.
+fn transport_entity(source: &EntityState) -> Q3EntityState {
+    Q3EntityState {
+        number: source.number,
+        e_type: source.e_type,
+        e_flags: source.e_flags,
+        pos: transport_trajectory(&source.pos),
+        apos: transport_trajectory(&source.apos),
+        time: source.time,
+        time2: source.time2,
+        origin: to_triple(source.origin),
+        origin2: to_triple(source.origin2),
+        angles: to_triple(source.angles),
+        angles2: to_triple(source.angles2),
+        other_entity_num: source.other_entity_num,
+        other_entity_num2: source.other_entity_num2,
+        ground_entity_num: source.ground_entity_num,
+        constant_light: source.constant_light,
+        loop_sound: source.loop_sound,
+        modelindex: source.modelindex,
+        modelindex2: source.modelindex2,
+        client_num: source.client_num,
+        frame: source.frame,
+        solid: source.solid,
+        event: source.event,
+        event_parm: source.event_parm,
+        powerups: source.powerups,
+        weapon: source.weapon,
+        legs_anim: source.legs_anim,
+        torso_anim: source.torso_anim,
+        generic1: source.generic1,
+    }
+}
+
+/// Convert copied source rows to visibility-selector rows (app-to-visibility
+/// conversion at the snapshot read).
+fn visibility_source_rows(state: &Q3SourcePresentationState) -> Vec<ApplicationQ3SourceEntity> {
+    state
+        .entities
+        .iter()
+        .map(|row| ApplicationQ3SourceEntity {
+            state: transport_entity(&row.state),
+            linked: row.linked,
+            server_flags: row.server_flags,
+            single_client: row.single_client,
+        })
+        .collect()
 }
 
 /// Copy sixteen network slots into presentation slots.
@@ -2220,10 +2277,9 @@ impl ApplicationQ3Client {
         };
         if let Some(info) = info {
             let skip: HashSet<String> = match self.time_cvars.as_ref() {
-                Some(time) => self
-                    .frame_time
-                    .frame_names(time.borrow().dialect())
-                    .into_iter()
+                Some(time) => frame_time_cvar_names(time.borrow().dialect())
+                    .iter()
+                    .map(ToString::to_string)
                     .collect(),
                 None => HashSet::new(),
             };
@@ -2245,19 +2301,25 @@ impl ApplicationQ3Client {
             }
             self.applied_time_system_info = Some(info);
         }
-        if let Some(mirror) = self.time_mirror.as_mut() {
-            let time = self.time_cvars.clone().expect("time mirror without time cvars");
-            mirror.refresh(&time.borrow(), &mut self.cvars.borrow_mut());
+        if let Some(mirror) = self.time_mirror.as_ref() {
+            mirror.pump()?;
+            mirror.refresh()?;
         } else if let Some(time) = self.time_cvars.as_ref() {
-            self.frame_time
-                .refresh_time_cvars(&mut time.borrow_mut(), &mut self.cvars.borrow_mut());
+            if !Rc::ptr_eq(time, &self.cvars) {
+                refresh_frame_time_cvars(&time.borrow(), &mut self.cvars.borrow_mut())?;
+            }
         }
         Ok(())
     }
 
     /// Bind the shared time-cvar mirror (donor `bindFrameTime`).
+    ///
+    /// Registries without a session adopt the seat session (or the peer
+    /// session when one side already has one): the canonical mirror requires
+    /// distinct registries in the same session, while this port otherwise
+    /// folds session identity away.
     fn bind_frame_time(&mut self) -> Result<(), Q3ClientError> {
-        if let Some(mirror) = self.time_mirror.take() {
+        if let Some(mut mirror) = self.time_mirror.take() {
             mirror.close();
         }
         let Some(time) = self.time_cvars.clone() else {
@@ -2267,14 +2329,41 @@ impl ApplicationQ3Client {
             return Ok(());
         }
         self.refresh_system_info()?;
-        let names: Vec<String> = self
-            .frame_time
-            .mirror_names(time.borrow().dialect())
-            .into_iter()
+        {
+            let seat = self.local.session.clone();
+            let mut cvars = self.cvars.borrow_mut();
+            let mut owner = time.borrow_mut();
+            match (cvars.session().cloned(), owner.session().cloned()) {
+                (None, None) => {
+                    cvars.set_session(seat.clone());
+                    owner.set_session(seat);
+                }
+                (None, Some(peer)) => cvars.set_session(peer),
+                (Some(peer), None) => owner.set_session(peer),
+                (Some(_), Some(_)) => {}
+            }
+        }
+        let names: Vec<String> = frame_time_cvar_names(time.borrow().dialect())
+            .iter()
+            .map(ToString::to_string)
+            .chain(
+                COLLISION_MAP_CVAR_DEFINITIONS
+                    .iter()
+                    .map(|(name, _, _)| name.to_string()),
+            )
             .filter(|name| time.borrow().get(name).is_some())
             .collect();
-        let mut mirror = (self.create_mirror)(names);
-        mirror.refresh(&time.borrow(), &mut self.cvars.borrow_mut());
+        let closed = self.shared.clone();
+        let assert = self.assert_current.clone();
+        let assert_current: Rc<dyn Fn()> = Rc::new(move || {
+            if closed.borrow().closed {
+                panic!("Q3 presentation is closed");
+            }
+            if let Some(assert) = assert.as_ref() {
+                assert();
+            }
+        });
+        let mirror = SharedCvarMirror::attach(time, self.cvars.clone(), &names, assert_current)?;
         self.time_mirror = Some(mirror);
         Ok(())
     }
@@ -2511,7 +2600,7 @@ impl ApplicationQ3Client {
         viewport: Rect,
         presentations: &[Q3ClientModel],
         status_visible: bool,
-        bodies: &[Q3ComponentBody],
+        bodies: &[ComponentBody],
         view_weapon_visible: bool,
         camera_controlled: bool,
     ) -> Result<(), Q3ClientError> {
@@ -2565,6 +2654,9 @@ impl ApplicationQ3Client {
             if self.shared_cvar_names.contains(&setting.name.to_lowercase()) {
                 self.cvars.borrow_mut().set(&setting.name, &setting.value, true)?;
             }
+        }
+        if let Some(mirror) = self.time_mirror.as_ref() {
+            mirror.pump()?;
         }
         let previous_status = std::mem::replace(&mut self.shared.borrow_mut().status_visible, status_visible);
         let time = self.source_time();
@@ -2760,14 +2852,21 @@ impl ApplicationQ3Client {
         &mut self,
         scene: &Q3PresentedSceneView,
         view: &Q3WorldView,
-        additional_effects: Option<&dyn Fn(&SceneCamera) -> Q3EffectFrame>,
+        additional_effects: Option<&dyn Fn(&SceneCamera) -> ApplicationEffectFrame>,
         view_offset: Option<Vec3>,
     ) {
         let effects = additional_effects.map(|run| run(&view.camera));
         let mut combined = view.clone();
         if let Some(effects) = effects.as_ref() {
             combined.lights.clone_from(&effects.lights);
-            combined.q3_lights.extend(effects.q3_lights.iter().cloned());
+            combined
+                .q3_lights
+                .extend(effects.q3_lights.iter().map(|light| Q3SceneLight {
+                    origin: light.origin,
+                    radius: light.radius,
+                    color: light.color,
+                    additive: light.additive,
+                }));
             combined.q3_lights.truncate(32);
         }
         let operations: &[SceneOperation] = effects.as_ref().map_or(&[], |effects| &effects.operations);
@@ -2787,7 +2886,7 @@ impl ApplicationQ3Client {
     /// pipeline-internal now.
     pub fn frame(
         &mut self,
-        additional_effects: Option<&dyn Fn(&SceneCamera) -> Q3EffectFrame>,
+        additional_effects: Option<&dyn Fn(&SceneCamera) -> ApplicationEffectFrame>,
         transform_camera: Option<&dyn Fn(&SceneCamera) -> SceneCamera>,
         environment: &Q3FrameEnvironment,
         view_offset: Option<Vec3>,
@@ -2911,7 +3010,7 @@ impl ApplicationQ3Client {
             return;
         }
         self.registration.close();
-        if let Some(mirror) = self.time_mirror.take() {
+        if let Some(mut mirror) = self.time_mirror.take() {
             mirror.close();
         }
         if let Some(backend) = self.backend.take() {
@@ -2948,17 +3047,18 @@ impl ApplicationQ3Client {
 mod tests {
     use super::*;
     use crate::bootstrap::q3_client::qvm_display::QvmDisplayDriver;
-    use crate::bootstrap::simulation::q3::types::Q3SourcePresentationClient;
+    use crate::bootstrap::simulation::q3::types::{Q3SourcePresentationClient, Q3SourcePresentationEntity};
     use qa_client::input::ControllerAxis;
+    use qa_client::materials::q3_lighting::DynamicLight;
     use qa_client::render::types::ResourceOwner;
+    use qa_content::contract::PresentationOwner;
     use qa_content::q3::presentation::movement_host::{CommandTiming, MoveBounds, PresentationMovementOptions};
     use qa_content::q3::presentation::ref_entity::ShadedFields;
     use qa_core::cmd_buffer::BufferOptions;
-    use qa_core::identity::IdentityOwner;
+    use qa_core::identity::{IdentityOwner, ProviderId};
     use qa_guest::qvm::game_data::{ModuleIdentity, QvmArtifact, QvmImage, QvmRole};
     use qa_guest::qvm::player_record::QvmPlayerState;
     use qa_net::q3_net::Q3Product;
-    use qa_net::q3_visibility::Q3VisibleEntities;
 
     #[derive(Debug, Default)]
     struct NativeCalls {
@@ -3334,34 +3434,35 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakeFrameTime {
-        frame: RefCell<Vec<String>>,
-        mirror: RefCell<Vec<String>>,
-        refreshes: RefCell<u32>,
-    }
+    struct FakeQueries;
 
-    impl Q3FrameTime for FakeFrameTime {
-        fn frame_names(&self, _dialect: Dialect) -> Vec<String> {
-            self.frame.borrow().clone()
+    impl ApplicationQ3SceneQueries for FakeQueries {
+        fn point_leaf(&self, _point: Vec3) -> i32 {
+            0
         }
 
-        fn mirror_names(&self, _dialect: Dialect) -> Vec<String> {
-            self.mirror.borrow().clone()
+        fn leaf_cluster(&self, _leaf: i32) -> i32 {
+            0
         }
 
-        fn refresh_time_cvars(&self, _time_cvars: &mut CvarRegistry, _cvars: &mut CvarRegistry) {
-            *self.refreshes.borrow_mut() += 1;
+        fn leaf_area(&self, _leaf: i32) -> i32 {
+            0
         }
-    }
 
-    struct FakeMirror {
-        refreshes: Rc<RefCell<u32>>,
-    }
+        fn area_bits(&self, _area: i32) -> Vec<u8> {
+            vec![0x01]
+        }
 
-    impl Q3CvarMirror for FakeMirror {
-        fn refresh(&mut self, _owner: &CvarRegistry, _mirror: &mut CvarRegistry) {
-            *self.refreshes.borrow_mut() += 1;
+        fn box_leaves(&self, _bounds: Bounds, _limit: i32) -> Vec<i32> {
+            vec![0]
+        }
+
+        fn cluster_visible(&self, _from: i32, _cluster: i32) -> bool {
+            true
+        }
+
+        fn areas_connected(&self, _first: i32, _second: i32) -> bool {
+            true
         }
     }
 
@@ -3536,7 +3637,6 @@ mod tests {
         pipeline: Rc<RefCell<FakePipeline>>,
         registration: Rc<FakeRegistration>,
         media: Rc<FakeMedia>,
-        frame_time: Rc<FakeFrameTime>,
         native_calls: Rc<RefCell<NativeCalls>>,
         qvm_calls: Rc<RefCell<QvmCalls>>,
         captured: Rc<RefCell<Captured>>,
@@ -3544,9 +3644,8 @@ mod tests {
         services_output: Rc<RefCell<Option<Q3ServiceOutput>>>,
         services_viewport: Rc<RefCell<Option<ViewportProbeFn>>>,
         services_remap: Rc<RefCell<Option<ServiceRemapFn>>>,
-        mirror_names: Rc<RefCell<Vec<String>>>,
-        mirror_refreshes: Rc<RefCell<u32>>,
         actor_map: Rc<RefCell<HashMap<i32, ActorId>>>,
+        link_bounds: Rc<RefCell<HashMap<i32, Bounds>>>,
         reliable: Rc<RefCell<Vec<String>>>,
         console: Rc<RefCell<Vec<String>>>,
         prints: Rc<RefCell<Vec<String>>>,
@@ -3576,7 +3675,6 @@ mod tests {
                 content: ContentId("test:content".to_string()),
                 closed: RefCell::new(false),
             }),
-            frame_time: Rc::new(FakeFrameTime::default()),
             native_calls: Rc::new(RefCell::new(NativeCalls::default())),
             qvm_calls: Rc::new(RefCell::new(QvmCalls::default())),
             captured: Rc::new(RefCell::new(Captured::default())),
@@ -3584,9 +3682,8 @@ mod tests {
             services_output: Rc::new(RefCell::new(None)),
             services_viewport: Rc::new(RefCell::new(None)),
             services_remap: Rc::new(RefCell::new(None)),
-            mirror_names: Rc::new(RefCell::new(Vec::new())),
-            mirror_refreshes: Rc::new(RefCell::new(0)),
             actor_map: Rc::new(RefCell::new(HashMap::new())),
+            link_bounds: Rc::new(RefCell::new(HashMap::new())),
             reliable: Rc::new(RefCell::new(Vec::new())),
             console: Rc::new(RefCell::new(Vec::new())),
             prints: Rc::new(RefCell::new(Vec::new())),
@@ -3672,14 +3769,6 @@ mod tests {
                 status_error: status_error.clone(),
             }) as Box<dyn Q3QvmGame>)
         });
-        let mirror_names = handles.mirror_names.clone();
-        let mirror_refreshes = handles.mirror_refreshes.clone();
-        let create_mirror: Rc<dyn Fn(Vec<String>) -> Box<dyn Q3CvarMirror>> = Rc::new(move |names| {
-            *mirror_names.borrow_mut() = names;
-            Box::new(FakeMirror {
-                refreshes: mirror_refreshes.clone(),
-            }) as Box<dyn Q3CvarMirror>
-        });
         let reliable = handles.reliable.clone();
         let console = handles.console.clone();
         let prints = handles.prints.clone();
@@ -3729,8 +3818,6 @@ mod tests {
             assert_current: Some(Rc::new(move || {
                 *asserts.borrow_mut() += 1;
             })),
-            frame_time: handles.frame_time.clone(),
-            create_mirror,
             media: handles.media.clone(),
             pipeline: handles.pipeline.clone(),
             create_services,
@@ -3785,10 +3872,7 @@ mod tests {
         initial: Q3SourcePresentationState,
     ) -> ApplicationQ3ClientOptions {
         let actor_map = handles.actor_map.clone();
-        let select: Rc<RefCell<Q3SourceSelect>> = Rc::new(RefCell::new(Box::new(|_, _| Q3VisibleEntities {
-            area_mask: Vec::new(),
-            entities: Vec::new(),
-        })));
+        let bounds_map = handles.link_bounds.clone();
         ApplicationQ3ClientOptions {
             common: make_common(ids, handles, behavior),
             kind: Q3ClientKindOptions::Local(Box::new(Q3LocalOptions {
@@ -3796,10 +3880,11 @@ mod tests {
                     timing: CommandTiming::Q3,
                 })),
                 initial,
-                link_bounds: Rc::new(|_| None),
+                link_bounds: Rc::new(move |number| bounds_map.borrow().get(&number).cloned()),
                 source_actor: Rc::new(move |number| actor_map.borrow().get(&number).cloned()),
                 prediction_command: None,
-                select,
+                queries: Rc::new(FakeQueries),
+                leaf_count: 64,
                 same_session: Rc::new(|_| true),
                 server_settings: None,
             })),
@@ -3994,19 +4079,33 @@ mod tests {
     }
 
     #[test]
-    fn refresh_system_info_skips_time_names_and_reapplies_timescale_once() {
+    fn refresh_system_info_skips_canonical_time_names() {
         let (_owner, ids) = ids();
         let mut handles = make_handles(&ids);
         handles.time_cvars = Some(Rc::new(RefCell::new(CvarRegistry::new(Dialect::Q3))));
-        *handles.frame_time.frame.borrow_mut() = vec!["skipme".to_string()];
         let surface = remote_surface(&ids);
-        surface.borrow_mut().system_info = Some("\\skipme\\1\\timescale\\5".to_string());
+        surface.borrow_mut().system_info = Some("\\timescale\\5\\fixedtime\\3\\mapname\\q3dm1".to_string());
+        let client = ApplicationQ3Client::create(
+            make_remote(&ids, &handles, &Behavior::default(), surface, test_player()),
+            None,
+        )
+        .expect("create");
+        assert!(client.cvars().borrow().get("timescale").is_none());
+        assert!(client.cvars().borrow().get("fixedtime").is_none());
+        assert_eq!(client.cvars().borrow().get("mapname").expect("mapname").value, "q3dm1");
+    }
+
+    #[test]
+    fn refresh_system_info_reapplies_timescale_once_without_time_cvars() {
+        let (_owner, ids) = ids();
+        let handles = make_handles(&ids);
+        let surface = remote_surface(&ids);
+        surface.borrow_mut().system_info = Some("\\timescale\\5".to_string());
         let mut client = ApplicationQ3Client::create(
             make_remote(&ids, &handles, &Behavior::default(), surface.clone(), test_player()),
             None,
         )
         .expect("create");
-        assert!(client.cvars().borrow().get("skipme").is_none());
         assert_eq!(client.cvars().borrow().get("timescale").expect("timescale").value, "5");
         client.cvars().borrow_mut().set("timescale", "9", true).expect("set");
         client.refresh_system_info().expect("refresh");
@@ -4017,18 +4116,26 @@ mod tests {
     }
 
     #[test]
-    fn time_mirror_binds_filtered_names_and_refreshes() {
+    fn time_mirror_binds_canonical_names_and_refreshes() {
         let (_owner, ids) = ids();
         let mut handles = make_handles(&ids);
-        let time = CvarRegistry::new(Dialect::Q3);
-        let time = Rc::new(RefCell::new(time));
-        time.borrow_mut().set("m_keep", "1", true).expect("set");
-        handles.time_cvars = Some(time);
-        *handles.frame_time.mirror.borrow_mut() = vec!["m_keep".to_string(), "m_missing".to_string()];
-        let client = local_client(&ids, &handles, &Behavior::default());
-        assert_eq!(*handles.mirror_names.borrow(), vec!["m_keep".to_string()]);
-        assert!(*handles.mirror_refreshes.borrow() > 0);
-        drop(client);
+        let time = Rc::new(RefCell::new(CvarRegistry::new(Dialect::Q3)));
+        time.borrow_mut().set("timescale", "2", true).expect("set");
+        time.borrow_mut().set("cm_noCurves", "1", true).expect("set");
+        handles.time_cvars = Some(time.clone());
+        let mut client = local_client(&ids, &handles, &Behavior::default());
+        assert_eq!(client.cvars().borrow().get("timescale").expect("timescale").value, "2");
+        assert_eq!(
+            client.cvars().borrow().get("cm_noCurves").expect("cm_noCurves").value,
+            "1"
+        );
+        assert!(client.cvars().borrow().get("fixedtime").is_none());
+        time.borrow_mut().set("timescale", "4", true).expect("set");
+        client.refresh_system_info().expect("refresh");
+        assert_eq!(client.cvars().borrow().get("timescale").expect("timescale").value, "4");
+        client.cvars().borrow_mut().set("timescale", "6", true).expect("set");
+        client.refresh_system_info().expect("refresh");
+        assert_eq!(time.borrow().get("timescale").expect("owner timescale").value, "6");
     }
 
     #[test]
@@ -4148,8 +4255,15 @@ mod tests {
             .expect("prepare");
         let submit = handles.captured.borrow().submit_body.clone().expect("submit");
         assert!(!submit(5, QvmBodyPart::Body, test_body_entity(), false));
-        let bodies = vec![Q3ComponentBody {
+        let bodies = vec![ComponentBody {
+            owner: PresentationOwner {
+                provider: ProviderId::new("test", "bodies"),
+                generation: 1,
+            },
             actor: ids.actor.clone(),
+            content: ContentId("test:content".to_string()),
+            time: 0.0,
+            parts: Vec::new(),
         }];
         client
             .prepare(2, test_viewport(), &[], true, &bodies, true, false)
@@ -4564,7 +4678,12 @@ mod tests {
         let shifted = camera;
         let frame = client
             .frame(
-                Some(&|_| Q3EffectFrame::default()),
+                Some(&|_| ApplicationEffectFrame {
+                    q3_admissions: Vec::new(),
+                    operations: Vec::new(),
+                    lights: Vec::new(),
+                    q3_lights: Vec::new(),
+                }),
                 Some(&|camera| {
                     let mut moved = *camera;
                     moved.origin.x += 5.0;
@@ -4772,5 +4891,136 @@ mod tests {
         assert_eq!(cvars.get("seeded_setting").expect("seeded").value, "yes");
         assert_eq!(cvars.get("cg_draw2D").expect("shared").value, "0");
         assert!(cvars.get("unshared_var").is_none());
+    }
+
+    #[test]
+    fn transport_entity_round_trips_presentation_fields() {
+        let source = EntityState {
+            number: 9,
+            e_type: 2,
+            e_flags: 4,
+            pos: Trajectory {
+                trajectory_type: TrajectoryType::TrLinear,
+                time: 100,
+                duration: 50,
+                base: vec3(1.0, 2.0, 3.0),
+                delta: vec3(4.0, 5.0, 6.0),
+            },
+            apos: Trajectory {
+                trajectory_type: TrajectoryType::TrStationary,
+                time: 0,
+                duration: 0,
+                base: vec3(0.0, 0.0, 0.0),
+                delta: vec3(0.0, 0.0, 0.0),
+            },
+            time: 7,
+            time2: 8,
+            origin: vec3(10.0, 20.0, 30.0),
+            origin2: vec3(11.0, 21.0, 31.0),
+            angles: vec3(0.0, 90.0, 0.0),
+            angles2: vec3(0.0, 0.0, 0.0),
+            other_entity_num: 3,
+            other_entity_num2: 4,
+            ground_entity_num: 5,
+            constant_light: 6,
+            loop_sound: 7,
+            modelindex: 8,
+            modelindex2: 9,
+            client_num: 1,
+            frame: 12,
+            solid: 13,
+            event: 14,
+            event_parm: 15,
+            powerups: 16,
+            weapon: 17,
+            legs_anim: 18,
+            torso_anim: 19,
+            generic1: 20,
+        };
+        let network = transport_entity(&source);
+        assert_eq!(network.number, 9);
+        assert_eq!(network.pos.trajectory_type, TrajectoryType::TrLinear as i32);
+        assert_eq!(network.origin, [10.0, 20.0, 30.0]);
+        assert_eq!(network.angles, [0.0, 90.0, 0.0]);
+        let back = retail_entity(&network);
+        assert_eq!(back.number, source.number);
+        assert_eq!(back.e_type, source.e_type);
+        assert_eq!(back.pos.trajectory_type, source.pos.trajectory_type);
+        assert_eq!(back.origin, source.origin);
+        assert_eq!(back.angles, source.angles);
+        assert_eq!(back.weapon, source.weapon);
+        assert_eq!(back.generic1, source.generic1);
+    }
+
+    #[test]
+    fn local_source_selects_through_ported_visibility() {
+        let (_owner, ids) = ids();
+        let handles = make_handles(&ids);
+        handles.actor_map.borrow_mut().insert(5, ids.actor.clone());
+        handles.link_bounds.borrow_mut().insert(
+            5,
+            Bounds {
+                min: vec3(-8.0, -8.0, -8.0),
+                max: vec3(8.0, 8.0, 8.0),
+            },
+        );
+        let mut client = local_client(&ids, &handles, &Behavior::default());
+        let mut state = local_initial(&ids.actor, 0, vec3(10.0, 20.0, 30.0), 26, vec3(0.0, 90.0, 0.0));
+        state.time = 100;
+        state.entities.push(Q3SourcePresentationEntity {
+            actor: ids.actor.clone(),
+            state: EntityState {
+                number: 5,
+                ..Default::default()
+            },
+            origin: vec3(0.0, 0.0, 0.0),
+            linked: true,
+            server_flags: 0,
+            single_client: 0,
+        });
+        client.receive(&state, &[], &[]).expect("receive");
+        let session = handles.captured.borrow().session.clone().expect("session");
+        let snapshot = session.snapshots.borrow_mut().read(2).expect("read").expect("snapshot");
+        assert_eq!(snapshot.entities.len(), 1);
+        assert_eq!(snapshot.entities[0].number, 5);
+    }
+
+    #[test]
+    fn frame_merges_canonical_effect_frame() {
+        let (_owner, ids) = ids();
+        let handles = make_handles(&ids);
+        let mut client = local_client(&ids, &handles, &Behavior::default());
+        let output = handles.services_output.borrow().clone().expect("output");
+        (output.scene)(test_scene(client.camera(), 0));
+        client
+            .frame(
+                Some(&|_| ApplicationEffectFrame {
+                    q3_admissions: Vec::new(),
+                    operations: Vec::new(),
+                    lights: Vec::new(),
+                    q3_lights: vec![DynamicLight {
+                        origin: vec3(1.0, 2.0, 3.0),
+                        radius: 100.0,
+                        color: vec3(1.0, 0.5, 0.0),
+                        additive: true,
+                    }],
+                }),
+                None,
+                &Q3FrameEnvironment::default(),
+                None,
+            )
+            .expect("frame");
+        let pipeline = handles.pipeline.borrow();
+        let views = pipeline.world_views.borrow();
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0].q3_lights,
+            vec![Q3SceneLight {
+                origin: vec3(1.0, 2.0, 3.0),
+                radius: 100.0,
+                color: vec3(1.0, 0.5, 0.0),
+                additive: true,
+            }]
+        );
     }
 }
