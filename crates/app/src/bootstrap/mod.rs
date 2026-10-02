@@ -7,6 +7,7 @@
 
 pub mod addon_library;
 pub mod application_tools;
+pub mod assets;
 pub mod audio;
 pub mod audio_settings;
 pub mod authored_start;
