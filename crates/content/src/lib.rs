@@ -4,9 +4,9 @@
 //! Donor provenance: `src/content` plus `src/formats` (including
 //! `src/formats/images`, ported to [`images`]).
 //!
-//! Quake64 (Q1 magic `0x51363420`) classifies as [`BspKind::Q1`] but stays
-//! rejected by the Q1 reader: packed lighting and BSPX extensions are out
-//! of scope, as before.
+//! Quake64 (Q1 magic `0x51363420`) classifies as [`BspKind::Q1`] but its
+//! map geometry stays rejected by the Q1 reader; only its packed lighting
+//! samples are understood. BSPX extensions read through [`bspx`].
 
 use qa_core::binary::{BinaryError, BinaryReader};
 
@@ -14,6 +14,7 @@ pub mod archive;
 pub mod bsp;
 pub mod bsp2;
 pub mod bsp3;
+pub mod bspx;
 pub mod catalog;
 pub mod common;
 pub mod composition;
@@ -23,6 +24,7 @@ pub mod held_weapon;
 pub mod images;
 pub mod item_icon;
 pub mod lod;
+pub mod materials;
 pub mod md2;
 pub mod md3;
 pub mod md4;
@@ -36,6 +38,7 @@ pub mod mounts;
 pub mod normals;
 pub mod paths;
 pub mod q1;
+pub mod q12;
 pub mod q2;
 pub mod q3;
 pub mod q3anim;

@@ -1,6 +1,6 @@
 //! Quake II extended protocol codec variants.
 //!
-//! Donor provenance: `src/network/q2/codecs/{r1q2,q2pro,q2pro-fields,
+//! Donor provenance: `src/network/q2/codecs/{codec,r1q2,q2pro,q2pro-fields,
 //! clc_batch_move,q2repro,kexdemo,kex-write,kex-usercmd,zpacket,mvd}.ts`,
 //! `src/network/q2/fog.ts`, and `src/network/q2/mvd-profile.ts`. Shared
 //! state shapes ([`EntityState`], [`PlayerState`]) live in [`crate::q2`].

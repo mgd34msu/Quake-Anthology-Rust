@@ -220,6 +220,16 @@ pub struct Q2SurfaceInfo {
     pub flags: i32,
 }
 
+/// Runner-up Quake II impact: the second enter plane beside the primary
+/// surface (`secondary` on donor Quake II traces).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q2SecondaryImpact {
+    /// Runner-up plane.
+    pub plane: BspPlane,
+    /// Primary surface retained beside it.
+    pub surface: Option<Q2SurfaceInfo>,
+}
+
 /// Per-family trace detail. Source ABI records retain the stored plane
 /// even when contact is none.
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +244,9 @@ pub enum TraceDetail {
         source_plane: Plane,
         /// Optional surface flags.
         surface_flags: Option<i32>,
+        /// Native contents. Native hull traces always carry it; adapted
+        /// results leave it empty and readers fall back to the hit record.
+        contents: Option<i32>,
     },
     /// Quake II result.
     Q2 {
@@ -243,6 +256,8 @@ pub enum TraceDetail {
         surface: Option<Q2SurfaceInfo>,
         /// Stored source plane.
         source_plane: BspPlane,
+        /// Runner-up impact; adapted results always clear it.
+        secondary: Option<Q2SecondaryImpact>,
     },
     /// Quake III result.
     Q3 {

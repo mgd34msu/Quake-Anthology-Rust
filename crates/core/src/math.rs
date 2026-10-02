@@ -241,6 +241,42 @@ pub fn color_bytes3(red: f32, green: f32, blue: f32, storage: &mut [u8; 4]) -> R
     Ok(u32::from_le_bytes(*storage))
 }
 
+/// Donor `Math.min` over binary64 inputs, including NaN and signed-zero edges.
+#[must_use]
+pub fn js_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        -0.0
+    } else {
+        a.min(b)
+    }
+}
+
+/// Donor `Math.max` over binary64 inputs, including NaN and signed-zero edges.
+#[must_use]
+pub fn js_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        0.0
+    } else {
+        a.max(b)
+    }
+}
+
+/// Donor `Math.min` over binary32 inputs.
+#[must_use]
+pub fn js_min_f32(a: f32, b: f32) -> f32 {
+    js_min(f64::from(a), f64::from(b)) as f32
+}
+
+/// Donor `Math.max` over binary32 inputs.
+#[must_use]
+pub fn js_max_f32(a: f32, b: f32) -> f32 {
+    js_max(f64::from(a), f64::from(b)) as f32
+}
+
 /// Linear interpolation between two points.
 #[must_use]
 pub fn lerp3(from: Vec3, to: Vec3, fraction: f32) -> Vec3 {
@@ -914,5 +950,20 @@ mod tests {
             project_point_on_plane(vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, 1.0)),
             vec3(1.0, 1.0, 0.0)
         );
+    }
+
+    #[test]
+    fn js_min_max_match_donor() {
+        assert_eq!(js_min(1.0, 2.0), 1.0);
+        assert_eq!(js_max(1.0, 2.0), 2.0);
+        assert!(js_min(f64::NAN, 1.0).is_nan());
+        assert!(js_min(1.0, f64::NAN).is_nan());
+        assert!(js_max(f64::NAN, 1.0).is_nan());
+        assert_eq!(js_min(0.0, -0.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(js_min(-0.0, 0.0).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(js_max(0.0, -0.0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(js_max(-0.0, 0.0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(js_min_f32(0.0, -0.0).to_bits(), (-0.0f32).to_bits());
+        assert_eq!(js_max_f32(-0.0, 0.0).to_bits(), 0.0f32.to_bits());
     }
 }

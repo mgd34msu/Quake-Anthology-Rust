@@ -1,12 +1,12 @@
 //! Quake III channels, reliable commands, snapshots, downloads, rcon,
 //! admission, and client/server connections.
 //!
-//! Donor provenance: `src/network/q3/{netchan,reliable,connectionless,
+//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/network/q3/{netchan,reliable,connectionless,
 //! transport,demo,game-state,configstrings,pure,server-message,
 //! client-message,parse-entities,snapshot-history,snapshot-store,
 //! client-server-command,download,rcon,admission,client,server,clock,
-//! state-delta,state/entity,state/player}.ts` (ports of id Software's
-//! `qcommon`, `client`, and `server` sources).
+//! state-delta,state/entity,state/player,state/product}.ts` (ports of id
+//! Software's `qcommon`, `client`, and `server` sources).
 //!
 //! The donor's promise-based owners become synchronous bindings over
 //! [`DatagramTransport`]; every state transition keeps the donor's order and
@@ -200,7 +200,7 @@ fn add_counter(value: Option<i32>, increment: i32) -> Option<i32> {
     value?.checked_add(increment)
 }
 
-/// Product tag (`Product`).
+/// Product tag (`Product`, donor `/home/buzzkill/Projects/quake-typescript/src/network/q3/state/product.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Q3Product {
     /// Base Quake III.
@@ -3606,7 +3606,8 @@ fn finish_snapshot<'d, 'x>(
     })
 }
 
-/// Incremental server-message step (`ServerMessageStep`).
+/// Incremental server-message step (`ServerMessageStep`, donor
+/// `/home/buzzkill/Projects/quake-typescript/src/network/q3/server-message.ts`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerMessageStep {
     /// Reliable acknowledgement.
@@ -4447,7 +4448,7 @@ pub trait Q3DownloadServerBindings {
     fn print(&mut self, text: &str);
 }
 
-/// Download rate settings (`Q3DownloadRate`).
+/// Download rate settings (`Q3DownloadRate`, donor `/home/buzzkill/Projects/quake-typescript/src/network/q3/download.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Q3DownloadRate {
     /// Rate.
@@ -7379,7 +7380,7 @@ pub trait Q3ServerBindings {
     fn print(&mut self, text: &str);
 }
 
-/// Server rate settings (`Q3ServerRate`).
+/// Server rate settings (`Q3ServerRate`, donor `/home/buzzkill/Projects/quake-typescript/src/network/q3/server.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Q3ServerRate {
     /// Rate.
@@ -7423,7 +7424,8 @@ pub enum Q3ServerPhase {
     Zombie,
 }
 
-/// Server connection: one admitted client (`Q3ServerConnection`).
+/// Server connection: one admitted client (`Q3ServerConnection`, donor
+/// `/home/buzzkill/Projects/quake-typescript/src/network/q3/server.ts`).
 pub struct Q3ServerConnection<'a> {
     /// Identity.
     pub identity: Q3ConnectionIdentity,

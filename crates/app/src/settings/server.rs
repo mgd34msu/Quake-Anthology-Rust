@@ -6,14 +6,10 @@
 //! map-name rules, and Q2/LMCTF cvar tables. Configuration files, console
 //! bridges, and UI writes share [`parse_server_setting`], as in the donor.
 //!
-//! Two donor pieces stay out, documented at their call sites:
-//!
-//! - Live `defineProperty` bindings between game-rules objects and cvars
-//!   (`bindQ2ServerCvars`, `bindQ2PlayerCvars`, LMCTF rule mirrors) need
-//!   the content-owned rules objects; registration uses the same
-//!   name/default/flag tables.
-//! - `restoreQ2ServerCvars` needs registry save-state capture the
-//!   [`qa_core::cvar`] port defers.
+//! Live rule bindings (`bindQ2ServerCvars`, `bindQ2PlayerCvars`, LMCTF rule
+//! mirrors) and `restoreQ2ServerCvars` live in
+//! [`super::q2_owner`]; registration here uses the same
+//! name/default/flag tables.
 
 use qa_core::cvar::q2_flags;
 use qa_core::cvar::CvarRegistry;

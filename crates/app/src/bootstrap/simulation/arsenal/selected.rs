@@ -1,4 +1,5 @@
 //! Selected-arsenal boundary: one family implementation per provider.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/selected.ts`.
 
 use qa_content::contract::{ItemId, PickupSelection, ProviderReference};
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};

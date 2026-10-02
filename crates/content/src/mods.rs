@@ -6,6 +6,9 @@
 //! `qvm-presentation.ts`, `selection.ts`, `source-call.ts`. The QuakeC
 //! declaration reader (`callbacks.ts`) stays sibling-owned: the declaration
 //! dispatch receives its reader as a caller-provided function.
+//! Absolute `src/contracts` donors for the absorbed native-mod types:
+//! `/home/buzzkill/Projects/quake-typescript/src/contracts/native-mod-callbacks.ts`,
+//! `/home/buzzkill/Projects/quake-typescript/src/contracts/native-mod-items.ts`, `/home/buzzkill/Projects/quake-typescript/src/contracts/native-mod-region.ts`.
 
 use std::collections::{HashMap, HashSet};
 

@@ -4,13 +4,17 @@
 //! `model-attachment.ts`, `pickups.ts`, `original-pickups.ts`,
 //! `mod-callbacks.ts`, `native-mod-callbacks.ts`, `native-mod-items.ts`,
 //! `native-mod-region.ts`, `source-items.ts`, `presentation.ts`,
-//! `mod-client-outputs.ts`, `source-match.ts`. Identity handles live in
+//! `mod-client-outputs.ts`, `source-match.ts`,
+//! `world/session/mod-client-presentation.ts`, `world/session/mod-objectives.ts`.
+//! Identity handles live in
 //! [`qa_core::identity`] (donor `identity.ts`). Types referenced from
 //! out-of-scope contracts are defined here structurally with their donor
 //! noted, since `qa-content` depends only on `qa-core`.
+//! Absolute donor for equipment types (`SharedGrappleControl` and the
+//! `equipment.ts` selections): `/home/buzzkill/Projects/quake-typescript/src/contracts/equipment.ts`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -19,7 +23,7 @@ use qa_core::cmd::{command_text_tail, tokenize_command, Dialect, TextMode};
 use qa_core::cmd_buffer::CommandOrigin;
 use qa_core::cvar::CvarRegistry;
 use qa_core::identity::{ActorId, OwnedActor, ProviderId, SessionId};
-use qa_core::math::{Axis, Bounds, Vec3};
+use qa_core::math::{Axis, Bounds, Vec3, Vec4};
 use qa_core::numeric::NumericProfile;
 use qa_core::time::{ClockProfile, SourceTime};
 use qa_platform::files::writable::UserFileStore;
@@ -7073,7 +7077,7 @@ pub enum QvmGrappleCable {
     },
 }
 
-// Component presentation ownership (donor `presentation.ts`).
+// Component presentation ownership (donor `/home/buzzkill/Projects/quake-typescript/src/contracts/presentation.ts`).
 
 /// A component activation, retained with its output across a world checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -8021,6 +8025,891 @@ impl SourceMatchServices for ModMatchState {
 
     fn gates(&self) -> Vec<MissionGate> {
         ModMatchState::gates(self)
+    }
+}
+
+// Mod client presentation (donor `world/session/mod-client-presentation.ts`).
+
+/// Player view snapshot (donor `PlayerView` from
+/// `app/bootstrap/simulation/types.ts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModPlayerView {
+    /// Client view-offset delta.
+    pub client_view_offset_delta: Option<Vec3>,
+    /// Screen blend.
+    pub blend: Option<Vec4>,
+    /// Damage blend.
+    pub damage_blend: Option<Vec4>,
+    /// View origin.
+    pub origin: Vec3,
+    /// View angles.
+    pub angles: Vec3,
+    /// View height.
+    pub view_height: f32,
+    /// Kick angles.
+    pub kick_angles: Option<Vec3>,
+    /// Field of view.
+    pub field_of_view: Option<f32>,
+    /// Foreign character death flag.
+    pub foreign_character_death: bool,
+    /// Pitch drift state.
+    pub pitch_drift: Option<ModPitchDrift>,
+}
+
+/// Pitch drift state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModPitchDrift {
+    /// Grounded.
+    pub grounded: bool,
+    /// Ideal pitch.
+    pub ideal_pitch: f32,
+    /// Disabled.
+    pub disabled: bool,
+}
+
+/// HUD admission mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModPresentationHud {
+    /// No HUD.
+    None,
+    /// Overlay HUD.
+    Overlay,
+    /// Replacement HUD.
+    Replace,
+}
+
+/// Mod client presentation admission (donor
+/// `ModClientPresentationAdmission`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModClientPresentationAdmission {
+    /// HUD mode.
+    pub hud: ModPresentationHud,
+    /// Whether the mod drives the view.
+    pub view: bool,
+}
+
+/// Native camera edition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeModCameraEdition {
+    /// Classic edition.
+    Classic,
+    /// Rerelease edition.
+    Rerelease,
+}
+
+/// Native camera extras.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeModCamera {
+    /// Edition.
+    pub edition: NativeModCameraEdition,
+    /// Movement origin.
+    pub movement_origin: Vec3,
+    /// Render flags.
+    pub render_flags: i32,
+    /// Position prediction.
+    pub position_prediction: bool,
+    /// Angular prediction.
+    pub angular_prediction: bool,
+    /// Weapon visible.
+    pub weapon_visible: bool,
+}
+
+/// Native mod camera view (donor `NativeModCameraView`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeModCameraView {
+    /// Base player view.
+    pub base: ModPlayerView,
+    /// Native extras.
+    pub native: NativeModCamera,
+}
+
+/// Detached native HUD frame snapshot. The client converts its
+/// `NativeQ2HudFrame` into this dependency-free shape; the protocol
+/// travels as its donor identity string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeModHudFrame {
+    /// Protocol identity.
+    pub protocol: String,
+    /// Playerstate stats.
+    pub stats: Vec<i32>,
+    /// Received configstrings by index.
+    pub configstrings: BTreeMap<i32, String>,
+    /// Server-sent layout string.
+    pub layout: String,
+    /// Inventory counts by item index.
+    pub inventory: Vec<i32>,
+    /// Zero-based player slot.
+    pub player_number: i32,
+    /// Server frame.
+    pub server_frame: i32,
+    /// Client time in milliseconds.
+    pub time_ms: i64,
+    /// Last frame duration in milliseconds, if measured.
+    pub frame_time_ms: Option<i64>,
+}
+
+/// QVM HUD mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QvmHudMode {
+    /// Overlay.
+    Overlay,
+    /// Replace status.
+    ReplaceStatus,
+}
+
+/// QuakeC HUD numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuakeCHud {
+    /// Health.
+    pub health: f32,
+    /// Armor.
+    pub armor: f32,
+}
+
+/// Native HUD mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeModHudMode {
+    /// Layout overlay.
+    LayoutOverlay,
+    /// Replace status.
+    ReplaceStatus,
+}
+
+/// Native HUD frame with its mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeModHud {
+    /// HUD mode.
+    pub mode: NativeModHudMode,
+    /// Detached frame.
+    pub frame: NativeModHudFrame,
+}
+
+/// One mod client presentation frame (donor
+/// `ModClientPresentationFrame`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModClientPresentationFrame {
+    /// QVM frame (view is always null).
+    Qvm {
+        /// HUD mode.
+        hud: QvmHudMode,
+    },
+    /// QuakeC frame.
+    QuakeC {
+        /// HUD numbers.
+        hud: Option<QuakeCHud>,
+        /// Camera view.
+        view: Option<ModPlayerView>,
+    },
+    /// Native frame.
+    Native {
+        /// HUD frame.
+        hud: Option<NativeModHud>,
+        /// Camera view.
+        view: Option<NativeModCameraView>,
+    },
+}
+
+/// Module-owned presentation source. Module storage remains authoritative;
+/// the returned frame contains detached source values.
+#[allow(clippy::wrong_self_convention)]
+pub trait ModClientPresentationSource {
+    /// Source generation.
+    fn generation(&self) -> u64;
+    /// Frame for an actor, if the source presents one.
+    fn frame(&self, actor: &ActorId) -> Option<ModClientPresentationFrame>;
+    /// Fail when the source is no longer current.
+    fn assert_current(&self) -> Result<(), ContractError>;
+}
+
+/// Active mod client presentation (donor `ActiveModClientPresentation`).
+#[derive(Clone)]
+pub struct ActiveModClientPresentation {
+    /// Presentation owner.
+    pub owner: PresentationOwner,
+    /// Mod identity.
+    pub identity: ModIdentity,
+    /// Presentation source.
+    pub source: Rc<dyn ModClientPresentationSource>,
+}
+
+// Mod source objectives (donor `world/session/mod-objectives.ts`).
+
+/// Objective word storage behind source declarations.
+#[allow(clippy::wrong_self_convention)]
+pub trait ModObjectiveStorage<Scalar, Reference, Call> {
+    /// Whether the source is still live.
+    fn current(&self) -> bool;
+    /// Borrowed-word projection location.
+    fn location(&self, declaration: &SourceObjectiveDeclaration<Scalar, Reference, Call>) -> String;
+    /// Read a scalar word.
+    fn read_scalar(&self, storage: &Scalar) -> f64;
+    /// Write a scalar word.
+    fn write_scalar(&self, storage: &Scalar, value: f64);
+    /// Read an actor word.
+    fn read_actor(&self, storage: &Reference) -> Option<ActorId>;
+    /// Write an actor word.
+    fn write_actor(&self, storage: &Reference, value: Option<ActorId>);
+    /// Invoke a change call.
+    fn invoke(&self, call: &Call, inputs: &HashMap<ModCallbackInput, ModRuntimeValue>);
+    /// Source seconds.
+    fn seconds(&self) -> f64;
+}
+
+fn objective_states_equal(left: &SourceObjectiveState, right: &SourceObjectiveState) -> bool {
+    left.stage == right.stage && left.carrier == right.carrier && left.target == right.target
+}
+
+struct ObjectiveBindingFn {
+    owner: ProviderId,
+    id: ObjectiveId,
+    campaign_gate: bool,
+    bot_goal: bool,
+    read: Box<dyn Fn() -> SourceObjectiveState>,
+    change: Box<dyn Fn(SourceObjectiveChange)>,
+}
+
+impl SourceObjectiveBinding for ObjectiveBindingFn {
+    fn owner(&self) -> &ProviderId {
+        &self.owner
+    }
+    fn id(&self) -> &ObjectiveId {
+        &self.id
+    }
+    fn campaign_gate(&self) -> bool {
+        self.campaign_gate
+    }
+    fn bot_goal(&self) -> bool {
+        self.bot_goal
+    }
+    fn read(&self) -> SourceObjectiveState {
+        (self.read)()
+    }
+    fn change(&self, request: SourceObjectiveChange) {
+        (self.change)(request);
+    }
+}
+
+/// Borrowed words project the original owner; only that owner's callback
+/// changes an objective (donor `ModSourceObjectives`).
+///
+/// Binding `read`/`change` closures panic on retired sources because the
+/// donor throws through the infallible binding interface.
+pub struct ModSourceObjectives<Scalar, Reference, Call> {
+    owner: ProviderId,
+    declarations: Vec<SourceObjectiveDeclaration<Scalar, Reference, Call>>,
+    match_services: Option<Rc<dyn SourceMatchServices>>,
+    storage: Rc<dyn ModObjectiveStorage<Scalar, Reference, Call>>,
+    removals: RefCell<Vec<Box<dyn Fn()>>>,
+    projected: RefCell<HashMap<ObjectiveId, (SourceObjectiveState, String)>>,
+    busy: Cell<bool>,
+    active: Cell<bool>,
+    closed: Cell<bool>,
+}
+
+impl<Scalar: Clone + 'static, Reference: Clone + 'static, Call: Clone + 'static>
+    ModSourceObjectives<Scalar, Reference, Call>
+{
+    /// Build objectives over borrowed storage.
+    pub fn new(
+        owner: ProviderId,
+        declarations: Vec<SourceObjectiveDeclaration<Scalar, Reference, Call>>,
+        match_services: Option<Rc<dyn SourceMatchServices>>,
+        storage: Rc<dyn ModObjectiveStorage<Scalar, Reference, Call>>,
+    ) -> Result<Self, ContractError> {
+        if !declarations.is_empty() && match_services.is_none() {
+            return Err(invalid(
+                "Declared objectives require destination match services".to_string(),
+            ));
+        }
+        let ids: HashSet<&ObjectiveId> = declarations.iter().map(|value| &value.id).collect();
+        if ids.len() != declarations.len() {
+            return Err(invalid("Duplicate source objective channel".to_string()));
+        }
+        for declaration in &declarations {
+            let values: HashSet<u64> = declaration.values.iter().map(|value| value.value.to_bits()).collect();
+            let stages: HashSet<&String> = declaration.values.iter().map(|value| &value.stage).collect();
+            let well_formed = !declaration.values.is_empty()
+                && values.len() == declaration.values.len()
+                && stages.len() == declaration.values.len()
+                && declaration
+                    .values
+                    .iter()
+                    .all(|value| value.value.is_finite() && !value.stage.is_empty());
+            if !well_formed {
+                return Err(invalid(
+                    "Source objective requires distinct original values and shared stages".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            owner,
+            declarations,
+            match_services,
+            storage,
+            removals: RefCell::new(Vec::new()),
+            projected: RefCell::new(HashMap::new()),
+            busy: Cell::new(false),
+            active: Cell::new(false),
+            closed: Cell::new(false),
+        })
+    }
+
+    fn read(
+        &self,
+        declaration: &SourceObjectiveDeclaration<Scalar, Reference, Call>,
+    ) -> Result<SourceObjectiveState, ContractError> {
+        if self.closed.get() || !self.storage.current() {
+            return Err(invalid("Original objective source was retired".to_string()));
+        }
+        let raw = self.storage.read_scalar(&declaration.storage);
+        let value = declaration
+            .values
+            .iter()
+            .find(|value| value.value == raw)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Objective {} has undeclared original state {raw}",
+                    declaration.id
+                ))
+            })?;
+        Ok(SourceObjectiveState {
+            stage: value.stage.clone(),
+            complete: value.complete,
+            carrier: declaration
+                .carrier
+                .as_ref()
+                .and_then(|storage| self.storage.read_actor(storage)),
+            target: declaration
+                .target
+                .as_ref()
+                .and_then(|storage| self.storage.read_actor(storage)),
+        })
+    }
+
+    fn write(
+        &self,
+        declaration: &SourceObjectiveDeclaration<Scalar, Reference, Call>,
+        value: SourceObjectiveState,
+    ) -> Result<(), ContractError> {
+        let original = declaration
+            .values
+            .iter()
+            .find(|entry| entry.stage == value.stage)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Objective {} cannot represent source stage {}",
+                    declaration.id, value.stage
+                ))
+            })?;
+        if declaration.carrier.is_none() && value.carrier.is_some()
+            || declaration.target.is_none() && value.target.is_some()
+        {
+            return Err(invalid(format!(
+                "Objective {} requires its declared source actor reference storage",
+                declaration.id
+            )));
+        }
+        self.storage.write_scalar(&declaration.storage, original.value);
+        if let Some(carrier) = &declaration.carrier {
+            self.storage.write_actor(carrier, value.carrier.clone());
+        }
+        if let Some(target) = &declaration.target {
+            self.storage.write_actor(target, value.target.clone());
+        }
+        let location = self.storage.location(declaration);
+        self.projected
+            .borrow_mut()
+            .insert(declaration.id.clone(), (value, location));
+        Ok(())
+    }
+
+    /// Bind owned objectives and project borrowed words.
+    pub fn activate(&self) -> Result<(), ContractError> {
+        if self.active.get() {
+            return Ok(());
+        }
+        if self.closed.get() || !self.storage.current() {
+            return Err(invalid("Original objective source is unavailable".to_string()));
+        }
+        let bound = self.activate_inner();
+        if bound.is_err() {
+            let mut removals = self.removals.borrow_mut();
+            for remove in removals.drain(..).rev() {
+                remove();
+            }
+            self.active.set(false);
+        }
+        bound
+    }
+
+    fn activate_inner(&self) -> Result<(), ContractError> {
+        for declaration in &self.declarations {
+            let SourceObjectiveRole::Owned {
+                campaign_gate,
+                bot_goal,
+                change,
+            } = &declaration.role
+            else {
+                continue;
+            };
+            let services = self
+                .match_services
+                .as_ref()
+                .ok_or_else(|| invalid("Original objective match service is unavailable".to_string()))?;
+            self.read(declaration)?;
+            let storage = Rc::clone(&self.storage);
+            let read_declaration = declaration.clone();
+            let change_declaration = declaration.clone();
+            let change_call = change.clone();
+            let read_storage = Rc::clone(&self.storage);
+            let binding = Rc::new(ObjectiveBindingFn {
+                owner: self.owner.clone(),
+                id: declaration.id.clone(),
+                campaign_gate: *campaign_gate,
+                bot_goal: *bot_goal,
+                read: Box::new(move || {
+                    if !read_storage.current() {
+                        panic!("Original objective source was retired");
+                    }
+                    let raw = read_storage.read_scalar(&read_declaration.storage);
+                    let value = read_declaration
+                        .values
+                        .iter()
+                        .find(|value| value.value == raw)
+                        .unwrap_or_else(|| {
+                            panic!("Objective {} has undeclared original state {raw}", read_declaration.id)
+                        });
+                    SourceObjectiveState {
+                        stage: value.stage.clone(),
+                        complete: value.complete,
+                        carrier: read_declaration
+                            .carrier
+                            .as_ref()
+                            .and_then(|word| read_storage.read_actor(word)),
+                        target: read_declaration
+                            .target
+                            .as_ref()
+                            .and_then(|word| read_storage.read_actor(word)),
+                    }
+                }),
+                change: Box::new(move |request: SourceObjectiveChange| {
+                    if !storage.current() {
+                        panic!("Original objective source was retired");
+                    }
+                    let original = change_declaration
+                        .values
+                        .iter()
+                        .find(|value| value.stage == request.stage);
+                    let (Some(original), Some(call)) = (original, change_call.as_ref()) else {
+                        panic!(
+                            "Objective {} has no original change for {}",
+                            change_declaration.id, request.stage
+                        )
+                    };
+                    let mut inputs = HashMap::new();
+                    inputs.insert(ModCallbackInput::Slf, ModRuntimeValue::Actor(request.target.clone()));
+                    inputs.insert(ModCallbackInput::Other, ModRuntimeValue::Actor(request.carrier.clone()));
+                    inputs.insert(
+                        ModCallbackInput::Activator,
+                        ModRuntimeValue::Actor(request.target.clone()),
+                    );
+                    inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(original.value));
+                    inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(storage.seconds()));
+                    storage.invoke(call, &inputs);
+                }),
+            });
+            let remove = services.bind_objective(binding)?;
+            self.removals.borrow_mut().push(remove);
+        }
+        self.active.set(true);
+        self.refresh()
+    }
+
+    /// Project borrowed words from their enabled source owners.
+    pub fn refresh(&self) -> Result<(), ContractError> {
+        if self.closed.get() || self.busy.get() || !self.storage.current() {
+            return Ok(());
+        }
+        struct Guard<'a> {
+            busy: &'a Cell<bool>,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.busy.set(false);
+            }
+        }
+        let _guard = Guard { busy: &self.busy };
+        self.busy.set(true);
+        for declaration in &self.declarations {
+            if !matches!(declaration.role, SourceObjectiveRole::Borrowed { .. }) {
+                continue;
+            }
+            let value = self
+                .match_services
+                .as_ref()
+                .and_then(|services| services.objective(&declaration.id));
+            let Some(value) = value else {
+                return Err(invalid(format!(
+                    "Borrowed objective {} requires its enabled source owner",
+                    declaration.id
+                )));
+            };
+            self.write(declaration, value)?;
+        }
+        Ok(())
+    }
+
+    /// Push original writes back to borrowed owners.
+    pub fn flush(&self) -> Result<(), ContractError> {
+        if self.closed.get() || self.busy.get() || !self.storage.current() {
+            return Ok(());
+        }
+        struct Guard<'a> {
+            busy: &'a Cell<bool>,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.busy.set(false);
+            }
+        }
+        let _guard = Guard { busy: &self.busy };
+        self.busy.set(true);
+        for declaration in &self.declarations {
+            let SourceObjectiveRole::Borrowed { writable } = &declaration.role else {
+                continue;
+            };
+            let before = self.projected.borrow().get(&declaration.id).cloned();
+            let Some((before_state, before_location)) = before else {
+                continue;
+            };
+            if before_location != self.storage.location(declaration) {
+                let current = self
+                    .match_services
+                    .as_ref()
+                    .and_then(|services| services.objective(&declaration.id));
+                let Some(current) = current else {
+                    return Err(invalid(format!(
+                        "Borrowed objective {} requires its enabled source owner",
+                        declaration.id
+                    )));
+                };
+                self.write(declaration, current)?;
+                continue;
+            }
+            let value = self.read(declaration)?;
+            if objective_states_equal(&before_state, &value) {
+                continue;
+            }
+            if !writable {
+                return Err(invalid(format!(
+                    "Original source wrote read-only objective {}",
+                    declaration.id
+                )));
+            }
+            let accepted = self
+                .match_services
+                .as_ref()
+                .map(|services| {
+                    services.change_objective(
+                        &declaration.id,
+                        SourceObjectiveChange {
+                            stage: value.stage.clone(),
+                            carrier: value.carrier.clone(),
+                            target: value.target.clone(),
+                        },
+                    )
+                })
+                .transpose()?
+                .flatten();
+            if self.closed.get() || !self.storage.current() {
+                return Ok(());
+            }
+            let Some(accepted) = accepted else {
+                return Err(invalid(format!(
+                    "Objective {} owner retired during its original change",
+                    declaration.id
+                )));
+            };
+            self.write(declaration, accepted)?;
+        }
+        Ok(())
+    }
+
+    /// Clear projections; refresh when active.
+    pub fn restored(&self) -> Result<(), ContractError> {
+        self.projected.borrow_mut().clear();
+        if self.active.get() {
+            self.refresh()?;
+        }
+        Ok(())
+    }
+
+    /// Unbind and clear. Idempotent.
+    pub fn close(&self) {
+        if self.closed.get() {
+            return;
+        }
+        self.closed.set(true);
+        let mut removals = self.removals.borrow_mut();
+        for remove in removals.drain(..).rev() {
+            remove();
+        }
+        self.projected.borrow_mut().clear();
+    }
+}
+
+#[cfg(test)]
+mod mod_objective_tests {
+    use super::*;
+
+    struct StubStorage {
+        current: Cell<bool>,
+        scalars: RefCell<HashMap<u32, f64>>,
+        actors: RefCell<HashMap<u32, Option<ActorId>>>,
+        invoked: RefCell<Vec<HashMap<ModCallbackInput, ModRuntimeValue>>>,
+    }
+
+    impl ModObjectiveStorage<u32, u32, u32> for StubStorage {
+        fn current(&self) -> bool {
+            self.current.get()
+        }
+        fn location(&self, declaration: &SourceObjectiveDeclaration<u32, u32, u32>) -> String {
+            format!("word-{}", declaration.storage)
+        }
+        fn read_scalar(&self, storage: &u32) -> f64 {
+            self.scalars.borrow().get(storage).copied().unwrap_or(0.0)
+        }
+        fn write_scalar(&self, storage: &u32, value: f64) {
+            self.scalars.borrow_mut().insert(*storage, value);
+        }
+        fn read_actor(&self, storage: &u32) -> Option<ActorId> {
+            self.actors.borrow().get(storage).cloned().flatten()
+        }
+        fn write_actor(&self, storage: &u32, value: Option<ActorId>) {
+            self.actors.borrow_mut().insert(*storage, value);
+        }
+        fn invoke(&self, _call: &u32, inputs: &HashMap<ModCallbackInput, ModRuntimeValue>) {
+            self.invoked.borrow_mut().push(inputs.clone());
+        }
+        fn seconds(&self) -> f64 {
+            4.0
+        }
+    }
+
+    struct StubMatch {
+        states: RefCell<HashMap<ObjectiveId, SourceObjectiveState>>,
+        bound: RefCell<Vec<Rc<dyn SourceObjectiveBinding>>>,
+    }
+
+    impl SourceMatchServices for StubMatch {
+        fn player(&self, _actor: &ActorId) -> Result<Option<MatchPlayerHandle>, ContractError> {
+            Ok(None)
+        }
+        fn bind_source(
+            &self,
+            _owner: ProviderId,
+            _resolve: MatchPlayerResolver,
+        ) -> Result<Box<dyn Fn()>, ContractError> {
+            Ok(Box::new(|| {}))
+        }
+        fn objective(&self, id: &ObjectiveId) -> Option<SourceObjectiveState> {
+            self.states.borrow().get(id).cloned()
+        }
+        fn change_objective(
+            &self,
+            id: &ObjectiveId,
+            request: SourceObjectiveChange,
+        ) -> Result<Option<SourceObjectiveState>, ContractError> {
+            let mut states = self.states.borrow_mut();
+            let Some(state) = states.get_mut(id) else {
+                return Ok(None);
+            };
+            state.stage = request.stage.clone();
+            state.carrier = request.carrier.clone();
+            state.target = request.target.clone();
+            Ok(Some(state.clone()))
+        }
+        fn bind_objective(&self, binding: Rc<dyn SourceObjectiveBinding>) -> Result<Box<dyn Fn()>, ContractError> {
+            self.bound.borrow_mut().push(binding);
+            Ok(Box::new(|| {}))
+        }
+        fn objectives(&self) -> Vec<SourceObjectiveView> {
+            Vec::new()
+        }
+        fn gates(&self) -> Vec<MissionGate> {
+            Vec::new()
+        }
+    }
+
+    fn declaration(id: &str, role: SourceObjectiveRole<u32>) -> SourceObjectiveDeclaration<u32, u32, u32> {
+        SourceObjectiveDeclaration {
+            id: id.to_string(),
+            storage: 1,
+            values: vec![
+                SourceObjectiveValue {
+                    value: 0.0,
+                    stage: "start".to_string(),
+                    complete: false,
+                },
+                SourceObjectiveValue {
+                    value: 1.0,
+                    stage: "done".to_string(),
+                    complete: true,
+                },
+            ],
+            carrier: None,
+            target: None,
+            role,
+        }
+    }
+
+    #[test]
+    fn constructor_validates_channels() {
+        let storage: Rc<dyn ModObjectiveStorage<u32, u32, u32>> = Rc::new(StubStorage {
+            current: Cell::new(true),
+            scalars: RefCell::new(HashMap::new()),
+            actors: RefCell::new(HashMap::new()),
+            invoked: RefCell::new(Vec::new()),
+        });
+        let owned = || SourceObjectiveRole::Owned {
+            campaign_gate: false,
+            bot_goal: true,
+            change: Some(9),
+        };
+        assert!(ModSourceObjectives::new(
+            ProviderId::new("q1", "game"),
+            vec![declaration("a", owned())],
+            None,
+            Rc::clone(&storage)
+        )
+        .is_err());
+        let services: Rc<dyn SourceMatchServices> = Rc::new(StubMatch {
+            states: RefCell::new(HashMap::new()),
+            bound: RefCell::new(Vec::new()),
+        });
+        assert!(ModSourceObjectives::new(
+            ProviderId::new("q1", "game"),
+            vec![declaration("a", owned()), declaration("a", owned())],
+            Some(Rc::clone(&services)),
+            Rc::clone(&storage),
+        )
+        .is_err());
+        let mut bad = declaration("b", SourceObjectiveRole::Borrowed { writable: true });
+        bad.values.clear();
+        assert!(ModSourceObjectives::new(ProviderId::new("q1", "game"), vec![bad], Some(services), storage).is_err());
+    }
+
+    #[test]
+    fn activate_refresh_flush_close_cycle() {
+        let storage = Rc::new(StubStorage {
+            current: Cell::new(true),
+            scalars: RefCell::new(HashMap::from([(1, 0.0), (2, 0.0)])),
+            actors: RefCell::new(HashMap::new()),
+            invoked: RefCell::new(Vec::new()),
+        });
+        let services = Rc::new(StubMatch {
+            states: RefCell::new(HashMap::from([(
+                "borrowed".to_string(),
+                SourceObjectiveState {
+                    stage: "done".to_string(),
+                    complete: true,
+                    carrier: None,
+                    target: None,
+                },
+            )])),
+            bound: RefCell::new(Vec::new()),
+        });
+        let mut borrowed = declaration("borrowed", SourceObjectiveRole::Borrowed { writable: true });
+        borrowed.storage = 2;
+        let objectives = ModSourceObjectives::new(
+            ProviderId::new("q1", "game"),
+            vec![
+                declaration(
+                    "owned",
+                    SourceObjectiveRole::Owned {
+                        campaign_gate: true,
+                        bot_goal: false,
+                        change: Some(9),
+                    },
+                ),
+                borrowed,
+            ],
+            Some(services.clone() as Rc<dyn SourceMatchServices>),
+            storage.clone() as Rc<dyn ModObjectiveStorage<u32, u32, u32>>,
+        )
+        .unwrap();
+        objectives.activate().unwrap();
+        assert_eq!(services.bound.borrow().len(), 1);
+        // Borrowed word projects the owner's done stage.
+        assert_eq!(storage.scalars.borrow().get(&2), Some(&1.0));
+        // An original write pushes back through change_objective.
+        storage.scalars.borrow_mut().insert(2, 0.0);
+        objectives.flush().unwrap();
+        assert_eq!(services.states.borrow().get("borrowed").unwrap().stage, "start");
+        objectives.restored().unwrap();
+        objectives.close();
+        objectives.close();
+    }
+
+    #[test]
+    fn presentation_frames_cover_all_kinds() {
+        let view = ModPlayerView {
+            client_view_offset_delta: None,
+            blend: None,
+            damage_blend: None,
+            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            view_height: 22.0,
+            kick_angles: None,
+            field_of_view: Some(90.0),
+            foreign_character_death: false,
+            pitch_drift: None,
+        };
+        let qvm = ModClientPresentationFrame::Qvm {
+            hud: QvmHudMode::Overlay,
+        };
+        assert!(matches!(qvm, ModClientPresentationFrame::Qvm { .. }));
+        let quakec = ModClientPresentationFrame::QuakeC {
+            hud: Some(QuakeCHud {
+                health: 100.0,
+                armor: 50.0,
+            }),
+            view: Some(view.clone()),
+        };
+        assert!(matches!(quakec, ModClientPresentationFrame::QuakeC { .. }));
+        let native = ModClientPresentationFrame::Native {
+            hud: Some(NativeModHud {
+                mode: NativeModHudMode::LayoutOverlay,
+                frame: NativeModHudFrame {
+                    protocol: "q2-classic".to_string(),
+                    stats: vec![0; 32],
+                    configstrings: BTreeMap::new(),
+                    layout: String::new(),
+                    inventory: Vec::new(),
+                    player_number: 0,
+                    server_frame: 1,
+                    time_ms: 100,
+                    frame_time_ms: None,
+                },
+            }),
+            view: Some(NativeModCameraView {
+                base: view,
+                native: NativeModCamera {
+                    edition: NativeModCameraEdition::Classic,
+                    movement_origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+                    render_flags: 0,
+                    position_prediction: true,
+                    angular_prediction: false,
+                    weapon_visible: true,
+                },
+            }),
+        };
+        assert!(matches!(native, ModClientPresentationFrame::Native { .. }));
+        let admission = ModClientPresentationAdmission {
+            hud: ModPresentationHud::Overlay,
+            view: true,
+        };
+        assert!(admission.view);
     }
 }
 

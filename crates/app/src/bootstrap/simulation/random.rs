@@ -1,5 +1,9 @@
 //! Instance-owned source RNG: glibc TYPE_3 plus the Q2 rerelease MT19937.
 //! glibc portion adapted from the Q3 donor; see donor `random.ts` header.
+//!
+//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/core/random/q2-rerelease.ts`
+//! (`Q2RereleaseRandom`, `Mt19937Checkpoint`, full STL-distribution API).
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/random.ts`.
 
 use qa_world::save::shared::SaveRandomState;
 use thiserror::Error;
@@ -204,12 +208,24 @@ impl Q2RereleaseRandom {
 
     /// Checkpoint the stream.
     #[must_use]
+    pub fn capture(&self) -> Mt19937Checkpoint {
+        self.checkpoint()
+    }
+
+    /// Checkpoint the stream.
+    #[must_use]
     pub fn checkpoint(&self) -> Mt19937Checkpoint {
         Mt19937Checkpoint {
             words: self.words,
             index: self.index,
             draws: self.draws,
         }
+    }
+
+    /// Wire the engine stream to Q2 content: the engine owns the stream and
+    /// content only draws through `Q2RereleaseRandomSource`.
+    pub fn as_content_source(&mut self) -> Q2RereleaseContentSource<'_> {
+        Q2RereleaseContentSource { random: self }
     }
 
     /// Restore a checkpoint.
@@ -221,6 +237,50 @@ impl Q2RereleaseRandom {
         self.index = state.index;
         self.draws = state.draws;
         Ok(())
+    }
+}
+
+/// Engine-stream adapter implementing the content `Q2RereleaseRandomSource`
+/// trait. Invalid ranges panic with the donor messages, matching the donor
+/// throws; all in-range draws delegate draw-for-draw to the engine stream.
+pub struct Q2RereleaseContentSource<'a> {
+    random: &'a mut Q2RereleaseRandom,
+}
+
+impl qa_content::q2::support::misc::Q2RereleaseRandomSource for Q2RereleaseContentSource<'_> {
+    fn next_uint32(&mut self) -> u32 {
+        self.random.next_u32()
+    }
+    fn float_unit(&mut self) -> f32 {
+        self.random.float()
+    }
+    fn float_max(&mut self, max_exclusive: f64) -> f32 {
+        self.random
+            .float_range(0.0, max_exclusive as f32)
+            .expect("Invalid rerelease float range")
+    }
+    fn float_range(&mut self, min_inclusive: f64, max_exclusive: f64) -> f32 {
+        self.random
+            .float_range(min_inclusive as f32, max_exclusive as f32)
+            .expect("Invalid rerelease float range")
+    }
+    fn integer_any(&mut self) -> i32 {
+        self.random.integer() as i32
+    }
+    fn integer_max(&mut self, max_exclusive: i32) -> i32 {
+        self.random
+            .integer_below(max_exclusive)
+            .expect("Invalid rerelease int32 range")
+    }
+    fn integer_range(&mut self, min_inclusive: i32, max_exclusive: i32) -> i32 {
+        self.random
+            .integer_range(min_inclusive, max_exclusive)
+            .expect("Empty rerelease int32 range")
+    }
+    fn time_milliseconds(&mut self, min_inclusive: i64, max_inclusive: i64) -> i64 {
+        self.random
+            .time_milliseconds(min_inclusive, max_inclusive)
+            .expect("Invalid rerelease int64 range")
     }
 }
 
@@ -470,6 +530,27 @@ mod tests {
             draws: 0,
         };
         assert!(random_checkpoint_from_save(&guest).is_err());
+    }
+
+    #[test]
+    fn capture_aliases_checkpoint_and_adapter_draws_through() {
+        use qa_content::q2::support::misc::Q2RereleaseRandomSource;
+        let random = Q2RereleaseRandom::new(7);
+        assert_eq!(random.capture(), random.checkpoint());
+        let mut direct = Q2RereleaseRandom::new(7);
+        let mut adapted = Q2RereleaseRandom::new(7);
+        {
+            let mut source = adapted.as_content_source();
+            assert_eq!(source.next_uint32(), direct.next_u32());
+            assert_eq!(source.float_unit(), direct.float());
+            assert_eq!(source.float_max(4.0), direct.float_range(0.0, 4.0).unwrap());
+            assert_eq!(source.float_range(1.0, 3.0), direct.float_range(1.0, 3.0).unwrap());
+            assert_eq!(source.integer_any(), direct.integer() as i32);
+            assert_eq!(source.integer_max(9), direct.integer_below(9).unwrap());
+            assert_eq!(source.integer_range(2, 9), direct.integer_range(2, 9).unwrap());
+            assert_eq!(source.time_milliseconds(3, 9), direct.time_milliseconds(3, 9).unwrap());
+        }
+        assert_eq!(adapted.capture(), direct.capture());
     }
 
     #[test]

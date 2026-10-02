@@ -67,6 +67,7 @@ dependencies = [
 name = "qa-app"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "qa-bots",
  "qa-client",
  "qa-compat",
@@ -83,6 +84,7 @@ dependencies = [
 name = "qa-bots"
 version = "0.1.0"
 dependencies = [
+ "qa-content",
  "qa-core",
  "qa-world",
  "thiserror",
@@ -149,6 +151,7 @@ name = "qa-net"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "qa-content",
  "qa-core",
  "thiserror",
 ]

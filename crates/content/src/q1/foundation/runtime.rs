@@ -230,7 +230,7 @@ mod tests {
     use super::super::host::mock::{mock_host, MockEvents};
     use super::super::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
     use super::*;
-    use crate::bsp::{BspFormat, WorldModel};
+    use crate::bsp::{BspFormat, BspLighting, WorldModel};
     use crate::common::Bounds as CommonBounds;
 
     fn options() -> Q1FoundationOptions {
@@ -317,7 +317,8 @@ mod tests {
             surface_edges: Vec::new(),
             leaf_faces: Vec::new(),
             visibility: &[],
-            lighting: &[],
+            monochrome_lighting: &[],
+            lighting: BspLighting::Luminance8 { samples: &[] },
         };
         let report = game.spawn_map(&map).expect("spawn");
         assert_eq!(game.map_name, "e1m1");

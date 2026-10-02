@@ -1,4 +1,5 @@
 //! Rewrite campaign intents when the primary world owns level authority.
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/source-transition.ts`.
 
 use qa_content::contract::CampaignSelection;
 use qa_core::identity::ProviderId;

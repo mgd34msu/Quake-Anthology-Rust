@@ -40,6 +40,7 @@ pub enum CollisionRole {
 
 /// Q3 entity/owner numbers carried on a collision record (donor
 /// `ActorCollision.q3Owner` from `src/world/collision/index.ts`).
+/// Owner number `1023` means unowned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Q3OwnerRef {
     /// Entity number.
@@ -47,6 +48,9 @@ pub struct Q3OwnerRef {
     /// Owner entity number.
     pub owner_number: i32,
 }
+
+/// Alias kept for call sites using the shorter name.
+pub type Q3Owner = Q3OwnerRef;
 
 /// Collision record attached to a linked body.
 #[derive(Debug, Clone, PartialEq)]

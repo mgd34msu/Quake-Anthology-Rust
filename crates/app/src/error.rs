@@ -29,9 +29,9 @@ pub enum AppError {
     /// The host loop was stepped after it finished.
     #[error("Application has finished")]
     Finished,
-    /// The weapon-behavior tool is not ported yet.
-    #[error("weapon-behavior tool is not ported yet")]
-    ToolUnavailable,
+    /// Weapon-behavior tool failure.
+    #[error("{0}")]
+    WeaponBehavior(String),
     /// World failure during startup or the host loop.
     #[error("World error: {0}")]
     World(String),
@@ -106,5 +106,11 @@ impl From<crate::debug::DebugError> for AppError {
 impl From<crate::persistence::PersistenceError> for AppError {
     fn from(error: crate::persistence::PersistenceError) -> Self {
         Self::Persistence(error.to_string())
+    }
+}
+
+impl From<crate::bootstrap::weapon_behavior_tool::WeaponBehaviorToolRunError> for AppError {
+    fn from(error: crate::bootstrap::weapon_behavior_tool::WeaponBehaviorToolRunError) -> Self {
+        Self::WeaponBehavior(error.to_string())
     }
 }

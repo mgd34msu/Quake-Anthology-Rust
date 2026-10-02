@@ -8,6 +8,8 @@ pub mod client;
 pub mod clocks;
 pub mod collision;
 pub mod combat;
+pub mod gameplay;
+pub mod geometry;
 pub mod hull;
 pub mod inventory;
 pub mod movement;
@@ -18,6 +20,7 @@ pub mod save;
 pub mod scheduler;
 pub mod server;
 pub mod session;
+pub mod source_slots;
 pub mod spatial;
 pub mod spawn;
 pub mod timers;
@@ -28,4 +31,7 @@ mod error;
 pub use error::WorldError;
 // Re-exports mirror `src/world/session/index.ts`.
 pub use clocks::SourceClock;
-pub use session::{EngineSession, ResourceScope, SessionClient, SessionMode, SessionResource, WorldLifetime};
+pub use session::{
+    ConnectionKind, ConnectionReplacement, EngineSession, ResourceScope, SessionClient, SessionConnection, SessionMode,
+    SessionResource, SessionSeat, WorldLifetime,
+};

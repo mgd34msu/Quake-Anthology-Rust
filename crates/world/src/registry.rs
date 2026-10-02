@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId, SessionId};
+use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId, SavedActorId, SessionId};
 use qa_core::time::SourceTime;
 
 use crate::WorldError;
@@ -82,6 +82,8 @@ pub struct SourceActorCheckpoint {
     pub generation: u32,
 }
 
+type ReleaseHook = dyn Fn(&OwnedActor);
+
 /// Session-owned actor registry.
 pub struct ActorRegistry {
     owner: IdentityOwner,
@@ -90,6 +92,7 @@ pub struct ActorRegistry {
     capacity: usize,
     revision: u64,
     closed: bool,
+    release_hooks: Vec<Box<ReleaseHook>>,
 }
 
 impl ActorRegistry {
@@ -105,6 +108,7 @@ impl ActorRegistry {
             capacity,
             revision: 0,
             closed: false,
+            release_hooks: Vec::new(),
         })
     }
 
@@ -212,6 +216,18 @@ impl ActorRegistry {
         self.slots.get(actor.slot() as usize)?.live.as_ref()?.source.clone()
     }
 
+    /// Run `hook` after every successful release.
+    pub fn on_release(&mut self, hook: Box<ReleaseHook>) {
+        self.release_hooks.push(hook);
+    }
+
+    /// Resolve a saved slot/generation reference under this authority.
+    #[must_use]
+    pub fn resolve_saved(&self, saved: &SavedActorId) -> Option<OwnedActor> {
+        let id = self.owner.actor(saved.slot, saved.generation);
+        self.resolve_owned(&id)
+    }
+
     /// Release an actor, invalidating its generation before tables drain.
     pub fn release(&mut self, actor: &OwnedActor) -> Result<(), WorldError> {
         let index = actor.id().slot() as usize;
@@ -228,6 +244,9 @@ impl ActorRegistry {
             if let Some(table) = self.sources.get_mut(&provider_key(&provider)) {
                 table.remove(&source_slot);
             }
+        }
+        for hook in &self.release_hooks {
+            hook(actor);
         }
         Ok(())
     }
