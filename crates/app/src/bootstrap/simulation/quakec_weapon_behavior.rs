@@ -1,6 +1,6 @@
 //! QuakeC weapon behavior source: donor bytecode trajectories.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-weapon-behavior.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakec-weapon-behavior.ts`.
 
 use std::cell::Cell;
 use std::cell::RefCell;

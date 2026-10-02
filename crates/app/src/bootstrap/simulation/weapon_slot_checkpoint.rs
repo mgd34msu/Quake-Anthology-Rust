@@ -1,6 +1,6 @@
 //! Weapon slot and grapple animation checkpoint readers.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/weapon-slot-checkpoint.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/weapon-slot-checkpoint.ts`
 //! (`readWeaponSlotState`, `readWeaponSlots`, `readGrappleWeaponState`).
 
 use qa_content::q2::equipment::grapple_weapon::{GrappleHandoff, GrappleWeaponState};

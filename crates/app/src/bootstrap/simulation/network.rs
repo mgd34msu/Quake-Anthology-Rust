@@ -1,13 +1,13 @@
 //! Native Quake II server network host over the shared simulation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network.ts`.
 //!
 //! This file is self-contained like its donor and the sibling Q2 host
 //! ports: shared application shapes are mirrored here with canonical-home
 //! notes instead of importing sibling ports. The async content fetch and
 //! download construction (`LoadedApplicationContent.forContent`,
 //! `createQ2ApplicationDownloads` from donor
-//! `src/app/bootstrap/network/q2-downloads.ts`) live behind the synchronous
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/q2-downloads.ts`) live behind the synchronous
 //! [`Q2HostContent`] seam and the injected `downloads` handle; bootstrap
 //! ports are sync.
 //!
@@ -24,7 +24,7 @@
 //!   [`q2_effect_to_wire`].
 //!
 //! The donor `admit` reads the split seat from `request.splitSeat` (donor
-//! `src/network/q2/handshake.ts`); the worktree [`Q2ConnectRequest`] has not
+//! Port of Quake-Anthology-TS `src/network/q2/handshake.ts`); the worktree [`Q2ConnectRequest`] has not
 //! ported that field yet, so the seat travels as an explicit `admit`
 //! parameter until the port lands.
 

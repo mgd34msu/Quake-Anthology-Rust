@@ -1,6 +1,6 @@
 //! Original-style Q1 punch angles with a local fallback.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q1-punch.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q1-punch.ts`
 //! (`Q1PlayerPunch`).
 //!
 //! One original-style Q1 field per player. Bound fields remain saved by

@@ -1,6 +1,6 @@
 //! QVM gameplay mod preparation.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/qvm-mod.ts`
+//! Provenance: `src/app/bootstrap/simulation/qvm-mod.ts`
 //! (donor `prepareQvmMod`, `prepareMountedQvmMod`).
 //!
 //! The donor takes the contracts declaration; the worktree splits it into the

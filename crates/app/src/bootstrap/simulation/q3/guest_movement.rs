@@ -1,6 +1,6 @@
 //! Quake III guest movement projection for navigation prediction.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-movement.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-movement.ts`
 //! (`guestMovementProjection`). Navigation reads public VM records at
 //! use time; it never owns a second gameplay player, so the donor's
 //! getters become live read methods on [`Q3MovementPredictionPlayer`].

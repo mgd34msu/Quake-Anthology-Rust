@@ -1,6 +1,6 @@
 //! Grapple equipment runtime: input edges and tether state over one source game.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/grapple-runtime.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/grapple-runtime.ts`
 //! (`GrappleRuntime`, `GrappleRuntimeCheckpoint`, `GrappleSlotHost`).
 //!
 //! Adaptations from the donor object graph:

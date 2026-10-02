@@ -1,6 +1,6 @@
 //! Q3 guest spatial operations over shared collision.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-spatial.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-spatial.ts`
 //! (`Q3GuestSpatial`).
 //!
 //! SV_Trace port credited to id Software's sv_world.c. Copyright (C)

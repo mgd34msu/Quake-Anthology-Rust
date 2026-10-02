@@ -1,6 +1,6 @@
 //! Hand-grenade runtime checkpoint reader.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/equipment-checkpoint.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/equipment-checkpoint.ts`
 //! (`readHandGrenadeRuntimeCheckpoint`).
 //!
 //! The reader builds content records where the conversion is mechanical (the

@@ -1,6 +1,6 @@
 //! Quake III QVM server-game guest runtime.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-runtime.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-runtime.ts`
 //! (`Q3QvmServerGame`, `savedQ3GuestClients`, `Q3GuestOutput`,
 //! `Q3GuestRuntimeOptions`, map-transition types).
 //!

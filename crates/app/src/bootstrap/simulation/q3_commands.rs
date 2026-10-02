@@ -1,6 +1,6 @@
 //! Conversions between selected commands and Q3 source commands.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3-commands.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3-commands.ts`
 //! (`relativeQ3SourceCommand`, `q3SourceCommand`, `q3CommandForControls`,
 //! `selectedQ3Command`, `relativeMovementCommand`).
 

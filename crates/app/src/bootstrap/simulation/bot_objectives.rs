@@ -1,6 +1,6 @@
 //! Native rerelease bot objectives over the shared match.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-objectives.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-objectives.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
 //! The [`BotObjectiveSimulation`] seam exposes exactly the donor's simulation

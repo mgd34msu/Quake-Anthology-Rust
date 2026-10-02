@@ -1,6 +1,6 @@
 //! QuakeWorld engine console variables.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakeworld-cvars.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakeworld-cvars.ts`.
 
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
 

@@ -1,6 +1,6 @@
 //! Q3 guest area-portal ownership against the selected world.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-world.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-world.ts`
 //! (`Q3GuestWorld`, `Q3GuestTopology`).
 //!
 //! The scene surface mirrors donor `SharedSceneQueries`

@@ -1,7 +1,7 @@
 //! Selected Q2 monster module registration.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q2-monster-sources.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q2-monster-sources.ts`
 //!
 //! The donor builds `Q2Monsters`/`Q2Ballistics`/`Q2MoverModule` objects,
 //! registers base, pack, and rerelease definitions into them, then lets the

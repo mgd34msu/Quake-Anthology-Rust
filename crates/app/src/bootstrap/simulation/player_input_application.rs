@@ -1,6 +1,6 @@
 //! Player input application: aim resolution and command clocks.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/player-input-application.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/player-input-application.ts`
 //! (`movementApplicationAim`, `movementApplicationFrame`).
 //!
 //! Movement entrypoints use native delta-angle conventions; the observer

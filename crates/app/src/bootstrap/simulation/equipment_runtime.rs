@@ -1,6 +1,6 @@
 //! Q2 hand-grenade equipment runtime: per-actor input edges over the shared grenade controller.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/equipment-runtime.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/equipment-runtime.ts`
 //! (`HandGrenadeRuntime`, `HandGrenadeRuntimeCheckpoint`, `HandGrenadeTravel`).
 //!
 //! Adaptations from the donor object graph:

@@ -1,6 +1,6 @@
 //! Rerelease Quake II guest projection through the native server channel.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-q2-rerelease-native.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q2-rerelease-native.ts`.
 //!
 //! This file is self-contained like its donor: shared application shapes are
 //! mirrored here with canonical-home notes instead of importing sibling
@@ -11,7 +11,7 @@
 //! `downloads` handle; bootstrap ports are sync.
 //!
 //! The donor `admit` reads the split seat from `request.splitSeat` (donor
-//! `src/network/q2/handshake.ts`); the worktree [`Q2ConnectRequest`] has not
+//! Port of Quake-Anthology-TS `src/network/q2/handshake.ts`); the worktree [`Q2ConnectRequest`] has not
 //! ported that field yet, so the seat travels as an explicit [`admit`]
 //! parameter until the port lands.
 

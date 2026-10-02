@@ -1,6 +1,6 @@
 //! Legacy Q3 ballistics checkpoint import for the selected source.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q3-source-legacy.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q3-source-legacy.ts`
 //! (`readLegacyQ3Source`, `LegacyQ3Source`, `migrateLegacyQ3Arsenal`,
 //! `restoreLegacyQ3Source`).
 //!

@@ -1,6 +1,6 @@
 //! Native QuakeWorld server network host over the admitted QuakeC source.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-qw.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-qw.ts`.
 //!
 //! This file is self-contained like its donor and the sibling host ports:
 //! shared application shapes are mirrored here with canonical-home notes

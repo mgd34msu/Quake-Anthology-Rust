@@ -1,7 +1,7 @@
 //! Selected-monster checkpoint records.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/monster-checkpoint.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/monster-checkpoint.ts`
 //!
 //! The saved authored-monster and per-source checkpoint shapes plus their
 //! reader. Entity, monster, mover, and pack checkpoints reuse the real

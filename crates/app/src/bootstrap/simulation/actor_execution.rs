@@ -1,7 +1,7 @@
 //! Per-actor execution dispatch across families.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/actor-execution.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/actor-execution.ts`
 //!
 //! Covers motion/collision/flag projection (`actorMotion`, `actorCollision`,
 //! `actorFlags`, `writeActorFlags`) and per-frame execution (`executeActor`,

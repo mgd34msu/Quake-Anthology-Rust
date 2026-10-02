@@ -1,6 +1,6 @@
 //! Native Quake II level-travel payloads.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/native-q2-travel.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/native-q2-travel.ts`.
 //!
 //! The donor's unexported `NativeQ2TravelClients` base is flattened into each
 //! travel struct: embedding it would name a donor-private interface in public

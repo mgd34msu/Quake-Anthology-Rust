@@ -1,6 +1,6 @@
 //! Selected Q3 bot weapon metadata parsed once from source files.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-selected-knowledge.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-selected-knowledge.ts`
 //! (`nativeQ3WeaponKnowledge`).
 //!
 //! Parse the selected Q3 source weapon metadata once; retain values, not

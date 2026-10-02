@@ -1,6 +1,6 @@
 //! Rogue `NewToss` projectile physics.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/new-toss.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/new-toss.ts`
 //! (`stepQ2NewToss`; original Rogue `g_phys.c` `SV_Physics_NewToss` and
 //! rerelease `rogue/g_rogue_phys.cpp`).
 //!

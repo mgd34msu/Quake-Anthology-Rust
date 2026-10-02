@@ -1,6 +1,6 @@
 //! Quake III source host: engine imports publishing to a session consumer.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/host.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/host.ts`
 //! (`Q3SourceEvent`, `Q3HostOperations`, `Q3HostSettings`,
 //! `createQ3SourceHost`).
 //!

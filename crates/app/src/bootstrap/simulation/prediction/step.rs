@@ -1,6 +1,6 @@
 //! One-command movement prediction over copied player state.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/step.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/step.ts`
 //! (`copyMovementState`, `copyPredictionSnapshot`, `predictMovementCommand`).
 
 use std::cell::RefCell;

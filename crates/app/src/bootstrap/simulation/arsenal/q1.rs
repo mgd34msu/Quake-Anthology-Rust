@@ -1,6 +1,6 @@
 //! Selected Quake I arsenal over the source entity services.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q1.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q1.ts`
 //! (`Q1SelectedArsenalTravel`, `Q1SelectedArsenalOptions`, `Q1SelectedArsenal`).
 
 use std::cell::RefCell;

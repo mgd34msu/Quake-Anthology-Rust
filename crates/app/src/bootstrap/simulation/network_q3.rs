@@ -1,6 +1,6 @@
 //! Q3 application server host binding.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-q3.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q3.ts`
 //! (`Q3ApplicationServerBindingOptions`, `Q3ApplicationServerAuthority`,
 //! `createQ3ApplicationServerHost`).
 //!

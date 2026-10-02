@@ -1,7 +1,7 @@
 //! Selected-monster spawn placement.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/monster-placement.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/monster-placement.ts`
 //!
 //! Q1 teleport-staging detection, authored-placement preservation checks for
 //! both families, and the encounter-preserving nearby-placement search. Trace

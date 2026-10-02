@@ -1,6 +1,6 @@
 //! Q3 guest player UI projection.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-player.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-player.ts`
 //! (`q3GuestPlayerUi`).
 //!
 //! The QVM authority exposes the same public player state as its native

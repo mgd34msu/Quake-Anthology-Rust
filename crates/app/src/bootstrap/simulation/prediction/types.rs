@@ -1,6 +1,6 @@
 //! Movement prediction snapshots, commands, and options.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/types.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/types.ts`
 //! (`MovementPredictionSnapshot`, `MovementPredictionOptions`, `MovementProbeOptions`,
 //! `PredictionCommand`, `MovementPredictionResult`, `PredictionStepOptions`).
 

@@ -1,6 +1,6 @@
 //! Client-owned QuakeC service state and local message presentation.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-local-messages.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakec-local-messages.ts`.
 
 use std::collections::HashMap;
 

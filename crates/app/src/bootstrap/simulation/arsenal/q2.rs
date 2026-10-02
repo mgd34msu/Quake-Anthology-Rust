@@ -1,6 +1,6 @@
 //! Selected Quake II arsenal over the game services.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q2.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q2.ts`
 //! (`Q2SelectedWeaponTurnState`, `Q2SelectedArsenalOptions`, `projectQ2Arsenal`,
 //! `Q2SelectedArsenal`).
 

@@ -1,6 +1,6 @@
 //! Q3 source command policy over translated foreign commands.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/command-policy.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/command-policy.ts`
 //! (`applyQ3CommandPolicy`).
 //!
 //! The policy edits only the fields the Q3 source run translated (detected

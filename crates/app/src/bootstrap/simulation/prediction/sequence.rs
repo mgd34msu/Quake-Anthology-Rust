@@ -1,6 +1,6 @@
 //! Multi-command prediction probes for navigation.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/sequence.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/sequence.ts`
 //! (`predictMovementSequence`).
 
 use std::cell::RefCell;

@@ -1,7 +1,7 @@
 //! Player checkpoint capture and readers.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/player-checkpoint.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/player-checkpoint.ts`
 //!
 //! Covers the player save surface: trace-hit projection, movement/arsenal/
 //! animation readers, movement-player capture/restore, and the Q3 character,

@@ -1,7 +1,7 @@
 //! QVM offhand-grapple source: one initialized source VM borrows session
 //! players and owns only its hook actors.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/qvm-grapple-source.ts`.
+//! Provenance: `src/app/bootstrap/simulation/qvm-grapple-source.ts`.
 //!
 //! Bridges from the donor universe. The recording [`QvmModule`] never
 //! executes bytecode, so no guest trap locates the entity/client tables

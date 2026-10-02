@@ -1,6 +1,6 @@
 //! Classic Quake II guest projection through the native server channel.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-q2-guest.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q2-guest.ts`.
 //!
 //! This file is self-contained like its donor: shared application shapes are
 //! mirrored here with canonical-home notes instead of importing sibling

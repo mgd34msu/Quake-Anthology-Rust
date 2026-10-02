@@ -1,6 +1,6 @@
 //! QuakeC gameplay-mod host: validated declaration plus prepared media over the guest provider.
 //!
-//! Ported from donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-mod.ts`.
+//! Ported from donor `src/app/bootstrap/simulation/quakec-mod.ts`.
 //!
 //! Donor mapping:
 //! - `QuakeCModParams` (media/identity subset) becomes [`QuakeCModConfig`]. The donor params also

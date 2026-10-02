@@ -1,10 +1,10 @@
 //! Authoritative native protocol output over the presentation history.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/events.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/events.ts`
 //! (`SimulationEvents`).
 //!
 //! The presentation history itself (donor
-//! `src/app/bootstrap/presentation-state.ts`) lives outside this partition,
+//! Port of Quake-Anthology-TS `src/app/bootstrap/presentation-state.ts`) lives outside this partition,
 //! so it surfaces as the
 //! [`PresentationStateSeam`] trait; only the operations the donor subclass
 //! calls or overrides are modeled.

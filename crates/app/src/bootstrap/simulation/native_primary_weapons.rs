@@ -1,6 +1,6 @@
 //! Native primary-weapon host binding for guest worlds.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/native-primary-weapons.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/native-primary-weapons.ts`.
 //!
 //! The donor reads live guest internals (host memory, runner, image base,
 //! edict tables) off the classic or rerelease world. Those internals belong

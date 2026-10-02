@@ -1,6 +1,6 @@
 //! Selected-movement player state and command dispatch.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/players.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/players.ts`
 //! (`NetQuakeClientBinding`, `PlayerMovementHost`, `providerFamily`,
 //! `providerTiming`, `movementProfile`, `movementOrigin`,
 //! `movementVelocity`, `MovementPlayer`).

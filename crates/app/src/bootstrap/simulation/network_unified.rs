@@ -1,6 +1,6 @@
 //! Unified native application server host.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-unified.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-unified.ts`
 //! (`UnifiedApplicationPlayer`, `UnifiedApplicationServerHost`,
 //! `unifiedPresentationFor`, `unifiedModelPresentations`,
 //! `createUnifiedApplicationServerHost`).

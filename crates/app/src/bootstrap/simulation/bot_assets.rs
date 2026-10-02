@@ -1,6 +1,6 @@
 //! Application bot asset loading.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-assets.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-assets.ts`.
 //!
 //! Missing siblings: `LoadedApplicationContent` (`content.ts`, content
 //! partition) and `SharedSimulation` (`runtime.ts`, runtime partition). The

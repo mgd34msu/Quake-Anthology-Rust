@@ -1,6 +1,6 @@
 //! Simulation weapon behavior runtime.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/weapon-behavior-runtime.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/weapon-behavior-runtime.ts`.
 //!
 //! The runtime orchestrates trajectory sources (QuakeC, QVM, rerelease
 //! native) selected in [`PreparedWeaponBehavior`](super::types::PreparedWeaponBehavior)

@@ -1,6 +1,6 @@
 //! Mapped Team Arena ammo regeneration timers over the shared inventory.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q3-ammo-regen.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q3-ammo-regen.ts`
 //! (`Q3MappedAmmoRegeneration`).
 
 use std::cell::{Cell, RefCell};

@@ -1,6 +1,6 @@
 //! Selected-ammunition display labels.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/inventory-labels.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/inventory-labels.ts`
 //! (`selectedAmmoLabel`).
 
 use qa_content::contract::ItemId;

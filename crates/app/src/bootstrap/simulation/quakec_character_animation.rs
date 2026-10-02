@@ -1,6 +1,6 @@
 //! QuakeC character reaction animations.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-character-animation.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakec-character-animation.ts`.
 
 use qa_content::q2::base::player::view::{q2_death_animation_frames, q2_pain_animation_frames};
 use qa_content::q2::foundation::weapons::presentation::q2_attack_frames;

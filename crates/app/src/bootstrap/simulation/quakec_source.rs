@@ -1,6 +1,6 @@
 //! QuakeC source preparation and synchronous source runtime.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-source.ts`
+//! Provenance: `src/app/bootstrap/simulation/quakec-source.ts`
 //! (donor `prepareQuakeCSource`, `prepareQuakeCResources`,
 //! `preparedQuakeCDamageScaling`, `preparedQuakeCWeaponStage`, `QuakeCSource`).
 //!

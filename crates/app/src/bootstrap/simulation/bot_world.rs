@@ -1,6 +1,6 @@
 //! Shared bot observation world.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-world.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-world.ts`
 //! (`createSharedBotWorld`).
 //!
 //! A sensory projection and ID lookup over existing shared actors, with no

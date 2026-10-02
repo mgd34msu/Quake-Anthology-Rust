@@ -1,6 +1,6 @@
 //! Quake II rerelease fly-move sliding.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q2-rerelease-slide.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q2-rerelease-slide.ts`
 //! (`createQ2RereleaseFlyMove`; rerelease `g_phys.cpp` `SV_FlyMove`).
 //! Movement clipping is shared with the existing `p_move.cpp` implementation
 //! through [`create_rerelease_movement`](qa_world::movement::q2::rerelease::create_rerelease_movement).

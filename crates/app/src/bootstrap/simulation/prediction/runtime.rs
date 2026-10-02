@@ -1,6 +1,6 @@
 //! Seat-local movement prediction with command replay.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/runtime.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/runtime.ts`
 //! (`copyPredictionCommand`, `SelectedMovementPrediction`).
 
 use std::cell::RefCell;

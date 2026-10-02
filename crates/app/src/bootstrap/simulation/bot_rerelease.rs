@@ -1,6 +1,6 @@
 //! Native rerelease bot transport over the shared simulation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-rerelease.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-rerelease.ts`.
 //!
 //! Missing siblings (host seams, implemented post-merge by their partitions):
 //! - `simulation/runtime.ts` (`SharedSimulation`): [`RereleaseBotSimulation`].

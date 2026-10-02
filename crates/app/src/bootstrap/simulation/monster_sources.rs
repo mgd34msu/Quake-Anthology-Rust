@@ -1,7 +1,7 @@
 //! Selected Q1 expansion registration.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/monster-sources.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/monster-sources.ts`
 //!
 //! The donor builds a `Q1Base` over the game and routes mission packs
 //! through it while addons get a fresh `Q1AddonContext`. The Rust content

@@ -1,6 +1,6 @@
 //! Q3 guest artifact preparation: recipe checks plus bytecode loading.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-artifact.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-artifact.ts`
 //! (`assertQ3GuestRecipe`, `prepareQ3Game`, `PreparedQ3Game`,
 //! `Q3GameExecution`).
 //!

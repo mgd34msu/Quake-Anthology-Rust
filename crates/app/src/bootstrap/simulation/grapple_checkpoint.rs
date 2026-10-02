@@ -1,6 +1,6 @@
 //! Grapple runtime checkpoint reader.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/grapple-checkpoint.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/grapple-checkpoint.ts`
 //! (`readGrappleRuntimeCheckpoint`).
 //!
 //! The QVM component arrives through a caller-supplied reader (value seam for

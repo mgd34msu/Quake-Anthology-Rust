@@ -1,6 +1,6 @@
 //! Application bot transport over Q3 and shared observation worlds.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bots.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bots.ts`
 //! (`SimulationBotServices`, `ApplicationBots`, `decodeApplicationBotsCheckpoint`,
 //! `RestoredBotReliableCommands`, `openApplicationBotLog`, `resumeApplicationBotLog`,
 //! `botAdmissionError`).

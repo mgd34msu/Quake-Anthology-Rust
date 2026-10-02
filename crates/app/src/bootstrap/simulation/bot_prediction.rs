@@ -1,6 +1,6 @@
 //! Application bot movement prediction over detached selected movement.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-prediction.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-prediction.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition),
 //! `MovementPredictionPlayer` plus `createPlayerMovementPrediction` and

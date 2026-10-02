@@ -1,6 +1,6 @@
 //! Shared body physics for every source family.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/physics.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/physics.ts`
 //! (`SharedPhysics`; adapted from Quake `sv_phys.c`/`sv_move.c` and Quake II
 //! `g_phys.c`/`m_move.c`).
 //!

@@ -1,7 +1,7 @@
 //! Selected-monster runtime across Q1 and Q2 map programs.
 //!
 //! Absolute donor:
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/monster-runtime.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/monster-runtime.ts`
 //!
 //! Admission, patrol/combat mission state, triggered-monster activation, and
 //! release tracking for selected monsters. The map program is the real
@@ -125,7 +125,7 @@ pub trait SelectedMonsterBehavior {
 ///
 /// Value seam for the donor `host.emit({ kind: "monster-killed", ... })` call
 /// in the mission `killed` branch of
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/monster-runtime.ts`;
+/// `src/app/bootstrap/simulation/monster-runtime.ts`;
 /// the content `Q1Event` has no such variant, so the session implements this
 /// instead of duplicating presentation routing.
 pub trait Q1MonsterKillSink {

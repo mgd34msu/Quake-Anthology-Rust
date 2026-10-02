@@ -1,6 +1,6 @@
 //! Selected Quake III arsenal over the shared inventory.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q3.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q3.ts`
 //! (`Q3SelectedArsenalOptions`, `Q3SelectedArsenalCheckpoint`, `Q3SelectedArsenal`,
 //! `readQ3SelectedArsenalCheckpoint`).
 

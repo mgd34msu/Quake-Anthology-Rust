@@ -1,6 +1,6 @@
 //! Native QuakeWorld client prediction continuation.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/qw-source-state.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/qw-source-state.ts`
 //! (`qwPredictionProfile`, `QwPredictionStatus`, `qwPredictionSnapshot`,
 //! `QuakeWorldPrediction`).
 //!

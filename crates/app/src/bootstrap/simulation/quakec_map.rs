@@ -1,6 +1,6 @@
 //! QuakeC map entity text for non-Quake sources.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-map.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakec-map.ts`.
 
 use qa_content::bsp::{parse_q1_entities, q1_entity_value, Q1Entity};
 use qa_core::binary::BinaryError;

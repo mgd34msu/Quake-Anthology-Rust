@@ -1,6 +1,6 @@
 //! Q1 fog transitions retained per map and player.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q1-fog.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q1-fog.ts`
 //! (`SimulationQ1Fog`).
 //!
 //! Finite world/actor transitions, not an event replay log.

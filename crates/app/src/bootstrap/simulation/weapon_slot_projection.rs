@@ -1,6 +1,6 @@
 //! Weapon slot presentation projection.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/weapon-slot-projection.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/weapon-slot-projection.ts`
 //! (`projectWeaponSlot`).
 //!
 //! The outgoing weapon remains visible through its own drop animation.

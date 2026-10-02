@@ -1,6 +1,6 @@
 //! NetQuake server host over the NetQuake QuakeC source.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-q1-quakec.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q1-quakec.ts`.
 //!
 //! Borrow split: the donor reads the game through `simulation.quakecSource()`
 //! and then calls mutating methods on both handles, which Rust cannot alias.

@@ -1,6 +1,6 @@
 //! QVM weapon behavior source: source trajectories from guest modules.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/qvm-weapon-behavior.ts`.
+//! Provenance: `src/app/bootstrap/simulation/qvm-weapon-behavior.ts`.
 
 use std::cell::Cell;
 use std::cell::RefCell;

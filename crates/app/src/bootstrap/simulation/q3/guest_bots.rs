@@ -1,6 +1,6 @@
 //! Q3 guest bot library over the shared selected navigation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-bots.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-bots.ts`.
 //!
 //! Missing siblings: `ApplicationBotNavigation` (`navigation.ts`, navigation
 //! partition). The [`GuestBotSelectedNavigation`] seam exposes exactly the

@@ -1,10 +1,10 @@
 //! Engine-owned Q3 server storage shared by the selected game and its host.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/server-state.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/server-state.ts`
 //! (`Q3ServerState`, `Q3ServerStateOptions`).
 //!
 //! Two donor pieces arrive through seams. `registerQ3ServerCvars` (donor
-//! `src/app/bootstrap/q3-common-cvars.ts`, outside the sim lane) does not
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q3-common-cvars.ts`, outside the sim lane) does not
 //! exist in this worktree, so [`Q3ServerStateOptions::register_server_cvars`]
 //! injects it: the caller supplies the registration callback and this module
 //! never duplicates the definition table. The `CvarRegistry` save image (donor

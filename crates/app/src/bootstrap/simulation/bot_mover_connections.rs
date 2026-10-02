@@ -1,6 +1,6 @@
 //! Q2 train connections for bot navigation construction.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-mover-connections.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-mover-connections.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
 //! The [`BotMoverSimulation`] seam exposes exactly the donor's scene plus

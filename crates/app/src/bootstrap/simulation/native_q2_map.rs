@@ -1,6 +1,6 @@
 //! Equivalent authored entity roles for native Quake II maps.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/native-q2-map.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/native-q2-map.ts`.
 //!
 //! Geometry stays in shared scene queries; only equivalent authored source
 //! entity roles change. The public entry adapts [`ApplicationWorld`] to the

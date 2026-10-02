@@ -1,6 +1,6 @@
 //! Q3 guest slot records binding VM entities to shared actors.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/guest-records.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-records.ts`
 //! (`Q3GuestRecords`, `Q3GuestRecordHost`).
 //!
 //! sharedEntity_t borrowing and SV_LinkEntity semantics from id Software's

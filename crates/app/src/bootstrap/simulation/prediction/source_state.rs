@@ -1,6 +1,6 @@
 //! Prediction snapshots across the Q2/Q3 source state boundary.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/source-state.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/source-state.ts`
 //! (`PredictionSourceEntities`, `predictionSourceHit`, `predictionSourceNumber`,
 //! `q2PredictionSnapshot`, `readPredictionSourceState`, `writePredictionSourceState`).
 

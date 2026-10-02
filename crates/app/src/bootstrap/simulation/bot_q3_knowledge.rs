@@ -1,6 +1,6 @@
 //! Q3 selected-arsenal bot weapon knowledge.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-q3-knowledge.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-q3-knowledge.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
 //! The [`Q3BotKnowledgeSimulation`] seam exposes exactly the donor's
@@ -15,7 +15,7 @@
 //!
 //! `update_q3_bot_weapon_inventory` below mirrors
 //! `updateQ3BotWeaponInventory` from donor
-//! `src/bots/behavior/q3/ai-combat.ts` (canonical home:
+//! Port of Quake-Anthology-TS `src/bots/behavior/q3/ai-combat.ts` (canonical home:
 //! `qa_bots::behavior::q3::ai_combat`); unify post-merge. The donor skips
 //! missionpack slots for baseq3 products; the dialect zeroes the inventory
 //! first, which makes the skip unobservable, and the Rust [`BotState`]

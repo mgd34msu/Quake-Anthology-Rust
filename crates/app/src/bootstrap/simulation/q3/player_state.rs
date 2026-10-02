@@ -1,6 +1,6 @@
 //! Q3 source player-state bridges between records and selected movement.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/player-state.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/player-state.ts`
 //! (`readQ3MovementState`, `writeQ3MovementState`,
 //! `writeQ3CharacterAnimation`, `readQ3MovementEnvironment`,
 //! `readQ3ArsenalRuntime`, `writeQ3ArsenalRuntime`).

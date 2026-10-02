@@ -1,6 +1,6 @@
 //! QuakeC weapon HUD bindings.
 //!
-//! Provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/quakec-player-ui.ts`.
+//! Provenance: `src/app/bootstrap/simulation/quakec-player-ui.ts`.
 
 use qa_content::contract::ItemId;
 

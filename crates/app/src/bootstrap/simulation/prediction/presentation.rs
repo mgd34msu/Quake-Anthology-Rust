@@ -1,6 +1,6 @@
 //! Cgame prediction adapter over the selected movement provider.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/prediction/presentation.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/prediction/presentation.ts`
 //! (`PresentationPredictionOptions`, `presentationSourceCommand`,
 //! `PresentationPredictionAdapter`, `createPresentationMovementHost`,
 //! `createSimulationPredictionHost`).

@@ -1,6 +1,6 @@
 //! Native source fields over the shared Q1 pusher transaction.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/native-q1-pusher.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/native-q1-pusher.ts`.
 //!
 //! Native source fields join the same pusher transaction used by raw QC. The
 //! donor spreads `physics.q1PusherServices(projection)` and adds `think`;

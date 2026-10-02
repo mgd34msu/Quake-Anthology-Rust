@@ -1,6 +1,6 @@
 //! Original Q3 weapon/equipment records over actors admitted by their world.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/arsenal/q3-source.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/arsenal/q3-source.ts`
 //! (`Q3SelectedClientPose`, `Q3SelectedSourceHost`, `Q3SelectedClientEffects`,
 //! `Q3SelectedEquipmentState`, `Q3SelectedSource`).
 //!

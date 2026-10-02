@@ -1,6 +1,6 @@
 //! Selected-arsenal bot weapon knowledge binding.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-arsenal.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-arsenal.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
 //! The factory below is generic over the three dialect simulation seams so
@@ -8,7 +8,7 @@
 //!
 //! The decision shell ([`BotWeaponCandidate`] plus the `arsenal_*` helpers)
 //! mirrors `createBotArsenalKnowledge` from donor
-//! `src/bots/behavior/q3/arsenal-knowledge.ts` (canonical home:
+//! Port of Quake-Anthology-TS `src/bots/behavior/q3/arsenal-knowledge.ts` (canonical home:
 //! `qa_bots::behavior::q3::arsenal_knowledge`); unify post-merge. Two
 //! adaptations are forced by the simplified Rust botlib surface:
 //!

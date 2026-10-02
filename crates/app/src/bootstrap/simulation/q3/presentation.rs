@@ -1,6 +1,6 @@
 //! Quake III source presentation snapshots for cgame/network consumers.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/presentation.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/presentation.ts`
 //! (`Q3SourcePresentationState`, `q3SourcePresentationState`,
 //! `q3PoolPresentationState`, `q3SourceModels`, `q3PoolModels`).
 //!

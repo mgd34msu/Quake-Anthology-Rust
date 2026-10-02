@@ -1,6 +1,6 @@
 //! Native NetQuake server host binding.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/network-q1.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q1.ts`
 //! (`Q1ApplicationServerBindingOptions`, `createQ1ApplicationServerHost`).
 //!
 //! # Missing siblings

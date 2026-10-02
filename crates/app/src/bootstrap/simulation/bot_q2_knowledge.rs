@@ -1,6 +1,6 @@
 //! Q2 selected-arsenal bot weapon knowledge.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/bot-q2-knowledge.ts`.
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-q2-knowledge.ts`.
 //!
 //! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
 //! The [`Q2BotKnowledgeSimulation`] seam exposes exactly the donor's
