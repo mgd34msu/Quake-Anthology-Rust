@@ -45,6 +45,7 @@ use qa_world::session::{
 };
 
 use super::q1_client::Q1ApplicationClientHost;
+use super::q1_demo::NetQuakeDemoRemote;
 use super::remote_world::{RemoteWorldContent, RemoteWorldError};
 use super::types::{
     ApplicationNetworkPlayer, ArsenalWarning, PlayerAmmo, PlayerArsenalItem, PlayerArsenalKind, PlayerUi, PlayerView,
@@ -1613,6 +1614,35 @@ impl<H: Q1RemoteHost + 'static> RemotePresentationAccess for Q1RemotePresentatio
 
     fn player_view(&self, actor: &ActorId) -> PlayerView {
         Q1RemotePresentation::player_view(self, actor)
+    }
+}
+
+/// Demo-input surface over the canonical presentation.
+///
+/// Each body resolves to the inherent presentation method of the same
+/// name (donor `Q1RemotePresentation` in
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/remote-q1.ts`).
+/// Readiness follows the donor demo input: signon plus a published player
+/// and output.
+impl<H: Q1RemoteHost + 'static> NetQuakeDemoRemote for Q1RemotePresentation<H> {
+    fn demo_ready(&self) -> bool {
+        self.player().is_some() && self.output().is_some()
+    }
+
+    fn recorded_seconds(&self) -> f64 {
+        self.recorded_seconds()
+    }
+
+    fn receive(&mut self, messages: &[NetQuakeMessage], milliseconds: f64, _assert_current: &dyn Fn()) {
+        self.receive(messages, milliseconds as u64);
+    }
+
+    fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool) {
+        self.set_demo_view_angles(*angles, interpolate);
+    }
+
+    fn sample_demo(&mut self, seconds: f64) {
+        let _ = self.sample_demo(seconds);
     }
 }
 

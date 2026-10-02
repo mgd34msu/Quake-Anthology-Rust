@@ -668,7 +668,7 @@ mod tests {
 
         fn receive(&mut self, _messages: &[NetQuakeMessage], _ms: f64, _assert: &dyn Fn()) {}
 
-        fn set_demo_view_angles(&mut self, _angles: &Vec3, _absolute: bool) {}
+        fn set_demo_view_angles(&mut self, _angles: &Vec3, _interpolate: bool) {}
 
         fn sample_demo(&mut self, seconds: f64) {
             self.samples.push(seconds);
@@ -690,7 +690,7 @@ mod tests {
     struct MockQwShared;
 
     impl QwDemoShared for MockQwShared {
-        fn set_demo_view_angles(&mut self, _angles: &Vec3, _absolute: bool) {}
+        fn set_demo_view_angles(&mut self, _angles: &Vec3, _interpolate: bool) {}
 
         fn sample_demo(&mut self, _seconds: f64) {}
     }

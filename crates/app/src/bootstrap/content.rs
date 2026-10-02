@@ -1766,6 +1766,17 @@ impl<'a, P: ApplicationContentPreparer> LoadedApplicationContent<'a, P> {
             .collect()
     }
 
+    /// Borrow the main and opened mounts (`openedMounts`, borrowed).
+    #[must_use]
+    pub fn opened_mount_refs(&self) -> Vec<&MountedContent> {
+        if self.lifecycle.closed.get() {
+            return Vec::new();
+        }
+        std::iter::once(self.mounts.as_ref())
+            .chain(self.opened.iter().map(|mounts| mounts.as_ref()))
+            .collect()
+    }
+
     /// Open (or reuse) mounts scoped to a content identity (`forContent`).
     pub fn for_content(&mut self, content: &ContentId) -> Result<Rc<MountedContent>, ContentError> {
         self.scope().for_content(content)
@@ -3280,5 +3291,96 @@ mod tests {
         assert!(Path::new(&content.write_root).is_dir());
         content.mounts.close();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    fn q3_seed_plan() -> ResolvedMountPlan {
+        ResolvedMountPlan {
+            id: create_mount_plan_id("test", "q3bind").expect("plan id"),
+            mounts: Vec::new(),
+            default_order: Vec::new(),
+            prefix_orders: Vec::new(),
+        }
+    }
+
+    fn q3_base_options() -> ApplicationOptions {
+        ApplicationOptions {
+            product: "q3-baseq3".to_string(),
+            ..ApplicationOptions::default()
+        }
+    }
+
+    #[test]
+    fn q3_client_content_drives_loaded_application_content() {
+        use crate::bootstrap::network::q3_client_content::{Q3ClientContent, Q3ClientLoadedContent};
+
+        let fixture = load_fixture("q3-client-bind");
+        let mut arena = WorldByteArena::default();
+        let mut preparer = StubPreparer::default();
+        let loaded = load_application_content(
+            &fixture.options,
+            Some(fixture.recipe.clone()),
+            None,
+            Some(fixture.catalog.clone()),
+            None,
+            &StubCompat,
+            &mut StubQ3,
+            &mut preparer,
+            &mut arena,
+        )
+        .expect("load");
+        let mounts = loaded.catalog_mounts();
+        assert!(std::ptr::eq(mounts.catalog, &loaded.catalog));
+        assert_eq!(mounts.plan.id, loaded.mounts.plan.id);
+        assert_eq!(loaded.mounted_content().len(), 1);
+
+        let seed = stock_catalog();
+        let plan = q3_seed_plan();
+        let info = "\\sv_pure\\0\\fs_game\\";
+        let mut content = Q3ClientContent::open(&q3_base_options(), info, 7, &seed, &plan, |policy| {
+            assert!(policy.is_none());
+            Ok(loaded)
+        })
+        .expect("open");
+        assert!(!content.pure());
+        assert!(content.content().is_some());
+        assert!(content.matches(info, 7));
+        let command = content.referenced_pure_command(3).expect("command");
+        assert!(command.starts_with("cp "));
+        content.close();
+        assert!(content.content().is_none());
+    }
+
+    #[test]
+    fn q3_client_content_open_loaded_runs_canonical_loader() {
+        use crate::bootstrap::network::q3_client_content::{Q3ClientContent, Q3ClientContentError};
+
+        let seed = stock_catalog();
+        let plan = q3_seed_plan();
+        let options = ApplicationContentOptions {
+            base: q3_base_options(),
+            remote_content: Some(remote_content_selection(RemoteContentBase::Q3Baseq3, "baseq3").expect("remote")),
+            q3_product: None,
+        };
+        let mut arena = WorldByteArena::default();
+        let mut preparer = StubPreparer::default();
+        let result = Q3ClientContent::open_loaded(
+            &options,
+            "\\sv_pure\\0\\fs_game\\",
+            7,
+            &seed,
+            &plan,
+            None,
+            &StubCompat,
+            &mut StubQ3,
+            &mut preparer,
+            &mut arena,
+        );
+        let Err(error) = result else {
+            panic!("loader runs");
+        };
+        assert!(matches!(
+            error,
+            Q3ClientContentError::Load(ContentError::RemoteProductMismatch)
+        ));
     }
 }
