@@ -2,15 +2,16 @@
 //!
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q2-console.ts`
 //! (`q2OperatorPlayerName`, `ApplicationQ2ConsoleOptions`, `ApplicationQ2Console`, plus the
-//! donor's re-export of `LMCTF_CONSOLE_NAMES`). The simulation, content mounts, and LMCTF
-//! match rules (`./simulation/runtime.ts`, `./content.ts`,
-//! `src/content/q2/multiplayer/lmctf/runtime.ts`, all out of scope) arrive through the
-//! [`Q2ConsoleHost`] seam, which keeps every donor behavior here: the constructor guards,
-//! `quit`/`map`/`say` forwarding, the `status`/`dumpuser` reports, shared-name selection,
-//! and the maplist load with its line parsing. The donor's async file open is sync through
-//! the host, and `bindLmctfConsoleRules` stays host-owned: its sibling
-//! (`src/settings/server/lmctf-cvars.ts`) is out of scope and its bind function has no
-//! Rust port yet, so this module cannot re-export it.
+//! donor's re-export of `LMCTF_CONSOLE_NAMES`). The simulation runtime
+//! (`./simulation/runtime.ts`, out of scope) arrives through the [`Q2ConsoleHost`] seam,
+//! which keeps every donor behavior here: the constructor guards, `quit`/`map`/`say`
+//! forwarding, the `status`/`dumpuser` reports, shared-name selection, and the maplist
+//! load with its line parsing. Content mounts and LMCTF match rules are the canonical
+//! `super::content::RemoteContentMounts` and
+//! `qa_content::q2::multiplayer::lmctf::runtime::Q2Lmctf` ports, held host-side; the
+//! donor's async file open is sync through the host. `bindLmctfConsoleRules` is the
+//! canonical [`bind_lmctf_console_rules`], re-exported below for host seam
+//! implementations.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ use qa_core::cmd_buffer::{BufferError, CommandBuffer, CommandContext, Invocation
 use qa_core::cvar::CvarRegistry;
 use thiserror::Error;
 
+pub use crate::settings::q2_owner::bind_lmctf_console_rules;
 pub use crate::settings::server::LMCTF_CONSOLE_NAMES;
 
 /// Parse a Q2 userinfo string into ordered pairs (donor `q2Userinfo`).
@@ -100,7 +102,8 @@ pub trait Q2ConsoleHost {
     fn maplist_file_name(&self) -> String;
     /// Open a match-content file, or [`None`] when absent.
     fn match_file(&mut self, path: &str) -> Option<Vec<u8>>;
-    /// Apply the out-of-scope LMCTF console rules to the source registry.
+    /// Apply the canonical LMCTF console rules to the source registry (hosts call
+    /// the re-exported [`bind_lmctf_console_rules`] on their registry and rules).
     fn bind_lmctf_console_rules(&mut self);
     /// Replace the LMCTF map list.
     fn set_lmctf_map_list(&mut self, maps: Vec<String>);

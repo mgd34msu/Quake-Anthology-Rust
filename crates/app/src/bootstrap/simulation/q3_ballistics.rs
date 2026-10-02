@@ -12,15 +12,19 @@
 //! unnecessary here). Random draws bridge through a
 //! [`GameRandomMirror`] seeded from the host stream, syncing the seed
 //! back after each call so the donor's single stream stays exact.
-//! `WeaponBehaviorProjectilePort` (donor `contracts/weapon-behavior.ts`,
-//! out of scope) is shimmed minimally as [`Q3WeaponBehaviorPort`]:
-//! only the launch/step overrides this file consumes are named.
+//! `WeaponBehaviorProjectilePort` (donor `contracts/weapon-behavior.ts`) is the canonical
+//! [`WeaponBehaviorProjectilePort`](qa_content::q2::support::contracts::WeaponBehaviorProjectilePort)
+//! port. [`Q3WeaponBehaviorPort`] keeps only the launch/step overrides this file consumes,
+//! and [`CanonicalWeaponBehaviorPort`] adapts any canonical port onto it.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_content::contract::ProjectileRole;
+use qa_content::q2::support::contracts::{
+    BodyState as ContractBodyState, WeaponBehaviorLaunch, WeaponBehaviorProjectilePort, WeaponTrajectoryUpdate,
+};
 use qa_content::q3::base::game::ballistics_math::{q3_missile_parameters, q3_nail_velocity};
 use qa_content::q3::base::game::entities::{GameRandomMirror, SimRandom};
 use qa_content::q3::base::game::grapple::{
@@ -390,12 +394,59 @@ pub struct Q3BehaviorLaunch {
 }
 
 /// Weapon behavior overrides consumed by shared ballistics (minimal
-/// `WeaponBehaviorProjectilePort`).
+/// [`WeaponBehaviorProjectilePort`] view).
 pub trait Q3WeaponBehaviorPort {
     /// Override a launch body, if the behavior replaces it.
     fn launch(&self, request: &Q3BehaviorLaunch) -> Option<BodyState>;
     /// Override a flight body, if the behavior replaces it.
     fn step(&self, projectile: &OwnedActor, body: &BodyState, time_seconds: f64) -> Option<BodyState>;
+}
+
+/// Canonical-port adapter: any canonical [`WeaponBehaviorProjectilePort`] plugs into
+/// shared ballistics through this wrapper, which merges trajectory updates into bodies.
+pub struct CanonicalWeaponBehaviorPort<P>(pub RefCell<P>);
+
+impl<P: WeaponBehaviorProjectilePort> Q3WeaponBehaviorPort for CanonicalWeaponBehaviorPort<P> {
+    fn launch(&self, request: &Q3BehaviorLaunch) -> Option<BodyState> {
+        let update = self.0.borrow_mut().launch(&WeaponBehaviorLaunch {
+            projectile: request.projectile.clone(),
+            shooter: request.shooter.clone(),
+            weapon: request.weapon.clone(),
+            role: request.role,
+            time_seconds: request.time_seconds,
+            body: contract_body(&request.body),
+        })?;
+        Some(apply_trajectory_update(&request.body, &update))
+    }
+
+    fn step(&self, projectile: &OwnedActor, body: &BodyState, time_seconds: f64) -> Option<BodyState> {
+        let update = self
+            .0
+            .borrow_mut()
+            .step(projectile, &contract_body(body), time_seconds)?;
+        Some(apply_trajectory_update(body, &update))
+    }
+}
+
+/// Project a session body onto the canonical contract body shape.
+fn contract_body(body: &BodyState) -> ContractBodyState {
+    ContractBodyState {
+        origin: body.origin,
+        angles: body.angles,
+        velocity: body.velocity,
+        bounds: body.bounds,
+        ground: body.ground.clone(),
+    }
+}
+
+/// Merge a canonical trajectory update into its launch/flight body.
+fn apply_trajectory_update(body: &BodyState, update: &WeaponTrajectoryUpdate) -> BodyState {
+    BodyState {
+        origin: update.origin,
+        velocity: update.velocity,
+        angles: update.angles,
+        ..body.clone()
+    }
 }
 
 /// Registered projectile step callback.
@@ -3162,5 +3213,67 @@ mod tests {
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0].trajectory.base, origin);
         assert_eq!(checkpoints[0].trajectory.delta, velocity);
+    }
+
+    struct CanonicalBehavior {
+        update: Option<WeaponTrajectoryUpdate>,
+    }
+
+    impl WeaponBehaviorProjectilePort for CanonicalBehavior {
+        fn controls_trajectory(&self, _projectile: &ActorId) -> bool {
+            true
+        }
+
+        fn launch(&mut self, _input: &WeaponBehaviorLaunch) -> Option<WeaponTrajectoryUpdate> {
+            self.update
+        }
+
+        fn step(
+            &mut self,
+            _projectile: &OwnedActor,
+            _body: &ContractBodyState,
+            _time_seconds: f64,
+        ) -> Option<WeaponTrajectoryUpdate> {
+            self.update
+        }
+    }
+
+    #[test]
+    fn canonical_port_adapts_onto_ballistics() {
+        let armed = fixture();
+        let shooter = armed.shooter();
+        let body = BodyState {
+            origin: vec3(1.0, 2.0, 3.0),
+            angles: zero(),
+            velocity: zero(),
+            bounds: Bounds {
+                min: zero(),
+                max: zero(),
+            },
+            ground: None,
+        };
+        let update = WeaponTrajectoryUpdate {
+            origin: vec3(5.0, 6.0, 7.0),
+            velocity: vec3(1.0, 2.0, 3.0),
+            angles: vec3(0.0, 90.0, 0.0),
+        };
+        let port = CanonicalWeaponBehaviorPort(RefCell::new(CanonicalBehavior { update: Some(update) }));
+        let launched = port
+            .launch(&Q3BehaviorLaunch {
+                projectile: shooter.clone(),
+                shooter: shooter.id().clone(),
+                weapon: "q3:weapon/rocketlauncher".to_string(),
+                role: ProjectileRole::Rocket,
+                time_seconds: 1.0,
+                body: body.clone(),
+            })
+            .unwrap();
+        assert_eq!(launched.origin, update.origin);
+        assert_eq!(launched.velocity, update.velocity);
+        assert_eq!(launched.angles, update.angles);
+        assert_eq!(launched.bounds, body.bounds);
+        let stepped = port.step(&shooter, &body, 2.0).unwrap();
+        assert_eq!(stepped.origin, update.origin);
+        assert_eq!(stepped.ground, None);
     }
 }

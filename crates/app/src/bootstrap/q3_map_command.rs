@@ -1,16 +1,18 @@
 //! Quake III `map`/`devmap`/`spmap` launch resolution.
 //!
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-map-command.ts`
-//! (`Q3MapLaunch`, `q3MapLaunch`, `applyQ3MapLaunch`). The product policy
-//! (`src/core/q3-product-policy.ts`, out of scope) is shimmed minimally below: this donor
-//! only reads which map commands the policy allows (`q3ProductMapCommands`), which is the
-//! prerelease-demo `["map"]` versus the full retail list. When the real policy port lands,
-//! [`Q3MapCommandPolicy`] should delegate to it.
+//! (`Q3MapLaunch`, `q3MapLaunch`, `applyQ3MapLaunch`). The product policy is the canonical
+//! [`Q3ProductPolicy`](qa_content::q3::product_restriction::Q3ProductPolicy) port; this
+//! donor only reads which map commands the policy allows, so [`Q3MapCommandPolicy`] is a
+//! thin alias over it and [`q3_map_command_policy_commands`] delegates the
+//! prerelease-demo check to the canonical
+//! [`q3_prerelease_demo`](qa_content::q3::product_restriction::q3_prerelease_demo).
 
+use qa_content::q3::product_restriction::{q3_prerelease_demo, Q3ProductPolicy, TeamArenaUi};
 use qa_core::cvar::{CvarError, CvarRegistry};
 use thiserror::Error;
 
-/// Minimal stand-in for the donor `Q3ProductPolicy` (out of scope).
+/// Map-command view of the canonical donor `Q3ProductPolicy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Q3MapCommandPolicy {
     /// Retail build: all four map commands.
@@ -21,10 +23,23 @@ pub enum Q3MapCommandPolicy {
     PrereleaseTeamArenaDemo,
 }
 
+impl From<Q3MapCommandPolicy> for Q3ProductPolicy {
+    /// Lower the map-command view onto the canonical policy.
+    fn from(policy: Q3MapCommandPolicy) -> Self {
+        match policy {
+            Q3MapCommandPolicy::Retail => Q3ProductPolicy::Retail,
+            Q3MapCommandPolicy::PrereleaseDemo => Q3ProductPolicy::PrereleaseDemo {
+                team_arena_ui: TeamArenaUi::Retail,
+            },
+            Q3MapCommandPolicy::PrereleaseTeamArenaDemo => Q3ProductPolicy::PrereleaseTaDemo,
+        }
+    }
+}
+
 /// Map commands a policy allows (donor `q3ProductMapCommands`).
 #[must_use]
 pub fn q3_map_command_policy_commands(policy: Q3MapCommandPolicy) -> &'static [&'static str] {
-    if policy == Q3MapCommandPolicy::PrereleaseDemo {
+    if q3_prerelease_demo(policy.into()) {
         &["map"]
     } else {
         &["map", "devmap", "spmap", "spdevmap"]

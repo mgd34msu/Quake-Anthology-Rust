@@ -383,32 +383,11 @@ pub enum PresentationOwnerEventKind {
     Refreshed,
 }
 
-/// Absorbed `Q2CompositionEvent` (donor
-/// `/home/buzzkill/Projects/quake-typescript/src/content/composition/q2/types.ts`,
-/// out of scope).
-#[derive(Debug, Clone, PartialEq)]
-pub enum ApplicationCompositionEvent {
-    /// Mission-pack player effect.
-    MissionpackPlayer(Q2MissionPackPlayerEffect),
-    /// Mission-pack entity event.
-    MissionpackEntity(Q2MissionPackEntityEvent),
-    /// CTF event (only the grapple cable presents).
-    Ctf(Q2CtfEvent),
-    /// LMCTF event (only the grapple cable presents).
-    Lmctf(LmctfEvent),
-    /// Session kick (rejected: reached the presentation owner).
-    Kick {
-        /// Kicked actor.
-        actor: ActorId,
-    },
-    /// Grapple-prediction toggle (rejected: reached the presentation owner).
-    GrapplePrediction {
-        /// Grapple owner.
-        actor: ActorId,
-        /// Whether prediction is suppressed.
-        suppressed: bool,
-    },
-}
+/// Canonical `Q2CompositionEvent` (donor
+/// `/home/buzzkill/Projects/quake-typescript/src/content/composition/q2/types.ts`).
+/// Only the grapple cable presents here; session kick and grapple-prediction
+/// are rejected as having reached the presentation owner.
+pub use qa_content::q2::composition::types::Q2CompositionEvent as ApplicationCompositionEvent;
 
 /// Absorbed `Q3SourceEvent` pick (donor
 /// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/host.ts`,
