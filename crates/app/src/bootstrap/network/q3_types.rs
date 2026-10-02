@@ -182,8 +182,14 @@ pub trait Q3ApplicationServerHost {
     fn game_state(&self, player: &Q3ApplicationPlayer, server_id: i32) -> Gamestate;
     /// Snapshot for a player.
     fn snapshot(&self, player: &Q3ApplicationPlayer) -> Q3ApplicationSnapshot;
-    /// Begin a player session.
-    fn begin(&mut self, _player: &Q3ApplicationPlayer, _command: &WireUserCommand) {}
+    /// Begin a player session for the first user command. Returns whether the
+    /// network should also run the command through [`input`](Self::input):
+    /// the donor calls `input` when `begin` is undefined, so the default
+    /// reports unhandled while session owners start the session and return
+    /// `false`.
+    fn begin(&mut self, _player: &Q3ApplicationPlayer, _command: &WireUserCommand) -> bool {
+        true
+    }
     /// Convert a client command into an actor command (donor
     /// sync-or-async; resolves inline here).
     fn input(&mut self, player: &Q3ApplicationPlayer, command: &WireUserCommand, sequence: u32)
