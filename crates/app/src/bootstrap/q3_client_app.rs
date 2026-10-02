@@ -1254,7 +1254,7 @@ impl ApplicationQ3Client {
                 .clients
                 .iter()
                 .find(|client| client.actor == options.common.local.actor)
-                .map(|client| (client.state.origin, client.state.view_height, client.state.view_angles)),
+                .map(|client| (client.state.origin(), client.state.viewheight, client.state.viewangles)),
         };
         let Some((origin, view_height, view_angles)) = player else {
             if !matches!(options.kind, Q3ClientKindOptions::Qvm(_)) {
@@ -3062,12 +3062,12 @@ mod tests {
     use qa_client::materials::q3_lighting::DynamicLight;
     use qa_client::render::types::ResourceOwner;
     use qa_content::contract::PresentationOwner;
+    use qa_content::q3::base::shared::player_state::create_player_state;
     use qa_content::q3::presentation::movement_host::{CommandTiming, MoveBounds, PresentationMovementOptions};
     use qa_content::q3::presentation::ref_entity::ShadedFields;
     use qa_core::cmd_buffer::BufferOptions;
     use qa_core::identity::{IdentityOwner, ProviderId};
     use qa_guest::qvm::game_data::{ModuleIdentity, QvmArtifact, QvmImage, QvmRole};
-    use qa_guest::qvm::player_record::QvmPlayerState;
     use qa_net::q3_net::Q3Product;
 
     #[derive(Debug, Default)]
@@ -3856,12 +3856,10 @@ mod tests {
     }
 
     fn local_initial(actor: &ActorId, slot: i32, origin: Vec3, height: i32, angles: Vec3) -> Q3SourcePresentationState {
-        let player = QvmPlayerState {
-            origin,
-            view_height: height,
-            view_angles: angles,
-            ..QvmPlayerState::default()
-        };
+        let mut player = create_player_state(Product::Baseq3, None);
+        player.set_origin(origin);
+        player.viewheight = height;
+        player.viewangles = angles;
         Q3SourcePresentationState {
             product: Product::Baseq3,
             time: 0,

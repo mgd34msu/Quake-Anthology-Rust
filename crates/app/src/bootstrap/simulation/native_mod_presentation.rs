@@ -1096,6 +1096,7 @@ mod tests {
                         distance: 0.0,
                     },
                     surface_flags: None,
+                    contents: None,
                 },
             }
         }

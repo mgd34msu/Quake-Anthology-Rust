@@ -8,7 +8,10 @@
 
 use std::rc::Rc;
 
-use qa_bots::scene::{BspPlane as BotsBspPlane, Q2SurfaceInfo as BotsSurfaceInfo, TraceContact as BotsTraceContact};
+use qa_bots::scene::{
+    BspPlane as BotsBspPlane, Q2SecondaryImpact as BotsSecondaryImpact, Q2SurfaceInfo as BotsSurfaceInfo,
+    TraceContact as BotsTraceContact,
+};
 use qa_bots::scene::{
     LeafContents, PointContentsQuery, PointContentsResult, Q1MoveRule, QueryTarget, SceneQueries, TraceDetail,
     TraceHit as BotsTraceHit, TracePolicy, TraceQuery, TraceResult as BotsTraceResult, TraceShape, VisibilityKind,
@@ -29,8 +32,8 @@ use qa_content::q2::foundation::host::{
     Q2WeaponTarget,
 };
 use qa_content::q2::support::contracts::{
-    Q2BspPlane, Q2SurfaceInfo, Q2TraceFields, TraceContact, TraceFamily, TraceHit, TraceResult, TransitionIntent,
-    WeaponBehaviorProjectilePort,
+    Q2BspPlane, Q2SecondaryPlane, Q2SurfaceInfo, Q2TraceFields, TraceContact, TraceFamily, TraceHit, TraceResult,
+    TransitionIntent, WeaponBehaviorProjectilePort,
 };
 use qa_content::q2::support::misc::Q2RereleaseRandomSource;
 use qa_content::q2::support::tables::{
@@ -215,6 +218,7 @@ pub fn create_q1_actor_host(bindings: Q1ActorHostBindings, world: ActorHostWorld
             in_water,
             source_plane,
             surface_flags,
+            ..
         } = result.detail
         else {
             panic!("Q1 actor trace returned another source representation");
@@ -635,6 +639,13 @@ fn convert_surface(surface: BotsSurfaceInfo) -> Q2SurfaceInfo {
     }
 }
 
+fn convert_secondary(secondary: BotsSecondaryImpact) -> Q2SecondaryPlane {
+    Q2SecondaryPlane {
+        plane: convert_bsp_plane(secondary.plane),
+        surface: secondary.surface.map(convert_surface),
+    }
+}
+
 fn convert_trace(result: BotsTraceResult) -> TraceResult {
     TraceResult {
         fraction: result.fraction,
@@ -656,6 +667,7 @@ fn convert_trace(result: BotsTraceResult) -> TraceResult {
                 in_water,
                 source_plane,
                 surface_flags,
+                ..
             } => TraceFamily::Q1 {
                 in_open,
                 in_water,
@@ -666,11 +678,12 @@ fn convert_trace(result: BotsTraceResult) -> TraceResult {
                 contents,
                 surface,
                 source_plane,
+                secondary,
             } => TraceFamily::Q2(Q2TraceFields {
                 contents,
                 surface: surface.map(convert_surface),
                 source_plane: convert_bsp_plane(source_plane),
-                secondary: None,
+                secondary: secondary.map(convert_secondary),
             }),
             TraceDetail::Q3 {
                 contents,
@@ -795,6 +808,7 @@ mod tests {
                     distance: 3.0,
                 },
                 surface_flags: Some(4),
+                contents: None,
             },
         }
     }
@@ -822,6 +836,7 @@ mod tests {
                 plane_type: 0,
                 signbits: 0,
             },
+            secondary: None,
         };
         let converted = convert_trace(result);
         match converted.family {

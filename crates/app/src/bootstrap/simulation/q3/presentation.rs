@@ -8,10 +8,13 @@
 //! (`q3SourcePresentationState`, `q3SourceModels`) land with `super::runtime`
 //! in the same partition to keep every commit compiling.
 //!
-//! Two entity-core projections apply. Client rows carry the pool's owned
-//! `PlayerState` mirror (`entities.rs`), not the behavior-rich shared
-//! `PlayerState`: the pool never stores the shared type, so converting
-//! would invent data. The pool core also records no `r.model` word, so the
+//! Two entity-core projections apply. Client rows carry the shared
+//! `PlayerState` (donor `content/q3/base/shared/player-state.ts`), projected
+//! from the pool's owned `entities.rs` mirror by [`shared_player_state`]:
+//! the pool records no view height, velocity, timers, or movement tuning,
+//! so those snapshot words take standing defaults (view height 26, the
+//! donor `DEFAULT_VIEWHEIGHT`, matching fresh guest states). The pool core
+//! also records no `r.model` word, so the
 //! donor's inline-model arm is reconstructed from the spawn paths the port
 //! implements: triggers always carry `NOCLIENT` (filtered before the model
 //! arms) and movers always spawn from `*N` brush models, so `ET_MOVER` with
@@ -19,12 +22,15 @@
 //! for every entity the ported spawns can produce.
 
 use qa_content::contract::{ContentId, GameFamily};
-use qa_content::q3::base::game::entities::{EntityPool, PlayerState};
+use qa_content::q3::base::game::entities::{
+    EntityPool, PlayerState as EntityPlayerState, PlayerStateSlots as EntityPlayerStateSlots,
+};
 use qa_content::q3::base::game::utilities::ConfigStringStore;
 use qa_content::q3::base::shared::definitions::{EntityType, Product, Weapon};
 use qa_content::q3::base::shared::entity_shared::ServerEntityFlags;
 use qa_content::q3::base::shared::entity_state::EntityState;
 use qa_content::q3::base::shared::items::item_at;
+use qa_content::q3::base::shared::player_state::{PlayerState, PlayerStateSlots as SharedPlayerStateSlots};
 use qa_content::q3::base::shared::trajectory::evaluate_trajectory;
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
@@ -51,7 +57,7 @@ pub struct Q3SourcePresentationEntity {
 
 /// One copied source client row.
 ///
-/// The pool core's `PlayerState` is `Clone`-only, so this row (and the
+/// The shared `PlayerState` is `Clone`-only, so this row (and the
 /// state below) cannot implement `Debug`/`PartialEq`.
 #[derive(Clone)]
 pub struct Q3SourcePresentationClient {
@@ -116,7 +122,7 @@ pub fn q3_pool_presentation_state(
             clients.push(Q3SourcePresentationClient {
                 actor: entity.actor.id.clone(),
                 slot: slot as i32,
-                state: client.ps.clone(),
+                state: shared_player_state(&client.ps),
             });
         }
     }
@@ -133,6 +139,50 @@ pub fn q3_pool_presentation_state(
         entities,
         clients,
         configstrings,
+    }
+}
+
+/// Project a pool client state onto the shared snapshot shape.
+///
+/// Every word the pool mirror carries copies across field for field. The
+/// words it lacks (view height, velocity, timers, movement tuning) take
+/// standing defaults: view height is the donor `DEFAULT_VIEWHEIGHT` (26),
+/// matching the fresh guest states in `super::guest_player`.
+fn shared_player_state(source: &EntityPlayerState) -> PlayerState {
+    let mut state = PlayerState::new(source.product, None);
+    state.set_origin(source.origin);
+    state.pm_type = source.pm_type as i32;
+    state.pm_flags = source.pm_flags;
+    state.pm_time = source.pm_time;
+    state.legs_anim = source.legs_anim;
+    state.torso_anim = source.torso_anim;
+    state.e_flags = source.e_flags;
+    state.event_sequence = source.event_sequence;
+    copy_slots(&source.events, &mut state.events);
+    copy_slots(&source.event_parms, &mut state.event_parms);
+    state.external_event = source.external_event;
+    state.external_event_parm = source.external_event_parm;
+    state.external_event_time = source.external_event_time;
+    state.client_num = source.client_num;
+    state.weapon = source.weapon as i32;
+    state.weapon_state = source.weapon_state as i32;
+    state.viewangles = source.viewangles;
+    state.viewheight = 26;
+    copy_slots(&source.stats, &mut state.stats);
+    copy_slots(&source.persistant, &mut state.persistant);
+    copy_slots(&source.powerups, &mut state.powerups);
+    copy_slots(&source.ammo, &mut state.ammo);
+    state.generic1 = source.generic1;
+    state.pmove_framecount = source.pmove_framecount;
+    state
+}
+
+/// Copy pool slot values into shared slots, clamped to the shorter side.
+fn copy_slots(source: &EntityPlayerStateSlots, target: &mut SharedPlayerStateSlots) {
+    for (index, value) in source.copy().iter().enumerate() {
+        if index < target.len() {
+            target.set(index, *value);
+        }
     }
 }
 

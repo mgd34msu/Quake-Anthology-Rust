@@ -181,7 +181,7 @@ pub fn prepare_native_q2_map(
 #[cfg(test)]
 mod tests {
     use qa_bots::scene::Q3WorldGeometry;
-    use qa_content::bsp::{BspFormat, Q1Map};
+    use qa_content::bsp::{BspFormat, BspLighting, Q1Map};
     use qa_content::common::Bounds;
 
     use super::*;
@@ -226,7 +226,8 @@ mod tests {
             surface_edges: Vec::new(),
             leaf_faces: Vec::new(),
             visibility: b"",
-            lighting: b"",
+            monochrome_lighting: b"",
+            lighting: BspLighting::Luminance8 { samples: b"" },
         })
     }
 

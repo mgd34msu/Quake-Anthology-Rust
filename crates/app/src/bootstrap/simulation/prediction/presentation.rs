@@ -16,8 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_content::contract::GameFamily;
-use qa_content::q3::base::game::entities::PlayerState as EntitiesPlayerState;
-use qa_content::q3::base::shared::player_state::{PlayerState, PlayerStateSlots, UserCommand as Q3SourceUserCommand};
+use qa_content::q3::base::shared::player_state::{PlayerState, UserCommand as Q3SourceUserCommand};
 use qa_content::q3::base::world::{TraceContact as ContentTraceContact, TraceSolidity};
 use qa_content::q3::presentation::movement_host::{
     CommandTiming, MoveBounds, PresentationMovementHost, PresentationMovementOptions,
@@ -816,10 +815,10 @@ fn capture_published(
         .iter()
         .find(|client| client.actor == *actor.id())
         .ok_or(PresentationPredictionError::NoSnapshot(published.time))?;
-    // The pool player state is a partial mirror: bridge it into a shared
-    // player state, falling back to presentation time for the missing
-    // command clock.
-    let ps = shared_player_state(&published_client.state, published.time);
+    // The published row is already a shared player state; stamp the
+    // presentation time as the command clock the pool mirror lacks.
+    let mut ps = published_client.state.clone();
+    ps.command_time = published.time;
     let base = MovementPredictionSnapshot {
         sequence: player.last_sequence(),
         command_time_milliseconds: ps.command_time as f64,
@@ -851,40 +850,6 @@ fn capture_published(
     };
     read_prediction_source_state(&base, &ps, entities.as_ref())
         .map_err(|error| PresentationPredictionError::SourceState(error.to_string()))
-}
-
-/// Copy pool slots into shared slots.
-fn copy_slots(slots: &qa_content::q3::base::game::entities::PlayerStateSlots) -> PlayerStateSlots {
-    let values = slots.copy();
-    PlayerStateSlots::new(values.len(), Some(values), None, None)
-}
-
-/// Bridge a pool player state into a shared player state.
-fn shared_player_state(ps: &EntitiesPlayerState, command_time: i32) -> PlayerState {
-    let mut shared = PlayerState::new(ps.product, None);
-    shared.command_time = command_time;
-    shared.pm_type = ps.pm_type as i32;
-    shared.pm_flags = ps.pm_flags;
-    shared.pm_time = ps.pm_time;
-    shared.set_origin(ps.origin);
-    shared.legs_anim = ps.legs_anim;
-    shared.torso_anim = ps.torso_anim;
-    shared.e_flags = ps.e_flags;
-    shared.event_sequence = ps.event_sequence;
-    shared.events = copy_slots(&ps.events);
-    shared.event_parms = copy_slots(&ps.event_parms);
-    shared.external_event = ps.external_event;
-    shared.external_event_parm = ps.external_event_parm;
-    shared.external_event_time = ps.external_event_time;
-    shared.client_num = ps.client_num;
-    shared.weapon = ps.weapon as i32;
-    shared.weapon_state = ps.weapon_state as i32;
-    shared.viewangles = ps.viewangles;
-    shared.stats = copy_slots(&ps.stats);
-    shared.powerups = copy_slots(&ps.powerups);
-    shared.ammo = copy_slots(&ps.ammo);
-    shared.pmove_framecount = ps.pmove_framecount;
-    shared
 }
 
 /// Create a simulation-backed prediction host for a cgame seat.

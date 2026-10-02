@@ -736,9 +736,9 @@ impl<B: SelectedQ3SceneBackend + 'static, F: SelectedQ3BackendFactory<Backend = 
 mod tests {
     use qa_content::q3::base::shared::definitions::Product;
     use qa_content::q3::base::shared::entity_state::EntityState;
+    use qa_content::q3::base::shared::player_state::create_player_state;
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
-    use qa_guest::qvm::player_record::QvmPlayerState;
 
     use super::super::simulation::q3::types::{
         Q3SourcePresentationClient, Q3SourcePresentationEntity, Q3SourcePresentationString,
@@ -945,7 +945,7 @@ mod tests {
             clients: vec![Q3SourcePresentationClient {
                 actor,
                 slot: 0,
-                state: QvmPlayerState::default(),
+                state: create_player_state(Product::Baseq3, None),
             }],
             configstrings: vec![Q3SourcePresentationString {
                 index: 544,

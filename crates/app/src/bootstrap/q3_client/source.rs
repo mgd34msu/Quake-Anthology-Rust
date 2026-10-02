@@ -14,11 +14,11 @@ use std::collections::HashMap;
 
 use qa_content::q3::base::shared::definitions::Product;
 use qa_content::q3::base::shared::player_state::UserCommand as PredictionCommand;
+use qa_content::q3::base::shared::player_state::{PlayerState, PlayerStateSlots as SharedPlayerStateSlots};
 use qa_content::q3::presentation::prediction::ClientCommandHistory;
 use qa_content::q3::presentation::snapshots::SnapshotCurrent;
 use qa_core::cmd::{tokenize_command, Dialect, TextMode};
 use qa_core::identity::ActorId;
-use qa_guest::qvm::player_record::QvmPlayerState;
 use qa_net::common::commands::{ActorCommand, UserCommand as ActorUserCommand};
 use qa_net::q3_net::{Q3PlayerSlots, Q3PlayerState, Q3Product, Snapshot};
 use qa_net::q3_visibility::Q3VisibleEntities;
@@ -129,10 +129,12 @@ pub struct ApplicationQ3SourceOptions {
     pub level_shot: Option<Q3LevelShot>,
 }
 
-fn slots(values: &[i32; 16]) -> Q3PlayerSlots {
+fn shared_slots(values: &SharedPlayerStateSlots) -> Q3PlayerSlots {
     let mut slots = Q3PlayerSlots::new();
-    for (index, value) in values.iter().enumerate() {
-        slots.set(index, *value).expect("player slot index is in range");
+    for index in 0..values.len() {
+        slots
+            .set(index, values.get(index))
+            .expect("player slot index is in range");
     }
     slots
 }
@@ -146,57 +148,55 @@ fn transport_product(product: Product) -> Q3Product {
 
 /// Copy a source player state into its transport record.
 #[must_use]
-pub fn transport_player(product: Product, source: &QvmPlayerState) -> Q3PlayerState {
+pub fn transport_player(product: Product, source: &PlayerState) -> Q3PlayerState {
+    let origin = source.origin();
+    let velocity = source.velocity();
     Q3PlayerState {
         product: transport_product(product),
-        command_time: source.command_time_ms,
-        pm_type: source.movement_type,
+        command_time: source.command_time,
+        pm_type: source.pm_type,
         bob_cycle: source.bob_cycle,
-        pm_flags: source.movement_flags,
-        pm_time: source.movement_time_ms,
-        origin: [source.origin.x, source.origin.y, source.origin.z],
-        velocity: [source.velocity.x, source.velocity.y, source.velocity.z],
-        weapon_time: source.weapon_time_ms,
+        pm_flags: source.pm_flags,
+        pm_time: source.pm_time,
+        origin: [origin.x, origin.y, origin.z],
+        velocity: [velocity.x, velocity.y, velocity.z],
+        weapon_time: source.weapon_time,
         gravity: source.gravity,
         speed: source.speed,
-        delta_angles: [
-            source.delta_angle_words[0] as f32,
-            source.delta_angle_words[1] as f32,
-            source.delta_angle_words[2] as f32,
-        ],
-        ground_entity_num: source.ground_entity_number,
-        legs_timer: source.legs_timer_ms,
-        legs_anim: source.legs_animation,
-        torso_timer: source.torso_timer_ms,
-        torso_anim: source.torso_animation,
-        movement_dir: source.movement_direction,
+        delta_angles: [source.delta_angles.x, source.delta_angles.y, source.delta_angles.z],
+        ground_entity_num: source.ground_entity_num,
+        legs_timer: source.legs_timer,
+        legs_anim: source.legs_anim,
+        torso_timer: source.torso_timer,
+        torso_anim: source.torso_anim,
+        movement_dir: source.movement_dir,
         grapple_point: [source.grapple_point.x, source.grapple_point.y, source.grapple_point.z],
-        e_flags: source.flags,
+        e_flags: source.e_flags,
         event_sequence: source.event_sequence,
-        events: source.events,
-        event_parms: source.event_parameters,
+        events: [source.events.get(0), source.events.get(1)],
+        event_parms: [source.event_parms.get(0), source.event_parms.get(1)],
         external_event: source.external_event,
-        external_event_parm: source.external_event_parameter,
-        external_event_time: source.external_event_time_ms,
-        client_num: source.client_number,
+        external_event_parm: source.external_event_parm,
+        external_event_time: source.external_event_time,
+        client_num: source.client_num,
         weapon: source.weapon,
         weapon_state: source.weapon_state,
-        viewangles: [source.view_angles.x, source.view_angles.y, source.view_angles.z],
-        viewheight: source.view_height,
+        viewangles: [source.viewangles.x, source.viewangles.y, source.viewangles.z],
+        viewheight: source.viewheight,
         damage_event: source.damage_event,
         damage_yaw: source.damage_yaw,
         damage_pitch: source.damage_pitch,
         damage_count: source.damage_count,
-        stats: slots(&source.stats),
-        persistant: slots(&source.persistent),
-        powerups: slots(&source.powerups),
-        ammo: slots(&source.ammo),
+        stats: shared_slots(&source.stats),
+        persistant: shared_slots(&source.persistant),
+        powerups: shared_slots(&source.powerups),
+        ammo: shared_slots(&source.ammo),
         generic1: source.generic1,
         loop_sound: source.loop_sound,
-        jumppad_ent: source.jump_pad_entity,
-        ping: source.ping_ms,
-        pmove_framecount: source.movement_frame_count,
-        jumppad_frame: source.jump_pad_frame,
+        jumppad_ent: source.jumppad_ent,
+        ping: source.ping,
+        pmove_framecount: source.pmove_framecount,
+        jumppad_frame: source.jumppad_frame,
         entity_event_sequence: source.entity_event_sequence,
     }
 }
@@ -549,6 +549,7 @@ impl ApplicationQ3Source {
 mod tests {
     use super::*;
     use qa_content::q3::base::shared::entity_state::EntityState;
+    use qa_content::q3::base::shared::player_state::create_player_state;
     use qa_content::q3::presentation::prediction::CommandSource as PredictionCommandSource;
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
@@ -581,7 +582,7 @@ mod tests {
             clients: vec![Q3SourcePresentationClient {
                 actor: actor.clone(),
                 slot: 2,
-                state: QvmPlayerState::default(),
+                state: create_player_state(Product::Baseq3, None),
             }],
             configstrings: vec![Q3SourcePresentationString {
                 index: 1,
@@ -799,17 +800,11 @@ mod tests {
 
     #[test]
     fn transport_player_copies_fields_and_slots() {
-        let mut stats = [0; 16];
-        stats[3] = 11;
-        let mut ammo = [0; 16];
-        ammo[15] = 22;
-        let state = QvmPlayerState {
-            movement_type: 4,
-            origin: vec3(1.0, 2.0, 3.0),
-            stats,
-            ammo,
-            ..QvmPlayerState::default()
-        };
+        let mut state = create_player_state(Product::Missionpack, None);
+        state.pm_type = 4;
+        state.set_origin(vec3(1.0, 2.0, 3.0));
+        state.stats.set(3, 11);
+        state.ammo.set(15, 22);
         let record = transport_player(Product::Missionpack, &state);
         assert_eq!(record.product, Q3Product::MissionPack);
         assert_eq!(record.pm_type, 4);

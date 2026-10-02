@@ -129,7 +129,8 @@ mod tests {
             surface_edges: Vec::new(),
             leaf_faces: Vec::new(),
             visibility: &[],
-            lighting: &[],
+            monochrome_lighting: &[],
+            lighting: qa_content::bsp::BspLighting::Luminance8 { samples: &[] },
         };
         let world = ApplicationWorld::Q1(map);
         assert_eq!(

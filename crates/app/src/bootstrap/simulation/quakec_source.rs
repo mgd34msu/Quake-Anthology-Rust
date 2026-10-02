@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use qa_bots::entities::parse_entities;
 use qa_client::audio::wav::decode_quake_wav;
-use qa_content::bsp::read_q1_bsp;
+use qa_content::bsp::{read_q1_bsp, Q1BspOptions};
 use qa_content::contract::QuakeCApiIdentity;
 use qa_content::contract::ResolvedResourceReference;
 use qa_content::mdl::parse_mdl;
@@ -736,7 +736,7 @@ pub fn prepare_quake_c_resources(
         } else if name.ends_with(".spr") {
             model_bounds = Some(core_bounds(parse_spr(&asset.bytes, &name)?.bounds));
         } else if name.ends_with(".bsp") {
-            let model = read_q1_bsp(&asset.bytes, &name)?
+            let model = read_q1_bsp(&asset.bytes, &name, Q1BspOptions::default())?
                 .models
                 .into_iter()
                 .next()

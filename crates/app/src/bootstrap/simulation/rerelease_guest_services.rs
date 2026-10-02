@@ -1444,11 +1444,12 @@ impl RereleaseGuestServices {
             TraceContact::Plane { plane } => (plane.normal, plane.distance),
             TraceContact::None => (Vec3 { x: 0.0, y: 0.0, z: 0.0 }, 0.0),
         };
-        let (contents, surface, plane_type, signbits) = match &hit.detail {
+        let (contents, surface, plane_type, signbits, secondary) = match &hit.detail {
             TraceDetail::Q2 {
                 contents,
                 surface,
                 source_plane,
+                secondary,
             } => (
                 *contents as u32,
                 surface.as_ref().map(|info| TraceSurface {
@@ -1459,8 +1460,22 @@ impl RereleaseGuestServices {
                 }),
                 source_plane.plane_type as u8,
                 source_plane.signbits as u8,
+                secondary.as_ref().map(|impact| {
+                    (
+                        impact.plane.normal,
+                        impact.plane.distance,
+                        impact.plane.plane_type as u8,
+                        impact.plane.signbits as u8,
+                        impact.surface.as_ref().map(|info| TraceSurface {
+                            name: info.name.clone(),
+                            flags: info.flags as u32,
+                            value: 0,
+                            material: String::new(),
+                        }),
+                    )
+                }),
             ),
-            _ => (0, None, 0, 0),
+            _ => (0, None, 0, 0, None),
         };
         Q2Trace {
             all_solid: hit.all_solid,
@@ -1474,7 +1489,7 @@ impl RereleaseGuestServices {
             surface,
             contents,
             hit: HostTraceHit::World,
-            secondary: None,
+            secondary,
         }
     }
 }
@@ -2287,6 +2302,7 @@ mod tests {
                         plane_type: 0,
                         signbits: 0,
                     },
+                    secondary: None,
                 },
             }
         }
