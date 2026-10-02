@@ -43,6 +43,7 @@ pub mod native_q1_pusher;
 pub mod native_q2_map;
 pub mod native_q2_rerelease_save;
 pub mod native_q2_travel;
+pub mod network;
 pub mod network_q1;
 pub mod network_q1_quakec;
 pub mod network_q2_guest;
