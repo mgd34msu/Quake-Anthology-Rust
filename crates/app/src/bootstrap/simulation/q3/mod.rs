@@ -12,5 +12,6 @@ pub mod guest_world;
 pub mod host;
 pub mod player_state;
 pub mod presentation;
+pub mod runtime;
 pub mod server_state;
 pub mod types;

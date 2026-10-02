@@ -281,7 +281,7 @@ pub trait Q3SourceHost: MovementHost {
     /// Death animation sequence.
     fn death_animations(&self) -> Q3DeathAnimationSequence;
     /// Bot services.
-    fn bots(&self) -> Q3SourceBots<'_>;
+    fn bots(&self) -> Q3SourceBots<'static>;
     /// Current time in milliseconds.
     fn now(&self) -> i32;
     /// Schedule an actor think.

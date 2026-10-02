@@ -185,7 +185,7 @@ pub trait Q3HostOperations: MovementHost {
     /// Death animation sequence.
     fn death_animations(&self) -> Q3DeathAnimationSequence;
     /// Bot services.
-    fn bots(&self) -> Q3SourceBots<'_>;
+    fn bots(&self) -> Q3SourceBots<'static>;
     /// Current time in milliseconds.
     fn now(&self) -> i32;
     /// Schedule an actor think.
@@ -456,7 +456,7 @@ impl Q3SourceHost for Q3SourceHostInstance {
         self.operations.death_animations()
     }
 
-    fn bots(&self) -> Q3SourceBots<'_> {
+    fn bots(&self) -> Q3SourceBots<'static> {
         self.operations.bots()
     }
 
@@ -659,7 +659,7 @@ mod tests {
             Q3DeathAnimationSequence::new()
         }
 
-        fn bots(&self) -> Q3SourceBots<'_> {
+        fn bots(&self) -> Q3SourceBots<'static> {
             Q3SourceBots::Unavailable {
                 reason: "test".to_string(),
             }
