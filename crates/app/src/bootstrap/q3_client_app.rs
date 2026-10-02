@@ -60,14 +60,14 @@
 //!   `Q3LocalOptions.same_session`); sessionless cvar registries adopt the
 //!   seat session when the time-cvar mirror binds.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `keys.ts`
-//! (the key profile is generic over the unported CD-key state and only
-//! forwards into the host-owned guest factory), `assets.ts`,
+//! Missing siblings (host seams, referenced but NOT ported here): `assets.ts`,
 //! `content/q3/presentation/client.ts` (native backend), and the QVM guest
 //! inputs (`Q3BrowserView`, guest cvars/input/client-state, connection,
 //! scalars) which the host factory captures directly.
 //!
-//! Canonical siblings (ported; not host seams): `input.ts`
+//! Canonical siblings (ported; not host seams): `keys.ts`
+//! (`crate::bootstrap::keys::ApplicationKeys` over
+//! `qa_core::q3_cd_key::Q3CdKeyState`), `input.ts`
 //! (`crate::bootstrap::input::ApplicationInput`; the mouse-button mapping stays
 //! inlined), `audio.ts` (`crate::bootstrap::audio::application`),
 //! `q3-client/services.ts`
