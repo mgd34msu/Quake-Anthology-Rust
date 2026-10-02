@@ -1,105 +1,122 @@
-# Quake Anthology — Rust port (`qa-muse`)
+# Quake Anthology
 
-A Rust port of the `quake-typescript` Quake anthology engine: one Cargo
-workspace covering server, client, renderer, audio, input, UI, platform
-backends, network transports, bots, tools, and game content for the
-Quake family (Q1, Q2, Q3, QuakeWorld, rereleases).
+One engine for the whole Quake family: Quake, Quake II, Quake III
+Arena, QuakeWorld, the mission packs and rereleases, and mods — local
+play with up to 4 splitscreen seats, bots, dedicated servers, and
+native-protocol online play against original servers.
 
-Port source (hard boundary): the `quake-typescript` donor tree, scoped
-to `src/`, `tests/`, `tools/`, `docs/`, `verification/`. All behavior
-questions resolve against the TypeScript donor bodies. See
-[docs/PORT_PLAN.md](docs/PORT_PLAN.md) for the crate layout,
-donor-to-crate mapping, and design rules.
+This is the Rust port of
+[Quake-Anthology-TS](https://github.com/mgd34msu/Quake-Anthology-TS).
+
+## Quick start
+
+Requires Rust 1.98 or newer.
+
+```sh
+cargo build --release
+./target/release/qa-muse
+```
+
+With no arguments it opens the startup menu. `--help` lists every
+option; `--version` prints the release (`Quake Anthology 0.1.0`).
+
+## Game data
+
+The engine needs your game files. The content root defaults to the
+folder beside the executable (override with `--content-root PATH`).
+Copy the `.pak`/game files from your Quake installs there, then check
+what the engine sees:
+
+```sh
+./target/release/qa-muse --list-content
+```
+
+It lists every known product (`q1-classic-id1`, `q2-classic-baseq2`,
+…) and tells you exactly which files are still missing for each one.
+Pick what to run with `--game PRODUCT`, `--map NAME`,
+`--map-game PRODUCT`, `--mod ID` (repeatable), and `--progs PATH` for
+QuakeC game logic.
+
+## Playing
+
+```sh
+# Quake II campaign, hard difficulty
+./target/release/qa-muse --game q2-classic-baseq2 --skill 2
+
+# Quake III with bots, nightmare bot skill
+./target/release/qa-muse --game q3-base --bot-skill 5
+
+# Two-player local splitscreen deathmatch
+./target/release/qa-muse --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
+
+# Software rendering instead of GL, custom window size
+./target/release/qa-muse --renderer cpu --width 1280 --height 720 --gamma 1.2
+
+# Mixed-game recipe
+./target/release/qa-muse --preset q2-q1-q3
+```
+
+Movement, characters, and models follow the game you pick
+(`--movement q1|q2|q3|qw`, `--character`, `--model`); `+command`
+arguments run startup console commands (`'+bind x "+attack"'` as one
+shell argument). `--frames N` runs N simulation steps and quits —
+useful for smoke-testing a setup without a window.
+
+## Hosting and joining
+
+```sh
+# Dedicated server (no window, no local seats)
+./target/release/qa-dedicated --game q1-classic-id1 --listen 26000
+
+# Host the selected game's native protocol / join servers
+./target/release/qa-muse --game q2-classic-baseq2 --listen-q2 27910
+./target/release/qa-muse --connect-q1 play.example.com
+./target/release/qa-muse --connect-q2 play.example.com
+./target/release/qa-muse --connect-q3 play.example.com:27960
+./target/release/qa-muse --connect-qw play.example.com:27500
+
+# Mixed-game hosting
+./target/release/qa-muse --listen-unified 27960
+./target/release/qa-muse --connect-unified play.example.com:27960
+```
+
+Server knobs: `--bind ADDRESS`, `--mode`, `--rules
+standard|ctf|lmctf|tag|deathball|horde`, `--seed N`,
+`--server-profile PATH`, `--q1-protocol`, `--q2-protocol`, and
+`--ipx-dosbox`/`--ipx-native` for IPX play.
 
 ## Status
 
-The headless simulation runs end to end: option parsing, startup,
-fixed-timestep server ticks, headless client seats, and demo framing —
-no window, no sockets, and no game data required. The app-level
-simulation bootstrap is the final code merge in flight; windowed
-presentation, native audio routing, and socket transports build on the
-ported platform/network layers.
+Pre-release (`0.1.0`), under active development. Verified working:
+startup menu, game launch with installed content, local seats,
+dedicated servers, native-protocol clients, and the headless
+simulation (`--dedicated … --frames N` prints a per-run summary such
+as `Ran 20 host frames, 20 server ticks, 5 entities`).
 
-## Build, run, test
+## Development
 
-Requires Rust 1.98+ (workspace uses edition 2021, resolver 2).
+One Cargo workspace, eleven library crates plus the two binaries:
 
-```sh
-cargo build                      # both binaries
-cargo test --workspace           # full suite incl. headless E2E
-cargo fmt --all -- --check       # formatting gate
-cargo clippy --workspace --all-targets -- -D warnings   # lint gate
-```
-
-## Binaries
-
-- `qa-muse` (`src/main.rs`) — main entry point. Parses the full donor
-  option set, then runs the headless host loop.
-- `qa-dedicated` (`src/bin/qa-dedicated.rs`) — dedicated-server entry
-  point. Injects `--dedicated` when absent and refuses `--menu`.
+- `qa-core` — math, numeric profiles, RNG, clocks, identity, cmd/cvar
+- `qa-content` — VFS/mounts, catalog, map/model/image format decoders
+- `qa-world` — actors, collision, movement, combat, headless simulation
+- `qa-net` — q1/q2/q3/quakeworld codecs, transports, sessions
+- `qa-guest` — game-module VM (x86/x64), ELF/PE loaders, QC/QVM
+- `qa-compat` — cross-family shims (versions, demos, userinfo)
+- `qa-client` — renderers, audio mixer, input, UI, media decode
+- `qa-app` — options, startup, host loop, console, settings, saves
+- `qa-platform` — native windows, audio, controllers, sockets
+- `qa-bots` — navigation and behavior
+- `qa-tools` — verification and inventory tooling
 
 ```sh
-cargo run --bin qa-muse -- --help
-cargo run --bin qa-muse -- --version
-cargo run --bin qa-muse -- --dedicated --movement q3 --frames 120
-cargo run --bin qa-dedicated -- --movement q1 --frames 120
-cargo run --bin qa-muse -- --list-content
+cargo test --workspace           # full suite incl. headless end-to-end
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Headless runs print a summary line, e.g.
-`Ran 120 host frames, 120 server ticks, 5 entities (120 render frames)`.
-Runs without `--frames` continue until quit (Ctrl-C).
-
-Selected options (full list in `--help`): `--game`, `--map-game`,
-`--map`, `--movement q1|q2|q3|qw|PRODUCT`, `--character`, `--model`,
-`--renderer`, `--width/--height`, `--seats 1..4`, `--mode`, `--rules`,
-`--skill`, `--bot-skill`, `--dedicated`,
-`--listen/--listen-q2/--listen-unified`,
-`--connect-q1/--connect-qw/--connect-q2/--connect-q3/--connect-unified`,
-`--q1-protocol`, `--q2-protocol`, `--bind`, `--ipx-dosbox/--ipx-native`,
-`--seed`, `--frames`, `--hidden`, `+command` startup lines, `--preset`.
-
-## Crate overview
-
-| Crate | Donor scope | Contents |
-| --- | --- | --- |
-| `qa-core` | `core`, contracts (math/numeric/time/identity/common) | fround-ordered `Vec3` math, numeric profiles, `Qrand`, source clocks, generational identity, command buffer, cvar registry |
-| `qa-content` | `content`, `formats` | resource paths, VFS/mounts, Q1–Q3 BSP/MDL/MD2/SPR/WAD + MD3/MD4/MD5 decoders, image codecs, packed lighting + `.lit` overrides, Q1–Q3 game content |
-| `qa-world` | `world`, `movement`, `persistence` (save kernel) | actor registry, bodies, spatial index, collision, q1–q3 movement, combat/inventory, headless `Simulation` + deterministic `Server` tick, saves |
-| `qa-net` | `network` | bounded byte buffer, q1/q2/q3/quakeworld codecs, demo framing, protocol identities, transports, sessions, services |
-| `qa-guest` | `guest`, `compat/qc,qvm`, `persistence` (execution) | entity fields, module registry, save/checkpoint records, x86/x64 VM, ELF/PE loaders, ABI runner |
-| `qa-compat` | `compat/q2,q3` + shims | cross-family versions, demo kinds, userinfo, game adapters |
-| `qa-client` | `render`, `materials`, `text`, `media`, `audio`, `input`, `ui`, `camera`, `capture` | prediction histories, view/HUD, seats/bindings, mixer channel pool, `RendererBackend` + CPU/GL renderers, spline cameras, screenshot/levelshot capture, shader/material data, text layout/fonts/localization, cinematic containers with CIN/RoQ/OGV decode |
-| `qa-app` | `app`, `console`, `settings`, `debug`, `llm`, `main.ts`, `persistence` (providers) | CLI options, startup/config, host main loop, CLI dispatch, console core, seat/server settings, debug shapes, saved-game envelopes, per-family providers, unified save image |
-| `qa-platform` | `platform` | native backends: windows, audio, controllers, fonts, codecs, sockets |
-| `qa-bots` | `bots` | navigation (AAS reachability/routing, Kex NAV2/NAV3) and behavior |
-| `qa-tools` | `tools/` | verification runner, inventories, reference captures, policy checks |
-
-Dependency direction is acyclic: `app` drives `world` (server),
-`client` (seats/render/audio), and `net`; `world` never depends on
-`client` or `net`.
-
-## Headless E2E
-
-`crates/app/tests/headless_e2e.rs` exercises the whole stack without a
-window or network: it parses CLI options, opens the server, spawns the
-stub map (worldspawn + four player starts), runs 32 host frames with
-deterministic synthetic client input for two seats (forward ramp,
-strafe jitter, attack/jump cadence), then round-trips the per-frame
-origins through both the Q2 (`.dm2`) and Q3 (`.dm3`) demo codecs. It
-asserts tick counts, command-history depth, entity/origin sanity, Q2
-record offsets and bytes, and Q3 sequences, payloads, and terminator.
-
-## Porting notes
-
-- Behavior fidelity over idiom: exact fround/operation order in math,
-  per-family numeric profiles, sync port of the donor's async seams.
-- No class hierarchies: traits + enums + generics. `Result<T, E>` with
-  `thiserror` enums per crate — no null/undefined unions.
-- Every ported file carries a donor provenance header naming the
-  `quake-typescript` source it was ported from.
-- Test footprint: 1300+ test files across the workspace, including
-  byte-vector integration tests.
+See [docs/PORT_PLAN.md](docs/PORT_PLAN.md) for the crate layout and
+design rules.
 
 ## License
 
