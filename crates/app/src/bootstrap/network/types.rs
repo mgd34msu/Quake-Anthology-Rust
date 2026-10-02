@@ -1046,6 +1046,16 @@ impl<B, C> Q3ConnectionCell<B, C> {
         self.connection.as_mut()
     }
 
+    /// Mutably borrow the adapter.
+    ///
+    /// Server endpoints use this to arm per-datagram callback state before
+    /// the connection runs; the connection lease stays exclusive because
+    /// the adapter outlives the cell and callbacks never run during arming.
+    pub fn adapter_mut(&mut self) -> &mut B {
+        // SAFETY: the pointer is uniquely owned (see `Drop`).
+        unsafe { &mut *self.adapter }
+    }
+
     /// Drop the live connection, if any.
     pub fn clear(&mut self) {
         self.connection = None;

@@ -16,6 +16,7 @@ pub mod q2_mvd_presentation;
 pub mod q2_remote_view;
 pub mod q2_rerelease_hud_events;
 pub mod q2_service_presentation;
+pub mod q3;
 pub mod q3_client;
 pub mod q3_client_content;
 pub mod q3_client_downloads;
