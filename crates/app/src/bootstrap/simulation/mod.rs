@@ -49,6 +49,7 @@ pub mod physics;
 pub mod player_checkpoint;
 pub mod player_input_application;
 pub mod player_jump;
+pub mod players;
 pub mod powerup_timers;
 pub mod prediction;
 pub mod provider_frames;
