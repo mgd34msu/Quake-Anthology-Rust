@@ -2,15 +2,13 @@
 //!
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-product.ts`
 //! (`prepareQ3ApplicationProduct`). The catalog, mount plans, restriction resolver,
-//! startup phases, and cvar registry are the ported catalog, mounts, restriction,
-//! startup-command, and cvar helpers; the product policy registrar
-//! (`registerQ3ProductPolicy` from `src/core/q3-product-policy.ts`, out of scope)
-//! arrives through the [`Q3ProductPolicyRegistrar`] seam, and the donor's async mount
-//! reads are sync through the host. The product read is skipped when a demo restriction
-//! is already forced, exactly like the donor's resolver early return. Two documented
-//! folds: `ApplicationOptions.q3Product` has no ported counterpart yet so options arrive
-//! as [`Q3ProductOptions`], and the donor's identity owner only feeds the cvar context
-//! which the ported registry does not take.
+//! product policy registrar, startup phases, and cvar registry are the ported catalog,
+//! mounts, restriction, product-restriction, startup-command, and cvar helpers; the
+//! donor's async mount reads are sync through the host. The product read is skipped when
+//! a demo restriction is already forced, exactly like the donor's resolver early return.
+//! Two documented folds: `ApplicationOptions.q3Product` has no ported counterpart yet so
+//! options arrive as [`Q3ProductOptions`], and the donor's identity owner only feeds the
+//! cvar context which the ported registry does not take.
 
 use qa_content::catalog::{CatalogError, InstalledCatalog};
 use qa_content::contract::{create_mount_plan_id, ContentId, ContractError, GameFamily, ResolvedMountPlan};
@@ -18,7 +16,7 @@ use qa_content::hash::hex_lower;
 use qa_content::mounts::{open_mount_plan, MountError, OpenMountOptions, Q3Restriction};
 use qa_content::q3::base::records::Q3BaseError;
 use qa_content::q3::product_restriction::{
-    q3_mount_restriction, resolve_q3_mount_restriction, Q3MountRestriction, Q3ProductPolicy,
+    q3_mount_restriction, register_q3_product_policy, resolve_q3_mount_restriction, Q3MountRestriction, Q3ProductPolicy,
 };
 use qa_core::cmd::Dialect;
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
@@ -33,12 +31,6 @@ pub struct Q3ApplicationProduct {
     pub policy: Q3ProductPolicy,
     /// Mount restriction.
     pub restriction: Q3MountRestriction,
-}
-
-/// Product policy registrar (donor `registerQ3ProductPolicy`, out of scope).
-pub trait Q3ProductPolicyRegistrar {
-    /// Register the policy from applied startup cvars.
-    fn register_policy(&self, cvars: &CvarRegistry) -> Q3ProductPolicy;
 }
 
 /// Product selection options (donor `Pick<ApplicationOptions, "startupCommands" | "q3Product">`).
@@ -101,7 +93,6 @@ pub fn prepare_q3_application_product(
     catalog: InstalledCatalog,
     content: &ContentId,
     options: &Q3ProductOptions,
-    registrar: &impl Q3ProductPolicyRegistrar,
 ) -> Result<Q3ProductSelection, Q3ProductError> {
     let selected = content.as_str().to_string();
     if catalog.product(&selected)?.expectation.family != GameFamily::Q3 {
@@ -121,7 +112,7 @@ pub fn prepare_q3_application_product(
                     cvars.set(&variable.name, &variable.value, true)?;
                 }
             }
-            let policy = registrar.register_policy(&cvars);
+            let policy = register_q3_product_policy(&mut cvars)?;
             let forced = cvars
                 .register("fs_restrict", "0", flags::INIT)?
                 .map_or(0, |snapshot| snapshot.integer_value)
@@ -196,32 +187,6 @@ mod tests {
     use super::*;
     use qa_content::catalog::{CatalogProduct, ProductAvailability, ProductExpectation};
 
-    struct Probe;
-
-    impl Q3ProductPolicyRegistrar for Probe {
-        fn register_policy(&self, cvars: &CvarRegistry) -> Q3ProductPolicy {
-            if cvars
-                .get("com_prereleasedemo")
-                .map_or(0, |snapshot| snapshot.integer_value)
-                != 0
-            {
-                Q3ProductPolicy::PrereleaseDemo {
-                    team_arena_ui: qa_content::q3::product_restriction::TeamArenaUi::Retail,
-                }
-            } else {
-                Q3ProductPolicy::Retail
-            }
-        }
-    }
-
-    struct Retail;
-
-    impl Q3ProductPolicyRegistrar for Retail {
-        fn register_policy(&self, _cvars: &CvarRegistry) -> Q3ProductPolicy {
-            Q3ProductPolicy::Retail
-        }
-    }
-
     fn product(id: &str, family: GameFamily) -> CatalogProduct {
         CatalogProduct {
             id: ContentId(id.to_string()),
@@ -257,7 +222,6 @@ mod tests {
             catalog(vec![product("q1:classic:id1:1", GameFamily::Q1)]),
             &ContentId("q1:classic:id1:1".to_string()),
             &Q3ProductOptions::default(),
-            &Retail,
         )
         .unwrap();
         assert!(selection.q3_product.is_none());
@@ -277,7 +241,6 @@ mod tests {
                 startup_commands: Vec::new(),
                 q3_product: Some(expected),
             },
-            &Retail,
         )
         .unwrap();
         assert_eq!(selection.q3_product, Some(expected));
@@ -296,7 +259,6 @@ mod tests {
                 startup_commands: vec!["set com_prereleasedemo 1".to_string()],
                 q3_product: None,
             },
-            &Probe,
         )
         .unwrap();
         let product = selection.q3_product.unwrap();
@@ -323,7 +285,6 @@ mod tests {
                 startup_commands: Vec::new(),
                 q3_product: Some(restricted),
             },
-            &Retail,
         )
         .unwrap();
         assert_eq!(selection.q3_product, Some(restricted));

@@ -10,10 +10,11 @@
 //! `sv_user.c` download semantics, permission checks, validation patterns,
 //! and the 1024-byte sender block size are unchanged.
 //!
-//! `RemoteContentMounts` (donor `../content.ts`) is out of scope; the
-//! content lane owns its canonical port, so this module shims the exact
-//! surface the receiver reads ([`RemoteContentRoots`] plus a borrowed
-//! [`MountedContent`](qa_content::mounts::MountedContent)). The donor's
+//! `RemoteContentMounts` (donor `../content.ts`) is the canonical
+//! [`RemoteContentMounts`](super::super::content::RemoteContentMounts) port; this module
+//! keeps the exact surface the receiver reads ([`RemoteContentRoots`] plus a borrowed
+//! [`MountedContent`](qa_content::mounts::MountedContent)) as a projection built from
+//! the canonical mounts. The donor's
 //! global fetch becomes an explicit
 //! [`HttpClient`](qa_net::services::http_downloads::HttpClient) factory.
 //! The queue's `resolved`/`refreshPackage` callbacks cannot borrow the
@@ -345,8 +346,8 @@ impl Default for Q2PeerDownload {
 // Client side
 // ---------------------------------------------------------------------------
 
-/// Content roots read from the out-of-scope `RemoteContentMounts` (donor
-/// `../content.ts`, owned by the content lane).
+/// Content roots read from the canonical `RemoteContentMounts` (donor
+/// `../content.ts`, ported at `super::super::content`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteContentRoots {
     /// Player-model write root.
@@ -361,6 +362,20 @@ pub struct RemoteContentRoots {
     pub loose_root: Option<PathBuf>,
     /// Catalog corpus root.
     pub corpus_root: PathBuf,
+}
+
+impl From<&super::super::content::RemoteContentMounts> for RemoteContentRoots {
+    /// Project the canonical opened remote content onto the receiver's roots.
+    fn from(mounts: &super::super::content::RemoteContentMounts) -> Self {
+        Self {
+            base_write_root: PathBuf::from(&mounts.base_write_root),
+            write_root: PathBuf::from(&mounts.write_root),
+            selection: mounts.selection.clone(),
+            content_directory: mounts.product.expectation.content_directory.clone(),
+            loose_root: mounts.product.loose_root.as_ref().map(PathBuf::from),
+            corpus_root: PathBuf::from(&mounts.catalog.corpus_root),
+        }
+    }
 }
 
 /// Client preparation verdict (`Q2DownloadPreparation`).

@@ -1,15 +1,20 @@
 //! Rerelease Quake weapon-wheel selection and layout.
 //!
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q1-wheel.ts`
-//! (`q1WheelSlotItem`, `ApplicationQ1Wheel`). The `wwheel.txt` parser
-//! (`src/ui/hud/q1-wheel.ts`, out of scope) stays host-owned through the [`Q1WheelAssets`]
-//! seam, which also provides the product gate, the wheel file, and icon loading; the
-//! eight-line `q1WheelItems` layout it calls is inlined below with citation and must
-//! delegate to the real port when `ui/hud/q1-wheel.ts` lands. Player state
-//! (`./simulation/types.ts`, out of scope) is shimmed to the fields this module reads.
+//! (`q1WheelSlotItem`, `ApplicationQ1Wheel`). The `wwheel.txt` parser and the
+//! `q1WheelItems` layout are the canonical [`qa_client::ui::hud::q1_wheel`] port, called
+//! directly like the donor; the [`Q1WheelAssets`] seam keeps only the product gate, the
+//! wheel file, and icon loading. Slots are stored as the local [`Q1WheelSlot`] projection
+//! (the canonical `ammoIcon`/`unknown` fields are never read here) and converted at the
+//! canonical call boundary. Player state (`./simulation/types.ts`, out of scope) is
+//! shimmed to the fields this module reads.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use qa_client::ui::hud::q1_wheel::{
+    parse_q1_weapon_wheel, q1_wheel_items, Q1WheelSlot as HudQ1WheelSlot, Q1WheelState,
+};
 use qa_content::contract::{ContentId, ResourceId};
 use thiserror::Error;
 
@@ -155,16 +160,27 @@ pub struct Q1WheelProduct {
     pub campaign: String,
 }
 
-/// Product, wheel file, parser, and icon seam (donor assets + icons + parser).
+/// Product, wheel file, and icon seam (donor assets + icons). Parsing is the
+/// canonical [`parse_q1_weapon_wheel`], called directly by [`ApplicationQ1Wheel::prepare`].
 pub trait Q1WheelAssets {
     /// Product identity for content.
     fn product(&self, content: &ContentId) -> Q1WheelProduct;
     /// Raw `wwheel.txt` bytes, or [`None`] when the file is absent.
     fn wheel_text(&mut self, content: &ContentId) -> Option<Vec<u8>>;
-    /// Parse wheel text with the out-of-scope parser; [`Err`] carries its error list.
-    fn parse_wheel(&mut self, content: &ContentId, text: &str) -> Result<Vec<Q1WheelSlot>, Vec<String>>;
     /// Load an icon image for content and path.
     fn load_icon(&mut self, content: &ContentId, path: &str) -> ResourceId;
+}
+
+/// Project a canonical wheel slot onto the fields this module reads.
+fn hud_slot(slot: HudQ1WheelSlot) -> Q1WheelSlot {
+    Q1WheelSlot {
+        slot: slot.slot,
+        impulse: slot.impulse,
+        icon: slot.icon,
+        selected_icon: slot.selected_icon,
+        entity_variable_byte_offset: slot.entity_variable_byte_offset,
+        weapon_bits: slot.weapon_bits,
+    }
 }
 
 /// Failure to prepare the wheel, with donor messages.
@@ -212,10 +228,11 @@ impl ApplicationQ1Wheel {
         let Some(bytes) = assets.wheel_text(source) else {
             return Ok(());
         };
-        let slots = assets
-            .parse_wheel(source, &String::from_utf8_lossy(&bytes))
-            .map_err(|errors| Q1WheelError::InvalidWheel(errors.join("; ")))?;
-        self.slots = slots;
+        let parsed = parse_q1_weapon_wheel(&String::from_utf8_lossy(&bytes));
+        if !parsed.errors.is_empty() {
+            return Err(Q1WheelError::InvalidWheel(parsed.errors.join("; ")));
+        }
+        self.slots = parsed.slots.into_iter().map(hud_slot).collect();
         let mut icons = Vec::new();
         for slot in &self.slots {
             for path in [&slot.icon, &slot.selected_icon].into_iter().flatten() {
@@ -284,16 +301,6 @@ impl ApplicationQ1Wheel {
         if self.slots.is_empty() {
             return None;
         }
-        let entity_float = |offset: i32| {
-            self.slots
-                .iter()
-                .find(|slot| slot.entity_variable_byte_offset == Some(offset))
-                .map_or(0.0, |slot| {
-                    self.player_item(slot, player)
-                        .and_then(|item| item.count)
-                        .unwrap_or(0.0)
-                })
-        };
         let bits =
             self.slots.iter().fold(0, |value, slot| {
                 value
@@ -305,26 +312,72 @@ impl ApplicationQ1Wheel {
                         }
                     })
             });
-        // Inlined `q1WheelItems` (src/ui/hud/q1-wheel.ts, out of scope): lay out one
-        // WheelItem per slot from owned bits, entity counts, labels, and images.
-        let values: Vec<Q1WheelItem> = self
+        // The canonical layout takes `'static` closures, so entity counts and
+        // labels are precomputed. A label is fixed by (ordinal, impulse); an
+        // offset keeps its first slot's count, like the donor `find`.
+        let mut counts: HashMap<i32, f64> = HashMap::new();
+        for slot in &self.slots {
+            if let Some(offset) = slot.entity_variable_byte_offset {
+                counts.entry(offset).or_insert_with(|| {
+                    self.player_item(slot, player)
+                        .and_then(|item| item.count)
+                        .unwrap_or(0.0)
+                });
+            }
+        }
+        let mut labels: HashMap<(i32, Option<i32>), String> = HashMap::new();
+        for slot in &self.slots {
+            labels.entry((slot.slot, slot.impulse)).or_insert_with(|| {
+                self.player_item(slot, player).map_or_else(
+                    || format!("Slot {}", slot.slot.saturating_add(1)),
+                    |item| item.label.clone(),
+                )
+            });
+        }
+        let rows: Vec<HudQ1WheelSlot> = self
             .slots
             .iter()
-            .map(|slot| {
-                let item = self.player_item(slot, player);
-                let count = slot.entity_variable_byte_offset.map(entity_float);
+            .map(|slot| HudQ1WheelSlot {
+                slot: slot.slot,
+                impulse: slot.impulse,
+                icon: slot.icon.clone(),
+                selected_icon: slot.selected_icon.clone(),
+                ammo_icon: None,
+                entity_variable_byte_offset: slot.entity_variable_byte_offset,
+                weapon_bits: slot.weapon_bits,
+                unknown: Vec::new(),
+            })
+            .collect();
+        let counts_f32: HashMap<i32, f32> = counts.iter().map(|(offset, count)| (*offset, *count as f32)).collect();
+        let state = Q1WheelState {
+            item_bits: bits as u32,
+            entity_float: Rc::new(move |offset| counts_f32.get(&offset).copied().unwrap_or(0.0)),
+            label: Rc::new(move |slot: &HudQ1WheelSlot| {
+                labels
+                    .get(&(slot.slot, slot.impulse))
+                    .cloned()
+                    .unwrap_or_else(|| format!("Slot {}", slot.slot.saturating_add(1)))
+            }),
+            // Host icons are content ids, not client resources, so they are
+            // filled from `images` after the canonical layout returns.
+            image: Rc::new(|_| None),
+        };
+        let values: Vec<Q1WheelItem> = rows
+            .iter()
+            .zip(q1_wheel_items(&rows, &state))
+            .map(|(slot, row)| {
+                let count = slot
+                    .entity_variable_byte_offset
+                    .map(|offset| counts.get(&offset).copied().unwrap_or(0.0));
                 Q1WheelItem {
-                    id: format!("q1-wheel:{}", slot.slot),
-                    source_ordinal: slot.slot,
-                    sort_order: slot.slot,
-                    label: item.map_or_else(
-                        || format!("Slot {}", slot.slot.saturating_add(1)),
-                        |item| item.label.clone(),
-                    ),
-                    owned: slot.weapon_bits.is_some_and(|mask| bits & mask != 0),
+                    id: row.id,
+                    source_ordinal: row.source_ordinal,
+                    sort_order: row.sort_order,
+                    label: row.label,
+                    owned: row.owned,
                     has_ammo: count.is_none_or(|count| count > 0.0),
                     count,
-                    warning_count: 0,
+                    warning_count: row.warning_count,
                     icon: slot.icon.as_ref().and_then(|path| self.images.get(path).cloned()),
                     selected_icon: slot
                         .selected_icon
@@ -359,7 +412,7 @@ mod tests {
     use super::*;
 
     struct Stub {
-        slots: Vec<Q1WheelSlot>,
+        text: String,
         icons: u32,
     }
 
@@ -372,10 +425,7 @@ mod tests {
             }
         }
         fn wheel_text(&mut self, _content: &ContentId) -> Option<Vec<u8>> {
-            Some(b"wheel".to_vec())
-        }
-        fn parse_wheel(&mut self, _content: &ContentId, _text: &str) -> Result<Vec<Q1WheelSlot>, Vec<String>> {
-            Ok(self.slots.clone())
+            Some(self.text.clone().into_bytes())
         }
         fn load_icon(&mut self, _content: &ContentId, path: &str) -> ResourceId {
             self.icons += 1;
@@ -383,15 +433,8 @@ mod tests {
         }
     }
 
-    fn slot(ordinal: i32, impulse: Option<i32>) -> Q1WheelSlot {
-        Q1WheelSlot {
-            slot: ordinal,
-            impulse,
-            icon: Some(format!("icon{ordinal}")),
-            selected_icon: None,
-            entity_variable_byte_offset: None,
-            weapon_bits: Some(1 << ordinal),
-        }
+    fn wheel_text() -> String {
+        "slot 0 {\nimpulse 1\nicon icon0\nweaponnum 1\n}\nslot 1 {\nimpulse 2\nicon icon1\nweaponnum 2\n}\n".to_string()
     }
 
     fn player() -> Q1WheelPlayer {
@@ -447,7 +490,7 @@ mod tests {
     fn prepare_loads_icons_once_per_path() {
         let mut wheel = ApplicationQ1Wheel::new();
         let mut assets = Stub {
-            slots: vec![slot(0, Some(1)), slot(1, Some(2))],
+            text: wheel_text(),
             icons: 0,
         };
         wheel.prepare(&mut assets, &player()).unwrap();
@@ -469,7 +512,7 @@ mod tests {
     fn switch_toggles_off_active() {
         let mut wheel = ApplicationQ1Wheel::new();
         let mut assets = Stub {
-            slots: vec![slot(0, Some(1)), slot(1, Some(2))],
+            text: wheel_text(),
             icons: 0,
         };
         wheel.prepare(&mut assets, &player()).unwrap();
@@ -489,10 +532,7 @@ mod tests {
                 }
             }
             fn wheel_text(&mut self, _content: &ContentId) -> Option<Vec<u8>> {
-                Some(Vec::new())
-            }
-            fn parse_wheel(&mut self, _content: &ContentId, _text: &str) -> Result<Vec<Q1WheelSlot>, Vec<String>> {
-                Err(vec!["bad header".to_string()])
+                Some(b"nope".to_vec())
             }
             fn load_icon(&mut self, _content: &ContentId, _path: &str) -> ResourceId {
                 ResourceId("icon".to_string())
@@ -500,6 +540,9 @@ mod tests {
         }
         let mut wheel = ApplicationQ1Wheel::new();
         let error = wheel.prepare(&mut Bad, &player()).unwrap_err();
-        assert_eq!(error, Q1WheelError::InvalidWheel("bad header".to_string()));
+        assert_eq!(
+            error,
+            Q1WheelError::InvalidWheel("line 1: expected slot N {".to_string())
+        );
     }
 }

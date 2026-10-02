@@ -66,7 +66,7 @@ impl<H: PickupActorHost> SourcePickupCargo<H> {
         }
     }
 
-    /// Mirror of the donor `onRelease` subscription: the session calls this when
+    /// Ports the donor `onRelease` subscription: the session calls this when
     /// an actor is released because `ActorRegistry` exposes no release hook.
     pub fn note_released(&mut self, actor: &ActorId) {
         self.current.remove(actor);

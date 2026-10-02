@@ -29,15 +29,21 @@
 //! - The `run` loop keeps the 4ms floor and video-generation reset; sleeping
 //!   is a systems call.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `options.ts`
-//! (full `ApplicationOptions`), `content.ts`, `configuration.ts`,
-//! `client-bootstrap.ts`, `console.ts`, `input.ts`, `keys.ts`, `audio.ts`,
-//! `effects.ts`, `assets.ts`, `loading.ts`, `menu-art.ts`, `frame-time.ts`,
-//! `frame-clock.ts`, `presentation*.ts`, `controller-settings.ts`,
-//! `local-lobby.ts`, `player-progress*.ts`, `media/*`, `network/*` (all
-//! protocol clients, presentations, downloads, transport, address
-//! resolution), `simulation/*`, `q3-client/*`, `ui/*`, `session/*`
-//! (`EngineSession`), renderer natives, `ConfigStore`, `PlayerProgressStore`,
+//! Canonical siblings (ported; the wiring lane holds the live instances):
+//! `options.ts` is `crate::options::ApplicationOptions` (`app/options.rs`),
+//! `input.ts` is `crate::bootstrap::input::ApplicationInput`, `keys.ts` is
+//! `crate::bootstrap::keys::ApplicationKeys`, `audio.ts` is
+//! `crate::bootstrap::audio::application`, `session/*` is
+//! `qa_world::session::EngineSession`, `ConfigStore` is
+//! `crate::settings::config::ConfigStore`, and `PlayerProgressStore` is
+//! `crate::bootstrap::player_progress::PlayerProgressStore`.
+//!
+//! Missing siblings (host seams, referenced but NOT ported here): `content.ts`,
+//! `configuration.ts`, `client-bootstrap.ts`, `console.ts`, `effects.ts`,
+//! `assets.ts`, `loading.ts`, `menu-art.ts`, `frame-time.ts`, `frame-clock.ts`,
+//! `presentation*.ts`, `controller-settings.ts`, `local-lobby.ts`, `media/*`,
+//! `network/*` (all protocol clients, presentations, downloads, transport,
+//! address resolution), `simulation/*`, `q3-client/*`, `ui/*`, renderer natives,
 //! demo recording/playback, GTV sources, and the content catalog.
 
 use qa_core::cmd::Dialect;

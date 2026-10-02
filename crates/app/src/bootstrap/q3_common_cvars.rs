@@ -4,10 +4,12 @@
 //! (`q3ServerCvarDefinitions`, `q3ServerCvarNames`, `registerQ3ServerCvars`). The protocol
 //! version cites donor `src/network/q3/adapters.ts` (`Q3_PROTOCOL.version`, 68); no shared
 //! protocol-identity port exists yet, so the value lives here. The trailing collision-map
-//! rows cite donor `src/world/collision/q3/settings.ts` (`collisionMapCvarDefinitions`,
-//! out of scope) and are asserted in tests to keep the name list honest.
+//! rows are the canonical [`COLLISION_MAP_CVAR_DEFINITIONS`] port of donor
+//! `src/world/collision/q3/settings.ts`, and are asserted in tests to keep the name list
+//! honest.
 
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
+use qa_world::collision::q3::settings::COLLISION_MAP_CVAR_DEFINITIONS;
 
 /// Quake III network protocol version (donor `Q3_PROTOCOL.version`).
 pub const Q3_PROTOCOL_VERSION: u32 = 68;
@@ -64,9 +66,6 @@ pub fn q3_server_cvar_definitions(max_clients: u32, map_name: &str) -> Vec<Q3Ser
         ("sv_floodProtect", "1".to_string(), flags::ARCHIVE | flags::SERVER_INFO),
         ("sv_strictAuth", "1".to_string(), flags::ARCHIVE),
         ("bot_enable", "1".to_string(), flags::NONE),
-        ("cm_noAreas", "0".to_string(), flags::CHEAT),
-        ("cm_noCurves", "0".to_string(), flags::CHEAT),
-        ("cm_playerCurveClip", "1".to_string(), flags::ARCHIVE | flags::CHEAT),
     ];
     rows.iter()
         .map(|(name, value, flags)| Q3ServerCvarDefinition {
@@ -74,6 +73,15 @@ pub fn q3_server_cvar_definitions(max_clients: u32, map_name: &str) -> Vec<Q3Ser
             value: value.clone(),
             flags: *flags,
         })
+        .chain(
+            COLLISION_MAP_CVAR_DEFINITIONS
+                .iter()
+                .map(|(name, value, flags)| Q3ServerCvarDefinition {
+                    name,
+                    value: value.to_string(),
+                    flags: *flags,
+                }),
+        )
         .collect()
 }
 
