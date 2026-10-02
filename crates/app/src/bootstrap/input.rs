@@ -4081,7 +4081,8 @@ impl ApplicationInput {
                     }
                 }
             }
-            // Haptics placeholder; the router wiring swaps in real haptics.
+            // Temporary haptics; the swap below replaces it with live router,
+            // loader, clock, and controller wiring once those cells exist.
             let haptics = Rc::new(RefCell::new(SeatHaptics::new(
                 seat.clone(),
                 Box::new(|_| None),
@@ -4904,12 +4905,30 @@ impl ApplicationInput {
                 .find(|local| local.seat_id() == &seat)
                 .map(|local| Rc::clone(&local.haptics))
                 .unwrap_or_else(|| {
+                    let router = Rc::clone(&self.router);
+                    let loader = Rc::clone(&self.haptic_loader);
+                    let now = Rc::clone(&self.now);
+                    let controllers = Rc::clone(&self.controllers);
                     Rc::new(RefCell::new(SeatHaptics::new(
                         seat.clone(),
-                        Box::new(|_| None),
-                        Box::new(|_, _| None),
-                        Box::new(|| 0.0),
-                        Box::new(|_, _, _, _| ControllerOperationResult::Accepted),
+                        Box::new(move |seat: &SeatId| router.borrow().controller_for(seat)),
+                        Box::new(move |content: &str, sound: &str| {
+                            let content = ContentId::new(content);
+                            let request = ResourceRequest {
+                                content,
+                                path: sound.to_string(),
+                            };
+                            Rc::clone(&loader.borrow())(&request)
+                        }),
+                        Box::new(move || now()),
+                        Box::new(move |instance, low, high, duration| {
+                            controllers
+                                .borrow()
+                                .rumble(instance, low, high, duration)
+                                .unwrap_or_else(|error| ControllerOperationResult::Disconnected {
+                                    reason: error.to_string(),
+                                })
+                        }),
                     )))
                 }),
             handle: self.handle.clone(),
