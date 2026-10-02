@@ -1,4 +1,8 @@
 //! Bootstrap network helpers (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/*`).
+//!
+//! Barrel (donor `index.ts`): `types`, `q2`, `q2-layout`, `q1-types`, `q1`,
+//! `q3-types`, and `q3` publish through their modules below. `remote.ts`
+//! has no Rust module yet (owned by another lane) and stays unwired here.
 
 pub mod client_download_policy;
 pub mod gtv_source;
