@@ -1001,6 +1001,80 @@ impl InputRouter {
             .map(|route| &route.seat)
     }
 
+    /// Seat by id, mutably.
+    pub fn seat_mut(&mut self, id: &SeatId) -> Option<&mut Seat> {
+        self.routes
+            .iter_mut()
+            .find(|route| route.seat.seat() == id)
+            .map(|route| &mut route.seat)
+    }
+
+    /// Remove one seat, returning it with its controller selection.
+    ///
+    /// The seat is released and its controller slot, device bindings, and
+    /// keyboard routing are retired like [`Self::retain_seats`] retires
+    /// dropped seats. Returns [`None`] when the seat is not routed.
+    pub fn remove_seat(&mut self, id: &SeatId) -> Option<(Seat, ControllerSelection)> {
+        let index = self.seat_index(id)?;
+        let now = (self.now)();
+        {
+            let (routes, commands) = (&mut self.routes, &mut *self.commands);
+            routes[index].seat.release(now, commands);
+            routes[index].seat.gamepad.cancel_gyro_calibration();
+        }
+        if self.finish_gyro_calibration().is_err() {
+            return None;
+        }
+        let route = self.routes.remove(index);
+        self.controller_seats = self
+            .controller_seats
+            .iter()
+            .map(|slot| {
+                slot.and_then(|slot| {
+                    if slot == index {
+                        None
+                    } else if slot > index {
+                        Some(slot - 1)
+                    } else {
+                        Some(slot)
+                    }
+                })
+            })
+            .collect();
+        let dropped: Vec<i32> = self
+            .device_seats
+            .iter()
+            .filter(|(_, route)| **route == index)
+            .map(|(instance, _)| *instance)
+            .collect();
+        for instance in dropped {
+            self.device_seats.remove(&instance);
+            if self.source_joystick == Some(instance) {
+                self.source_joystick = None;
+                self.source_seat = None;
+            }
+        }
+        for route in self.device_seats.values_mut() {
+            if *route > index {
+                *route -= 1;
+            }
+        }
+        if self.source_seat.as_ref() == Some(id) {
+            self.source_joystick = None;
+            self.source_seat = None;
+        }
+        if let Some(keyboard) = self.keyboard {
+            if keyboard == index {
+                self.keyboard = None;
+                self.keyboard_keys.clear();
+            } else if keyboard > index {
+                self.keyboard = Some(keyboard - 1);
+            }
+        }
+        let _ = self.update_capture();
+        Some((route.seat, route.controller))
+    }
+
     fn seat_index(&self, id: &SeatId) -> Option<usize> {
         self.routes.iter().position(|route| route.seat.seat() == id)
     }
@@ -2127,5 +2201,80 @@ mod tests {
             .unwrap();
         assert_eq!(router.controller_for(&id), None);
         router.cancel_gyro_calibration(&id).unwrap();
+    }
+
+    fn two_seat_router() -> (IdentityOwner, SeatId, SeatId, InputRouter) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let first = owner.seat(0);
+        let second = owner.seat(1);
+        let router = InputRouter::new(
+            vec![
+                SeatRoute {
+                    seat: seat(first.clone()),
+                    controller: ControllerSelection::Automatic,
+                },
+                SeatRoute {
+                    seat: seat(second.clone()),
+                    controller: ControllerSelection::None,
+                },
+            ],
+            Some(first.clone()),
+            Some(Box::new(FakeControllers {
+                events: Vec::new(),
+                slots: vec![None, None],
+                sensors: Vec::new(),
+            })),
+            Box::new(FakeRegistry { appended: Vec::new() }),
+            Box::new(|| 1000.0),
+            Box::new(|| 42),
+            true,
+            Box::new(|_| {}),
+            false,
+            None,
+        )
+        .unwrap();
+        (owner, first, second, router)
+    }
+
+    #[test]
+    fn seat_mut_reaches_routed_seats() {
+        let (_owner, first, second, mut router) = two_seat_router();
+        assert!(router.seat_mut(&second).is_some());
+        router.seat_mut(&first).unwrap().bind(InputBinding {
+            input: PhysicalInput::Key(32),
+            target: InputBindingTarget::Command("+jump".to_string()),
+        });
+        assert!(router.seat(&first).unwrap().binding(&PhysicalInput::Key(32)).is_some());
+        assert!(router.seat(&second).unwrap().binding(&PhysicalInput::Key(32)).is_none());
+        let missing = _owner.seat(9);
+        assert!(router.seat_mut(&missing).is_none());
+    }
+
+    #[test]
+    fn remove_seat_returns_seat_and_retires_routing() {
+        let (_owner, first, second, mut router) = two_seat_router();
+        router.seat_mut(&second).unwrap().bind(InputBinding {
+            input: PhysicalInput::Key(32),
+            target: InputBindingTarget::Command("+jump".to_string()),
+        });
+        let (seat, selection) = router.remove_seat(&second).unwrap();
+        assert_eq!(seat.seat(), &second);
+        assert_eq!(selection, ControllerSelection::None);
+        assert_eq!(seat.bindings().len(), 1);
+        assert!(router.seat(&second).is_none());
+        assert!(router.seat(&first).is_some());
+        assert_eq!(router.keyboard_seat(), Some(first.clone()));
+        assert!(router.remove_seat(&second).is_none());
+    }
+
+    #[test]
+    fn remove_seat_clears_keyboard_owner() {
+        let (_owner, first, second, mut router) = two_seat_router();
+        let (seat, _) = router.remove_seat(&first).unwrap();
+        assert_eq!(seat.seat(), &first);
+        assert_eq!(router.keyboard_seat(), None);
+        assert!(router.seat(&second).is_some());
+        router.set_keyboard_seat(Some(second.clone())).unwrap();
+        assert_eq!(router.keyboard_seat(), Some(second));
     }
 }
