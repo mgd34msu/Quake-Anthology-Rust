@@ -30,6 +30,7 @@ pub mod qw_server;
 pub mod qw_server_types;
 pub mod qw_skins;
 pub mod qw_types;
+pub mod recorded_source;
 pub mod socks_settings;
 pub mod transport;
 pub mod types;
