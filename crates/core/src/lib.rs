@@ -11,6 +11,7 @@ pub mod identity;
 pub mod math;
 pub mod numeric;
 pub mod omnitimer;
+pub mod q3_cd_key;
 pub mod resource_name_index;
 pub mod rng;
 pub mod time;
