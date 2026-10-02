@@ -1,12 +1,16 @@
 //! Quake III client pure content (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q3-client-content.ts`).
 //!
 //! The donor is `async`; this sync port resolves every host call inline.
-//! `loadApplicationContent` and `LoadedApplicationContent` (donor
-//! `../content.ts`) are outside this wave, so loading and the loaded content
-//! surface arrive as the structural [`Q3ClientLoadedContent`] trait plus a
-//! loader closure; the merge target binds the real content loader there.
+//! The loaded content surface is the structural [`Q3ClientLoadedContent`]
+//! trait plus a loader closure; [`Q3ClientContent::open_loaded`] binds the
+//! canonical application loader
+//! ([`load_application_content`](crate::bootstrap::content::load_application_content))
+//! and its [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//! there.
 
-use qa_content::catalog::{remote_content_selection, CatalogError, InstalledCatalog, RemoteContentBase};
+use qa_content::catalog::{
+    remote_content_selection, CatalogError, InstalledCatalog, LaunchQvmCompatibility, RemoteContentBase,
+};
 use qa_content::contract::{GameFamily, ResolvedMountPlan};
 use qa_content::mounts::{MountedContent, PureMountPolicy};
 use qa_core::numeric::{native_atoi, NumericError};
@@ -16,6 +20,10 @@ use qa_net::q3_pak_references::{PakReferenceFlag, Q3PakError, ServerPakSet};
 use thiserror::Error;
 
 use super::q3_downloads::{Q3ApplicationPackages, Q3CatalogMounts, Q3DownloadError};
+use crate::bootstrap::content::{
+    load_application_content, ApplicationContentOptions, ApplicationContentPreparer, ApplicationContentSource,
+    ContentError, LoadedApplicationContent, Q3ProductPreparer, WorldByteArena,
+};
 use crate::options::ApplicationOptions;
 
 /// Parsed pure server settings (donor `PureSystemInfo`).
@@ -55,6 +63,9 @@ pub enum Q3ClientContentError {
     /// Package failure.
     #[error(transparent)]
     Download(#[from] Q3DownloadError),
+    /// Canonical content-loader failure.
+    #[error(transparent)]
+    Load(#[from] ContentError),
 }
 
 /// Loaded content surface used by [`Q3ClientContent`] (donor
@@ -67,6 +78,28 @@ pub trait Q3ClientLoadedContent {
     fn mounted_content(&self) -> Vec<&MountedContent>;
     /// Retire the loaded content.
     fn close(self);
+}
+
+/// Canonical loaded content behind [`Q3ClientLoadedContent`.
+///
+/// The catalog and package plan come from the loaded content itself: the
+/// mount plan is the main mounts' resolved plan, and reference collection
+/// walks the main plus opened mounts (donor `openedMounts`).
+impl<P: ApplicationContentPreparer> Q3ClientLoadedContent for LoadedApplicationContent<'_, P> {
+    fn catalog_mounts(&self) -> Q3CatalogMounts<'_> {
+        Q3CatalogMounts {
+            catalog: &self.catalog,
+            plan: &self.mounts.plan,
+        }
+    }
+
+    fn mounted_content(&self) -> Vec<&MountedContent> {
+        self.opened_mount_refs()
+    }
+
+    fn close(mut self) {
+        LoadedApplicationContent::close(&mut self);
+    }
 }
 
 /// Quake III client content (donor `Q3ClientContent`).
@@ -218,6 +251,53 @@ impl<C: Q3ClientLoadedContent> Q3ClientContent<C> {
         if let Some(content) = self.content.take() {
             content.close();
         }
+    }
+}
+
+impl<'a, P: ApplicationContentPreparer> Q3ClientContent<LoadedApplicationContent<'a, P>>
+where
+    P::Error: Into<ContentError>,
+{
+    /// Open client content through the canonical application loader (`open`).
+    ///
+    /// The seed catalog and plan come from the currently loaded content;
+    /// the seed catalog is reused for the load when a presentation source
+    /// is given, matching the donor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_loaded<Q: Q3ProductPreparer>(
+        options: &ApplicationContentOptions,
+        info: &str,
+        checksum_feed: i64,
+        catalog: &InstalledCatalog,
+        plan: &ResolvedMountPlan,
+        presentation_source: Option<ApplicationContentSource>,
+        compat: &dyn LaunchQvmCompatibility,
+        q3: &mut Q,
+        preparer: &mut P,
+        arena: &'a mut WorldByteArena,
+    ) -> Result<Self, Q3ClientContentError>
+    where
+        Q::Error: Into<ContentError>,
+    {
+        Self::open(&options.base, info, checksum_feed, catalog, plan, |policy| {
+            let installed = if presentation_source.is_some() {
+                Some(catalog.clone())
+            } else {
+                None
+            };
+            load_application_content(
+                options,
+                None,
+                policy.cloned(),
+                installed,
+                presentation_source,
+                compat,
+                q3,
+                preparer,
+                arena,
+            )
+            .map_err(Q3ClientContentError::from)
+        })
     }
 }
 

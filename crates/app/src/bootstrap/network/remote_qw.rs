@@ -44,10 +44,12 @@ use qa_net::qw::QwUsercmd;
 use qa_world::body::BodyState;
 use qa_world::session::{EngineSession, SessionClient, SimulationOutput};
 
+use super::q1_demo::{QuakeWorldDemoRemote, QwDemoPrediction, QwDemoShared};
 use super::qw_camera::{QwCameraFrame, QwCameraOptions, QwCameraPlayer, QwCameraTrace, QwSpectatorCamera};
 use super::qw_skins::{skin_name, QwPlayerSkins, QwSkinOptions};
 use super::qw_types::{
-    QwApplicationClientHost, QwApplicationDownloads, QwApplicationPrediction, QwApplicationSkins, QwServerData,
+    qw_server_data, QwApplicationClientHost, QwApplicationDownloads, QwApplicationPrediction, QwApplicationSkins,
+    QwServerData,
 };
 use super::remote_q1::{
     Q1ClientRow, Q1RemoteContent, Q1RemoteHost, Q1RemotePresentation, Q1RemotePresentationEvent,
@@ -325,6 +327,34 @@ fn vec3(values: [f64; 3]) -> Vec3 {
 
 fn arr(value: Vec3) -> [f64; 3] {
     [f64::from(value.x), f64::from(value.y), f64::from(value.z)]
+}
+
+/// Map a recorded demo command onto the predictor command shape.
+///
+/// Demo commands are already QuakeWorld moves (donor `QwUserCommand` in
+/// `/home/buzzkill/Projects/quake-typescript/src/network/q1/demos.ts`).
+fn demo_usercmd(command: &UserCommand) -> QwUsercmd {
+    let UserCommand::Q1Quakeworld {
+        milliseconds,
+        angles,
+        forward_move,
+        side_move,
+        up_move,
+        buttons,
+        impulse,
+    } = command
+    else {
+        panic!("QW requires QuakeWorld input");
+    };
+    QwUsercmd {
+        msec: *milliseconds as u8,
+        angles: *angles,
+        forwardmove: *forward_move as i16,
+        sidemove: *side_move as i16,
+        upmove: *up_move as i16,
+        buttons: *buttons as u8,
+        impulse: *impulse as u8,
+    }
 }
 
 /// Map a QuakeWorld player state onto a NetQuake entity (donor `playerEntity`).
@@ -1353,6 +1383,69 @@ impl<H: QwRemoteHost + 'static> QwRemotePresentation<H> {
     /// Print text (donor `print`).
     pub fn print(&mut self, text: &str) {
         self.host.borrow_mut().print(text);
+    }
+}
+
+/// Demo-input shared surface over the wrapped NetQuake presentation
+/// (donor `remote.shared` in
+/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q1-demo.ts`).
+impl<H: QwRemoteHost + 'static> QwDemoShared for QwRemotePresentation<H> {
+    fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool) {
+        self.shared.borrow_mut().set_demo_view_angles(*angles, interpolate);
+    }
+
+    fn sample_demo(&mut self, seconds: f64) {
+        let _ = self.shared.borrow_mut().sample_demo(seconds);
+    }
+}
+
+/// Demo-input prediction surface (donor `remote.prediction`).
+impl<H: QwRemoteHost + 'static> QwDemoPrediction for QwRemotePresentation<H> {
+    fn sent(&mut self, sequence: u32, command: &UserCommand, milliseconds: f64) {
+        let command = demo_usercmd(command);
+        self.prediction_sent(sequence, &command, milliseconds);
+    }
+
+    fn acknowledged(&mut self, sequence: u32, milliseconds: f64) {
+        self.prediction_acknowledged(sequence, milliseconds);
+    }
+}
+
+/// Demo-input surface over the canonical presentation.
+///
+/// Readiness follows the donor demo input: an admitted world plus a
+/// published player and output.
+impl<H: QwRemoteHost + 'static> QuakeWorldDemoRemote for QwRemotePresentation<H>
+where
+    H::Scene: QwRemoteScene,
+{
+    fn demo_ready(&self) -> bool {
+        self.player().is_some() && self.output().is_some()
+    }
+
+    fn shared(&mut self) -> &mut dyn QwDemoShared {
+        self
+    }
+
+    fn prediction(&mut self) -> &mut dyn QwDemoPrediction {
+        self
+    }
+
+    fn server_data(&mut self, message: &QuakeWorldMessage) {
+        let data = qw_server_data(message).expect("QW demo server data is valid");
+        self.server_data(&data);
+    }
+
+    fn game_state(&mut self, data: &QwServerData, models: &[String], sounds: &[String], _assert_current: &dyn Fn()) {
+        self.game_state(data, models, sounds);
+    }
+
+    fn receive(&mut self, messages: &[QuakeWorldMessage], milliseconds: f64, _assert_current: &dyn Fn()) {
+        self.receive(messages, milliseconds);
+    }
+
+    fn sample_presentation(&mut self, milliseconds: f64) {
+        let _ = self.sample_presentation(milliseconds);
     }
 }
 

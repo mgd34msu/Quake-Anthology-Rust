@@ -1,13 +1,15 @@
 //! Quake demo inputs (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q1-demo.ts`).
 //!
-//! The demo readers live in the unported `network/q1/demos.ts` and the remote
-//! presentations in the out-of-scope `remote-q1.ts`/`remote-qw.ts`, so this
-//! port defines the structural traits both sides implement at merge time.
+//! The streaming readers adapt the `qa-net` demo parsers (donor
+//! `/home/buzzkill/Projects/quake-typescript/src/network/q1/demos.ts`); the
+//! demo remotes are the canonical presentations in [`super::remote_q1`] and
+//! [`super::remote_qw`], which implement the remote traits below.
 
 use std::collections::BTreeMap;
 
 use qa_core::math::Vec3;
 use qa_net::common::commands::UserCommand;
+use qa_net::demo::{NqDemoReader, QwDemoReader, QwDemoRecord};
 use qa_net::q1_net::{
     NetQuakeDecoder, NetQuakeMessage, NqUnit, Q1NetError, QuakeWorldDecoder, QuakeWorldMessage, QwUnit,
     RereleaseMessages,
@@ -157,6 +159,31 @@ pub trait NetQuakeDemoReader {
     fn forced_track(&self) -> i32;
 }
 
+/// Streaming NetQuake demo reader.
+///
+/// Adapts the `qa-net` byte parser (donor `NetQuakeDemoReader` in
+/// `/home/buzzkill/Projects/quake-typescript/src/network/q1/demos.ts`):
+/// parsed records convert to the input shape, and a malformed record ends
+/// the stream (`None`) the same way byte exhaustion does.
+impl<'a> NetQuakeDemoReader for NqDemoReader<'a> {
+    fn next_record(&mut self) -> Option<NetQuakeDemoRecord> {
+        match NqDemoReader::next_record(self) {
+            Ok(Some(record)) => {
+                let [x, y, z] = record.view_angles;
+                Some(NetQuakeDemoRecord {
+                    view_angles: Vec3 { x, y, z },
+                    message: record.message,
+                })
+            }
+            Ok(None) | Err(_) => None,
+        }
+    }
+
+    fn forced_track(&self) -> i32 {
+        self.forced_track
+    }
+}
+
 /// NetQuake demo presentation (`Q1RemotePresentation` surface used here).
 pub trait NetQuakeDemoRemote {
     /// Signon and output both ready.
@@ -166,7 +193,7 @@ pub trait NetQuakeDemoRemote {
     /// Receive decoded messages.
     fn receive(&mut self, messages: &[NetQuakeMessage], milliseconds: f64, assert_current: &dyn Fn());
     /// Set the demo view angles.
-    fn set_demo_view_angles(&mut self, angles: &Vec3, absolute: bool);
+    fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool);
     /// Sample the demo clock (seconds).
     fn sample_demo(&mut self, seconds: f64);
 }
@@ -356,6 +383,64 @@ pub trait QuakeWorldDemoReader {
     fn next_record(&mut self) -> Option<QuakeWorldDemoRecord>;
 }
 
+/// Map a parsed QuakeWorld demo record onto the input shape.
+fn convert_qw_demo_record(record: QwDemoRecord) -> QuakeWorldDemoRecord {
+    match record {
+        QwDemoRecord::Command {
+            seconds,
+            command,
+            view_angles,
+        } => {
+            let [x, y, z] = view_angles;
+            QuakeWorldDemoRecord::Command {
+                seconds: f64::from(seconds),
+                command: UserCommand::Q1Quakeworld {
+                    milliseconds: f64::from(command.milliseconds),
+                    angles: [
+                        f64::from(command.angles[0]),
+                        f64::from(command.angles[1]),
+                        f64::from(command.angles[2]),
+                    ],
+                    forward_move: f64::from(command.forward_move),
+                    side_move: f64::from(command.side_move),
+                    up_move: f64::from(command.up_move),
+                    buttons: f64::from(command.buttons),
+                    impulse: f64::from(command.impulse),
+                },
+                view_angles: Vec3 { x, y, z },
+            }
+        }
+        QwDemoRecord::Packet { seconds, message } => QuakeWorldDemoRecord::Packet {
+            seconds: f64::from(seconds),
+            message,
+        },
+        QwDemoRecord::Sequences {
+            seconds,
+            outgoing,
+            incoming,
+        } => QuakeWorldDemoRecord::Sequences {
+            seconds: f64::from(seconds),
+            outgoing,
+            incoming,
+        },
+    }
+}
+
+/// Streaming QuakeWorld demo reader.
+///
+/// Adapts the `qa-net` byte parser (donor `QuakeWorldDemoReader` in
+/// `/home/buzzkill/Projects/quake-typescript/src/network/q1/demos.ts`):
+/// parsed records convert to the input shape, and a malformed record ends
+/// the stream (`None`) the same way byte exhaustion does.
+impl<'a> QuakeWorldDemoReader for QwDemoReader<'a> {
+    fn next_record(&mut self) -> Option<QuakeWorldDemoRecord> {
+        match QwDemoReader::next_record(self) {
+            Ok(Some(record)) => Some(convert_qw_demo_record(record)),
+            Ok(None) | Err(_) => None,
+        }
+    }
+}
+
 /// QuakeWorld demo prediction hooks.
 pub trait QwDemoPrediction {
     /// A command was sent (or replayed).
@@ -367,7 +452,7 @@ pub trait QwDemoPrediction {
 /// QuakeWorld shared demo presentation.
 pub trait QwDemoShared {
     /// Set the demo view angles.
-    fn set_demo_view_angles(&mut self, angles: &Vec3, absolute: bool);
+    fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool);
     /// Sample the demo clock (seconds).
     fn sample_demo(&mut self, seconds: f64);
 }
@@ -681,6 +766,9 @@ fn record_seconds(record: &QuakeWorldDemoRecord) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qa_net::demo::{
+        write_nq_demo_header, write_nq_demo_record, write_qw_demo_record, NqDemoRecord, QwDemoUserCommand,
+    };
     use qa_net::msg::MsgWriter;
     use qa_net::q1_net::{write_net_quake_message, write_quake_world_message, QwMoveVariables};
 
@@ -732,8 +820,8 @@ mod tests {
             }
         }
 
-        fn set_demo_view_angles(&mut self, angles: &Vec3, absolute: bool) {
-            self.angles.push((*angles, absolute));
+        fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool) {
+            self.angles.push((*angles, interpolate));
         }
 
         fn sample_demo(&mut self, seconds: f64) {
@@ -779,8 +867,8 @@ mod tests {
     }
 
     impl QwDemoShared for MockShared {
-        fn set_demo_view_angles(&mut self, angles: &Vec3, absolute: bool) {
-            self.angles.push((*angles, absolute));
+        fn set_demo_view_angles(&mut self, angles: &Vec3, interpolate: bool) {
+            self.angles.push((*angles, interpolate));
         }
 
         fn sample_demo(&mut self, seconds: f64) {
@@ -914,6 +1002,184 @@ mod tests {
             buttons: 0.0,
             impulse: 0.0,
         }
+    }
+
+    fn stream_nq(reader: &mut NqDemoReader<'_>) -> Option<NetQuakeDemoRecord> {
+        <NqDemoReader<'_> as NetQuakeDemoReader>::next_record(reader)
+    }
+
+    fn stream_qw(reader: &mut QwDemoReader<'_>) -> Option<QuakeWorldDemoRecord> {
+        <QwDemoReader<'_> as QuakeWorldDemoReader>::next_record(reader)
+    }
+
+    #[test]
+    fn streaming_nq_reader_converts_records() {
+        let mut bytes = write_nq_demo_header(3);
+        bytes.extend(
+            write_nq_demo_record(&NqDemoRecord {
+                view_angles: [1.0, 2.0, 3.0],
+                message: vec![7, 8, 9],
+            })
+            .expect("record"),
+        );
+        let mut reader = NqDemoReader::new(&bytes, 64_000).expect("open");
+        assert_eq!(<NqDemoReader<'_> as NetQuakeDemoReader>::forced_track(&reader), 3);
+        assert_eq!(
+            stream_nq(&mut reader),
+            Some(NetQuakeDemoRecord {
+                view_angles: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+                message: vec![7, 8, 9],
+            })
+        );
+        assert_eq!(stream_nq(&mut reader), None);
+    }
+
+    #[test]
+    fn streaming_nq_reader_ends_on_corruption() {
+        // Size 65536 exceeds the cap, so the record fails to parse.
+        let bytes = [b'2', b'\n', 0x00, 0x00, 0x01, 0x00];
+        let mut reader = NqDemoReader::new(&bytes, 64_000).expect("open");
+        assert_eq!(stream_nq(&mut reader), None);
+    }
+
+    #[test]
+    fn streaming_qw_reader_converts_records() {
+        let command = QwDemoRecord::Command {
+            seconds: 1.5,
+            command: QwDemoUserCommand {
+                milliseconds: 50,
+                angles: [10.0, 20.0, 30.0],
+                forward_move: 100,
+                side_move: -5,
+                up_move: 6,
+                buttons: 3,
+                impulse: 7,
+            },
+            view_angles: [1.0, 2.0, 3.0],
+        };
+        let packet = QwDemoRecord::Packet {
+            seconds: 2.5,
+            message: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        let sequences = QwDemoRecord::Sequences {
+            seconds: 3.5,
+            outgoing: 9,
+            incoming: 8,
+        };
+        let mut bytes = Vec::new();
+        for record in [&command, &packet, &sequences] {
+            bytes.extend(write_qw_demo_record(record).expect("record"));
+        }
+        let mut reader = QwDemoReader::new(&bytes, 1450);
+        assert_eq!(
+            stream_qw(&mut reader),
+            Some(QuakeWorldDemoRecord::Command {
+                seconds: 1.5,
+                command: UserCommand::Q1Quakeworld {
+                    milliseconds: 50.0,
+                    angles: [10.0, 20.0, 30.0],
+                    forward_move: 100.0,
+                    side_move: -5.0,
+                    up_move: 6.0,
+                    buttons: 3.0,
+                    impulse: 7.0,
+                },
+                view_angles: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            })
+        );
+        assert_eq!(
+            stream_qw(&mut reader),
+            Some(QuakeWorldDemoRecord::Packet {
+                seconds: 2.5,
+                message: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            })
+        );
+        assert_eq!(
+            stream_qw(&mut reader),
+            Some(QuakeWorldDemoRecord::Sequences {
+                seconds: 3.5,
+                outgoing: 9,
+                incoming: 8,
+            })
+        );
+        assert_eq!(stream_qw(&mut reader), None);
+    }
+
+    #[test]
+    fn streaming_qw_reader_ends_on_corruption() {
+        let mut bytes = 1.0f32.to_le_bytes().to_vec();
+        bytes.push(99);
+        let mut reader = QwDemoReader::new(&bytes, 1450);
+        assert_eq!(stream_qw(&mut reader), None);
+    }
+
+    #[test]
+    fn netquake_input_advances_streaming_reader() {
+        let mut bytes = write_nq_demo_header(-1);
+        bytes.extend(
+            write_nq_demo_record(&NqDemoRecord {
+                view_angles: [4.0, 5.0, 6.0],
+                message: nq_bytes(&[nq_server_info()]),
+            })
+            .expect("record"),
+        );
+        let reader = NqDemoReader::new(&bytes, 64_000).expect("open");
+        let remote = MockNQRemote {
+            ready: true,
+            recorded: 0.0,
+            receives: Vec::new(),
+            angles: Vec::new(),
+            samples: Vec::new(),
+            tracks: Vec::new(),
+        };
+        let mut input = NetQuakeDemoInput::new(reader, remote);
+        let progress = input
+            .advance(&Q1DemoFrame {
+                elapsed_seconds: 0.0,
+                frame: 0,
+                timedemo: false,
+            })
+            .expect("advance");
+        assert_eq!(progress.records_read, 1);
+        assert_eq!(progress.phase, Q1DemoPhase::Ended(Q1DemoEnd::Eof));
+        assert_eq!(input.remote().receives.len(), 1);
+        assert_eq!(input.remote().angles, vec![(Vec3 { x: 4.0, y: 5.0, z: 6.0 }, true)]);
+    }
+
+    #[test]
+    fn quakeworld_input_advances_streaming_reader() {
+        let bytes = write_qw_demo_record(&QwDemoRecord::Sequences {
+            seconds: 0.0,
+            outgoing: 4,
+            incoming: 3,
+        })
+        .expect("record");
+        let reader = QwDemoReader::new(&bytes, 1450);
+        let remote = MockQWRemote {
+            ready: true,
+            shared: MockShared {
+                angles: Vec::new(),
+                samples: Vec::new(),
+            },
+            prediction: MockPred {
+                sent: Vec::new(),
+                acked: Vec::new(),
+            },
+            server_datas: 0,
+            game_states: Vec::new(),
+            receives: Vec::new(),
+            presentations: Vec::new(),
+        };
+        let mut input = QuakeWorldDemoInput::new(reader, remote);
+        let progress = input
+            .advance(&Q1DemoFrame {
+                elapsed_seconds: 0.0,
+                frame: 0,
+                timedemo: true,
+            })
+            .expect("advance");
+        assert_eq!(progress.records_read, 1);
+        assert_eq!(progress.phase, Q1DemoPhase::Ended(Q1DemoEnd::Eof));
     }
 
     #[test]
@@ -1094,7 +1360,7 @@ mod tests {
         assert_eq!(progress.recorded_seconds, 12.0);
         assert_eq!(input.remote().receives.len(), 4);
         assert_eq!(input.remote().angles.len(), 4);
-        assert!(input.remote().angles.iter().all(|(_, absolute)| *absolute));
+        assert!(input.remote().angles.iter().all(|(_, interpolate)| *interpolate));
         assert_eq!(input.remote().samples, vec![12.0]);
     }
 
