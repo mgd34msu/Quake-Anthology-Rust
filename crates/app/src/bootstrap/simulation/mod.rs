@@ -45,6 +45,7 @@ pub mod network_q1;
 pub mod network_q1_quakec;
 pub mod network_q2_guest;
 pub mod network_q2_rerelease_native;
+pub mod network_unified;
 pub mod new_toss;
 pub mod physics;
 pub mod player_checkpoint;
