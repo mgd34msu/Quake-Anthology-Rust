@@ -707,10 +707,13 @@ impl<Q: Q3EffectHost + 'static> ApplicationQ3Effects for Q3ApplicationEffects<Q>
     }
 }
 
-/// Absorbed `ApplicationAssets` plus `SceneQueries` pick (both out of scope):
+/// Absorbed [`ApplicationAssets`](super::super::assets::ApplicationAssets) plus `SceneQueries`
+/// ([`ApplicationQ3SceneQueries`](super::super::q3_client::visibility::ApplicationQ3SceneQueries)) pick:
 /// provider families, palettes, model loading/preparation, and the
-/// content-recipe plan. Synchronous mapping of the donor's awaited asset
-/// calls; renderer caches live host-side (donor `preparedRenderers`).
+/// content-recipe plan resolve against the asset cache; the player closure,
+/// particle registry, staged-model preparation, and renderer caches stay
+/// host-side (donor `preparedRenderers`). Synchronous mapping of the donor's
+/// awaited asset calls.
 pub trait ApplicationEffectHost: Clone + 'static {
     /// Prepared brush world scene.
     type BrushScene: Clone;

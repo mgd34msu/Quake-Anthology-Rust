@@ -75,8 +75,10 @@ pub enum RereleasePresentationEventKind {
 }
 
 /// Absorbed `ApplicationAssets` provider pick used by rerelease presentation
-/// (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/assets.ts`, out of scope): content families,
-/// localization mounts, and sky-face images with the missing-texture fallback
+/// (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/assets.ts`, ported as
+/// [`ApplicationAssets`](super::super::assets::ApplicationAssets)): content families and
+/// localization mounts resolve against [`ApplicationAssets::provider`](super::super::assets::ApplicationAssets::provider);
+/// sky-face images still need the host texture loader, with the missing-texture fallback
 /// applied by the host.
 pub trait RereleasePresentationProvider: 'static {
     /// Content family for language-binding eligibility.

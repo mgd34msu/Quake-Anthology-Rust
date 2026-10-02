@@ -1,16 +1,19 @@
 //! Remote seat component-client collection view.
 //!
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-components.ts`
-//! (`RemoteComponentView`). The component collection (`./mod-presentations.ts`), the media
-//! preparation (`./component-media.ts`), and the unified remote side
-//! (`./network/remote-unified.ts`, all out of scope) arrive through the
-//! [`RemoteComponentClients`] and [`RemoteComponentMedia`] seams; the seat presentation
-//! (`./presentation.ts`) and the mod presentation sources stay generic. Documented folds:
+//! (`RemoteComponentView`). The component collection resolves to the canonical
+//! [`ApplicationModPresentations`](super::mod_presentations::ApplicationModPresentations),
+//! which implements [`RemoteComponentClients`] below; the media preparation
+//! (`super::component_media`) and the unified remote side
+//! (`super::network::remote_unified`) stay behind the [`RemoteComponentMedia`]
+//! seam for the host to wire; the seat presentation (`./presentation.ts`) and
+//! the mod presentation sources stay generic. Documented folds:
 //! the donor's async dispatch/prepare/media calls are sync through the host; the
 //! `queueCommand` closure the donor installs on the collection options is a shared
 //! [`RemoteComponentQueue`] handle the host clones into its collection before building
 //! the view; the dispatch outcome (`"handled" | "retired"`) is ignored like the donor
-//! ignores it.
+//! ignores it; collection cleanup failures are discarded because the seam
+//! close returns `()` (the donor propagates them).
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -18,6 +21,11 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use super::mod_presentation::{ModPresentationBackend, ModPresentationSource, ModSceneRendererOps};
+use super::mod_presentations::{
+    ApplicationModPresentations, ComponentClientCommandRequest, ModCollectionSeat, ModPresentationsError,
+    ModQ3EventPayload,
+};
 use super::presentation_state::{SimulationPresentationEvent, SourcePresentationEvent};
 
 /// Component-client collection (donor `ApplicationModPresentations` subset).
@@ -61,6 +69,46 @@ pub trait RemoteComponentMedia<F> {
     fn prepare_shaders(&mut self) -> Result<(), Self::Error>;
     /// Current mod presentation sources (donor `modPresentationSources`).
     fn mod_presentation_sources(&self) -> Vec<Self::Source>;
+}
+
+/// Canonical component collection behind the clients seam (donor
+/// `ApplicationModPresentations` as `RemoteComponentView["clients"]`).
+impl<F: ModQ3EventPayload, B: ModPresentationBackend + 'static, S: ModCollectionSeat + 'static>
+    RemoteComponentClients<F> for ApplicationModPresentations<B, S>
+where
+    B::Error: std::error::Error + 'static,
+    B::Renderer: ModSceneRendererOps<B::Error>,
+{
+    /// Queued command request (donor `ComponentClientCommandRequest`).
+    type Command = ComponentClientCommandRequest;
+    /// Failure.
+    type Error = ModPresentationsError<B::Error>;
+    /// Viewing seat handle.
+    type Presentation = Rc<RefCell<S>>;
+    /// Active mod presentation.
+    type Source = Rc<dyn ModPresentationSource>;
+
+    fn pending_commands(&self) -> bool {
+        self.pending_commands()
+    }
+
+    fn dispatch_command(&mut self, request: Self::Command) -> Result<(), Self::Error> {
+        self.dispatch_command(&request).map(|_| ())
+    }
+
+    fn prepare(
+        &mut self,
+        presentations: &[Self::Presentation],
+        sources: &[Self::Source],
+        events: &[SimulationPresentationEvent<F>],
+        frame: i32,
+    ) -> Result<(), Self::Error> {
+        self.prepare(presentations, sources, events, i64::from(frame))
+    }
+
+    fn close(&mut self) {
+        let _ = self.close();
+    }
 }
 
 /// View operation error.

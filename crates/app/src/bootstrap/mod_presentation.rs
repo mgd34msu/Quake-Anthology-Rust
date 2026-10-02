@@ -147,8 +147,8 @@ pub type FreeMemoryCallback = Rc<dyn Fn() -> u64>;
 pub type ModPresentationMedia =
     Rc<dyn Fn(&ComponentPresentationMediaRequest, bool, &dyn Fn() -> bool) -> Result<(), String>>;
 /// Scalar fallback (donor `scalar(call, owner)` over the host guest-call type).
-pub type ModScalarCallback<'x, B> =
-    Rc<dyn Fn(&<B as ModPresentationBackend>::HostCall, &ApplicationModPresentation<'x, B>) -> Option<i32>>;
+pub type ModScalarCallback<B> =
+    Rc<dyn Fn(&<B as ModPresentationBackend>::HostCall, &ApplicationModPresentation<B>) -> Option<i32>>;
 
 /// Presentation clock (donor `ApplicationQ3ServiceOptions["clock"]`).
 pub trait ModPresentationClock {
@@ -230,20 +230,21 @@ pub enum ModPresentationCinematics<B: ModPresentationBackend> {
     Factory(ModCinematicsFactory<B>),
 }
 
-/// System cinematics factory type.
+/// System cinematics factory type (fallible: the donor factory throws
+/// through its scope append).
 pub type ModCinematicsFactory<B> =
-    Rc<dyn Fn(&CvarRegistry, &MountedContent) -> <B as ModPresentationBackend>::Cinematics>;
+    Rc<dyn Fn(&CvarRegistry, &MountedContent) -> Result<<B as ModPresentationBackend>::Cinematics, String>>;
 
 /// Presentation options (donor `ApplicationModPresentationOptions`; the guest
 /// backend is a separate `&mut B` on every driving call because the host owns
 /// it next to this owner).
-pub struct ApplicationModPresentationOptions<'x, B: ModPresentationBackend> {
+pub struct ApplicationModPresentationOptions<B: ModPresentationBackend> {
     /// Asset inputs.
-    pub assets: &'x dyn ModPresentationAssets,
+    pub assets: Rc<dyn ModPresentationAssets>,
     /// Cgame audio sink.
-    pub audio: &'x dyn ModAudioSink,
+    pub audio: Rc<dyn ModAudioSink>,
     /// Scene queries.
-    pub queries: &'x dyn ModSceneQueries,
+    pub queries: Rc<dyn ModSceneQueries>,
     /// Viewing seat.
     pub seat: SeatId,
     /// Viewing actor.
@@ -251,13 +252,13 @@ pub struct ApplicationModPresentationOptions<'x, B: ModPresentationBackend> {
     /// 2D viewport.
     pub viewport: Rect,
     /// Display renderer, when display traps are served.
-    pub renderer: Option<&'x QvmDisplayRenderer>,
+    pub renderer: Option<Rc<QvmDisplayRenderer>>,
     /// Live source, prepared module, and owner.
     pub source: Rc<dyn ModPresentationSource>,
     /// Presentation clock.
-    pub clock: &'x dyn ModPresentationClock,
+    pub clock: Rc<dyn ModPresentationClock>,
     /// Presentation output.
-    pub output: &'x dyn ModPresentationOutput,
+    pub output: Rc<dyn ModPresentationOutput>,
     /// System cinematics value or factory.
     pub system_cinematics: Option<ModPresentationCinematics<B>>,
     /// Command host (absent registries make command traps silent no-ops).
@@ -273,7 +274,7 @@ pub struct ApplicationModPresentationOptions<'x, B: ModPresentationBackend> {
     /// Next-frame pump.
     pub next_frame: NextFrameCallback,
     /// Scalar fallback.
-    pub scalar: Option<ModScalarCallback<'x, B>>,
+    pub scalar: Option<ModScalarCallback<B>>,
     /// Free-memory sampler.
     pub free_memory: FreeMemoryCallback,
 }
@@ -759,9 +760,9 @@ pub enum ModPresentationHudSubmission {
 
 /// One original component cgame instance for one live source generation and
 /// viewing seat (donor `ApplicationModPresentation`).
-pub struct ApplicationModPresentation<'x, B: ModPresentationBackend> {
+pub struct ApplicationModPresentation<B: ModPresentationBackend> {
     /// Presentation options.
-    pub options: ApplicationModPresentationOptions<'x, B>,
+    pub options: ApplicationModPresentationOptions<B>,
     /// Component cvars.
     pub cvars: Rc<RefCell<CvarRegistry>>,
     /// Bound source generation.
@@ -824,10 +825,10 @@ pub struct ApplicationModPresentation<'x, B: ModPresentationBackend> {
     marks: Option<B::Marks>,
 }
 
-impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
+impl<B: ModPresentationBackend> ApplicationModPresentation<B> {
     /// Create a presentation (donor `create`).
     pub fn create(
-        options: ApplicationModPresentationOptions<'x, B>,
+        options: ApplicationModPresentationOptions<B>,
         backend: &mut B,
     ) -> Result<Self, ModPresentationError<B::Error>> {
         Self::create_owner(options, backend, -1, None)
@@ -836,7 +837,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
     /// Create a presentation over a baseline sequence (donor `create` with
     /// `baselineSequence`).
     pub fn create_with_baseline(
-        options: ApplicationModPresentationOptions<'x, B>,
+        options: ApplicationModPresentationOptions<B>,
         backend: &mut B,
         baseline_sequence: i64,
     ) -> Result<Self, ModPresentationError<B::Error>> {
@@ -845,7 +846,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
 
     /// Restore a presentation from a checkpoint (donor `restore`).
     pub fn restore(
-        options: ApplicationModPresentationOptions<'x, B>,
+        options: ApplicationModPresentationOptions<B>,
         backend: &mut B,
         checkpoint: &SaveJson,
         resolve_actor: &dyn Fn(&SavedActorId) -> Option<ActorId>,
@@ -855,7 +856,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
 
     /// Create or restore an owner (donor `createOwner`).
     fn create_owner(
-        options: ApplicationModPresentationOptions<'x, B>,
+        options: ApplicationModPresentationOptions<B>,
         backend: &mut B,
         baseline_sequence: i64,
         checkpoint: CheckpointRestore<'_, '_>,
@@ -961,7 +962,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
             Some(ModPresentationCinematics::Host(host)) => Some(host),
             Some(ModPresentationCinematics::Factory(factory)) => {
                 let cvars = self.cvars.borrow();
-                Some(factory(&cvars, &mounts))
+                Some(factory(&cvars, &mounts).map_err(ModPresentationError::Presentation)?)
             }
         };
         let services = backend
@@ -1184,7 +1185,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
                     self.scene_baseline = Some(select_component_scene(
                         baseline,
                         &self.options.viewer,
-                        self.options.queries,
+                        &*self.options.queries,
                         self.options.assets.world_leaf_count(),
                         &mut emit,
                     )?);
@@ -1195,7 +1196,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
             self.scene_context = Some(select_component_scene(
                 &publication.current,
                 &self.options.viewer,
-                self.options.queries,
+                &*self.options.queries,
                 self.options.assets.world_leaf_count(),
                 &mut emit,
             )?);
@@ -1784,7 +1785,7 @@ impl<'x, B: ModPresentationBackend> ApplicationModPresentation<'x, B> {
     }
 }
 
-impl<'x, B: ModPresentationBackend> ModSyscalls<B> for ApplicationModPresentation<'x, B> {
+impl<B: ModPresentationBackend> ModSyscalls<B> for ApplicationModPresentation<B> {
     fn assert_current(&mut self) -> Result<(), ModPresentationError<B::Error>> {
         Self::assert_current(self)
     }
@@ -1922,7 +1923,7 @@ impl<'x, B: ModPresentationBackend> ModSyscalls<B> for ApplicationModPresentatio
     }
 
     fn display_renderer(&self) -> Option<&QvmDisplayRenderer> {
-        self.options.renderer
+        self.options.renderer.as_deref()
     }
 
     fn viewport(&self) -> Rect {
@@ -2938,11 +2939,11 @@ mod tests {
         authority: IdentityOwner,
         viewer: ActorId,
         seat: SeatId,
-        assets: MockAssets,
-        audio: MockAudio,
-        queries: MockQueries,
-        clock: MockClock,
-        output: MockOutput,
+        assets: Rc<MockAssets>,
+        audio: Rc<MockAudio>,
+        queries: Rc<MockQueries>,
+        clock: Rc<MockClock>,
+        output: Rc<MockOutput>,
         commands: Rc<MockCommands>,
     }
 
@@ -2955,16 +2956,16 @@ mod tests {
                 authority,
                 viewer,
                 seat,
-                assets: MockAssets,
-                audio: MockAudio {
+                assets: Rc::new(MockAssets),
+                audio: Rc::new(MockAudio {
                     frames: RefCell::new(Vec::new()),
-                },
-                queries: MockQueries,
-                clock: MockClock { now: 5000.0, frame: 40 },
-                output: MockOutput {
+                }),
+                queries: Rc::new(MockQueries),
+                clock: Rc::new(MockClock { now: 5000.0, frame: 40 }),
+                output: Rc::new(MockOutput {
                     scenes: RefCell::new(0),
                     commands: RefCell::new(Vec::new()),
-                },
+                }),
                 commands: Rc::new(MockCommands {
                     registered: RefCell::new(HashSet::new()),
                 }),
@@ -2993,11 +2994,11 @@ mod tests {
             })
         }
 
-        fn options(&self, source: Rc<MockSource>) -> ApplicationModPresentationOptions<'_, MockBackend> {
+        fn options(&self, source: Rc<MockSource>) -> ApplicationModPresentationOptions<MockBackend> {
             ApplicationModPresentationOptions {
-                assets: &self.assets,
-                audio: &self.audio,
-                queries: &self.queries,
+                assets: self.assets.clone(),
+                audio: self.audio.clone(),
+                queries: self.queries.clone(),
                 seat: self.seat.clone(),
                 viewer: self.viewer.clone(),
                 viewport: Rect {
@@ -3008,8 +3009,8 @@ mod tests {
                 },
                 renderer: None,
                 source,
-                clock: &self.clock,
-                output: &self.output,
+                clock: self.clock.clone(),
+                output: self.output.clone(),
                 system_cinematics: None,
                 commands: Some(self.commands.clone()),
                 presentation_media: None,
