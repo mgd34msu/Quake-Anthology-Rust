@@ -200,7 +200,7 @@ struct QwSignonBinding<T, H> {
 }
 
 /// JavaScript `ToInt32` for challenge randoms.
-fn js_int32(value: f64) -> i32 {
+pub(crate) fn js_int32(value: f64) -> i32 {
     if !value.is_finite() {
         return 0;
     }

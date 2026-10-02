@@ -49,6 +49,7 @@ use super::q3_types::{
     q3_game_callback, Q3ApplicationAdmission, Q3ApplicationAdmissionSurface, Q3ApplicationPlayer,
     Q3ApplicationServerHost, Q3GameCallbackError, Q3NetworkRoundRestart, Q3SnapshotServerBit,
 };
+use super::qw_server::js_int32;
 use super::types::{
     ApplicationNetwork, ApplicationNetworkError, ApplicationNetworkPhase, ApplicationNetworkRole,
     NetworkPresentationEvent, Q3ConnectionCell,
@@ -110,22 +111,9 @@ pub struct Q3ServerNetworkOptions<T, H> {
     pub resolve_authorization: Option<Box<dyn FnMut() -> Result<NetworkAddress, String>>>,
 }
 
-/// JavaScript `ToInt32` (donor bitwise operators).
-fn js_to_int32(value: f64) -> i32 {
-    if !value.is_finite() {
-        return 0;
-    }
-    let wrapped = value.trunc().rem_euclid(4_294_967_296.0);
-    if wrapped >= 2_147_483_648.0 {
-        (wrapped - 4_294_967_296.0) as i32
-    } else {
-        wrapped as i32
-    }
-}
-
 /// Next scripted random as the donor `<<` operand.
 fn next_random(random: &Rc<RefCell<Box<dyn FnMut() -> f64>>>) -> i32 {
-    js_to_int32((random.borrow_mut())())
+    js_int32((random.borrow_mut())())
 }
 
 /// Panic payload text.
@@ -3106,14 +3094,14 @@ mod tests {
     }
 
     #[test]
-    fn js_to_int32_folds_like_javascript() {
-        assert_eq!(js_to_int32(0.5), 0);
-        assert_eq!(js_to_int32(-0.5), 0);
-        assert_eq!(js_to_int32(f64::NAN), 0);
-        assert_eq!(js_to_int32(f64::INFINITY), 0);
-        assert_eq!(js_to_int32(4_294_967_297.0), 1);
-        assert_eq!(js_to_int32(-1.0), -1);
-        assert_eq!(js_to_int32(2_147_483_648.0), i32::MIN);
+    fn js_int32_folds_like_javascript() {
+        assert_eq!(js_int32(0.5), 0);
+        assert_eq!(js_int32(-0.5), 0);
+        assert_eq!(js_int32(f64::NAN), 0);
+        assert_eq!(js_int32(f64::INFINITY), 0);
+        assert_eq!(js_int32(4_294_967_297.0), 1);
+        assert_eq!(js_int32(-1.0), -1);
+        assert_eq!(js_int32(2_147_483_648.0), i32::MIN);
     }
 
     #[test]

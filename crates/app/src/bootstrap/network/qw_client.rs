@@ -392,9 +392,10 @@ where
             if path.starts_with('*') {
                 continue;
             }
-            let waiting = self.host.downloads().is_some_and(|downloads| {
-                downloads.request(&path, category) == QwDownloadRequest::Waiting
-            });
+            let waiting = self
+                .host
+                .downloads()
+                .is_some_and(|downloads| downloads.request(&path, category) == QwDownloadRequest::Waiting);
             if waiting {
                 return Ok(());
             }
