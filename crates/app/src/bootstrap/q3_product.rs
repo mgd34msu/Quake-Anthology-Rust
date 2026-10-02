@@ -1,6 +1,6 @@
 //! Quake III application product selection with demo restriction.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-product.ts`
+//! Port of `src/app/bootstrap/q3-product.ts`
 //! (`prepareQ3ApplicationProduct`). The catalog, mount plans, restriction resolver,
 //! startup phases, and cvar registry are the ported catalog, mounts, restriction,
 //! startup-command, and cvar helpers; the product policy registrar
@@ -8,8 +8,9 @@
 //! arrives through the [`Q3ProductPolicyRegistrar`] seam, and the donor's async mount
 //! reads are sync through the host. The product read is skipped when a demo restriction
 //! is already forced, exactly like the donor's resolver early return. Two documented
-//! folds: `ApplicationOptions.q3Product` has no ported counterpart yet so options arrive
-//! as [`Q3ProductOptions`], and the donor's identity owner only feeds the cvar context
+//! folds: options arrive as [`Q3ProductOptions`], a `startupCommands`/`q3Product`
+//! projection of ported [`ApplicationOptions::q3_product`](crate::options::ApplicationOptions::q3_product),
+//! and the donor's identity owner only feeds the cvar context
 //! which the ported registry does not take.
 
 use qa_content::catalog::{CatalogError, InstalledCatalog};
