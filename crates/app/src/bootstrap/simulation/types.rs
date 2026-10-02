@@ -10,17 +10,14 @@
 //! * Donor `number` becomes `i32` for counts, ordinals, frames, and
 //!   millisecond clocks, `u32` for slots and seeds, `u64` for monotonic
 //!   sequences, and `f64` for measurements.
-//! * `prepareRereleaseNavigation` is omitted until wave 2: it takes the
-//!   `SharedSimulation`.borrow from `runtime.ts`, which lands with the wave-2
-//!   runtime port, and `types.rs` cannot name that home before it exists.
-//! * Opaque mirrors below (unit structs) stand in for in-scope homes that
-//!   land in wave 1 (`PreparedClassicGuest`, `PreparedRereleaseGuest`,
-//!   `PreparedQ3Game`, `PreparedQuakeCSource`, `NativeQ2Travel`,
-//!   `ApplicationMonsterNavigation`) or for out-of-scope subtrees nobody in
-//!   the lane reads (`QvmWeaponProfile`, `NativeWeaponBehaviorDeclaration`,
-//!   `WeaponBehaviorComponent` is real, see below). Wave 2 replaces each
-//!   opaque in-scope mirror with an import of its real home; nothing in wave 1
-//!   reads their fields, so the swap is mechanical.
+//! * Wave 2 unified the in-scope opaque mirrors (`PreparedClassicGuest`,
+//!   `PreparedRereleaseGuest`, `PreparedQ3Game`, `PreparedQuakeCSource`,
+//!   `NativeQ2Travel`, `ApplicationMonsterNavigation`) into imports of their
+//!   real homes, and added `prepareRereleaseNavigation` now that
+//!   `super::runtime` exists. Remaining opaque mirrors below stand in for
+//!   out-of-scope subtrees nobody in the lane reads (`QvmWeaponProfile`,
+//!   `NativeWeaponBehaviorDeclaration`; `WeaponBehaviorComponent` is real,
+//!   see below).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -69,7 +66,6 @@ use qa_guest::qvm::artifacts::ResolvedQvmArtifact;
 use qa_guest::runtime::windows::contracts::WindowsCapabilities;
 use qa_platform::files::writable::UserFileStore;
 use qa_world::movement::types::ArsenalState;
-use qa_world::session::SaveImage;
 
 use super::arsenal::selected::{ArsenalAmmoWarning, WeaponHudStatus};
 use super::powerup_timers::ActivePowerupTimer;
@@ -83,41 +79,19 @@ use crate::settings::server::ServerProfile;
 // In-scope mirrors (transient): real homes land in wave 1, wave 2 unifies.
 // ---------------------------------------------------------------------------
 
-/// Mirror of `PreparedClassicGuest` from donor
-/// `src/app/bootstrap/simulation/classic-guest-source.ts` (canonical home:
-/// `crate::bootstrap::simulation::classic_guest_source`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct PreparedClassicGuest;
+/// Wave-2 unification: real prepared guests (see the module docs).
+pub use super::classic_guest_source::PreparedClassicGuest;
+/// Wave-2 unification: real prepared guests (see the module docs).
+pub use super::rerelease_guest_source::PreparedRereleaseGuest;
 
-/// Mirror of `PreparedRereleaseGuest` from donor
-/// `src/app/bootstrap/simulation/rerelease-guest-source.ts` (canonical home:
-/// `crate::bootstrap::simulation::rerelease_guest_source`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct PreparedRereleaseGuest;
-
-/// Mirror of `PreparedQ3Game` from donor
-/// `src/app/bootstrap/simulation/q3/guest-artifact.ts` (canonical home:
-/// `crate::bootstrap::simulation::q3::guest_artifact`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct PreparedQ3Game;
-
-/// Mirror of `PreparedQuakeCSource` from donor
-/// `src/app/bootstrap/simulation/quakec-source.ts` (canonical home:
-/// `crate::bootstrap::simulation::quakec_source`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct PreparedQuakeCSource;
-
-/// Mirror of `NativeQ2Travel` from donor
-/// `src/app/bootstrap/simulation/native-q2-travel.ts` (canonical home:
-/// `crate::bootstrap::simulation::native_q2_travel`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct NativeQ2Travel;
-
-/// Mirror of `ApplicationMonsterNavigation` from donor
-/// `src/app/bootstrap/simulation/monster-navigation.ts` (canonical home:
-/// `crate::bootstrap::simulation::monster_navigation`); unify when it merges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ApplicationMonsterNavigation;
+/// Wave-2 unification: real monster navigation (see the module docs).
+pub use super::monster_navigation::ApplicationMonsterNavigation;
+/// Wave-2 unification: real native Q2 travel (see the module docs).
+pub use super::native_q2_travel::NativeQ2Travel;
+/// Wave-2 unification: real prepared Q3 game (see the module docs).
+pub use super::q3::guest_artifact::PreparedQ3Game;
+/// Wave-2 unification: real prepared QuakeC source (see the module docs).
+pub use super::quakec_source::PreparedQuakeCSource;
 
 /// Mirror of `HandGrenadeTravel` from donor
 /// `src/app/bootstrap/simulation/equipment-runtime.ts` (canonical home:
@@ -323,6 +297,7 @@ pub type SemanticForeignAddress = Rc<dyn Fn(&RereleaseGuestModule) -> GuestAddre
 
 /// Rerelease semantic bindings, mirroring donor `RereleaseSemanticBindings`
 /// from `src/compat/q2/rerelease/host.ts`.
+#[derive(Clone)]
 pub struct RereleaseSemanticBindings {
     /// Project an entity view to world space.
     pub project: Option<SemanticProject>,
@@ -460,6 +435,7 @@ pub struct QuakeCWeaponResource {
 /// Prepared weapon behavior, mirroring donor `PreparedWeaponBehavior` from
 /// `src/app/bootstrap/weapon-behavior-selection.ts`.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum PreparedWeaponBehavior {
     /// QVM behavior.
     Qvm {
@@ -573,6 +549,54 @@ pub enum NativeQ2GuestOptions {
     },
 }
 
+impl NativeQ2GuestOptions {
+    /// Donor `edition` discriminant.
+    #[must_use]
+    pub fn edition(&self) -> qa_content::q2::foundation::host::Q2Edition {
+        use qa_content::q2::foundation::host::Q2Edition;
+        match self {
+            NativeQ2GuestOptions::Classic { .. } => Q2Edition::Classic,
+            NativeQ2GuestOptions::Rerelease { .. } => Q2Edition::Rerelease,
+        }
+    }
+
+    /// Shared native callbacks.
+    #[must_use]
+    pub fn callbacks(&self) -> &NativeQ2GuestCallbacks {
+        match self {
+            NativeQ2GuestOptions::Classic { callbacks, .. } => callbacks,
+            NativeQ2GuestOptions::Rerelease { callbacks, .. } => callbacks,
+        }
+    }
+
+    /// Prepared classic guest, when classic.
+    #[must_use]
+    pub fn prepared_classic(&self) -> Option<&PreparedClassicGuest> {
+        match self {
+            NativeQ2GuestOptions::Classic { prepared, .. } => Some(prepared),
+            NativeQ2GuestOptions::Rerelease { .. } => None,
+        }
+    }
+
+    /// Prepared rerelease guest, when rerelease.
+    #[must_use]
+    pub fn prepared_rerelease(&self) -> Option<&PreparedRereleaseGuest> {
+        match self {
+            NativeQ2GuestOptions::Classic { .. } => None,
+            NativeQ2GuestOptions::Rerelease { prepared, .. } => Some(prepared),
+        }
+    }
+
+    /// Rerelease local services, when rerelease.
+    #[must_use]
+    pub fn local(&self) -> Option<&RereleaseGuestLocalServices> {
+        match self {
+            NativeQ2GuestOptions::Classic { .. } => None,
+            NativeQ2GuestOptions::Rerelease { local, .. } => Some(local),
+        }
+    }
+}
+
 /// Q3 guest options: the `q3Guest` member of donor `SimulationOptions`.
 pub struct Q3GuestOptions {
     /// Writable file store.
@@ -632,9 +656,20 @@ pub type PromptSupported = Rc<dyn Fn(&ClientId) -> bool>;
 /// Player identity lookup.
 pub type PlayerIdentityLookup = Rc<dyn Fn(&ClientId) -> PlayerIdentity>;
 
-/// Simulation options, mirroring donor `SimulationOptions` except
-/// `prepareRereleaseNavigation` (see the module note).
+/// Rerelease navigation factory (donor `prepareRereleaseNavigation`).
+///
+/// Wave-2 addition: the runtime home (`super::runtime`) and the navigation
+/// home (`super::navigation`) both exist now, so the callback names them.
+pub type PrepareRereleaseNavigation = Rc<
+    dyn Fn(
+        &super::runtime::SharedSimulation,
+    ) -> Result<super::navigation::ApplicationBotNavigation, super::navigation::NavigationError>,
+>;
+
+/// Simulation options, mirroring donor `SimulationOptions`.
 pub struct SimulationOptions<'w> {
+    /// Rerelease navigation factory.
+    pub prepare_rerelease_navigation: Option<PrepareRereleaseNavigation>,
     /// Prepared QVM grapple.
     pub prepared_qvm_grapple: Option<PreparedQvmGrapple>,
     /// Prepared gameplay mods.
@@ -709,8 +744,9 @@ pub struct SimulationOptions<'w> {
     pub initial_source_milliseconds: Option<i32>,
     /// Monster navigation.
     pub monster_navigation: Option<ApplicationMonsterNavigation>,
-    /// Save image to restore.
-    pub restore: Option<SaveImage>,
+    /// Save image to restore (rich simulation image; the `qa_world` session
+    /// image does not carry providers, guests, or recipes).
+    pub restore: Option<super::save::SimulationSaveImage>,
     /// Restored clients.
     pub restored_clients: Option<Vec<ClientId>>,
 }
@@ -1489,4 +1525,26 @@ mod tests {
         assert_ne!(SimulationMode::Coop, SimulationMode::Deathmatch);
         let _ = ProviderId::new("sim", "test");
     }
+}
+
+/// Scene light style, mirroring donor `SceneLightStyle` from
+/// `src/contracts/scene.ts` (C6: needed by the presentation seam).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneLightStyle {
+    /// Quake light style.
+    Q1 {
+        /// Style index.
+        style: i32,
+        /// Light value.
+        value: i32,
+    },
+    /// Quake II light style.
+    Q2 {
+        /// Style index.
+        style: i32,
+        /// RGB scale.
+        rgb: Vec3,
+        /// White scale.
+        white: f64,
+    },
 }

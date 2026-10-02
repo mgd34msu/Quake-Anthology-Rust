@@ -843,6 +843,8 @@ pub struct PlayerState {
     pub generic1: i32,
     /// Pmove frame count (event debug only).
     pub pmove_framecount: i32,
+    /// Authoritative angle delta words (`ps.deltaAngles`; C7 needs input observation).
+    pub delta_angles: [i32; 3],
     /// Event debug sink.
     event_debug: Option<EventDebugMirror>,
 }
@@ -876,6 +878,7 @@ impl PlayerState {
             ammo: PlayerStateSlots::new(16),
             generic1: 0,
             pmove_framecount: 0,
+            delta_angles: [0; 3],
             event_debug: None,
         }
     }

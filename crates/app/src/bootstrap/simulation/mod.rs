@@ -20,8 +20,12 @@ pub mod grapple_runtime;
 pub mod mod_callbacks;
 pub mod mod_client_checkpoint;
 pub mod monster_checkpoint;
+pub mod monster_navigation;
 pub mod monster_placement;
 pub mod monster_runtime;
+// TEMP-C6-HARNESS
+pub mod navigation;
+// TEMP-C6-HARNESS
 pub mod monster_sources;
 pub mod native_mod;
 pub mod native_mod_camera;
@@ -40,6 +44,7 @@ pub mod physics;
 pub mod player_checkpoint;
 pub mod player_input_application;
 pub mod player_jump;
+pub mod player_movement;
 pub mod powerup_timers;
 pub mod prediction;
 pub mod provider_frames;
@@ -71,6 +76,8 @@ pub mod rerelease_guest_source;
 pub mod rerelease_guest_world;
 pub mod rerelease_weapon_behavior;
 pub mod rerelease_weapon_checkpoint;
+pub mod runtime;
+// TEMP-C6-HARNESS
 pub mod save;
 pub mod shared_quakeworld_movement;
 pub mod source_hosts;

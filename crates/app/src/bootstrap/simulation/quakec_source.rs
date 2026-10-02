@@ -21,6 +21,7 @@ use qa_content::contract::ResolvedResourceReference;
 use qa_content::mdl::parse_mdl;
 use qa_content::mounts::MountedContent;
 use qa_content::mounts::ResourceRef;
+use qa_content::q1::quakec::id1_program::id1_damage_multiplier;
 use qa_content::q1::quakec::id1_program::id1_program_binding;
 use qa_content::q1::quakec::id1_program::Id1Attribution;
 use qa_content::q1::quakec::id1_program::Id1ProgramCache;
@@ -765,31 +766,35 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use qa_content::contract::{
-    ArmorState, ItemId, ModCallbackInput, ModRuntimeValue, PoweredProtectionState, ProtectionChannel, RegularArmorState,
+    ArmorState, ItemId, ModCallbackInput, ModRuntimeValue, OriginalPickupOffer, PoweredProtectionState,
+    ProtectionChannel, RegularArmorState,
 };
+use qa_content::q1::composition::types::Q1CompositionEvent;
 use qa_content::q1::foundation::checkpoint::{decode_checkpoint_value, encode_checkpoint_value};
 use qa_content::q1::foundation::gameplay::{DamageOutcome, DamageRequest};
+use qa_content::q1::foundation::types::{Q1Event, Q1Powerup};
 use qa_content::q1::foundation::types::{Q1Weapon, WEAPONS};
 use qa_content::q1::foundation::weapon_names::q1_weapon_display_name;
 use qa_content::q1::quakec::armor_points::qc_empty_armor;
 use qa_content::q1::quakec::id1_attacks::Id1SynchronousAttacks;
 use qa_content::q1::quakec::id1_damage::{Id1DamageBinding, Id1DamageCall};
 use qa_content::q1::quakec::id1_environment::{EnvCallbackKind, Id1Environment, Id1PhysicsCallback};
-use qa_content::q1::quakec::id1_pickups::{Id1PickupBinding, QcPickupPolicy};
+use qa_content::q1::quakec::id1_pickups::{Id1PickupBinding, QcPickupPolicy, QcPickupSupplyOffer};
 use qa_content::q1::quakec::id1_projectiles::Id1ProjectileAttacks;
 use qa_content::q1::quakec::qc_gameplay::{ActorSource, QcActorRegistry, QcActorSlots};
 use qa_content::q1::quakec::qc_view::{
     with_qc_source_call, GameplayAuthority, MachineFn, QcHostSource, QcMachineView, QcWordsBuf,
 };
 use qa_content::q1::quakec::weapon_stage::{
-    invoke_qc_client_stage, qc_client_stage_self, QcClientStageCall, QcWeaponStageBinding,
+    invoke_qc_client_stage, qc_client_stage_self, QcClientStageCall, QcWeaponObjectives, QcWeaponStageBinding,
 };
 use qa_content::value::{arr, boolean, int, namespaced, num, obj, str, SaveJson, ValueError};
 use qa_core::cmd::Dialect;
 use qa_core::cvar::CvarRegistry;
 use qa_core::identity::{ActorId, ClientId, OwnedActor, ProviderId, SavedActorId};
+use qa_core::math::donor_angle_vectors;
 use qa_core::math::Vec3;
-use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
+use qa_core::numeric::{native_atoi, NumericOps, Q1_DONOR_PROFILE};
 use qa_core::time::ClockProfile;
 use qa_core::time::{FrameContext, SourceTime};
 use qa_guest::core::contracts::ModuleIdentity;
@@ -808,25 +813,51 @@ use qa_guest::qc::machine::{
     QcInlineRegion, QcMachine, QcMachineOptions,
 };
 use qa_guest::qc::memory::QcEntityMemory;
+use qa_guest::qc::message_effects::{QcBroadcastEffect, TempEntityEffect};
 use qa_guest::qc::movement_host::{MonsterBodySnapshot, MovementBindings, MovementBodies, MovementWorld, RandomSource};
 use qa_guest::qc::presentation_host::{
     capture_netquake_messages, capture_qc_destination, read_qc_destination, restore_netquake_messages, ApiKind,
-    NqMessage, PrecacheKind, QcBroadcastMessages, QcMessageCheckpoint, QcMessageDestination, QcMessageRouter,
-    QcPrecachedResource, QcPresentationEvent, QcRoutedMessage, QwEntriesCheckpoint, QwEntryCheckpoint,
+    ClientMessage, NqMessage, PrecacheKind, QcBroadcastMessages, QcMessageCheckpoint, QcMessageDestination,
+    QcMessageRouter, QcPrecachedResource, QcPresentationEvent, QcRoutedMessage, QwEntriesCheckpoint, QwEntryCheckpoint,
     RoutedCheckpoint, SavedDestination, VisibilityScope,
 };
 use qa_guest::qc::profile::classic_qc_entity_layout;
+use qa_guest::qc::save::{
+    apply_qc_entity_pairs, apply_qc_global_pairs, save_qc_entity_pairs, save_qc_global_pairs,
+    QcTextPair as GuestTextPair,
+};
 use qa_guest::qc::world_host::QcWorldHost;
+use qa_net::common::commands::UserCommand;
 use qa_net::msg::MsgWriter;
-use qa_net::q1_net::{write_net_quake_message, NetQuakeDecoder, NetQuakeMessage};
+use qa_net::q1_net::{write_net_quake_message, NetQuakeDecoder, NetQuakeMessage, NqText, TemporaryEntity};
 use qa_net::q1_wide::NqProfile;
+use qa_world::movement::q1::types::{Q1MovementState, QwMovementProfile, QwMovementState};
+use qa_world::movement::q1::water_transition::q1_water_transition;
+use qa_world::movement::types::{
+    ActorAnimationState, AnimationState, ArsenalState, InventoryEntry as MovementInventoryEntry, Q1UserCommand,
+    QwUserCommand, TraceHit, WeaponState,
+};
+use qa_world::movement::Q1MovementParameters;
 use qa_world::scheduler::think_callback_time;
 
-use super::quakec_local_messages::{
-    QuakeCLocalClientCapture, QuakeCLocalMessageCapture, QuakeCLocalMessageError, QuakeCLocalMessages, QuakeCViewClient,
+use super::powerup_timers::{q1_powerup_timers, ActivePowerupTimer};
+use super::quakec_client_adapter::{
+    consume_quake_c_jump, quake_c_client_command, quake_c_source_jump, QuakeCClientMovement, QuakeCTransitionState,
 };
+use super::quakec_local_messages::{
+    present_quake_c_local_message, quake_c_local_view, NetworkEvent as LocalNetworkEvent, QuakeCLocalClientCapture,
+    QuakeCLocalFog, QuakeCLocalMessageCapture, QuakeCLocalMessageError, QuakeCLocalMessageHost, QuakeCLocalMessages,
+    QuakeCLocalViewSource, QuakeCSessionKind, QuakeCViewClient,
+};
+use super::quakec_player_ui::{quake_c_weapon_ui, QuakeCWeaponUi, QuakeCWeaponUiBinding};
 use super::quakeworld_cvars::register_quake_world_engine_cvars;
-use super::types::QuakeCSourceKind;
+use super::types::{
+    CvarNameValue, PlayerView, Q1ClientMetadataEvent, QuakeCClientRole, QuakeCSourceClient, QuakeCSourceKind,
+    QuakeCSourceTravel,
+};
+use crate::persistence::q1::quakec::{Q1AppliedEntity, Q1QuakeCMachine, Q1SaveHeader, Q1UnknownSaveFields};
+use crate::persistence::q1::source::{capture_q1_source_save, restore_q1_source_save, Q1Source, Q1SourceStaging};
+use crate::persistence::q1::source_text::{Q1SaveData, Q1SaveFormat, QcTextPair as SavedTextPair};
 
 /// Synchronous source physics callback.
 ///
@@ -859,6 +890,8 @@ pub enum QuakeCSlotKind {
     ReservedClient,
     /// Authored map entity slot.
     Authored,
+    /// Restored save-game edict slot.
+    Edict,
 }
 
 impl QuakeCSlotKind {
@@ -869,6 +902,7 @@ impl QuakeCSlotKind {
             QuakeCSlotKind::Worldspawn => "quakec:worldspawn",
             QuakeCSlotKind::ReservedClient => "quakec:reserved-client",
             QuakeCSlotKind::Authored => "quakec:authored",
+            QuakeCSlotKind::Edict => "quakec:edict",
         }
     }
 }
@@ -1006,9 +1040,67 @@ pub trait QuakeCSourcePhysics {
 /// never duplicated.
 pub trait QuakeCSourceEvents {
     /// Deliver a client message event (donor `events.message`).
-    fn message(&mut self, event: qa_guest::qc::presentation_host::ClientMessage, actor: &ActorId);
+    ///
+    /// The actor is `None` for baseline (signon) presentation, matching the
+    /// donor `null` recipient.
+    fn message(&mut self, event: ClientMessage, actor: Option<&ActorId>);
     /// Emit a content event (donor `events.emit`).
     fn emit(&mut self, content: &str, event: QcPresentationEvent, recipient: Option<&ActorId>);
+    /// Emit one decoded local-service signal (donor `events.emit` arms of
+    /// `receiveLocalMessages` that carry no [`QcPresentationEvent`]).
+    fn emit_local(&mut self, content: &str, event: QuakeCLocalSinkEvent, recipient: Option<&ActorId>);
+    /// Light-style pattern by index, empty when unset (donor
+    /// `events.lightStyle`).
+    fn light_style(&self, index: usize) -> String;
+}
+
+/// Decoded local-service signal for [`QuakeCSourceEvents::emit_local`].
+///
+/// Each variant carries one donor `events.emit` call from
+/// `receiveLocalMessages` in `quakec-source.ts` that is not a
+/// [`QcPresentationEvent`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuakeCLocalSinkEvent {
+    /// Q1 presentation event (donor `{ kind: "q1", event }`).
+    Q1(Q1Event),
+    /// CD audio track (donor `{ kind: "music", event: { kind: "cd-track" } }`).
+    Music {
+        /// Track number.
+        track: u8,
+    },
+    /// Client view-angle reset (donor `{ kind: "view-reset", reason: "source" }`).
+    ViewReset {
+        /// Viewing actor.
+        actor: ActorId,
+        /// Reset angles.
+        angles: Vec3,
+    },
+    /// Music pause switch (donor `{ kind: "music", event: { kind: "pause" } }`).
+    Pause {
+        /// Paused flag.
+        paused: bool,
+    },
+    /// Skybox switch (donor `{ kind: "q1-sky", event: { kind: "skybox" } }`).
+    Sky {
+        /// Skybox name.
+        name: String,
+    },
+    /// Client metadata (donor `{ kind: "q1-client", event }`).
+    ClientMetadata(Q1ClientMetadataEvent),
+    /// Session lifecycle signal (donor `{ kind: "q1-session", event }`).
+    Session(QuakeCSessionKind),
+    /// Composition prompt (donor `{ kind: "q1-composition", event }`).
+    Prompt(Q1CompositionEvent),
+    /// Fog addon (donor `{ kind: "q1-composition", event: { kind: "addon",
+    /// event: { kind: "fog" } } }`).
+    Fog {
+        /// Fog density.
+        density: f64,
+        /// Fog color.
+        color: Vec3,
+        /// Transition duration in seconds.
+        duration_seconds: f64,
+    },
 }
 
 /// Scene query surface.
@@ -1536,6 +1628,1253 @@ mod tests {
         assert_eq!(armor.damage, 3);
         let program = fixture_program(&[]);
         validate_qc_mod_combat(&GuestProgramView::new(&program), &runtime).unwrap();
+    }
+
+    use crate::bootstrap::simulation::random::SourceRandom;
+    use crate::persistence::recipe::ExecutableRecipe;
+    use qa_content::contract::{
+        OriginalPickupAdmission, OriginalPickupContinuation, OriginalPickupOutcome, SourcePickupLifetime,
+        SourcePickupSelection,
+    };
+    use qa_content::q1::foundation::gameplay::{AttackProvenance, DamageDelivery};
+    use qa_content::q1::quakec::qc_view::SourceDamageExecute;
+    use qa_core::identity::IdentityOwner;
+    use qa_core::time::FramePhase;
+    use qa_guest::qc::actor_state::QcBodyBinding;
+    use qa_guest::qc::actor_state::{BodyState, SharedSolid};
+    use qa_guest::qc::message_effects::{BeamStyle, PointEffect};
+    use qa_guest::qc::spatial_host::TraceResult as GuestTraceResult;
+    use qa_world::movement::q1::types::{Q1PhysicsEntity, Q1PusherServices, Q1Trace};
+
+    fn surface_fields() -> Vec<(u16, &'static str)> {
+        let vectors = [
+            "origin",
+            "angles",
+            "velocity",
+            "mins",
+            "v_angle",
+            "punchangle",
+            "movedir",
+            "view_ofs",
+            "avelocity",
+            "oldorigin",
+        ];
+        let floats = [
+            "movetype",
+            "flags",
+            "waterlevel",
+            "watertype",
+            "teleport_time",
+            "idealpitch",
+            "fixangle",
+            "health",
+            "team",
+            "colormap",
+            "items",
+            "weapon",
+            "currentammo",
+            "weaponframe",
+            "attack_finished",
+            "frame",
+            "nextthink",
+            "modelindex",
+            "solid",
+            "takedamage",
+            "invincible_finished",
+            "armorvalue",
+            "armortype",
+            "max_health",
+            "super_damage_finished",
+            "invisible_finished",
+            "radsuit_finished",
+            "button0",
+            "button2",
+            "impulse",
+            "spawnflags",
+            "maxspeed",
+            "gravity",
+            "ammo_shells",
+            "ammo_nails",
+            "ammo_rockets",
+            "ammo_cells",
+        ];
+        let strings = [
+            "model",
+            "classname",
+            "netname",
+            "deathtype",
+            "target",
+            "targetname",
+            "killtarget",
+        ];
+        let mut fields: Vec<(u16, &'static str)> = Vec::new();
+        for name in vectors {
+            fields.push((3, name));
+        }
+        for name in floats {
+            fields.push((2, name));
+        }
+        for name in strings {
+            fields.push((1, name));
+        }
+        fields.push((4, "groundentity"));
+        fields.push((4, "enemy"));
+        fields.push((4, "goalentity"));
+        fields.push((4, "aiment"));
+        fields.push((4, "owner"));
+        fields.push((6, "think"));
+        fields.push((6, "touch"));
+        fields.push((6, "th_pain"));
+        fields.push((6, "th_die"));
+        fields.push((2, "items2"));
+        fields.push((2, "frags"));
+        fields
+    }
+
+    fn surface_globals() -> Vec<(u16, &'static str)> {
+        let mut globals = vec![
+            (2u16, "time"),
+            (2, "frametime"),
+            (4, "self"),
+            (4, "other"),
+            (1, "mapname"),
+            (2, "force_retouch"),
+            (4, "newmis"),
+            (2, "serverflags"),
+            (2, "deathmatch"),
+            (2, "skill"),
+            (2, "coop"),
+            (2, "teamplay"),
+        ];
+        for (raw, name) in [(4u16, "pd0"), (4, "pd1"), (4, "pd2"), (2, "pd3")] {
+            globals.push((raw, name));
+        }
+        for (raw, name) in [
+            (6u16, "T_Damage"),
+            (2, "IT2_ARMOR1"),
+            (2, "IT2_ARMOR2"),
+            (2, "IT2_ARMOR3"),
+            (5, "fld_th_pain"),
+            (2, "tmp0"),
+        ] {
+            globals.push((raw, name));
+        }
+        for ordinal in 1..=16 {
+            let name: &'static str = match ordinal {
+                1 => "parm1",
+                2 => "parm2",
+                3 => "parm3",
+                4 => "parm4",
+                5 => "parm5",
+                6 => "parm6",
+                7 => "parm7",
+                8 => "parm8",
+                9 => "parm9",
+                10 => "parm10",
+                11 => "parm11",
+                12 => "parm12",
+                13 => "parm13",
+                14 => "parm14",
+                15 => "parm15",
+                _ => "parm16",
+            };
+            globals.push((2, name));
+        }
+        globals
+    }
+
+    fn surface_functions() -> Vec<&'static str> {
+        vec![
+            "main",
+            "T_Damage",
+            "StartFrame",
+            "ClientConnect",
+            "PutClientInServer",
+            "ClientKill",
+            "ClientDisconnect",
+            "PlayerPreThink",
+            "PlayerPostThink",
+            "SetNewParms",
+            "SetChangeParms",
+            "W_SetCurrentAmmo",
+            "spawn",
+            "worldspawn",
+        ]
+    }
+
+    fn surface_bytes() -> Vec<u8> {
+        let functions = surface_functions();
+        let mut statements = vec![0u16; (functions.len() + 2) * 4];
+        statements[4] = 29;
+        statements[5] = 0;
+        statements[6] = 20;
+        statements[7] = 21;
+        statements[8] = 52;
+        statements[9] = 21;
+        let statement_blob: Vec<u8> = statements.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let mut strings = vec![0u8];
+        let mut intern = |text: &str| {
+            let offset = strings.len() as i32;
+            strings.extend_from_slice(text.as_bytes());
+            strings.push(0);
+            offset
+        };
+        let mut globals_blob = Vec::new();
+        for (index, (raw, name)) in surface_globals().into_iter().enumerate() {
+            let offset = index as u16;
+            globals_blob.extend_from_slice(&raw.to_le_bytes());
+            globals_blob.extend_from_slice(&offset.to_le_bytes());
+            globals_blob.extend_from_slice(&intern(name).to_le_bytes());
+        }
+        let mut fields_blob = Vec::new();
+        let mut field_offset = 0u16;
+        for (raw, name) in surface_fields() {
+            fields_blob.extend_from_slice(&raw.to_le_bytes());
+            fields_blob.extend_from_slice(&field_offset.to_le_bytes());
+            fields_blob.extend_from_slice(&intern(name).to_le_bytes());
+            field_offset += if raw == 3 { 3 } else { 1 };
+        }
+        let mut function_blob = Vec::new();
+        for (index, name) in functions.iter().enumerate() {
+            let first = if index == 0 {
+                0
+            } else if index == 1 {
+                1
+            } else {
+                index as i32 + 2
+            };
+            let damage = *name == "T_Damage";
+            let words = if damage {
+                [first, 12, 0, 0, intern(name), intern("surface.qc"), 4]
+            } else {
+                [first, 0, 0, 0, intern(name), intern("surface.qc"), 0]
+            };
+            for word in words {
+                function_blob.extend_from_slice(&word.to_le_bytes());
+            }
+            if damage {
+                function_blob.extend_from_slice(&[1u8, 1, 1, 1, 0, 0, 0, 0]);
+            } else {
+                function_blob.extend_from_slice(&[0u8; 8]);
+            }
+        }
+        let mut values = vec![0u8; 96 * 4];
+        values[16 * 4..17 * 4].copy_from_slice(&1i32.to_le_bytes());
+        values[17 * 4..18 * 4].copy_from_slice(&1f32.to_le_bytes());
+        values[18 * 4..19 * 4].copy_from_slice(&2f32.to_le_bytes());
+        values[19 * 4..20 * 4].copy_from_slice(&4f32.to_le_bytes());
+        values[20 * 4..21 * 4].copy_from_slice(&81i32.to_le_bytes());
+        let mut blobs = vec![statement_blob, globals_blob, fields_blob, function_blob];
+        blobs.push(strings.clone());
+        blobs.push(values);
+        let counts = [
+            functions.len() as i32 + 2,
+            surface_globals().len() as i32,
+            surface_fields().len() as i32,
+            functions.len() as i32,
+            strings.len() as i32,
+            96,
+        ];
+        let mut image = Vec::new();
+        image.extend_from_slice(&6i32.to_le_bytes());
+        image.extend_from_slice(&5927i32.to_le_bytes());
+        let mut at = 60i32;
+        for (blob, count) in blobs.iter().zip(counts) {
+            image.extend_from_slice(&at.to_le_bytes());
+            image.extend_from_slice(&count.to_le_bytes());
+            at += blob.len() as i32;
+        }
+        image.extend_from_slice(&96i32.to_le_bytes());
+        for blob in &blobs {
+            image.extend_from_slice(blob);
+        }
+        image
+    }
+
+    fn surface_prepared(name: &str) -> PreparedQuakeCSource {
+        let dir = scratch_dir(name);
+        std::fs::write(dir.join("progs.dat"), surface_bytes()).unwrap();
+        let program = load_qc_program(&surface_bytes(), None, "surface.dat").unwrap();
+        let digest = format!("{}:{}", program.digest.algorithm, program.digest.value);
+        std::fs::write(
+            dir.join("quakec-compatibility.json"),
+            format!(r#"{{"version":1,"artifactDigest":"{digest}"}}"#).into_bytes(),
+        )
+        .unwrap();
+        let mounts = loose_mounts(&dir);
+        let found = mounts.open("progs.dat", |_| true).unwrap().unwrap();
+        let execution = QuakeCExecution {
+            owner: test_owner(),
+            artifact: found.reference,
+            api: QuakeCApiIdentity::Netquake,
+        };
+        let prepared = prepare_quake_c_source(&execution, &mounts, "", &mounts).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        prepared
+    }
+
+    struct FakeActors {
+        owner: IdentityOwner,
+        provider: ProviderId,
+        slots: std::collections::HashMap<usize, OwnedActor>,
+        live: std::collections::HashSet<ActorId>,
+        hooks: Vec<ReleaseHook>,
+        next_generation: u32,
+    }
+
+    impl FakeActors {
+        fn new(provider: ProviderId) -> Self {
+            Self {
+                owner: IdentityOwner::create("surface").unwrap(),
+                provider,
+                slots: std::collections::HashMap::new(),
+                live: std::collections::HashSet::new(),
+                hooks: Vec::new(),
+                next_generation: 1,
+            }
+        }
+
+        fn mint(&mut self, slot: usize) -> OwnedActor {
+            let id = self.owner.actor(slot as u32, self.next_generation);
+            self.next_generation += 1;
+            self.owner.owned_actor(&id, self.provider.clone()).unwrap()
+        }
+    }
+
+    impl QuakeCSourceActors for FakeActors {
+        fn at_source(&self, provider: &ProviderId, slot: usize) -> Option<OwnedActor> {
+            if provider != &self.provider {
+                return None;
+            }
+            self.slots.get(&slot).cloned()
+        }
+
+        fn allocate_at_source(&mut self, _provider: &ProviderId, slot: usize, _definition: &str) -> OwnedActor {
+            let actor = self.mint(slot);
+            self.live.insert(actor.id().clone());
+            self.slots.insert(slot, actor.clone());
+            actor
+        }
+
+        fn allocate(&mut self, provider: &ProviderId, definition: &str) -> OwnedActor {
+            let slot = self.slots.keys().max().map_or(1, |slot| slot + 1);
+            self.allocate_at_source(provider, slot, definition)
+        }
+
+        fn release(&mut self, actor: &OwnedActor) {
+            self.live.remove(actor.id());
+            self.slots.retain(|_, owned| owned.id() != actor.id());
+            for hook in &mut self.hooks {
+                hook(actor);
+            }
+        }
+
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+
+        fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
+            if !self.live.contains(actor) {
+                return None;
+            }
+            self.slots.values().find(|owned| owned.id() == actor).cloned()
+        }
+
+        fn reference_saved(&self, _saved: SavedActorId) -> ActorId {
+            self.owner.actor(0, 0)
+        }
+
+        fn source_of(&self, actor: &ActorId) -> Option<(ProviderId, usize)> {
+            self.slots
+                .iter()
+                .find(|(_, owned)| owned.id() == actor)
+                .map(|(slot, _)| (self.provider.clone(), *slot))
+        }
+
+        fn on_release(&mut self, hook: ReleaseHook) {
+            self.hooks.push(hook);
+        }
+    }
+
+    struct FakePhysics {
+        bodies: std::collections::HashMap<ActorId, BodyState>,
+        gravity: f32,
+    }
+
+    impl FakePhysics {
+        fn new() -> Self {
+            Self {
+                bodies: std::collections::HashMap::new(),
+                gravity: 0.0,
+            }
+        }
+
+        fn default_body() -> BodyState {
+            BodyState {
+                origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                bounds: Bounds {
+                    min: Vec3 {
+                        x: -16.0,
+                        y: -16.0,
+                        z: -24.0,
+                    },
+                    max: Vec3 {
+                        x: 16.0,
+                        y: 16.0,
+                        z: 32.0,
+                    },
+                },
+                ground: None,
+            }
+        }
+    }
+
+    struct FakePusher;
+
+    impl Q1PusherServices for FakePusher {
+        fn numeric(&self) -> NumericOps {
+            NumericOps::select(Q1_DONOR_PROFILE).unwrap()
+        }
+
+        fn read(&mut self, _actor: &ActorId) -> Option<Q1PhysicsEntity> {
+            None
+        }
+
+        fn candidates(&mut self) -> Vec<ActorId> {
+            Vec::new()
+        }
+
+        fn write(&mut self, _entity: Q1PhysicsEntity) {}
+
+        fn link(&mut self, _actor: &OwnedActor, _touch_triggers: bool) {}
+
+        fn collision_enabled(&mut self, _actor: &OwnedActor, _enabled: bool) {}
+
+        fn test_position(&mut self, _entity: &Q1PhysicsEntity) -> TraceHit {
+            TraceHit::None
+        }
+
+        fn push(&mut self, _entity: &Q1PhysicsEntity, _displacement: Vec3) -> (Option<Q1PhysicsEntity>, Q1Trace) {
+            (
+                None,
+                Q1Trace {
+                    fraction: 1.0,
+                    end: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    start_solid: false,
+                    all_solid: false,
+                    contact: qa_world::movement::types::TraceContact::None,
+                    hit: TraceHit::None,
+                    in_open: true,
+                    in_water: false,
+                    source_plane: qa_core::math::Plane {
+                        normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+                        distance: 0.0,
+                    },
+                    surface_flags: None,
+                },
+            )
+        }
+
+        fn blocked(&mut self, _pusher: &OwnedActor, _obstacle: &ActorId) {}
+    }
+
+    impl QuakeCSourcePhysics for FakePhysics {
+        fn unlink_body(&mut self, actor: &OwnedActor) {
+            self.bodies.remove(actor.id());
+        }
+
+        fn read_body(&self, actor: &ActorId) -> Option<BodyState> {
+            self.bodies.get(actor).cloned()
+        }
+
+        fn write_body(&mut self, actor: &OwnedActor, body: BodyState) {
+            self.bodies.insert(actor.id().clone(), body);
+        }
+
+        fn bind_body(&mut self, actor: &ActorId, _slot: usize, _binding: QcBodyBinding) {
+            self.bodies.insert(actor.clone(), Self::default_body());
+        }
+
+        fn link_body(&mut self, actor: &ActorId) {
+            self.bodies.entry(actor.clone()).or_insert_with(Self::default_body);
+        }
+
+        fn read_q1_pusher(&self, _actor: &ActorId) -> Option<Q1PhysicsEntity> {
+            None
+        }
+
+        fn write_q1_pusher(&mut self, _entity: &Q1PhysicsEntity) {}
+
+        fn q1_pusher_services(
+            &mut self,
+            _projection: Rc<dyn QuakeCSourcePusherProjection>,
+        ) -> Rc<RefCell<dyn Q1PusherServices>> {
+            Rc::new(RefCell::new(FakePusher))
+        }
+
+        fn set_collision_enabled(&mut self, _actor: &OwnedActor, _enabled: bool) {}
+
+        fn solid_of(&self, _actor: &ActorId) -> Option<SharedSolid> {
+            None
+        }
+
+        fn touch_triggers(&mut self, _actor: &OwnedActor) {}
+
+        fn set_world_gravity(&mut self, gravity: f32) {
+            self.gravity = gravity;
+        }
+    }
+
+    struct FakeCombat;
+
+    impl GameplayAuthority for FakeCombat {
+        fn apply(
+            &self,
+            request: DamageRequest,
+            _source_damage: Option<&mut dyn FnMut(DamageRequest) -> Result<DamageOutcome, QcError>>,
+        ) -> Result<DamageOutcome, QcError> {
+            Ok(DamageOutcome::StaleTarget { request })
+        }
+
+        fn run_source_damage(
+            &self,
+            request: DamageRequest,
+            _execute: SourceDamageExecute<'_>,
+        ) -> Result<DamageOutcome, QcError> {
+            Ok(DamageOutcome::StaleTarget { request })
+        }
+
+        fn damage_operation_active(&self) -> bool {
+            false
+        }
+    }
+
+    impl QuakeCSourceCombat for FakeCombat {
+        fn bind_actor(&self, _actor: &OwnedActor, _binding: QuakeCCombatBinding) {}
+    }
+
+    struct FakeInventory;
+
+    impl QuakeCSourceInventory for FakeInventory {
+        fn bind(&mut self, _actor: &OwnedActor, _binding: QuakeCInventoryBinding) {}
+
+        fn count(&self, _actor: &ActorId, _item: &ItemId) -> f64 {
+            0.0
+        }
+
+        fn entries(&self, _actor: &ActorId) -> Vec<QuakeCInventoryEntry> {
+            Vec::new()
+        }
+    }
+
+    struct FakeCallbacks;
+
+    impl QuakeCSourceCallbacks for FakeCallbacks {
+        fn bind_actor(&mut self, _actor: &OwnedActor, _hooks: QuakeCActorHooks) {}
+    }
+
+    struct FakeWorld {
+        entities: String,
+    }
+
+    impl QuakeCSourceWorld for FakeWorld {
+        fn model_count(&self) -> usize {
+            1
+        }
+
+        fn map_entities(&self, _mode: QuakeCSourceMode) -> String {
+            self.entities.clone()
+        }
+    }
+
+    struct FakeScene;
+
+    impl QuakeCSourceScene for FakeScene {
+        fn model_bounds(&self, _index: usize) -> Bounds {
+            Bounds {
+                min: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                max: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            }
+        }
+
+        fn visible(&self, _from: Vec3, _to: Vec3) -> bool {
+            true
+        }
+
+        fn trace_hit_actor(&self, _start: Vec3, _end: Vec3, _pass: &ActorId) -> Option<ActorId> {
+            None
+        }
+
+        fn body_origin(&self, _actor: &ActorId) -> Option<Vec3> {
+            None
+        }
+
+        fn trace(&self, params: &qa_guest::qc::spatial_host::TraceParams) -> Result<GuestTraceResult, GuestError> {
+            Ok(GuestTraceResult {
+                fraction: 1.0,
+                all_solid: false,
+                start_solid: false,
+                in_water: false,
+                in_open: true,
+                end: params.end,
+                plane: qa_core::math::Plane {
+                    normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+                    distance: 0.0,
+                },
+                hit: qa_guest::qc::spatial_host::TraceHit::None,
+            })
+        }
+
+        fn point_contents(&self, _point: Vec3) -> Result<f32, GuestError> {
+            Ok(-1.0)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeEvents {
+        messages: Vec<(ClientMessage, Option<ActorId>)>,
+        emitted: Vec<(String, QcPresentationEvent, Option<ActorId>)>,
+        local: Vec<(String, QuakeCLocalSinkEvent, Option<ActorId>)>,
+    }
+
+    impl QuakeCSourceEvents for FakeEvents {
+        fn message(&mut self, event: ClientMessage, actor: Option<&ActorId>) {
+            self.messages.push((event, actor.cloned()));
+        }
+
+        fn emit(&mut self, content: &str, event: QcPresentationEvent, recipient: Option<&ActorId>) {
+            self.emitted.push((content.to_string(), event, recipient.cloned()));
+        }
+
+        fn emit_local(&mut self, content: &str, event: QuakeCLocalSinkEvent, recipient: Option<&ActorId>) {
+            self.local.push((content.to_string(), event, recipient.cloned()));
+        }
+
+        fn light_style(&self, _index: usize) -> String {
+            String::new()
+        }
+    }
+
+    struct FakePickups;
+
+    struct FakeLifetime;
+
+    impl SourcePickupLifetime for FakeLifetime {
+        fn consume_pickup(&self, _remove: Box<dyn FnOnce()>) {}
+    }
+
+    impl OriginalPickupAdmission for FakePickups {
+        fn run_source<R>(
+            &self,
+            _offer: &OriginalPickupOffer,
+            execute: &mut dyn FnMut(SourcePickupSelection<'_>, &dyn SourcePickupLifetime) -> R,
+        ) -> R {
+            execute(SourcePickupSelection::Original, &FakeLifetime)
+        }
+
+        fn touch(
+            &self,
+            _offer: &OriginalPickupOffer,
+            _continuation: &dyn OriginalPickupContinuation,
+        ) -> OriginalPickupOutcome {
+            OriginalPickupOutcome::Accepted
+        }
+    }
+
+    use crate::persistence::recipe::MapSelection;
+    use crate::persistence::recipe::{
+        CampaignSelection, EnemySelection, EnvironmentSelection, EquipmentSelection, ExecutionImplementation,
+        GrappleSelection, HandGrenadeSelection, PresentationSelection, ResolvedExecutionModule,
+    };
+    use qa_guest::checkpoint::GameApi;
+    use qa_world::save::shared::{CharacterSelection, ProviderRef};
+
+    fn test_provider_ref(provider: &str) -> ProviderRef {
+        ProviderRef {
+            provider: provider.to_string(),
+            content: "test-content".to_string(),
+        }
+    }
+
+    fn recipe_reference(requested_path: &str, digest: &str) -> crate::persistence::recipe::ResolvedResourceReference {
+        crate::persistence::recipe::ResolvedResourceReference {
+            id: format!("test:{requested_path}"),
+            requested_path: requested_path.to_string(),
+            provenance: crate::persistence::recipe::ResourceProvenance::Loose {
+                mount: Box::new(crate::persistence::recipe::ContentMount::Loose {
+                    identity: crate::persistence::recipe::MountIdentity {
+                        id: "test:loose".to_string(),
+                        content: "test-content".to_string(),
+                        generation: 0,
+                    },
+                    root_path: "/tmp".to_string(),
+                }),
+                member_path: requested_path.to_string(),
+            },
+            digest: digest.to_string(),
+            byte_length: 0,
+            resolution: crate::persistence::recipe::ResourceResolution::DefaultOrder {
+                plan: "test:plan".to_string(),
+                rank: 0,
+            },
+        }
+    }
+
+    fn surface_recipe(prepared: &PreparedQuakeCSource) -> ExecutableRecipe {
+        let digest = prepared.execution.artifact.digest.as_str().to_string();
+        let geometry = recipe_reference("maps/test.bsp", &digest);
+        ExecutableRecipe {
+            mods: Vec::new(),
+            weapon_behaviors: Vec::new(),
+            id: "surface".to_string(),
+            preset: "test".to_string(),
+            map: MapSelection {
+                geometry_content: String::new(),
+                geometry,
+                entities: test_provider_ref("test:entities"),
+            },
+            campaign: CampaignSelection::None,
+            movement: test_provider_ref("test:movement"),
+            combat: test_provider_ref("test:combat"),
+            inventory: test_provider_ref("test:inventory"),
+            match_provider: test_provider_ref("test:match"),
+            transition: test_provider_ref("test:transition"),
+            engine_behavior: test_provider_ref("test:engine"),
+            character: CharacterSelection {
+                definition: test_provider_ref("q1:test-character"),
+                appearance: test_provider_ref("q1:test-appearance"),
+            },
+            weapons: Vec::new(),
+            equipment: EquipmentSelection {
+                grapple: GrappleSelection::Disabled,
+                hand_grenades: HandGrenadeSelection::Disabled,
+            },
+            enemies: EnemySelection::MapDefined,
+            presentation: PresentationSelection {
+                doppler: String::new(),
+                environment: EnvironmentSelection::Disabled,
+                assets: String::new(),
+                hud: test_provider_ref("test:hud"),
+                effects: test_provider_ref("test:effects"),
+                audio: test_provider_ref("test:audio"),
+            },
+            execution: vec![ResolvedExecutionModule {
+                owner: test_provider_ref("q1:test"),
+                role: "game".to_string(),
+                api: GameApi::Q1Netquake,
+                implementation: ExecutionImplementation::Quakec {
+                    artifact: recipe_reference("progs.dat", &digest),
+                },
+            }],
+            mounts: crate::persistence::recipe::ResolvedMountPlan {
+                id: "test:plan".to_string(),
+                mounts: Vec::new(),
+                default_order: Vec::new(),
+                prefix_orders: Vec::new(),
+            },
+            resources: Vec::new(),
+            timing: Vec::new(),
+            ordering: qa_world::scheduler::FrameOrdering::Native {
+                clock: qa_core::time::ClockProfile::Q1Netquake {
+                    minimum_frame_seconds: 0.0,
+                    maximum_frame_seconds: 0.1,
+                    fixed_frame_seconds: None,
+                },
+            },
+        }
+    }
+
+    type SurfaceSourceHandles = (
+        Rc<QuakeCSource<FakePickups>>,
+        Rc<RefCell<FakeActors>>,
+        Rc<RefCell<FakePhysics>>,
+        Rc<RefCell<FakeEvents>>,
+        IdentityOwner,
+    );
+
+    fn surface_source(name: &str, max_clients: usize, entities: &str) -> SurfaceSourceHandles {
+        let prepared = surface_prepared(name);
+        let provider = prepared.execution.owner.provider.clone();
+        let actors = Rc::new(RefCell::new(FakeActors::new(provider)));
+        let physics = Rc::new(RefCell::new(FakePhysics::new()));
+        let events = Rc::new(RefCell::new(FakeEvents::default()));
+        let identities = IdentityOwner::create("surface-clients").unwrap();
+        let options = QuakeCSourceOptions {
+            recipe: surface_recipe(&prepared),
+            world: Rc::new(RefCell::new(FakeWorld {
+                entities: entities.to_string(),
+            })),
+            scene: Rc::new(RefCell::new(FakeScene)),
+            actors: actors.clone(),
+            callbacks: Rc::new(RefCell::new(FakeCallbacks)),
+            physics: physics.clone(),
+            combat: Rc::new(FakeCombat),
+            inventory: Rc::new(RefCell::new(FakeInventory)),
+            pickups: Rc::new(FakePickups),
+            events: events.clone(),
+            random: SourceRandom::new(1),
+            admit: Rc::new(|_, _, _| {}),
+            damage_request: Rc::new(|call| DamageRequest {
+                attack: AttackProvenance {
+                    sequence: 0,
+                    time: SourceTime::Seconds(0.0),
+                    attacker: None,
+                    inflictor: None,
+                    originating_projectile: None,
+                    weapon: None,
+                    weapon_provider: ProviderId::new("test", "weapon"),
+                    damage_powerup_owner: None,
+                    combat_provider: ProviderId::new("test", "combat"),
+                    inventory_provider: ProviderId::new("test", "inventory"),
+                    movement_provider: ProviderId::new("test", "movement"),
+                    cause: qa_content::q1::foundation::gameplay::AttackCause::Q1 {
+                        death_type: String::new(),
+                        armor_effect: None,
+                    },
+                },
+                target: call.target.clone(),
+                amount: call.amount,
+                knockback: 0.0,
+                direction: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                point: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+                delivery: DamageDelivery::Direct,
+            }),
+            print: Rc::new(|_| {}),
+            change_level: Rc::new(|_| {}),
+            max_clients,
+            skill: 2,
+            mode: QuakeCSourceMode::Singleplayer,
+            initial_source_time_seconds: 0.0,
+            source_registry: None,
+            restore: None,
+            original_save_candidate: false,
+            give_inventory: None,
+            primary_weapon_selected: None,
+            owns_weapon: None,
+            client_spawned: None,
+            bind_inventory: None,
+            foreign_classname: None,
+            damage_allowed: None,
+            pickup_policy: None,
+        };
+        let source = QuakeCSource::new(prepared, options).unwrap();
+        (source, actors, physics, events, identities)
+    }
+
+    fn admit_surface_client(source: &QuakeCSource<FakePickups>, identities: &IdentityOwner, slot: u32) -> OwnedActor {
+        if source.loading() {
+            source.spawn_map().unwrap();
+        }
+        let client = identities.client(slot, 1);
+        source.reserved_client(&client).unwrap();
+        source.admit_client(&client).unwrap()
+    }
+
+    #[test]
+    fn surface_constructs_and_binds_reserved_slots() {
+        let (source, _, _, _, _) = surface_source("qc-surface-construct", 2, "");
+        assert_eq!(source.kind(), QuakeCSourceKind::Netquake);
+        assert!(source.loading());
+        assert_eq!(source.time_seconds(), 0.0);
+        let world = source.world_actor().unwrap();
+        assert_eq!(source.source_slot(world.id()), Some(0));
+        assert!(!source.is_reserved_client(world.id()));
+        assert!(!source.is_active_client(world.id()));
+        assert!(!source.has_client(&IdentityOwner::create("probe").unwrap().client(0, 1)));
+        assert!(source.connected_client_identities().is_empty());
+        assert!(source
+            .client_actor(&IdentityOwner::create("probe").unwrap().client(0, 1))
+            .is_none());
+        assert!(source.local_client_intermission(world.id()).is_none());
+        assert!(!source.is_spectator_client(world.id()));
+        assert_eq!(source.classname(world.id()).unwrap(), "");
+        assert_eq!(source.read_move_type(world.id()).unwrap(), Some(0));
+        assert_eq!(source.notarget(world.id()).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn surface_admits_and_runs_client_commands() {
+        let (source, _, _, _, identities) = surface_source("qc-surface-admit", 2, "");
+        let actor = admit_surface_client(&source, &identities, 0);
+        assert!(source.is_active_client(actor.id()));
+        let client = identities.client(0, 1);
+        assert!(source.has_client(&client));
+        assert_eq!(source.connected_client_identities(), vec![client.clone()]);
+        assert_eq!(source.client_actor(&client), Some(actor.id().clone()));
+        assert!(source.is_reserved_client(actor.id()));
+        assert_eq!(source.classname(actor.id()).unwrap(), "");
+
+        source.set_match_score(actor.id(), 7.0).unwrap();
+        assert_eq!(source.match_score(actor.id()).unwrap(), 7.0);
+        assert!(source.set_match_score(actor.id(), f64::NAN).is_err());
+
+        source.set_client_max_health(actor.id(), 150.0).unwrap();
+        let equipment = source.client_equipment(actor.id()).unwrap();
+        assert_eq!(equipment.max_health, 150.0);
+        assert_eq!(equipment.quad_until, 0.0);
+        assert!(source.set_client_max_health(actor.id(), f64::INFINITY).is_err());
+
+        assert_eq!(
+            source.client_powerup_expires(actor.id(), QuakeCPowerup::Quad).unwrap(),
+            0.0
+        );
+        assert_eq!(source.death_type(actor.id()).unwrap(), "");
+
+        let target = source.weapon_target(actor.id()).unwrap().unwrap();
+        assert!(!target.monster);
+        assert!(!target.aimed_damage);
+
+        source.host_cheat(actor.id(), QuakeCCheat::God, &[]).unwrap();
+        assert_eq!(source.notarget(actor.id()).unwrap(), Some(false));
+
+        let punch = source.client_punch_angles(actor.id()).unwrap();
+        assert_eq!(punch, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+        source
+            .set_client_punch_angles(actor.id(), Vec3 { x: 1.0, y: 2.0, z: 3.0 })
+            .unwrap();
+        assert_eq!(
+            source.client_punch_angles(actor.id()).unwrap(),
+            Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+        );
+        assert!(!source.client_punch_advances(actor.id()).unwrap());
+        assert!(source.consume_client_view_reset(actor.id()).unwrap().is_none());
+
+        assert!(!source.client_kill(actor.id()).unwrap());
+        source
+            .host_cheat(actor.id(), QuakeCCheat::Give, &["health".to_string()])
+            .unwrap();
+        assert!(source.client_kill(actor.id()).unwrap());
+
+        let mut info = std::collections::HashMap::new();
+        info.insert("name".to_string(), "surface".to_string());
+        source.set_client_info(&client, &info).unwrap();
+        assert_eq!(source.client_info(&client).get("name").unwrap(), "surface");
+        source.set_match_team(actor.id(), Some("3")).unwrap();
+        assert_eq!(source.match_team(actor.id()).unwrap(), Some("3".to_string()));
+        assert!(source.set_match_team(actor.id(), Some("nope")).is_err());
+        assert!(source.set_match_team(actor.id(), None).is_err());
+
+        source.disconnect_client(&actor).unwrap();
+        assert!(!source.is_active_client(actor.id()));
+        assert!(!source.has_client(&client));
+    }
+
+    #[test]
+    fn surface_runs_frames_and_spawns_empty_map() {
+        let (source, _, _, _, identities) = surface_source("qc-surface-frame", 2, "");
+        source.spawn_map().unwrap();
+        assert!(!source.loading());
+        assert!(source.spawn_map().is_err());
+        let frame = FrameContext {
+            frame: 1,
+            time: SourceTime::Seconds(0.1),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
+        source.begin_frame(&frame).unwrap();
+        assert!((source.time_seconds() - 0.1f64).abs() < 1e-6);
+        let world = source.world_actor().unwrap();
+        source.before_actor(&world).unwrap();
+        source.end_frame().unwrap();
+        let bad = FrameContext {
+            frame: 2,
+            time: SourceTime::Milliseconds(100),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
+        assert!(source.begin_frame(&bad).is_err());
+        assert!(source.take_new_missile().unwrap().is_none());
+
+        let actor = admit_surface_client(&source, &identities, 0);
+        source.check_water_transition(&actor).unwrap();
+        source
+            .write_angular_velocity(&actor, Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+            .unwrap();
+        assert!(!source
+            .request_client_weapon(actor.id(), &"q1:weapon:axe".to_string())
+            .unwrap());
+        source.client_pre_think(&actor).unwrap();
+        source.client_post_think(&actor).unwrap();
+        let ui = source.client_ui(actor.id()).unwrap();
+        assert!(ui.powerups.is_empty());
+        assert!(source.client_arsenal(actor.id()).is_err());
+        let animation = source.client_animation(actor.id()).unwrap();
+        assert_eq!(animation.provider, ProviderId::new("q1", "test-character"));
+        assert!(source.local_client_view(actor.id()).is_none());
+        assert_eq!(
+            source.client_view_offset(actor.id()).unwrap(),
+            Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+        );
+    }
+
+    #[test]
+    fn surface_round_trips_movement_state() {
+        let (source, _, _, _, identities) = surface_source("qc-surface-move", 2, "");
+        let actor = admit_surface_client(&source, &identities, 0);
+        let state = Q1MovementState {
+            origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            velocity: Vec3 { x: 4.0, y: 5.0, z: 6.0 },
+            angles: Vec3 { x: 7.0, y: 8.0, z: 9.0 },
+            old_origin: Vec3 {
+                x: 10.0,
+                y: 11.0,
+                z: 12.0,
+            },
+            angular_velocity: Vec3 {
+                x: 13.0,
+                y: 14.0,
+                z: 15.0,
+            },
+            view_angles: Vec3 {
+                x: 16.0,
+                y: 17.0,
+                z: 18.0,
+            },
+            punch_angles: Vec3 {
+                x: 19.0,
+                y: 20.0,
+                z: 21.0,
+            },
+            move_type: 3,
+            flags: 1,
+            water_level: 2,
+            water_type: -3,
+            teleport_time_seconds: 4.0,
+            water_jump_direction: Vec3 {
+                x: 22.0,
+                y: 23.0,
+                z: 24.0,
+            },
+            ideal_pitch: 25.0,
+            fix_angle: false,
+            health: 100.0,
+            ground: qa_world::movement::types::TraceHit::None,
+        };
+        source.write_client_state(actor.id(), &state).unwrap();
+        source
+            .host_cheat(actor.id(), QuakeCCheat::Give, &["health".to_string()])
+            .unwrap();
+        let read = source.read_client_state(actor.id(), &state).unwrap();
+        assert_eq!(read.view_angles, state.view_angles);
+        assert_eq!(read.punch_angles, state.punch_angles);
+        assert_eq!(read.move_type, 3);
+        assert_eq!(read.flags, 1);
+        assert_eq!(read.water_level, 2);
+        assert_eq!(read.water_type, -3);
+        assert_eq!(read.teleport_time_seconds, 4.0);
+        assert_eq!(read.water_jump_direction, state.water_jump_direction);
+        assert_eq!(read.ideal_pitch, 25.0);
+        assert!(!read.fix_angle);
+        assert_eq!(read.health, 100.0);
+        assert_eq!(source.read_move_type(actor.id()).unwrap(), Some(3));
+        source
+            .client_input(
+                actor.id(),
+                &Q1UserCommand {
+                    acknowledged_server_time_seconds: 0.0,
+                    view_angles: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+                    forward_move: 0.0,
+                    side_move: 0.0,
+                    up_move: 0.0,
+                    buttons: 3,
+                    impulse: 0,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn surface_travel_round_trip() {
+        let (source, _, _, _, identities) = surface_source("qc-surface-travel", 2, "");
+        assert!(source.capture_travel().is_err());
+        let actor = admit_surface_client(&source, &identities, 0);
+        let travel = source.capture_travel().unwrap();
+        assert_eq!(travel.kind, QuakeCSourceKind::Netquake);
+        assert_eq!(travel.clients.len(), 1);
+        assert_eq!(travel.clients[0].parameters.len(), 16);
+        assert_eq!(travel.server_flags, 0);
+        source.disconnect_client(&actor).unwrap();
+
+        let (fresh, _, _, _, _) = surface_source("qc-surface-travel-fresh", 2, "");
+        fresh.restore_travel(&travel).unwrap();
+        let clients = fresh.connected_client_identities();
+        assert_eq!(clients.len(), 1);
+        assert!(fresh.restore_travel(&travel).is_err());
+        let mut wrong = travel.clone();
+        wrong.kind = QuakeCSourceKind::Quakeworld;
+        let (other, _, _, _, _) = surface_source("qc-surface-travel-other", 2, "");
+        assert!(other.restore_travel(&wrong).is_err());
+    }
+
+    #[test]
+    fn surface_converts_routed_messages() {
+        let origin = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+        let print = netquake_message_from_nq(&NqMessage::Print { text: "hi".to_string() });
+        assert_eq!(
+            print,
+            NetQuakeMessage::Text {
+                kind: NqText::Print,
+                text: "hi".to_string()
+            }
+        );
+        let center = netquake_message_from_nq(&NqMessage::CenterPrint { text: "c".to_string() });
+        assert_eq!(
+            center,
+            NetQuakeMessage::Text {
+                kind: NqText::CenterPrint,
+                text: "c".to_string()
+            }
+        );
+        let stuff = netquake_message_from_nq(&NqMessage::StuffText { text: "s".to_string() });
+        assert_eq!(
+            stuff,
+            NetQuakeMessage::Text {
+                kind: NqText::Stufftext,
+                text: "s".to_string()
+            }
+        );
+        let view = netquake_message_from_nq(&NqMessage::SetView { entity: 4 });
+        assert_eq!(view, NetQuakeMessage::SetView { entity: 4 });
+        let sound = netquake_message_from_nq(&NqMessage::Sound {
+            entity: 2,
+            channel: 1,
+            index: 3,
+            origin,
+            volume: 9,
+            attenuation: 0.5,
+        });
+        assert_eq!(
+            sound,
+            NetQuakeMessage::Sound {
+                entity: 2,
+                channel: 1,
+                index: 3,
+                volume: 9,
+                attenuation: 0.5,
+                origin: [1.0, 2.0, 3.0],
+            }
+        );
+        let temp = netquake_message_from_nq(&NqMessage::TempEntity {
+            effect: TempEntityEffect::Point {
+                effect_type: 7,
+                origin,
+                count: 5,
+            },
+        });
+        assert_eq!(
+            temp,
+            NetQuakeMessage::TemporaryEntity {
+                effect: TemporaryEntity::Point {
+                    effect_type: 7,
+                    origin: [1.0, 2.0, 3.0],
+                    count: 5
+                },
+            }
+        );
+        let beam = netquake_message_from_nq(&NqMessage::TempEntity {
+            effect: TempEntityEffect::Beam {
+                entity: 6,
+                beam_type: 1,
+                start: origin,
+                end: origin,
+            },
+        });
+        assert_eq!(
+            beam,
+            NetQuakeMessage::TemporaryEntity {
+                effect: TemporaryEntity::Beam {
+                    effect_type: 1,
+                    entity: 6,
+                    start: [1.0, 2.0, 3.0],
+                    end: [1.0, 2.0, 3.0],
+                },
+            }
+        );
+        let boom = netquake_message_from_nq(&NqMessage::TempEntity {
+            effect: TempEntityEffect::ExplosionColors {
+                origin,
+                color_start: 1,
+                color_length: 2,
+            },
+        });
+        assert_eq!(
+            boom,
+            NetQuakeMessage::TemporaryEntity {
+                effect: TemporaryEntity::ExplosionColors {
+                    origin: [1.0, 2.0, 3.0],
+                    color_start: 1,
+                    color_length: 2,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn surface_maps_broadcast_effects() {
+        let origin = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+        let actor = IdentityOwner::create("fx").unwrap().actor(1, 1);
+        let effect = map_broadcast_effect(&QcBroadcastEffect::Effect {
+            effect: PointEffect::Explosion,
+            actor: Some(actor.clone()),
+            origin,
+            amount: 2,
+        });
+        assert_eq!(
+            effect,
+            QcPresentationEvent::Effect {
+                effect: PointEffect::Explosion,
+                actor: Some(actor.clone()),
+                origin,
+                amount: 2,
+            }
+        );
+        let beam = map_broadcast_effect(&QcBroadcastEffect::Beam {
+            style: BeamStyle::Lightning1,
+            actor: actor.clone(),
+            start: origin,
+            end: origin,
+        });
+        assert_eq!(
+            beam,
+            QcPresentationEvent::Beam {
+                style: BeamStyle::Lightning1,
+                actor: actor.clone(),
+                start: origin,
+                end: origin,
+            }
+        );
+        let boom = map_broadcast_effect(&QcBroadcastEffect::ColoredExplosion {
+            origin,
+            color_start: 1,
+            color_length: 2,
+        });
+        assert_eq!(
+            boom,
+            QcPresentationEvent::ColoredExplosion {
+                origin,
+                color_start: 1,
+                color_length: 2
+            }
+        );
+        let particles = map_broadcast_effect(&QcBroadcastEffect::Particles {
+            origin,
+            direction: origin,
+            color: 3,
+            count: 4,
+        });
+        assert_eq!(
+            particles,
+            QcPresentationEvent::Particles {
+                origin,
+                direction: origin,
+                color: 3,
+                count: 4
+            }
+        );
+        assert_eq!(QuakeCPostThink::default(), QuakeCPostThink::Immediate);
     }
 }
 
@@ -2250,7 +3589,8 @@ impl qa_guest::qc::world_host::WorldSlots for WorldSlots {
             .actors
             .borrow_mut()
             .allocate_at_source(&self.provider, slot, definition.definition());
-        if !self.fields.borrow().is_allocated(owned.id()) {
+        let fields_allocated = self.fields.borrow().is_allocated(owned.id());
+        if !fields_allocated {
             self.fields
                 .borrow_mut()
                 .allocate(owned.id(), &self.layout)
@@ -2916,6 +4256,95 @@ impl GuestInlineBoundary for InlineBridge {
 ///
 /// Donor `Projection = Pick<Q1PusherServices, "read" | "write" | "link" | "blocked">` from
 /// `src/compat/qc/pusher-host.ts`.
+/// Host cheat name (donor `hostCheat` name union).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuakeCCheat {
+    /// God mode toggle.
+    God,
+    /// Notarget toggle.
+    Notarget,
+    /// Noclip toggle.
+    Noclip,
+    /// Fly toggle.
+    Fly,
+    /// Give items.
+    Give,
+}
+
+/// Client powerup timer (donor `clientPowerupExpires` powerup union).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuakeCPowerup {
+    /// Quad damage.
+    Quad,
+    /// Pentagram of protection.
+    Invulnerability,
+    /// Ring of shadows.
+    Invisibility,
+    /// Biosuit.
+    Suit,
+}
+
+/// Mixed-client post-think phase (donor `mixedClientPostThink` postThink union).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum QuakeCPostThink {
+    /// Run `PlayerPostThink` immediately.
+    #[default]
+    Immediate,
+    /// Defer `PlayerPostThink` to the native command loop.
+    Deferred,
+}
+
+/// Movement profile family (donor `MovementProfile["kind"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuakeCMovementKind {
+    /// NetQuake.
+    Q1Netquake,
+    /// QuakeWorld.
+    Q1Quakeworld,
+    /// Quake II classic.
+    Q2Classic,
+    /// Quake II rerelease.
+    Q2Rerelease,
+    /// Quake III.
+    Q3,
+}
+
+/// Client equipment snapshot (donor `clientEquipment` return).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuakeCEquipment {
+    /// Maximum health.
+    pub max_health: f64,
+    /// Quad expiry in source seconds.
+    pub quad_until: f64,
+}
+
+/// Combat target flags (donor `weaponTarget` return).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuakeCWeaponTarget {
+    /// Monster flag bit is set.
+    pub monster: bool,
+    /// Takes aimed damage.
+    pub aimed_damage: bool,
+}
+
+/// Selected spawn point (donor `clientSpawnPoint` return).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuakeCSpawnPoint {
+    /// Spawn origin.
+    pub origin: Vec3,
+    /// Spawn angles.
+    pub angles: Vec3,
+}
+
+/// Client HUD snapshot (donor `clientUi` return).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuakeCClientUi {
+    /// Weapon HUD.
+    pub weapon: QuakeCWeaponUi,
+    /// Active powerup timers.
+    pub powerups: Vec<ActivePowerupTimer>,
+}
+
 pub trait QuakeCSourcePusherProjection {
     /// Read one pusher entity.
     fn read(&self, actor: &ActorId) -> Option<qa_world::movement::q1::types::Q1PhysicsEntity>;
@@ -3669,16 +5098,19 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             machine,
         });
         source.shared.borrow_mut().source = Rc::downgrade(&source);
-        source.shared.borrow_mut().world.set_admit_hook({
-            let admissions = Rc::clone(&source.shared.borrow().admissions);
-            move |actor: &ActorId, slot: usize| {
+        let admissions = Rc::clone(&source.shared.borrow().admissions);
+        source
+            .shared
+            .borrow_mut()
+            .world
+            .set_admit_hook(move |actor: &ActorId, slot: usize| {
                 admissions.borrow_mut().push((actor.clone(), slot));
-            }
-        });
+            });
         if let Some(restore) = restore {
             source.restore_host(&restore.checkpoint, &restore.clients)?;
         } else {
-            for slot in 0..=source.shared.borrow().reserved_client_slots {
+            let reserved_slots = source.shared.borrow().reserved_client_slots;
+            for slot in 0..=reserved_slots {
                 source.bind_reserved_slot(slot)?;
             }
         }
@@ -4043,9 +5475,17 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         });
     }
 
-    /// Encode an actor as an entity reference (`reference`).
+    /// Encode an actor as a QuakeC entity reference (`reference`).
+    ///
+    /// The donor's reference is a byte offset into QuakeC entity memory, not
+    /// the physics world's handle, so this resolves the source slot first and
+    /// encodes it through the machine layout.
     fn reference(&self, actor: &ActorId) -> Result<i32, QuakeCSourceError> {
-        Ok(self.shared.borrow().world.reference(actor)?)
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC entity has no source slot".to_string()))?;
+        self.machine_read(|machine| machine.entities().reference(slot as u32))
+            .map_err(QuakeCSourceError::from)
     }
 
     /// Source slot owned by an actor (`sourceSlot`).
@@ -4079,6 +5519,16 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     /// Source family (`kind`).
     pub fn kind(&self) -> QuakeCSourceKind {
         self.shared.borrow().kind
+    }
+
+    /// Prepared source declaration (`game.prepared`; C7 needs the team aliases).
+    pub fn prepared(&self) -> &PreparedQuakeCSource {
+        &self.prepared
+    }
+
+    /// Shared source cvars (`game.cvars`; C7 needs pause/server-settings reads).
+    pub fn cvars(&self) -> Rc<RefCell<CvarRegistry>> {
+        self.shared.borrow().cvars.clone()
     }
 
     /// Current server time in seconds (`timeSeconds`).
@@ -4121,7 +5571,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             let slot = machine.entities().slot(reference)?;
             machine.entities().slot_float(slot, self.must_field("team"))
         })?;
-        Ok(Some(format!("{team}")))
+        Ok(if team > 0.0 { Some(format!("{team}")) } else { None })
     }
 
     /// Read id1 armor state for a slot (`armor`).
@@ -4314,12 +5764,78 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     }
 
     /// Bind one reserved row (`worldHost.actor` for map/client rows).
+    ///
+    /// Mirrors the checkpoint-restore binding order: field row, storage row,
+    /// then the world body binding that queues admission. Re-entrant: rows
+    /// that are already bound keep their words.
     fn bind_reserved_slot(&self, slot: usize) -> Result<(), QuakeCSourceError> {
+        self.bind_slot_inner(slot, None)?;
+        Ok(())
+    }
+
+    /// Bind any live row (map/client/save rows share this order).
+    fn bind_slot(&self, slot: usize, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        self.bind_slot_inner(slot, Some(actor))?;
+        Ok(())
+    }
+
+    /// Bind one row and resolve its actor (donor `worldHost.actor`).
+    fn slot_actor(&self, slot: usize) -> Result<OwnedActor, QuakeCSourceError> {
+        self.bind_slot_inner(slot, None)?;
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, slot);
+        actor.ok_or_else(|| QuakeCSourceError::Invalid("Missing QC bound actor".to_string()))
+    }
+
+    /// Shared row binder behind [`bind_reserved_slot`](Self::bind_reserved_slot),
+    /// [`bind_slot`](Self::bind_slot) and [`slot_actor`](Self::slot_actor).
+    fn bind_slot_inner(&self, slot: usize, actor: Option<&OwnedActor>) -> Result<(), QuakeCSourceError> {
+        let slot_free = self.shared.borrow().storage.borrow().is_free(slot);
+        if slot_free {
+            let provider = self.prepared.execution.owner.provider.clone();
+            let actors = self.shared.borrow().options.actors.clone();
+            let resolved;
+            let actor = match actor {
+                Some(actor) => actor,
+                None => {
+                    resolved = actors
+                        .borrow()
+                        .at_source(&provider, slot)
+                        .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC reserved actor".to_string()))?;
+                    &resolved
+                }
+            };
+            {
+                let shared = self.shared.borrow();
+                let allocated = shared.fields.borrow().is_allocated(actor.id());
+                if !allocated {
+                    shared.fields.borrow_mut().allocate(actor.id(), &shared.layout)?;
+                }
+                shared
+                    .storage
+                    .borrow_mut()
+                    .initialize(slot, &mut shared.fields.borrow_mut(), actor.id())?;
+            }
+        }
         self.shared.borrow_mut().world.actor(slot)?;
         self.drain_admissions()?;
         if let Some(error) = self.shared.borrow().hook_error.borrow_mut().take() {
             return Err(QuakeCSourceError::Guest(error));
         }
+        Ok(())
+    }
+
+    /// Release one bound row (donor `slots.free`).
+    fn free_slot(&self, actor: &OwnedActor, slot: usize) -> Result<(), QuakeCSourceError> {
+        let actors = self.shared.borrow().options.actors.clone();
+        actors.borrow_mut().release(actor);
+        let now = self.current_time() as f32;
+        let shared = self.shared.borrow();
+        shared
+            .storage
+            .borrow_mut()
+            .clear_freed(slot, &mut shared.fields.borrow_mut(), actor.id(), now)?;
         Ok(())
     }
 
@@ -4434,8 +5950,6 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     }
 
     /// Invoke a declared client stage for one client (`invokeClientStage`).
-    /// Pending donor callers (`clientSpawnPoint`, `clientWeaponSettled`).
-    #[allow(dead_code)]
     fn invoke_client_stage(&self, call: &QcClientStageCall, actor: &ActorId) -> Result<i32, QuakeCSourceError> {
         let actors = self.shared.borrow().options.actors.clone();
         let owner = actors
@@ -4451,7 +5965,12 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         let result = invoke_qc_client_stage(machine_view, call, actor, self.current_time(), &|actor| {
             Ok(match actor {
                 None => machine_view.entity_reference(0)?,
-                Some(actor) => self.shared.borrow().world.reference(actor).map_err(qc_error)?,
+                Some(actor) => {
+                    let slot = self
+                        .source_slot(actor)
+                        .ok_or_else(|| qc_error(GuestError::invalid("QC stage actor has no source slot")))?;
+                    machine_view.entity_reference(slot)?
+                }
             })
         })?;
         if actors.borrow().resolve_owned(actor) != Some(owner) || !self.is_active_client(actor) {
@@ -4570,7 +6089,12 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                     &|actor| {
                         Ok(match actor {
                             None => machine_view.entity_reference(0)?,
-                            Some(actor) => self.shared.borrow().world.reference(actor).map_err(qc_error)?,
+                            Some(actor) => {
+                                let slot = self.source_slot(actor).ok_or_else(|| {
+                                    qc_error(GuestError::invalid("QC stage actor has no source slot"))
+                                })?;
+                                machine_view.entity_reference(slot)?
+                            }
                         })
                     },
                     &mut |count| {
@@ -5063,7 +6587,8 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                     }
                     {
                         let shared = self.shared.borrow();
-                        if !shared.fields.borrow().is_allocated(actor.id()) {
+                        let row_allocated = shared.fields.borrow().is_allocated(actor.id());
+                        if !row_allocated {
                             shared.fields.borrow_mut().allocate(actor.id(), &shared.layout)?;
                         }
                         shared
@@ -5636,7 +7161,9 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     }
 
     /// Precache one model or sound (`precache`).
-    /// Pending donor callers (`spawnMap`, `admitClient`).
+    ///
+    /// Wired to the message-router builtins once that lane lands; the
+    /// game-surface methods below only read [`precached`](Shared::precached).
     #[allow(dead_code)]
     fn precache(&self, kind: PrecacheKind, name: &str) -> Result<QcPrecachedResource, QuakeCSourceError> {
         let key = format!(
@@ -5707,6 +7234,3416 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         };
         self.shared.borrow_mut().precached.insert(key, value.clone());
         Ok(value)
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Set one client's match team (`setMatchTeam`).
+    pub fn set_match_team(&self, actor: &ActorId, team: Option<&str>) -> Result<(), QuakeCSourceError> {
+        let slot = self.source_slot(actor);
+        let client = slot.and_then(|slot| self.shared.borrow().client_identities.get(&slot).cloned());
+        let (Some(slot), Some(client)) = (slot, client) else {
+            return Err(QuakeCSourceError::Invalid(
+                "Original team command requires an admitted client".to_string(),
+            ));
+        };
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid(
+                "Original team command requires an admitted client".to_string(),
+            ));
+        }
+        let mut info = self.client_info(&client);
+        if self.kind() == QuakeCSourceKind::Quakeworld {
+            if let Some(team) = team {
+                if team
+                    .chars()
+                    .any(|char| char == '\\' || char == '"' || char == '\n' || char == '\r')
+                {
+                    return Err(QuakeCSourceError::Invalid(
+                        "Original QW team userinfo is invalid".to_string(),
+                    ));
+                }
+                info.insert("team".to_string(), team.to_string());
+            } else {
+                info.remove("team");
+            }
+        } else {
+            let value: f64 = match team {
+                None => f64::NAN,
+                Some(team) => team.trim().parse().unwrap_or(f64::NAN),
+            };
+            if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > 14.0 {
+                return Err(QuakeCSourceError::Invalid(
+                    "Team has no original Quake color command".to_string(),
+                ));
+            }
+            info.insert("bottomcolor".to_string(), format!("{}", value as i64 - 1));
+            let team_word = self.field("team")?;
+            self.machine_write(|machine| {
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, team_word, value as f32)
+            })?;
+        }
+        self.set_client_info(&client, &info)?;
+        Ok(())
+    }
+
+    /// Match score for one actor (`matchScore`).
+    pub fn match_score(&self, actor: &ActorId) -> Result<f64, QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let frags = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities().slot_float(slot, self.must_field("frags"))
+        })?;
+        Ok(f64::from(frags))
+    }
+
+    /// Set one actor's match score (`setMatchScore`).
+    pub fn set_match_score(&self, actor: &ActorId, score: f64) -> Result<(), QuakeCSourceError> {
+        if !score.is_finite() {
+            return Err(QuakeCSourceError::Invalid("QuakeC score must be finite".to_string()));
+        }
+        let reference = self.reference(actor)?;
+        let frags = self.field("frags")?;
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities_mut().set_slot_float(slot, frags, score as f32)
+        })?;
+        Ok(())
+    }
+
+    /// Death-type string for one actor (`deathType`).
+    pub fn death_type(&self, actor: &ActorId) -> Result<String, QuakeCSourceError> {
+        let Some(definition) = self.prepared.program.field_named("deathtype") else {
+            return Ok(String::new());
+        };
+        let offset = definition.offset;
+        let reference = self.reference(actor)?;
+        self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let text = machine.entities().slot_int(slot, offset)?;
+            machine.strings().get(text)
+        })
+        .map_err(QuakeCSourceError::from)
+    }
+
+    /// Set one client's userinfo, republishing its netname (`setClientInfo`).
+    pub fn set_client_info(
+        &self,
+        client: &ClientId,
+        values: &std::collections::HashMap<String, String>,
+    ) -> Result<(), QuakeCSourceError> {
+        self.set_client_info_storage(client, values)?;
+        let slot = client.slot() as usize + 1;
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, slot);
+        let current = actor.as_ref().is_some_and(|actor| {
+            self.is_active_client(actor.id()) || self.shared.borrow().prepared_clients.contains(&slot)
+        });
+        if !current {
+            return Ok(());
+        }
+        let name = values.get("name").cloned().unwrap_or_else(|| "unnamed".to_string());
+        let netname = self.field("netname")?;
+        if self.kind() == QuakeCSourceKind::Quakeworld {
+            let engine = format!("qw-name:{slot}");
+            self.machine_write(|machine| {
+                let offset = machine.strings_mut().set_engine(&engine, &name, 32)?;
+                machine.entities_mut().set_slot_int(slot as u32, netname, offset)
+            })?;
+        } else {
+            self.machine_write(|machine| {
+                let offset = machine.strings_mut().allocate(&name)?;
+                machine.entities_mut().set_slot_int(slot as u32, netname, offset)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Store one client's userinfo without republishing (`setClientInfoStorage`).
+    pub fn set_client_info_storage(
+        &self,
+        client: &ClientId,
+        values: &std::collections::HashMap<String, String>,
+    ) -> Result<(), QuakeCSourceError> {
+        if client.slot() as usize >= self.shared.borrow().options.max_clients {
+            return Err(QuakeCSourceError::Invalid(
+                "QC userinfo slot is unavailable".to_string(),
+            ));
+        }
+        self.shared
+            .borrow_mut()
+            .user_info
+            .insert(client.slot() as usize + 1, values.clone());
+        Ok(())
+    }
+
+    /// Whether an actor is a QuakeWorld spectator (`isSpectatorClient`).
+    pub fn is_spectator_client(&self, actor: &ActorId) -> bool {
+        let Some(slot) = self.source_slot(actor) else {
+            return false;
+        };
+        self.kind() == QuakeCSourceKind::Quakeworld && self.shared.borrow().spectator_slots.contains(&slot)
+    }
+
+    /// Run one spectator callback when the program defines it (`spectatorCallback`).
+    fn spectator_callback(&self, name: &str, slot: usize) -> Result<(), QuakeCSourceError> {
+        let callback = self
+            .prepared
+            .program
+            .function_named(name)
+            .ok()
+            .map(|function| function.index);
+        if let Some(index) = callback {
+            if index != 0 {
+                let time = self.current_time();
+                self.invoke(index as i32, slot, 0, time)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reserve (or re-reserve) one client's source row (`reservedClient`).
+    pub fn reserved_client(&self, client: &ClientId) -> Result<OwnedActor, QuakeCSourceError> {
+        let base = client.slot() as usize;
+        if base >= self.shared.borrow().options.max_clients || self.loading() {
+            return Err(QuakeCSourceError::Invalid(
+                "QC reserved client is unavailable".to_string(),
+            ));
+        }
+        let slot = base + 1;
+        let existing = self.shared.borrow().client_identities.get(&slot).cloned();
+        if let Some(existing) = &existing {
+            if existing != client {
+                return Err(QuakeCSourceError::Invalid(
+                    "QC client slot still belongs to an earlier connection".to_string(),
+                ));
+            }
+        }
+        if existing.is_none() && self.kind() == QuakeCSourceKind::Netquake {
+            let classname_word = self.field("classname")?;
+            let classname = self.machine_read(|machine| {
+                let text = machine.entities().slot_int(slot as u32, classname_word)?;
+                machine.strings().get(text)
+            })?;
+            if classname == "player" {
+                let provider = self.prepared.execution.owner.provider.clone();
+                let actors = self.shared.borrow().options.actors.clone();
+                if let Some(previous) = actors.borrow().at_source(&provider, slot) {
+                    actors.borrow_mut().release(&previous);
+                }
+                self.machine_write(|machine| machine.entities_mut().set_slot_int(slot as u32, classname_word, 0))?;
+            }
+        }
+        self.shared.borrow_mut().client_identities.insert(slot, client.clone());
+        if !self.shared.borrow().spawn_parameters.contains_key(&slot) {
+            let index = self.prepared.program.function_named("SetNewParms")?.index;
+            let time = self.current_time();
+            self.invoke(index as i32, 0, 0, time)?;
+            let mut parameters = Vec::with_capacity(16);
+            for ordinal in 1..=16 {
+                let name = format!("parm{ordinal}");
+                let value = self.machine_read(|machine| {
+                    let offset = machine.global_offset(&name)?;
+                    machine.globals().float(offset)
+                })?;
+                parameters.push(f64::from(value));
+            }
+            self.shared.borrow_mut().spawn_parameters.insert(slot, parameters);
+        }
+        self.slot_actor(slot)
+    }
+
+    /// Stored userinfo for one client (`clientInfo`).
+    pub fn client_info(&self, client: &ClientId) -> std::collections::HashMap<String, String> {
+        self.shared
+            .borrow()
+            .user_info
+            .get(&(client.slot() as usize + 1))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Capture level-travel state (`captureTravel`).
+    pub fn capture_travel(&self) -> Result<QuakeCSourceTravel, QuakeCSourceError> {
+        if self.loading() {
+            return Err(QuakeCSourceError::Invalid(
+                "Native QuakeC travel requires a loaded source world".to_string(),
+            ));
+        }
+        let server_flags = self.machine_read(|machine| {
+            let offset = machine.global_offset("serverflags")?;
+            machine.globals().float(offset)
+        })?;
+        let mut slots: Vec<usize> = self.shared.borrow().client_identities.keys().copied().collect();
+        slots.sort_unstable();
+        let mut clients = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let client = self
+                .shared
+                .borrow()
+                .client_identities
+                .get(&slot)
+                .cloned()
+                .ok_or_else(|| {
+                    QuakeCSourceError::Invalid("Native QuakeC connection has no spawn parameters".to_string())
+                })?;
+            let provider = self.prepared.execution.owner.provider.clone();
+            let actors = self.shared.borrow().options.actors.clone();
+            let actor = actors.borrow().at_source(&provider, slot);
+            if let Some(actor) = &actor {
+                if self.is_active_client(actor.id()) {
+                    let index = self.prepared.program.function_named("SetChangeParms")?.index;
+                    let time = self.current_time();
+                    self.invoke(index as i32, slot, 0, time)?;
+                    let mut parameters = Vec::with_capacity(16);
+                    for ordinal in 1..=16 {
+                        let name = format!("parm{ordinal}");
+                        let value = self.machine_read(|machine| {
+                            let offset = machine.global_offset(&name)?;
+                            machine.globals().float(offset)
+                        })?;
+                        parameters.push(f64::from(value));
+                    }
+                    self.shared.borrow_mut().spawn_parameters.insert(slot, parameters);
+                }
+            }
+            let parameters = self
+                .shared
+                .borrow()
+                .spawn_parameters
+                .get(&slot)
+                .cloned()
+                .ok_or_else(|| {
+                    QuakeCSourceError::Invalid("Native QuakeC connection has no spawn parameters".to_string())
+                })?;
+            let role = if self.shared.borrow().spectator_slots.contains(&slot) {
+                QuakeCClientRole::Spectator
+            } else {
+                QuakeCClientRole::Player
+            };
+            let user_info = self.shared.borrow().user_info.get(&slot).cloned().unwrap_or_default();
+            clients.push(QuakeCSourceClient {
+                client,
+                parameters,
+                user_info,
+                role: Some(role),
+            });
+        }
+        let cvars = self
+            .shared
+            .borrow()
+            .cvars
+            .borrow()
+            .snapshots(0)
+            .into_iter()
+            .map(|variable| CvarNameValue {
+                name: variable.name.clone(),
+                value: variable.latched_value.clone().unwrap_or(variable.value.clone()),
+            })
+            .collect();
+        Ok(QuakeCSourceTravel {
+            kind: self.kind(),
+            server_flags: server_flags as i32,
+            cvars,
+            clients,
+        })
+    }
+
+    /// Restore level-travel state into a fresh world (`restoreTravel`).
+    pub fn restore_travel(&self, travel: &QuakeCSourceTravel) -> Result<(), QuakeCSourceError> {
+        if travel.kind != self.kind() || !self.loading() || !self.shared.borrow().client_identities.is_empty() {
+            return Err(QuakeCSourceError::Invalid(
+                "Native QuakeC travel requires a fresh source world with the same ABI".to_string(),
+            ));
+        }
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("serverflags")?;
+            machine.globals_mut().set_float(offset, travel.server_flags as f32)
+        })?;
+        {
+            let cvars = self.shared.borrow().cvars.clone();
+            let mut cvars = cvars.borrow_mut();
+            for variable in &travel.cvars {
+                if cvars.get(&variable.name).is_none() {
+                    cvars.register(&variable.name, &variable.value, 0)?;
+                }
+                cvars.set(&variable.name, &variable.value, true)?;
+            }
+        }
+        for record in &travel.clients {
+            let slot = record.client.slot() as usize + 1;
+            let reserved = self.shared.borrow().reserved_client_slots;
+            if slot < 1
+                || slot > reserved
+                || self.shared.borrow().client_identities.contains_key(&slot)
+                || record.parameters.len() != 16
+                || record.parameters.iter().any(|value| !value.is_finite())
+            {
+                return Err(QuakeCSourceError::Invalid(
+                    "Invalid native QuakeC travel client parameters".to_string(),
+                ));
+            }
+            if record.role == Some(QuakeCClientRole::Spectator) {
+                if self.kind() != QuakeCSourceKind::Quakeworld {
+                    return Err(QuakeCSourceError::Invalid(
+                        "NetQuake travel cannot contain a spectator".to_string(),
+                    ));
+                }
+                self.shared.borrow_mut().spectator_slots.insert(slot);
+            }
+            let mut shared = self.shared.borrow_mut();
+            shared.client_identities.insert(slot, record.client.clone());
+            shared.spawn_parameters.insert(slot, record.parameters.clone());
+            shared.user_info.insert(slot, record.user_info.clone());
+        }
+        Ok(())
+    }
+
+    /// Connected client identities in slot order (`connectedClientIdentities`).
+    pub fn connected_client_identities(&self) -> Vec<ClientId> {
+        let mut clients: Vec<ClientId> = self.shared.borrow().client_identities.values().cloned().collect();
+        clients.sort_by_key(|client| client.slot());
+        clients
+    }
+
+    /// Live actor for one connected client (`clientActor`).
+    pub fn client_actor(&self, client: &ClientId) -> Option<ActorId> {
+        if !self.has_client(client) {
+            return None;
+        }
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, client.slot() as usize + 1);
+        actor.map(|actor| actor.id().clone())
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Run one host cheat for an admitted client (`hostCheat`).
+    pub fn host_cheat(&self, actor: &ActorId, name: QuakeCCheat, args: &[String]) -> Result<(), QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC host command requires an admitted client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid(
+                "QC host command requires an admitted client".to_string(),
+            ));
+        }
+        let message = |text: String| {
+            let events = self.shared.borrow().options.events.clone();
+            events
+                .borrow_mut()
+                .message(ClientMessage::Print { level: 2, text }, Some(actor));
+        };
+        let denied = if self.kind() == QuakeCSourceKind::Quakeworld {
+            self.shared.borrow().cvars.borrow().variable_value("sv_cheats") == 0.0
+        } else {
+            self.machine_read(|machine| {
+                let offset = machine.global_offset("deathmatch")?;
+                machine.globals().float(offset)
+            })? != 0.0
+        };
+        if denied {
+            message("Cheats are disabled on this server.\n".to_string());
+            return Ok(());
+        }
+        if name == QuakeCCheat::Give {
+            self.host_give(actor, slot, args)?;
+            if self.prepared.program.function_named("W_SetCurrentAmmo").is_ok() {
+                let selected = self
+                    .shared
+                    .borrow()
+                    .options
+                    .primary_weapon_selected
+                    .clone()
+                    .is_none_or(|predicate| predicate(actor));
+                if selected {
+                    let index = self.prepared.program.function_named("W_SetCurrentAmmo")?.index;
+                    let time = self.current_time();
+                    self.invoke(index as i32, slot, 0, time)?;
+                }
+            }
+            return Ok(());
+        }
+        let (label, enabled) = match name {
+            QuakeCCheat::Noclip | QuakeCCheat::Fly => {
+                let move_type = if name == QuakeCCheat::Fly { 5.0 } else { 8.0 };
+                let word = self.field("movetype")?;
+                let enabled =
+                    self.machine_read(|machine| machine.entities().slot_float(slot as u32, word))? != move_type;
+                self.machine_write(|machine| {
+                    machine
+                        .entities_mut()
+                        .set_slot_float(slot as u32, word, if enabled { move_type } else { 3.0 })
+                })?;
+                (if name == QuakeCCheat::Fly { "fly" } else { "noclip" }, enabled)
+            }
+            _ => {
+                let bit = if name == QuakeCCheat::God { 64 } else { 128 };
+                let word = self.field("flags")?;
+                let flags = self.machine_read(|machine| machine.entities().slot_float(slot as u32, word))? as i32 ^ bit;
+                self.machine_write(|machine| machine.entities_mut().set_slot_float(slot as u32, word, flags as f32))?;
+                (
+                    if name == QuakeCCheat::God {
+                        "godmode"
+                    } else {
+                        "notarget"
+                    },
+                    flags & bit != 0,
+                )
+            }
+        };
+        message(format!("{label} {}\n", if enabled { "ON" } else { "OFF" }));
+        Ok(())
+    }
+
+    /// Grant cheat items to one client slot (`hostGive`).
+    fn host_give(&self, actor: &ActorId, slot: usize, args: &[String]) -> Result<(), QuakeCSourceError> {
+        let Some(input) = args.first().map(|arg| arg.to_lowercase()) else {
+            return Err(QuakeCSourceError::Invalid(
+                "Usage: give <all|weapons|ammo|health|armor|keys|item> [amount]".to_string(),
+            ));
+        };
+        if input != "all" {
+            let give = self.shared.borrow().options.give_inventory.clone();
+            if give.is_some_and(|give| give(actor, args)) {
+                return Ok(());
+            }
+        }
+        let amount = match args.get(1) {
+            None => None,
+            Some(text) => Some(native_atoi(text).map_err(|error| QuakeCSourceError::Invalid(error.to_string()))?),
+        };
+        let all = input == "all";
+        let write = |machine: &mut QcMachine, name: &str, value: f64| -> Result<(), QuakeCSourceError> {
+            let word = self.field(name)?;
+            machine.entities_mut().set_slot_float(slot as u32, word, value as f32)?;
+            Ok(())
+        };
+        if all || input == "health" || input == "h" {
+            let value = amount.map_or(if input == "h" { 0.0 } else { 100.0 }, f64::from);
+            self.machine_write(|machine| write(machine, "health", value))?;
+            if !all {
+                return Ok(());
+            }
+        }
+        if all || input == "armor" || input == "a" {
+            let points = amount.map_or(if input == "a" { 0.0 } else { 200.0 }, f64::from);
+            let armor_bit = if points > 150.0 {
+                32768
+            } else if points > 100.0 {
+                16384
+            } else if points > 0.0 {
+                8192
+            } else {
+                0
+            };
+            let items = self.field("items")?;
+            self.machine_write(|machine| {
+                let held = machine.entities().slot_float(slot as u32, items)? as i32;
+                machine.entities_mut().set_slot_float(
+                    slot as u32,
+                    items,
+                    ((held & !(8192 | 16384 | 32768)) | armor_bit) as f32,
+                )?;
+                write(machine, "armorvalue", points)?;
+                write(
+                    machine,
+                    "armortype",
+                    if points > 150.0 {
+                        0.8
+                    } else if points > 100.0 {
+                        0.6
+                    } else if points > 0.0 {
+                        0.3
+                    } else {
+                        0.0
+                    },
+                )
+            })?;
+            if !all {
+                return Ok(());
+            }
+        }
+        if all || input == "weapons" {
+            let give = self.shared.borrow().options.give_inventory.clone();
+            let handled = give.is_some_and(|give| give(actor, &["weapons".to_string()]));
+            if !handled {
+                let weapons = self.shared.borrow().weapons.clone();
+                let items = self.field("items")?;
+                self.machine_write(|machine| {
+                    let mut held = machine.entities().slot_float(slot as u32, items)? as i32;
+                    for weapon in &weapons {
+                        held |= weapon.bit;
+                    }
+                    machine.entities_mut().set_slot_float(slot as u32, items, held as f32)
+                })?;
+            }
+            if !all {
+                return Ok(());
+            }
+        }
+        if all || input == "ammo" {
+            let give = self.shared.borrow().options.give_inventory.clone();
+            let handled = give.is_some_and(|give| give(actor, &["ammo".to_string()]));
+            if !handled {
+                self.machine_write(|machine| {
+                    for (field, value) in [
+                        ("ammo_shells", 100.0),
+                        ("ammo_nails", 200.0),
+                        ("ammo_rockets", 100.0),
+                        ("ammo_cells", 100.0),
+                    ] {
+                        write(machine, field, value)?;
+                    }
+                    for field in [
+                        "ammo_shells1",
+                        "ammo_nails1",
+                        "ammo_rockets1",
+                        "ammo_cells1",
+                        "ammo_lava_nails",
+                        "ammo_multi_rockets",
+                        "ammo_plasma",
+                    ] {
+                        if let Some(definition) = self.prepared.program.field_named(field) {
+                            let value = if field.contains("nails") { 200.0 } else { 100.0 };
+                            machine
+                                .entities_mut()
+                                .set_slot_float(slot as u32, definition.offset, value)?;
+                        }
+                    }
+                    Ok::<_, QuakeCSourceError>(())
+                })?;
+            }
+            if !all {
+                return Ok(());
+            }
+        }
+        if all || input == "keys" {
+            let items = self.field("items")?;
+            self.machine_write(|machine| {
+                let held = machine.entities().slot_float(slot as u32, items)? as i32;
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, items, (held | (131072 | 262144)) as f32)
+            })?;
+            return Ok(());
+        }
+        if input == "items" {
+            for item in ["quad", "pent", "ring", "suit"] {
+                self.host_give(actor, slot, &[item.to_string()])?;
+            }
+            return Ok(());
+        }
+        let hipnotic = self
+            .shared
+            .borrow()
+            .weapons
+            .iter()
+            .any(|weapon| weapon.item == "q1:weapon/hipnotic:laser");
+        let named: Option<String> = if hipnotic && input == "6a" {
+            Some("q1:weapon/hipnotic:proximity".to_string())
+        } else if hipnotic && input == "9" {
+            Some("q1:weapon/hipnotic:laser".to_string())
+        } else if hipnotic && input == "0" {
+            Some("q1:weapon/hipnotic:mjolnir".to_string())
+        } else if input.len() == 1 && matches!(input.as_bytes()[0], b'2'..=b'8') {
+            let ordinal: usize = input.parse().unwrap_or(0);
+            self.shared
+                .borrow()
+                .weapons
+                .get(ordinal.wrapping_sub(1))
+                .map(|weapon| weapon.item.clone())
+        } else {
+            None
+        };
+        let weapons = self.shared.borrow().weapons.clone();
+        if let Some(weapon) = weapons.iter().find(|weapon| {
+            Some(weapon.item.as_str()) == named.as_deref()
+                || weapon.item == input
+                || weapon.item.rsplit('/').next() == Some(input.as_str())
+        }) {
+            let bit = weapon.bit;
+            let items = self.field("items")?;
+            self.machine_write(|machine| {
+                let held = machine.entities().slot_float(slot as u32, items)? as i32;
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, items, (held | bit) as f32)
+            })?;
+            return Ok(());
+        }
+        let ammo = match input.as_str() {
+            "s" | "shells" => Some("ammo_shells"),
+            "n" | "nails" => Some("ammo_nails"),
+            "r" | "rockets" => Some("ammo_rockets"),
+            "c" | "cells" => Some("ammo_cells"),
+            "l" => Some("ammo_lava_nails"),
+            "m" => Some("ammo_multi_rockets"),
+            "p" => Some("ammo_plasma"),
+            _ => None,
+        };
+        if let Some(ammo) = ammo {
+            let value = amount.map_or(0.0, f64::from);
+            let alternate = self
+                .prepared
+                .program
+                .field_named(&format!("{ammo}1"))
+                .map(|definition| definition.offset);
+            let weapon_word = self.field("weapon")?;
+            self.machine_write(|machine| {
+                if let Some(alternate) = alternate {
+                    machine
+                        .entities_mut()
+                        .set_slot_float(slot as u32, alternate, value as f32)?;
+                }
+                let current = machine.entities().slot_float(slot as u32, weapon_word)?;
+                if alternate.is_none() || ammo == "ammo_shells" || current <= 64.0 {
+                    write(machine, ammo, value)?;
+                }
+                let native = match ammo {
+                    "ammo_lava_nails" => Some("ammo_nails"),
+                    "ammo_multi_rockets" => Some("ammo_rockets"),
+                    "ammo_plasma" => Some("ammo_cells"),
+                    _ => None,
+                };
+                if let Some(native) = native {
+                    let current = machine.entities().slot_float(slot as u32, weapon_word)?;
+                    if current > 64.0 {
+                        write(machine, native, value)?;
+                    }
+                }
+                Ok::<_, QuakeCSourceError>(())
+            })?;
+            return Ok(());
+        }
+        let classname = match input.as_str() {
+            "quad" => "item_artifact_super_damage",
+            "pent" => "item_artifact_invulnerability",
+            "ring" => "item_artifact_invisibility",
+            "suit" => "item_artifact_envirosuit",
+            _ => input.as_str(),
+        };
+        if !classname.starts_with("item_") && !classname.starts_with("weapon_") {
+            return Err(QuakeCSourceError::Invalid(format!("Unknown QuakeC item: {input}")));
+        }
+        let mut template: Option<Vec<u8>> = None;
+        let reserved = self.shared.borrow().reserved_client_slots;
+        let count = self.machine_read(|machine| machine.entities().count());
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let touch_word = self.field("touch")?;
+        let classname_word = self.field("classname")?;
+        for candidate in reserved + 1..count {
+            let owner = actors.borrow().at_source(&provider, candidate);
+            let live = owner.as_ref().is_some_and(|owner| actors.borrow().is_live(owner.id()));
+            if !live {
+                continue;
+            }
+            let found = self.machine_read(|machine| {
+                let touched = machine.entities().slot_int(candidate as u32, touch_word)?;
+                if touched == 0 {
+                    return Ok::<_, GuestError>(false);
+                }
+                let text = machine.entities().slot_int(candidate as u32, classname_word)?;
+                Ok(machine.strings().get(text).is_ok_and(|name| name == classname))
+            })?;
+            if found {
+                template =
+                    Some(self.machine_read(|machine| {
+                        machine.entities().field_bytes(candidate as u32).map(<[u8]>::to_vec)
+                    })?);
+                break;
+            }
+        }
+        let Some(template) = template else {
+            return Err(QuakeCSourceError::Invalid(format!(
+                "Cannot give {classname}: this map has no source item template"
+            )));
+        };
+        let spawn = self.prepared.program.function_named("spawn")?.index;
+        self.execute_guarded(spawn, 0)?;
+        let reference = self.machine_read(|machine| machine.globals().int(1))?;
+        let item_slot = self.machine_read(|machine| machine.entities().slot(reference))? as usize;
+        let item = self.slot_actor(item_slot)?;
+        let origin_word = self.field("origin")?;
+        let solid_word = self.field("solid")?;
+        let nextthink_word = self.field("nextthink")?;
+        let target_words: Vec<usize> = ["target", "targetname", "killtarget"]
+            .into_iter()
+            .filter_map(|name| {
+                self.prepared
+                    .program
+                    .field_named(name)
+                    .map(|definition| definition.offset)
+            })
+            .collect();
+        let origin = self.machine_read(|machine| machine.entities().slot_vector(slot as u32, origin_word))?;
+        self.machine_write(|machine| {
+            machine
+                .entities_mut()
+                .field_bytes_mut(item_slot as u32)?
+                .copy_from_slice(&template);
+            machine
+                .entities_mut()
+                .set_slot_vector(item_slot as u32, origin_word, origin)?;
+            machine
+                .entities_mut()
+                .set_slot_float(item_slot as u32, solid_word, 1.0)?;
+            machine
+                .entities_mut()
+                .set_slot_float(item_slot as u32, nextthink_word, 0.0)?;
+            for word in &target_words {
+                machine.entities_mut().set_slot_int(item_slot as u32, *word, 0)?;
+            }
+            Ok::<_, GuestError>(())
+        })?;
+        let touch = self.machine_read(|machine| machine.entities().slot_int(item_slot as u32, touch_word))?;
+        let target = self.reference(actor)?;
+        let time = self.current_time();
+        let outcome = self.invoke(touch, item_slot, target, time);
+        let actors = self.shared.borrow().options.actors.clone();
+        if actors.borrow().is_live(item.id()) {
+            actors.borrow_mut().release(&item);
+        }
+        outcome
+    }
+
+    /// Admit one reserved client into the server (`admitClient`).
+    pub fn admit_client(&self, client: &ClientId) -> Result<OwnedActor, QuakeCSourceError> {
+        let slot = client.slot() as usize + 1;
+        if slot > self.shared.borrow().options.max_clients || self.loading() {
+            return Err(QuakeCSourceError::Invalid("QC client slot is unavailable".to_string()));
+        }
+        let reserved = self.reserved_client(client)?;
+        if self.is_active_client(reserved.id()) {
+            return Err(QuakeCSourceError::Invalid("QC reserved client is active".to_string()));
+        }
+        if self.classname(reserved.id())? == "player" {
+            self.shared.borrow().options.actors.borrow_mut().release(&reserved);
+        }
+        let actor = self.slot_actor(slot)?;
+        let parameters = self
+            .shared
+            .borrow()
+            .spawn_parameters
+            .get(&slot)
+            .cloned()
+            .ok_or_else(|| {
+                QuakeCSourceError::Invalid("Native QuakeC client has no source spawn parameters".to_string())
+            })?;
+        if self.kind() == QuakeCSourceKind::Quakeworld {
+            if !self.shared.borrow().prepared_clients.contains(&slot) {
+                return Err(QuakeCSourceError::Invalid(
+                    "QW begin requires completed source spawn preparation".to_string(),
+                ));
+            }
+        } else {
+            self.machine_write(|machine| machine.entities_mut().clear_slot(slot as u32))?;
+            let colormap = self.field("colormap")?;
+            let team = self.field("team")?;
+            let netname = self.field("netname")?;
+            let name = self
+                .shared
+                .borrow()
+                .user_info
+                .get(&slot)
+                .and_then(|info| info.get("name").cloned())
+                .unwrap_or_else(|| format!("Player {slot}"));
+            self.machine_write(|machine| {
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, colormap, slot as f32)?;
+                machine.entities_mut().set_slot_float(slot as u32, team, 1.0)?;
+                let offset = machine.strings_mut().allocate(&name)?;
+                machine.entities_mut().set_slot_int(slot as u32, netname, offset)
+            })?;
+        }
+        let spectator = self.shared.borrow().spectator_slots.contains(&slot);
+        let spectator_connect = self.prepared.program.function_named("SpectatorConnect").ok();
+        if !spectator || spectator_connect.is_some_and(|function| function.index != 0) {
+            self.machine_write(|machine| {
+                for (index, value) in parameters.iter().enumerate() {
+                    let offset = machine.global_offset(&format!("parm{}", index + 1))?;
+                    machine.globals_mut().set_float(offset, *value as f32)?;
+                }
+                Ok::<_, GuestError>(())
+            })?;
+        }
+        let replay_local_presentation = self.shared.borrow().router.borrow().local_messages_started;
+        self.shared
+            .borrow()
+            .active_clients
+            .borrow_mut()
+            .insert(actor.id().clone());
+        if self.kind() == QuakeCSourceKind::Netquake {
+            let router = self.shared.borrow().router.clone();
+            let start = {
+                let state = router.borrow();
+                !state.netquake_wire_attached || state.local_messages_started
+            };
+            if start {
+                let fresh = !router.borrow().local_messages_started;
+                if fresh {
+                    router.borrow_mut().local_messages_started = true;
+                    router.borrow_mut().local_messages.admit(actor.id());
+                    let (signon, views): (Vec<NetQuakeMessage>, Vec<(usize, Option<ActorId>)>) = {
+                        let state = router.borrow();
+                        (
+                            state.netquake_signon.iter().map(netquake_message_from_nq).collect(),
+                            state.netquake_signon_views.clone(),
+                        )
+                    };
+                    let views: std::collections::HashMap<usize, Option<ActorId>> = views.into_iter().collect();
+                    self.receive_local_messages(&signon, &QcMessageDestination::Signon, &views)?;
+                    type RoutedSignonBatch = (
+                        Vec<NetQuakeMessage>,
+                        QcMessageDestination,
+                        Vec<(usize, Option<ActorId>)>,
+                    );
+                    let routed: Vec<RoutedSignonBatch> = {
+                        let state = router.borrow();
+                        state
+                            .netquake_routed
+                            .iter()
+                            .map(|entry| {
+                                (
+                                    entry.messages.iter().map(netquake_message_from_nq).collect(),
+                                    entry.destination.clone(),
+                                    entry.view_targets.clone(),
+                                )
+                            })
+                            .collect()
+                    };
+                    for (messages, destination, views) in &routed {
+                        let views: std::collections::HashMap<usize, Option<ActorId>> = views.iter().cloned().collect();
+                        self.receive_local_messages(messages, destination, &views)?;
+                    }
+                }
+                router.borrow_mut().local_messages.admit(actor.id());
+            }
+        }
+        self.bind_client_inventory(&actor, slot)?;
+        if spectator {
+            let origin_word = self.field("origin")?;
+            let view_word = self.field("view_ofs")?;
+            let classname_word = self.field("classname")?;
+            self.machine_write(|machine| {
+                machine
+                    .entities_mut()
+                    .set_slot_vector(slot as u32, origin_word, Vec3 { x: 0.0, y: 0.0, z: 0.0 })?;
+                machine.entities_mut().set_slot_vector(
+                    slot as u32,
+                    view_word,
+                    Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 22.0,
+                    },
+                )
+            })?;
+            let reserved_slots = self.shared.borrow().reserved_client_slots;
+            let count = self.machine_read(|machine| machine.entities().count());
+            for candidate in reserved_slots - 1..count {
+                let info = self.machine_read(|machine| {
+                    let text = machine.entities().slot_int(candidate as u32, classname_word)?;
+                    let name = machine.strings().get(text)?;
+                    let origin = machine.entities().slot_vector(candidate as u32, origin_word)?;
+                    Ok::<_, GuestError>((name, origin))
+                })?;
+                if info.0 != "info_player_start" {
+                    continue;
+                }
+                self.machine_write(|machine| machine.entities_mut().set_slot_vector(slot as u32, origin_word, info.1))?;
+                break;
+            }
+            self.spectator_callback("SpectatorConnect", slot)?;
+        } else {
+            let connect = self.prepared.program.function_named("ClientConnect")?.index;
+            let time = self.current_time();
+            self.invoke(connect as i32, slot, 0, time)?;
+            let spawn = self
+                .shared
+                .borrow()
+                .weapon_stage
+                .and_then(|stage| stage.stage.client.as_ref().map(|client| client.spawn.clone()));
+            match spawn {
+                None => {
+                    let put = self.prepared.program.function_named("PutClientInServer")?.index;
+                    self.invoke(put as i32, slot, 0, time)?;
+                }
+                Some(spawn) => {
+                    self.invoke_client_stage(&spawn, actor.id())?;
+                }
+            }
+        }
+        if replay_local_presentation {
+            let presentation = self
+                .shared
+                .borrow()
+                .router
+                .borrow()
+                .local_messages
+                .presentation(actor.id());
+            for message in &presentation {
+                self.receive_local_messages(
+                    std::slice::from_ref(message),
+                    &QcMessageDestination::Client {
+                        actor: actor.id().clone(),
+                    },
+                    &std::collections::HashMap::new(),
+                )?;
+            }
+        }
+        Ok(actor)
+    }
+
+    /// Run the `ClientKill` callback for one client (`clientKill`).
+    pub fn client_kill(&self, actor: &ActorId) -> Result<bool, QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(false);
+        };
+        if !self.is_active_client(actor) || self.is_spectator_client(actor) {
+            return Ok(false);
+        }
+        let health = self.field("health")?;
+        let alive = self.machine_read(|machine| machine.entities().slot_float(slot as u32, health))? > 0.0;
+        if !alive {
+            return Ok(false);
+        }
+        let index = self.prepared.program.function_named("ClientKill")?.index;
+        let time = self.current_time();
+        self.invoke(index as i32, slot, 0, time)?;
+        Ok(true)
+    }
+
+    /// Whether a client identity is connected (`hasClient`).
+    pub fn has_client(&self, client: &ClientId) -> bool {
+        self.shared
+            .borrow()
+            .client_identities
+            .get(&(client.slot() as usize + 1))
+            == Some(client)
+    }
+
+    /// Disconnect one reserved client (`disconnectClient`).
+    pub fn disconnect_client(&self, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        let slot = match self.source_slot(actor.id()) {
+            Some(slot) if self.is_reserved_client(actor.id()) => slot,
+            _ => {
+                return Err(QuakeCSourceError::Invalid(
+                    "QC disconnect requires a reserved client".to_string(),
+                ));
+            }
+        };
+        if self.is_active_client(actor.id()) {
+            if self.is_spectator_client(actor.id()) {
+                self.spectator_callback("SpectatorDisconnect", slot)?;
+            } else {
+                let index = self.prepared.program.function_named("ClientDisconnect")?.index;
+                let time = self.current_time();
+                self.invoke(index as i32, slot, 0, time)?;
+            }
+        }
+        let mut shared = self.shared.borrow_mut();
+        shared.spectator_slots.remove(&slot);
+        shared.active_clients.borrow_mut().remove(actor.id());
+        shared.pending_weapons.borrow_mut().remove(actor.id());
+        shared.prepared_clients.remove(&slot);
+        shared.spawn_parameters.remove(&slot);
+        shared.user_info.remove(&slot);
+        shared.client_identities.remove(&slot);
+        drop(shared);
+        self.shared
+            .borrow()
+            .router
+            .borrow_mut()
+            .local_messages
+            .retire(actor.id());
+        Ok(())
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Whether one client's staged weapon left continuations (`clientWeaponSettled`).
+    pub fn client_weapon_settled(&self, actor: &ActorId) -> Result<bool, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC weapon client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid("Missing QC weapon client".to_string()));
+        }
+        let stage = self
+            .shared
+            .borrow()
+            .weapon_stage
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC artifact has no qualified weapon stage".to_string()))?;
+        let reference = self.machine_read(|machine| machine.entities().reference(slot as u32))?;
+        stage.settled(reference).map_err(QuakeCSourceError::from)
+    }
+
+    /// Equipment snapshot for one client (`clientEquipment`).
+    pub fn client_equipment(&self, actor: &ActorId) -> Result<QuakeCEquipment, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC equipment client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid("Missing QC equipment client".to_string()));
+        }
+        let max_health = self.field("max_health")?;
+        let quad_until = self.field("super_damage_finished")?;
+        let (max_health, quad_until) = self.machine_read(|machine| {
+            let max = machine.entities().slot_float(slot as u32, max_health)?;
+            let quad = machine.entities().slot_float(slot as u32, quad_until)?;
+            Ok::<_, GuestError>((f64::from(max), f64::from(quad)))
+        })?;
+        Ok(QuakeCEquipment { max_health, quad_until })
+    }
+
+    /// Scaled damage amount for one attacker (`damageAmount`).
+    pub fn damage_amount(&self, actor: Option<&ActorId>, amount: f64) -> Result<f64, QuakeCSourceError> {
+        let world;
+        let owner = match actor {
+            Some(actor) => actor,
+            None => {
+                world = self.world_actor()?;
+                world.id()
+            }
+        };
+        let reference = self.reference(owner)?;
+        let damage = self.shared.borrow().damage;
+        let time = self.current_time();
+        if let Some(scaled) = damage.damage_amount(owner, reference, time, amount)? {
+            return Ok(scaled);
+        }
+        let machine_view = self.shared.borrow().machine_view;
+        let program_view = self.shared.borrow().program_view;
+        let multiplier = id1_damage_multiplier(program_view, machine_view, reference, reference)?;
+        let scaled = f64::from(amount as f32) * f64::from(multiplier as f32);
+        Ok(f64::from(scaled as f32))
+    }
+
+    /// Powerup expiry for one client (`clientPowerupExpires`).
+    pub fn client_powerup_expires(&self, actor: &ActorId, powerup: QuakeCPowerup) -> Result<f64, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC powerup client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid("Missing QC powerup client".to_string()));
+        }
+        let field = match powerup {
+            QuakeCPowerup::Quad => "super_damage_finished",
+            QuakeCPowerup::Invulnerability => "invincible_finished",
+            QuakeCPowerup::Invisibility => "invisible_finished",
+            QuakeCPowerup::Suit => "radsuit_finished",
+        };
+        let word = self.field(field)?;
+        let expires = self.machine_read(|machine| machine.entities().slot_float(slot as u32, word))?;
+        Ok(f64::from(expires))
+    }
+
+    /// Combat target flags for one actor (`weaponTarget`).
+    pub fn weapon_target(&self, actor: &ActorId) -> Result<Option<QuakeCWeaponTarget>, QuakeCSourceError> {
+        let actors = self.shared.borrow().options.actors.clone();
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(None);
+        };
+        if !actors.borrow().is_live(actor) {
+            return Ok(None);
+        }
+        let flags = self.field("flags")?;
+        let takedamage = self.field("takedamage")?;
+        let (flags, takedamage) = self.machine_read(|machine| {
+            let flags = machine.entities().slot_float(slot as u32, flags)?;
+            let takedamage = machine.entities().slot_float(slot as u32, takedamage)?;
+            Ok::<_, GuestError>((flags, takedamage))
+        })?;
+        Ok(Some(QuakeCWeaponTarget {
+            monster: flags as i32 & 32 != 0,
+            aimed_damage: takedamage == 2.0,
+        }))
+    }
+
+    /// Set one client's maximum health (`setClientMaxHealth`).
+    pub fn set_client_max_health(&self, actor: &ActorId, value: f64) -> Result<(), QuakeCSourceError> {
+        if !(value as f32).is_finite() {
+            return Err(QuakeCSourceError::Invalid(
+                "QC max health exceeds binary32 range".to_string(),
+            ));
+        }
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC equipment client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid("Missing QC equipment client".to_string()));
+        }
+        let word = self.field("max_health")?;
+        self.machine_write(|machine| machine.entities_mut().set_slot_float(slot as u32, word, value as f32))?;
+        Ok(())
+    }
+
+    /// Drop one client's objectives (`dropClientObjectives`).
+    pub fn drop_client_objectives(&self, actor: &ActorId) -> Result<(), QuakeCSourceError> {
+        let slot = self.source_slot(actor);
+        if !self.is_active_client(actor) || slot.is_none() {
+            return Err(QuakeCSourceError::Invalid("Missing QC equipment client".to_string()));
+        }
+        let client = self
+            .shared
+            .borrow()
+            .weapon_stage
+            .and_then(|stage| stage.stage.client.clone());
+        let Some(client) = client else {
+            return Err(QuakeCSourceError::Invalid(
+                "QC artifact has no qualified objective contract".to_string(),
+            ));
+        };
+        if let QcWeaponObjectives::Call(call) = &client.objectives {
+            self.invoke_client_stage(call, actor)?;
+        }
+        Ok(())
+    }
+
+    /// Selected spawn point for one client (`clientSpawnPoint`).
+    pub fn client_spawn_point(&self, actor: &ActorId) -> Result<QuakeCSpawnPoint, QuakeCSourceError> {
+        if self.source_slot(actor).is_none() {
+            return Err(QuakeCSourceError::Invalid("Missing QC equipment client".to_string()));
+        }
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid("Missing QC equipment client".to_string()));
+        }
+        let client = self
+            .shared
+            .borrow()
+            .weapon_stage
+            .and_then(|stage| stage.stage.client.clone());
+        let Some(client) = client else {
+            return Err(QuakeCSourceError::Invalid(
+                "QC artifact has no qualified spawn selection".to_string(),
+            ));
+        };
+        let reference = self.invoke_client_stage(&client.select_spawn, actor)?;
+        let spawn_slot = self.machine_read(|machine| machine.entities().slot(reference))? as usize;
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let spawn = actors.borrow().at_source(&provider, spawn_slot);
+        let world = self.world_actor()?;
+        let live = spawn
+            .as_ref()
+            .is_some_and(|spawn| actors.borrow().is_live(spawn.id()) && spawn.id() != world.id());
+        if !live {
+            return Err(QuakeCSourceError::Invalid(
+                "Original QC source selected no spawn point".to_string(),
+            ));
+        }
+        let origin_word = self.field("origin")?;
+        let angles_word = self.field("angles")?;
+        let (origin, angles) = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let origin = machine.entities().slot_vector(slot, origin_word)?;
+            let angles = machine.entities().slot_vector(slot, angles_word)?;
+            Ok::<_, GuestError>((origin, angles))
+        })?;
+        Ok(QuakeCSpawnPoint { origin, angles })
+    }
+
+    /// Whether one pickup defers selection to the source (`pickupSelectionDeferred`).
+    pub fn pickup_selection_deferred(&self, offer: &OriginalPickupOffer) -> Result<bool, QuakeCSourceError> {
+        self.shared
+            .borrow()
+            .pickups
+            .selection_deferred(offer)
+            .map_err(QuakeCSourceError::from)
+    }
+
+    /// Selected supply for one pickup (`pickupSupply`).
+    pub fn pickup_supply(&self, offer: &OriginalPickupOffer) -> Result<QcPickupSupplyOffer, QuakeCSourceError> {
+        self.shared
+            .borrow()
+            .pickups
+            .supply(offer)
+            .map_err(QuakeCSourceError::from)
+    }
+
+    /// Run mixed-client pre-think for one NetQuake command (`mixedClientPreThink`).
+    pub fn mixed_client_pre_think(
+        &self,
+        actor: &OwnedActor,
+        command: &UserCommand,
+        frame: &FrameContext,
+    ) -> Result<QuakeCClientMovement, QuakeCSourceError> {
+        let input = quake_c_client_command(command);
+        let converted = match &input {
+            UserCommand::Q1Netquake {
+                view_angles,
+                buttons,
+                impulse,
+                forward_move,
+                side_move,
+                up_move,
+                acknowledged_server_time_seconds,
+            } => Q1UserCommand {
+                acknowledged_server_time_seconds: *acknowledged_server_time_seconds,
+                view_angles: Vec3 {
+                    x: view_angles[0] as f32,
+                    y: view_angles[1] as f32,
+                    z: view_angles[2] as f32,
+                },
+                forward_move: *forward_move,
+                side_move: *side_move,
+                up_move: *up_move,
+                buttons: *buttons as i32,
+                impulse: *impulse as i32,
+            },
+            _ => {
+                return Err(QuakeCSourceError::Invalid(
+                    "Mixed QC pre-think requires a NetQuake command".to_string(),
+                ));
+            }
+        };
+        self.client_input(actor.id(), &converted)?;
+        let input_buttons = converted.buttons;
+        let reference = self.reference(actor.id())?;
+        let flags_word = self.field("flags")?;
+        let velocity_word = self.field("velocity")?;
+        let before = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            let velocity = machine.entities().slot_vector(slot, velocity_word)?;
+            Ok::<_, GuestError>(QuakeCTransitionState {
+                flags,
+                velocity: [f64::from(velocity.x), f64::from(velocity.y), f64::from(velocity.z)],
+            })
+        })?;
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("frametime")?;
+            machine
+                .globals_mut()
+                .set_float(offset, frame.elapsed.as_seconds_f64() as f32)
+        })?;
+        self.client_pre_think(actor)?;
+        let after = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            let velocity = machine.entities().slot_vector(slot, velocity_word)?;
+            Ok::<_, GuestError>(QuakeCTransitionState {
+                flags,
+                velocity: [f64::from(velocity.x), f64::from(velocity.y), f64::from(velocity.z)],
+            })
+        })?;
+        let accepted_jump = quake_c_source_jump(command, &before, &after);
+        let source_jump = accepted_jump || input_buttons & 2 != 0 && before.flags & 4096 == 0;
+        if accepted_jump {
+            let physics = self.shared.borrow().options.physics.clone();
+            let current = physics.borrow().read_body(actor.id());
+            if let Some(current) = current {
+                physics.borrow_mut().write_body(
+                    actor,
+                    BodyState {
+                        ground: None,
+                        ..current
+                    },
+                );
+            }
+        }
+        let mut think_frame = *frame;
+        think_frame.time = qa_core::time::SourceTime::Seconds(self.current_time() as f32);
+        think_frame.elapsed = qa_core::time::SourceTime::Seconds(frame.elapsed.as_seconds_f64() as f32);
+        self.run_think(actor, &think_frame)?;
+        Ok(QuakeCClientMovement {
+            command: if source_jump {
+                consume_quake_c_jump(command)
+            } else {
+                command.clone()
+            },
+            source_jump,
+        })
+    }
+
+    /// Run mixed-client pre-think for one QuakeWorld command (`mixedQuakeWorldPreThink`).
+    pub fn mixed_quake_world_pre_think(
+        &self,
+        actor: &OwnedActor,
+        source_command: &QwUserCommand,
+        command: &UserCommand,
+        frame: &FrameContext,
+    ) -> Result<QuakeCClientMovement, QuakeCSourceError> {
+        let reference = self.reference(actor.id())?;
+        let flags_word = self.field("flags")?;
+        let velocity_word = self.field("velocity")?;
+        let (before_flags, before_velocity) = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            let velocity = machine.entities().slot_vector(slot, velocity_word)?;
+            Ok::<_, GuestError>((flags, velocity))
+        })?;
+        self.quake_world_pre_think(actor, source_command, frame)?;
+        let (after_flags, after_velocity) = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            let velocity = machine.entities().slot_vector(slot, velocity_word)?;
+            Ok::<_, GuestError>((flags, velocity))
+        })?;
+        let accepted =
+            source_command.buttons & 2 != 0 && before_flags & (512 | 4096) == (512 | 4096) && after_flags & 4096 == 0;
+        let impulse = accepted && after_velocity.z > before_velocity.z;
+        if impulse {
+            let physics = self.shared.borrow().options.physics.clone();
+            let current = physics.borrow().read_body(actor.id());
+            if let Some(current) = current {
+                physics.borrow_mut().write_body(
+                    actor,
+                    BodyState {
+                        ground: None,
+                        ..current
+                    },
+                );
+            }
+        }
+        Ok(QuakeCClientMovement {
+            command: if impulse {
+                consume_quake_c_jump(command)
+            } else {
+                command.clone()
+            },
+            source_jump: accepted,
+        })
+    }
+
+    /// Run mixed-client post-think after movement (`mixedClientPostThink`).
+    pub fn mixed_client_post_think(
+        &self,
+        actor: &OwnedActor,
+        ground: &TraceHit,
+        water_level: i32,
+        water_type: i32,
+        movement: QuakeCMovementKind,
+        post_think: QuakeCPostThink,
+    ) -> Result<(), QuakeCSourceError> {
+        let reference = self.reference(actor.id())?;
+        let flags_word = self.field("flags")?;
+        let ground_word = self.field("groundentity")?;
+        let level_word = self.field("waterlevel")?;
+        let type_word = self.field("watertype")?;
+        let ground_reference = match ground {
+            TraceHit::Actor { actor } => self.reference(actor)?,
+            _ => 0,
+        };
+        let grounded = !matches!(ground, TraceHit::None);
+        let source_water = if water_level == 0 {
+            -1
+        } else if movement == QuakeCMovementKind::Q1Netquake || movement == QuakeCMovementKind::Q1Quakeworld {
+            water_type
+        } else if water_type & 16 != 0 {
+            -4
+        } else if water_type & 8 != 0 {
+            -5
+        } else {
+            -3
+        };
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            machine.entities_mut().set_slot_float(
+                slot,
+                flags_word,
+                ((flags & !512) | if grounded { 512 } else { 0 }) as f32,
+            )?;
+            machine
+                .entities_mut()
+                .set_slot_int(slot, ground_word, ground_reference)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot, level_word, water_level as f32)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot, type_word, source_water as f32)
+        })?;
+        if post_think == QuakeCPostThink::Immediate {
+            self.client_post_think(actor)?;
+        }
+        Ok(())
+    }
+
+    /// Feed one NetQuake command into the source ABI (`clientInput`).
+    pub fn client_input(&self, actor: &ActorId, command: &Q1UserCommand) -> Result<(), QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC input requires an admitted client".to_string()))?;
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid(
+                "QC input requires an admitted client".to_string(),
+            ));
+        }
+        let view_word = self.field("v_angle")?;
+        let button0 = self.field("button0")?;
+        let button2 = self.field("button2")?;
+        let impulse_word = self.field("impulse")?;
+        self.machine_write(|machine| {
+            machine
+                .entities_mut()
+                .set_slot_vector(slot as u32, view_word, command.view_angles)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, button0, (command.buttons & 1) as f32)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, button2, ((command.buttons >> 1) & 1) as f32)
+        })?;
+        if command.impulse != 0 {
+            let router = self.shared.borrow().router.clone();
+            if router
+                .borrow_mut()
+                .local_messages
+                .answer_prompt(actor, command.impulse as u8)?
+            {
+                let content = self.prepared.execution.owner.content.clone();
+                let events = self.shared.borrow().options.events.clone();
+                events.borrow_mut().emit_local(
+                    &content,
+                    QuakeCLocalSinkEvent::Prompt(Q1CompositionEvent::ClearPrompt { actor: actor.clone() }),
+                    Some(actor),
+                );
+            }
+            self.shared.borrow().pending_weapons.borrow_mut().remove(actor);
+            self.machine_write(|machine| {
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, impulse_word, command.impulse as f32)
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Read one client's QuakeWorld movement state (`readQuakeWorldState`).
+    pub fn read_quake_world_state(
+        &self,
+        actor: &ActorId,
+        state: &QwMovementState,
+    ) -> Result<QwMovementState, QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let origin_word = self.field("origin")?;
+        let mins_word = self.field("mins")?;
+        let velocity_word = self.field("velocity")?;
+        let angle_word = self.field("v_angle")?;
+        let teleport_word = self.field("teleport_time")?;
+        let health_word = self.field("health")?;
+        let (origin, mins, velocity, angles, teleport, health) = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let origin = machine.entities().slot_vector(slot, origin_word)?;
+            let mins = machine.entities().slot_vector(slot, mins_word)?;
+            let velocity = machine.entities().slot_vector(slot, velocity_word)?;
+            let angles = machine.entities().slot_vector(slot, angle_word)?;
+            let teleport = machine.entities().slot_float(slot, teleport_word)?;
+            let health = machine.entities().slot_float(slot, health_word)?;
+            Ok::<_, GuestError>((origin, mins, velocity, angles, teleport, health))
+        })?;
+        Ok(QwMovementState {
+            origin: Vec3 {
+                x: origin.x + mins.x + 16.0,
+                y: origin.y + mins.y + 16.0,
+                z: origin.z + mins.z + 24.0,
+            },
+            velocity,
+            angles,
+            water_jump_time_seconds: f64::from(teleport),
+            dead: health <= 0.0,
+            spectator: if self.is_spectator_client(actor) { 1 } else { 0 },
+            ..state.clone()
+        })
+    }
+
+    /// Write one client's QuakeWorld movement state (`writeQuakeWorldState`).
+    pub fn write_quake_world_state(&self, actor: &ActorId, state: &QwMovementState) -> Result<(), QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let origin_word = self.field("origin")?;
+        let mins_word = self.field("mins")?;
+        let velocity_word = self.field("velocity")?;
+        let angle_word = self.field("v_angle")?;
+        let teleport_word = self.field("teleport_time")?;
+        let flags_word = self.field("flags")?;
+        let ground_word = self.field("groundentity")?;
+        let ground_reference = match &state.ground {
+            TraceHit::Actor { actor } => self.reference(actor)?,
+            _ => 0,
+        };
+        let grounded = !matches!(state.ground, TraceHit::None);
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let mins = machine.entities().slot_vector(slot, mins_word)?;
+            machine.entities_mut().set_slot_vector(
+                slot,
+                origin_word,
+                Vec3 {
+                    x: state.origin.x - mins.x - 16.0,
+                    y: state.origin.y - mins.y - 16.0,
+                    z: state.origin.z - mins.z - 24.0,
+                },
+            )?;
+            machine
+                .entities_mut()
+                .set_slot_vector(slot, velocity_word, state.velocity)?;
+            machine.entities_mut().set_slot_vector(slot, angle_word, state.angles)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot, teleport_word, state.water_jump_time_seconds as f32)?;
+            let flags = machine.entities().slot_float(slot, flags_word)? as i32;
+            machine.entities_mut().set_slot_float(
+                slot,
+                flags_word,
+                ((flags & !512) | if grounded { 512 } else { 0 }) as f32,
+            )?;
+            if grounded {
+                machine
+                    .entities_mut()
+                    .set_slot_int(slot, ground_word, ground_reference)?;
+            }
+            Ok::<_, GuestError>(())
+        })?;
+        Ok(())
+    }
+
+    /// Write one client's QuakeWorld water state (`quakeWorldWater`).
+    pub fn quake_world_water(&self, actor: &ActorId, level: i32, type_: i32) -> Result<(), QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let level_word = self.field("waterlevel")?;
+        let type_word = self.field("watertype")?;
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities_mut().set_slot_float(slot, level_word, level as f32)?;
+            machine.entities_mut().set_slot_float(slot, type_word, type_ as f32)
+        })?;
+        Ok(())
+    }
+
+    /// Resolve one client's QuakeWorld movement profile (`quakeWorldProfile`).
+    pub fn quake_world_profile(
+        &self,
+        actor: &ActorId,
+        profile: &QwMovementProfile,
+    ) -> Result<QwMovementProfile, QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let cvars = self.shared.borrow().cvars.clone();
+        let cvars = cvars.borrow();
+        let mut resolved = profile.clone();
+        resolved.parameters = Q1MovementParameters {
+            gravity: f64::from(cvars.variable_value("sv_gravity")),
+            stop_speed: f64::from(cvars.variable_value("sv_stopspeed")),
+            max_speed: resolved.parameters.max_speed,
+            spectator_max_speed: f64::from(cvars.variable_value("sv_spectatormaxspeed")),
+            accelerate: f64::from(cvars.variable_value("sv_accelerate")),
+            air_accelerate: f64::from(cvars.variable_value("sv_airaccelerate")),
+            water_accelerate: f64::from(cvars.variable_value("sv_wateraccelerate")),
+            friction: f64::from(cvars.variable_value("sv_friction")),
+            water_friction: f64::from(cvars.variable_value("sv_waterfriction")),
+            entity_gravity: resolved.parameters.entity_gravity,
+        };
+        let maxspeed = self
+            .prepared
+            .program
+            .field_named("maxspeed")
+            .map(|definition| definition.offset);
+        let gravity = self
+            .prepared
+            .program
+            .field_named("gravity")
+            .map(|definition| definition.offset);
+        let fallback_max = f64::from(cvars.variable_value("sv_maxspeed"));
+        drop(cvars);
+        let (max_speed, entity_gravity) = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let max = match maxspeed {
+                Some(word) => f64::from(machine.entities().slot_float(slot, word)?),
+                None => fallback_max,
+            };
+            let gravity = match gravity {
+                Some(word) => f64::from(machine.entities().slot_float(slot, word)?),
+                None => 1.0,
+            };
+            Ok::<_, GuestError>((max, gravity))
+        })?;
+        resolved.parameters.max_speed = max_speed;
+        resolved.parameters.entity_gravity = entity_gravity;
+        Ok(resolved)
+    }
+
+    /// Run QuakeWorld pre-think for one client (`quakeWorldPreThink`).
+    pub fn quake_world_pre_think(
+        &self,
+        actor: &OwnedActor,
+        command: &QwUserCommand,
+        frame: &FrameContext,
+    ) -> Result<(), QuakeCSourceError> {
+        if self.kind() != QuakeCSourceKind::Quakeworld || !self.is_active_client(actor.id()) {
+            return Err(QuakeCSourceError::Invalid(
+                "QW movement requires a begun native client".to_string(),
+            ));
+        }
+        let reference = self.reference(actor.id())?;
+        let fixangle = self.field("fixangle")?;
+        let v_angle = self.field("v_angle")?;
+        let button0 = self.field("button0")?;
+        let button2 = self.field("button2")?;
+        let impulse = self.field("impulse")?;
+        let health = self.field("health")?;
+        let angles = self.field("angles")?;
+        let velocity = self.field("velocity")?;
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            if machine.entities().slot_float(slot, fixangle)? == 0.0 {
+                machine.entities_mut().set_slot_vector(slot, v_angle, command.angles)?;
+            }
+            machine
+                .entities_mut()
+                .set_slot_float(slot, button0, (command.buttons & 1) as f32)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot, button2, ((command.buttons >> 1) & 1) as f32)?;
+            if command.impulse != 0 {
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot, impulse, command.impulse as f32)?;
+            }
+            if machine.entities().slot_float(slot, health)? > 0.0 {
+                let mut posed = machine.entities().slot_vector(slot, angles)?;
+                if machine.entities().slot_float(slot, fixangle)? == 0.0 {
+                    posed.x = -command.angles.x / 3.0;
+                    posed.y = command.angles.y;
+                }
+                let mut right = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+                let moved = machine.entities().slot_vector(slot, velocity)?;
+                donor_angle_vectors(posed, None, Some(&mut right), None);
+                let side = moved.x * right.x + moved.y * right.y + moved.z * right.z;
+                posed.z = (if side.abs() < 200.0 {
+                    side.abs() * 2.0 / 200.0
+                } else {
+                    2.0
+                }) * (if side < 0.0 { -1.0 } else { 1.0 })
+                    * 4.0;
+                machine.entities_mut().set_slot_vector(slot, angles, posed)?;
+            }
+            Ok::<_, GuestError>(())
+        })?;
+        if self.is_spectator_client(actor.id()) {
+            return Ok(());
+        }
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("frametime")?;
+            machine
+                .globals_mut()
+                .set_float(offset, command.milliseconds as f32 * 0.001)
+        })?;
+        self.client_pre_think(actor)?;
+        let mut think_frame = *frame;
+        think_frame.time = qa_core::time::SourceTime::Seconds(self.current_time() as f32);
+        think_frame.elapsed = qa_core::time::SourceTime::Seconds(command.milliseconds as f32 * 0.001);
+        self.run_think(actor, &think_frame)
+    }
+
+    /// Take the pending QuakeWorld missile, if any (`takeNewMissile`).
+    pub fn take_new_missile(&self) -> Result<Option<OwnedActor>, QuakeCSourceError> {
+        if self.kind() != QuakeCSourceKind::Quakeworld {
+            return Ok(None);
+        }
+        let offset = self.machine_read(|machine| machine.global_offset("newmis"))?;
+        let reference = self.machine_read(|machine| machine.globals().int(offset))?;
+        if reference == 0 {
+            return Ok(None);
+        }
+        self.machine_write(|machine| machine.globals_mut().set_int(offset, 0))?;
+        let slot = self.machine_read(|machine| machine.entities().slot(reference))? as usize;
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, slot);
+        Ok(actor)
+    }
+
+    /// Read one client's NetQuake movement state (`readClientState`).
+    pub fn read_client_state(
+        &self,
+        actor: &ActorId,
+        state: &Q1MovementState,
+    ) -> Result<Q1MovementState, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC player has no source slot".to_string()))?;
+        let words = [
+            "origin",
+            "velocity",
+            "angles",
+            "oldorigin",
+            "avelocity",
+            "v_angle",
+            "punchangle",
+            "movetype",
+            "flags",
+            "waterlevel",
+            "watertype",
+            "teleport_time",
+            "movedir",
+            "idealpitch",
+            "fixangle",
+            "health",
+        ]
+        .into_iter()
+        .map(|name| self.field(name))
+        .collect::<Result<Vec<_>, _>>()?;
+        let values = self.machine_read(|machine| {
+            let entities = machine.entities();
+            Ok::<_, GuestError>((
+                entities.slot_vector(slot as u32, words[0])?,
+                entities.slot_vector(slot as u32, words[1])?,
+                entities.slot_vector(slot as u32, words[2])?,
+                entities.slot_vector(slot as u32, words[3])?,
+                entities.slot_vector(slot as u32, words[4])?,
+                entities.slot_vector(slot as u32, words[5])?,
+                entities.slot_vector(slot as u32, words[6])?,
+                entities.slot_float(slot as u32, words[7])?,
+                entities.slot_float(slot as u32, words[8])?,
+                entities.slot_float(slot as u32, words[9])?,
+                entities.slot_float(slot as u32, words[10])?,
+                entities.slot_float(slot as u32, words[11])?,
+                entities.slot_vector(slot as u32, words[12])?,
+                entities.slot_float(slot as u32, words[13])?,
+                entities.slot_float(slot as u32, words[14])?,
+                entities.slot_float(slot as u32, words[15])?,
+            ))
+        })?;
+        let (
+            origin,
+            velocity,
+            angles,
+            old_origin,
+            angular_velocity,
+            view_angles,
+            punch_angles,
+            move_type,
+            flags,
+            water_level,
+            water_type,
+            teleport,
+            movedir,
+            ideal_pitch,
+            fixangle,
+            health,
+        ) = values;
+        Ok(Q1MovementState {
+            origin,
+            velocity,
+            angles,
+            old_origin,
+            angular_velocity,
+            view_angles: if fixangle != 0.0 { angles } else { view_angles },
+            punch_angles,
+            move_type: move_type as i32,
+            flags: flags as i32,
+            water_level: water_level as i32,
+            water_type: water_type as i32,
+            teleport_time_seconds: f64::from(teleport),
+            water_jump_direction: movedir,
+            ideal_pitch: f64::from(ideal_pitch),
+            fix_angle: fixangle != 0.0,
+            health: f64::from(health),
+            ..state.clone()
+        })
+    }
+
+    /// Read one client's NetQuake punch vector (`clientPunchAngles`).
+    pub fn client_punch_angles(&self, actor: &ActorId) -> Result<Vec3, QuakeCSourceError> {
+        if self.kind() != QuakeCSourceKind::Netquake {
+            return Err(QuakeCSourceError::Invalid(
+                "QuakeWorld does not own a NetQuake punch vector".to_string(),
+            ));
+        }
+        let reference = self.reference(actor)?;
+        let word = self.field("punchangle")?;
+        self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities().slot_vector(slot, word)
+        })
+        .map_err(QuakeCSourceError::from)
+    }
+
+    /// Write one client's view roll (`setClientViewRoll`).
+    pub fn set_client_view_roll(&self, actor: &ActorId, roll: f64) -> Result<(), QuakeCSourceError> {
+        if !self.is_active_client(actor) {
+            return Err(QuakeCSourceError::Invalid(
+                "QC source view requires an admitted client".to_string(),
+            ));
+        }
+        let reference = self.reference(actor)?;
+        let word = self.field("v_angle")?;
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            let mut angles = machine.entities().slot_vector(slot, word)?;
+            angles.z = roll as f32;
+            machine.entities_mut().set_slot_vector(slot, word, angles)
+        })?;
+        Ok(())
+    }
+
+    /// Whether one client's punch vector advances (`clientPunchAdvances`).
+    pub fn client_punch_advances(&self, actor: &ActorId) -> Result<bool, QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        let word = self.field("movetype")?;
+        let move_type = self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities().slot_float(slot, word)
+        })?;
+        Ok(move_type != 0.0)
+    }
+
+    /// Write one client's NetQuake punch vector (`setClientPunchAngles`).
+    pub fn set_client_punch_angles(&self, actor: &ActorId, angles: Vec3) -> Result<(), QuakeCSourceError> {
+        if self.kind() != QuakeCSourceKind::Netquake {
+            return Err(QuakeCSourceError::Invalid(
+                "QuakeWorld does not own a NetQuake punch vector".to_string(),
+            ));
+        }
+        let reference = self.reference(actor)?;
+        let word = self.field("punchangle")?;
+        self.machine_write(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities_mut().set_slot_vector(slot, word, angles)
+        })?;
+        Ok(())
+    }
+
+    /// Write one client's NetQuake movement state (`writeClientState`).
+    pub fn write_client_state(&self, actor: &ActorId, state: &Q1MovementState) -> Result<(), QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("QC player has no source slot".to_string()))?;
+        let vectors = [
+            ("oldorigin", state.old_origin),
+            ("avelocity", state.angular_velocity),
+            ("v_angle", state.view_angles),
+            ("punchangle", state.punch_angles),
+            ("movedir", state.water_jump_direction),
+        ];
+        let scalars = [
+            ("movetype", state.move_type as f64),
+            ("flags", state.flags as f64),
+            ("waterlevel", state.water_level as f64),
+            ("watertype", state.water_type as f64),
+            ("teleport_time", state.teleport_time_seconds),
+            ("idealpitch", state.ideal_pitch),
+            ("fixangle", f64::from(u8::from(state.fix_angle))),
+        ];
+        let vector_words = vectors
+            .iter()
+            .map(|(name, _)| self.field(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        let scalar_words = scalars
+            .iter()
+            .map(|(name, _)| self.field(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.machine_write(|machine| {
+            for (word, (_, value)) in vector_words.iter().zip(vectors.iter()) {
+                machine.entities_mut().set_slot_vector(slot as u32, *word, *value)?;
+            }
+            for (word, (_, value)) in scalar_words.iter().zip(scalars.iter()) {
+                machine
+                    .entities_mut()
+                    .set_slot_float(slot as u32, *word, *value as f32)?;
+            }
+            Ok::<_, GuestError>(())
+        })?;
+        Ok(())
+    }
+
+    /// Consume one client's pending view reset (`consumeClientViewReset`).
+    pub fn consume_client_view_reset(&self, actor: &ActorId) -> Result<Option<Vec3>, QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(None);
+        };
+        let fixangle = self.field("fixangle")?;
+        let angles = self.field("angles")?;
+        let fixed = self.machine_read(|machine| machine.entities().slot_float(slot as u32, fixangle))?;
+        if fixed == 0.0 {
+            return Ok(None);
+        }
+        self.machine_write(|machine| machine.entities_mut().set_slot_float(slot as u32, fixangle, 0.0))?;
+        let reset = self.machine_read(|machine| machine.entities().slot_vector(slot as u32, angles))?;
+        Ok(Some(reset))
+    }
+
+    /// Request one client's weapon (`requestClientWeapon`).
+    pub fn request_client_weapon(&self, actor: &ActorId, item: &ItemId) -> Result<bool, QuakeCSourceError> {
+        let slot = self.source_slot(actor);
+        let weapon = self
+            .shared
+            .borrow()
+            .weapons
+            .iter()
+            .find(|weapon| &weapon.item == item)
+            .cloned();
+        let (Some(slot), Some(weapon)) = (slot, weapon) else {
+            return Ok(false);
+        };
+        let inventory = self.shared.borrow().options.inventory.clone();
+        if inventory.borrow().count(actor, item) <= 0.0 {
+            return Ok(false);
+        }
+        let weapon_word = self.field("weapon")?;
+        let items_word = self.field("items")?;
+        let impulse_word = self.field("impulse")?;
+        self.shared.borrow().pending_weapons.borrow_mut().remove(actor);
+        let current = self.machine_read(|machine| machine.entities().slot_float(slot as u32, weapon_word))?;
+        if current as i32 == weapon.bit {
+            self.machine_write(|machine| machine.entities_mut().set_slot_float(slot as u32, impulse_word, 0.0))?;
+            return Ok(true);
+        }
+        if let Some(via) = weapon.via {
+            let held = self.machine_read(|machine| machine.entities().slot_float(slot as u32, items_word))? as i32;
+            if current as i32 != via && held & via != 0 {
+                self.shared.borrow().pending_weapons.borrow_mut().insert(
+                    actor.clone(),
+                    PendingWeapon {
+                        weapon: weapon.clone(),
+                        following: false,
+                    },
+                );
+            }
+        }
+        self.machine_write(|machine| {
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, impulse_word, weapon.impulse as f32)
+        })?;
+        Ok(true)
+    }
+
+    /// Run `PlayerPreThink` for one client (`clientPreThink`).
+    pub fn client_pre_think(&self, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        if self.is_spectator_client(actor.id()) {
+            return Ok(());
+        }
+        let slot = self
+            .source_slot(actor.id())
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC client".to_string()))?;
+        let index = self.prepared.program.function_named("PlayerPreThink")?.index;
+        let time = self.current_time();
+        self.invoke(index as i32, slot, 0, time)
+    }
+
+    /// Run `PlayerPostThink` for one client (`clientPostThink`).
+    pub fn client_post_think(&self, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor.id()) else {
+            return Ok(());
+        };
+        if self.is_spectator_client(actor.id()) {
+            return self.spectator_callback("SpectatorThink", slot);
+        }
+        let impulse_word = self.field("impulse")?;
+        let health_word = self.field("health")?;
+        let weapon_word = self.field("weapon")?;
+        let pending = self.shared.borrow().pending_weapons.borrow().get(actor.id()).cloned();
+        let impulse = self.machine_read(|machine| machine.entities().slot_float(slot as u32, impulse_word))?;
+        if let Some(pending) = &pending {
+            let inventory = self.shared.borrow().options.inventory.clone();
+            let held = inventory.borrow().count(actor.id(), &pending.weapon.item);
+            let health = self.machine_read(|machine| machine.entities().slot_float(slot as u32, health_word))?;
+            if held <= 0.0 || health <= 0.0 {
+                self.shared.borrow().pending_weapons.borrow_mut().remove(actor.id());
+                if impulse as i32 == pending.weapon.impulse {
+                    self.machine_write(|machine| {
+                        machine.entities_mut().set_slot_float(slot as u32, impulse_word, 0.0)
+                    })?;
+                }
+            } else if impulse != 0.0 && impulse as i32 != pending.weapon.impulse {
+                self.shared.borrow().pending_weapons.borrow_mut().remove(actor.id());
+            }
+        }
+        let index = self.prepared.program.function_named("PlayerPostThink")?.index;
+        let time = self.current_time();
+        self.invoke(index as i32, slot, 0, time)?;
+        let selection = self.shared.borrow().pending_weapons.borrow().get(actor.id()).cloned();
+        if let Some(selection) = selection {
+            let impulse = self.machine_read(|machine| machine.entities().slot_float(slot as u32, impulse_word))?;
+            if impulse == 0.0 {
+                self.shared.borrow().pending_weapons.borrow_mut().remove(actor.id());
+                let current = self.machine_read(|machine| machine.entities().slot_float(slot as u32, weapon_word))?;
+                let inventory = self.shared.borrow().options.inventory.clone();
+                if !selection.following
+                    && selection.weapon.via.is_some_and(|via| current as i32 == via)
+                    && inventory.borrow().count(actor.id(), &selection.weapon.item) > 0.0
+                {
+                    self.shared.borrow().pending_weapons.borrow_mut().insert(
+                        actor.id().clone(),
+                        PendingWeapon {
+                            weapon: selection.weapon.clone(),
+                            following: true,
+                        },
+                    );
+                    self.machine_write(|machine| {
+                        machine.entities_mut().set_slot_float(
+                            slot as u32,
+                            impulse_word,
+                            selection.weapon.impulse as f32,
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// HUD snapshot for one client (`clientUi`).
+    pub fn client_ui(&self, actor: &ActorId) -> Result<QuakeCClientUi, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC UI actor".to_string()))?;
+        let items_word = self.field("items")?;
+        let weapon_word = self.field("weapon")?;
+        let current_word = self.field("currentammo")?;
+        let (items, weapon, current) = self.machine_read(|machine| {
+            let items = machine.entities().slot_float(slot as u32, items_word)? as i32;
+            let weapon = machine.entities().slot_float(slot as u32, weapon_word)? as i32;
+            let current = machine.entities().slot_float(slot as u32, current_word)?;
+            Ok::<_, GuestError>((items, weapon, f64::from(current)))
+        })?;
+        let timers = [
+            (Q1Powerup::Quad, "super_damage_finished"),
+            (Q1Powerup::Invulnerability, "invincible_finished"),
+            (Q1Powerup::Invisibility, "invisible_finished"),
+            (Q1Powerup::Suit, "radsuit_finished"),
+        ];
+        let mut powerups = std::collections::HashMap::new();
+        for (kind, field) in timers {
+            if let Some(definition) = self.prepared.program.field_named(field) {
+                if definition.value_type == qa_guest::qc::program::QcValueType::Float {
+                    let expires =
+                        self.machine_read(|machine| machine.entities().slot_float(slot as u32, definition.offset))?;
+                    powerups.insert(kind, f64::from(expires));
+                }
+            }
+        }
+        let stat = self.shared.borrow().router.borrow().local_messages.stat(actor, 3);
+        let bindings: Vec<QuakeCWeaponUiBinding> = self
+            .shared
+            .borrow()
+            .weapons
+            .iter()
+            .map(|weapon| QuakeCWeaponUiBinding {
+                item: weapon.item.clone(),
+                label: weapon.label.clone(),
+                bit: weapon.bit,
+                impulse: weapon.impulse,
+            })
+            .collect();
+        let weapon_ui = quake_c_weapon_ui(items, weapon, stat.map_or(current, f64::from), &bindings);
+        let timers = q1_powerup_timers(&powerups, self.current_time());
+        Ok(QuakeCClientUi {
+            weapon: weapon_ui,
+            powerups: timers,
+        })
+    }
+
+    /// Arsenal snapshot for one client (`clientArsenal`).
+    pub fn client_arsenal(&self, actor: &ActorId) -> Result<ArsenalState, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC arsenal actor".to_string()))?;
+        let weapon_word = self.field("weapon")?;
+        let frame_word = self.field("weaponframe")?;
+        let attack_word = self.field("attack_finished")?;
+        let (value, frame, attack) = self.machine_read(|machine| {
+            let value = machine.entities().slot_float(slot as u32, weapon_word)?;
+            let frame = machine.entities().slot_float(slot as u32, frame_word)? as i32;
+            let attack = machine.entities().slot_float(slot as u32, attack_word)?;
+            Ok::<_, GuestError>((value, frame, f64::from(attack)))
+        })?;
+        let weapons = self.shared.borrow().weapons.clone();
+        let weapon = weapons.iter().find(|weapon| f64::from(weapon.bit) == f64::from(value));
+        if weapon.is_none() && !(value == 0.0 && self.is_spectator_client(actor)) {
+            return Err(QuakeCSourceError::Invalid(format!(
+                "Unsupported actual QC weapon {value}"
+            )));
+        }
+        let inventory = self.shared.borrow().options.inventory.clone();
+        let ammo = inventory
+            .borrow()
+            .entries(actor)
+            .into_iter()
+            .map(|entry| MovementInventoryEntry {
+                item: entry.item,
+                count: entry.count,
+            })
+            .collect();
+        Ok(ArsenalState {
+            provider: self.prepared.execution.owner.provider.clone(),
+            active_weapon: weapon.map(|weapon| weapon.item.clone()),
+            state: WeaponState::Q1 {
+                frame,
+                attack_finished_seconds: attack,
+                source_weapon: value as i32,
+            },
+            ammo,
+        })
+    }
+
+    /// Animation snapshot for one client (`clientAnimation`).
+    pub fn client_animation(&self, actor: &ActorId) -> Result<ActorAnimationState, QuakeCSourceError> {
+        let slot = self
+            .source_slot(actor)
+            .ok_or_else(|| QuakeCSourceError::Invalid("Missing QC animation actor".to_string()))?;
+        let frame_word = self.field("frame")?;
+        let think_word = self.field("nextthink")?;
+        let (frame, next) = self.machine_read(|machine| {
+            let frame = machine.entities().slot_float(slot as u32, frame_word)? as i32;
+            let next = machine.entities().slot_float(slot as u32, think_word)?;
+            Ok::<_, GuestError>((frame, f64::from(next)))
+        })?;
+        let definition = self
+            .shared
+            .borrow()
+            .options
+            .recipe
+            .character
+            .definition
+            .provider
+            .clone();
+        let (namespace, name) = definition.split_once(':').unwrap_or(("", definition.as_str()));
+        Ok(ActorAnimationState {
+            provider: ProviderId::new(namespace, name),
+            state: AnimationState::Q1 {
+                frame,
+                next_frame_seconds: next,
+            },
+        })
+    }
+
+    /// Local intermission flag for one client (`localClientIntermission`).
+    pub fn local_client_intermission(&self, actor: &ActorId) -> Option<bool> {
+        let router = self.shared.borrow().router.clone();
+        let state = router.borrow();
+        if !state.local_messages.has_client(actor) {
+            return None;
+        }
+        Some(state.local_messages.intermission(actor))
+    }
+
+    /// Local camera view for one client (`localClientView`).
+    pub fn local_client_view(&self, actor: &ActorId) -> Option<PlayerView> {
+        let router = self.shared.borrow().router.clone();
+        let state = router.borrow();
+        let source = LocalViewSource { source: self };
+        quake_c_local_view(actor, &state.local_messages, &source)
+    }
+
+    /// Feed decoded NetQuake services into local presentation (`receiveLocalMessages`).
+    fn receive_local_messages(
+        &self,
+        messages: &[NetQuakeMessage],
+        destination: &QcMessageDestination,
+        view_targets: &std::collections::HashMap<usize, Option<ActorId>>,
+    ) -> Result<(), QuakeCSourceError> {
+        if matches!(destination, QcMessageDestination::Multicast { .. }) {
+            return Err(QuakeCSourceError::Invalid(
+                "NetQuake has no multicast destination".to_string(),
+            ));
+        }
+        let target = match destination {
+            QcMessageDestination::Client { actor } => Some(actor.clone()),
+            _ => None,
+        };
+        let router = self.shared.borrow().router.clone();
+        let content = self.prepared.execution.owner.content.clone();
+        for (index, message) in messages.iter().enumerate() {
+            if matches!(message, NetQuakeMessage::SetView { .. }) && !view_targets.contains_key(&index) {
+                return Err(QuakeCSourceError::Invalid(
+                    "QC camera message has no captured source actor".to_string(),
+                ));
+            }
+            router.borrow_mut().local_messages.receive(
+                std::slice::from_ref(message),
+                target.as_ref(),
+                view_targets.get(&index).cloned(),
+            )?;
+            let state = router.borrow();
+            let mut host = LocalMessageHost {
+                source: self,
+                target: target.clone(),
+                content: content.clone(),
+            };
+            present_quake_c_local_message(message, target.as_ref(), &state.local_messages, &mut host)?;
+        }
+        Ok(())
+    }
+
+    /// Precached names by kind, in precache order (`precacheNames`).
+    fn precache_names(&self, kind: PrecacheKind) -> Vec<String> {
+        if kind == PrecacheKind::Model {
+            let mut models: Vec<(String, i32)> = self
+                .shared
+                .borrow()
+                .models
+                .borrow()
+                .iter()
+                .map(|(name, model)| (name.clone(), model.index))
+                .collect();
+            models.sort_by_key(|(_, index)| *index);
+            return models.into_iter().map(|(name, _)| name).collect();
+        }
+        let mut sounds: Vec<(String, i32)> = self
+            .shared
+            .borrow()
+            .precached
+            .iter()
+            .filter(|(key, _)| key.starts_with("sound:"))
+            .map(|(key, entry)| (key.clone(), entry.index))
+            .collect();
+        sounds.sort_by_key(|(_, index)| *index);
+        sounds
+            .into_iter()
+            .map(|(key, _)| key["sound:".len()..].to_string())
+            .collect()
+    }
+
+    /// Client view offset for one actor (`clientViewOffset`).
+    pub fn client_view_offset(&self, actor: &ActorId) -> Result<Vec3, QuakeCSourceError> {
+        let reference = self.reference(actor)?;
+        if self.kind() == QuakeCSourceKind::Quakeworld {
+            let mins_word = self.field("mins")?;
+            let health_word = self.field("health")?;
+            let (mins, health) = self.machine_read(|machine| {
+                let slot = machine.entities().slot(reference)?;
+                let mins = machine.entities().slot_vector(slot, mins_word)?;
+                let health = machine.entities().slot_float(slot, health_word)?;
+                Ok::<_, GuestError>((mins, health))
+            })?;
+            let height = if mins.z != -24.0 {
+                8.0
+            } else if health <= 0.0 {
+                -16.0
+            } else {
+                22.0
+            };
+            return Ok(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: height,
+            });
+        }
+        let word = self.field("view_ofs")?;
+        self.machine_read(|machine| {
+            let slot = machine.entities().slot(reference)?;
+            machine.entities().slot_vector(slot, word)
+        })
+        .map_err(QuakeCSourceError::from)
+    }
+}
+
+/// Local camera source over one [`QuakeCSource`].
+struct LocalViewSource<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: &'s QuakeCSource<P>,
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCLocalViewSource for LocalViewSource<'s, P> {
+    fn read(&self, actor: &ActorId) -> Option<(Vec3, Vec3)> {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        if !actors.borrow().is_live(actor) {
+            return None;
+        }
+        let slot = self.source.source_slot(actor);
+        let Some(slot) = slot else {
+            let physics = self.source.shared.borrow().options.physics.clone();
+            let body = physics.borrow().read_body(actor)?;
+            return Some((body.origin, body.angles));
+        };
+        let origin = self.source.field("origin").ok()?;
+        let angles = self.source.field("angles").ok()?;
+        self.source.machine_read(|machine| {
+            let origin = machine.entities().slot_vector(slot as u32, origin).ok()?;
+            let angles = machine.entities().slot_vector(slot as u32, angles).ok()?;
+            Some((origin, angles))
+        })
+    }
+
+    fn offset(&self, actor: &ActorId) -> Vec3 {
+        self.source
+            .client_view_offset(actor)
+            .unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+    }
+}
+
+/// Local-service host over one [`QuakeCSource`].
+struct LocalMessageHost<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: &'s QuakeCSource<P>,
+    target: Option<ActorId>,
+    content: String,
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> LocalMessageHost<'s, P> {
+    fn events(&self) -> Rc<RefCell<dyn QuakeCSourceEvents>> {
+        self.source.shared.borrow().options.events.clone()
+    }
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCLocalMessageHost
+    for LocalMessageHost<'s, P>
+{
+    fn actor(&self, slot: u16) -> Result<ActorId, QuakeCLocalMessageError> {
+        let provider = self.source.prepared.execution.owner.provider.clone();
+        let actors = self.source.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, slot as usize);
+        actor
+            .map(|actor| actor.id().clone())
+            .ok_or(QuakeCLocalMessageError::ServiceActor(slot))
+    }
+
+    fn recipients(&self) -> Vec<ActorId> {
+        self.source
+            .shared
+            .borrow()
+            .active_clients
+            .borrow()
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn source_actor(&self) -> ActorId {
+        self.source.world_actor().expect("QC worldspawn is bound").id().clone()
+    }
+
+    fn map(&self) -> String {
+        self.source
+            .shared
+            .borrow()
+            .options
+            .recipe
+            .map
+            .geometry
+            .requested_path
+            .clone()
+    }
+
+    fn seconds(&self) -> f64 {
+        self.source.current_time()
+    }
+
+    fn camera(&self, actor: &ActorId) -> Result<(Vec3, Vec3), QuakeCLocalMessageError> {
+        let slot = self
+            .source
+            .source_slot(actor)
+            .ok_or(QuakeCLocalMessageError::ServiceCamera)?;
+        let origin = self
+            .source
+            .field("origin")
+            .map_err(|_| QuakeCLocalMessageError::ServiceCamera)?;
+        let angles = self
+            .source
+            .field("angles")
+            .map_err(|_| QuakeCLocalMessageError::ServiceCamera)?;
+        self.source
+            .machine_read(|machine| {
+                let origin = machine.entities().slot_vector(slot as u32, origin).ok()?;
+                let angles = machine.entities().slot_vector(slot as u32, angles).ok()?;
+                Some((origin, angles))
+            })
+            .ok_or(QuakeCLocalMessageError::ServiceCamera)
+    }
+
+    fn sound(&self, index: u16) -> Result<String, QuakeCLocalMessageError> {
+        self.source
+            .precache_names(PrecacheKind::Sound)
+            .get(usize::from(index).wrapping_sub(1))
+            .cloned()
+            .ok_or(QuakeCLocalMessageError::ServiceSound(index))
+    }
+
+    fn model(&self, index: u16) -> Result<String, QuakeCLocalMessageError> {
+        self.source
+            .precache_names(PrecacheKind::Model)
+            .get(usize::from(index).wrapping_sub(1))
+            .cloned()
+            .ok_or(QuakeCLocalMessageError::ServiceModel(index))
+    }
+
+    fn emit(&mut self, event: Q1Event, recipient: Option<ActorId>) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::Q1(event),
+            recipient.as_ref().or(self.target.as_ref()),
+        );
+    }
+
+    fn message(&mut self, event: LocalNetworkEvent, actor: Option<ActorId>) {
+        let mapped = match event {
+            LocalNetworkEvent::Print { level, text } => ClientMessage::Print { level, text },
+            LocalNetworkEvent::CenterPrint { text } => ClientMessage::CenterPrint { text },
+            LocalNetworkEvent::CommandText { text } => ClientMessage::CommandText { text },
+            LocalNetworkEvent::Disconnect { reason } => ClientMessage::Disconnect { reason },
+            _ => return,
+        };
+        self.events()
+            .borrow_mut()
+            .message(mapped, actor.as_ref().or(self.target.as_ref()));
+    }
+
+    fn music(&mut self, track: u8) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::Music { track },
+            self.target.as_ref(),
+        );
+    }
+
+    fn angles(&mut self, actor: &ActorId, angles: Vec3) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::ViewReset {
+                actor: actor.clone(),
+                angles,
+            },
+            self.target.as_ref(),
+        );
+    }
+
+    fn pause(&mut self, paused: bool) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::Pause { paused },
+            self.target.as_ref(),
+        );
+    }
+
+    fn sky(&mut self, name: &str, recipient: Option<ActorId>) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::Sky { name: name.to_string() },
+            recipient.as_ref(),
+        );
+    }
+
+    fn client_metadata(&mut self, event: Q1ClientMetadataEvent, recipient: Option<ActorId>) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::ClientMetadata(event),
+            recipient.as_ref(),
+        );
+    }
+
+    fn session(&mut self, kind: QuakeCSessionKind, recipient: Option<ActorId>) {
+        self.events()
+            .borrow_mut()
+            .emit_local(&self.content, QuakeCLocalSinkEvent::Session(kind), recipient.as_ref());
+    }
+
+    fn prompt(&mut self, event: Q1CompositionEvent) {
+        let recipient = match &event {
+            Q1CompositionEvent::Prompt { actor, .. } | Q1CompositionEvent::ClearPrompt { actor } => Some(actor.clone()),
+            _ => None,
+        };
+        self.events()
+            .borrow_mut()
+            .emit_local(&self.content, QuakeCLocalSinkEvent::Prompt(event), recipient.as_ref());
+    }
+
+    fn fog(&mut self, fog: QuakeCLocalFog, recipient: Option<ActorId>) {
+        self.events().borrow_mut().emit_local(
+            &self.content,
+            QuakeCLocalSinkEvent::Fog {
+                density: fog.density,
+                color: fog.color,
+                duration_seconds: fog.transition_seconds.max(0.0),
+            },
+            recipient.as_ref(),
+        );
+    }
+}
+
+/// Project one routed NetQuake message into its wire form.
+fn netquake_message_from_nq(message: &NqMessage) -> NetQuakeMessage {
+    match message {
+        NqMessage::Print { text } => NetQuakeMessage::Text {
+            kind: NqText::Print,
+            text: text.clone(),
+        },
+        NqMessage::CenterPrint { text } => NetQuakeMessage::Text {
+            kind: NqText::CenterPrint,
+            text: text.clone(),
+        },
+        NqMessage::StuffText { text } => NetQuakeMessage::Text {
+            kind: NqText::Stufftext,
+            text: text.clone(),
+        },
+        NqMessage::SetView { entity } => NetQuakeMessage::SetView { entity: *entity },
+        NqMessage::Sound {
+            entity,
+            channel,
+            index,
+            origin,
+            volume,
+            attenuation,
+        } => NetQuakeMessage::Sound {
+            entity: *entity,
+            channel: *channel,
+            index: u16::from(*index),
+            volume: *volume,
+            attenuation: f64::from(*attenuation),
+            origin: [f64::from(origin.x), f64::from(origin.y), f64::from(origin.z)],
+        },
+        NqMessage::TempEntity { effect } => NetQuakeMessage::TemporaryEntity {
+            effect: match effect {
+                TempEntityEffect::ExplosionColors {
+                    origin,
+                    color_start,
+                    color_length,
+                } => TemporaryEntity::ExplosionColors {
+                    origin: [f64::from(origin.x), f64::from(origin.y), f64::from(origin.z)],
+                    color_start: *color_start as u8,
+                    color_length: *color_length as u8,
+                },
+                TempEntityEffect::Beam {
+                    entity,
+                    beam_type,
+                    start,
+                    end,
+                } => TemporaryEntity::Beam {
+                    effect_type: *beam_type,
+                    entity: *entity,
+                    start: [f64::from(start.x), f64::from(start.y), f64::from(start.z)],
+                    end: [f64::from(end.x), f64::from(end.y), f64::from(end.z)],
+                },
+                TempEntityEffect::Point {
+                    effect_type,
+                    origin,
+                    count,
+                } => TemporaryEntity::Point {
+                    effect_type: *effect_type,
+                    origin: [f64::from(origin.x), f64::from(origin.y), f64::from(origin.z)],
+                    count: *count as u8,
+                },
+            },
+        },
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Drain broadcast presentation into the session sink (`messages.flush`).
+    fn flush_messages(&self) -> Result<(), QuakeCSourceError> {
+        let content = self.prepared.execution.owner.content.clone();
+        let events = self.shared.borrow().options.events.clone();
+        self.shared.borrow_mut().messages.flush(&mut |effect, recipient| {
+            events
+                .borrow_mut()
+                .emit(&content, map_broadcast_effect(effect), recipient);
+        })?;
+        Ok(())
+    }
+
+    /// Drain signon presentation into the session sink (`messages.flushSignon`).
+    fn flush_signon_messages(&self) -> Result<(), QuakeCSourceError> {
+        self.shared.borrow_mut().messages.flush_signon()?;
+        Ok(())
+    }
+
+    /// Spawn the source map (`spawnMap`).
+    pub fn spawn_map(&self) -> Result<(), QuakeCSourceError> {
+        if !self.loading() {
+            return Err(QuakeCSourceError::Invalid("QC map was already spawned".to_string()));
+        }
+        let map = self.shared.borrow().options.recipe.map.geometry.requested_path.clone();
+        let model_word = self.field("model")?;
+        let modelindex_word = self.field("modelindex")?;
+        let solid_word = self.field("solid")?;
+        let movetype_word = self.field("movetype")?;
+        self.machine_write(|machine| {
+            let model = machine.strings_mut().allocate(&map)?;
+            machine.entities_mut().set_slot_int(0, model_word, model)?;
+            machine.entities_mut().set_slot_float(0, modelindex_word, 1.0)?;
+            machine.entities_mut().set_slot_float(0, solid_word, 4.0)?;
+            machine.entities_mut().set_slot_float(0, movetype_word, 7.0)
+        })?;
+        let time = self.current_time();
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("time")?;
+            machine.globals_mut().set_float(offset, time as f32)
+        })?;
+        for name in ["skill", "deathmatch", "coop", "teamplay"] {
+            let value = self.shared.borrow().cvars.borrow().variable_value(name);
+            if let Some(definition) = self.prepared.program.global_named(name) {
+                let offset = definition.offset;
+                self.machine_write(|machine| machine.globals_mut().set_float(offset, value))?;
+            }
+        }
+        let stripped = map.strip_prefix("maps/").unwrap_or(map.as_str());
+        let stripped = stripped.strip_suffix(".bsp").unwrap_or(stripped);
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("mapname")?;
+            let text = machine.strings_mut().allocate(stripped)?;
+            machine.globals_mut().set_int(offset, text)
+        })?;
+        let mode = self.shared.borrow().options.mode;
+        let world = self.shared.borrow().options.world.clone();
+        let text = world.borrow().map_entities(mode);
+        let entities = parse_entities(&text, &map).map_err(|error| QuakeCSourceError::Invalid(error.to_string()))?;
+        let provider = self.prepared.execution.owner.provider.clone();
+        let skill = self.shared.borrow().options.skill;
+        let spawnflags_word = self.field("spawnflags")?;
+        let classname_word = self.field("classname")?;
+        for (ordinal, pairs) in entities.iter().enumerate() {
+            let actor = if ordinal == 0 {
+                self.world_actor()?
+            } else {
+                self.shared
+                    .borrow()
+                    .options
+                    .actors
+                    .borrow_mut()
+                    .allocate(&provider, QuakeCSlotKind::Authored.definition())
+            };
+            let slot = self
+                .source_slot(actor.id())
+                .ok_or_else(|| QuakeCSourceError::Invalid("Missing authored QC source slot".to_string()))?;
+            self.bind_slot(slot, &actor)?;
+            let mut ordered: Vec<GuestTextPair> = pairs
+                .iter()
+                .map(|(key, value)| GuestTextPair {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect();
+            ordered.sort_by(|left, right| left.key.cmp(&right.key));
+            self.machine_write(|machine| apply_qc_entity_pairs(machine, slot as u32, &ordered))?;
+            let excluded = if mode == QuakeCSourceMode::Deathmatch {
+                2048
+            } else if skill == 0 {
+                256
+            } else if skill == 1 {
+                512
+            } else {
+                1024
+            };
+            let flags =
+                self.machine_read(|machine| machine.entities().slot_float(slot as u32, spawnflags_word))? as i32;
+            if flags & excluded != 0 {
+                self.free_slot(&actor, slot)?;
+                continue;
+            }
+            let classname = self.machine_read(|machine| {
+                let text = machine.entities().slot_int(slot as u32, classname_word)?;
+                machine.strings().get(text)
+            })?;
+            let spawn = self
+                .prepared
+                .program
+                .function_named(&classname)
+                .ok()
+                .map(|function| function.index);
+            if classname.is_empty() || spawn.is_none() {
+                let print = self.shared.borrow().options.print.clone();
+                if classname.is_empty() {
+                    print(&format!("No classname for: {classname}\n"));
+                } else {
+                    print(&format!("No spawn function for: {classname}\n"));
+                }
+                self.free_slot(&actor, slot)?;
+                continue;
+            }
+            let time = self.current_time();
+            self.invoke(spawn.unwrap_or(0) as i32, slot, 0, time)?;
+            self.flush_signon_messages()?;
+        }
+        *self.shared.borrow_mut().spawning.borrow_mut() = false;
+        let gravity = self.shared.borrow().cvars.borrow().variable_value("sv_gravity");
+        self.shared
+            .borrow()
+            .options
+            .physics
+            .borrow_mut()
+            .set_world_gravity(gravity);
+        self.flush_messages()
+    }
+
+    /// Start one native frame (`beginFrame`).
+    pub fn begin_frame(&self, frame: &FrameContext) -> Result<(), QuakeCSourceError> {
+        let (qa_core::time::SourceTime::Seconds(time), qa_core::time::SourceTime::Seconds(elapsed)) =
+            (frame.time, frame.elapsed)
+        else {
+            return Err(QuakeCSourceError::Invalid(
+                "QC frame requires source seconds".to_string(),
+            ));
+        };
+        if !time.is_finite() {
+            return Err(QuakeCSourceError::Invalid(
+                "QC frame requires source seconds".to_string(),
+            ));
+        }
+        if self.kind() == QuakeCSourceKind::Netquake {
+            let router = self.shared.borrow().router.clone();
+            let mut router = router.borrow_mut();
+            if !router.netquake_wire_attached {
+                if !router.netquake_signon.is_empty() {
+                    return Err(QuakeCSourceError::Invalid(
+                        "QuakeC MSG_INIT requires a native NetQuake wire consumer".to_string(),
+                    ));
+                }
+                router.netquake_routed.clear();
+            }
+        }
+        self.shared.borrow_mut().current_time = f64::from(time);
+        self.machine_write(|machine| {
+            let offset = machine.global_offset("frametime")?;
+            machine.globals_mut().set_float(offset, elapsed)
+        })?;
+        let gravity = self.shared.borrow().cvars.borrow().variable_value("sv_gravity");
+        self.shared
+            .borrow()
+            .options
+            .physics
+            .borrow_mut()
+            .set_world_gravity(gravity);
+        let index = self.prepared.program.function_named("StartFrame")?.index;
+        self.invoke(index as i32, 0, 0, f64::from(time))
+    }
+
+    /// Link one actor before reaction (`beforeActor`).
+    pub fn before_actor(&self, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor.id()) else {
+            return Ok(());
+        };
+        let force = self.machine_read(|machine| {
+            let offset = machine.global_offset("force_retouch")?;
+            machine.globals().float(offset)
+        })?;
+        if force == 0.0 {
+            return Ok(());
+        }
+        self.shared.borrow_mut().world.link(slot)?;
+        self.drain_admissions()?;
+        if let Some(error) = self.shared.borrow().hook_error.borrow_mut().take() {
+            return Err(QuakeCSourceError::Guest(error));
+        }
+        self.shared.borrow().options.physics.borrow_mut().touch_triggers(actor);
+        Ok(())
+    }
+
+    /// End one native frame (`endFrame`).
+    pub fn end_frame(&self) -> Result<(), QuakeCSourceError> {
+        self.flush_messages()?;
+        {
+            let router = self.shared.borrow().router.clone();
+            let mut router = router.borrow_mut();
+            if router.local_messages_started && !router.netquake_wire_attached {
+                router.netquake_routed.clear();
+            }
+        }
+        let offset = self.machine_read(|machine| machine.global_offset("force_retouch"))?;
+        let current = self.machine_read(|machine| machine.globals().float(offset))?;
+        if current != 0.0 {
+            let numeric = self.shared.borrow().numeric;
+            self.machine_write(|machine| {
+                machine
+                    .globals_mut()
+                    .set_float(offset, numeric.sub(f64::from(current), 1.0) as f32)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Movement type for one actor (`readMoveType`).
+    pub fn read_move_type(&self, actor: &ActorId) -> Result<Option<i32>, QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(None);
+        };
+        let word = self.field("movetype")?;
+        let move_type = self.machine_read(|machine| machine.entities().slot_float(slot as u32, word))?;
+        Ok(Some(move_type as i32))
+    }
+
+    /// Notarget flag for one actor (`notarget`).
+    pub fn notarget(&self, actor: &ActorId) -> Result<Option<bool>, QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(None);
+        };
+        let word = self.field("flags")?;
+        let flags = self.machine_read(|machine| machine.entities().slot_float(slot as u32, word))?;
+        Ok(Some(flags as i32 & 128 != 0))
+    }
+
+    /// Classname for one actor (`classname`).
+    pub fn classname(&self, actor: &ActorId) -> Result<String, QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor) else {
+            return Ok(String::new());
+        };
+        let word = self.field("classname")?;
+        self.machine_read(|machine| {
+            let text = machine.entities().slot_int(slot as u32, word)?;
+            machine.strings().get(text)
+        })
+        .map_err(QuakeCSourceError::from)
+    }
+
+    /// Apply one actor's water transition (`checkWaterTransition`).
+    pub fn check_water_transition(&self, actor: &OwnedActor) -> Result<(), QuakeCSourceError> {
+        let Some(slot) = self.source_slot(actor.id()) else {
+            return Ok(());
+        };
+        let origin_word = self.field("origin")?;
+        let type_word = self.field("watertype")?;
+        let level_word = self.field("waterlevel")?;
+        let (origin, previous) = self.machine_read(|machine| {
+            let origin = machine.entities().slot_vector(slot as u32, origin_word)?;
+            let previous = machine.entities().slot_float(slot as u32, type_word)?;
+            Ok::<_, GuestError>((origin, previous))
+        })?;
+        let scene = self.shared.borrow().options.scene.clone();
+        let contents = scene.borrow().point_contents(origin)?;
+        let transition = q1_water_transition(previous as i32, contents as i32);
+        if transition.splash {
+            let path = "misc/h2ohit1.wav";
+            let key = format!("sound:{path}");
+            if !self.shared.borrow().precached.contains_key(&key) {
+                let print = self.shared.borrow().options.print.clone();
+                print(&format!("SV_StartSound: {path} not precacheed\n"));
+            } else {
+                let content = self.prepared.execution.owner.content.clone();
+                let events = self.shared.borrow().options.events.clone();
+                events.borrow_mut().emit(
+                    &content,
+                    QcPresentationEvent::Sound {
+                        actor: actor.id().clone(),
+                        channel: qa_guest::qc::presentation_host::Q1SoundChannel::Auto,
+                        path: path.to_string(),
+                        volume: 1.0,
+                        attenuation: 1.0,
+                    },
+                    None,
+                );
+            }
+        }
+        self.machine_write(|machine| {
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, type_word, transition.water_type as f32)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, level_word, transition.water_level as f32)
+        })?;
+        Ok(())
+    }
+
+    /// Write one actor's angular velocity (`writeAngularVelocity`).
+    pub fn write_angular_velocity(&self, actor: &OwnedActor, value: Vec3) -> Result<(), QuakeCSourceError> {
+        let shared = self.shared.borrow();
+        let fields = shared.fields.clone();
+        shared
+            .actor_state
+            .write_angular_velocity(&mut fields.borrow_mut(), actor.id(), value)?;
+        Ok(())
+    }
+}
+
+/// Project one broadcast effect into a session presentation event.
+fn map_broadcast_effect(effect: &QcBroadcastEffect) -> QcPresentationEvent {
+    match effect {
+        QcBroadcastEffect::Effect {
+            effect,
+            actor,
+            origin,
+            amount,
+        } => QcPresentationEvent::Effect {
+            effect: *effect,
+            actor: actor.clone(),
+            origin: *origin,
+            amount: *amount,
+        },
+        QcBroadcastEffect::Beam {
+            style,
+            actor,
+            start,
+            end,
+        } => QcPresentationEvent::Beam {
+            style: *style,
+            actor: actor.clone(),
+            start: *start,
+            end: *end,
+        },
+        QcBroadcastEffect::ColoredExplosion {
+            origin,
+            color_start,
+            color_length,
+        } => QcPresentationEvent::ColoredExplosion {
+            origin: *origin,
+            color_start: *color_start,
+            color_length: *color_length,
+        },
+        QcBroadcastEffect::Particles {
+            origin,
+            direction,
+            color,
+            count,
+        } => QcPresentationEvent::Particles {
+            origin: *origin,
+            direction: *direction,
+            color: *color,
+            count: *count,
+        },
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
+    /// Capture an original Quake save (`captureOriginalSave`).
+    pub fn capture_original_save(&self, format: Q1SaveFormat, comment: &str) -> Result<Q1SaveData, QuakeCSourceError> {
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, 1);
+        let live = actor.as_ref().is_some_and(|actor| self.is_active_client(actor.id()));
+        let parameters = self.shared.borrow().spawn_parameters.get(&1).cloned();
+        let Some(parameters) = parameters.filter(|_| live) else {
+            return Err(QuakeCSourceError::Invalid(
+                "Cannot capture an original save for an idle source".to_string(),
+            ));
+        };
+        let extension = self.shared.borrow().original_save_extension_text.clone();
+        let mut source = OriginalSaveSource::new(self, 0.0);
+        let save = capture_q1_source_save(&mut source, format, comment, parameters, &extension)
+            .map_err(|error| QuakeCSourceError::Invalid(error.to_string()))?;
+        if let Some(error) = source.error.borrow_mut().take() {
+            return Err(error);
+        }
+        Ok(save)
+    }
+
+    /// Restore an original Quake save (`restoreOriginalSave`).
+    pub fn restore_original_save(&self, save: &Q1SaveData) -> Result<Q1UnknownSaveFields, QuakeCSourceError> {
+        let pending =
+            self.shared.borrow().options.original_save_candidate && !self.shared.borrow().original_save_restored;
+        if !pending {
+            return Err(QuakeCSourceError::Invalid(
+                "QuakeC source has no pending original save".to_string(),
+            ));
+        }
+        let provider = self.prepared.execution.owner.provider.clone();
+        let actors = self.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&provider, 1);
+        let live = actor.as_ref().is_some_and(|actor| self.is_active_client(actor.id()));
+        let parameters = self.shared.borrow().spawn_parameters.contains_key(&1);
+        if !live || !parameters {
+            return Err(QuakeCSourceError::Invalid(
+                "Cannot restore an original save for an idle source".to_string(),
+            ));
+        }
+        let mut source = OriginalSaveSource::new(self, save.time as f32);
+        let extension = save.extension_text.clone();
+        let unknowns = restore_q1_source_save(&mut source, save, |header: Q1SaveHeader| {
+            let mut shared = self.shared.borrow_mut();
+            shared.current_time = header.time;
+            shared.spawn_parameters.insert(1, header.spawn_parameters.clone());
+            shared.change_level_issued = false;
+            shared.pending_weapons.borrow_mut().clear();
+            shared.original_save_extension_text = extension.clone();
+            shared.original_save_restored = true;
+        })
+        .map_err(|error| QuakeCSourceError::Invalid(error.to_string()))?;
+        if let Some(error) = source.error.borrow_mut().take() {
+            return Err(error);
+        }
+        Ok(unknowns)
+    }
+}
+
+/// Original-save adapter over one [`QuakeCSource`].
+struct OriginalSaveSource<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: &'s QuakeCSource<P>,
+    machine: OriginalSaveMachine<'s, P>,
+    staging: OriginalSaveStaging<'s, P>,
+    error: Rc<RefCell<Option<QuakeCSourceError>>>,
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> OriginalSaveSource<'s, P> {
+    fn new(source: &'s QuakeCSource<P>, now_seconds: f32) -> Self {
+        let error = Rc::new(RefCell::new(None));
+        Self {
+            source,
+            machine: OriginalSaveMachine {
+                source,
+                error: error.clone(),
+            },
+            staging: OriginalSaveStaging {
+                source,
+                error: error.clone(),
+                now_seconds,
+            },
+            error,
+        }
+    }
+
+    fn record(&self, error: QuakeCSourceError) {
+        let mut slot = self.error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> Q1Source for OriginalSaveSource<'s, P> {
+    type Machine = OriginalSaveMachine<'s, P>;
+    type Staging = OriginalSaveStaging<'s, P>;
+
+    fn checkpoint(&mut self) {
+        if let Err(error) = self.source.checkpoint() {
+            self.record(error);
+        }
+    }
+
+    fn kind(&self) -> String {
+        checkpoint_kind(self.source.kind()).to_string()
+    }
+
+    fn max_clients(&self) -> u32 {
+        self.source.shared.borrow().options.max_clients as u32
+    }
+
+    fn mode(&self) -> String {
+        match self.source.shared.borrow().options.mode {
+            QuakeCSourceMode::Singleplayer => "singleplayer",
+            QuakeCSourceMode::Coop => "coop",
+            QuakeCSourceMode::Deathmatch => "deathmatch",
+        }
+        .to_string()
+    }
+
+    fn skill(&self) -> i32 {
+        i32::from(self.source.shared.borrow().options.skill)
+    }
+
+    fn map_geometry_path(&self) -> String {
+        self.source
+            .shared
+            .borrow()
+            .options
+            .recipe
+            .map
+            .geometry
+            .requested_path
+            .clone()
+    }
+
+    fn time_seconds(&self) -> f64 {
+        self.source.current_time()
+    }
+
+    fn light_style(&self, index: usize) -> String {
+        self.source.shared.borrow().options.events.borrow().light_style(index)
+    }
+
+    fn loading(&self) -> bool {
+        self.source.loading()
+    }
+
+    fn split(&mut self) -> (&mut Self::Machine, &mut Self::Staging) {
+        (&mut self.machine, &mut self.staging)
+    }
+}
+
+/// Original-save machine adapter over one [`QuakeCSource`].
+struct OriginalSaveMachine<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: &'s QuakeCSource<P>,
+    error: Rc<RefCell<Option<QuakeCSourceError>>>,
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> OriginalSaveMachine<'s, P> {
+    fn record(&self, error: QuakeCSourceError) {
+        let mut slot = self.error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> Q1QuakeCMachine for OriginalSaveMachine<'s, P> {
+    fn snapshot(&mut self) {
+        let executing = EXECUTING.with(|executing| executing.borrow().is_some());
+        if executing {
+            self.record(QuakeCSourceError::Invalid(
+                "Original save requires an idle source machine".to_string(),
+            ));
+        }
+    }
+
+    fn entity_count(&self) -> usize {
+        self.source.machine_read(|machine| machine.entities().count())
+    }
+
+    fn entity_capacity(&self) -> usize {
+        self.source.machine_read(|machine| machine.entities().capacity())
+    }
+
+    fn set_entity_count(&mut self, count: usize) {
+        if let Err(error) = self
+            .source
+            .machine_write(|machine| machine.entities_mut().set_count(count))
+        {
+            self.record(QuakeCSourceError::from(error));
+        }
+    }
+
+    fn clear_entity(&mut self, slot: usize) {
+        if let Err(error) = self
+            .source
+            .machine_write(|machine| machine.entities_mut().clear_slot(slot as u32))
+        {
+            self.record(QuakeCSourceError::from(error));
+        }
+    }
+
+    fn save_global_pairs(&self) -> Vec<SavedTextPair> {
+        match self.source.machine_read(save_qc_global_pairs) {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|pair| SavedTextPair {
+                    key: pair.key,
+                    value: pair.value,
+                })
+                .collect(),
+            Err(error) => {
+                self.record(QuakeCSourceError::from(error));
+                Vec::new()
+            }
+        }
+    }
+
+    fn save_entity_pairs(&self, slot: usize, free: bool) -> Vec<SavedTextPair> {
+        match self
+            .source
+            .machine_read(|machine| save_qc_entity_pairs(machine, slot as u32, free))
+        {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|pair| SavedTextPair {
+                    key: pair.key,
+                    value: pair.value,
+                })
+                .collect(),
+            Err(error) => {
+                self.record(QuakeCSourceError::from(error));
+                Vec::new()
+            }
+        }
+    }
+
+    fn apply_global_pairs(&mut self, pairs: &[SavedTextPair]) -> Vec<SavedTextPair> {
+        let guest: Vec<GuestTextPair> = pairs
+            .iter()
+            .map(|pair| GuestTextPair {
+                key: pair.key.clone(),
+                value: pair.value.clone(),
+            })
+            .collect();
+        match self
+            .source
+            .machine_write(|machine| apply_qc_global_pairs(machine, &guest))
+        {
+            Ok(unknowns) => unknowns
+                .into_iter()
+                .map(|pair| SavedTextPair {
+                    key: pair.key,
+                    value: pair.value,
+                })
+                .collect(),
+            Err(error) => {
+                self.record(QuakeCSourceError::from(error));
+                Vec::new()
+            }
+        }
+    }
+
+    fn apply_entity_pairs(&mut self, slot: usize, pairs: &[SavedTextPair]) -> Q1AppliedEntity {
+        let guest: Vec<GuestTextPair> = pairs
+            .iter()
+            .map(|pair| GuestTextPair {
+                key: pair.key.clone(),
+                value: pair.value.clone(),
+            })
+            .collect();
+        match self
+            .source
+            .machine_write(|machine| apply_qc_entity_pairs(machine, slot as u32, &guest))
+        {
+            Ok(applied) => Q1AppliedEntity {
+                empty: applied.empty,
+                unknown: applied
+                    .unknown
+                    .into_iter()
+                    .map(|pair| SavedTextPair {
+                        key: pair.key,
+                        value: pair.value,
+                    })
+                    .collect(),
+            },
+            Err(error) => {
+                self.record(QuakeCSourceError::from(error));
+                Q1AppliedEntity {
+                    empty: false,
+                    unknown: Vec::new(),
+                }
+            }
+        }
+    }
+}
+
+/// Original-save staging adapter over one [`QuakeCSource`].
+struct OriginalSaveStaging<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: &'s QuakeCSource<P>,
+    error: Rc<RefCell<Option<QuakeCSourceError>>>,
+    now_seconds: f32,
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> OriginalSaveStaging<'s, P> {
+    fn record(&self, error: QuakeCSourceError) {
+        let mut slot = self.error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    fn provider(&self) -> ProviderId {
+        self.source.prepared.execution.owner.provider.clone()
+    }
+}
+
+impl<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> Q1SourceStaging for OriginalSaveStaging<'s, P> {
+    fn is_free(&self, slot: usize) -> bool {
+        self.source.shared.borrow().storage.borrow().is_free(slot)
+    }
+
+    fn staged_entity_count(&self) -> usize {
+        self.source.machine_read(|machine| machine.entities().count())
+    }
+
+    fn has_actor(&self, slot: usize) -> bool {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&self.provider(), slot);
+        actor.is_some()
+    }
+
+    fn unlink_body(&mut self, slot: usize) {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        let physics = self.source.shared.borrow().options.physics.clone();
+        let actor = actors.borrow().at_source(&self.provider(), slot);
+        if let Some(actor) = actor {
+            physics.borrow_mut().unlink_body(&actor);
+        }
+    }
+
+    fn release_actor(&mut self, slot: usize) {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&self.provider(), slot);
+        if let Some(actor) = actor {
+            actors.borrow_mut().release(&actor);
+        }
+    }
+
+    fn reserved_client_slots(&self) -> usize {
+        self.source.shared.borrow().reserved_client_slots
+    }
+
+    fn bind_existing(&mut self, slot: usize) {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        if actors.borrow().at_source(&self.provider(), slot).is_none() {
+            actors
+                .borrow_mut()
+                .allocate_at_source(&self.provider(), slot, QuakeCSlotKind::Edict.definition());
+        }
+    }
+
+    fn initialize(&mut self, slot: usize) {
+        let actors = self.source.shared.borrow().options.actors.clone();
+        let actor = actors.borrow().at_source(&self.provider(), slot);
+        let Some(actor) = actor else {
+            self.record(QuakeCSourceError::Invalid("Missing QC staged actor".to_string()));
+            return;
+        };
+        let shared = self.source.shared.borrow();
+        if shared.storage.borrow().count() <= slot {
+            if let Err(error) = shared.storage.borrow_mut().set_count(slot + 1) {
+                self.record(QuakeCSourceError::from(error));
+                return;
+            }
+        }
+        if !shared.fields.borrow().is_allocated(actor.id()) {
+            if let Err(error) = shared.fields.borrow_mut().allocate(actor.id(), &shared.layout) {
+                self.record(QuakeCSourceError::from(error));
+                return;
+            }
+        }
+        let outcome = shared
+            .storage
+            .borrow_mut()
+            .initialize(slot, &mut shared.fields.borrow_mut(), actor.id());
+        if let Err(error) = outcome {
+            self.record(QuakeCSourceError::from(error));
+        }
+    }
+
+    fn clear_freed(&mut self, slot: usize) {
+        let shared = self.source.shared.borrow();
+        if shared.storage.borrow().count() <= slot {
+            if let Err(error) = shared.storage.borrow_mut().set_count(slot + 1) {
+                self.record(QuakeCSourceError::from(error));
+            }
+            return;
+        }
+        let occupant = shared.storage.borrow().at(slot).cloned();
+        let actor = match occupant {
+            Some(actor) => Some(actor),
+            None => {
+                let actors = shared.options.actors.clone();
+                let actor = actors.borrow().at_source(&self.provider(), slot);
+                actor.map(|actor| actor.id().clone())
+            }
+        };
+        if let Some(actor) = actor {
+            if shared.fields.borrow().is_allocated(&actor) {
+                if let Err(error) = shared.storage.borrow_mut().clear_freed(
+                    slot,
+                    &mut shared.fields.borrow_mut(),
+                    &actor,
+                    self.now_seconds,
+                ) {
+                    self.record(QuakeCSourceError::from(error));
+                }
+            }
+        }
+    }
+
+    fn link(&mut self, slot: usize) {
+        if let Err(error) = self.source.shared.borrow_mut().world.link(slot) {
+            self.record(QuakeCSourceError::from(error));
+            return;
+        }
+        if let Err(error) = self.source.drain_admissions() {
+            self.record(error);
+            return;
+        }
+        if let Some(error) = self.source.shared.borrow().hook_error.borrow_mut().take() {
+            self.record(QuakeCSourceError::from(error));
+        }
+    }
+
+    fn emit_lightstyle(&mut self, style: usize, pattern: &str) {
+        let content = self.source.prepared.execution.owner.content.clone();
+        let events = self.source.shared.borrow().options.events.clone();
+        events.borrow_mut().emit(
+            &content,
+            QcPresentationEvent::Lightstyle {
+                style: style as i32,
+                pattern: pattern.to_string(),
+            },
+            None,
+        );
     }
 }
 

@@ -188,9 +188,9 @@ pub struct Q1ActorHostBindings {
 
 /// Build a Q1 foundation host whose world queries read the shared scene.
 #[must_use]
-pub fn create_q1_actor_host(bindings: Q1ActorHostBindings, world: ActorHostWorld) -> Q1FoundationHost {
-    let trace_world = world.clone();
-    let trace: Q1TraceHook = Box::new(move |request: &Q1TraceRequest| {
+pub fn q1_trace_hook(world: ActorHostWorld) -> Q1TraceHook {
+    let trace_world = world;
+    Box::new(move |request: &Q1TraceRequest| {
         let scene = &trace_world.scene;
         let result = scene.trace(&TraceQuery {
             start: request.start,
@@ -244,7 +244,12 @@ pub fn create_q1_actor_host(bindings: Q1ActorHostBindings, world: ActorHostWorld
             in_open,
             in_water,
         }
-    });
+    })
+}
+
+#[must_use]
+pub fn create_q1_actor_host(bindings: Q1ActorHostBindings, world: ActorHostWorld) -> Q1FoundationHost {
+    let trace = q1_trace_hook(world.clone());
     let contents_world = world.clone();
     let contents: Q1ContentsHook = Box::new(move |point: Vec3| {
         let result = contents_world.scene.point_contents(&PointContentsQuery {

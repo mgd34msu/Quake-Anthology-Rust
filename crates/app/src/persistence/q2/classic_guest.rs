@@ -500,9 +500,10 @@ fn normalize(path: &str) -> String {
 type FallbackOpener = Box<dyn Fn(&str, &ClassicOpenMode) -> Option<MemoryFile>>;
 
 /// Overlay scoping callback-owned save files to one active operation.
+#[derive(Clone)]
 pub struct ClassicOriginalSaveFiles {
-    fallback: Option<FallbackOpener>,
-    operation: RefCell<Option<Operation>>,
+    fallback: Option<Rc<FallbackOpener>>,
+    operation: Rc<RefCell<Option<Operation>>>,
     epoch: Rc<Cell<u64>>,
 }
 
@@ -511,8 +512,8 @@ impl ClassicOriginalSaveFiles {
     #[must_use]
     pub fn new(fallback: Option<FallbackOpener>) -> Self {
         Self {
-            fallback,
-            operation: RefCell::new(None),
+            fallback: fallback.map(Rc::new),
+            operation: Rc::new(RefCell::new(None)),
             epoch: Rc::new(Cell::new(1)),
         }
     }

@@ -371,6 +371,17 @@ pub struct Q3CharacterActor<S> {
     inner: Rc<RefCell<Q3CharacterInner>>,
 }
 
+impl<S> Q3CharacterActor<S> {
+    /// Current animation.
+    #[must_use]
+    pub fn animation(&self) -> ActorAnimationState {
+        ActorAnimationState {
+            provider: self.provider.clone(),
+            state: self.inner.borrow().animation,
+        }
+    }
+}
+
 impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     /// Bind a character to its services.
     pub fn new(
@@ -396,15 +407,6 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
                 gibbed: false,
                 initialized: false,
             })),
-        }
-    }
-
-    /// Current animation.
-    #[must_use]
-    pub fn animation(&self) -> ActorAnimationState {
-        ActorAnimationState {
-            provider: self.provider.clone(),
-            state: self.inner.borrow().animation,
         }
     }
 

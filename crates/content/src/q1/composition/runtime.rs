@@ -67,7 +67,6 @@ use crate::q1::base::rules::{
     Q1SourceFinale,
 };
 use crate::q1::base::travel::{admit_q1_travel, capture_q1_travel, decode_q1_travel, new_q1_travel, Q1TravelState};
-#[cfg(test)]
 use crate::q1::composition::clients::Q1SourceClient;
 use crate::q1::composition::clients::Q1SourceClients;
 use crate::q1::composition::commands::{base_q1_impulse, q1_weapon_impulse};
@@ -887,6 +886,39 @@ impl Q1SourceComposition {
         inner
             .clients
             .update(game, &mut *inner.services, self.program, actor, values)?;
+        drop(guard);
+        self.drain_pending(game)
+    }
+
+    /// Replace a client userinfo map without side effects (donor `storePlayerUserinfo` q1 arm).
+    pub fn replace_userinfo(&self, actor: &ActorId, values: &[(String, String)]) -> Result<(), Q1Error> {
+        lock_inner(&self.shared).clients.require_mut(actor)?.userinfo = values.to_vec();
+        Ok(())
+    }
+
+    /// Admitted client snapshot (`clients.require`, cloned).
+    #[must_use]
+    pub fn client(&self, actor: &ActorId) -> Option<Q1SourceClient> {
+        lock_inner(&self.shared).clients.client(actor).cloned()
+    }
+
+    /// Set shirt and pants colors (`clients.colors`).
+    pub fn colors(&self, game: &mut Q1EntityServices, actor: &ActorId, shirt: i32, pants: i32) -> Result<(), Q1Error> {
+        let mut guard = lock_inner(&self.shared);
+        let inner = &mut *guard;
+        inner
+            .clients
+            .colors(game, &mut *inner.services, self.program, actor, shirt, pants)?;
+        drop(guard);
+        self.drain_pending(game)
+    }
+
+    /// Replace frags and publish (`clients.require` + `publish`).
+    pub fn set_frags(&self, game: &mut Q1EntityServices, actor: &ActorId, frags: f64) -> Result<(), Q1Error> {
+        let mut guard = lock_inner(&self.shared);
+        let inner = &mut *guard;
+        inner.clients.require_mut(actor)?.frags = frags;
+        inner.clients.publish(&mut *inner.services, actor)?;
         drop(guard);
         self.drain_pending(game)
     }

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use qa_core::identity::{ActorId, SavedActorId};
 use qa_core::math::{Bounds, Vec3};
 
-use super::message_effects::{quake_temporary_event, QcBroadcastEffect, TempEntityEffect};
+use super::message_effects::{quake_temporary_event, BeamStyle, PointEffect, QcBroadcastEffect, TempEntityEffect};
 use crate::error::GuestError;
 use crate::fields::FieldTable;
 
@@ -144,6 +144,37 @@ pub enum QcPresentationEvent {
         /// Placement angles.
         angles: Vec3,
     },
+    /// Named point effect (donor broadcast `effect`).
+    Effect {
+        /// Effect name.
+        effect: PointEffect,
+        /// Owning actor, if any.
+        actor: Option<ActorId>,
+        /// Effect origin.
+        origin: Vec3,
+        /// Effect amount.
+        amount: i32,
+    },
+    /// Beam effect (donor broadcast `beam`).
+    Beam {
+        /// Beam style.
+        style: BeamStyle,
+        /// Owning actor.
+        actor: ActorId,
+        /// Beam start.
+        start: Vec3,
+        /// Beam end.
+        end: Vec3,
+    },
+    /// Colored explosion (donor broadcast `colored-explosion`).
+    ColoredExplosion {
+        /// Explosion origin.
+        origin: Vec3,
+        /// First palette color.
+        color_start: i32,
+        /// Palette color span.
+        color_length: i32,
+    },
 }
 
 /// Q1 sound channel.
@@ -200,6 +231,11 @@ pub enum ClientMessage {
     CommandText {
         /// Command text.
         text: String,
+    },
+    /// Client disconnect.
+    Disconnect {
+        /// Reason text.
+        reason: String,
     },
 }
 

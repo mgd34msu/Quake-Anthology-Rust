@@ -38,7 +38,7 @@ use qa_net::q2_adapters::{Q2EntityState, Q2PlayerState, Q2UserCommand};
 
 use super::classic_guest_services::{
     ClassicGuestMapServices, ClassicGuestMessage, ClassicGuestServices, ClassicGuestServicesOptions, GuestCommandLine,
-    ModelAppearance,
+    ModelAppearance, NativeInputViewState,
 };
 use super::classic_guest_source::{ClassicGuestSource, ClassicGuestSourceOptions, PreparedClassicGuest};
 use crate::persistence::recipe::ExecutionImplementation;
@@ -167,6 +167,12 @@ impl ClassicGuestWorld {
     pub fn module(&self) -> ClassicResult<ModuleIdentity> {
         let (source, _) = self.split()?;
         Ok(source.host.memory.module().clone())
+    }
+
+    /// Bound guest services, while this world owns them.
+    #[must_use]
+    pub fn services(&self) -> Option<&ClassicGuestServices> {
+        self.services.as_ref()
     }
 
     /// Connected clients.
@@ -1045,6 +1051,21 @@ impl ClassicGuestWorld {
         self.require_running()?;
         let (source, _) = self.split_mut()?;
         ClassicGuestServices::player_state(&mut source.host, slot)
+    }
+
+    /// Player view for a client actor (donor `services.playerView`).
+    pub fn player_view(&mut self, slot: u32, actor: &ActorId) -> ClassicResult<NativeInputViewState> {
+        self.require_running()?;
+        let (source, services) = self.split_mut()?;
+        services.player_view(&mut source.host, slot, actor)
+    }
+
+    /// Whether a source inventory profile is known (donor `services.hasSourceInventory`).
+    #[must_use]
+    pub fn has_source_inventory(&self) -> bool {
+        self.services
+            .as_ref()
+            .is_some_and(super::classic_guest_services::ClassicGuestServices::has_source_inventory)
     }
 
     /// Model appearance for one slot.

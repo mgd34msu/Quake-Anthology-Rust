@@ -511,8 +511,8 @@ pub struct QuakeCWeaponContext<S> {
 /// Donor `WeaponBehaviorRuntimeHost` plus the QuakeC constructor and the save
 /// readers, which the donor imports directly from the qc, guest, and world
 /// partitions. Every hook takes the same [`super::types`] entries the donor
-/// passes; hooks must clone retained entry data during the call because
-/// entries are borrowed. `S` is the opaque scene queries object forwarded to
+/// passes; hooks receive shared (`Rc`) entries and must clone retained entry
+/// data during the call. `S` is the opaque scene queries object forwarded to
 /// QuakeC construction (donor `Pick<SceneQueries, "trace" |
 /// "pointContents">`); the `Rc` shares one scene object exactly like the
 /// donor.
@@ -612,8 +612,10 @@ impl<Q, V, N> WeaponBehaviorEntry<Q, V, N> {
 }
 
 /// Simulation weapon behaviors over injected sources and driver.
+///
+/// Deferred entries are `Rc`-shared (not borrowed) so owners like the shared
+/// simulation can hold the runtime without self-referential borrows.
 pub struct SimulationWeaponBehaviors<
-    'p,
     Q: QuakeCWeaponBehaviorSource + 'static,
     V: QvmWeaponBehaviorSource + 'static,
     N: RereleaseWeaponBehaviorSource + 'static,
@@ -629,7 +631,7 @@ pub struct SimulationWeaponBehaviors<
     /// Selection order for deterministic checkpoints (donor `Map`
     /// insertion order; `HashMap` alone would serialize randomly).
     order: Vec<String>,
-    deferred: Vec<&'p PreparedWeaponBehavior>,
+    deferred: Vec<Rc<PreparedWeaponBehavior>>,
     /// Queued restore as an owned snapshot: cloning frees callers from
     /// lending save data across the loading boundary.
     pending_restore: Option<(Option<SaveJson>, String)>,
@@ -637,19 +639,18 @@ pub struct SimulationWeaponBehaviors<
 }
 
 impl<
-        'p,
         Q: QuakeCWeaponBehaviorSource + 'static,
         V: QvmWeaponBehaviorSource + 'static,
         N: RereleaseWeaponBehaviorSource + 'static,
         D: WeaponBehaviorAttachmentDriver,
         A: WeaponBehaviorActors,
         S,
-    > SimulationWeaponBehaviors<'p, Q, V, N, D, A, S>
+    > SimulationWeaponBehaviors<Q, V, N, D, A, S>
 {
     /// Build the runtime, constructing QuakeC sources and deferring QVM and
     /// native sources to [`initialize_loading`](Self::initialize_loading).
     pub fn new(
-        prepared: &'p [PreparedWeaponBehavior],
+        prepared: Vec<PreparedWeaponBehavior>,
         mut host: WeaponBehaviorRuntimeHost<Q, V, N, S>,
         actors: A,
         mut attachments: D,
@@ -659,10 +660,10 @@ impl<
         let mut order = Vec::new();
         let mut deferred = Vec::new();
         for entry in prepared {
-            let definition = match entry {
+            let definition = match &entry {
                 PreparedWeaponBehavior::QuakeC { selection, .. }
                 | PreparedWeaponBehavior::Qvm { selection, .. }
-                | PreparedWeaponBehavior::RereleaseNative { selection, .. } => &selection.definition,
+                | PreparedWeaponBehavior::RereleaseNative { selection, .. } => selection.definition.clone(),
             };
             if definitions.contains_key(&definition.role) {
                 return Err(WeaponBehaviorRuntimeError::DuplicateRole(
@@ -703,7 +704,7 @@ impl<
                     sources.insert(definition.id.clone(), WeaponBehaviorEntry::QuakeC(shared));
                 }
                 PreparedWeaponBehavior::Qvm { .. } | PreparedWeaponBehavior::RereleaseNative { .. } => {
-                    deferred.push(entry)
+                    deferred.push(Rc::new(entry))
                 }
             }
         }
@@ -733,10 +734,10 @@ impl<
             return Ok(());
         }
         for index in 0..self.deferred.len() {
-            let entry = self.deferred[index];
-            match entry {
+            let entry = Rc::clone(&self.deferred[index]);
+            match entry.as_ref() {
                 PreparedWeaponBehavior::Qvm { .. } => {
-                    let source = (self.host.qvm)(entry)?;
+                    let source = (self.host.qvm)(&entry)?;
                     let id = source.definition().id.clone();
                     let shared = Rc::new(RefCell::new(source));
                     self.attachments
@@ -745,7 +746,7 @@ impl<
                     self.sources.insert(id, WeaponBehaviorEntry::Qvm(shared));
                 }
                 PreparedWeaponBehavior::RereleaseNative { .. } => {
-                    let source = (self.host.native)(entry, next_frame)?;
+                    let source = (self.host.native)(&entry, next_frame)?;
                     let id = source.definition().id.clone();
                     let shared = Rc::new(RefCell::new(source));
                     self.attachments
@@ -812,7 +813,7 @@ impl<
         if self
             .deferred
             .iter()
-            .any(|entry| matches!(entry, PreparedWeaponBehavior::RereleaseNative { .. }))
+            .any(|entry| matches!(entry.as_ref(), PreparedWeaponBehavior::RereleaseNative { .. }))
         {
             return Err(WeaponBehaviorRuntimeError::NativeCheckpointRequiresLoading);
         }
@@ -1069,14 +1070,13 @@ impl<
 }
 
 impl<
-        'p,
         Q: QuakeCWeaponBehaviorSource + 'static,
         V: QvmWeaponBehaviorSource + 'static,
         N: RereleaseWeaponBehaviorSource + 'static,
         D: WeaponBehaviorAttachmentDriver,
         A: WeaponBehaviorActors,
         S,
-    > WeaponBehaviorProjectilePort for SimulationWeaponBehaviors<'p, Q, V, N, D, A, S>
+    > WeaponBehaviorProjectilePort for SimulationWeaponBehaviors<Q, V, N, D, A, S>
 {
     fn controls_trajectory(&self, projectile: &ActorId) -> bool {
         self.controls_trajectory(projectile)
@@ -1122,12 +1122,14 @@ mod tests {
     use qa_guest::qvm::syscalls::{QvmAbiProfile, QvmRole};
     use qa_world::save::value::{arr, int, obj, str, SaveJson};
 
+    use super::super::q2_native_world::fixtures::rerelease_execution;
     use super::super::types::{
         NativeWeaponBehaviorDeclaration as OpaqueDeclaration, PreparedRereleaseGuest, QuakeCWeaponResource,
         QvmWeaponProfile,
     };
     use super::*;
     use crate::bootstrap::simulation::random::RandomProfile;
+    use qa_compat::q2::native_primary::PrimaryEdition;
 
     // ---- stub sources ----
 
@@ -1666,7 +1668,12 @@ mod tests {
         let (mounts, _) = artifact_mounts();
         PreparedWeaponBehavior::RereleaseNative {
             selection: selection(definition),
-            prepared: PreparedRereleaseGuest,
+            prepared: PreparedRereleaseGuest {
+                edition: PrimaryEdition::Rerelease,
+                primary: None,
+                execution: rerelease_execution(),
+                bytes: Vec::new(),
+            },
             declaration: OpaqueDeclaration,
             mounts,
         }
@@ -1806,9 +1813,9 @@ mod tests {
         }))
     }
 
-    type StubRuntime<'p> = SimulationWeaponBehaviors<'p, StubQc, StubQvm, StubNative, StubDriver, StubActors, u32>;
+    type StubRuntime = SimulationWeaponBehaviors<StubQc, StubQvm, StubNative, StubDriver, StubActors, u32>;
 
-    fn runtime<'p>(prepared: &'p [PreparedWeaponBehavior], probes: Rc<RefCell<HostProbes>>) -> StubRuntime<'p> {
+    fn runtime(prepared: Vec<PreparedWeaponBehavior>, probes: Rc<RefCell<HostProbes>>) -> StubRuntime {
         StubRuntime::new(prepared, host(probes), StubActors::default(), StubDriver::default()).unwrap()
     }
 
@@ -1840,7 +1847,7 @@ mod tests {
             quakec_entry("test:rocket-a", ProjectileRole::Rocket),
             qvm_entry("test:rocket-b", ProjectileRole::Rocket),
         ];
-        let Err(error) = StubRuntime::new(&prepared, host(probes()), StubActors::default(), StubDriver::default())
+        let Err(error) = StubRuntime::new(prepared, host(probes()), StubActors::default(), StubDriver::default())
         else {
             panic!("expected duplicate roles");
         };
@@ -1855,7 +1862,7 @@ mod tests {
             native_entry("test:nail", ProjectileRole::Nail),
         ];
         let seen = probes();
-        let behaviors = runtime(&prepared, Rc::clone(&seen));
+        let behaviors = runtime(prepared, Rc::clone(&seen));
         assert!(!behaviors.ready());
         let seen = seen.borrow();
         assert_eq!(seen.quakec_contexts, 1);
@@ -1871,7 +1878,7 @@ mod tests {
             native_entry("test:nail", ProjectileRole::Nail),
         ];
         let seen = probes();
-        let mut behaviors = runtime(&prepared, Rc::clone(&seen));
+        let mut behaviors = runtime(prepared, Rc::clone(&seen));
         let mut pumps = 0;
         behaviors.initialize_loading(&mut || pumps += 1).unwrap();
         assert!(behaviors.ready());
@@ -1894,7 +1901,7 @@ mod tests {
     #[test]
     fn launch_requires_ready_and_dispatches_by_role() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         let owner = IdentityOwner::create("launch-test").unwrap();
         let projectile = owner
             .owned_actor(&owner.actor(3, 1), ProviderId::new("test", "game"))
@@ -1935,7 +1942,7 @@ mod tests {
     #[test]
     fn checkpoint_rejects_native_without_loading() {
         let prepared = vec![native_entry("test:nail", ProjectileRole::Nail)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         assert!(matches!(
             behaviors.checkpoint().unwrap_err(),
             WeaponBehaviorRuntimeError::ComponentsNotLoaded
@@ -1959,7 +1966,7 @@ mod tests {
             quakec_entry("test:rocket", ProjectileRole::Rocket),
             qvm_entry("test:grenade", ProjectileRole::Grenade),
         ];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         assert!(!behaviors.ready());
         let save = checkpoint_save(&["test:rocket", "test:grenade"]);
         behaviors.restore(SaveReader::at(&save, "weapons")).unwrap();
@@ -1985,7 +1992,7 @@ mod tests {
                 random: SourceRandom::with_profile(11, RandomProfile::Q2Rerelease).checkpoint(),
             })
         });
-        let mut behaviors = StubRuntime::new(&prepared, host, StubActors::default(), StubDriver::default()).unwrap();
+        let mut behaviors = StubRuntime::new(prepared, host, StubActors::default(), StubDriver::default()).unwrap();
         let save = checkpoint_save(&["test:rocket"]);
         let error = behaviors.restore(SaveReader::at(&save, "weapons")).unwrap_err();
         assert!(error.to_string().contains("source stream"), "{error}");
@@ -1994,7 +2001,7 @@ mod tests {
     #[test]
     fn restore_queues_before_ready_and_rejects_double_queue() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         let save = checkpoint_save(&["test:grenade"]);
         behaviors.restore(SaveReader::at(&save, "weapons")).unwrap();
         let queued = checkpoint_save(&["test:grenade"]);
@@ -2015,7 +2022,7 @@ mod tests {
             quakec_entry("test:rocket", ProjectileRole::Rocket),
             qvm_entry("test:grenade", ProjectileRole::Grenade),
         ];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         for ids in [
             vec!["test:rocket", "test:unknown"],
@@ -2030,7 +2037,7 @@ mod tests {
     #[test]
     fn restore_rejects_native_without_loading() {
         let prepared = vec![native_entry("test:nail", ProjectileRole::Nail)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         let save = checkpoint_save(&["test:nail"]);
         assert!(matches!(
@@ -2070,7 +2077,7 @@ mod tests {
             fail_close: true,
             ..StubDriver::default()
         };
-        let mut behaviors = StubRuntime::new(&prepared, host, StubActors::default(), driver).unwrap();
+        let mut behaviors = StubRuntime::new(prepared, host, StubActors::default(), driver).unwrap();
         behaviors.initialize_loading(&mut || {}).unwrap();
         let error = behaviors.close().unwrap_err();
         match error {
@@ -2084,7 +2091,7 @@ mod tests {
     #[test]
     fn projectile_port_delegates() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         let owner = IdentityOwner::create("port-test").unwrap();
         let projectile = owner

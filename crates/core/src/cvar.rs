@@ -9,6 +9,7 @@
 //! and save/restore are follow-ups owned by later phases.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use thiserror::Error;
 
@@ -439,6 +440,7 @@ impl CvarState {
 }
 
 /// Instance-owned cvar registry for one dialect.
+#[derive(Clone)]
 pub struct CvarRegistry {
     dialect: Dialect,
     variables: HashMap<String, CvarState>,
@@ -454,7 +456,7 @@ pub struct CvarRegistry {
     userinfo_dirty: bool,
     console_variables: HashSet<String>,
     info_targets: Vec<InfoTarget>,
-    command_exists: Option<Box<CommandExistsCallback>>,
+    command_exists: Option<Rc<CommandExistsCallback>>,
     notifications: Vec<String>,
     effects: Vec<CvarEffect>,
 }
@@ -491,8 +493,16 @@ impl CvarRegistry {
     }
 
     /// Install the `commandExists` callback used by Q1 registration.
-    pub fn set_command_exists(&mut self, callback: Box<CommandExistsCallback>) {
+    pub fn set_command_exists(&mut self, callback: Rc<CommandExistsCallback>) {
         self.command_exists = Some(callback);
+    }
+
+    /// Apply archived values as `seta` commands (donor `applyArchive`).
+    pub fn apply_archive(&mut self, entries: &[CvarArchiveEntry]) -> Result<(), CvarError> {
+        for entry in entries {
+            self.set_command_flags(&entry.name, &entry.value, SetCommandKind::Archive)?;
+        }
+        Ok(())
     }
 
     /// Override cheat permission (a local game consults its live authority).

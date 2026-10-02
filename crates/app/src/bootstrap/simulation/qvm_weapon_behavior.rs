@@ -456,7 +456,9 @@ pub(crate) fn convert_image(image: &ParsedImage) -> (GameImage, ProviderImage) {
     )
 }
 
-fn convert_artifact(resolved: &ResolvedQvmArtifact) -> Result<(GameArtifact, ProviderArtifact), QvmWeaponError> {
+pub(crate) fn convert_artifact(
+    resolved: &ResolvedQvmArtifact,
+) -> Result<(GameArtifact, ProviderArtifact), QvmWeaponError> {
     let ResolvedQvmArtifact::Bytecode {
         module,
         role,

@@ -1,6 +1,7 @@
 //! Simulation: actors, bodies, spatial queries, collision, movement,
 //! gameplay, and sessions. Headless: never depends on client or net.
 
+pub mod actor_execution;
 pub mod ai;
 pub mod body;
 pub mod client;

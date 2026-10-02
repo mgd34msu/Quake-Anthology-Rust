@@ -289,6 +289,12 @@ pub struct RereleaseGuestServices {
 }
 
 impl RereleaseGuestServices {
+    /// Bound services options (donor `services.options`).
+    #[must_use]
+    pub fn options(&self) -> &RereleaseGuestServicesOptions {
+        &self.options
+    }
+
     /// Build the services over validated options.
     pub fn new(options: RereleaseGuestServicesOptions) -> RereleaseResult<Self> {
         if options.base.max_clients < 1 || options.base.max_clients > 256 {

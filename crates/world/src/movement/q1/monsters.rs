@@ -87,6 +87,16 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         Self { services, math }
     }
 
+    /// Borrow the movement services.
+    pub fn services(&self) -> &S {
+        &self.services
+    }
+
+    /// Mutably borrow the movement services.
+    pub fn services_mut(&mut self) -> &mut S {
+        &mut self.services
+    }
+
     fn angle_mod(&self, angle: f64) -> f64 {
         let n = self.services.numeric();
         n.mul(

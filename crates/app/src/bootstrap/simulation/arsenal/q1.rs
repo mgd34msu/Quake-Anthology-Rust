@@ -866,6 +866,11 @@ impl Q1ArsenalGame for Q1EntityServices {
     }
 }
 
+/// Wrap a contract handoff for a weapon slot (C11 `primaryHandoff` Q1 arm).
+pub(crate) fn q1_handoff(inner: ContractHandoff) -> Box<dyn SourceWeaponHandoff> {
+    Box::new(Q1Handoff { inner })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

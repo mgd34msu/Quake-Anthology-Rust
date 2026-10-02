@@ -34,7 +34,7 @@ use qa_guest::core::contracts::ModuleIdentity;
 use qa_guest::runtime::windows::contracts::WindowsCapabilities;
 use qa_net::q2_adapters::{Q2RereleaseEntityState, Q2RereleasePlayerState, Q2RereleaseUserCommand};
 
-use super::classic_guest_services::GuestCommandLine;
+use super::classic_guest_services::{GuestCommandLine, NativeInputViewState};
 use super::classic_guest_world::{ClassicGuestClient, ClassicGuestClientPhase, ClassicGuestMap};
 use super::rerelease_guest_services::RereleaseGuestServices;
 use super::rerelease_guest_services_contract::{
@@ -139,6 +139,12 @@ impl RereleaseGuestWorld {
     pub fn module(&self) -> RereleaseResult<ModuleIdentity> {
         let (source, _) = self.split()?;
         Ok(source.host.memory.module().clone())
+    }
+
+    /// Bound guest services, while this world owns them.
+    #[must_use]
+    pub fn services(&self) -> Option<&RereleaseGuestServices> {
+        self.services.as_ref()
     }
 
     /// Connected clients.
@@ -696,6 +702,13 @@ impl RereleaseGuestWorld {
         })
     }
 
+    /// Replace a client userinfo string without notifying the game (donor `setUserinfoStorage`).
+    ///
+    /// Mirrors the classic raw store; the rerelease game skips the DLL hook headless.
+    pub fn set_userinfo_storage(&mut self, slot: u32, value: &str) -> RereleaseResult<()> {
+        self.userinfo(slot, value)
+    }
+
     /// Run a client command.
     ///
     /// The DLL `ClientCommand` dispatch is skipped headless; the command
@@ -829,6 +842,21 @@ impl RereleaseGuestWorld {
         self.require_running()?;
         let (source, services) = self.split_mut()?;
         services.player_state(&mut source.host, slot)
+    }
+
+    /// Player view for a client actor (donor `services.playerView`).
+    pub fn player_view(&mut self, slot: u32, actor: &ActorId) -> RereleaseResult<NativeInputViewState> {
+        self.require_running()?;
+        let (source, services) = self.split_mut()?;
+        services.player_view(&mut source.host, slot, actor)
+    }
+
+    /// Whether a source inventory profile is known (donor `services.hasSourceInventory`).
+    #[must_use]
+    pub fn has_source_inventory(&self) -> bool {
+        self.services
+            .as_ref()
+            .is_some_and(super::rerelease_guest_services::RereleaseGuestServices::has_source_inventory)
     }
 
     /// Model appearance for one slot.

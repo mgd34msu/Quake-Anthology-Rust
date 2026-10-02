@@ -510,6 +510,9 @@ pub enum PresentationStateError {
     /// Save requires consumed source output.
     #[error("Save requires consumed source output")]
     OutputPending,
+    /// Registered resource path does not match its source request.
+    #[error("Registered resource path does not match its source request")]
+    ResourcePathMismatch,
 }
 
 /// Presentation history surface used by simulation events.
@@ -535,6 +538,15 @@ pub trait PresentationStateSeam {
     ) -> SimulationPresentationEvent;
     /// Resolve a resource by content and requested path.
     fn resource_by_path(&self, content: &ContentId, path: &str) -> Option<ResolvedResourceReference>;
+    /// Register a resolved resource (donor `registerResource`).
+    fn register_resource(
+        &mut self,
+        content: &ContentId,
+        path: &str,
+        resource: ResolvedResourceReference,
+    ) -> Result<(), PresentationStateError>;
+    /// Animated light styles (donor `lightStyles`).
+    fn light_styles(&self, seconds: f64) -> Vec<super::types::SceneLightStyle>;
     /// Take pending presentation output.
     fn take_presentation(&mut self) -> Vec<SimulationPresentationEvent>;
     /// Assert all output was consumed before a save.
@@ -727,6 +739,21 @@ impl SimulationEvents {
     /// Take pending simulation events.
     pub fn take(&mut self) -> Vec<SimulationEvent> {
         std::mem::take(&mut self.emitted)
+    }
+
+    /// Register a resolved resource (donor `registerResource`).
+    pub fn register_resource(
+        &mut self,
+        content: &ContentId,
+        path: &str,
+        resource: ResolvedResourceReference,
+    ) -> Result<(), PresentationStateError> {
+        self.presentation.register_resource(content, path, resource)
+    }
+
+    /// Animated light styles (donor `lightStyles`).
+    pub fn light_styles(&self, seconds: f64) -> Vec<super::types::SceneLightStyle> {
+        self.presentation.light_styles(seconds)
     }
 
     /// Take pending presentation output.
@@ -999,6 +1026,24 @@ mod tests {
 
         fn resource_by_path(&self, content: &ContentId, path: &str) -> Option<ResolvedResourceReference> {
             self.resources.get(&format!("{}/{}", content.as_str(), path)).cloned()
+        }
+
+        fn register_resource(
+            &mut self,
+            content: &ContentId,
+            path: &str,
+            resource: ResolvedResourceReference,
+        ) -> Result<(), PresentationStateError> {
+            if resource.requested_path != path {
+                return Err(PresentationStateError::ResourcePathMismatch);
+            }
+            self.resources
+                .insert(format!("{}/{}", content.as_str(), path), resource);
+            Ok(())
+        }
+
+        fn light_styles(&self, _seconds: f64) -> Vec<super::super::types::SceneLightStyle> {
+            Vec::new()
         }
 
         fn take_presentation(&mut self) -> Vec<SimulationPresentationEvent> {

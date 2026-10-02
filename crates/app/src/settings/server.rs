@@ -1508,6 +1508,78 @@ pub fn list_server_profiles(store: &ConfigStore) -> Result<Vec<ServerProfileEntr
     Ok(profiles)
 }
 
+/// Donor dialect spelling for a registry (donor `CvarRegistry["dialect"]`).
+fn cvar_dialect_name(dialect: qa_core::cmd::Dialect) -> &'static str {
+    match dialect {
+        qa_core::cmd::Dialect::Q1Netquake => "q1-netquake",
+        qa_core::cmd::Dialect::Q1Quakeworld => "q1-quakeworld",
+        qa_core::cmd::Dialect::Q2Classic => "q2-classic",
+        qa_core::cmd::Dialect::Q2Rerelease => "q2-rerelease",
+        qa_core::cmd::Dialect::Q3 => "q3",
+    }
+}
+
+/// Restore saved cvar values into a registry (donor `restoreSaveState`).
+///
+/// The donor restores full registry state (variables, order, latched
+/// values, modification counters); the Rust registry recomputes derived
+/// state on write, so this restores names, values, reset values, flags,
+/// and latched values through the public registry API and enforces the
+/// donor's dialect check. Variables the save does not mention keep their
+/// current values, matching the donor's missing-variable merge.
+pub fn restore_cvar_save_state(
+    cvars: &mut CvarRegistry,
+    saved: &qa_world::save::value::SaveJson,
+) -> Result<(), SettingsError> {
+    use qa_world::save::value::SaveReader;
+    let reader = SaveReader::new(saved);
+    let dialect = reader
+        .field("dialect")
+        .string()
+        .map_err(|error| SettingsError::BadValue(error.to_string()))?;
+    if dialect != cvar_dialect_name(cvars.dialect()) {
+        return Err(SettingsError::BadValue(format!("Saved cvars use dialect {dialect}")));
+    }
+    let variables = reader
+        .field("variables")
+        .list(|entry| {
+            entry.nullable(|item| {
+                let name = item.field("name").string()?;
+                let value = item.field("value").string()?;
+                let reset = item.field("resetValue").string()?;
+                let latched = item.field("latchedValue").nullable(|field| field.string())?;
+                let flags = item.field("flags").integer(0)?;
+                Ok((name, value, reset, latched, flags))
+            })
+        })
+        .map_err(|error: qa_world::WorldError| SettingsError::BadValue(error.to_string()))?;
+    for saved in variables.into_iter().flatten() {
+        let (name, value, reset, latched, flags) = saved;
+        let flags = u32::try_from(flags)
+            .map_err(|_| SettingsError::BadValue(format!("Saved cvar {name} has flags out of range")))?;
+        if cvars.get(&name).is_none() {
+            cvars.register(&name, &reset, flags)?;
+        }
+        cvars.set(&name, &value, true)?;
+        if let Some(latched) = latched {
+            cvars.stage(&name, &latched)?;
+        }
+    }
+    Ok(())
+}
+
+/// Restore saved Quake II server cvars (donor `restoreQ2ServerCvars`).
+///
+/// The donor validates the save into a scratch registry, then merges
+/// current-only variables ahead of the saved order; value restore keeps
+/// current-only variables untouched, which is the same observable merge.
+pub fn restore_q2_server_cvars(
+    cvars: &mut CvarRegistry,
+    saved: &qa_world::save::value::SaveJson,
+) -> Result<(), SettingsError> {
+    restore_cvar_save_state(cvars, saved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,7 @@
 //! Instance-owned source RNG: glibc TYPE_3 plus the Q2 rerelease MT19937.
 //! glibc portion adapted from the Q3 donor; see donor `random.ts` header.
 
+use qa_world::save::shared::SaveRandomState;
 use thiserror::Error;
 
 /// Source RNG profile.
@@ -339,6 +340,48 @@ impl SourceRandom {
     }
 }
 
+/// Convert a saved random stream to a restore checkpoint (C10).
+///
+/// Only the donor's restorable kinds convert; length/cast failures are
+/// invalid states, exactly like the donor's `RangeError`s.
+pub fn random_checkpoint_from_save(state: &SaveRandomState) -> Result<RandomCheckpoint, RandomError> {
+    match state {
+        SaveRandomState::GlibcRandom {
+            words,
+            front,
+            rear,
+            draws,
+        } => {
+            if words.len() != GLIBC_WORDS {
+                return Err(RandomError::InvalidState);
+            }
+            let mut converted = [0i32; GLIBC_WORDS];
+            for (slot, word) in converted.iter_mut().zip(words.iter()) {
+                *slot = i32::try_from(*word).map_err(|_| RandomError::InvalidState)?;
+            }
+            Ok(RandomCheckpoint::Glibc(GlibcCheckpoint {
+                words: converted,
+                front: usize::try_from(*front).map_err(|_| RandomError::InvalidState)?,
+                rear: usize::try_from(*rear).map_err(|_| RandomError::InvalidState)?,
+                draws: *draws,
+            }))
+        }
+        SaveRandomState::RereleaseMt19937 { words, index, draws } => {
+            if words.len() != MT_WORDS {
+                return Err(RandomError::InvalidState);
+            }
+            let mut converted = [0u32; MT_WORDS];
+            converted.copy_from_slice(words);
+            Ok(RandomCheckpoint::Mt19937(Box::new(Mt19937Checkpoint {
+                words: converted,
+                index: usize::try_from(*index).map_err(|_| RandomError::InvalidState)?,
+                draws: *draws,
+            })))
+        }
+        _ => Err(RandomError::InvalidState),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +437,39 @@ mod tests {
         assert_eq!(random.integer_below(1).unwrap(), 0);
         assert_eq!(random.integer_below(0).unwrap(), 0);
         assert_eq!(random.time_milliseconds(5, 5).unwrap(), 5);
+    }
+
+    #[test]
+    fn save_checkpoint_round_trip() {
+        use super::random_checkpoint_from_save;
+        use qa_world::save::shared::SaveRandomState;
+        let glibc = SaveRandomState::GlibcRandom {
+            words: vec![7i64; super::GLIBC_WORDS],
+            front: 1,
+            rear: 2,
+            draws: 9,
+        };
+        let checkpoint = random_checkpoint_from_save(&glibc).expect("glibc converts");
+        match checkpoint {
+            super::RandomCheckpoint::Glibc(state) => {
+                assert_eq!(state.words, [7i32; super::GLIBC_WORDS]);
+                assert_eq!((state.front, state.rear, state.draws), (1, 2, 9));
+            }
+            _ => panic!("glibc converts to glibc"),
+        }
+        let short = SaveRandomState::GlibcRandom {
+            words: vec![7i64; 3],
+            front: 0,
+            rear: 0,
+            draws: 0,
+        };
+        assert!(random_checkpoint_from_save(&short).is_err());
+        let guest = SaveRandomState::Guest {
+            module: "q3:game".to_string(),
+            bytes: vec![1, 2, 3],
+            draws: 0,
+        };
+        assert!(random_checkpoint_from_save(&guest).is_err());
     }
 
     #[test]
