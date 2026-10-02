@@ -914,7 +914,7 @@ pub trait ApplicationBotService: std::fmt::Debug {
     /// Live client snapshots.
     fn clients(&self) -> Vec<BotClientSnapshot>;
     /// Run a console command.
-    fn console_command(&mut self, argv: &[String]);
+    fn console_command(&mut self, argv: &[String]) -> Result<(), ApplicationBotError>;
     /// Disconnect a client slot.
     fn disconnect(&mut self, client: i32) -> bool;
     /// Close the transport.
@@ -3329,8 +3329,9 @@ where
         ApplicationBots::clients(self)
     }
 
-    fn console_command(&mut self, argv: &[String]) {
+    fn console_command(&mut self, argv: &[String]) -> Result<(), ApplicationBotError> {
         ApplicationBots::console_command(self, argv);
+        Ok(())
     }
 
     fn disconnect(&mut self, client: i32) -> bool {

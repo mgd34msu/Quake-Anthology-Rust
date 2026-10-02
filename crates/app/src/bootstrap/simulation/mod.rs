@@ -13,6 +13,7 @@ pub mod bot_prediction;
 pub mod bot_q1_knowledge;
 pub mod bot_q2_knowledge;
 pub mod bot_q3_knowledge;
+pub mod bot_rerelease;
 pub mod bot_rerelease_world;
 pub mod bot_selected_knowledge;
 pub mod bot_world;
