@@ -6,14 +6,16 @@
 //! [`Q3ConnectionCell`](super::types::Q3ConnectionCell) and drains queued
 //! binding callbacks after each demo read, preserving donor order. The demo
 //! bytes are owned by the playback: they are heap-leased to the framed
-//! reader for the playback lifetime and reclaimed in [`Drop`]. The clock
-//! (donor `network/q3/clock.ts`, outside this wave) arrives as the
-//! structural [`Q3DemoClock`] trait.
+//! reader for the playback lifetime and reclaimed in [`Drop`]. The clock is
+//! the canonical [`Q3ClientClock`](qa_net::q3_clock::Q3ClientClock), which
+//! implements the structural [`Q3DemoClock`] trait; the caller owns the
+//! clock and publishes snapshots into it, matching the donor.
 
 use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
+use qa_net::q3_clock::{Q3ClientClock, Q3ClockOptions};
 use qa_net::q3_net::{
     DemoEnd, DemoMessageReader, DemoReader, DownloadBlock, Gamestate, Q3ClientBindings, Q3ClientConnection,
     Q3ClientMode, Q3ConnectionIdentity, Q3DemoRead, Q3NetError, Q3Product, Snapshot,
@@ -100,6 +102,33 @@ pub trait Q3DemoClock {
     /// Whether the clock needs another demo message (donor
     /// `needsDemoMessage`).
     fn needs_demo_message(&self) -> bool;
+}
+
+impl Q3DemoClock for Q3ClientClock {
+    fn demo_timing(&self, milliseconds: f64) -> Option<Q3DemoTiming> {
+        Q3ClientClock::demo_timing(self, milliseconds)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .map(|timing| Q3DemoTiming {
+                frames: timing.frames,
+                elapsed_milliseconds: timing.elapsed_milliseconds,
+            })
+    }
+
+    fn advance(&mut self, real_time: f64, options: &Q3DemoClockOptions) -> Option<i32> {
+        let options = Q3ClockOptions {
+            paused: options.paused,
+            time_nudge: options.time_nudge,
+            timescale: options.timescale,
+            demo: options.demo,
+            freeze_demo: options.freeze_demo,
+            timedemo: options.timedemo,
+        };
+        Q3ClientClock::advance(self, real_time, &options).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn needs_demo_message(&self) -> bool {
+        Q3ClientClock::needs_demo_message(self)
+    }
 }
 
 /// Quake III demo frame (donor `Q3DemoFrame`).
@@ -829,6 +858,49 @@ mod tests {
         assert_eq!(error.to_string(), "Q3 demo message processing is already in progress");
         demo.busy = false;
         assert_eq!(demo.prime(1000.0).expect("prime"), None);
+    }
+
+    #[test]
+    fn real_clock_drives_playback_to_end() {
+        let mut clock = Q3ClientClock::new();
+        clock.publish(&Snapshot {
+            message_number: 2,
+            server_time: 50,
+            delta_number: 0,
+            flags: 0,
+            server_command_number: 0,
+            parse_entities_number: 0,
+            area_mask: Vec::new(),
+            player_state: Q3PlayerState::new(Q3Product::Base),
+            entities: Vec::new(),
+        });
+        let mut demo = Q3DemoPlayback::new(Q3DemoPlaybackOptions {
+            host: MockHost::new(),
+            clock,
+            bytes: demo_bytes(),
+        })
+        .expect("playback");
+        assert_eq!(demo.prime(1000.0).expect("prime"), None);
+        assert_eq!(
+            demo.advance_frame(1000.0, &advance_options()).expect("skip"),
+            Q3DemoFrame::Pending
+        );
+        // The published snapshot activates the clock at time 50, which is
+        // already past, so the clock demands the trailing terminator.
+        match demo.advance_frame(1050.0, &advance_options()).expect("end") {
+            Q3DemoFrame::End { end, timing } => {
+                assert_eq!(end.reason, DemoEndReason::Terminator);
+                assert_eq!(
+                    timing,
+                    Some(Q3DemoTiming {
+                        frames: 0,
+                        elapsed_milliseconds: 1050
+                    })
+                );
+            }
+            other => panic!("expected end, got {other:?}"),
+        }
+        assert_eq!(demo.phase(), Q3DemoPhase::Ended);
     }
 
     #[test]
