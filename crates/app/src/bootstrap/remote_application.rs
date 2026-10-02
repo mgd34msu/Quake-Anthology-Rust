@@ -1,4 +1,4 @@
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-application.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-application.ts`
 //! (`RemoteApplication`): native remote-client application orchestration.
 //!
 //! The donor is a 2498-line orchestrator over subsystems that live elsewhere.
@@ -38,13 +38,80 @@
 //! `crate::settings::config::ConfigStore`, and `PlayerProgressStore` is
 //! `crate::bootstrap::player_progress::PlayerProgressStore`.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `content.ts`,
-//! `configuration.ts`, `client-bootstrap.ts`, `console.ts`, `effects.ts`,
-//! `assets.ts`, `loading.ts`, `menu-art.ts`, `frame-time.ts`, `frame-clock.ts`,
-//! `presentation*.ts`, `controller-settings.ts`, `local-lobby.ts`, `media/*`,
-//! `network/*` (all protocol clients, presentations, downloads, transport,
-//! address resolution), `simulation/*`, `q3-client/*`, `ui/*`, renderer natives,
-//! demo recording/playback, GTV sources, and the content catalog.
+//! Host seams (donor subsystems owned by the wiring lane behind
+//! [`RemoteApplicationSystems`]; each names its canonical Rust home):
+//! - `content.ts` is `crate::bootstrap::content` (`load_application_content`,
+//!   `open_remote_application_content`); reached via `finish_open`,
+//!   `select_content_mounts`, `resolve_movement`, `open_content_q3_product`,
+//!   `close_loaded_content`, and `close_content_bundle`.
+//! - `configuration.ts` is `crate::bootstrap::configuration`
+//!   (`legacy_configuration_options`); reached via `prepare_configuration`,
+//!   `publish_configuration`, and `publish_peer_configuration`, with seat cvar
+//!   seeding ported as [`seed_seat_cvars`].
+//! - `client-bootstrap.ts` is `crate::bootstrap::client_bootstrap`
+//!   (`ClientSourcePublicationError`); reached via `dispatch_borrowed`,
+//!   `borrowed_source_is_current`, and `release_borrowed_source`, with the
+//!   `open_borrowed`, `open_demo_borrowed`, and `open_gtv_borrowed` entries ported.
+//! - `effects.ts` is `crate::bootstrap::effects::application`
+//!   (`ApplicationEffects`); reached via `present_primary_frame` (which returns
+//!   unhandled effects) and `record_level_completion`.
+//! - `assets.ts` has no dedicated Rust home; the wiring lane owns frontend
+//!   asset setup and teardown behind `finish_open`, `refresh_images`,
+//!   `read_pixels`, and `capture_next_frame`.
+//! - `menu-art.ts` is `crate::bootstrap::menu_art` (`load_menu_art_image`);
+//!   menu art loads during `finish_open` frontend assembly.
+//! - `frame-time.ts` is `crate::bootstrap::frame_time`
+//!   (`source_frame_milliseconds`); reached via `source_frame_ms`, with the 4ms
+//!   run-loop floor ported in [`RemoteApplication::run`].
+//! - `frame-clock.ts` is `crate::bootstrap::frame_clock` (`PresentationTime`);
+//!   reached via `advance_presentation_time` and `presentation_ms`.
+//! - `presentation*.ts` is `crate::bootstrap::presentation` (`seat_viewport`,
+//!   `WorldSeatPresentation`) plus `presentation_scene.rs`,
+//!   `presentation_state.rs`, and `selected_q3_presentation.rs`; reached via
+//!   `presentation_for_actor`, the bind/sample/present/submit/retire family,
+//!   and `clear_presentation`.
+//! - `media/*` is `crate::bootstrap::component_media`
+//!   (`presentation_audio_control`) and `crate::bootstrap::media`; reached via
+//!   the `movie_*` and signon-recording seams.
+//! - `network/*` is `crate::bootstrap::network` (`transport.rs`,
+//!   `unified_client.rs`, `gtv_source.rs`, `recorded_source.rs`, `q2_demo.rs`,
+//!   and the per-family clients and presentations); reached via
+//!   `resolve_address`, `execute_advance`, `submit_primary`, the peer
+//!   open/poll/drain family, and the download progress/cancel/retry family.
+//! - `simulation/*` crosses the seam as [`RemotePresentationEvent`] (the
+//!   consumed `SimulationPresentationEvent` subset, also referenced by
+//!   `network/types.rs`); reached via `present_primary_frame` and the
+//!   sample-presentation seams.
+//! - `q3-client/*` is `crate::bootstrap::q3_client_app`
+//!   (`ApplicationQ3Client`) and `crate::bootstrap::q3_client`; reached via
+//!   `q3_command`, the input-client and browser seams, and
+//!   `shutdown_primary_q3`.
+//! - `ui/*` is `crate::bootstrap::ui` (`ApplicationSeatUi`); reached via
+//!   `use_item_ordinal`, `controls_input`, `player_command`, and `centerview`.
+//! - Renderer natives are `crate::bootstrap::renderer` (`NativeRenderer`);
+//!   reached via `flush_renderer`, `read_pixels`, `capture_next_frame`, and the
+//!   video-restart seams; the loading frame (`present_loading_frame`) is a
+//!   renderer draw/swap plus capture drain, matching the donor.
+//! - Demo recording/playback is `crate::bootstrap::demo_recording`,
+//!   `demo_recording_commands.rs`, `demo_playback.rs`,
+//!   `network/recorded_source.rs`, and `network/q2_demo.rs`; reached via the
+//!   recording-command, recording-root, signon-recording, and
+//!   `q2_demo_protocol` seams, with recorded-option mapping ported as
+//!   `recorded_options`.
+//! - GTV sources are `crate::bootstrap::network::gtv_source`; reached via
+//!   `prepare_gtv` and `abort_gtv`, with GTV launch validation ported in
+//!   `open_gtv_borrowed` and watch polling behind the `PollGtv` advance op.
+//! - The content catalog is `qa_content::catalog` (`remote_content_selection`,
+//!   `remote_content_product`, `expected_products`); directory normalization is
+//!   ported here as [`remote_content_selection`] (string-base sync fold,
+//!   donor-faithful), while product mapping stays host-side behind
+//!   `content_product`, `product_expectation`, and `default_q2_selection`.
+//!
+//! Deliberately not listed above: the donor file never references
+//! `console.ts` (console-open state is read through `ApplicationInput` focus
+//! and covered by the `console_open` seam), `controller-settings.ts`,
+//! `local-lobby.ts`, or `loading.ts` (the donor loading frame only touches the
+//! renderer and capture, covered by `present_loading_frame`).
 
 use qa_core::cmd::Dialect;
 use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
