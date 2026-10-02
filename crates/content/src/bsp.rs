@@ -10,9 +10,8 @@
 //! `selectLighting` in `src/formats/q1-map/index.ts`: an external `.lit`
 //! file wins over BSPX RGB samples, Quake64 packed samples, and the
 //! monochrome lump (`readQ1Lit`, `BspLighting`). Q1 BSPX geometry and the
-//! map queries live in [`crate::bspx`]; Quake64 map geometry stays
-//! rejected with an explicit error, and only its packed lighting samples
-//! are understood.
+//! map queries live in [`crate::bspx`]. Quake64 maps share the BSP29
+//! record layout with packed lighting samples (`Q1_QUAKE64_VERSION`).
 
 use std::borrow::Cow;
 
@@ -27,10 +26,10 @@ pub const BSP_VERSION_29: u32 = 29;
 pub const BSP_VERSION_BSP2: u32 = 0x3250_5342;
 /// 2PSB version (`Q1_2PSB_VERSION`).
 pub const BSP_VERSION_2PSB: u32 = 0x4253_5032;
-/// Quake64 version (explicitly unsupported).
+/// Quake64 version (`Q1_QUAKE64_VERSION`).
 pub const BSP_VERSION_QUAKE64: u32 = 0x5136_3420;
 
-/// BSP format (`Q1BspFormat`, minus Quake64).
+/// BSP format (`Q1BspFormat`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BspFormat {
     /// Classic 16-bit limits.
@@ -39,6 +38,8 @@ pub enum BspFormat {
     Bsp2,
     /// 32-bit limits, short node bounds.
     Psb2,
+    /// Quake64: BSP29 record layout with packed lighting.
+    Quake64,
 }
 
 /// Lump directory entry (`Q1Lump`, without copied bytes).
@@ -261,7 +262,8 @@ pub struct Q1Map<'a> {
     /// Monochrome lighting (`monochromeLighting` in `src/formats/q1-map/types.ts`).
     pub monochrome_lighting: &'a [u8],
     /// Selected lighting (`lighting` on `Q1WorldGeometry` in
-    /// `src/contracts/scene.ts`): the `.lit` override wins, else monochrome.
+    /// `src/contracts/scene.ts`): the `.lit` override wins, else Quake64
+    /// packed samples, else monochrome.
     pub lighting: BspLighting<'a>,
 }
 
@@ -365,7 +367,7 @@ fn node_child(reader: &mut BinaryReader<'_>, format: BspFormat, node_count: u32)
 
 fn read_nodes(reader: &mut BinaryReader<'_>, source: &str, format: BspFormat) -> Result<Vec<Node>, BinaryError> {
     let stride = match format {
-        BspFormat::Bsp29 => 24,
+        BspFormat::Bsp29 | BspFormat::Quake64 => 24,
         BspFormat::Psb2 => 32,
         BspFormat::Bsp2 => 44,
     };
@@ -563,6 +565,7 @@ fn read_textures<'a>(
     source: &str,
     lump_offset: usize,
     lump_length: usize,
+    quake64: bool,
 ) -> Result<TextureLump<'a>, BinaryError> {
     if lump_length == 0 {
         return Ok(TextureLump {
@@ -610,8 +613,10 @@ fn read_textures<'a>(
             continue;
         };
         let header_at = lump_offset + offset as usize;
+        // Donor `readTextures`: Quake64 headers carry a shift word.
+        let header_size: u32 = if quake64 { 44 } else { 40 };
         let header = BinaryReader::new(data, source)
-            .section(header_at, 40)
+            .section(header_at, header_size as usize)
             .map_err(|_| BinaryError {
                 input: source.to_string(),
                 offset: header_at,
@@ -621,6 +626,11 @@ fn read_textures<'a>(
         let name = header.fixed_byte_string(16)?;
         let width = header.u32()?;
         let height = header.u32()?;
+        if quake64 {
+            // `quake64Shift`; `MipTexture` has no field for it, so consume
+            // the word to reach the mip table.
+            header.u32()?;
+        }
         let mips = [header.u32()?, header.u32()?, header.u32()?, header.u32()?];
         mip_offsets.push(Some(mips));
         if width == 0 || height == 0 {
@@ -630,22 +640,33 @@ fn read_textures<'a>(
                 message: "zero-sized mip texture".to_string(),
             });
         }
-        if mips == [0, 0, 0, 0] {
+        if !quake64 && mips == [0, 0, 0, 0] {
             textures.push(Some(MipTexture::External { name, width, height }));
             continue;
         }
         let mut levels: [&[u8]; 4] = [&[], &[], &[], &[]];
         for (index, level) in levels.iter_mut().enumerate() {
+            // Donor `readTextures`: Quake64 level 0 starts at the header end
+            // and later zero offsets decode as empty levels.
+            let mip_offset = if quake64 && index == 0 {
+                header_size
+            } else {
+                mips[index]
+            };
+            if quake64 && mip_offset == 0 {
+                *level = &[];
+                continue;
+            }
             let scale = 1u32 << index;
-            if mips[index] < 40 {
+            if mip_offset < header_size {
                 return Err(BinaryError {
                     input: source.to_string(),
-                    offset: header_at + mips[index] as usize,
+                    offset: header_at + mip_offset as usize,
                     message: "mip pixels overlap texture header".to_string(),
                 });
             }
             let length = (width / scale) as usize * (height / scale) as usize;
-            let at = header_at + mips[index] as usize;
+            let at = header_at + mip_offset as usize;
             *level = data.get(at..at + length).ok_or_else(|| BinaryError {
                 input: source.to_string(),
                 offset: at,
@@ -902,7 +923,18 @@ pub fn select_lighting<'a>(
 impl<'a> Q1Map<'a> {
     /// Select this map's lighting, applying an external `.lit` override.
     pub fn selected_lighting(&self, lit: Option<&[u8]>) -> Result<BspLighting<'a>, BinaryError> {
-        select_lighting(self.monochrome_lighting, None, lit, None)
+        // Quake64 keeps no monochrome samples; recover the packed lump from
+        // the borrowed input so `selectLighting` sees the stored bytes.
+        let packed = if self.format == BspFormat::Quake64 {
+            self.lumps.iter().find(|lump| lump.name == "lighting").and_then(|lump| {
+                let start = usize::try_from(lump.offset).ok()?;
+                let length = usize::try_from(lump.length).ok()?;
+                self.data.get(start..start.checked_add(length)?)
+            })
+        } else {
+            None
+        };
+        select_lighting(self.monochrome_lighting, None, lit, packed)
     }
 }
 
@@ -938,13 +970,7 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) 
         BSP_VERSION_29 => BspFormat::Bsp29,
         BSP_VERSION_BSP2 => BspFormat::Bsp2,
         BSP_VERSION_2PSB => BspFormat::Psb2,
-        BSP_VERSION_QUAKE64 => {
-            return Err(BinaryError {
-                input: source.to_string(),
-                offset: 0,
-                message: "Quake64 BSP is not supported".to_string(),
-            });
-        }
+        BSP_VERSION_QUAKE64 => BspFormat::Quake64,
         _ => {
             return Err(BinaryError {
                 input: source.to_string(),
@@ -952,6 +978,12 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) 
                 message: format!("unsupported Quake BSP version {version}"),
             });
         }
+    };
+    // Donor `readQ1Bsp`: Quake64 shares the BSP29 record layout.
+    let layout = if format == BspFormat::Quake64 {
+        BspFormat::Bsp29
+    } else {
+        format
     };
     let mut directory = reader.section(4, 120)?;
     let mut lumps = Vec::with_capacity(LUMP_NAMES.len());
@@ -1012,14 +1044,44 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) 
         vertices.push(vec3(&mut vertex_reader)?);
     }
     let (textures_offset, textures_length) = lump("textures");
-    let texture_lump = read_textures(data, source, textures_offset, textures_length)?;
-    let faces = read_faces(&mut section("faces")?, source, format)?;
+    let texture_lump = read_textures(
+        data,
+        source,
+        textures_offset,
+        textures_length,
+        format == BspFormat::Quake64,
+    )?;
+    let faces = read_faces(&mut section("faces")?, source, layout)?;
+    // Donor `readQ1Bsp`: Quake64 face offsets address packed byte pairs.
+    let faces = if format == BspFormat::Quake64 {
+        faces
+            .into_iter()
+            .map(|face| {
+                let Some(offset) = face.lighting_offset else {
+                    return Ok(face);
+                };
+                if !offset.is_multiple_of(2) {
+                    return Err(BinaryError {
+                        input: source.to_string(),
+                        offset: offset as usize,
+                        message: "unaligned Quake64 lighting offset".to_string(),
+                    });
+                }
+                Ok(Face {
+                    lighting_offset: Some(offset / 2),
+                    ..face
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        faces
+    };
     let models = read_models(&mut section("models")?)?;
     let texture_info = read_texture_info(&mut section("textureInfo")?)?;
-    let nodes = read_nodes(&mut section("nodes")?, source, format)?;
-    let leaves = read_leaves(&mut section("leaves")?, format)?;
-    let edges = read_edges(&mut section("edges")?, format)?;
-    let clipnodes = read_clipnodes(&mut section("clipnodes")?, format)?;
+    let nodes = read_nodes(&mut section("nodes")?, source, layout)?;
+    let leaves = read_leaves(&mut section("leaves")?, layout)?;
+    let edges = read_edges(&mut section("edges")?, layout)?;
+    let clipnodes = read_clipnodes(&mut section("clipnodes")?, layout)?;
     let mut surface_reader = section("surfaceEdges")?;
     let mut surface_edges = Vec::new();
     while surface_reader.remaining() > 0 {
@@ -1028,7 +1090,7 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) 
     let mut leaf_face_reader = section("leafFaces")?;
     let mut leaf_faces = Vec::new();
     while leaf_face_reader.remaining() > 0 {
-        if format == BspFormat::Bsp29 {
+        if layout == BspFormat::Bsp29 {
             leaf_faces.push(u32::from(leaf_face_reader.u16()?));
         } else {
             leaf_faces.push(leaf_face_reader.u32()?);
@@ -1037,10 +1099,21 @@ pub fn read_q1_bsp<'a>(data: &'a [u8], source: &str, options: Q1BspOptions<'_>) 
     let (visibility_offset, visibility_length) = lump("visibility");
     let visibility = reader.view(visibility_offset, visibility_length)?;
     let (lighting_offset, lighting_length) = lump("lighting");
-    let monochrome_lighting = reader.view(lighting_offset, lighting_length)?;
-    // `selectLighting` with no BSPX RGB (core reader without BSPX) and no
-    // packed samples (Quake64 is rejected above).
-    let lighting = select_lighting(monochrome_lighting, None, options.lit, None)?;
+    let stored_lighting = reader.view(lighting_offset, lighting_length)?;
+    // Donor `readQ1Bsp`: Quake64 keeps no monochrome samples; the stored
+    // bytes are packed pairs passed through to `selectLighting`.
+    let monochrome_lighting = if format == BspFormat::Quake64 {
+        &stored_lighting[..0]
+    } else {
+        stored_lighting
+    };
+    // `selectLighting` with no BSPX RGB (core reader without BSPX).
+    let packed = if format == BspFormat::Quake64 {
+        Some(stored_lighting)
+    } else {
+        None
+    };
+    let lighting = select_lighting(monochrome_lighting, None, options.lit, packed)?;
     let map = Q1Map {
         format,
         source: source.to_string(),
@@ -1190,6 +1263,10 @@ mod tests {
     use qa_core::binary::BinaryWriter;
 
     fn fixture() -> Vec<u8> {
+        build_bsp(BSP_VERSION_29, &[])
+    }
+
+    fn build_bsp(version: u32, textures: &[u8]) -> Vec<u8> {
         let entities = b"{\n\"classname\" \"worldspawn\"\n}\n\0";
         let mut planes = BinaryWriter::new(20);
         planes.f32(0.0).unwrap();
@@ -1251,7 +1328,7 @@ mod tests {
         let lumps: [(&[u8], usize); 15] = [
             (entities, entities.len()),
             (&planes, planes.len()),
-            (&[], 0),
+            (textures, textures.len()),
             (&vertices, vertices.len()),
             (&[], 0),
             (&[], 0),
@@ -1266,7 +1343,7 @@ mod tests {
             (&models, models.len()),
         ];
         let mut writer = BinaryWriter::new(2048);
-        writer.u32(BSP_VERSION_29).unwrap();
+        writer.u32(version).unwrap();
         let mut offset = 124;
         let mut directory = Vec::new();
         for (_, length) in &lumps {
@@ -1322,15 +1399,81 @@ mod tests {
         let mut bad_version = good.clone();
         bad_version[0] = 30;
         assert!(read_q1_bsp(&bad_version, "<test>", Q1BspOptions::default()).is_err());
-        let mut quake64 = good.clone();
-        quake64[0..4].copy_from_slice(&BSP_VERSION_QUAKE64.to_le_bytes());
-        assert!(read_q1_bsp(&quake64, "<test>", Q1BspOptions::default()).is_err());
         // Face plane index past the plane table.
         let mut bad_face = good.clone();
         // Header + entities + planes + vertices + texture info (skipping empties).
         let faces_offset = 124 + 30 + 20 + 24 + 40;
         bad_face[faces_offset] = 9;
         assert!(read_q1_bsp(&bad_face, "<test>", Q1BspOptions::default()).is_err());
+    }
+
+    #[test]
+    fn quake64_version_parses_with_packed_lighting() {
+        let bytes = build_bsp(BSP_VERSION_QUAKE64, &[]);
+        let map = read_q1_bsp(&bytes, "<test>", Q1BspOptions::default()).unwrap();
+        assert_eq!(map.format, BspFormat::Quake64);
+        assert_eq!(map.version, BSP_VERSION_QUAKE64);
+        assert!(map.monochrome_lighting.is_empty());
+        // Empty packed input selects (empty) RGB, matching `selectLighting`.
+        match &map.lighting {
+            BspLighting::Rgb8 { samples, source } => {
+                assert_eq!(*source, LightingSource::Bsp);
+                assert!(samples.is_empty());
+            }
+            other => panic!("expected packed rgb, got {other:?}"),
+        }
+        // Re-selecting without an override reproduces the stored lighting.
+        match map.selected_lighting(None).unwrap() {
+            BspLighting::Rgb8 { source, .. } => assert_eq!(source, LightingSource::Bsp),
+            other => panic!("expected packed rgb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quake64_face_lighting_offsets_halve() {
+        // BSP29 face stride 20: plane u16, side u16, first i32, count u16,
+        // texinfo u16, styles, lighting i32.
+        let faces_offset = 124 + 30 + 20 + 24 + 40;
+        let mut even = build_bsp(BSP_VERSION_QUAKE64, &[]);
+        even[faces_offset + 16..faces_offset + 20].copy_from_slice(&2i32.to_le_bytes());
+        let map = read_q1_bsp(&even, "<test>", Q1BspOptions::default()).unwrap();
+        assert_eq!(map.faces[0].lighting_offset, Some(1));
+        let mut odd = build_bsp(BSP_VERSION_QUAKE64, &[]);
+        odd[faces_offset + 16..faces_offset + 20].copy_from_slice(&3i32.to_le_bytes());
+        let error = read_q1_bsp(&odd, "<test>", Q1BspOptions::default()).unwrap_err();
+        assert_eq!(error.message, "unaligned Quake64 lighting offset");
+        assert_eq!(error.offset, 3);
+    }
+
+    #[test]
+    fn quake64_textures_use_44_byte_headers() {
+        let mut lump = BinaryWriter::new(512);
+        lump.i32(1).unwrap();
+        lump.i32(8).unwrap();
+        let mut name = [0u8; 16];
+        name[..4].copy_from_slice(b"q64_");
+        lump.bytes(&name).unwrap();
+        lump.u32(16).unwrap();
+        lump.u32(16).unwrap();
+        lump.u32(7).unwrap();
+        for mip in [0u32, 0, 0, 0] {
+            lump.u32(mip).unwrap();
+        }
+        lump.bytes(&[5u8; 256]).unwrap();
+        let lump = lump.finish();
+        let bytes = build_bsp(BSP_VERSION_QUAKE64, &lump);
+        let map = read_q1_bsp(&bytes, "<test>", Q1BspOptions::default()).unwrap();
+        assert_eq!(map.texture_offsets, vec![Some(8)]);
+        assert_eq!(map.mip_offsets, vec![Some([0, 0, 0, 0])]);
+        // Zero mips stay embedded: level 0 at the header end, rest empty.
+        match &map.textures[..] {
+            [Some(MipTexture::Embedded { levels, width, .. })] => {
+                assert_eq!(*width, 16);
+                assert_eq!(levels[0], &[5u8; 256]);
+                assert!(levels[1].is_empty() && levels[2].is_empty() && levels[3].is_empty());
+            }
+            other => panic!("expected embedded quake64 texture, got {other:?}"),
+        }
     }
 
     fn lit_bytes(samples: &[u8]) -> Vec<u8> {
