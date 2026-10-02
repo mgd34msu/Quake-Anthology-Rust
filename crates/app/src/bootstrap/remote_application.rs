@@ -1,4 +1,4 @@
-//! Port of donor `src/app/bootstrap/remote-application.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-application.ts`
 //! (`RemoteApplication`): native remote-client application orchestration.
 //!
 //! The donor is a 2498-line orchestrator over subsystems that live elsewhere.
