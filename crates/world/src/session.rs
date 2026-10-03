@@ -308,7 +308,7 @@ impl Simulation {
     /// Live actor count.
     #[must_use]
     pub fn actor_count(&self) -> usize {
-        self.registry.observations().len()
+        self.registry.live_count()
     }
 
     /// Borrow the actor registry (server trigger/timer passes).
@@ -332,12 +332,23 @@ impl Simulation {
     /// Actors with bodies, in observation order.
     #[must_use]
     pub fn body_actors(&self) -> Vec<ActorId> {
-        self.registry
-            .observations()
-            .into_iter()
-            .filter(|observed| self.bodies.read(&self.registry, &observed.id).is_some())
-            .map(|observed| observed.id)
-            .collect()
+        let mut actors = Vec::new();
+        self.body_actors_into(&mut actors);
+        actors
+    }
+
+    /// Collect actors with bodies in observation order, reusing `out`.
+    ///
+    /// Per-frame callers pass a scratch buffer so repeated frames do not
+    /// reallocate; the buffer is cleared and refilled every call.
+    pub fn body_actors_into(&self, out: &mut Vec<ActorId>) {
+        out.clear();
+        let (registry, bodies) = (&self.registry, &self.bodies);
+        registry.for_each_live(|id, _, _| {
+            if bodies.has_body(registry, &id) {
+                out.push(id);
+            }
+        });
     }
 
     /// Move a body to an origin (server mover pass).
@@ -433,32 +444,25 @@ impl Simulation {
     }
 
     fn snapshot(&self) -> WorldSnapshot {
-        let actors: Vec<SnapshotActor> = self
-            .registry
-            .observations()
-            .into_iter()
-            .map(|observed| SnapshotActor {
-                id: SavedActorId::from(&observed.id),
-                owner: observed.owner,
-                definition: observed.definition,
-            })
-            .collect();
+        let mut actors = Vec::new();
         let mut bodies = Vec::new();
         let mut inventories = Vec::new();
-        for actor in &actors {
-            let live = self.registry.observations().into_iter().find(|observed| {
-                observed.id.slot() == actor.id.slot && observed.id.generation() == actor.id.generation
+        let (registry, body_table, inventory_table) = (&self.registry, &self.bodies, &self.inventories);
+        registry.for_each_live(|id, owner, definition| {
+            let saved = SavedActorId::from(&id);
+            actors.push(SnapshotActor {
+                id: saved,
+                owner: owner.clone(),
+                definition: definition.to_owned(),
             });
-            if let Some(live) = live {
-                if let Some(state) = self.bodies.read(&self.registry, &live.id) {
-                    bodies.push(SnapshotBody { id: actor.id, state });
-                }
-                let entries = self.inventories.entries(&self.registry, &live.id);
-                if !entries.is_empty() {
-                    inventories.push(SnapshotInventory { id: actor.id, entries });
-                }
+            if let Some(state) = body_table.read(registry, &id) {
+                bodies.push(SnapshotBody { id: saved, state });
             }
-        }
+            let entries = inventory_table.entries(registry, &id);
+            if !entries.is_empty() {
+                inventories.push(SnapshotInventory { id: saved, entries });
+            }
+        });
         WorldSnapshot {
             frame: self.clock.frame(),
             actors,
@@ -473,39 +477,37 @@ impl Simulation {
         let mut bodies = Vec::new();
         let mut combats = Vec::new();
         let mut inventories = Vec::new();
-        for observed in self.registry.observations() {
-            let id = SavedActorId::from(&observed.id);
-            if let Some(state) = self.bodies.read(&self.registry, &observed.id) {
+        let (registry, body_table, combat_table, inventory_table) =
+            (&self.registry, &self.bodies, &self.combats, &self.inventories);
+        registry.for_each_live(|id, _, _| {
+            let saved = SavedActorId::from(&id);
+            if let Some(state) = body_table.read(registry, &id) {
                 bodies.push(BodyCheckpoint {
-                    slot: id.slot,
-                    generation: id.generation,
+                    slot: saved.slot,
+                    generation: saved.generation,
                     state: saved_body(&state),
-                    link_count: self
-                        .bodies
-                        .linked(&self.registry, &observed.id)
-                        .map_or(0, |linked| linked.link_count),
-                    linked: self
-                        .bodies
-                        .linked(&self.registry, &observed.id)
+                    link_count: body_table.linked(registry, &id).map_or(0, |linked| linked.link_count),
+                    linked: body_table
+                        .linked(registry, &id)
                         .map(|linked| (saved_body(&linked.state), linked.absolute_bounds)),
                 });
             }
-            if let Some(state) = self.combats.get(&observed.id) {
+            if let Some(state) = combat_table.get(&id) {
                 combats.push(CombatCheckpoint {
-                    slot: id.slot,
-                    generation: id.generation,
+                    slot: saved.slot,
+                    generation: saved.generation,
                     state: state.clone(),
                 });
             }
-            let entries = self.inventories.entries(&self.registry, &observed.id);
+            let entries = inventory_table.entries(registry, &id);
             if !entries.is_empty() {
                 inventories.push(InventoryCheckpoint {
-                    slot: id.slot,
-                    generation: id.generation,
+                    slot: saved.slot,
+                    generation: saved.generation,
                     entries,
                 });
             }
-        }
+        });
         Ok(SaveImage {
             schema_version: 3,
             frame: self.clock.frame(),
@@ -607,19 +609,13 @@ impl Simulation {
     }
 
     fn actor_by_saved(&self, slot: u32, generation: u32) -> Option<OwnedActor> {
-        self.registry
-            .observations()
-            .into_iter()
-            .find(|observed| observed.id.slot() == slot && observed.id.generation() == generation)
-            .and_then(|observed| self.registry.resolve_owned(&observed.id))
+        let id = self.registry.live_id(slot, generation)?;
+        self.registry.resolve_owned(&id)
     }
 
     fn actor_by_slot_inner(&self, slot: u32) -> Option<OwnedActor> {
-        self.registry
-            .observations()
-            .into_iter()
-            .find(|observed| observed.id.slot() == slot)
-            .and_then(|observed| self.registry.resolve_owned(&observed.id))
+        let id = self.registry.live_id_in_slot(slot)?;
+        self.registry.resolve_owned(&id)
     }
 
     /// Execute one dedicated-server command.
@@ -2421,5 +2417,51 @@ mod tests {
         seat.close().unwrap();
         assert_eq!(*order.borrow(), vec!["presentation", "seat"]);
         seat.close().unwrap();
+    }
+
+    fn test_body() -> BodyState {
+        let zero = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+        BodyState {
+            origin: zero,
+            angles: zero,
+            velocity: zero,
+            bounds: Bounds { min: zero, max: zero },
+            ground: None,
+        }
+    }
+
+    #[test]
+    fn body_actors_into_reuses_scratch_without_reallocating() {
+        let (primary, profile) = q3();
+        let mut simulation = Simulation::new("test", primary, profile, SourceTime::Milliseconds(0), 8).unwrap();
+        let bodied = simulation
+            .spawn(provider(), "q3:player", Some(test_body()), None, Vec::new())
+            .unwrap();
+        simulation
+            .spawn(provider(), "q3:ghost", None, None, Vec::new())
+            .unwrap();
+        assert_eq!(simulation.actor_count(), 2);
+
+        let mut scratch = Vec::new();
+        simulation.body_actors_into(&mut scratch);
+        assert_eq!(scratch, simulation.body_actors());
+        assert_eq!(scratch.as_slice(), &[bodied.id().clone()]);
+
+        let (ptr, capacity) = (scratch.as_ptr(), scratch.capacity());
+        for _ in 0..4 {
+            simulation.body_actors_into(&mut scratch);
+            assert_eq!(scratch.as_slice(), &[bodied.id().clone()]);
+        }
+        assert_eq!(scratch.as_ptr(), ptr);
+        assert_eq!(scratch.capacity(), capacity);
+
+        simulation.release(&bodied).unwrap();
+        simulation.body_actors_into(&mut scratch);
+        assert!(scratch.is_empty());
+        assert_eq!(scratch.capacity(), capacity);
+    }
+
+    fn provider() -> ProviderId {
+        ProviderId::new("q3", "game")
     }
 }

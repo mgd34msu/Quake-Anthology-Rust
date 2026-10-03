@@ -126,6 +126,15 @@ impl BodyTable {
         Ok(())
     }
 
+    /// Whether a live actor has a body, without cloning state.
+    #[must_use]
+    pub fn has_body(&self, registry: &ActorRegistry, actor: &ActorId) -> bool {
+        if !registry.is_live(actor) {
+            return false;
+        }
+        self.records.contains_key(actor)
+    }
+
     /// Read a live body.
     #[must_use]
     pub fn read(&self, registry: &ActorRegistry, actor: &ActorId) -> Option<BodyState> {

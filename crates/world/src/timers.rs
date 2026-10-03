@@ -214,10 +214,7 @@ impl TimerTable {
         self.next_sequence = 0;
         for timer in saved {
             let actor = registry
-                .observations()
-                .into_iter()
-                .find(|observed| observed.id.slot() == timer.slot && observed.id.generation() == timer.generation)
-                .map(|observed| observed.id)
+                .live_id(timer.slot, timer.generation)
                 .ok_or_else(|| WorldError::BadSave("Timer names a missing actor".to_string()))?;
             self.next_sequence = self.next_sequence.max(timer.sequence + 1);
             self.timers.push(Timer {
