@@ -3,7 +3,8 @@
 //! Port of Quake-Anthology-TS `src/app/bootstrap/remote-seat-view.ts`
 //! (`RemoteSeatViewOptions`, `RemoteSeatView`). A channel's view and PVS
 //! effects borrow the retained frontend assets and output. All collaborators
-//! (assets, still unported, plus [`effects`](super::effects),
+//! ([`ApplicationAssets`](super::assets::ApplicationAssets) plus
+//! [`effects`](super::effects),
 //! [`SeatUiData`](super::presentation::SeatUiData), [`qa_guest`],
 //! [`presentation`](super::presentation), [`component_media`](super::component_media),
 //! [`renderer`](super::renderer), [`audio`](super::audio),
@@ -160,7 +161,8 @@ pub struct RemoteSeatViewOptions {
     pub q3_command_angles: Option<[i32; 3]>,
 }
 
-/// View collaborators (the unported assets plus landed homes behind one seam).
+/// View collaborators ([`ApplicationAssets`](super::assets::ApplicationAssets)
+/// plus other landed homes behind one seam).
 pub trait RemoteSeatViewBackend {
     /// Backend failure.
     type Error: std::fmt::Display;

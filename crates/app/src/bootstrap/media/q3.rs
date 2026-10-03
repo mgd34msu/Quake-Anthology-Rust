@@ -216,10 +216,9 @@ pub struct Q3EffectMaterialContext {
 }
 
 /// Absorbed application services: asset registration, collision queries, and
-/// world drawing (donor `ApplicationAssets` plus `SceneQueries`;
-/// `ApplicationAssets` is out of scope and the
-/// [`SceneQueries`](qa_bots::scene::SceneQueries) port stays absorbed in
-/// this host).
+/// world drawing (donor [`ApplicationAssets`](super::super::assets::ApplicationAssets)
+/// plus `SceneQueries`; the [`SceneQueries`](qa_bots::scene::SceneQueries)
+/// port stays absorbed in this host).
 /// All methods take `&self`; hosts keep registration caches behind
 /// interior mutability like [`SettingCvars`](qa_client::ui::settings::SettingCvars).
 pub trait Q3EffectHost {
