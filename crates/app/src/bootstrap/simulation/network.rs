@@ -40,9 +40,7 @@ use qa_bots::BotsError;
 use qa_content::contract::ItemId;
 use qa_content::q2::base::player::types::{Q2PlayerEvent, Q2PlayerView, Q2PrintLevel as Q2PlayerPrintLevel};
 
-use qa_content::q2::foundation::host::{
-    Q2PresentationEvent, Q2PrintLevel as Q2HostPrintLevel, Q2SoundLoop,
-};
+use qa_content::q2::foundation::host::{Q2PresentationEvent, Q2PrintLevel as Q2HostPrintLevel, Q2SoundLoop};
 use qa_content::q2::foundation::weapons::definitions::base_weapons;
 use qa_content::q2::foundation::weapons::types::Q2WeaponEvent;
 use qa_core::cmd::{expand_command_macros, CmdError, TextMode};
