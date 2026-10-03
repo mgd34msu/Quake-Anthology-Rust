@@ -7410,6 +7410,20 @@ impl NativePrimaryWeapons {
             .set_score(&mut host, actor, score)
             .map_err(|error| error.to_string())
     }
+
+    /// Weapon availability for one owner (donor `available`,
+    /// native-primary-weapons.ts 221).
+    pub fn available(&self, owner: &ActorId) -> Result<bool, String> {
+        let live = self
+            .live
+            .as_ref()
+            .ok_or_else(|| "Original native selected weapons have no qualified owner".to_string())?;
+        let actor = live.shared.actor(owner)?;
+        let mut host = live.shared.host.borrow_mut();
+        live.service
+            .available(&mut host, actor)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl Default for NativePrimaryWeapons {
@@ -7502,6 +7516,48 @@ mod native_primary_seam_tests {
         assert_eq!(weapons.match_score(&owner).expect("initial score"), 0);
         weapons.set_match_score(&owner, 7).expect("write score");
         assert_eq!(weapons.match_score(&owner).expect("read score"), 7);
+    }
+
+    #[test]
+    fn available_reads_live_host_for_fresh_actors() {
+        let (_, _, _, weapons) = bound();
+        let owner = owner();
+        assert!(weapons.available(&owner).expect("fresh availability"));
+        let other = IdentityOwner::create("native-primary-seam-other").unwrap().actor(1, 1);
+        assert!(weapons.available(&other).expect("second availability"));
+        assert!(weapons.available(&owner).expect("repeat availability"));
+    }
+
+    #[test]
+    fn available_unbound_has_no_qualified_owner() {
+        let weapons = NativePrimaryWeapons::new();
+        assert_eq!(
+            weapons.available(&owner()).unwrap_err(),
+            "Original native selected weapons have no qualified owner"
+        );
+    }
+
+    #[test]
+    fn available_tracks_live_host_fields() {
+        use qa_compat::q2::native_primary_reader::{NativeItemField, NativeScalar, RecordKind};
+        let (_, _, _, weapons) = bound();
+        let owner = owner();
+        let live = weapons.live.as_ref().expect("bound weapons");
+        let actor = live.shared.actor(&owner).expect("spawn actor");
+        let field = NativeItemField {
+            record: RecordKind::Image,
+            offset: 0x768c8,
+            encoding: NativeScalar::Float32,
+        };
+        assert!(weapons.available(&owner).expect("fresh availability"));
+        live.service
+            .write(&mut live.shared.host.borrow_mut(), actor, field, 1.0)
+            .expect("break active test");
+        assert!(!weapons.available(&owner).expect("broken availability"));
+        live.service
+            .write(&mut live.shared.host.borrow_mut(), actor, field, 0.0)
+            .expect("restore active test");
+        assert!(weapons.available(&owner).expect("restored availability"));
     }
 
     #[test]
@@ -38356,10 +38412,13 @@ fn equipment_player_available_in(
             if player_client_in(state, actors, actor).is_none() {
                 return false;
             }
-            // Missing siblings: `NativePrimaryWeapons::available` needs the
-            // native-weapon lane's synthetic host, so the donor's native
-            // arm reads empty and every owner takes the health fallback.
-            state.combat.read(actor).map(|entry| entry.health).unwrap_or(100.0) > 0.0
+            // Donor `equipmentPlayerAvailable` q2-native arm (runtime.ts
+            // 2146): live availability over the shared synthetic host, with
+            // the health fallback when no primary service is bound.
+            match state.native_primary_weapons.as_ref() {
+                Some(weapons) => weapons.available(actor).unwrap_or_else(|error| panic!("{error}")),
+                None => state.combat.read(actor).map(|entry| entry.health).unwrap_or(100.0) > 0.0,
+            }
         }
         _ => {
             let Some(owned) = actors.resolve_owned(actor) else {
