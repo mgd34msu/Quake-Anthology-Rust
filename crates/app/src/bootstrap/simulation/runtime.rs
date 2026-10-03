@@ -6826,14 +6826,39 @@ impl qa_content::q3::foundation::character::Q3CharacterServices for RuntimeQ3Cha
 /// Mirror of donor `src/world/gameplay/q1-client-visibility.ts` (canonical
 /// home: `qa_world`); unify post-merge.
 pub struct Q1ClientVisibility {
+    /// Restored visibility cache (donor `state`).
     #[allow(dead_code)]
-    opaque: bool,
+    state: Q1ClientVisibilityState,
+}
+
+/// Q1 client visibility cache (donor `Q1ClientVisibilityState`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Q1ClientVisibilityState {
+    /// Last checked reserved client slot.
+    last_check_slot: i64,
+    /// Last check time in seconds.
+    last_check_time: f64,
+    /// Checked eye cluster, if any.
+    checked_cluster: Option<i64>,
+}
+
+/// Reserved-slot services for visibility restore (donor
+/// `Q1ClientVisibility` services, restore subset).
+pub struct Q1ClientVisibilityServices {
+    /// Reserved client slots (`maxClients`).
+    pub max_clients: usize,
 }
 
 impl Q1ClientVisibility {
-    /// Create an opaque seam value.
+    /// Create a seam value with the donor initial cache.
     pub fn new() -> Self {
-        Self { opaque: true }
+        Self {
+            state: Q1ClientVisibilityState {
+                last_check_slot: 0,
+                last_check_time: 0.0,
+                checked_cluster: None,
+            },
+        }
     }
 }
 
@@ -26058,30 +26083,43 @@ impl Q1ClientVisibility {
     /// Donor `q1ClientVisibility.restore` (C10 seam; the q1-client lane owns the type).
     ///
     /// Port of the donor range checks (`src/world/gameplay/q1-client-visibility.ts`
-    /// 58-66): a present value must carry a non-negative slot, a finite
-    /// check time, and a consistent initial cache (slot 0 pairs with a
-    /// null cluster and a zero time). The slot/client upper bounds need
-    /// the lane's reserved-slot services, and the accepted state still has
-    /// no storage on this seam, so a valid value is dropped after
-    /// validation. A missing value stays accepted: no Rust capture writer
-    /// emits the field yet.
-    /// Missing siblings: q1-client lane visibility state storage plus
-    /// reserved-slot services for the upper-bound checks.
-    pub fn restore(&mut self, value: Option<&qa_world::save::value::SaveJson>) -> Result<(), RuntimeError> {
+    /// 58-66): a present value must carry a slot at or below the reserved
+    /// client count, a finite non-negative check time, and a consistent
+    /// initial cache (slot 0 pairs with a null cluster and a zero time).
+    /// The accepted state is stored on the seam. A missing value stays
+    /// accepted: no Rust capture writer emits the field yet.
+    /// Missing siblings: q1-client lane reserved-slot client service plus
+    /// the collision-lane cluster upper bound (`checkedCluster` has no
+    /// maximum until the scene exposes geometry leaves).
+    pub fn restore(
+        &mut self,
+        value: Option<&qa_world::save::value::SaveJson>,
+        services: &Q1ClientVisibilityServices,
+    ) -> Result<(), RuntimeError> {
         use qa_world::save::value::SaveReader;
         let Some(value) = value else {
             return Ok(());
         };
+        if services.max_clients < 1 {
+            return Err(RuntimeError::Failure(
+                "Q1 visibility requires reserved client slots".to_string(),
+            ));
+        }
         let reader = SaveReader::at(value, "q1-client-visibility");
         let slot = reader.field("lastCheckSlot").integer(0)?;
         let time = reader.field("lastCheckTime").finite()?;
         let cluster = reader.field("checkedCluster").nullable(|field| field.integer(-1))?;
-        if time < 0.0 {
+        if slot > services.max_clients as i64 || time < 0.0 {
             return Err(reader.fail("visibility cache outside source range").into());
         }
         if (slot == 0) != cluster.is_none() || (slot == 0 && time != 0.0) {
             return Err(reader.fail("invalid initial visibility cache").into());
         }
+        self.state = Q1ClientVisibilityState {
+            last_check_slot: slot,
+            last_check_time: time,
+            checked_cluster: cluster,
+        };
         Ok(())
     }
 }
@@ -26444,10 +26482,13 @@ impl SharedSimulation {
         let attack_sequence = reader.field("attackSequence").integer(0)?;
         self.state.borrow_mut().attack_sequence = attack_sequence as u64;
         let visibility = reader.field("q1ClientVisibility").value.cloned();
+        let visibility_services = Q1ClientVisibilityServices {
+            max_clients: self.peek().options_max_clients,
+        };
         self.state
             .borrow_mut()
             .q1_client_visibility
-            .restore(visibility.as_ref())?;
+            .restore(visibility.as_ref(), &visibility_services)?;
         let campaign = reader.field("campaign");
         self.state.borrow_mut().q1_campaign.flags = campaign.field("flags").number()? as i32;
         self.state.borrow_mut().q1_campaign.skill = campaign.field("skill").choice_i64(&[0, 1, 2, 3])? as i32;
@@ -28367,26 +28408,39 @@ fn step_net_to_world_command(
     }
 }
 
+/// Selected-arsenal step frame for a non-Q1 family (donor `weaponStep`
+/// 3919-3920): the attached Q2 weapon-source frame, else the caller
+/// frame retimed to the selected milliseconds.
+fn selected_non_q1_step_frame(
+    q2_frame: Option<FrameContext>,
+    input_frame: FrameContext,
+    selected_milliseconds: f64,
+) -> FrameContext {
+    if let Some(frame) = q2_frame {
+        return frame;
+    }
+    let mut frame = input_frame;
+    frame.time = SourceTime::Milliseconds(selected_milliseconds as i32);
+    frame
+}
+
 impl SharedSimulation {
     /// Selected-arsenal weapon step (donor `weaponStep`, donor runtime.ts
     /// 3886-3925).
     ///
     /// Runs the Q1 impulse routing + `syncSelectedQ1HealthLimit` (donor
     /// 3890-3901), the LMCTF-paused read-only return (donor 3902-3903),
-    /// gauntlet-hit detection (donor 3904-3907), the family step (donor
-    /// 3921), and `weaponSlots.reconcile()` (donor 3924). Weapon
-    /// selection already happened upstream in `prepareArsenalCommand`,
-    /// so no intent is passed. Unadmitted actors keep the passthrough
-    /// (donor `read` has no rows for them); ordered effects stay
-    /// unconsumed until the q3 lane can publish them to the source
-    /// client.
+    /// gauntlet-hit detection (donor 3904-3907), the selected-frame
+    /// override (donor 3919-3920), the family step (donor 3921), and
+    /// `weaponSlots.reconcile()` (donor 3924). Weapon selection already
+    /// happened upstream in `prepareArsenalCommand`, so no intent is
+    /// passed. Unadmitted actors keep the passthrough (donor `read` has
+    /// no rows for them); ordered effects stay unconsumed until the q3
+    /// lane can publish them to the source client.
     ///
-    /// Missing siblings: donor `weaponStep` remainder — the Q1 client
-    /// impulse clear (donor 3896; the composition exposes the client
-    /// snapshot but no impulse setter), the Q3 holdable block (donor
-    /// 3908-3917; Q3 source construction is unlanded so
-    /// `source.kind() == "q3"` is unreachable), and the selected-frame
-    /// override (donor 3919-3920; the caller frame is used as-is).
+    /// Missing siblings: donor `weaponStep` remainder — the Q3 holdable
+    /// block (donor 3908-3917; the native-client read, holdable step,
+    /// and early return are unported).
     fn weapon_step_seam(
         &self,
         pstate: &mut MovementPlayer,
@@ -28426,11 +28480,25 @@ impl SharedSimulation {
         let gauntlet_hit = self.weapon_step_gauntlet_seam(&arsenal, input)?;
         // Donor 3918 (the Q3 holdable block itself stays in the marker above).
         self.lock().primary_command_blocks.remove(id);
+        // Donor 3919-3920.
+        let frame = if family == "q1" {
+            selected_q1_frame(&self.peek())?
+        } else {
+            let state = self.peek();
+            selected_non_q1_step_frame(
+                match state.selected_weapon_source.as_ref() {
+                    Some(SelectedWeaponSource::Q2 { frame, .. }) => Some(*frame),
+                    _ => None,
+                },
+                input.frame,
+                state.selected_milliseconds,
+            )
+        };
         // Donor 3921.
         let stepped = super::arsenal::selected::WeaponStepInput {
             actor: (*input.actor).clone(),
             command: step_net_to_world_command(input.command),
-            frame: input.frame,
+            frame,
             arsenal: input.arsenal.clone(),
             animation: input.animation.clone(),
             environment: input.environment,
@@ -28448,6 +28516,17 @@ impl SharedSimulation {
             slot.reconcile().map_err(source_failure)?;
         }
         Ok((result.arsenal, result.animation))
+    }
+
+    /// Clear the source client impulse the selected arsenal consumed
+    /// (donor 3896).
+    fn weapon_step_composition_clear_impulse_seam(&self, actor: &ActorId) -> Result<(), RuntimeError> {
+        let state = self.peek();
+        let SourceRuntime::Q1 { composition, .. } = &state.source else {
+            return fail("Q1 impulse has no source composition");
+        };
+        composition.clear_impulse(actor).map_err(source_failure)?;
+        Ok(())
     }
 
     /// Run the composition impulse fallback (donor 3897/3901).
@@ -28509,8 +28588,12 @@ impl SharedSimulation {
         };
         // Donor 3895.
         self.sync_selected_q1_health_limit(id)?;
-        // Donor 3896-3897 (the client clear stays in the seam marker).
-        if !handled && source_is_q1 {
+        // Donor 3896-3897.
+        if handled {
+            if source_is_q1 {
+                self.weapon_step_composition_clear_impulse_seam(id)?;
+            }
+        } else if source_is_q1 {
             self.weapon_step_composition_impulse_seam(id)?;
         }
         // Donor 3898-3900; the working copy writes back wholesale downstream.
@@ -45594,5 +45677,110 @@ mod tests {
             buttons: 0.0,
             impulse: 0.0,
         }
+    }
+
+    fn step_frame(time: SourceTime, elapsed: SourceTime) -> FrameContext {
+        FrameContext {
+            frame: 7,
+            time,
+            elapsed,
+            phase: qa_core::time::FramePhase::ClientCommand,
+        }
+    }
+
+    #[test]
+    fn non_q1_step_frame_prefers_attached_q2_frame() {
+        let q2 = step_frame(SourceTime::Seconds(1.5), SourceTime::Seconds(0.1));
+        let input = step_frame(SourceTime::Seconds(9.0), SourceTime::Seconds(0.5));
+        let frame = selected_non_q1_step_frame(Some(q2), input, 250.0);
+        assert_eq!(frame.time, SourceTime::Seconds(1.5));
+        assert_eq!(frame.elapsed, SourceTime::Seconds(0.1));
+    }
+
+    #[test]
+    fn non_q1_step_frame_retimes_caller_frame_to_selected_milliseconds() {
+        let input = step_frame(SourceTime::Seconds(9.0), SourceTime::Seconds(0.5));
+        let frame = selected_non_q1_step_frame(None, input, 250.0);
+        assert_eq!(frame.time, SourceTime::Milliseconds(250));
+        assert_eq!(frame.elapsed, SourceTime::Seconds(0.5));
+        assert_eq!(frame.frame, 7);
+        assert!(matches!(frame.phase, qa_core::time::FramePhase::ClientCommand));
+    }
+
+    fn visibility_value(
+        slot: f64,
+        time: f64,
+        cluster: qa_world::save::value::SaveJson,
+    ) -> qa_world::save::value::SaveJson {
+        use qa_world::save::value::SaveJson;
+        SaveJson::Object(vec![
+            ("lastCheckSlot".to_string(), SaveJson::Number(slot)),
+            ("lastCheckTime".to_string(), SaveJson::Number(time)),
+            ("checkedCluster".to_string(), cluster),
+        ])
+    }
+
+    fn visibility_services(max_clients: usize) -> Q1ClientVisibilityServices {
+        Q1ClientVisibilityServices { max_clients }
+    }
+
+    #[test]
+    fn visibility_restore_stores_valid_cache() {
+        use qa_world::save::value::SaveJson;
+        let mut visibility = Q1ClientVisibility::new();
+        let value = visibility_value(2.0, 1.5, SaveJson::Number(3.0));
+        visibility
+            .restore(Some(&value), &visibility_services(4))
+            .expect("restore");
+        assert_eq!(
+            visibility.state,
+            Q1ClientVisibilityState {
+                last_check_slot: 2,
+                last_check_time: 1.5,
+                checked_cluster: Some(3),
+            }
+        );
+    }
+
+    #[test]
+    fn visibility_restore_accepts_missing_value() {
+        let mut visibility = Q1ClientVisibility::new();
+        visibility
+            .restore(None, &visibility_services(4))
+            .expect("missing stays accepted");
+        assert_eq!(
+            visibility.state,
+            Q1ClientVisibilityState {
+                last_check_slot: 0,
+                last_check_time: 0.0,
+                checked_cluster: None,
+            }
+        );
+    }
+
+    #[test]
+    fn visibility_restore_rejects_slot_above_reserved_count() {
+        use qa_world::save::value::SaveJson;
+        let mut visibility = Q1ClientVisibility::new();
+        let value = visibility_value(5.0, 1.5, SaveJson::Number(3.0));
+        assert!(visibility.restore(Some(&value), &visibility_services(4)).is_err());
+    }
+
+    #[test]
+    fn visibility_restore_rejects_bad_initial_cache() {
+        use qa_world::save::value::SaveJson;
+        let mut visibility = Q1ClientVisibility::new();
+        let value = visibility_value(0.0, 1.5, SaveJson::Null);
+        assert!(visibility.restore(Some(&value), &visibility_services(4)).is_err());
+        let value = visibility_value(0.0, 0.0, SaveJson::Number(3.0));
+        assert!(visibility.restore(Some(&value), &visibility_services(4)).is_err());
+    }
+
+    #[test]
+    fn visibility_restore_requires_reserved_slots() {
+        use qa_world::save::value::SaveJson;
+        let mut visibility = Q1ClientVisibility::new();
+        let value = visibility_value(0.0, 0.0, SaveJson::Null);
+        assert!(visibility.restore(Some(&value), &visibility_services(0)).is_err());
     }
 }

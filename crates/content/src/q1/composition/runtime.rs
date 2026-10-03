@@ -1118,8 +1118,9 @@ impl Q1SourceComposition {
         Ok(true)
     }
 
-    /// Clear a pending impulse.
-    fn clear_impulse(&self, actor: &ActorId) -> Result<(), Q1Error> {
+    /// Clear a pending impulse (donor `weaponStep`, runtime.ts 3896
+    /// `client.impulse = 0`, after the selected arsenal consumes it).
+    pub fn clear_impulse(&self, actor: &ActorId) -> Result<(), Q1Error> {
         lock_inner(&self.shared).clients.require_mut(actor)?.impulse = 0;
         Ok(())
     }
@@ -1883,6 +1884,27 @@ mod tests {
             .any(|event| matches!(event, Q1CompositionEvent::Client(_))));
         composition.pre_frame(&mut *game, 0.016).expect("frame");
         assert!(!composition.impulse(&mut *game, owned.id()).expect("idle"));
+    }
+
+    #[test]
+    fn clear_impulse_drops_pending_client_impulse() {
+        let (game, composition, _sink) = setup(Q1SourceProgram::Id1);
+        let owned = join(&mut *game, &composition, 0, "Player");
+        composition
+            .input(
+                game,
+                owned.id(),
+                &Q1SourceInput {
+                    attack: false,
+                    jump: false,
+                    use_action: false,
+                    impulse: 9,
+                },
+            )
+            .expect("input");
+        assert_eq!(composition.test_client(owned.id()).expect("client").impulse, 9);
+        composition.clear_impulse(owned.id()).expect("clear");
+        assert_eq!(composition.test_client(owned.id()).expect("client").impulse, 0);
     }
 
     #[test]
