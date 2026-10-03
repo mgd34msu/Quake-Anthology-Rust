@@ -34,6 +34,7 @@ use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
 use thiserror::Error;
 
+use super::windowed_scene::{build_presentation, open_product_mounts, WindowedPresentation};
 use crate::options::ApplicationOptions;
 use crate::startup::{open_server, StartupConfig};
 
@@ -92,6 +93,14 @@ pub enum WindowedWorldError {
     /// The map server could not open.
     #[error("cannot open map server: {0}")]
     Server(String),
+    /// The decoded world did not become a scene presentation.
+    #[error("cannot present {map}: {reason}")]
+    Presentation {
+        /// Map resource path.
+        map: String,
+        /// Presentation failure.
+        reason: String,
+    },
     /// No entity record spawned.
     #[error("spawned 0 of {records} map entities from {map} ({reason})")]
     NothingSpawned {
@@ -112,6 +121,8 @@ pub struct WindowedWorld {
     entity_records: usize,
     spawned: usize,
     skipped: Vec<SkippedEntity>,
+    presentation: Option<WindowedPresentation>,
+    presentation_error: Option<String>,
 }
 
 impl std::fmt::Debug for WindowedWorld {
@@ -124,6 +135,8 @@ impl std::fmt::Debug for WindowedWorld {
             .field("spawned", &self.spawned)
             .field("skipped", &self.skipped)
             .field("entity_count", &self.entity_count())
+            .field("presentation", &self.presentation)
+            .field("presentation_error", &self.presentation_error)
             .finish()
     }
 }
@@ -169,6 +182,24 @@ impl WindowedWorld {
     #[must_use]
     pub fn entity_count(&self) -> usize {
         self.server.simulation().actor_count()
+    }
+
+    /// Scene presentation (world geometry plus model-bearing entities), or
+    /// `None` when presentation failed (see [`Self::presentation_error`]).
+    #[must_use]
+    pub fn presentation(&self) -> Option<&WindowedPresentation> {
+        self.presentation.as_ref()
+    }
+
+    /// Why presentation failed, when [`Self::presentation`] is `None`.
+    #[must_use]
+    pub fn presentation_error(&self) -> Option<&str> {
+        self.presentation_error.as_deref()
+    }
+
+    /// Move the scene presentation out for the windowed scene view.
+    pub fn take_presentation(&mut self) -> Option<WindowedPresentation> {
+        self.presentation.take()
     }
 }
 
@@ -303,19 +334,23 @@ pub fn spawn_map_entities(
 ///
 /// Reads `options.map` through the `--map-game`/`--game` product mounts,
 /// decodes the BSP for the map's family, parses the entity string, and
-/// spawns every record. Fails honestly when the product is unknown, the
-/// map is unreadable or undecodable, or no record spawns.
+/// spawns every record, then builds the scene presentation over `owner`
+/// (the windowed renderer's resource owner, so the presentation's image
+/// uploads apply to the live backend). Fails honestly when the product is
+/// unknown, the map is unreadable or undecodable, or no record spawns.
 pub fn load_windowed_world(
     config: &StartupConfig,
     catalog: &InstalledCatalog,
     options: &ApplicationOptions,
+    owner: qa_client::render::types::ResourceOwner,
 ) -> Result<WindowedWorld, WindowedWorldError> {
     let content = map_content_id(options).to_string();
     if catalog.require(&content).is_err() {
         return Err(WindowedWorldError::UnknownProduct(content));
     }
-    let bytes = catalog
-        .read(&content, &options.map)
+    let mounts = open_product_mounts(catalog, &content, &options.map)?;
+    let bytes = mounts
+        .read(qa_content::mounts::ResourceRef::Path(&options.map))
         .map_err(|error| WindowedWorldError::MapUnread {
             content: content.clone(),
             map: options.map.clone(),
@@ -335,6 +370,10 @@ pub fn load_windowed_world(
             reason,
         });
     }
+    let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
+        Ok(presentation) => (Some(presentation), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
     Ok(WindowedWorld {
         server,
         content,
@@ -342,6 +381,8 @@ pub fn load_windowed_world(
         entity_records: entities.len(),
         spawned: summary.spawned,
         skipped: summary.skipped,
+        presentation,
+        presentation_error,
     })
 }
 
@@ -360,13 +401,28 @@ mod tests {
     fn steel_catalog() -> Option<InstalledCatalog> {
         let root = steel_corpus_root();
         if !root.join("q1").is_dir() && !root.join("q2").is_dir() && !root.join("q3a").is_dir() {
+            eprintln!("skipped: Steel corpus root {} has no game data", root.display());
             return None;
         }
-        qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()
+        match qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root.clone())) {
+            Ok(catalog) => Some(catalog),
+            Err(error) => {
+                eprintln!("skipped: Steel catalog discovery failed at {}: {error}", root.display());
+                None
+            }
+        }
     }
 
     fn test_config(options: &ApplicationOptions) -> StartupConfig {
         StartupConfig::from_options(options).unwrap()
+    }
+
+    fn test_owner() -> qa_client::render::types::ResourceOwner {
+        let session = qa_core::identity::IdentityOwner::create("windowed-world-test")
+            .unwrap()
+            .session()
+            .clone();
+        qa_client::render::types::ResourceOwner::new(7, session, 0)
     }
 
     #[test]
@@ -460,7 +516,7 @@ mod tests {
         )))
         .unwrap();
         let config = test_config(&options);
-        let error = load_windowed_world(&config, &catalog, &options).unwrap_err();
+        let error = load_windowed_world(&config, &catalog, &options, test_owner()).unwrap_err();
         let message = error.to_string();
         assert!(
             matches!(
@@ -489,7 +545,7 @@ mod tests {
                 ..ApplicationOptions::default()
             };
             let config = test_config(&options);
-            let world = match load_windowed_world(&config, &catalog, &options) {
+            let world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
                 Ok(world) => world,
                 Err(error) => {
                     eprintln!("skipped: {product} {map}: {error}");
@@ -508,5 +564,155 @@ mod tests {
             loaded += 1;
         }
         assert!(loaded > 0, "expected at least one Steel map to load");
+    }
+
+    /// Assert one Steel map presents draw batches at its spawn camera.
+    /// Returns `None` when the corpus or map is unavailable (skip).
+    fn steel_presentation_batches(product: &str, map: &str) -> Option<usize> {
+        use qa_client::render::types::{RenderOperation, SourceTime, ViewTarget};
+        use qa_client::view::perspective_projection;
+        use qa_core::math::{angles_to_axis, vec3};
+
+        let catalog = steel_catalog()?;
+        let options = ApplicationOptions {
+            product: product.to_string(),
+            map: map.to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                eprintln!("skipped: {product} {map}: {error}");
+                return None;
+            }
+        };
+        let presentation = world.presentation().unwrap_or_else(|| {
+            panic!(
+                "{product} {map}: expected a scene presentation ({:?})",
+                world.presentation_error()
+            )
+        });
+        assert!(
+            presentation.surface_count() > 0,
+            "{product} {map}: expected world surfaces"
+        );
+        let (origin, angles) = presentation
+            .spawn()
+            .map_or((vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0)), |spawn| {
+                (spawn.origin, spawn.angles)
+            });
+        let mut presentation = world.take_presentation().unwrap();
+        let camera = qa_client::view::SceneCamera {
+            origin,
+            axis: angles_to_axis(angles),
+            viewport: qa_client::view::Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            projection: perspective_projection(90.0, 90.0, 16384.0, 4.0).unwrap(),
+            clip: qa_client::view::CameraClip::None,
+        };
+        let (view, _) = presentation
+            .prepare_frame_view(
+                camera,
+                ViewTarget::Preview("steel".to_string()),
+                SourceTime::Milliseconds(33.0),
+            )
+            .unwrap_or_else(|error| panic!("{product} {map}: frame view failed: {error}"));
+        let batches: usize = view
+            .operations
+            .iter()
+            .map(|operation| match operation {
+                RenderOperation::Draw(batches) => batches.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(batches > 0, "{product} {map}: expected draw batches, got none");
+        eprintln!(
+            "{product} {map}: {} draw batches ({} model entities, {} inline models, {} skipped models)",
+            batches,
+            presentation.entities().len(),
+            presentation.inline_models().len(),
+            presentation.skipped_models().len()
+        );
+        for skipped in presentation.skipped_models() {
+            eprintln!(
+                "{product} {map}: skipped model #{} {} {}: {}",
+                skipped.index, skipped.classname, skipped.model, skipped.reason
+            );
+        }
+        Some(batches)
+    }
+
+    #[test]
+    fn live_steel_q3_presentation_prepares_draw_batches() {
+        if steel_presentation_batches("q3-baseq3", "maps/q3dm1.bsp").is_none() {
+            eprintln!("skipped: Steel corpus root has no game data");
+        }
+    }
+
+    #[test]
+    fn live_steel_q3_entities_submit_model_batches() {
+        use qa_client::render::types::SourceTime;
+        use qa_client::view::perspective_projection;
+        use qa_core::math::{angles_to_axis, normalize3, sub3, vector_to_angles};
+
+        let Some(catalog) = steel_catalog() else {
+            eprintln!("skipped: Steel corpus root has no game data");
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q3-baseq3".to_string(),
+            map: "maps/q3dm1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");
+                return;
+            }
+        };
+        let presentation = world
+            .take_presentation()
+            .unwrap_or_else(|| panic!("expected a scene presentation ({:?})", world.presentation_error()));
+        assert!(!presentation.entities().is_empty(), "q3dm1 has item entities");
+        let target = presentation.entities()[0].transform.origin;
+        let origin = qa_core::math::add3(target, qa_core::math::vec3(48.0, 0.0, 24.0));
+        let camera = qa_client::view::SceneCamera {
+            origin,
+            axis: angles_to_axis(vector_to_angles(normalize3(sub3(target, origin)))),
+            viewport: qa_client::view::Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            projection: perspective_projection(90.0, 90.0, 16384.0, 4.0).unwrap(),
+            clip: qa_client::view::CameraClip::None,
+        };
+        let batches = presentation
+            .prepare_entity_batches(camera, SourceTime::Milliseconds(33.0))
+            .expect("entity batches");
+        assert!(!batches.is_empty(), "close-up entity submits model batches");
+        eprintln!("q3dm1 close-up: {} entity batches", batches.len());
+    }
+
+    #[test]
+    fn live_steel_q1_presentation_prepares_draw_batches() {
+        if steel_presentation_batches("q1-classic-id1", "maps/e1m1.bsp").is_none() {
+            eprintln!("skipped: Steel corpus root has no game data");
+        }
+    }
+
+    #[test]
+    fn live_steel_q2_presentation_prepares_draw_batches() {
+        if steel_presentation_batches("q2-classic-baseq2", "maps/base1.bsp").is_none() {
+            eprintln!("skipped: Steel corpus root has no game data");
+        }
     }
 }
