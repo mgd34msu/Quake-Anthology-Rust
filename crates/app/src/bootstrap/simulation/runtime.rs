@@ -36472,6 +36472,7 @@ impl SharedSimulation {
                 })?
                 .restore_selection(owner, rows, item.as_ref())
                 .map_err(RuntimeError::Failure)?;
+            self.lock().restored_native_inventory_selections.remove(owner);
         }
         Ok(())
     }
@@ -39554,6 +39555,10 @@ impl SharedSimulation {
     /// Binds the live native primary weapon/command/inventory/drop services
     /// from the declared primary profile (donor `bindNativePrimaryWeapons`,
     /// runtime.ts 5490-5535) over one shared synthetic host.
+    ///
+    /// Missing siblings: the service hooks are no-ops; the donor passes
+    /// live callbacks (donor runtime.ts 5490-5500: `grantSelectedArsenal`,
+    /// `giveSelectedItem`, `nativeWeaponStep`, `nativeClientSpawned`).
     fn bind_native_input(
         &self,
         retained_drops: Option<&super::dropped_pickups::DroppedPickupLevels>,
