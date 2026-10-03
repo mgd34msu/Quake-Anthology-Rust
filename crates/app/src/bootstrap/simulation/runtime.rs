@@ -25552,12 +25552,73 @@ fn q2_character_begin_frame_seam(actor: &OwnedActor) {
     let _ = actor;
 }
 
-/// Step the player weapon (donor `playerWeapon`).
-///
-/// Missing siblings: the arsenal lane owns the player weapon step.
+/// Step the player weapon (donor `playerWeapon`, runtime.ts 3955-3960).
 #[allow(dead_code)]
-fn player_weapon_seam(player: &MovementPlayer) {
-    let _ = player;
+fn player_weapon_seam(sim: &SharedSimulation, player: &MovementPlayer) -> Result<(), RuntimeError> {
+    if player.cutscene.is_some() {
+        return Ok(());
+    }
+    let pressed = (player.buttons as i32 & 1) != 0;
+    let state = sim.peek();
+    match &state.source {
+        SourceRuntime::Q1 {
+            composition, services, ..
+        } => {
+            composition
+                .impulse(&mut services.borrow_mut(), player.actor.id())
+                .map_err(source_failure)?;
+            if state.selected_arsenal.is_none() {
+                // The donor sets `attackHeld = pressed` inside `weaponInput`;
+                // the port splits that write into `player_input`.
+                let fired = {
+                    let mut game = services.borrow_mut();
+                    game.player_input(
+                        &player.actor,
+                        &qa_content::q1::foundation::entity_services::Q1PlayerInput {
+                            attack: pressed,
+                            jump: false,
+                            teleport_until: None,
+                        },
+                    );
+                    game.weapon_input(
+                        &player.actor,
+                        None,
+                        player.view_angles,
+                        sim.time_seconds(),
+                        player.water_level as i32,
+                    )
+                    .map_err(source_failure)?
+                };
+                if fired {
+                    let arsenal = sim.read_player_arsenal(player)?;
+                    composition
+                        .fired(
+                            &mut services.borrow_mut(),
+                            player.actor.id(),
+                            arsenal.active_weapon.as_ref(),
+                        )
+                        .map_err(source_failure)?;
+                }
+            }
+            Ok(())
+        }
+        SourceRuntime::Q2 { game, .. } => {
+            if game.borrow().entity(player.actor.id()).is_none() {
+                return Ok(());
+            }
+            let Some(product) = state.q2_product.clone() else {
+                return Ok(());
+            };
+            let product = product.borrow();
+            let mut game = game.borrow_mut();
+            product
+                .product_match
+                .before_player(player.actor.id().clone(), &mut game);
+            product.players.begin_frame(player.actor.id().clone(), &mut game);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Run QuakeWorld new-missile maintenance (donor `runQuakeWorldNewMissile`).
@@ -25893,7 +25954,7 @@ impl SharedSimulation {
                 }
             }
             if let Some(player) = self.peek().player_states.get(actor).cloned() {
-                player_weapon_seam(&player);
+                player_weapon_seam(self, &player)?;
             }
         }
         // Donor 4616 (commit; the donor `continue` is the return).
@@ -26164,7 +26225,7 @@ impl SharedSimulation {
                 Some(player) => player,
                 None => self.require_player(actor.id())?,
             };
-            player_weapon_seam(&player);
+            player_weapon_seam(self, &player)?;
             self.lock().physics.commit_attachments();
             return Ok(());
         }
@@ -26368,8 +26429,21 @@ impl SharedSimulation {
                 })
                 .unwrap_or(false),
             SourceRuntime::Q2 { game, .. } => {
-                // Missing siblings: the q2 lane owns the product match record,
-                // so only the donor's deathmatch-flags arm is live.
+                // Donor `teamGame` q2 tail (runtime.ts 5715-5718): LMCTF
+                // rules, then match-selection kind, then the
+                // deathmatch-flags fallback.
+                if let Some(product) = state.q2_product.clone() {
+                    let selection = product.borrow().product_match.selection.clone();
+                    if matches!(
+                        selection,
+                        qa_content::q2::composition::types::Q2MatchSelection::Lmctf { .. }
+                    ) {
+                        return (game.borrow().lmctf.rules.ctf_flags & 128) == 0;
+                    }
+                    if matches!(selection.kind(), "ctf" | "lmctf" | "deathball") {
+                        return true;
+                    }
+                }
                 let services = game.borrow();
                 services.options.mode == qa_content::q2::foundation::host::Q2Mode::Deathmatch
                     && (services.options.deathmatch_flags & (64 | 128)) != 0
@@ -26772,13 +26846,27 @@ fn q2_players_end_frame_seam(
 
 /// Whether an LMCTF countdown elapsed for the timelimit latch (donor
 /// `match instanceof Q2Lmctf && phase/countdown/paused/remaining/nextThink`
-/// chain).
-///
-/// Missing siblings: the Q2 lane owns the match runtime (the product is
-/// opaque); the latch never fires until it lands.
+/// chain, runtime.ts 4707-4709).
 #[allow(dead_code)]
-fn q2_lmctf_countdown_elapsed_seam() -> bool {
-    false
+fn q2_lmctf_countdown_elapsed_seam(sim: &SharedSimulation) -> bool {
+    use qa_content::q2::composition::types::Q2MatchSelection;
+    use qa_content::q2::multiplayer::lmctf::match_::LmctfMatchPhase;
+    let (game, product) = {
+        let state = sim.peek();
+        let SourceRuntime::Q2 { game, .. } = &state.source else {
+            return false;
+        };
+        (Rc::clone(game), state.q2_product.clone())
+    };
+    let Some(product) = product else {
+        return false;
+    };
+    if !matches!(product.borrow().product_match.selection, Q2MatchSelection::Lmctf { .. }) {
+        return false;
+    }
+    let game = game.borrow();
+    let state = &game.lmctf.match_state;
+    state.phase == LmctfMatchPhase::Countdown && !state.paused && state.remaining <= 0 && game.now() >= state.next_think
 }
 
 /// Run Q2 post-player frames (donor `source.product.afterPlayerFrames`).
@@ -26792,11 +26880,18 @@ fn q2_after_player_frames_seam(
 
 /// Run the Q2 source-monster end frame (donor
 /// `source.monsters.endFrame(source.game)`).
-///
-/// Missing siblings: the Q2 lane owns the source monster runtime (the
-/// product is opaque).
 #[allow(dead_code)]
-fn q2_source_monsters_end_frame_seam() {}
+fn q2_source_monsters_end_frame_seam(sim: &SharedSimulation) {
+    let state = sim.peek();
+    let Some(game) = (match &state.source {
+        SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+        _ => None,
+    }) else {
+        return;
+    };
+    drop(state);
+    qa_content::q2::foundation::monsters::end_monster_frame(&mut game.borrow_mut());
+}
 
 /// Run Q2 rules (donor `source.product.checkRules`).
 #[allow(dead_code)]
@@ -26857,22 +26952,166 @@ fn run_quake_world_commands_seam() {}
 #[allow(dead_code)]
 fn quake_c_messages_flush_seam() {}
 
-/// Step one QuakeC character (donor `quakeCCharacterStep`).
-///
-/// Missing siblings: the QuakeC lane owns the character step; the
-/// locomotion/backwards computation around this call is real and the
-/// animation passes through unchanged until it lands.
+/// Advance one Q2 player animation tick (donor
+/// `advanceQ2PlayerAnimation`, `content/q2/base/player/view.ts` 127-141).
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+fn advance_q2_player_animation_state(
+    entity_frame: &mut i32,
+    priority: &mut i32,
+    end_frame: &mut i32,
+    duck: &mut bool,
+    run: &mut bool,
+    grounded: bool,
+    ducked: bool,
+    running: bool,
+) {
+    let changed = ducked != *duck && *priority < 5 || running != *run && *priority == 0 || !grounded && *priority <= 1;
+    if !changed {
+        if *priority == 6 {
+            if *entity_frame > *end_frame {
+                *entity_frame -= 1;
+                return;
+            }
+        } else if *entity_frame < *end_frame {
+            *entity_frame += 1;
+            return;
+        }
+        if *priority == 5 {
+            return;
+        }
+        if *priority == 2 {
+            if !grounded {
+                return;
+            }
+            *priority = 1;
+            *entity_frame = 68;
+            *end_frame = 71;
+            return;
+        }
+    }
+    *priority = 0;
+    *duck = ducked;
+    *run = running;
+    if !grounded {
+        *priority = 2;
+        if *entity_frame != 67 {
+            *entity_frame = 66;
+        }
+        *end_frame = 67;
+    } else if running {
+        *entity_frame = if ducked { 154 } else { 40 };
+        *end_frame = if ducked { 159 } else { 45 };
+    } else {
+        *entity_frame = if ducked { 135 } else { 0 };
+        *end_frame = if ducked { 153 } else { 39 };
+    }
+}
+
+/// Step one QuakeC character (donor `quakeCCharacterStep`, runtime.ts
+/// 4034-4050).
 #[allow(dead_code)]
 fn quake_c_character_step_seam(
+    sim: &SharedSimulation,
     actor: &OwnedActor,
     frame: &FrameContext,
     animation: &ActorAnimationState,
     locomotion: &'static str,
     backwards: bool,
     force: bool,
-) -> ActorAnimationState {
-    let _ = (actor, frame, locomotion, backwards, force);
-    animation.clone()
+) -> Result<ActorAnimationState, RuntimeError> {
+    use qa_world::movement::types::{AnimationState, LocomotionAnimation};
+    if matches!(animation.state, AnimationState::Q1 { .. }) {
+        return Ok(animation.clone());
+    }
+    let health = sim
+        .peek()
+        .combat
+        .read(actor.id())
+        .map(|state| state.health)
+        .unwrap_or(0.0);
+    if matches!(animation.state, AnimationState::Q3 { .. }) {
+        let content = sim.peek().recipe.character.definition.content.clone();
+        let product = if content.as_str().contains("missionpack") {
+            qa_world::movement::q3::types::Q3Product::MissionPack
+        } else {
+            qa_world::movement::q3::types::Q3Product::BaseQ3
+        };
+        let input = qa_content::q3::foundation::character::AnimationStepInput {
+            frame: *frame,
+            animation: animation.clone(),
+            locomotion: match locomotion {
+                "swim" => LocomotionAnimation::Swim,
+                "jump" => LocomotionAnimation::Jump,
+                "crouch" => LocomotionAnimation::Crouch,
+                "run" => LocomotionAnimation::Run,
+                _ => LocomotionAnimation::Idle,
+            },
+            backwards,
+            force,
+        };
+        let stepped =
+            qa_content::q3::foundation::character::step_q3_character_animation(&input, product, health <= 0.0, 0)
+                .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+        return Ok(stepped.animation);
+    }
+    let player = sim.require_player(actor.id())?;
+    let ducked = player.bounds.max.z < player.standing_bounds.max.z;
+    let reaction = if health <= 0.0 {
+        super::quakec_character_animation::QuakeCCharacterReaction::Death
+    } else {
+        super::quakec_character_animation::QuakeCCharacterReaction::Alive
+    };
+    let selected = super::quakec_character_animation::quake_c_character_animation(animation, reaction, ducked);
+    let AnimationState::Q2 {
+        frame: first,
+        end_frame,
+        priority,
+        duck,
+        run: anim_run,
+    } = selected.state
+    else {
+        return fail("Q2 character animation changed family");
+    };
+    let mut entity_frame = first;
+    let mut end = end_frame;
+    let mut priority = priority;
+    let mut duck = duck;
+    let mut anim_run = anim_run;
+    let now = seconds(frame.time);
+    let elapsed = seconds(frame.elapsed);
+    let body = {
+        let actors = sim.actors.borrow();
+        sim.bodies_table.borrow().read(actors.inner(), actor.id())
+    };
+    let run = body
+        .as_ref()
+        .is_some_and(|body| f64::from(body.velocity.x).hypot(f64::from(body.velocity.y)) != 0.0);
+    let grounded = !matches!(player.ground, TraceHit::None);
+    let start = ((now - elapsed) * 10.0).floor() as i64;
+    let end_tick = (now * 10.0).floor() as i64;
+    for _tick in start..end_tick {
+        advance_q2_player_animation_state(
+            &mut entity_frame,
+            &mut priority,
+            &mut end,
+            &mut duck,
+            &mut anim_run,
+            grounded,
+            ducked,
+            run,
+        );
+    }
+    Ok(ActorAnimationState {
+        provider: animation.provider.clone(),
+        state: AnimationState::Q2 {
+            frame: entity_frame,
+            end_frame: end,
+            priority,
+            duck,
+            run: anim_run,
+        },
+    })
 }
 
 /// Emit Q2 shadow lights (donor `emitQ2ShadowLights(source.game)`).
@@ -27010,7 +27249,7 @@ impl SharedSimulation {
         }
         // Donor 4705-4712: Q2 match maintenance.
         if ctx.run && self.peek().source.kind() == "q2" {
-            if q2_lmctf_countdown_elapsed_seam() {
+            if q2_lmctf_countdown_elapsed_seam(self) {
                 if let Some(registry) = self.peek().q2_server_registry.clone() {
                     registry
                         .borrow_mut()
@@ -27027,7 +27266,7 @@ impl SharedSimulation {
                     q2_after_player_frames_seam(&product, &mut game);
                 }
             }
-            q2_source_monsters_end_frame_seam();
+            q2_source_monsters_end_frame_seam(self);
             {
                 let mut state = self.lock();
                 state.checking_q2_rules = true;
@@ -27342,8 +27581,15 @@ impl SharedSimulation {
             let yaw = f64::from(player.view_angles.y) * std::f64::consts::PI / 180.0;
             let backwards = f64::from(body.velocity.x) * yaw.cos() + f64::from(body.velocity.y) * yaw.sin() < 0.0;
             let frame = self.peek().source_frame;
-            let animation =
-                quake_c_character_step_seam(&player.actor, &frame, &player.animation, locomotion, backwards, false);
+            let animation = quake_c_character_step_seam(
+                self,
+                &player.actor,
+                &frame,
+                &player.animation,
+                locomotion,
+                backwards,
+                false,
+            )?;
             {
                 let mut state = self.lock();
                 if let Some(entry) = state.player_states.get_mut(&player.actor) {
