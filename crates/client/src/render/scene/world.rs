@@ -3168,11 +3168,13 @@ impl WorldScene {
             };
             let entity = data.entity_rgba;
             let context = LegacyMaterialDrawContext {
+                // Donor `entityRGBA` is bytes-as-floats (0..255); the legacy
+                // batch builder divides by 255 itself, so pass bytes through.
                 entity_rgba: Some(vec4(
-                    f32::from(entity[0]) / 255.0,
-                    f32::from(entity[1]) / 255.0,
-                    f32::from(entity[2]) / 255.0,
-                    f32::from(entity[3]) / 255.0,
+                    f32::from(entity[0]),
+                    f32::from(entity[1]),
+                    f32::from(entity[2]),
+                    f32::from(entity[3]),
                 )),
                 time: data.time,
                 animation_frame: input.animation_frame.unwrap_or((data.time * 2.0).trunc()),

@@ -315,7 +315,8 @@ pub fn q1_sky_tex_coords(position: Vec3, view_origin: Vec3, time: f32, layer: Q1
 
 /// Legacy material draw context (`LegacyMaterialDrawContext`).
 pub struct LegacyMaterialDrawContext<'a> {
-    /// Entity RGBA tint.
+    /// Entity RGBA tint as bytes-as-floats (0..255 per channel, donor
+    /// `entityRGBA` scale); `None` means opaque white.
     pub entity_rgba: Option<Vec4>,
     /// Time.
     pub time: f32,
