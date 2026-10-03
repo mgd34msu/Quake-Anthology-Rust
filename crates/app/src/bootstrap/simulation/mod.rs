@@ -70,6 +70,7 @@ pub mod q1_punch;
 pub mod q2_character_bridge;
 pub mod q2_monster_sources;
 pub mod q2_native_world;
+pub mod q2_product_bridge;
 pub mod q2_rerelease_slide;
 pub mod q3;
 pub mod q3_ballistics;
