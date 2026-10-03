@@ -1,9 +1,13 @@
 //! Renderer diagnostic source commands.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/renderer-diagnostics.ts`
-//! (`registerRendererDiagnostics`, `RendererDiagnosticServices`). The command buffer, invocation,
-//! scene-material, renderer-resource, and renderer-diagnostics siblings are unported, so they are
-//! absorbed as local traits and snapshot rows; every report format and error text matches the
+//! Port of Quake-Anthology-TS `src/app/bootstrap/renderer-diagnostics.ts`
+//! (`registerRendererDiagnostics`, `RendererDiagnosticServices`). The command buffer
+//! ([`CommandBuffer`](qa_core::cmd_buffer::CommandBuffer)), invocation
+//! ([`Invocation`](qa_core::cmd_buffer::Invocation)), scene-material
+//! ([`RegisteredSceneMaterial`](qa_client::render::scene::material_registrations::RegisteredSceneMaterial)),
+//! renderer-resource ([`Q3RendererResources`](qa_content::q3::presentation::resources::Q3RendererResources)),
+//! and renderer diagnostics ([`RendererDiagnostics`](super::renderer::RendererDiagnostics))
+//! arrive as local traits and snapshot rows; every report format and error text matches the
 //! donor exactly. Source commands query the active owners at dispatch; snapshots never execute
 //! resource queues.
 

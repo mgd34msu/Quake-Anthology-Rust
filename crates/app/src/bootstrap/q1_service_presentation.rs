@@ -1,11 +1,12 @@
 //! Quake sky and scoreboard presentation with retained source events.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q1-service-presentation.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q1-service-presentation.ts`
 //! (`Q1ClientRow`, `Q1ServiceAssets`, `updateQ1ClientMetadata`, `Q1ServicePresentation`).
 //! Sky faces load in [`SKY_FACE_SUFFIXES`](qa_client::materials::sky::SKY_FACE_SUFFIXES)
 //! order into the ported [`Q2SkyView`](qa_client::render::scene::q2_sky::Q2SkyView), which
 //! matches the donor sky value field for field. The event stream
-//! (`./simulation/types.ts`, out of scope) is shimmed minimally below: this class only
+//! ([`SimulationPresentationEvent`](super::simulation::types::SimulationPresentationEvent),
+//! `./simulation/types.ts` port) is shimmed minimally below: this class only
 //! reads owner lifecycle plus the `q1-sky`/`q1-client` owner/content/recipient/sequence
 //! envelope and the metadata event. Async loads become the sync [`Q1ServiceAssets`] seam,
 //! and the refresh applier becomes an explicit [`Q1SkyRefresh`] commit; selection identity

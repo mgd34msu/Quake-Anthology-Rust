@@ -1,9 +1,10 @@
 //! Quake II operator console over the simulation's source registry.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q2-console.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q2-console.ts`
 //! (`q2OperatorPlayerName`, `ApplicationQ2ConsoleOptions`, `ApplicationQ2Console`, plus the
 //! donor's re-export of `LMCTF_CONSOLE_NAMES`). The simulation runtime
-//! (`./simulation/runtime.ts`, out of scope) arrives through the [`Q2ConsoleHost`] seam,
+//! ([`SharedSimulation`](super::simulation::runtime::SharedSimulation),
+//! `./simulation/runtime.ts` port) arrives through the [`Q2ConsoleHost`] seam,
 //! which keeps every donor behavior here: the constructor guards, `quit`/`map`/`say`
 //! forwarding, the `status`/`dumpuser` reports, shared-name selection, and the maplist
 //! load with its line parsing. Content mounts and LMCTF match rules are the canonical

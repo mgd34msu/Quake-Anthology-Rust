@@ -1,10 +1,11 @@
 //! Component scene snapshot selection.
 //!
-//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/component-scene.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/component-scene.ts`
 //! (`selectComponentScene`).
 //! The mod scene publication arrives as the absorbed
 //! [`ComponentScenePublication`] pick (donor `QvmModScenePublication`,
-//! unported) with game state as an opaque passthrough; visibility runs
+//! mirrored at [`mod_presentation_checkpoint`](qa_guest::qvm::mod_presentation_checkpoint))
+//! with game state as an opaque passthrough; visibility runs
 //! through [`select_application_q3_snapshot`], and server commands
 //! tokenize per recipient. The selected context mirrors the donor's
 //! `QvmSceneContext` shape over the ported Q3 state types.

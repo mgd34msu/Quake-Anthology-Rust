@@ -1,6 +1,6 @@
 //! Seat-owned Quake III client game (cgame) presentation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q3-client.ts`
 //! (`ApplicationQ3ClientSource`, `ApplicationQ3ClientOptions`, `QvmVideoReopenOptions`,
 //! `ApplicationQ3LocalRound`, `ApplicationQ3Client`). The client owns cgame state:
 //! kind dispatch, cvar wiring, input mapping, round management, system-info parsing,
@@ -14,9 +14,9 @@
 //!   `handlesCommand`, key/mouse/event/input handling, and `shutdown` are sync;
 //!   server-command reads settle immediately.
 //! - Backend construction is host-owned. The donor builds the TypeScript presentation
-//!   and QVM client inline, but those builders live in missing siblings and the
-//!   ported presentation API was redesigned without a hook surface, so the host
-//!   supplies `create_native`/`create_qvm` factories. The port keeps every piece of
+//!   and QVM client inline, but the ported presentation API was redesigned
+//!   without a hook surface, so the host supplies `create_native`/`create_qvm`
+//!   factories over the homes below. The port keeps every piece of
 //!   donor logic the factories need as callbacks: the session surface, movement
 //!   proxy, render gates, body capture, and the `q3:` provider wrapper contract is
 //!   documented on [`Q3NativeParams`] for the wiring lane.
@@ -60,10 +60,16 @@
 //!   `Q3LocalOptions.same_session`); sessionless cvar registries adopt the
 //!   seat session when the time-cvar mirror binds.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `assets.ts`,
-//! `content/q3/presentation/client.ts` (native backend), and the QVM guest
-//! inputs (`Q3BrowserView`, guest cvars/input/client-state, connection,
-//! scalars) which the host factory captures directly.
+//! Sibling homes (host seams, referenced but NOT ported here): the native
+//! backend is [`client`](qa_content::q3::presentation::client)
+//! (`content/q3/presentation/client.ts` port); and the QVM guest inputs
+//! are [`Q3BrowserView`](qa_net::q3_browser_view::Q3BrowserView) plus
+//! [`q3_client::cvars`](super::q3_client::cvars),
+//! [`q3_client::client_state`](super::q3_client::client_state),
+//! [`q3_client::qvm_scalars`](super::q3_client::qvm_scalars), and the
+//! connection, which the host factory captures directly.
+//!
+//! Missing siblings (host seams, referenced but NOT ported here): `assets.ts`.
 //!
 //! Canonical siblings (ported; not host seams): `keys.ts`
 //! (`crate::bootstrap::keys::ApplicationKeys` over
@@ -468,7 +474,8 @@ pub struct Q3ClientCommands {
     pub print: Rc<dyn Fn(&str)>,
 }
 
-/// Client command registration (donor `ClientCommandRegistration`, unported).
+/// Client command registration (donor `ClientCommandRegistration`, whose owner
+/// model lives in [`ApplicationInput`](super::input::ApplicationInput)).
 ///
 /// Interior mutability: implementations hold their table behind a lock so the
 /// session callbacks can share one registration.
@@ -1122,15 +1129,9 @@ pub struct ApplicationQ3Client {
 }
 
 /// Physical mouse button to Quake button (donor `input/mouse-buttons.ts`
-/// `quakeMouseButton`: middle and right swap; unported sibling, inlined).
+/// `quakeMouseButton`: middle and right swap).
 fn quake_mouse_button(physical: i32) -> i32 {
-    if physical == 2 {
-        3
-    } else if physical == 3 {
-        2
-    } else {
-        physical
-    }
+    qa_client::input::mouse_buttons::quake_mouse_button(physical)
 }
 
 impl ApplicationQ3Client {

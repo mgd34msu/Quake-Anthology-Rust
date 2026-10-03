@@ -1,5 +1,5 @@
-//! Weapon-behavior authoring tool ported from
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/weapon-behavior-tool.ts`.
+//! Weapon-behavior authoring tool ported from Quake-Anthology-TS
+//! `src/app/bootstrap/weapon-behavior-tool.ts`.
 //!
 //! Catalog discovery, behavior documents, and mount plans reuse
 //! [`qa_content`]; QuakeC, QVM, and PE parsing reuse [`qa_guest`]. The
@@ -8,8 +8,8 @@
 //! port, and shared behavior helpers reuse
 //! [`weapon_behavior_selection`](super::weapon_behavior_selection). Guest
 //! behavior services and QuakeC program snapshots arrive through
-//! [`WeaponBehaviorHost`](super::weapon_behavior_selection::WeaponBehaviorHost)
-//! because those sibling lanes are unported.
+//! [`WeaponBehaviorHost`](super::weapon_behavior_selection::WeaponBehaviorHost),
+//! backed by the selection homes above.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

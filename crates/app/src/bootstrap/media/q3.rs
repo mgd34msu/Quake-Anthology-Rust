@@ -1,6 +1,6 @@
 //! Source cgame effect producers joined to shared assets, collision, and drawing.
 //!
-//! Sync port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/effects/q3.ts`. The donor awaits
+//! Sync port of Quake-Anthology-TS `src/app/bootstrap/effects/q3.ts`. The donor awaits
 //! asset-provider promises; this port resolves the same registrations through
 //! the synchronous [`Q3EffectHost`]. Engine services the donor imports
 //! (assets, world, collision) arrive as host methods; content systems
@@ -216,8 +216,11 @@ pub struct Q3EffectMaterialContext {
 }
 
 /// Absorbed application services: asset registration, collision queries, and
-/// world drawing (donor `ApplicationAssets` plus `SceneQueries`, out of
-/// scope). All methods take `&self`; hosts keep registration caches behind
+/// world drawing (donor `ApplicationAssets` plus `SceneQueries`;
+/// `ApplicationAssets` is out of scope and the
+/// [`SceneQueries`](qa_bots::scene::SceneQueries) port stays absorbed in
+/// this host).
+/// All methods take `&self`; hosts keep registration caches behind
 /// interior mutability like [`SettingCvars`](qa_client::ui::settings::SettingCvars).
 pub trait Q3EffectHost {
     /// Register a sound path, or `None` when the source is missing (donor

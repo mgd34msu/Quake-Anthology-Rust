@@ -2,9 +2,11 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-arsenal.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
-//! The factory below is generic over the three dialect simulation seams so
-//! the runtime partition can wire the shared simulation post-merge.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! factory below stays generic over the three dialect simulation seams:
+//! each seam is the narrow interface one dialect needs; only test doubles
+//! implement them.
 //!
 //! The decision shell ([`BotWeaponCandidate`] plus the `arsenal_*` helpers)
 //! mirrors `createBotArsenalKnowledge` from donor

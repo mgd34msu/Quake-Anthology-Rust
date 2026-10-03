@@ -1,6 +1,6 @@
 //! Player locomotion snapshots, movement provider assembly, and detached prediction.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/player-movement.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/player-movement.ts`
 //! (`LocomotionPlayer`, `capturePlayerLocomotion`, `playerLocomotionMatches`, `playerTracePolicy`,
 //! `playerStandingBounds`, `playerPostures`, `locomotionTemplate`, `playerCrouchedBounds`,
 //! `selectedMovementProfile`, `playerMovementEnvironment`, `PlayerMovementHooks`,

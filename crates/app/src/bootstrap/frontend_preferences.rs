@@ -1,5 +1,5 @@
-//! Frontend preference overrides ported from
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/frontend-preferences.ts`.
+//! Frontend preference overrides ported from Quake-Anthology-TS
+//! `src/app/bootstrap/frontend-preferences.ts`.
 //!
 //! Only user-selected overrides cross into a game; saved values stay with
 //! their seat. [`FrontendPreferences`] holds the override set plus baselines
@@ -8,8 +8,13 @@
 //!
 //! Live game state stays behind caller traits: [`FrontendAudio`] covers the
 //! unported `ApplicationAudio` (`audio.ts`) volumes, and
-//! [`FrontendLocalInput`] covers one local seat's haptics, mouse tuning, and
-//! run toggle (the donor `LocalInput` builder/haptics types are unported).
+//! [`FrontendLocalInput`] covers one local seat's haptics
+//! ([`SeatHaptics`](qa_client::input::haptics::SeatHaptics)), mouse tuning
+//! ([`qa_client::input::mouse_settings`]), and run toggle over
+//! [`LocalInput`](super::input::LocalInput) (the donor `LocalInput` builder
+//! types are ported as [`InputCommandBuilder`](qa_client::input::InputCommandBuilder)
+//! and [`MouseInput`](qa_client::input::MouseInput), which stay behind the
+//! trait).
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -148,7 +153,7 @@ pub trait FrontendAudio {
 }
 
 /// One local seat's haptics, mouse tuning, and run toggle behind the
-/// unported donor `LocalInput` builder/haptics types.
+/// ported donor `LocalInput` builder types.
 pub trait FrontendLocalInput {
     /// Read the seat's input-side preference values.
     fn read_frontend_input(&self) -> FrontendInputValues;

@@ -1,6 +1,5 @@
-//! Application audio data (port of donor
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/audio.ts`,
-//! data exports only).
+//! Application audio data (port of Quake-Anthology-TS
+//! `src/app/bootstrap/audio.ts`, data exports only).
 //!
 //! This port covers the donor's data exports: [`ApplicationAudioCommand`],
 //! [`ApplicationEffectSound`], [`ApplicationAudioSeatEvents`], and
@@ -14,9 +13,10 @@
 //! way the donor does, and per-call music construction would reset track
 //! selection, resume, and shuffle state. The class belongs with the audio
 //! lane once `ApplicationMusic` ownership is restructured (owned engine or
-//! shared handle). `SceneQueries` and `SimulationPresentationEvent` are
-//! likewise unported, so [`ApplicationAudioSeatEvents`] stays generic over
-//! its scene and event inputs.
+//! shared handle). [`SceneQueries`](qa_bots::scene::SceneQueries) and
+//! [`SimulationPresentationEvent`](crate::bootstrap::simulation::types::SimulationPresentationEvent)
+//! are the live scene and event homes; [`ApplicationAudioSeatEvents`]
+//! stays generic over its scene and event inputs.
 
 use qa_client::audio::music::MusicControls;
 use qa_client::audio::output::AudioOutputFormat;

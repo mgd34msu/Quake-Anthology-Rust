@@ -1,12 +1,13 @@
 //! Console capture ownership: screenshot readback, config text, command registration.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/capture.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/capture.ts`
 //! (`applicationCaptureRoot`, `ApplicationCaptureServices`,
 //! `inputCaptureServices`, `ApplicationCapture`). The port is synchronous:
 //! operations run inline, so `drain` has nothing to await; the
 //! cancel-before-presentation error survives for reads that reentrantly
-//! observe `before_world_change`. Console registration, archived bindings,
-//! and archive commands arrive through seams because those lanes are unported.
+//! observe `before_world_change`. Console registration ([`console`](super::console)),
+//! archived bindings, and archive commands ([`cvar_archives`](super::cvar_archives))
+//! arrive through seams because the donor's registration calls run host-side.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

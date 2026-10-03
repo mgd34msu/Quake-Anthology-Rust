@@ -2,10 +2,11 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-objectives.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
-//! The [`BotObjectiveSimulation`] seam exposes exactly the donor's simulation
-//! surface, including the Q2 match-mode discriminants; the runtime partition
-//! implements it post-merge over `qa_content::q2` and `qa_world`.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! [`BotObjectiveSimulation`] seam stays as the narrow interface this
+//! module needs (simulation surface plus Q2 match-mode discriminants);
+//! only test doubles implement it.
 
 use std::rc::Rc;
 

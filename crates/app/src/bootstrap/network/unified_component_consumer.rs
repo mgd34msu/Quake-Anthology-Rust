@@ -1,13 +1,16 @@
 //! Client-side original component replica.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/unified-component-consumer.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/unified-component-consumer.ts`
 //! (`UnifiedComponentConsumers`).
 //!
 //! The replica owns only original client presentation and its exact server
 //! activation lease. Donor closures over entries become methods on the
 //! collection; asynchronous content loading runs synchronously with order
-//! preserved. Content, presentation events, and user files arrive through
-//! [`UnifiedComponentHost`] since those lanes are unported.
+//! preserved. Content ([`LoadedApplicationContent`](super::super::content::LoadedApplicationContent)),
+//! presentation events
+//! ([`SimulationPresentationEvent`](super::super::simulation::types::SimulationPresentationEvent)),
+//! and user files ([`ModUserFiles`](qa_content::contract::ModUserFiles)) arrive through
+//! [`UnifiedComponentHost`], which carries the host-side handles.
 
 use std::collections::HashMap;
 

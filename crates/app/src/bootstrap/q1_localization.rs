@@ -1,6 +1,6 @@
 //! Source message localization shared by the console and HUD.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q1-localization.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q1-localization.ts`
 //! (`Q1MessageLocalization`). Catalog tables, tier loading, and classic formatting come from
 //! the ported [`LocalizationCatalog`](qa_client::text::localization::LocalizationCatalog)
 //! and [`classic_q1_text`](qa_content::q1::foundation::text::classic_q1_text); the content

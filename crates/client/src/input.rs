@@ -38,6 +38,7 @@ pub mod haptics;
 pub mod joystick;
 pub mod keycodes;
 pub mod midi;
+pub mod mouse_buttons;
 pub mod mouse_settings;
 pub mod router;
 pub mod sdl_keys;

@@ -2,13 +2,18 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-rerelease.ts`.
 //!
+//! Sibling homes (narrow host seams over live siblings):
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`RereleaseBotSimulation`].
+//! - [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`RereleaseBotSession`].
+//! - [`ApplicationBotNavigation`](super::navigation::ApplicationBotNavigation)
+//!   (`simulation/navigation.ts` port): [`RereleaseBotNav`]. The ported
+//!   `RereleaseNavigation` graph and the generic `NavigationRuntime`
+//!   stay separate; the rerelease-used surface (checkpoint, restore,
+//!   per-client graph) is seamed directly.
+//!
 //! Missing siblings (host seams, implemented post-merge by their partitions):
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`RereleaseBotSimulation`].
-//! - `world/session/session.ts` (`EngineSession`): [`RereleaseBotSession`].
-//! - `simulation/navigation.ts` (`ApplicationBotNavigation`):
-//!   [`RereleaseBotNav`]. The ported `RereleaseNavigation` graph and the
-//!   generic `NavigationRuntime` have no bridge yet, so the rerelease-used
-//!   surface (checkpoint, restore, per-client graph) is seamed directly.
 //! - `bots/behavior/rerelease/profile.ts` (`RereleaseBotBehavior`):
 //!   [`RereleaseBotBehavior`]. Only the checkpoint and chat-text pieces are
 //!   ported (`qa_bots::behavior::rerelease`); the driver is seamed.

@@ -1,10 +1,11 @@
 //! Quake II deathmatch completion reporting.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q2-match-reports.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q2-match-reports.ts`
 //! (`NativeQ2MapTransition`, `classicMatchScore`, `prepareQ2MatchReports`,
 //! `rereleaseMatchScore`, `q2MatchCompleted`, `q2MatchReports`). Score math reads the
 //! ported protocol stat slots directly; the simulation, native runtime, and recipe
-//! (`./simulation/runtime.ts`, out of scope) arrive through the [`Q2MatchSimulation`] seam.
+//! ([`SharedSimulation`](super::simulation::runtime::SharedSimulation),
+//! `./simulation/runtime.ts` port) arrive through the [`Q2MatchSimulation`] seam.
 //! Round identities need OS entropy, which the workspace does not provide, so the host
 //! mints them (donor `randomUUID`). Events use the ported [`PlayerProgressEvent`].
 

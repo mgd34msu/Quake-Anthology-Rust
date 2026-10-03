@@ -5,9 +5,12 @@
 //! `PresentationPredictionAdapter`, `createPresentationMovementHost`,
 //! `createSimulationPredictionHost`).
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`, `MovementPredictionPlayer`):
+//! - [`SharedSimulation`](super::super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port) and
+//!   [`MovementPredictionPlayer`](super::super::player_movement::MovementPredictionPlayer)
+//!   (`player-movement.ts` port):
 //!   [`create_simulation_prediction_host`] takes the narrow
 //!   [`SimulationPredictionSource`] seam instead of the full simulation.
 

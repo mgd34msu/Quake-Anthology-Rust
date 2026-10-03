@@ -5,9 +5,11 @@
 //! messages; file writes stay atomic under the writable root; server
 //! setting definitions, ranges, and profile handling match the donor
 //! collections. Input-device tuning types that the donor imports from
-//! unported input/platform modules (`GamepadTuning`, `MouseTuning`,
-//! `ControllerSelection`) live here as document-schema projections; key
-//! codes, bindings, and axes reuse [`qa_client::input`].
+//! input/platform modules ([`GamepadTuning`](qa_client::input::gamepad::GamepadTuning),
+//! [`MouseTuning`](qa_client::input::MouseTuning),
+//! [`ControllerSelection`](qa_platform::controller::ControllerSelection)) live here
+//! as document-schema projections; key codes, bindings, and axes reuse
+//! [`qa_client::input`].
 
 pub mod config;
 pub mod json;

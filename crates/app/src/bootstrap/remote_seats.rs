@@ -1,14 +1,16 @@
 //! Native per-seat remote channels over admitted session clients.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-seats.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-seats.ts`
 //! (`RemoteSeatServices`, `RemoteSeatChannel`, `prepareRemoteSeatChannels`).
 //! One native channel per admitted local player; no authority or platform
-//! input owner. Session seats, clients, and connections (unported
-//! `EngineSession` surface) arrive as local traits following the
-//! [`super::remote_seat_identities`] absorbed-contract pattern; the network
-//! and presentation reuse [`super::remote_seat_source`], the frame clock
-//! reuses [`super::frame_clock`], and frame-time controls (unported
-//! `frame-time.ts`) arrive through [`RemoteFrameTimer`]. Sync port: the
+//! input owner. Session seats, clients, and connections
+//! ([`EngineSession`](qa_world::session::EngineSession) surface) arrive as
+//! local traits following the [`super::remote_seat_identities`]
+//! absorbed-contract pattern; the network and presentation reuse
+//! [`super::remote_seat_source`], the frame clock reuses
+//! [`super::frame_clock`], and frame-time controls
+//! ([`FrameTimeControls`](super::frame_time::FrameTimeControls),
+//! `frame-time.ts` port) arrive through [`RemoteFrameTimer`]. Sync port: the
 //! donor's async poll/close/prepare become sync calls with the same
 //! aggregate cleanup texts.
 

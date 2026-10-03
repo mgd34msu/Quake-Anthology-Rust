@@ -1,5 +1,5 @@
-//! Profile configuration entry points (port of donor
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/configuration.ts`).
+//! Profile configuration entry points (port of Quake-Anthology-TS
+//! `src/app/bootstrap/configuration.ts`).
 //!
 //! This port covers the donor's self-contained exports:
 //! [`ConfigurationCommandRequest`], [`configuration_dialect`],
@@ -8,14 +8,25 @@
 //!
 //! Scope note: `PreparedProfileConfiguration`, `prepareProfileConfiguration`,
 //! and `prepareInitialConfiguration` are NOT ported here. Both functions are
-//! orchestrators over roughly fifteen unported sibling lanes
-//! (`prepared-startup`, `startup-config`, `startup-source`, `player-userinfo`,
-//! `gtv-commands`, `input-devices`, `q1/q2-client-commands`,
-//! `q3-map-command`, `team-arena-skirmish`, `image-settings`,
-//! `view-settings`, `audio-settings`, `mouse-settings`, startup rules).
-//! Porting them now would mean inventing those lanes' APIs as speculative
-//! seams, which the zero-deferral and stay-in-scope rules forbid. They belong
-//! to the integration lane once the siblings land.
+//! orchestrators over sibling lanes that now live here
+//! ([`prepared_startup`](super::prepared_startup),
+//! [`startup_config`](super::startup_config),
+//! [`startup_source`](super::startup_source) including
+//! [`resolve_startup_rules`](super::startup_source::resolve_startup_rules),
+//! [`player_userinfo`](super::player_userinfo),
+//! [`gtv_commands`](super::gtv_commands),
+//! [`input_devices`](super::input_devices),
+//! [`q1_client_commands`](super::q1_client_commands),
+//! [`q2_client_commands`](super::q2_client_commands),
+//! [`q3_map_command`](super::q3_map_command),
+//! [`team_arena_skirmish`](super::team_arena_skirmish),
+//! [`image_settings`](super::image_settings),
+//! [`view_settings`](super::view_settings),
+//! [`audio_settings`](super::audio_settings); only the `MouseSettings` class
+//! is unported ([`qa_client::input::mouse_settings`] carries the tuning
+//! functions)). Porting the orchestrators now would mean inventing their
+//! composition API as a speculative seam, which the stay-in-scope rule
+//! forbids. They belong to the integration lane.
 
 use super::config_scripts::LegacyConsoleConfigSources;
 use super::content::{

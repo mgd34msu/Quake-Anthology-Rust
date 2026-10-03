@@ -5,15 +5,16 @@
 //! `providerTiming`, `movementProfile`, `movementOrigin`,
 //! `movementVelocity`, `MovementPlayer`).
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/player-movement.ts` (`createPlayerMovementProvider`,
-//!   `playerMovementEnvironment`, `playerStandingBounds`,
-//!   `playerCrouchedBounds`, `selectedMovementProfile`): the small
-//!   selectors are implemented locally; dialect dispatch calls the
-//!   `qa-world` movement entry points directly.
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`PlayerMovementHost`]
-//!   is the narrow host seam.
+//! - [`player_movement`](super::player_movement)
+//!   (`simulation/player-movement.ts` port): [`player_standing_bounds`]
+//!   delegates to the canonical selector; the remaining small selectors
+//!   keep module-local shapes over [`MovementPlayer`] while dialect
+//!   dispatch calls the `qa-world` movement entry points directly.
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`PlayerMovementHost`] is the narrow
+//!   host seam.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -432,13 +433,7 @@ pub fn movement_velocity(state: &MovementState) -> Vec3 {
 /// Standing bounds for a character family.
 #[must_use]
 pub fn player_standing_bounds(character: GameFamily) -> Bounds {
-    match character {
-        GameFamily::Q3 => qa_world::movement::q3::postures::Q3_SOURCE_STANDING_BOUNDS,
-        _ => Bounds {
-            min: qa_core::math::vec3(-16.0, -16.0, -24.0),
-            max: qa_core::math::vec3(16.0, 16.0, 32.0),
-        },
-    }
+    super::player_movement::player_standing_bounds(character)
 }
 
 /// Crouched bounds for a player.

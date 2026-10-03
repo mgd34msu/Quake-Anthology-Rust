@@ -23,11 +23,16 @@
 //! - `CommandSource::Bot` carries no provider tag; every command here is
 //!   implicitly `q3:bot`.
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`ApplicationBotSimulation`].
-//! - `simulation/q3/runtime.ts` (`Q3SourceRuntime`): [`BotQ3Source`].
-//! - `world/session/session.ts` (`EngineSession`): [`ApplicationBotSession`].
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`ApplicationBotSimulation`].
+//! - [`Q3SourceRuntime`](super::q3::runtime::Q3SourceRuntime)
+//!   (`simulation/q3/runtime.ts` port): [`BotQ3Source`].
+//! - [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`ApplicationBotSession`].
+//!
+//! Each seam stays as the narrow interface this module needs.
 //! - `bots/behavior/q3/game-host.ts` (`q3BotGame`): [`BotQ3GameFactory`].
 //! - qa-bots director persistence/rounds/client state: [`BotDirectorBacking`].
 //! - `bots/behavior/library/log.ts` (`BotLogOpenResult`, `BotLogIoResult`):

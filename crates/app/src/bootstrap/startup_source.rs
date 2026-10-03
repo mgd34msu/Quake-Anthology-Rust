@@ -1,6 +1,6 @@
 //! Source cvar registry and rule resolution for startup.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-source.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/startup-source.ts`
 //! (`createStartupSource`, `resolveStartupRules`). The source/match selection
 //! pair arrives as [`StartupSourceSelection`]; the Q3 product and server
 //! profile (donor `options.q3Product`/`options.serverProfile`, absent from
@@ -8,13 +8,15 @@
 //! arrive as explicit caller inputs. Cvar registration reuses `qa_core`,
 //! Q2 server cvars and profile application reuse `crate::settings::server`,
 //! Q3 game definitions reuse `qa_content`, and source administration reuses
-//! [`super::server_administration`]. The unported frame-time
-//! (`../frame-time.ts`), QuakeWorld engine
-//! (`./simulation/quakeworld-cvars.ts`), Q3 server
-//! (`./simulation/q3/server-state.ts`, via `../q3-common-cvars.ts`), and Q3
-//! product-policy (`../../core/q3-product-policy.ts`) registrations are
-//! ported inline with donor provenance; the shared `CvarRegistry` takes no
-//! context/print callback, so those donor parameters are dropped.
+//! [`super::server_administration`]. The frame-time
+//! ([`frame_time`](super::frame_time)), QuakeWorld engine
+//! ([`quakeworld_cvars`](super::simulation::quakeworld_cvars)), Q3 server
+//! ([`q3::server_state`](super::simulation::q3::server_state), via
+//! [`q3_common_cvars`](super::q3_common_cvars)), and Q3 product-policy
+//! ([`Q3ApplicationProduct`](super::content::Q3ApplicationProduct))
+//! registrations are ported inline with donor provenance; the shared
+//! `CvarRegistry` takes no context/print callback, so those donor
+//! parameters are dropped.
 
 use qa_content::q3::base::settings::q3_game_cvar_definitions;
 use qa_content::q3::base::shared::definitions::Product;

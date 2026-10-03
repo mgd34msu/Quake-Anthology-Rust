@@ -1,4 +1,4 @@
-//! Quake III client pure content (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q3-client-content.ts`).
+//! Quake III client pure content (port of Quake-Anthology-TS `src/app/bootstrap/network/q3-client-content.ts`).
 //!
 //! The donor is `async`; this sync port resolves every host call inline.
 //! The loaded content surface is the structural [`Q3ClientLoadedContent`]
@@ -117,10 +117,11 @@ pub struct Q3ClientContent<C> {
 impl<C: Q3ClientLoadedContent> Q3ClientContent<C> {
     /// Open client content for a pure server (`open`).
     ///
-    /// The `load` closure stands in for the unported
-    /// `loadApplicationContent`: it receives the resolved pure policy and
-    /// returns the loaded content. It captures the application options and
-    /// presentation source the real loader needs.
+    /// The `load` closure stands in for
+    /// [`load_application_content`](super::super::content::load_application_content):
+    /// it receives the resolved pure policy and returns the loaded content.
+    /// It captures the application options and presentation source the real
+    /// loader needs.
     pub fn open(
         options: &ApplicationOptions,
         info: &str,

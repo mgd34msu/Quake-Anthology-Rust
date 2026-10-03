@@ -2,9 +2,10 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-mover-connections.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
-//! The [`BotMoverSimulation`] seam exposes exactly the donor's scene plus
-//! Q2 source surface; the runtime partition implements it post-merge.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! [`BotMoverSimulation`] seam stays as the narrow interface this module
+//! needs (scene plus Q2 source surface); only test doubles implement it.
 
 use qa_bots::construct::NavigationConnection;
 use qa_bots::scene::BodyShape;

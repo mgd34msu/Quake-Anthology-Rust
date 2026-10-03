@@ -454,7 +454,9 @@ pub struct TouchSurface {
 }
 
 /// Synchronous touch contact (`TouchContact`, donor `world.ts`). The
-/// Q2-rerelease source-trace variant is out of scope for Q1 content.
+/// Q2-rerelease source-trace variant lives in
+/// [`TouchContact::source_trace`](crate::q2::support::contracts::TouchContact::source_trace);
+/// Q1 content carries only the shared contact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TouchContact {
     /// Touching actor.

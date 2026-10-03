@@ -7,25 +7,32 @@
 //! The donor is synchronous except for guest/package awaits; this port is
 //! fully synchronous (guest and package siblings expose sync host seams).
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`Q3HostSimulation`],
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`Q3HostSimulation`],
 //!   [`Q3HostScene`].
-//! - `simulation/q3/runtime.ts` (`Q3SourceRuntime`, `Q3ClientAdmissionDenied`):
-//!   [`Q3HostNativeSource`]; the denial maps to
-//!   [`Q3HostError::AdmissionDenied`].
-//! - `app/bootstrap/network/q3-types.ts`: the host shape is implemented as
-//!   inherent methods here; [`Q3ApplicationPlayer`] and
-//!   [`Q3ApplicationAdmission`] are reused from `q3::guest_runtime` (unify
-//!   post-merge); `administration` stays an opaque generic.
-//! - `app/bootstrap/network/q3-downloads.ts` (`Q3ApplicationPackages`):
-//!   [`Q3HostPackages`], opened through [`Q3OpenPackagesFn`].
-//! - `app/bootstrap/content.ts` (`LoadedApplicationContent`):
-//!   [`Q3HostContent`].
-//! - `world/session/session.ts` (`EngineSession`): [`Q3HostSession`].
+//! - [`Q3SourceRuntime`](super::q3::runtime::Q3SourceRuntime) and
+//!   [`Q3ClientAdmissionDenied`](super::q3::runtime::Q3ClientAdmissionDenied)
+//!   (`simulation/q3/runtime.ts` port): [`Q3HostNativeSource`]; the
+//!   denial maps to [`Q3HostError::AdmissionDenied`].
+//! - `app/bootstrap/network/q3-types.ts`
+//!   ([`network::q3_types`](crate::bootstrap::network::q3_types) port):
+//!   the host shape is implemented as inherent methods here;
+//!   [`Q3ApplicationPlayer`] and [`Q3ApplicationAdmission`] are reused
+//!   from [`q3::guest_runtime`](super::q3::guest_runtime);
+//!   `administration` stays an opaque generic.
+//! - [`Q3ApplicationPackages`](crate::bootstrap::network::q3_downloads::Q3ApplicationPackages)
+//!   (`q3-downloads.ts` port): [`Q3HostPackages`], opened through
+//!   [`Q3OpenPackagesFn`].
+//! - [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (`content.ts` port): [`Q3HostContent`].
+//! - [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`Q3HostSession`].
 //! - `network/q3/adapters.ts` (`toQ3UserCommand`, `fromQ3PlayerState`,
-//!   `Q3_PROTOCOL`): [`to_q3_user_command`], [`from_qvm_player_state`],
-//!   [`Q3_PROTOCOL_VERSION`].
+//!   `Q3_PROTOCOL`): [`to_q3_user_command`] and [`from_qvm_player_state`]
+//!   keep host-local command/state shapes; [`Q3_PROTOCOL_VERSION`] is the
+//!   canonical [`qa_net::protocol::q3::PROTOCOL_VERSION`].
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -50,7 +57,7 @@ use super::q3::guest_runtime::{Q3ApplicationAdmission, Q3ApplicationPlayer, Q3Qv
 use super::q3::server_state::{Q3ServerState, Q3StoredUserCommand};
 
 /// Q3 wire protocol version (donor `Q3_PROTOCOL.version`).
-pub const Q3_PROTOCOL_VERSION: u32 = 68;
+pub const Q3_PROTOCOL_VERSION: u32 = qa_net::protocol::q3::PROTOCOL_VERSION;
 
 /// Maximum Q3 configstrings scanned for gamestate entries.
 const Q3_CONFIGSTRING_COUNT: i32 = 1024;

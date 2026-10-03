@@ -1,11 +1,15 @@
 //! Local demo recording borrowing the live source host.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/demo-local-recording.ts`
-//! (`LocalDemoRecording`). Hosts arrive behind per-kind traits because the
-//! network host lanes are unported; the Quake III path encodes through the
-//! ported server-message codec while the Quake I/II/World paths take
-//! host-encoded bytes (their ported codecs diverged or are missing). The port
-//! is synchronous because the recording sink is synchronous. Worlds are
+//! Port of Quake-Anthology-TS `src/app/bootstrap/demo-local-recording.ts`
+//! (`LocalDemoRecording`). Hosts arrive behind per-kind traits over the live
+//! source hosts ([`simulation::network_q1`](super::simulation::network_q1),
+//! [`simulation::network_qw`](super::simulation::network_qw),
+//! [`simulation::network`](super::simulation::network),
+//! [`simulation::network_q3`](super::simulation::network_q3)); the Quake III
+//! path encodes through the ported server-message codec while the Quake
+//! I/II/World paths take host-encoded bytes (their ported codecs diverged
+//! or are missing).
+//! The port is synchronous because the recording sink is synchronous. Worlds are
 //! compared by host-issued generation tokens, and seed identities by debug
 //! text instead of JSON.
 

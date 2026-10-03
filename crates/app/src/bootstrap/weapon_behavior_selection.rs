@@ -1,11 +1,16 @@
-//! Application weapon-behavior selection ported from
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/weapon-behavior-selection.ts`.
+//! Application weapon-behavior selection ported from Quake-Anthology-TS
+//! `src/app/bootstrap/weapon-behavior-selection.ts`.
 //!
 //! Catalog discovery, mount plans, and behavior documents reuse
 //! [`qa_content`]; QuakeC programs reuse [`qa_guest`]. Guest behavior
-//! services, QuakeC resource preparation, rerelease guest preparation,
-//! content mounts, and application mod state arrive through
-//! [`WeaponBehaviorHost`] because those sibling lanes are unported.
+//! services, QuakeC resource preparation
+//! ([`prepare_quake_c_resources`](super::simulation::quakec_source::prepare_quake_c_resources)),
+//! rerelease guest preparation
+//! ([`prepare_rerelease_guest`](super::simulation::rerelease_guest_source::prepare_rerelease_guest)),
+//! content mounts, and application mod state
+//! ([`application_mod_choices`](super::mod_selection::application_mod_choices),
+//! [`apply_application_mods`](super::mod_selection::apply_application_mods))
+//! arrive through [`WeaponBehaviorHost`], which carries the host-side roots.
 
 use std::fmt::Display;
 use std::path::PathBuf;

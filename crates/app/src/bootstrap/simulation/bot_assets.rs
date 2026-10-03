@@ -2,11 +2,14 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-assets.ts`.
 //!
-//! Missing siblings: `LoadedApplicationContent` (`content.ts`, content
-//! partition) and `SharedSimulation` (`runtime.ts`, runtime partition). The
-//! [`BotAssetContent`] and [`BotAssetSimulation`] seams expose exactly the
-//! donor's content and simulation surface; the partitions implement them
-//! post-merge. The donor is async; bootstrap ports are sync.
+//! Sibling homes:
+//! [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//! (`content.ts` port) is the live loaded content, and
+//! [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! [`BotAssetContent`] and [`BotAssetSimulation`] seams stay as the narrow
+//! interfaces this module needs (content and simulation surfaces); only
+//! test doubles implement them. The donor is async; bootstrap ports are sync.
 
 use qa_bots::behavior::assets::{BotAssetFiles, BotSourceFiles};
 use qa_bots::behavior::rerelease::data::knowledge::BotKnowledge;

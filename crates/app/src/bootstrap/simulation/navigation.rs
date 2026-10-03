@@ -63,13 +63,21 @@
 //! * Checkpoint client lists are sorted by slot (the donor keeps map
 //!   insertion order; the cache here is a `HashMap`).
 //!
+//! Sibling homes:
+//!
+//! * [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (donor `src/app/bootstrap/content.ts`) behind
+//!   [`ApplicationNavigationContent`]; decoded-geometry supply arrives
+//!   through the seam (the donor reads `simulation.options.world`,
+//!   which has no worktree accessor).
+//! * Keyed Q1 doors read the bound holder's live key count through the
+//!   Q1 source view
+//!   ([`Q1SharedInventoryTable::count`](qa_content::q1::foundation::host::Q1SharedInventoryTable::count))
+//!   in `keyed_door_needs_key`; the shared table home is
+//!   [`count`](qa_world::inventory::InventoryTable::count).
+//!
 //! Missing siblings (no Rust home in this worktree; unify post-merge):
 //!
-//! * `LoadedApplicationContent` (donor `src/app/bootstrap/content.ts`,
-//!   canonical home: the content partition) behind
-//!   [`ApplicationNavigationContent`]; decoded-geometry supply lands with
-//!   it (the donor reads `simulation.options.world`, which has no
-//!   worktree accessor).
 //! * Scene actor rows: `SharedSceneQueries::query_actors` answers empty
 //!   until the collision lane lands, so entity/hazard/train reads are
 //!   inert (same seam as the player-movement empty-world traces); the
@@ -80,8 +88,6 @@
 //! * Q2 expansion mover modules (donor `product.expansions`): the Q2
 //!   product runtime in `SharedSimulation` is opaque, so only base
 //!   platform/traversal readers run.
-//! * The shared inventory count accessor: keyed Q1 doors read locked
-//!   until the accessor lands (see `keyed_door_needs_key`).
 //! * `SelectedBotNavigation` (donor `Pick<SourceBotNavigationHost,
 //!   "runtime" | "forClient" | "crouchedBounds" | "predictClientMovement"
 //!   | "travelWeapon">`): no worktree home; the five members live here as
@@ -1031,7 +1037,19 @@ impl ApplicationNavigationWorld {
         } else {
             None
         };
-        let needs_key = keyed_door_needs_key(key, master.touch.is_some(), &self.session_player());
+        let player = self.session_player();
+        let key_count = match (key, player.as_ref()) {
+            (Some(key), Some(player)) => {
+                let item = key.to_string();
+                Some(
+                    self.simulation
+                        .with_q1_source(|view| view.services.borrow().host.inventory.count(player.actor.id(), &item))
+                        .unwrap_or(0.0),
+                )
+            }
+            _ => None,
+        };
+        let needs_key = keyed_door_needs_key(key, master.touch.is_some(), key_count);
         let elevator = (q1.classname == "func_plat").then(|| ElevatorState {
             origin: body.state.origin,
             bottom: q1.pos2,
@@ -1190,12 +1208,13 @@ fn binding_key(binding: &NavigationEntityBinding) -> BindingKey {
 
 /// Whether a keyed Q1 door needs its key (donor `needsKey`).
 ///
-/// Missing siblings: the shared inventory count accessor has no
-/// worktree home, so a keyed door with a touch function reads locked
-/// (count as zero) until the accessor lands; the expression below
-/// takes the count back then.
-fn keyed_door_needs_key(key: Option<&str>, touch: bool, _player: &Option<MovementPredictionPlayer>) -> bool {
-    key.is_some() && touch
+/// `key_count` is `None` when no player is bound (donor
+/// `player === null`, which reads locked) and the live key count from
+/// [`Q1SharedInventoryTable::count`](qa_content::q1::foundation::host::Q1SharedInventoryTable::count)
+/// otherwise; a keyed door with a touch function reads locked while
+/// the count is zero.
+fn keyed_door_needs_key(key: Option<&str>, touch: bool, key_count: Option<f64>) -> bool {
+    key.is_some() && touch && key_count.is_none_or(|count| count == 0.0)
 }
 
 /// Project a Q1 mover state onto the elevator phase set.
@@ -1715,9 +1734,11 @@ mod tests {
     /// Keyed Q1 doors with a touch function read locked without inventory.
     #[test]
     fn keyed_doors_read_locked_without_inventory() {
-        assert!(keyed_door_needs_key(Some("q1:key/gold"), true, &None));
-        assert!(!keyed_door_needs_key(None, true, &None));
-        assert!(!keyed_door_needs_key(Some("q1:key/gold"), false, &None));
+        assert!(keyed_door_needs_key(Some("q1:key/gold"), true, None));
+        assert!(keyed_door_needs_key(Some("q1:key/gold"), true, Some(0.0)));
+        assert!(!keyed_door_needs_key(Some("q1:key/gold"), true, Some(1.0)));
+        assert!(!keyed_door_needs_key(None, true, None));
+        assert!(!keyed_door_needs_key(Some("q1:key/gold"), false, None));
     }
 
     /// Locomotion fixture over a q3 profile.

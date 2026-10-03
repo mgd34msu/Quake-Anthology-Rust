@@ -1,9 +1,10 @@
 //! Single-player arena selection rows and saved-selection reads.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/base-arena-selection.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/base-arena-selection.ts`
 //! (`arenaSelection`, `readArenaSelection`). The initial configuration content
-//! comes from [`ArenaSelectionConfiguration`] because the configuration lane
-//! is unported; tier labels, record text, and current-arena fallback stay here.
+//! comes from [`ArenaSelectionConfiguration`], the narrow seam over
+//! [`configuration`](super::configuration); tier labels, record text, and
+//! current-arena fallback stay here.
 
 use qa_content::catalog::InstalledCatalog;
 use qa_content::contract::ProviderReference;

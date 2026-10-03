@@ -1,13 +1,16 @@
 //! Application resource precache requests and preload.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/precache.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/precache.ts`
 //! (`characterResourceRequests`, `nativeQ2MonsterResources`,
 //! `applicationResourceRequests`, `prepareApplicationResources`). The catalog resource
 //! helpers, monster sources, transient sounds, entity and weapon types, and character
-//! media lists are the ported content helpers; the recipe (`./content.ts`, out of
-//! scope) arrives as [`PrecacheContent`], the simulation (`./simulation/runtime.ts`, out
-//! of scope) through the [`PrecacheSimulation`] seam, and audio/effects through the
-//! [`PrecacheAudio`]/[`PrecacheEffects`] seams. Q1 world enumeration arrives through the
+//! media lists are the ported content helpers; the recipe
+//! ([`LoadedApplicationContent`](super::content::LoadedApplicationContent), `./content.ts`
+//! port) arrives as [`PrecacheContent`], the simulation
+//! ([`SharedSimulation`](super::simulation::runtime::SharedSimulation),
+//! `./simulation/runtime.ts` port) through the [`PrecacheSimulation`] seam, and
+//! audio/effects through the [`PrecacheAudio`]/[`PrecacheEffects`] seams. Q1 world
+//! enumeration arrives through the
 //! [`Q1WorldPrecaches`] seam because Q1 services need a host; the donor's two filter
 //! predicates are ported. Two documented folds: `nativeQ2MonsterResources` takes full
 //! [`Q2Entity`] slices instead of the donor's classname/spawn pick (it reads the same

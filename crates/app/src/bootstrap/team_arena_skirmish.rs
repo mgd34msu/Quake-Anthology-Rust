@@ -1,6 +1,6 @@
 //! Team Arena single-player skirmish planning over authored campaign metadata.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/team-arena-skirmish.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/team-arena-skirmish.ts`
 //! (`TeamArenaTeams`, `teamArenaTeamChoices`, `TeamArenaSkirmishCursor`,
 //! `TeamArenaSkirmish`, `TeamArenaCampaign`, `parseTeamArenaCampaign`,
 //! `nextTeamArenaCursor`, `planTeamArenaSkirmish`, `currentTeamArenaCursor`,
@@ -9,9 +9,10 @@
 //! `TeamArenaLaunchOverrides`). Metadata grammar and defaults follow
 //! `code/ui/ui_main.c`, `UI_StartSkirmish`. Sync port: the donor's async
 //! catalog reads become the injected [`TeamArenaMounts`] seam, and
-//! `InstalledCatalog` preparation plus mount-plan opening (unported siblings)
-//! arrive through [`TeamArenaProductCatalog`]. `COM_Parse` tokenizing is
-//! ported inline (the shared parser is unported); game types, cvar defaults,
+//! [`InstalledCatalog`](qa_content::catalog::InstalledCatalog) preparation plus
+//! mount-plan opening arrive through [`TeamArenaProductCatalog`]. `COM_Parse`
+//! tokenizing is ported inline (the shared parser is unported); game types,
+//! cvar defaults,
 //! and the product policy reuse `qa_content`.
 
 use std::collections::BTreeMap;
@@ -848,7 +849,8 @@ pub fn read_team_arena_campaign<Mounts: TeamArenaMounts + ?Sized>(
     })
 }
 
-/// Mission-pack preparation plus mount opening (unported `prepareQ3ApplicationProduct`).
+/// Mission-pack preparation plus mount opening (donor `prepareQ3ApplicationProduct`,
+/// [`Q3ProductPreparer`](super::content::Q3ProductPreparer)).
 pub trait TeamArenaProductCatalog {
     /// Mount reader.
     type Mounts: TeamArenaMounts;

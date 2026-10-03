@@ -5,25 +5,32 @@
 //! `unifiedPresentationFor`, `unifiedModelPresentations`,
 //! `createUnifiedApplicationServerHost`).
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`UnifiedHostSimulation`]
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`UnifiedHostSimulation`]
 //!   is the narrow seam.
-//! - `app/bootstrap/content.ts` (`LoadedApplicationContent`) and
-//!   `world/session/session.ts` (`EngineSession`): [`UnifiedHostContent`]
+//! - [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (`content.ts` port) and [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`UnifiedHostContent`]
 //!   and [`UnifiedHostSession`] are the narrow seams.
-//! - `app/bootstrap/network/unified-types.ts`,
-//!   `unified-components.ts`, `unified-native-components.ts`,
-//!   `unified-frame-codec.ts`: [`UnifiedPresentationFrame`],
-//!   [`UnifiedComponentPublication`], [`UnifiedNativePublication`],
-//!   [`UnifiedResourceKey`], and [`UnifiedPrediction`] are local mirrors;
-//!   unify post-merge.
-//! - `app/bootstrap/component-scene.ts` (`selectComponentScene`) and
-//!   `app/bootstrap/network/unified-prediction.ts`
-//!   (`projectUnifiedPrediction`): selection and projection live behind
-//!   the [`UnifiedModSource`] and [`UnifiedHostSimulation`] seams.
-//! - `content/q2/base/player/index.ts` (`q2Userinfo`): parsed locally by
-//!   [`parse_q2_userinfo`].
+//! - [`unified_types`](crate::bootstrap::network::unified_types),
+//!   [`unified_components`](crate::bootstrap::network::unified_components),
+//!   [`unified_native_components`](crate::bootstrap::network::unified_native_components),
+//!   [`unified_frame_codec`](crate::bootstrap::network::unified_frame_codec):
+//!   [`UnifiedPresentationFrame`], [`UnifiedComponentPublication`],
+//!   [`UnifiedNativePublication`], [`UnifiedResourceKey`], and
+//!   [`UnifiedPrediction`] keep host-local shapes.
+//! - [`select_component_scene`](crate::bootstrap::component_scene::select_component_scene)
+//!   (`component-scene.ts` port) and
+//!   [`project_unified_prediction`](crate::bootstrap::network::unified_prediction::project_unified_prediction)
+//!   (`unified-prediction.ts` port): selection and projection live behind
+//!   the [`UnifiedModSource`] and [`UnifiedHostSimulation`] seams, which
+//!   carry the host-side scene and simulation inputs those functions
+//!   need.
+//! - `content/q2/base/player/index.ts` (`q2Userinfo`): ported as
+//!   [`parse_q2_userinfo`] (first-wins pairs, leading-separator strip,
+//!   trailing key dropped).
 
 use std::collections::HashMap;
 
@@ -495,14 +502,13 @@ pub fn unified_model_presentations(viewer: &ActorId, models: &[SimulationPresent
         .collect()
 }
 
-/// Parse Q2 userinfo text into pairs.
+/// Parse Q2 userinfo text into first-wins pairs (donor `q2Userinfo`).
 #[must_use]
-pub fn parse_q2_userinfo(value: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut parts = value.split('\\');
-    let _ = parts.next();
+pub fn parse_q2_userinfo(value: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut parts = value.strip_prefix('\\').unwrap_or(value).split('\\');
     while let (Some(key), Some(val)) = (parts.next(), parts.next()) {
-        out.push((key.to_string(), val.to_string()));
+        out.entry(key.to_string()).or_insert_with(|| val.to_string());
     }
     out
 }
@@ -640,7 +646,7 @@ where
 
     /// Admit a client.
     pub fn admit(&mut self, address: &NetworkAddress, userinfo: &str) -> Result<UnifiedAdmission, UnifiedServerError> {
-        let mut values: HashMap<String, String> = parse_q2_userinfo(userinfo).into_iter().collect();
+        let mut values: HashMap<String, String> = parse_q2_userinfo(userinfo);
         let address_text = match address {
             NetworkAddress::Loopback { .. } => "localhost".to_string(),
             NetworkAddress::Ipv4 { host, port } => format!("{}.{}.{}.{}:{port}", host[0], host[1], host[2], host[3]),
@@ -669,7 +675,7 @@ where
                     return Ok(UnifiedAdmission::Rejected { reason });
                 }
                 Ok(rewritten) => {
-                    values = parse_q2_userinfo(&rewritten).into_iter().collect();
+                    values = parse_q2_userinfo(&rewritten);
                 }
             }
         }
@@ -771,7 +777,7 @@ where
             .and_then(|values| values.get("ip"))
             .cloned()
             .unwrap_or_default();
-        let mut values: HashMap<String, String> = parse_q2_userinfo(value).into_iter().collect();
+        let mut values: HashMap<String, String> = parse_q2_userinfo(value);
         values.insert("ip".to_string(), address);
         self.update(player, values);
         Ok(())
@@ -984,13 +990,28 @@ mod tests {
     #[test]
     fn userinfo_round_trip() {
         let values = parse_q2_userinfo("\\name\\player\\ip\\localhost");
-        assert_eq!(
-            values,
-            vec![
-                ("name".to_string(), "player".to_string()),
-                ("ip".to_string(), "localhost".to_string())
-            ]
-        );
+        assert_eq!(values.get("name").map(String::as_str), Some("player"));
+        assert_eq!(values.get("ip").map(String::as_str), Some("localhost"));
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn userinfo_first_key_wins() {
+        let values = parse_q2_userinfo("\\name\\first\\name\\second");
+        assert_eq!(values.get("name").map(String::as_str), Some("first"));
+    }
+
+    #[test]
+    fn userinfo_without_leading_separator() {
+        let values = parse_q2_userinfo("name\\player");
+        assert_eq!(values.get("name").map(String::as_str), Some("player"));
+    }
+
+    #[test]
+    fn userinfo_drops_trailing_key() {
+        let values = parse_q2_userinfo("\\name\\player\\trailing");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.get("name").map(String::as_str), Some("player"));
     }
 
     #[test]

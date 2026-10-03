@@ -1,15 +1,17 @@
 //! Recorded remote source.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/recorded-source.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/recorded-source.ts`
 //! (`RecordedRemoteSource`). The donor `async` advances resolve inline. The
-//! concrete remote presentations are unported siblings, so the remote union
-//! carries the exact surfaces this module uses: the sibling demo-remote
-//! traits for Quake/QuakeWorld and capability bundles for Quake II/III.
-//! Quake/QuakeWorld byte readers parse eagerly at construction (the donor
-//! throws corrupt headers from its constructor too); mid-stream corruption
-//! therefore fails construction instead of a later advance.
-//! [`RecordedCompletion`] mirrors the unported `demo-commands`
-//! `DemoCompletion` union.
+//! concrete remote presentations
+//! ([`remote_q1`](super::remote_q1), [`remote_qw`](super::remote_qw),
+//! [`remote`](super::remote), [`remote_q3`](super::remote_q3)) back the
+//! remote union, which carries the exact surfaces this module uses: the
+//! sibling demo-remote traits for Quake/QuakeWorld and capability bundles
+//! for Quake II/III. Quake/QuakeWorld byte readers parse eagerly at
+//! construction (the donor throws corrupt headers from its constructor
+//! too); mid-stream corruption therefore fails construction instead of a
+//! later advance. [`RecordedCompletion`] is the `demo-commands`
+//! [`DemoCompletion`](crate::bootstrap::demo_commands::DemoCompletion) union.
 
 use std::rc::Rc;
 
@@ -63,19 +65,7 @@ pub fn demo_timing_text(timing: &DemoTiming) -> String {
 }
 
 /// Demo completion reason (donor `demo-commands` `DemoCompletion`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordedCompletion {
-    /// Byte stream exhausted.
-    Eof,
-    /// Terminator record.
-    Terminator,
-    /// Recorded disconnect.
-    Disconnected,
-    /// Truncated recording.
-    Truncated,
-    /// Closed during advancement.
-    Closed,
-}
+pub use crate::bootstrap::demo_commands::DemoCompletion as RecordedCompletion;
 
 /// Recorded source failure.
 #[derive(Debug, Error)]

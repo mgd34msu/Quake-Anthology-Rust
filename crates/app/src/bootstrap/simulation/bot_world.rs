@@ -13,15 +13,21 @@
 //! surfaces that the trait does not expose stay as inherent methods for the
 //! `bots.ts` consumer.
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`BotWorldSimulation`],
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`BotWorldSimulation`],
 //!   [`BotWorldScene`].
-//! - Q1/Q2 source games (`simulation.q1Source()/q2Source()`,
-//!   `q2WeaponSource()`): [`BotWorldQ1Source`], [`BotWorldQ2Source`],
+//! - Q1/Q2 source games
+//!   ([`SharedSimulation::with_q1_source`](super::runtime::SharedSimulation::with_q1_source),
+//!   [`with_q2_source`](super::runtime::SharedSimulation::with_q2_source),
+//!   [`q2_source`](super::runtime::SharedSimulation::q2_source)):
+//!   [`BotWorldQ1Source`], [`BotWorldQ2Source`],
 //!   [`BotWorldSimulation::q2_arsenal_entity`]. The concrete
 //!   `observeQ1Supply`/`previewQ1Supply` calls stay with the sibling that
 //!   owns the game object; the seam surfaces their contract results.
+//!   [`BotWorldQ2Source`] has no implementations, and the other seams
+//!   are implemented only by test doubles.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

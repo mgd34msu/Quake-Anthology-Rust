@@ -2,11 +2,11 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-q2-knowledge.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
-//! The [`Q2BotKnowledgeSimulation`] seam exposes exactly the donor's
-//! `Pick<SharedSimulation, "q2WeaponSource" | "inventory" | "combat">`
-//! surface; the runtime partition implements it post-merge over
-//! `qa_content::q2` and `qa_world`.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! [`Q2BotKnowledgeSimulation`] seam stays as the narrow interface this
+//! module needs (the donor `Pick<SharedSimulation, "q2WeaponSource" |
+//! "inventory" | "combat">` surface); only test doubles implement it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

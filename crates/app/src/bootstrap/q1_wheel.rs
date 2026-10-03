@@ -1,12 +1,13 @@
 //! Rerelease Quake weapon-wheel selection and layout.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q1-wheel.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q1-wheel.ts`
 //! (`q1WheelSlotItem`, `ApplicationQ1Wheel`). The `wwheel.txt` parser and the
 //! `q1WheelItems` layout are the canonical [`qa_client::ui::hud::q1_wheel`] port, called
 //! directly like the donor; the [`Q1WheelAssets`] seam keeps only the product gate, the
 //! wheel file, and icon loading. Slots are stored as the local [`Q1WheelSlot`] projection
 //! (the canonical `ammoIcon`/`unknown` fields are never read here) and converted at the
-//! canonical call boundary. Player state (`./simulation/types.ts`, out of scope) is
+//! canonical call boundary. Player state
+//! ([`simulation::types`](super::simulation::types), `./simulation/types.ts` port) is
 //! shimmed to the fields this module reads.
 
 use std::collections::HashMap;

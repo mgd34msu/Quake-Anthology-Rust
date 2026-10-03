@@ -1,5 +1,5 @@
-//! Transient-effect math and orchestration ported from
-//! `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/effects.ts`.
+//! Transient-effect math and orchestration ported from Quake-Anthology-TS
+//! `src/app/bootstrap/effects.ts`.
 //!
 //! Ports the donor's dependency-free effect logic (the Quake beam model
 //! table, the Quake II player muzzle-flash profile table, explosion
@@ -316,10 +316,9 @@ pub enum ApplicationEffectError {
     Host(String),
 }
 
-/// Absorbed `SimulationPresentationEvent` (donor
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/types.ts`,
-/// out of scope): the routing envelope plus exactly the payloads this
-/// orchestrator reads.
+/// Absorbed [`SimulationPresentationEvent`](super::super::simulation::types::SimulationPresentationEvent)
+/// pick (`simulation/types.ts` port): the routing envelope plus exactly
+/// the payloads this orchestrator reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationEffectEvent {
     /// Presenting owner, when set.
@@ -384,15 +383,14 @@ pub enum PresentationOwnerEventKind {
 }
 
 /// Canonical `Q2CompositionEvent` (donor
-/// `/home/buzzkill/Projects/quake-typescript/src/content/composition/q2/types.ts`).
+/// `src/content/composition/q2/types.ts`).
 /// Only the grapple cable presents here; session kick and grapple-prediction
 /// are rejected as having reached the presentation owner.
 pub use qa_content::q2::composition::types::Q2CompositionEvent as ApplicationCompositionEvent;
 
-/// Absorbed `Q3SourceEvent` pick (donor
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/q3/host.ts`,
-/// out of scope): the sound payload the orchestrator emits plus the
-/// entity-event marker it rejects.
+/// Absorbed [`Q3SourceEvent`](super::super::simulation::q3::host::Q3SourceEvent)
+/// pick (`simulation/q3/host.ts` port): the sound payload the
+/// orchestrator emits plus the entity-event marker it rejects.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationQ3SourceEvent {
     /// Positioned source sound.
@@ -686,10 +684,11 @@ impl<Q: Q3EffectHost + 'static> ApplicationQ3Effects for Q3ApplicationEffects<Q>
     }
 }
 
-/// Absorbed `ApplicationAssets` plus `SceneQueries` pick (both out of scope):
-/// provider families, palettes, model loading/preparation, and the
-/// content-recipe plan. Synchronous mapping of the donor's awaited asset
-/// calls; renderer caches live host-side (donor `preparedRenderers`).
+/// Absorbed `ApplicationAssets` (out of scope) plus
+/// [`SceneQueries`](qa_bots::scene::SceneQueries) pick: provider families,
+/// palettes, model loading/preparation, and the content-recipe plan.
+/// Synchronous mapping of the donor's awaited asset calls; renderer
+/// caches live host-side (donor `preparedRenderers`).
 pub trait ApplicationEffectHost: Clone + 'static {
     /// Prepared brush world scene.
     type BrushScene: Clone;
