@@ -559,22 +559,23 @@ where
             .map_err(|error| RendererError::Window(error.to_string()))?;
         let journal = RenderImageJournal::default();
         let captures = FrameCaptures::new();
-        let opened: Result<Backend, RendererError> = (|| {
-            if options.renderer == RenderBackendKind::Gl {
-                window
-                    .set_swap_interval(1)
-                    .map_err(|error| RendererError::Window(error.to_string()))?;
-            }
-            backends
-                .open_backend(
-                    options.renderer,
-                    options.width,
-                    options.height,
-                    options.gamma,
-                    options.render_worker,
-                )
-                .map_err(|error| RendererError::Backend(error.to_string()))
-        })();
+        if options.renderer == RenderBackendKind::Gl {
+            // Swap control is a preference, not a requirement: drivers
+            // without swap-control support (Mesa swrast under Xvfb) fail
+            // the set and run unthrottled. Failing open here would make
+            // windowed unusable on those drivers. Explicit sets through
+            // `set_swap_interval` stay strict.
+            let _ = window.set_swap_interval(1);
+        }
+        let opened: Result<Backend, RendererError> = backends
+            .open_backend(
+                options.renderer,
+                options.width,
+                options.height,
+                options.gamma,
+                options.render_worker,
+            )
+            .map_err(|error| RendererError::Backend(error.to_string()));
         let backend = match opened {
             Ok(opened) => opened,
             Err(error) => {
@@ -793,9 +794,9 @@ where
                 })
                 .map_err(|error| RendererError::Window(error.to_string()))?;
             if kind == RenderBackendKind::Gl {
-                window
-                    .set_swap_interval(self.interval)
-                    .map_err(|error| RendererError::Window(error.to_string()))?;
+                // Best effort, as in `open`: unsupported swap control must
+                // not fail the restart.
+                let _ = window.set_swap_interval(self.interval);
             }
             let mut backend = backends
                 .open_backend(kind, presentation.width, presentation.height, self.gamma, worker)
@@ -1231,6 +1232,7 @@ mod tests {
         width: i32,
         height: i32,
         swap: i32,
+        fail_swap: bool,
         presented: Vec<u8>,
         closed: bool,
     }
@@ -1267,6 +1269,9 @@ mod tests {
         }
 
         fn set_swap_interval(&mut self, interval: i32) -> Result<(), WindowError> {
+            if self.fail_swap {
+                return Err(WindowError);
+            }
             self.swap = interval;
             Ok(())
         }
@@ -1435,6 +1440,26 @@ mod tests {
                 width: options.width,
                 height: options.height,
                 swap: 1,
+                fail_swap: false,
+                presented: Vec::new(),
+                closed: false,
+            })
+        }
+    }
+
+    struct FailingSwapWindows;
+
+    impl NativeWindowFactory for FailingSwapWindows {
+        type Window = FakeWindow;
+        type Error = WindowError;
+
+        fn open_window(&mut self, options: &RenderWindowOptions) -> Result<FakeWindow, WindowError> {
+            Ok(FakeWindow {
+                kind: options.backend,
+                width: options.width,
+                height: options.height,
+                swap: 0,
+                fail_swap: true,
                 presented: Vec::new(),
                 closed: false,
             })
@@ -1532,6 +1557,31 @@ mod tests {
             .unwrap(),
             RendererError::ForeignRegistry
         );
+    }
+
+    #[test]
+    fn open_tolerates_unsupported_swap_control() {
+        // Drivers without swap-control support (Mesa swrast under Xvfb)
+        // fail the default set; open must still succeed and run
+        // unthrottled.
+        let mut windows = FailingSwapWindows;
+        let mut backends = FakeBackends {
+            backend_kind: RenderBackendKind::Gl,
+            worker: false,
+        };
+        let options = NativeRendererOptions {
+            renderer: RenderBackendKind::Gl,
+            ..options()
+        };
+        let renderer = NativeRenderer::open(
+            &options,
+            owner(),
+            FakeImages { owner: owner() },
+            &mut windows,
+            &mut backends,
+        )
+        .unwrap();
+        assert_eq!(renderer.window().swap_interval(), 0);
     }
 
     #[test]
