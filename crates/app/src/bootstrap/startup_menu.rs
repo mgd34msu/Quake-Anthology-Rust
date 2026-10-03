@@ -3884,4 +3884,153 @@ mod tests {
         menu.close();
         assert_eq!(menu.active_menu(), None);
     }
+
+    /// wu-16: keyboard and gamepad menu interaction. The main menu holds
+    /// four buttons (native, load, options, quit); these tests drive
+    /// [`StartupMenu::input`] the way the windowed seat router would and
+    /// assert focus and selection state changes.
+    mod interaction {
+        use std::cell::Cell;
+
+        use qa_client::input::ControllerAxis;
+        use qa_client::ui::types::SeatInputFocus;
+
+        use super::*;
+
+        fn focus_id(menu: &StartupMenu) -> Option<String> {
+            match menu.state().focus {
+                SeatInputFocus::Menu { control, .. } => control.map(|id| id.as_str().to_string()),
+                _ => None,
+            }
+        }
+
+        fn pad_button(seat: SeatId, button: u8, down: bool) -> SeatInputEvent {
+            SeatInputEvent {
+                seat,
+                time_ms: 0,
+                kind: SeatInputEventKind::ControllerButton {
+                    device: 0,
+                    button: i32::from(button),
+                    down,
+                },
+            }
+        }
+
+        fn pad_axis(seat: SeatId, axis: ControllerAxis, value: f32) -> SeatInputEvent {
+            SeatInputEvent {
+                seat,
+                time_ms: 0,
+                kind: SeatInputEventKind::ControllerAxis { device: 0, axis, value },
+            }
+        }
+
+        fn menu_with_quit() -> (StartupMenu, Rc<Cell<bool>>) {
+            let flag = Rc::new(Cell::new(false));
+            let quit = Rc::clone(&flag);
+            let authority = IdentityOwner::create("startup-menu-quit-test").unwrap();
+            let options = ApplicationOptions {
+                product: "q1-classic-id1".to_string(),
+                map: "maps/start.bsp".to_string(),
+                character_model: "player".to_string(),
+                ..ApplicationOptions::default()
+            };
+            let model = StartupSelectionModel::new(catalog(), options, Box::new(FakeCollaborators)).unwrap();
+            let menu = StartupMenu::new(StartupMenuOptions {
+                lobby: None,
+                sound: None,
+                llm: None,
+                clipboard: None,
+                seat: authority.seat(0),
+                model: Rc::new(RefCell::new(model)),
+                art: art(),
+                font: font(),
+                title_font: font(),
+                now: Rc::new(|| 0),
+                play: Rc::new(|| {}),
+                play_preset: None,
+                browser: None,
+                connect: None,
+                load: Rc::new(|_| {}),
+                saves: Rc::new(StartupSaveList::default),
+                refresh_saves: Rc::new(|| {}),
+                quit: Rc::new(move || quit.set(true)),
+                settings: Vec::new(),
+                appearance: None,
+                team_arena: None,
+                libraries: None,
+            });
+            (menu, flag)
+        }
+
+        #[test]
+        fn arrow_keys_walk_focus_through_main_buttons() {
+            let menu = menu();
+            let seat = menu.controller.borrow().seat();
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:native"));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:load"));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:options"));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:quit"));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Up as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:options"));
+        }
+
+        #[test]
+        fn focus_wraps_past_both_ends() {
+            let menu = menu();
+            let seat = menu.controller.borrow().seat();
+            assert!(menu.input(&key(seat.clone(), KeyCode::Up as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:quit"));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:native"));
+        }
+
+        #[test]
+        fn gamepad_buttons_walk_focus_and_activate() {
+            let menu = menu();
+            let seat = menu.controller.borrow().seat();
+            assert!(menu.input(&pad_button(seat.clone(), 12, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:load"));
+            assert!(menu.input(&pad_button(seat.clone(), 11, true)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:native"));
+            assert!(menu.input(&pad_button(seat.clone(), 0, true)));
+            assert_eq!(menu.active_menu(), Some(native_family_menu_id()));
+        }
+
+        #[test]
+        fn gamepad_stick_deflection_moves_focus() {
+            let menu = menu();
+            let seat = menu.controller.borrow().seat();
+            assert!(menu.input(&pad_axis(seat.clone(), ControllerAxis::LeftY, 0.8)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:load"));
+            assert!(menu.input(&pad_axis(seat.clone(), ControllerAxis::LeftY, -0.8)));
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:native"));
+        }
+
+        #[test]
+        fn activating_quit_runs_the_quit_callback() {
+            let (menu, quit) = menu_with_quit();
+            let seat = menu.controller.borrow().seat();
+            for _ in 0..3 {
+                assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            }
+            assert_eq!(focus_id(&menu).as_deref(), Some("ui:startup:quit"));
+            assert!(!quit.get());
+            assert!(menu.input(&key(seat.clone(), KeyCode::Enter as i32, true)));
+            assert!(quit.get());
+        }
+
+        #[test]
+        fn activating_load_opens_the_load_menu() {
+            let menu = menu();
+            let seat = menu.controller.borrow().seat();
+            assert!(menu.input(&key(seat.clone(), KeyCode::Down as i32, true)));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Enter as i32, true)));
+            assert_eq!(menu.active_menu(), Some(load_menu_id()));
+            assert!(menu.input(&key(seat.clone(), KeyCode::Escape as i32, true)));
+            assert_eq!(menu.active_menu(), Some(main_menu_id()));
+        }
+    }
 }

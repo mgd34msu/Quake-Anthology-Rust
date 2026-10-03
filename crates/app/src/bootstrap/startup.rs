@@ -244,6 +244,17 @@ impl<B: StartupBackend> StartupApplication<B> {
         self.entry
     }
 
+    /// Borrow the world-owning backend.
+    #[must_use]
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// Mutably borrow the world-owning backend.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
     /// Queued source change, if any.
     #[must_use]
     pub fn pending(&self) -> Option<&StartupAction> {
