@@ -220,6 +220,16 @@ impl SpatialIndex {
     /// Link a body snapshot. Q3 members prepend; Q1/Q2 members append.
     pub fn link(&mut self, body: &LinkedBody, collision: &ActorCollision) {
         self.unlink(&body.actor);
+        self.link_fresh(body, collision);
+    }
+
+    /// Link a body snapshot known to be absent, skipping the unlink scan.
+    ///
+    /// The caller must guarantee the actor is not already linked (for
+    /// example, the index was just cleared and every actor links once);
+    /// linking a present actor a second time leaves a duplicate behind.
+    /// Q3 members prepend; Q1/Q2 members append, exactly like [`Self::link`].
+    pub fn link_fresh(&mut self, body: &LinkedBody, collision: &ActorCollision) {
         let actor = SpatialActor {
             body: body.clone(),
             collision: collision.clone(),
@@ -446,6 +456,46 @@ mod tests {
         index.unlink(&solid.actor);
         assert!(index.get(&solid.actor).is_none());
         assert_eq!(index.query(&world_bounds(), QueryRole::Both).len(), 1);
+    }
+
+    #[test]
+    fn link_fresh_matches_link_for_absent_actors() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let mut registry = ActorRegistry::new(owner, 16).unwrap();
+        let mut index = SpatialIndex::new(&world_bounds());
+        let mut entries = Vec::new();
+        for (x, family) in [
+            (-500.0, CollisionFamily::Q1),
+            (500.0, CollisionFamily::Q1),
+            (-100.0, CollisionFamily::Q3),
+            (-120.0, CollisionFamily::Q3),
+        ] {
+            entries.push(linked_at(&mut registry, x, family, CollisionRole::Solid));
+        }
+        for (body, collision) in &entries {
+            index.link(body, collision);
+        }
+        let linked: Vec<ActorId> = index
+            .query(&world_bounds(), QueryRole::Solid)
+            .iter()
+            .map(|actor| actor.body.actor.clone())
+            .collect();
+
+        // Sweep-style rebuild: clear, then link every actor exactly once.
+        index.clear();
+        assert!(index.query(&world_bounds(), QueryRole::Both).is_empty());
+        for (body, collision) in &entries {
+            index.link_fresh(body, collision);
+        }
+        let rebuilt: Vec<ActorId> = index
+            .query(&world_bounds(), QueryRole::Solid)
+            .iter()
+            .map(|actor| actor.body.actor.clone())
+            .collect();
+        assert_eq!(rebuilt, linked);
+        for (body, _) in &entries {
+            assert!(index.get(&body.actor).is_some());
+        }
     }
 
     #[test]
