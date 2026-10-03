@@ -222,10 +222,20 @@ impl ModelMaterialProvider for WindowedModelProvider {
 /// Player spawn point: camera origin plus pitch/yaw/roll angles.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpawnPoint {
-    /// Camera origin.
+    /// Camera origin at eye height (feet origin plus the family eye offset).
     pub origin: Vec3,
     /// Camera angles (pitch, yaw, roll) in degrees.
     pub angles: Vec3,
+}
+
+/// Standing eye height above the spawn feet origin, in map units (donor
+/// `viewOffset.z` 22 for Quake, `viewHeight` 22 for Quake II,
+/// `standingViewHeight` 26 for Quake III).
+fn eye_height(kind: BspKind) -> f32 {
+    match kind {
+        BspKind::Q1 | BspKind::Q2 => 22.0,
+        BspKind::Q3 => 26.0,
+    }
 }
 
 /// One model-bearing record that did not become a scene entity.
@@ -412,16 +422,26 @@ fn worldspawn_sky(records: &[Vec<(String, String)>]) -> Option<String> {
 }
 
 /// Select the player spawn point: the highest-priority spawn record with a
-/// parseable origin (first wins ties).
-pub fn select_spawn(records: &[Vec<(String, String)>]) -> Option<SpawnPoint> {
+/// parseable origin (first wins ties). Records without a classname, without
+/// a spawn priority, or without a parseable origin are skipped, never
+/// fatal. The returned origin is at eye height (`eye_height` above the
+/// record feet origin).
+pub fn select_spawn(records: &[Vec<(String, String)>], kind: BspKind) -> Option<SpawnPoint> {
     let mut best: Option<(u32, SpawnPoint)> = None;
     for record in records {
-        let classname = record_get(record, "classname")?;
-        let priority = spawn_priority(classname)?;
+        let Some(classname) = record_get(record, "classname") else {
+            continue;
+        };
+        let Some(priority) = spawn_priority(classname) else {
+            continue;
+        };
         if best.is_some_and(|(best_priority, _)| best_priority <= priority) {
             continue;
         }
-        let origin = record_get(record, "origin").and_then(parse_triple)?;
+        let Some(feet) = record_get(record, "origin").and_then(parse_triple) else {
+            continue;
+        };
+        let origin = vec3(feet.x, feet.y, feet.z + eye_height(kind));
         best = Some((
             priority,
             SpawnPoint {
@@ -757,7 +777,7 @@ pub fn build_presentation(
         models,
         entities,
         inline_models,
-        spawn: select_spawn(records),
+        spawn: select_spawn(records, kind),
         q3_world,
         q2_world,
         skipped_models,
@@ -778,6 +798,7 @@ mod tests {
     #[test]
     fn spawn_prefers_starts_over_deathmatch() {
         let records = vec![
+            record(&[("classname", "worldspawn")]),
             record(&[
                 ("classname", "info_player_deathmatch"),
                 ("origin", "1 2 3"),
@@ -790,9 +811,24 @@ mod tests {
             ]),
             record(&[("classname", "info_player_start"), ("origin", "7 8 9")]),
         ];
-        let spawn = select_spawn(&records).expect("spawn");
-        assert_eq!(spawn.origin, vec3(4.0, 5.0, 6.0));
+        let spawn = select_spawn(&records, BspKind::Q1).expect("spawn");
+        assert_eq!(spawn.origin, vec3(4.0, 5.0, 6.0 + 22.0));
         assert_eq!(spawn.angles, vec3(0.0, 180.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_eye_height_follows_family() {
+        let records = vec![
+            record(&[("classname", "worldspawn")]),
+            record(&[("classname", "info_player_start"), ("origin", "0 0 100")]),
+        ];
+        assert_eq!(eye_height(BspKind::Q1), 22.0);
+        assert_eq!(eye_height(BspKind::Q2), 22.0);
+        assert_eq!(eye_height(BspKind::Q3), 26.0);
+        let q1 = select_spawn(&records, BspKind::Q1).expect("q1 spawn");
+        assert_eq!(q1.origin, vec3(0.0, 0.0, 122.0));
+        let q3 = select_spawn(&records, BspKind::Q3).expect("q3 spawn");
+        assert_eq!(q3.origin, vec3(0.0, 0.0, 126.0));
     }
 
     #[test]
@@ -815,7 +851,7 @@ mod tests {
             record(&[("classname", "info_player_start")]),
             record(&[("classname", "info_player_deathmatch"), ("origin", "bogus")]),
         ];
-        assert!(select_spawn(&records).is_none());
+        assert!(select_spawn(&records, BspKind::Q2).is_none());
     }
 
     #[test]
