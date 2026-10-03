@@ -22,7 +22,9 @@ use std::collections::HashMap;
 
 use qa_client::render::image_journal::ImageDescription;
 use qa_client::render::image_journal::RenderImageJournal;
-use qa_client::render::types::ImageResourceOperation;
+use qa_client::render::types::{
+    DrawBuffer as ClientDrawBuffer, ImageResourceOperation, RenderView as ClientRenderView,
+};
 use qa_core::math::Vec4;
 use qa_platform::sdl::SdlDisplayMode;
 use thiserror::Error;
@@ -338,18 +340,28 @@ pub struct RenderGlConfig {
     pub stereo_enabled: bool,
 }
 
-/// One render command (donor `RenderFrame["commands"]`, draws opaque).
+/// One render command (donor `RenderFrame["commands"]`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderCommand {
-    /// Set the clear color.
+    /// Set the 2D drawing color.
     SetColor {
-        /// Clear color.
+        /// Drawing color.
         color: Vec4,
     },
     /// Swap buffers.
     SwapBuffers,
     /// Opaque draw command for the backend.
     Draw,
+    /// Select the draw buffer (donor `draw-buffer`).
+    DrawBuffer {
+        /// Target buffer.
+        buffer: ClientDrawBuffer,
+        /// Clear after selecting.
+        clear: bool,
+    },
+    /// Render one ordered view: scene entities plus view/camera state
+    /// (donor `view`).
+    View(ClientRenderView),
 }
 
 /// One render frame (donor `RenderFrame`).
@@ -1077,6 +1089,15 @@ where
                     }
                     RenderCommand::Draw => {
                         self.backend.execute_serial_command(&RenderCommand::Draw);
+                    }
+                    RenderCommand::DrawBuffer { buffer, clear } => {
+                        self.backend.execute_serial_command(&RenderCommand::DrawBuffer {
+                            buffer: *buffer,
+                            clear: *clear,
+                        });
+                    }
+                    RenderCommand::View(view) => {
+                        self.backend.execute_serial_command(&RenderCommand::View(view.clone()));
                     }
                 }
                 index += 1;
