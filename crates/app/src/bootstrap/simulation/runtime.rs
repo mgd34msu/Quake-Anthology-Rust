@@ -42411,9 +42411,9 @@ impl SharedSimulation {
 impl SharedSimulation {
     /// Attach rerelease bot navigation (donor `installRereleaseNavigation`).
     ///
-    /// Missing siblings: the temporary navigation harness carries no
-    /// identity, so the already-belongs inequality only lands with the
-    /// real navigation home; reinstalling the harness is idempotent.
+    /// Donor identity: a second distinct harness fails with the
+    /// already-belongs error while reinstalling the attached harness
+    /// is idempotent (handle identity on the shared installation).
     pub fn attach_rerelease_navigation(
         &self,
         navigation: super::navigation::ApplicationBotNavigation,
@@ -47314,6 +47314,35 @@ mod tests {
                 native: None,
             },
         }
+    }
+
+    /// Attaching rerelease navigation enforces donor harness identity
+    /// (donor `installRereleaseNavigation`, runtime.ts 2503-2507): a
+    /// second distinct harness fails while reinstalling the attached
+    /// harness is idempotent.
+    #[test]
+    fn attach_rerelease_navigation_enforces_harness_identity() {
+        let rig = gu1_sim();
+        let first = super::super::navigation::ApplicationBotNavigation::test_harness(&rig.sim);
+        let same = first.clone();
+        assert_ne!(
+            first,
+            super::super::navigation::ApplicationBotNavigation::test_harness(&rig.sim)
+        );
+        rig.sim.attach_rerelease_navigation(first).expect("first attach");
+        assert!(rig.sim.rerelease_navigation().is_some());
+        rig.sim
+            .attach_rerelease_navigation(same)
+            .expect("reinstall is idempotent");
+        let other = super::super::navigation::ApplicationBotNavigation::test_harness(&rig.sim);
+        let error = rig
+            .sim
+            .attach_rerelease_navigation(other)
+            .expect_err("foreign harness is rejected");
+        assert!(
+            error.to_string().contains("already belongs"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
