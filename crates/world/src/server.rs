@@ -485,7 +485,10 @@ impl<L: ServerLogic> Server<L> {
                 } else {
                     CollisionRole::Solid
                 };
-                spatial.link(
+                // The scratch index was just cleared and every body actor
+                // links once, so the defensive unlink inside `link` would
+                // always scan the whole tree and find nothing.
+                spatial.link_fresh(
                     &LinkedBody {
                         actor: linked.actor.clone(),
                         state: linked.state.clone(),
