@@ -2899,7 +2899,7 @@ fn removed_result(profile: &MovementProfile, actor: &ActorId, sequence: u64) -> 
 }
 
 /// Convert a net command to its world twin.
-fn net_to_world(command: &NetUserCommand) -> WorldUserCommand {
+pub(crate) fn net_to_world(command: &NetUserCommand) -> WorldUserCommand {
     match command {
         NetUserCommand::Q1Netquake { .. } => WorldUserCommand::Q1Netquake(net_to_world_q1(command)),
         NetUserCommand::Q1Quakeworld {
@@ -2974,7 +2974,7 @@ fn net_to_world(command: &NetUserCommand) -> WorldUserCommand {
 }
 
 /// Convert a world command to its net twin.
-fn world_to_net(command: &WorldUserCommand) -> NetUserCommand {
+pub(crate) fn world_to_net(command: &WorldUserCommand) -> NetUserCommand {
     match command {
         WorldUserCommand::Q1Netquake(command) => NetUserCommand::Q1Netquake {
             acknowledged_server_time_seconds: command.acknowledged_server_time_seconds,

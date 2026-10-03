@@ -3,7 +3,7 @@
 //! Donor provenance: `src/content/q1/quakec/armor-points.ts`
 //! (`qcEmptyArmor`).
 
-use crate::contract::{ModQcEmptyArmor, ModQcEmptyArmorItem, RegularArmorState};
+use crate::contract::{ModQcEmptyArmor, ModQcEmptyArmorItem, ModSourceCall, RegularArmorState};
 
 use super::id1_program::{id1_program_snapshot, Id1Attribution};
 use super::qc_view::QcProgramView;
@@ -42,8 +42,9 @@ impl QcEmptyArmorGrant {
 pub fn qc_empty_armor(
     program: &QcProgramView,
     declared: Option<&ModQcEmptyArmor>,
+    declared_damage: Option<&ModSourceCall>,
 ) -> Result<Option<QcEmptyArmorGrant>, QcError> {
-    let pinned_default = id1_program_snapshot(program)?.attribution == Id1Attribution::Pinned;
+    let pinned_default = id1_program_snapshot(program, declared_damage)?.attribution == Id1Attribution::Pinned;
     let source: Option<(ModQcEmptyArmorItem, f64)> = match declared {
         Some(declared) => Some((declared.item, declared.absorption)),
         None if pinned_default => Some((ModQcEmptyArmorItem::ArmorInv, 0.8)),

@@ -788,6 +788,7 @@ use qa_content::q1::quakec::qc_view::{
 use qa_content::q1::quakec::weapon_stage::{
     invoke_qc_client_stage, qc_client_stage_self, QcClientStageCall, QcWeaponObjectives, QcWeaponStageBinding,
 };
+use qa_content::q2::foundation::host::{Q2Motion, Q2MotionKind};
 use qa_content::value::{arr, boolean, int, namespaced, num, obj, str, SaveJson, ValueError};
 use qa_core::cmd::Dialect;
 use qa_core::cvar::CvarRegistry;
@@ -799,7 +800,10 @@ use qa_core::time::ClockProfile;
 use qa_core::time::{FrameContext, SourceTime};
 use qa_guest::core::contracts::ModuleIdentity;
 use qa_guest::fields::{FieldLayout, FieldTable, FieldValue};
-use qa_guest::qc::actor_state::{BodyState, QcActorState, SharedSolid};
+use qa_guest::qc::actor_state::{
+    BodyState, Motion as GuestMotion, MotionKind as GuestMotionKind, PhysicsFlagChanges, QcActorState,
+    SharedPhysicsFlags as GuestPhysicsFlags, SharedSolid,
+};
 use qa_guest::qc::borrowed_actors::{BorrowedCheckpoint, BorrowedSlotPool, QcBorrowedActors, ReusePolicy};
 use qa_guest::qc::builtins::{create_qc_builtins, QcBuiltinServices, QcHostBuiltinName, QcHostKind, QcSharedRandom};
 use qa_guest::qc::client_host::{AimScene, ClientSlots, QcClientHost, VisibilityScene};
@@ -831,6 +835,7 @@ use qa_net::common::commands::UserCommand;
 use qa_net::msg::MsgWriter;
 use qa_net::q1_net::{write_net_quake_message, NetQuakeDecoder, NetQuakeMessage, NqText, TemporaryEntity};
 use qa_net::q1_wide::NqProfile;
+use qa_world::body::BodyState as WorldBodyState;
 use qa_world::movement::q1::types::{Q1MovementState, QwMovementProfile, QwMovementState};
 use qa_world::movement::q1::water_transition::q1_water_transition;
 use qa_world::movement::types::{
@@ -840,6 +845,11 @@ use qa_world::movement::types::{
 use qa_world::movement::Q1MovementParameters;
 use qa_world::scheduler::think_callback_time;
 
+use super::actor_execution::QuakeCSource as ExecutionQuakeCSource;
+use super::physics::{
+    PhysicsFamily, SharedPhysicsFlags as ExecutionPhysicsFlags, SharedSolid as ExecutionSharedSolid,
+    SolidKind as ExecutionSolidKind,
+};
 use super::powerup_timers::{q1_powerup_timers, ActivePowerupTimer};
 use super::quakec_client_adapter::{
     consume_quake_c_jump, quake_c_client_command, quake_c_source_jump, QuakeCClientMovement, QuakeCTransitionState,
@@ -1728,6 +1738,7 @@ mod tests {
         fields.push((6, "th_die"));
         fields.push((2, "items2"));
         fields.push((2, "frags"));
+        fields.push((2, "lastruntime"));
         fields
     }
 
@@ -1802,7 +1813,7 @@ mod tests {
         ]
     }
 
-    fn surface_bytes() -> Vec<u8> {
+    fn surface_bytes_with_crc(crc: i32) -> Vec<u8> {
         let functions = surface_functions();
         let mut statements = vec![0u16; (functions.len() + 2) * 4];
         statements[4] = 29;
@@ -1877,7 +1888,7 @@ mod tests {
         ];
         let mut image = Vec::new();
         image.extend_from_slice(&6i32.to_le_bytes());
-        image.extend_from_slice(&5927i32.to_le_bytes());
+        image.extend_from_slice(&crc.to_le_bytes());
         let mut at = 60i32;
         for (blob, count) in blobs.iter().zip(counts) {
             image.extend_from_slice(&at.to_le_bytes());
@@ -1891,22 +1902,28 @@ mod tests {
         image
     }
 
-    fn surface_prepared(name: &str) -> PreparedQuakeCSource {
+    fn surface_prepared_with(name: &str, crc: i32, api: QuakeCApiIdentity) -> PreparedQuakeCSource {
         let dir = scratch_dir(name);
-        std::fs::write(dir.join("progs.dat"), surface_bytes()).unwrap();
-        let program = load_qc_program(&surface_bytes(), None, "surface.dat").unwrap();
+        std::fs::write(dir.join("progs.dat"), surface_bytes_with_crc(crc)).unwrap();
+        let program = load_qc_program(&surface_bytes_with_crc(crc), None, "surface.dat").unwrap();
         let digest = format!("{}:{}", program.digest.algorithm, program.digest.value);
-        std::fs::write(
-            dir.join("quakec-compatibility.json"),
-            format!(r#"{{"version":1,"artifactDigest":"{digest}"}}"#).into_bytes(),
-        )
-        .unwrap();
+        let compatibility = if api == QuakeCApiIdentity::Quakeworld {
+            // The surface T_Damage takes (targ, inflictor, attacker, damage).
+            let args = r#"{"kind":"input","name":"self"},{"kind":"input","name":"inflictor"},{"kind":"input","name":"attacker"},{"kind":"input","name":"amount"}"#;
+            format!(
+                r#"{{"version":1,"artifactDigest":"{digest}","combat":{{"damage":{{"function":"T_Damage","arguments":[{args}],"globals":[]}}}}}}"#
+            )
+            .into_bytes()
+        } else {
+            format!(r#"{{"version":1,"artifactDigest":"{digest}"}}"#).into_bytes()
+        };
+        std::fs::write(dir.join("quakec-compatibility.json"), compatibility).unwrap();
         let mounts = loose_mounts(&dir);
         let found = mounts.open("progs.dat", |_| true).unwrap().unwrap();
         let execution = QuakeCExecution {
             owner: test_owner(),
             artifact: found.reference,
-            api: QuakeCApiIdentity::Netquake,
+            api,
         };
         let prepared = prepare_quake_c_source(&execution, &mounts, "", &mounts).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2395,7 +2412,17 @@ mod tests {
     );
 
     fn surface_source(name: &str, max_clients: usize, entities: &str) -> SurfaceSourceHandles {
-        let prepared = surface_prepared(name);
+        surface_source_with(name, max_clients, entities, 5927, QuakeCApiIdentity::Netquake)
+    }
+
+    fn surface_source_with(
+        name: &str,
+        max_clients: usize,
+        entities: &str,
+        crc: i32,
+        api: QuakeCApiIdentity,
+    ) -> SurfaceSourceHandles {
+        let prepared = surface_prepared_with(name, crc, api);
         let provider = prepared.execution.owner.provider.clone();
         let actors = Rc::new(RefCell::new(FakeActors::new(provider)));
         let physics = Rc::new(RefCell::new(FakePhysics::new()));
@@ -2470,6 +2497,9 @@ mod tests {
         }
         let client = identities.client(slot, 1);
         source.reserved_client(&client).unwrap();
+        if source.kind() == QuakeCSourceKind::Quakeworld {
+            source.prepare_client_spawn(&client).unwrap();
+        }
         source.admit_client(&client).unwrap()
     }
 
@@ -2887,6 +2917,145 @@ mod tests {
             }
         );
         assert_eq!(QuakeCPostThink::default(), QuakeCPostThink::Immediate);
+    }
+
+    #[test]
+    fn flush_messages_drains_broadcast_temp_entities() {
+        let (source, _, _, events, _) = surface_source("qc-flush", 2, "");
+        let slots = |_: usize| None;
+        {
+            let mut shared = source.shared.borrow_mut();
+            // MSG_BROADCAST svc_temp_entity point (presentation-host recipe).
+            shared.messages.write_byte(0, None, &slots, 4).unwrap();
+            shared.messages.write_byte(0, None, &slots, 3).unwrap();
+            shared.messages.write_coord(0, None, &slots, 1.0).unwrap();
+            shared.messages.write_coord(0, None, &slots, 2.0).unwrap();
+            shared.messages.write_coord(0, None, &slots, 3.0).unwrap();
+            shared.messages.write_byte(0, None, &slots, 9).unwrap();
+        }
+        source.flush_messages().unwrap();
+        assert_eq!(events.borrow().emitted.len(), 1);
+        source.flush_messages().unwrap();
+        assert_eq!(events.borrow().emitted.len(), 1);
+    }
+
+    #[test]
+    fn execution_projections_read_absent_for_unknown_actors() {
+        use qa_core::math::Bounds;
+        let (source, _, _, _, identities) = surface_source("qc-exec-absent", 2, "");
+        let id = identities.actor(9, 1);
+        let owned = identities.owned_actor(&id, ProviderId::new("q1", "test")).unwrap();
+        let body = WorldBodyState {
+            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            bounds: Bounds {
+                min: Vec3 {
+                    x: -16.0,
+                    y: -16.0,
+                    z: -24.0,
+                },
+                max: Vec3 {
+                    x: 16.0,
+                    y: 16.0,
+                    z: 32.0,
+                },
+            },
+            ground: None,
+        };
+        assert!(source.motion(&owned, &body).unwrap().is_none());
+        let flags = source.execution_flags(&owned).unwrap();
+        assert!(!flags.fly && !flags.swim && !flags.partial_ground && !flags.player && !flags.dead);
+        source
+            .write_execution_flags(&owned, &PhysicsFlagChanges::default())
+            .unwrap();
+        let mut exec = QuakeCExecutionSource::new(source.clone());
+        assert!(exec.motion(&owned, &body).is_none());
+        assert!(exec.collision(&owned).is_none());
+        assert_eq!(exec.flags(&owned).fly, Some(false));
+        exec.write_flags(&owned, &ExecutionPhysicsFlags::default());
+        assert!(exec.step_pusher(&id, 0.05).is_ok());
+    }
+
+    #[test]
+    fn prepare_client_spawn_gates_quakeworld_admission() {
+        let (nq, _, _, _, nq_identities) = surface_source("qc-prep-nq", 2, "");
+        nq.spawn_map().unwrap();
+        let nq_client = nq_identities.client(0, 1);
+        nq.reserved_client(&nq_client).unwrap();
+        assert!(nq.prepare_client_spawn(&nq_client).is_err());
+        let (qw, _, _, _, qw_identities) =
+            surface_source_with("qc-prep-qw", 2, "", 54730, QuakeCApiIdentity::Quakeworld);
+        qw.spawn_map().unwrap();
+        let qw_client = qw_identities.client(0, 1);
+        qw.reserved_client(&qw_client).unwrap();
+        assert!(qw.admit_client(&qw_client).is_err());
+        qw.prepare_client_spawn(&qw_client).unwrap();
+        let actor = qw.admit_client(&qw_client).unwrap();
+        assert!(qw.is_active_client(actor.id()));
+        assert!(qw.prepare_client_spawn(&qw_client).is_err());
+    }
+
+    #[test]
+    fn take_new_missile_drains_quakeworld_word() {
+        let (source, _, _, _, identities) =
+            surface_source_with("qc-newmis", 2, "", 54730, QuakeCApiIdentity::Quakeworld);
+        let actor = admit_surface_client(&source, &identities, 0);
+        assert!(source.take_new_missile().unwrap().is_none());
+        let offset = source.machine_read(|machine| machine.global_offset("newmis")).unwrap();
+        let reference = source.reference(actor.id()).unwrap();
+        source
+            .machine_write(|machine| machine.globals_mut().set_int(offset, reference))
+            .unwrap();
+        let taken = source.take_new_missile().unwrap().expect("drained missile");
+        assert_eq!(taken.id(), actor.id());
+        assert!(source.take_new_missile().unwrap().is_none());
+    }
+
+    #[test]
+    fn run_actor_once_passes_netquake_through() {
+        use qa_core::time::FramePhase;
+        let (source, _, _, _, identities) = surface_source("qc-runonce-nq", 2, "");
+        let actor = admit_surface_client(&source, &identities, 0);
+        let frame = FrameContext {
+            frame: 1,
+            time: SourceTime::Seconds(1.0),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
+        assert!(source.run_actor_once(actor.id(), &frame).unwrap());
+        assert!(source.run_actor_once(actor.id(), &frame).unwrap());
+    }
+
+    #[test]
+    fn run_actor_once_claims_quakeworld_frames() {
+        use qa_core::time::FramePhase;
+        let (source, _, _, _, identities) =
+            surface_source_with("qc-runonce-qw", 2, "", 54730, QuakeCApiIdentity::Quakeworld);
+        assert_eq!(source.kind(), QuakeCSourceKind::Quakeworld);
+        let actor = admit_surface_client(&source, &identities, 0);
+        let frame = FrameContext {
+            frame: 1,
+            time: SourceTime::Seconds(1.0),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
+        assert!(source.run_actor_once(actor.id(), &frame).unwrap());
+        assert!(!source.run_actor_once(actor.id(), &frame).unwrap());
+        let millis = FrameContext {
+            frame: 2,
+            time: SourceTime::Milliseconds(1000),
+            elapsed: SourceTime::Milliseconds(100),
+            phase: FramePhase::FrameEntry,
+        };
+        assert!(!source.run_actor_once(actor.id(), &millis).unwrap());
+        let next = FrameContext {
+            frame: 3,
+            time: SourceTime::Seconds(2.0),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
+        assert!(source.run_actor_once(actor.id(), &next).unwrap());
     }
 }
 
@@ -4389,7 +4558,8 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         let mut cache = Id1ProgramCache::default();
         let probe_views = ContentProgramViews::build(&prepared.program);
         let probe = probe_views.view(&prepared.program);
-        let binding = id1_program_binding(&mut cache, &probe, None)?;
+        let declared_probe = declared_damage_call(&prepared)?;
+        let binding = id1_program_binding(&mut cache, &probe, declared_probe.as_ref())?;
         let quakeworld = matches!(binding.kind, qa_content::q1::quakec::id1_program::Id1Kind::Quakeworld);
         let kind = if quakeworld {
             QuakeCSourceKind::Quakeworld
@@ -4517,12 +4687,21 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         let machine_fn =
             || -> MachineFn<'static> { Box::new(move || &core.machine_view as &'static (dyn QcMachineView + 'static)) };
 
-        let attacks: &'static Id1SynchronousAttacks<'static> =
-            Box::leak(Box::new(Id1SynchronousAttacks::new(host_source(), machine_fn())?));
-        let projectiles: &'static Id1ProjectileAttacks<'static> =
-            Box::leak(Box::new(Id1ProjectileAttacks::new(host_source(), machine_fn())?));
-        let environment: &'static Id1Environment<'static> =
-            Box::leak(Box::new(Id1Environment::new(host_source(), machine_fn())?));
+        let attacks: &'static Id1SynchronousAttacks<'static> = Box::leak(Box::new(Id1SynchronousAttacks::new(
+            host_source(),
+            machine_fn(),
+            declared_probe.as_ref(),
+        )?));
+        let projectiles: &'static Id1ProjectileAttacks<'static> = Box::leak(Box::new(Id1ProjectileAttacks::new(
+            host_source(),
+            machine_fn(),
+            declared_probe.as_ref(),
+        )?));
+        let environment: &'static Id1Environment<'static> = Box::leak(Box::new(Id1Environment::new(
+            host_source(),
+            machine_fn(),
+            declared_probe.as_ref(),
+        )?));
 
         if let Some(combat) = &prepared.combat_declaration {
             validate_qc_mod_combat(&GuestProgramView::new(&prepared.program), &runtime_combat(combat)?)?;
@@ -4701,11 +4880,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             .and_then(|combat| combat.armor_stage.as_ref())
             .map(content_armor_stage)
             .transpose()?;
-        let declared_damage = prepared
-            .combat_declaration
-            .as_ref()
-            .map(|combat| content_source_call(&guest_call(&combat.damage)))
-            .transpose()?;
+        let declared_damage = declared_damage_call(&prepared)?;
         let declared_scale_region = prepared
             .combat_declaration
             .as_ref()
@@ -4723,6 +4898,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             resolve_request,
             Some(projection),
             declared_armor.as_ref(),
+            declared_damage.as_ref(),
             declared_scale,
             &mut cache,
         )?));
@@ -5614,7 +5790,8 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             )
         };
         let mut cache = Id1ProgramCache::default();
-        let binding = id1_program_binding(&mut cache, program_view, None)?;
+        let declared = declared_damage_call(&self.prepared)?;
+        let binding = id1_program_binding(&mut cache, program_view, declared.as_ref())?;
         let declared_empty = self
             .prepared
             .combat_declaration
@@ -5622,7 +5799,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             .and_then(|combat| combat.empty_armor.as_ref())
             .map(content_empty_armor)
             .transpose()?;
-        let empty_regular_armor = qc_empty_armor(program_view, declared_empty.as_ref())?;
+        let empty_regular_armor = qc_empty_armor(program_view, declared_empty.as_ref(), declared.as_ref())?;
         let powered = Id1DamageBinding::protection_stage(damage, actor, ProtectionChannel::Powered);
         let regular = Id1DamageBinding::protection_stage(damage, actor, ProtectionChannel::Regular);
         let actor_id = actor.id().clone();
@@ -6026,7 +6203,8 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             )
         };
         let mut cache = Id1ProgramCache::default();
-        let damage_abi = id1_program_binding(&mut cache, program_view, None)?.damage;
+        let declared = declared_damage_call(&self.prepared)?;
+        let damage_abi = id1_program_binding(&mut cache, program_view, declared.as_ref())?.damage;
         if damage_abi.call.declaration.is_none() && damage_abi.call.parameters.len() != 4 {
             return Err(QuakeCSourceError::Invalid(
                 "QC incoming damage requires its qualified four-argument source ABI".to_string(),
@@ -8024,6 +8202,58 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         outcome
     }
 
+    /// Prepare one QuakeWorld client's spawn entity (`prepareClientSpawn`,
+    /// donor `quakec-source.ts` 720-731).
+    pub fn prepare_client_spawn(&self, client: &ClientId) -> Result<(), QuakeCSourceError> {
+        let actor = self.reserved_client(client)?;
+        let slot = client.slot() as usize + 1;
+        if self.kind() != QuakeCSourceKind::Quakeworld || self.is_active_client(actor.id()) {
+            return Err(QuakeCSourceError::Invalid(
+                "QW spawn requires an inactive reserved client".to_string(),
+            ));
+        }
+        let colormap = self.field("colormap")?;
+        let team = self.field("team")?;
+        let netname = self.field("netname")?;
+        let name = self
+            .shared
+            .borrow()
+            .user_info
+            .get(&slot)
+            .and_then(|info| info.get("name").cloned())
+            .unwrap_or_else(|| "unnamed".to_string());
+        let maxspeed = self.shared.borrow().cvars.borrow().variable_value("sv_maxspeed");
+        let gravity = self
+            .prepared
+            .program
+            .field_named("gravity")
+            .map(|definition| definition.offset);
+        let maxspeed_field = self
+            .prepared
+            .program
+            .field_named("maxspeed")
+            .map(|definition| definition.offset);
+        let engine = format!("qw-name:{slot}");
+        self.machine_write(|machine| {
+            machine.entities_mut().clear_slot(slot as u32)?;
+            machine
+                .entities_mut()
+                .set_slot_float(slot as u32, colormap, slot as f32)?;
+            machine.entities_mut().set_slot_float(slot as u32, team, 0.0)?;
+            let offset = machine.strings_mut().set_engine(&engine, &name, 32)?;
+            machine.entities_mut().set_slot_int(slot as u32, netname, offset)?;
+            if let Some(word) = gravity {
+                machine.entities_mut().set_slot_float(slot as u32, word, 1.0)?;
+            }
+            if let Some(word) = maxspeed_field {
+                machine.entities_mut().set_slot_float(slot as u32, word, maxspeed)?;
+            }
+            Ok::<_, GuestError>(())
+        })?;
+        self.shared.borrow_mut().prepared_clients.insert(slot);
+        Ok(())
+    }
+
     /// Admit one reserved client into the server (`admitClient`).
     pub fn admit_client(&self, client: &ClientId) -> Result<OwnedActor, QuakeCSourceError> {
         let slot = client.slot() as usize + 1;
@@ -9119,6 +9349,72 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         Ok(solid)
     }
 
+    /// Live motion record for an actor (`motion`, donor `quakec-source.ts` 1444).
+    pub fn motion(&self, actor: &OwnedActor, body: &WorldBodyState) -> Result<Option<GuestMotion>, QuakeCSourceError> {
+        let guest_body = BodyState {
+            origin: body.origin,
+            angles: body.angles,
+            velocity: body.velocity,
+            bounds: body.bounds,
+            ground: body.ground.clone(),
+        };
+        let shared = self.shared.borrow();
+        let fields = shared.fields.clone();
+        let borrowed = fields.borrow();
+        Ok(shared.actor_state.motion(&borrowed, actor.id(), &guest_body)?)
+    }
+
+    /// Live physics flags for an actor (`flags`, donor `quakec-source.ts` 1445).
+    pub fn execution_flags(&self, actor: &OwnedActor) -> Result<GuestPhysicsFlags, QuakeCSourceError> {
+        let shared = self.shared.borrow();
+        let fields = shared.fields.clone();
+        let borrowed = fields.borrow();
+        Ok(shared.actor_state.flags(&borrowed, actor.id())?)
+    }
+
+    /// Store partial physics-flag changes (`writeFlags`, donor `quakec-source.ts` 1446).
+    pub fn write_execution_flags(
+        &self,
+        actor: &OwnedActor,
+        changes: &PhysicsFlagChanges,
+    ) -> Result<(), QuakeCSourceError> {
+        let shared = self.shared.borrow();
+        let fields = shared.fields.clone();
+        let mut borrowed = fields.borrow_mut();
+        shared.actor_state.write_flags(&mut borrowed, actor.id(), changes)?;
+        Ok(())
+    }
+
+    /// Claim one QuakeWorld execution of an actor for this frame (`runActorOnce`,
+    /// donor `quakec-source.ts` 1107-1114).
+    pub fn run_actor_once(&self, actor: &ActorId, frame: &FrameContext) -> Result<bool, QuakeCSourceError> {
+        if self.kind() != QuakeCSourceKind::Quakeworld {
+            return Ok(true);
+        }
+        let time = match frame.time {
+            SourceTime::Seconds(value) => value,
+            SourceTime::Milliseconds(value) => value as f32 / 1000.0,
+        };
+        let reference = self.reference(actor)?;
+        let word = self.field("lastruntime")?;
+        let seen = self.machine_read(|machine| {
+            machine
+                .entities()
+                .slot(reference)
+                .and_then(|slot| machine.entities().slot_float(slot, word))
+        })?;
+        if seen == time {
+            return Ok(false);
+        }
+        self.machine_write(|machine| {
+            machine
+                .entities()
+                .slot(reference)
+                .and_then(|slot| machine.entities_mut().set_slot_float(slot, word, time))
+        })?;
+        Ok(true)
+    }
+
     /// Write one client's NetQuake punch vector (`setClientPunchAngles`).
     pub fn set_client_punch_angles(&self, actor: &ActorId, angles: Vec3) -> Result<(), QuakeCSourceError> {
         if self.kind() != QuakeCSourceKind::Netquake {
@@ -9563,6 +9859,133 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     }
 }
 
+/// Actor-execution handle over a shared source (donor `QuakeCSource` arm of
+/// `executeActor`, donor actor-execution.ts 119-123).
+///
+/// The session holds sources behind [`Rc`](std::rc::Rc) with interior
+/// mutability; the wrapper keeps the execution method names off the shared
+/// handle. Machine failures panic like the session's other execution
+/// adapters: they signal a corrupt program, not a missable lookup (unknown
+/// actors already read back absent through the `Option` returns).
+pub struct QuakeCExecutionSource<P: qa_content::contract::OriginalPickupAdmission + 'static> {
+    source: std::rc::Rc<QuakeCSource<P>>,
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCExecutionSource<P> {
+    /// Borrow the execution surface of a shared source.
+    pub fn new(source: std::rc::Rc<QuakeCSource<P>>) -> Self {
+        Self { source }
+    }
+}
+
+impl<P: qa_content::contract::OriginalPickupAdmission + 'static> ExecutionQuakeCSource for QuakeCExecutionSource<P> {
+    fn is_reserved_client(&self, actor: &ActorId) -> bool {
+        self.source.is_reserved_client(actor)
+    }
+
+    fn run_actor_once(&mut self, actor: &ActorId, frame: &FrameContext) -> bool {
+        self.source
+            .run_actor_once(actor, frame)
+            .expect("qc run-once claim failed")
+    }
+
+    fn read_move_type(&self, actor: &ActorId) -> Option<i32> {
+        self.source.read_move_type(actor).expect("qc movetype read failed")
+    }
+
+    fn run_think(&mut self, actor: &OwnedActor, frame: &FrameContext) {
+        self.source.run_think(actor, frame).expect("qc think failed");
+    }
+
+    fn check_water_transition(&mut self, actor: &OwnedActor) {
+        self.source
+            .check_water_transition(actor)
+            .expect("qc water transition failed");
+    }
+
+    fn motion(&self, actor: &OwnedActor, body: &WorldBodyState) -> Option<Q2Motion> {
+        let motion = self.source.motion(actor, body).expect("qc motion read failed")?;
+        Some(Q2Motion {
+            actor: actor.clone(),
+            velocity: motion.velocity,
+            angular_velocity: motion.angular_velocity,
+            kind: match motion.kind {
+                GuestMotionKind::Stationary => Q2MotionKind::Stationary,
+                GuestMotionKind::Step => Q2MotionKind::Step,
+                GuestMotionKind::Fly => Q2MotionKind::Fly,
+                GuestMotionKind::Toss => Q2MotionKind::Toss,
+                GuestMotionKind::Push => Q2MotionKind::Push,
+                GuestMotionKind::FlyMissile => Q2MotionKind::FlyMissile,
+                GuestMotionKind::Bounce => Q2MotionKind::Bounce,
+            },
+            gravity: f64::from(motion.gravity),
+            gravity_vector: motion.gravity_vector,
+            clip_mask: motion.clip_mask as i32,
+            owner: motion.owner,
+        })
+    }
+
+    fn collision(&self, actor: &OwnedActor) -> Option<ExecutionSharedSolid> {
+        let solid = self.source.collision(actor).expect("qc collision read failed")?;
+        Some(ExecutionSharedSolid {
+            solid: match solid.solid {
+                qa_guest::qc::actor_state::SolidKind::None => ExecutionSolidKind::None,
+                qa_guest::qc::actor_state::SolidKind::Trigger => ExecutionSolidKind::Trigger,
+                qa_guest::qc::actor_state::SolidKind::Brush => ExecutionSolidKind::Brush,
+                qa_guest::qc::actor_state::SolidKind::Box => ExecutionSolidKind::Box,
+            },
+            model: solid.model.and_then(|model| u32::try_from(model).ok()),
+            family: PhysicsFamily::Q1,
+            owner: solid.owner,
+            monster: Some(solid.monster),
+            dead_monster: None,
+            q1_corpse: solid.q1_corpse,
+            item: Some(solid.item),
+        })
+    }
+
+    fn flags(&self, actor: &OwnedActor) -> ExecutionPhysicsFlags {
+        let flags = self.source.execution_flags(actor).expect("qc flags read failed");
+        ExecutionPhysicsFlags {
+            fly: Some(flags.fly),
+            swim: Some(flags.swim),
+            partial_ground: Some(flags.partial_ground),
+            player: Some(flags.player),
+            water_level: Some(flags.water_level as i32),
+            water_type: Some(flags.water_type as i32),
+            dead: Some(flags.dead),
+            ..ExecutionPhysicsFlags::default()
+        }
+    }
+
+    fn write_flags(&mut self, actor: &OwnedActor, changes: &ExecutionPhysicsFlags) {
+        let changes = PhysicsFlagChanges {
+            fly: changes.fly,
+            swim: changes.swim,
+            partial_ground: changes.partial_ground,
+            water_level: changes.water_level.map(|level| level as f32),
+            water_type: changes.water_type.map(|kind| kind as f32),
+        };
+        self.source
+            .write_execution_flags(actor, &changes)
+            .expect("qc flags write failed");
+    }
+
+    fn step_pusher(
+        &mut self,
+        actor: &ActorId,
+        elapsed_seconds: f64,
+    ) -> Result<(), qa_world::movement::types::MovementError> {
+        // Missing siblings: stepping runs `stepQ1Pusher` over
+        // `physics.q1PusherServices(projection)` (donor quakec-source.ts
+        // 403-406), and `SharedPhysics` exposes no projection-based
+        // builder (physics lane). Pushers hold still until it lands,
+        // matching the native Q1 host pusher stub.
+        let _ = (actor, elapsed_seconds);
+        Ok(())
+    }
+}
+
 /// Local camera source over one [`QuakeCSource`].
 struct LocalViewSource<'s, P: qa_content::contract::OriginalPickupAdmission + 'static> {
     source: &'s QuakeCSource<P>,
@@ -9851,8 +10274,9 @@ fn netquake_message_from_nq(message: &NqMessage) -> NetQuakeMessage {
 }
 
 impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P> {
-    /// Drain broadcast presentation into the session sink (`messages.flush`).
-    fn flush_messages(&self) -> Result<(), QuakeCSourceError> {
+    /// Drain broadcast presentation into the session sink (`messages.flush`,
+    /// donor runtime.ts 4745).
+    pub fn flush_messages(&self) -> Result<(), QuakeCSourceError> {
         let content = self.prepared.execution.owner.content.clone();
         let events = self.shared.borrow().options.events.clone();
         self.shared.borrow_mut().messages.flush(&mut |effect, recipient| {
@@ -11649,6 +12073,19 @@ fn content_callback_value(
         Guest::String(value) => Ok(Content::Str(qa_content::contract::ModCallbackString(value.clone()))),
         Guest::Vector(value) => Ok(Content::Vector(*value)),
     }
+}
+
+/// Declared damage call for program binding derivation (donor
+/// `deriveNativeBinding` `declaredDamage`; QuakeWorld requires the
+/// artifact-qualified declaration).
+fn declared_damage_call(
+    prepared: &PreparedQuakeCSource,
+) -> Result<Option<qa_content::contract::ModSourceCall>, GuestError> {
+    prepared
+        .combat_declaration
+        .as_ref()
+        .map(|combat| content_source_call(&guest_call(&combat.damage)))
+        .transpose()
 }
 
 /// Convert a guest source call into the content shape.

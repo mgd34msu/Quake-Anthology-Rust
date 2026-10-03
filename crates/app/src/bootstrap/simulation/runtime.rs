@@ -29694,27 +29694,145 @@ fn player_weapon_seam(sim: &SharedSimulation, player: &MovementPlayer) -> Result
     }
 }
 
-/// Run QuakeWorld new-missile maintenance (donor `runQuakeWorldNewMissile`).
+/// Run QuakeWorld new-missile maintenance (donor `runQuakeWorldNewMissile`,
+/// donor runtime.ts 4171-4180).
 ///
-/// Missing siblings: the QuakeC/QuakeWorld lane owns missile maintenance.
-#[allow(dead_code)]
-fn run_quake_world_new_missile_seam() {}
+/// Drains the source `newmis` word, checks the shared QuakeC execution,
+/// steps the missile through [`execute_runtime_entry_seam`], and commits
+/// attachments.
+fn run_quake_world_new_missile_seam(sim: &SharedSimulation) -> Result<(), RuntimeError> {
+    let game = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } if game.kind() == super::types::QuakeCSourceKind::Quakeworld => {
+                Rc::clone(game)
+            }
+            _ => return Ok(()),
+        }
+    };
+    let Some(actor) = game.take_new_missile().map_err(source_failure)? else {
+        return Ok(());
+    };
+    let entry = sim.peek().actor_executions.get(actor.id()).cloned();
+    let Some(entry) = entry else {
+        return fail("QW newmis has no shared source execution");
+    };
+    if !matches!(entry, RuntimeExecutionEntry::QuakeC { .. }) {
+        return fail("QW newmis has no shared source execution");
+    }
+    let frame = FrameContext {
+        elapsed: SourceTime::Seconds(0.05),
+        ..sim.peek().source_frame
+    };
+    execute_runtime_entry_seam(sim, &entry, &frame, sim.time_seconds(), 0.05)?;
+    sim.lock().physics.commit_attachments();
+    Ok(())
+}
 
-/// Execute one actor execution entry (donor `executeActor`).
+/// Execute one actor execution entry (donor `executeActor`, donor
+/// actor-execution.ts 106-108).
 ///
-/// Missing siblings: the actor lane (C4) owns execution dispatch — entries
-/// carry identity only, and no `ExecutionBodies`/`ExecutionScheduler`
-/// adapters exist yet. The frame, times, and commit around this call are
-/// real.
-#[allow(dead_code)]
+/// QuakeC and Q1 entries execute through the shared C11 session adapters
+/// and [`super::actor_execution::execute_actor`]. Q3 entries pass through:
+/// the donor excludes `q3`/`q3-source` from `executeActor` and the Q3 lane
+/// owns their stepping.
+///
+/// Missing siblings: Q2 entries need the live `Q2GameServices` the
+/// q2-native lane has not landed yet (`SourceRuntime::Q2` still holds the
+/// opaque seam, `Q2Native` holds guest worlds); they pass through until
+/// it lands.
 fn execute_runtime_entry_seam(
+    sim: &SharedSimulation,
     entry: &RuntimeExecutionEntry,
     frame: &FrameContext,
     time_seconds: f64,
     elapsed: f64,
 ) -> Result<(), RuntimeError> {
-    let _ = (entry, frame, time_seconds, elapsed);
-    Ok(())
+    use super::actor_execution::{execute_actor, ActorExecution, ActorExecutionFrame};
+    if !matches!(execution_entry_dispatch(entry), ExecutionEntryDispatch::Execute) {
+        return Ok(());
+    }
+    let actors = C11Actors {
+        actors: sim.actors_handle(),
+    };
+    let mut bodies = C11Bodies {
+        actors: sim.actors_handle(),
+        bodies: sim.bodies_handle(),
+    };
+    let mut physics = C11Physics { weak: sim.weak() };
+    let mut scheduler = C11Scheduler {
+        weak: sim.weak(),
+        actors: sim.actors_handle(),
+    };
+    let mut context = ActorExecutionFrame {
+        actors: &actors,
+        bodies: &mut bodies,
+        physics: &mut physics,
+        scheduler: &mut scheduler,
+        frame: *frame,
+        time_seconds,
+        elapsed,
+        visited: HashSet::new(),
+    };
+    match entry {
+        RuntimeExecutionEntry::QuakeC { actor, content } => {
+            let game = {
+                let state = sim.peek();
+                match &state.source {
+                    SourceRuntime::QuakeC { game } => Rc::clone(game),
+                    _ => return fail("QuakeC execution entry has no QuakeC source"),
+                }
+            };
+            let source = super::quakec_source::QuakeCExecutionSource::new(game);
+            let mut execution = ActorExecution::QuakeC {
+                actor: actor.clone(),
+                source: Box::new(source),
+                content: content.clone(),
+            };
+            execute_actor(&mut execution, &mut context).map_err(|error| RuntimeError::Failure(error.to_string()))
+        }
+        RuntimeExecutionEntry::Q1 { actor, content } => {
+            let services = {
+                let state = sim.peek();
+                match &state.source {
+                    SourceRuntime::Q1 { services, .. } => Rc::clone(services),
+                    _ => return fail("Q1 execution entry has no Q1 source"),
+                }
+            };
+            let mut services = services.borrow_mut();
+            let mut execution = ActorExecution::Q1 {
+                actor: actor.clone(),
+                services: &mut services,
+                content: content.clone(),
+            };
+            execute_actor(&mut execution, &mut context).map_err(|error| RuntimeError::Failure(error.to_string()))
+        }
+        RuntimeExecutionEntry::Q2 { .. }
+        | RuntimeExecutionEntry::Q3 { .. }
+        | RuntimeExecutionEntry::Q3Source { .. } => Ok(()),
+    }
+}
+
+/// Dispatch decision for an execution entry: QuakeC/Q1 entries execute;
+/// Q2 entries await the live game services and Q3 entries belong to the
+/// Q3 lane, so both pass through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionEntryDispatch {
+    /// Execute through the shared adapters.
+    Execute,
+    /// Pass through without executing.
+    Passthrough,
+}
+
+/// Whether an execution entry dispatches (donor `executeActor` kind
+/// dispatch, donor actor-execution.ts 106-108).
+fn execution_entry_dispatch(entry: &RuntimeExecutionEntry) -> ExecutionEntryDispatch {
+    match entry {
+        RuntimeExecutionEntry::QuakeC { .. } | RuntimeExecutionEntry::Q1 { .. } => ExecutionEntryDispatch::Execute,
+        RuntimeExecutionEntry::Q2 { .. }
+        | RuntimeExecutionEntry::Q3 { .. }
+        | RuntimeExecutionEntry::Q3Source { .. } => ExecutionEntryDispatch::Passthrough,
+    }
 }
 
 /// Step one Q3-source actor (donor `execution.step` on `q3-source`).
@@ -30104,10 +30222,10 @@ impl SharedSimulation {
                         let state = self.peek();
                         (state.source_frame, self.time_seconds())
                     };
-                    execute_runtime_entry_seam(entry, &frame, time_seconds, ctx.elapsed)?;
+                    execute_runtime_entry_seam(self, entry, &frame, time_seconds, ctx.elapsed)?;
                 }
             }
-            run_quake_world_new_missile_seam();
+            run_quake_world_new_missile_seam(self)?;
             self.lock().physics.commit_attachments();
             return Ok(());
         }
@@ -30152,7 +30270,7 @@ impl SharedSimulation {
         if selected_actor {
             if ctx.boundary.q2 {
                 if let (Some(entry), Some((frame, interval))) = (execution.as_ref(), selected_q2) {
-                    execute_runtime_entry_seam(entry, &frame, seconds(frame.time), interval / 1000.0)?;
+                    execute_runtime_entry_seam(self, entry, &frame, seconds(frame.time), interval / 1000.0)?;
                     self.lock().physics.commit_attachments();
                 }
             }
@@ -30198,6 +30316,7 @@ impl SharedSimulation {
                 if ctx.map_run && active && clock.advanced && self.actors.borrow().is_live(actor.id()) {
                     if let Some(entry) = execution.as_ref() {
                         execute_runtime_entry_seam(
+                            self,
                             entry,
                             &clock.frame,
                             seconds(clock.frame.time),
@@ -30275,7 +30394,7 @@ impl SharedSimulation {
                     let state = self.peek();
                     step_execution_frame(&state, entry, actor)?
                 };
-                execute_runtime_entry_seam(entry, &frame, seconds(frame.time), ctx.elapsed)?;
+                execute_runtime_entry_seam(self, entry, &frame, seconds(frame.time), ctx.elapsed)?;
                 self.lock().physics.commit_attachments();
             }
             return Ok(());
@@ -31028,18 +31147,415 @@ fn q1_character_axe_pose_seam(sim: &SharedSimulation, actor: &ActorId) -> Result
     Ok(ui.active_weapon.as_ref().is_some_and(|id| id == "q1:weapon/axe"))
 }
 
-/// Run QuakeWorld commands (donor `runQuakeWorldCommands`).
+/// Run QuakeWorld commands (donor `runQuakeWorldCommands`, donor
+/// runtime.ts 4181-4232).
 ///
-/// Missing siblings: the QuakeC/QuakeWorld lane owns command maintenance.
-#[allow(dead_code)]
-fn run_quake_world_commands_seam() {}
+/// Drains the queued command groups, applies each through the movement
+/// seams, then runs the post-think/arsenal/view tail. Movement state
+/// advance stays with the movement lane (`move_seam`,
+/// `move_command_seam`, `with_input_command_seam`); the runtime-player
+/// `state` field is authoritative, so the donor `player.state =
+/// player.readState()` refresh is a no-op here.
+fn run_quake_world_commands_seam(sim: &SharedSimulation) -> Result<(), RuntimeError> {
+    let is_quakeworld = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.kind() == super::types::QuakeCSourceKind::Quakeworld,
+            _ => false,
+        }
+    };
+    if !is_quakeworld {
+        return Ok(());
+    }
+    let groups = std::mem::take(&mut sim.lock().quake_world_commands);
+    for group in groups {
+        match group {
+            QuakeWorldCommand::Action { client, action } => {
+                run_quake_world_action_group(sim, &client, action)?;
+            }
+            QuakeWorldCommand::Move {
+                client,
+                commands,
+                sequence,
+            } => {
+                let owned = {
+                    let state = sim.peek();
+                    state
+                        .player_states
+                        .iter()
+                        .find(|(_, player)| player.client == client)
+                        .map(|(owned, _)| owned.clone())
+                };
+                let Some(owned) = owned else {
+                    continue;
+                };
+                let last = {
+                    let state = sim.peek();
+                    state.player_states.get(&owned).map(|player| player.last_sequence)
+                };
+                if last.is_none_or(|last| step_command_stale(sequence, last)) {
+                    continue;
+                }
+                sim.lock().quake_world_touched = Some(HashSet::new());
+                let result = run_quake_world_move_group(sim, &owned, &commands, sequence, &client);
+                sim.lock().quake_world_touched = None;
+                result?;
+            }
+        }
+    }
+    Ok(())
+}
 
-/// Flush QuakeC messages (donor `source.game.messages.flush()`).
+/// Run one deferred QuakeWorld action group (donor runtime.ts 4186-4192).
+fn run_quake_world_action_group(
+    sim: &SharedSimulation,
+    client: &ClientId,
+    action: Box<dyn FnOnce()>,
+) -> Result<(), RuntimeError> {
+    let admitted = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.has_client(client),
+            _ => false,
+        }
+    };
+    if !admitted {
+        return Ok(());
+    }
+    action();
+    let owned = {
+        let state = sim.peek();
+        state
+            .player_states
+            .iter()
+            .find(|(_, player)| player.client == *client)
+            .map(|(owned, _)| owned.clone())
+    };
+    let Some(owned) = owned else {
+        return Ok(());
+    };
+    let active = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.is_active_client(owned.id()),
+            _ => false,
+        }
+    };
+    if !active {
+        return Ok(());
+    }
+    refresh_quake_world_player_presentation(sim, &owned)
+}
+
+/// Run one QuakeWorld movement group (donor runtime.ts 4194-4231).
+fn run_quake_world_move_group(
+    sim: &SharedSimulation,
+    owned: &OwnedActor,
+    commands: &[qa_world::movement::types::QwUserCommand],
+    sequence: u64,
+    client: &ClientId,
+) -> Result<(), RuntimeError> {
+    use qa_core::time::{ClockProfile, FramePhase};
+    use qa_net::common::commands::MovementDialect;
+    let maximum_milliseconds = {
+        let state = sim.peek();
+        let timing = provider_timing(&state.recipe, &provider_text(&state.recipe.map.entities.provider))?;
+        match timing.clock {
+            ClockProfile::Q1Quakeworld {
+                maximum_command_milliseconds,
+                ..
+            } => maximum_command_milliseconds,
+            _ => return fail("Native QW source requires its command clock"),
+        }
+    };
+    let applications_active = sim.peek().mod_client_applications.active;
+    let source_frame = sim.peek().source_frame;
+    let Some(mut pstate) = sim.peek().player_states.get(owned).cloned() else {
+        return Ok(());
+    };
+    for command in commands {
+        if !sim.actors.borrow().is_live(owned.id()) {
+            break;
+        }
+        let input = ActorCommand {
+            actor: owned.id().clone(),
+            source: qa_net::common::commands::CommandSource::Remote { client: client.clone() },
+            command: super::players::world_to_net(&qa_world::movement::types::UserCommand::Q1Quakeworld(*command)),
+            sequence,
+            arsenal: None,
+        };
+        sim.observe_client_command(&input)?;
+        if step_profile_kind(&pstate.profile) == "q1-quakeworld" {
+            let frame = FrameContext {
+                phase: FramePhase::ClientCommand,
+                elapsed: SourceTime::Milliseconds(command.milliseconds),
+                ..source_frame
+            };
+            move_seam(&mut pstate, &input, &frame)?;
+            sim.step_writeback_player(owned, &pstate);
+        } else {
+            let applied_milliseconds =
+                quake_world_applied_milliseconds(command, applications_active, maximum_milliseconds)?;
+            let frame = FrameContext {
+                phase: FramePhase::ClientCommand,
+                elapsed: SourceTime::Milliseconds(applied_milliseconds),
+                ..source_frame
+            };
+            let effective = input.command.clone();
+            let mut execute = |effective: qa_net::common::commands::UserCommand,
+                               arsenal: Option<ArsenalIntent>|
+             -> Result<(), RuntimeError> {
+                let _ = arsenal;
+                if effective.dialect() != MovementDialect::Q1Quakeworld {
+                    return fail("Input output changed source command dialect");
+                }
+                let qa_world::movement::types::UserCommand::Q1Quakeworld(effective) =
+                    super::players::net_to_world(&effective)
+                else {
+                    return fail("Input output changed source command dialect");
+                };
+                for slice in
+                    qa_world::movement::q1::quakeworld::quake_world_command_slices(&effective, maximum_milliseconds)
+                        .map_err(|error| RuntimeError::Failure(error.to_string()))?
+                {
+                    if !sim.actors.borrow().is_live(owned.id()) {
+                        break;
+                    }
+                    let milliseconds =
+                        quake_world_slice_milliseconds(&pstate.state, sim.time_seconds(), slice.milliseconds);
+                    let mut physical = slice;
+                    if slice.buttons & 2 != 0 {
+                        physical.up_move = 320.0;
+                    }
+                    let bridge = super::q3_commands::MovementPlayer {
+                        profile: quake_world_prediction_profile(&pstate.profile),
+                        arsenal: pstate.arsenal.clone(),
+                        recipe: pstate.recipe.clone(),
+                    };
+                    let physical_input = ActorCommand {
+                        command: super::players::world_to_net(&qa_world::movement::types::UserCommand::Q1Quakeworld(
+                            physical,
+                        )),
+                        ..input.clone()
+                    };
+                    let source_command =
+                        super::q3_commands::q3_source_command(&physical_input, &bridge, milliseconds.into(), 0)
+                            .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+                    let selected =
+                        super::q3_commands::selected_q3_command(&source_command, &bridge.profile, slice.milliseconds);
+                    let selected_input = ActorCommand {
+                        command: super::players::world_to_net(&selected),
+                        ..input.clone()
+                    };
+                    let relative = relative_movement_command_seam(&selected_input);
+                    let slice_frame = FrameContext {
+                        phase: FramePhase::ClientCommand,
+                        elapsed: SourceTime::Milliseconds(slice.milliseconds),
+                        ..source_frame
+                    };
+                    move_command_seam(&mut pstate, &relative, &slice_frame)?;
+                }
+                Ok(())
+            };
+            with_input_command_seam(&mut execute, &frame, effective, None)?;
+            sim.step_writeback_player(owned, &pstate);
+        }
+    }
+    if !sim.actors.borrow().is_live(owned.id()) {
+        return Ok(());
+    }
+    let before = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.client_arsenal(owned.id()).map_err(source_failure)?,
+            _ => return fail("QuakeWorld commands require a QuakeC source"),
+        }
+    };
+    {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.client_post_think(owned).map_err(source_failure)?,
+            _ => return fail("QuakeWorld commands require a QuakeC source"),
+        }
+    }
+    project_quake_c_attack_seam(sim, owned, &before)?;
+    let spectator = {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => game.is_spectator_client(owned.id()),
+            _ => return fail("QuakeWorld commands require a QuakeC source"),
+        }
+    };
+    if !spectator {
+        run_quake_world_new_missile_seam(sim)?;
+    }
+    refresh_quake_world_player_presentation(sim, owned)
+}
+
+/// Refresh arsenal/animation/view after QuakeWorld command work (donor
+/// runtime.ts 4189-4191, 4229-4230).
+fn refresh_quake_world_player_presentation(sim: &SharedSimulation, owned: &OwnedActor) -> Result<(), RuntimeError> {
+    let (arsenal, animation) = {
+        let state = sim.peek();
+        let arsenal = match (&state.selected_arsenal, &state.source) {
+            (Some(selected), _) => selected.read(owned.id()),
+            (None, SourceRuntime::QuakeC { game }) => game.client_arsenal(owned.id()).map_err(source_failure)?,
+            (None, _) => return fail("QuakeWorld commands require a QuakeC source"),
+        };
+        let animation = match &state.source {
+            SourceRuntime::QuakeC { game } => game.client_animation(owned.id()).map_err(source_failure)?,
+            _ => return fail("QuakeWorld commands require a QuakeC source"),
+        };
+        (arsenal, animation)
+    };
+    {
+        let mut state = sim.lock();
+        if let Some(player) = state.player_states.get_mut(owned) {
+            player.arsenal = arsenal;
+            if player.character == GameFamily::Q1 {
+                player.animation = animation;
+            }
+        }
+    }
+    let Some(mut pstate) = sim.peek().player_states.get(owned).cloned() else {
+        return Ok(());
+    };
+    {
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::QuakeC { game } => sync_quake_c_client_view_seam(game, &mut pstate)?,
+            _ => return fail("QuakeWorld commands require a QuakeC source"),
+        }
+    }
+    sim.step_writeback_player(owned, &pstate);
+    Ok(())
+}
+
+/// Project a QuakeC attack onto a Q2 character clip (donor
+/// `projectQuakeCAttack`, donor runtime.ts 4025-4032).
+fn project_quake_c_attack_seam(
+    sim: &SharedSimulation,
+    owned: &OwnedActor,
+    before: &ArsenalState,
+) -> Result<(), RuntimeError> {
+    let (after, health, character, animation, ducked) = {
+        let state = sim.peek();
+        let SourceRuntime::QuakeC { game } = &state.source else {
+            return Ok(());
+        };
+        let Some(player) = state.player_states.get(owned) else {
+            return Ok(());
+        };
+        let after = game.client_arsenal(owned.id()).map_err(source_failure)?;
+        let health = state.combat.read(owned.id()).map(|entry| entry.health).unwrap_or(0.0);
+        (
+            after,
+            health,
+            player.character,
+            player.animation.clone(),
+            player.bounds.max.z < player.standing_bounds.max.z,
+        )
+    };
+    if let Some(animation) =
+        quake_world_attack_animation(&before.state, &after.state, health, character, &animation, ducked)
+    {
+        if let Some(player) = sim.lock().player_states.get_mut(owned) {
+            player.animation = animation;
+        }
+    }
+    Ok(())
+}
+
+/// Elapsed milliseconds for a QuakeWorld input scope (donor runtime.ts
+/// 4204-4208): live mod observers force the slice-sum path.
+fn quake_world_applied_milliseconds(
+    command: &qa_world::movement::types::QwUserCommand,
+    applications_active: bool,
+    maximum_milliseconds: f64,
+) -> Result<i32, RuntimeError> {
+    if !applications_active {
+        return Ok(command.milliseconds);
+    }
+    let mut applied = 0;
+    for slice in qa_world::movement::q1::quakeworld::quake_world_command_slices(command, maximum_milliseconds)
+        .map_err(|error| RuntimeError::Failure(error.to_string()))?
+    {
+        applied += slice.milliseconds;
+    }
+    Ok(applied)
+}
+
+/// Command-time word for one QuakeWorld slice (donor runtime.ts 4216).
+fn quake_world_slice_milliseconds(state: &MovementState, time_seconds: f64, slice_milliseconds: i32) -> i32 {
+    let base = match state {
+        MovementState::Q3(inner) => inner.command_time_milliseconds,
+        _ => (time_seconds * 1000.0) as i32,
+    };
+    base + slice_milliseconds
+}
+
+/// Prediction-profile twin of a runtime movement profile for the Q3
+/// source-command bridge (donor `player.profile`, runtime.ts 4218).
+fn quake_world_prediction_profile(profile: &MovementProfile) -> super::prediction::types::MovementPredictionProfile {
+    use super::prediction::types::MovementPredictionProfile;
+    match profile {
+        MovementProfile::Q1Netquake(inner) => MovementPredictionProfile::Q1Netquake(inner.clone()),
+        MovementProfile::Q1Quakeworld(inner) => MovementPredictionProfile::Q1Quakeworld(inner.clone()),
+        MovementProfile::Q2Classic(inner) => MovementPredictionProfile::Q2Classic(inner.clone()),
+        MovementProfile::Q2Rerelease(inner) => MovementPredictionProfile::Q2Rerelease(inner.clone()),
+        MovementProfile::Q3(inner) => MovementPredictionProfile::Q3(inner.clone()),
+    }
+}
+
+/// Attack-clip projection for a Q2 character (donor runtime.ts 4028-4030):
+/// a live Q2 client whose Q1 weapon state advanced its attack clock takes
+/// the attack clip.
+fn quake_world_attack_animation(
+    before: &WeaponState,
+    after: &WeaponState,
+    health: f64,
+    character: GameFamily,
+    animation: &ActorAnimationState,
+    ducked: bool,
+) -> Option<ActorAnimationState> {
+    use super::quakec_character_animation::{quake_c_character_animation, QuakeCCharacterReaction};
+    let WeaponState::Q1 {
+        attack_finished_seconds: before_attack,
+        ..
+    } = before
+    else {
+        return None;
+    };
+    let WeaponState::Q1 {
+        attack_finished_seconds: after_attack,
+        ..
+    } = after
+    else {
+        return None;
+    };
+    if character == GameFamily::Q2 && after_attack > before_attack && health > 0.0 {
+        Some(quake_c_character_animation(
+            animation,
+            QuakeCCharacterReaction::Attack,
+            ducked,
+        ))
+    } else {
+        None
+    }
+}
+
+/// Flush QuakeC messages (donor `source.game.messages.flush()`, donor
+/// runtime.ts 4745).
 ///
-/// Missing siblings: the QuakeC lane owns the message queue (no queue
-/// accessor exists yet).
-#[allow(dead_code)]
-fn quake_c_messages_flush_seam() {}
+/// Non-QuakeC sources have no message queue and pass through, matching the
+/// donor's quakeworld-kind guard at the call site.
+fn quake_c_messages_flush_seam(sim: &SharedSimulation) -> Result<(), RuntimeError> {
+    let state = sim.peek();
+    if let SourceRuntime::QuakeC { game } = &state.source {
+        game.flush_messages().map_err(source_failure)?;
+    }
+    Ok(())
+}
 
 /// Advance one Q2 player animation tick (donor
 /// `advanceQ2PlayerAnimation`, `content/q2/base/player/view.ts` 127-141).
@@ -31636,8 +32152,8 @@ impl SharedSimulation {
                 }
             };
             if is_quakeworld {
-                run_quake_world_commands_seam();
-                quake_c_messages_flush_seam();
+                run_quake_world_commands_seam(self)?;
+                quake_c_messages_flush_seam(self)?;
             }
         }
         let players: Vec<MovementPlayer> = {
@@ -43063,6 +43579,241 @@ mod tests {
         assert!(
             crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&bad_edition)
                 .is_err()
+        );
+    }
+
+    fn qw_test_command(milliseconds: i32) -> qa_world::movement::types::QwUserCommand {
+        qa_world::movement::types::QwUserCommand {
+            milliseconds,
+            angles: qa_core::math::vec3(0.0, 0.0, 0.0),
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0,
+            impulse: 0,
+        }
+    }
+
+    #[test]
+    fn quake_world_applied_milliseconds_passes_through_without_mods() {
+        assert_eq!(
+            quake_world_applied_milliseconds(&qw_test_command(100), false, 50.0).unwrap(),
+            100
+        );
+    }
+
+    #[test]
+    fn quake_world_applied_milliseconds_sums_slices_with_mods() {
+        assert_eq!(
+            quake_world_applied_milliseconds(&qw_test_command(100), true, 50.0).unwrap(),
+            100
+        );
+        assert_eq!(
+            quake_world_applied_milliseconds(&qw_test_command(30), true, 50.0).unwrap(),
+            30
+        );
+        assert!(quake_world_applied_milliseconds(&qw_test_command(30), true, 0.0).is_err());
+    }
+
+    #[test]
+    fn quake_world_slice_milliseconds_prefers_q3_command_time() {
+        use qa_world::movement::q3::types::Q3MovementState;
+        let q3 = MovementState::Q3(Q3MovementState {
+            command_time_milliseconds: 900,
+            movement_type: 0,
+            bob_cycle: 0,
+            movement_flags: 0,
+            movement_time_milliseconds: 0,
+            origin: qa_core::math::vec3(0.0, 0.0, 0.0),
+            velocity: qa_core::math::vec3(0.0, 0.0, 0.0),
+            gravity: 800.0,
+            speed: 0.0,
+            delta_angle_words: [0, 0, 0],
+            movement_direction: 0,
+            grapple_point: qa_core::math::vec3(0.0, 0.0, 0.0),
+            flags: 0,
+            view_angles: qa_core::math::vec3(0.0, 0.0, 0.0),
+            view_height: 26.0,
+            ground: TraceHit::None,
+            predictable_event_sequence: 0,
+            jump_pad: None,
+            movement_frame: 0,
+            jump_pad_frame: 0,
+        });
+        assert_eq!(quake_world_slice_milliseconds(&q3, 1.5, 33), 933);
+        let nq = MovementState::Q1Netquake(qa_world::movement::q1::types::Q1MovementState {
+            origin: qa_core::math::vec3(0.0, 0.0, 0.0),
+            velocity: qa_core::math::vec3(0.0, 0.0, 0.0),
+            angles: qa_core::math::vec3(0.0, 0.0, 0.0),
+            old_origin: qa_core::math::vec3(0.0, 0.0, 0.0),
+            angular_velocity: qa_core::math::vec3(0.0, 0.0, 0.0),
+            view_angles: qa_core::math::vec3(0.0, 0.0, 0.0),
+            punch_angles: qa_core::math::vec3(0.0, 0.0, 0.0),
+            move_type: 0,
+            flags: 0,
+            ground: TraceHit::None,
+            water_level: 0,
+            water_type: -1,
+            teleport_time_seconds: 0.0,
+            water_jump_direction: qa_core::math::vec3(0.0, 0.0, 0.0),
+            ideal_pitch: 0.0,
+            fix_angle: false,
+            health: 100.0,
+        });
+        assert_eq!(quake_world_slice_milliseconds(&nq, 1.5, 33), 1533);
+    }
+
+    #[test]
+    fn quake_world_prediction_profile_maps_variants() {
+        use qa_core::numeric::Q2_DONOR_PROFILE;
+        use qa_core::time::ClockProfile;
+        use qa_world::movement::q1::types::QwMovementProfile;
+        use qa_world::movement::Q1MovementParameters;
+        let qw = QwMovementProfile {
+            id: ProviderId::new("q1", "test"),
+            clock: ClockProfile::Q1Quakeworld {
+                maximum_command_milliseconds: 50.0,
+            },
+            numeric: Q2_DONOR_PROFILE,
+            parameters: Q1MovementParameters {
+                gravity: 800.0,
+                stop_speed: 100.0,
+                max_speed: 320.0,
+                spectator_max_speed: 500.0,
+                accelerate: 10.0,
+                air_accelerate: 1.0,
+                water_accelerate: 10.0,
+                friction: 4.0,
+                water_friction: 1.0,
+                entity_gravity: 1.0,
+            },
+        };
+        let mapped = quake_world_prediction_profile(&MovementProfile::Q1Quakeworld(qw.clone()));
+        assert_eq!(
+            mapped,
+            crate::bootstrap::simulation::prediction::types::MovementPredictionProfile::Q1Quakeworld(qw)
+        );
+    }
+
+    fn qw_attack_animation() -> ActorAnimationState {
+        ActorAnimationState {
+            provider: ProviderId::new("q2", "test"),
+            state: qa_world::movement::types::AnimationState::Q2 {
+                frame: 0,
+                end_frame: 39,
+                priority: 0,
+                duck: false,
+                run: false,
+            },
+        }
+    }
+
+    fn q1_weapon_state(attack_finished_seconds: f64) -> WeaponState {
+        WeaponState::Q1 {
+            frame: 0,
+            attack_finished_seconds,
+            source_weapon: 0,
+        }
+    }
+
+    #[test]
+    fn quake_world_attack_animation_projects_live_q2_advance() {
+        let out = quake_world_attack_animation(
+            &q1_weapon_state(1.0),
+            &q1_weapon_state(2.0),
+            100.0,
+            GameFamily::Q2,
+            &qw_attack_animation(),
+            false,
+        )
+        .expect("attack clip");
+        assert!(matches!(
+            out.state,
+            qa_world::movement::types::AnimationState::Q2 { priority: 4, .. }
+        ));
+    }
+
+    #[test]
+    fn execution_entry_dispatch_executes_quakec_and_q1() {
+        let actors = SimActors::new("execution-dispatch-test");
+        let owner = ProviderId::new("q1", "test");
+        let actor = actors.mint(&owner, "monster");
+        let content = ContentId("q1:id1:test:1".to_string());
+        assert_eq!(
+            execution_entry_dispatch(&RuntimeExecutionEntry::QuakeC {
+                actor: actor.clone(),
+                content: content.clone(),
+            }),
+            ExecutionEntryDispatch::Execute
+        );
+        assert_eq!(
+            execution_entry_dispatch(&RuntimeExecutionEntry::Q1 {
+                actor: actor.clone(),
+                content: content.clone(),
+            }),
+            ExecutionEntryDispatch::Execute
+        );
+        assert_eq!(
+            execution_entry_dispatch(&RuntimeExecutionEntry::Q2 {
+                actor: actor.clone(),
+                content: content.clone(),
+            }),
+            ExecutionEntryDispatch::Passthrough
+        );
+        assert_eq!(
+            execution_entry_dispatch(&RuntimeExecutionEntry::Q3 {
+                actor: actor.clone(),
+                owner: actor.id().clone(),
+                provider: owner.clone(),
+                content: content.clone(),
+            }),
+            ExecutionEntryDispatch::Passthrough
+        );
+        assert_eq!(
+            execution_entry_dispatch(&RuntimeExecutionEntry::Q3Source {
+                actor,
+                provider: owner,
+                content,
+            }),
+            ExecutionEntryDispatch::Passthrough
+        );
+    }
+
+    #[test]
+    fn quake_world_attack_animation_ignores_other_cases() {
+        let animation = qw_attack_animation();
+        assert_eq!(
+            quake_world_attack_animation(
+                &q1_weapon_state(1.0),
+                &q1_weapon_state(2.0),
+                100.0,
+                GameFamily::Q1,
+                &animation,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            quake_world_attack_animation(
+                &q1_weapon_state(2.0),
+                &q1_weapon_state(2.0),
+                100.0,
+                GameFamily::Q2,
+                &animation,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            quake_world_attack_animation(
+                &q1_weapon_state(1.0),
+                &q1_weapon_state(2.0),
+                0.0,
+                GameFamily::Q2,
+                &animation,
+                false
+            ),
+            None
         );
     }
 }

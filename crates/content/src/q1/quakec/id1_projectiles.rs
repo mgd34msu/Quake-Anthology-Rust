@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use qa_core::identity::{ActorId, SavedActorId};
 use qa_core::math::Vec3;
 
-use crate::contract::ItemId;
+use crate::contract::{ItemId, ModSourceCall};
 use crate::value::{namespaced, SaveReader};
 
 use super::id1_damage::Id1DamageCall;
@@ -90,8 +90,12 @@ pub struct Id1ProjectileAttacks<'a> {
 impl<'a> Id1ProjectileAttacks<'a> {
     /// Bind projectile attacks (donor `Id1ProjectileAttacks`
     /// constructor).
-    pub fn new(source: QcHostSource<'a>, machine: MachineFn<'a>) -> Result<Self, QcError> {
-        let binding: Id1ProgramBinding = id1_program_snapshot(source.program)?;
+    pub fn new(
+        source: QcHostSource<'a>,
+        machine: MachineFn<'a>,
+        declared_damage: Option<&ModSourceCall>,
+    ) -> Result<Self, QcError> {
+        let binding: Id1ProgramBinding = id1_program_snapshot(source.program, declared_damage)?;
         if binding.attribution == Id1Attribution::Native {
             let damage = source.program.function_named("T_Damage")?.index;
             return Ok(Self {

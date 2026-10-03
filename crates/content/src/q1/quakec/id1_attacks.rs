@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use crate::contract::ItemId;
+use crate::contract::{ItemId, ModSourceCall};
 
 use super::id1_damage::Id1DamageCall;
 use super::id1_program::{id1_damage_multiplier, id1_program_snapshot, Id1AttacksLayout, Id1ProgramBinding};
@@ -63,9 +63,13 @@ pub struct Id1SynchronousAttacks<'a> {
 impl<'a> Id1SynchronousAttacks<'a> {
     /// Bind synchronous attacks (donor `Id1SynchronousAttacks`
     /// constructor).
-    pub fn new(source: QcHostSource<'a>, machine: MachineFn<'a>) -> Result<Self, QcError> {
+    pub fn new(
+        source: QcHostSource<'a>,
+        machine: MachineFn<'a>,
+        declared_damage: Option<&ModSourceCall>,
+    ) -> Result<Self, QcError> {
         Ok(Self {
-            binding: id1_program_snapshot(source.program)?,
+            binding: id1_program_snapshot(source.program, declared_damage)?,
             source,
             machine,
             active: RefCell::new(Vec::new()),
