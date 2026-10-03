@@ -2474,6 +2474,18 @@ mod tests {
     }
 
     #[test]
+    fn collision_reports_unknown_actors_as_absent() {
+        let (source, _, _, _, identities) = surface_source("qc-collision", 2, "");
+        let actor = admit_surface_client(&source, &identities, 0);
+        // The fixture client has no spawned map entity, so its entity words
+        // are absent and the projection fails like the donor throw.
+        assert!(source.collision(&actor).is_err());
+        let (other, _, _, _, other_identities) = surface_source("qc-collision-other", 2, "");
+        let stranger = admit_surface_client(&other, &other_identities, 0);
+        assert!(source.collision(&stranger).unwrap().is_none());
+    }
+
+    #[test]
     fn surface_constructs_and_binds_reserved_slots() {
         let (source, _, _, _, _) = surface_source("qc-surface-construct", 2, "");
         assert_eq!(source.kind(), QuakeCSourceKind::Netquake);
@@ -9096,6 +9108,15 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             machine.entities().slot_float(slot, word)
         })?;
         Ok(move_type != 0.0)
+    }
+
+    /// Live collision record for an actor (`collision`, donor `quakec-source.ts` 1443).
+    pub fn collision(&self, actor: &OwnedActor) -> Result<Option<SharedSolid>, QuakeCSourceError> {
+        let shared = self.shared.borrow();
+        let fields = shared.fields.clone();
+        let borrowed = fields.borrow();
+        let solid = shared.actor_state.collision(&borrowed, actor.id())?;
+        Ok(solid)
     }
 
     /// Write one client's NetQuake punch vector (`setClientPunchAngles`).

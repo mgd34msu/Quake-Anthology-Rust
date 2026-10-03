@@ -18,7 +18,7 @@ use self::types::{
     MonsterAction, MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler, NextFrame, PlatformPhase,
     Q2MonsterDefinition, Q2MonsterHintHooks, Q2MonsterHooks, Q2MonsterSourceCombatHooks, SourceCombatMode,
 };
-use super::host::Q2GameServices;
+use super::host::{Q2Edition, Q2GameServices};
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 pub mod actions;
@@ -1653,6 +1653,29 @@ fn process_pain(actor: &ActorId, game: &mut Q2GameServices) {
     }
     if game.host.actors().is_live(actor) {
         game.show(actor.clone());
+    }
+}
+
+/// Run the end-of-frame pain queue (`endFrame`, donor `monsters/index.ts` 306).
+///
+/// Classic editions skip. Contexts sort by source slot; live monsters
+/// carrying the pain flag process their queued pain.
+pub fn end_frame(game: &mut Q2GameServices) {
+    if game.options.edition != Q2Edition::Rerelease {
+        return;
+    }
+    let mut actors: Vec<ActorId> = game.monsters.states.keys().cloned().collect();
+    actors.sort_by_key(|actor| {
+        game.host
+            .actors()
+            .source_of(actor)
+            .map(|(_, slot)| slot)
+            .unwrap_or_else(|| actor.slot())
+    });
+    for actor in &actors {
+        if game.host.actors().is_live(actor) && game.entity(actor).is_some_and(|entity| entity.server_flags & 4 != 0) {
+            process_pain(actor, game);
+        }
     }
 }
 

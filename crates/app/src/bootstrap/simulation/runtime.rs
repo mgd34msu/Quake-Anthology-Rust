@@ -16657,8 +16657,32 @@ impl SharedSimulation {
                     item: None,
                 })
             }
-            RuntimeExecutionEntry::QuakeC { .. } => {
-                fail("Missing siblings: QuakeCSource::collision for live QC collision (quakec-source lane)")
+            RuntimeExecutionEntry::QuakeC { actor, .. } => {
+                use qa_guest::qc::actor_state::SolidKind as GuestSolidKind;
+                let solid = self
+                    .with_quakec_source(|game| game.collision(actor))
+                    .ok_or_else(|| RuntimeError::Failure("QC collision lost its source".to_string()))?
+                    .map_err(source_failure)?;
+                let Some(solid) = solid else {
+                    return fail("Missing live QC collision");
+                };
+                Ok(SharedSolid {
+                    solid: match solid.solid {
+                        GuestSolidKind::None => SolidKind::None,
+                        GuestSolidKind::Trigger => SolidKind::Trigger,
+                        GuestSolidKind::Box => SolidKind::Box,
+                        GuestSolidKind::Brush => SolidKind::Brush,
+                    },
+                    model: solid.model.and_then(|index| u32::try_from(index).ok()),
+                    // QuakeC sources execute Q1-family content, so traces
+                    // use the Q1 namespace like the Q1 arm below.
+                    family: PhysicsFamily::Q1,
+                    owner: solid.owner.clone(),
+                    monster: Some(solid.monster),
+                    dead_monster: None,
+                    q1_corpse: solid.q1_corpse,
+                    item: Some(solid.item),
+                })
             }
             RuntimeExecutionEntry::Q3 { owner, .. } => Ok(SharedSolid {
                 solid: SolidKind::None,
@@ -17992,8 +18016,8 @@ impl SharedSimulation {
             if travel.is_some() {
                 return fail("Native Quake II travel requires its source file lifecycle");
             }
-            let _ = userinfo;
-            return fail("Missing siblings: admitQ2NativePlayer (out-of-range owner ports donor runtime.ts 5431)");
+            let fallback = format!("\\name\\Player {}\\skin\\male/grunt\\fov\\90", client.slot() + 1);
+            return self.admit_q2_native_player(client, userinfo.unwrap_or(fallback.as_str()), true);
         }
         if kind == "quakec" {
             return self.admit_quakec_player(client, travel, userinfo);
@@ -18617,30 +18641,25 @@ pub(super) fn selected_q1_frame(state: &SharedSimulationState) -> Result<FrameCo
 }
 
 /// Q1 addon frame for one monster source (donor `source.addon?.frame`).
-///
-/// Missing siblings: the q1-addons lane owns the per-source addon driver
-/// mapping (`Q1AddonContext` carries no frame entry point).
 #[allow(dead_code)]
-fn q1_monster_addon_frame(addon: &qa_content::q1::addons::context::Q1AddonContext, elapsed_seconds: f64) {
-    let _ = (addon, elapsed_seconds);
+fn q1_monster_addon_frame(
+    game: &mut qa_content::q1::foundation::entity_services::Q1EntityServices,
+    elapsed_seconds: f64,
+) -> Result<(), RuntimeError> {
+    qa_content::q1::addons::context::frame_addons(game, elapsed_seconds)
+        .map_err(|error| RuntimeError::Failure(error.to_string()))
 }
 
 /// Q2 monster begin frame for one source game (donor `source.monsters.beginFrame`).
-///
-/// Missing siblings: the q2 lane owns the per-source monster frame driver
-/// (`MonsterRuntime` exposes no begin/end frame).
 #[allow(dead_code)]
 fn q2_monster_begin_frame(game: &mut qa_content::q2::foundation::host::Q2GameServices) {
-    let _ = game;
+    qa_content::q2::foundation::monsters::perception::begin_frame(game);
 }
 
 /// Q2 monster end frame for one source game (donor `source.monsters.endFrame`).
-///
-/// Missing siblings: the q2 lane owns the per-source monster frame driver
-/// (`MonsterRuntime` exposes no begin/end frame).
 #[allow(dead_code)]
 fn q2_monster_end_frame(game: &mut qa_content::q2::foundation::host::Q2GameServices) {
-    let _ = game;
+    qa_content::q2::foundation::monsters::end_frame(game);
 }
 
 /// Begin monster-source frames (donor `beginMonsterFrames`, unowned scaffold).
@@ -18666,8 +18685,8 @@ pub(super) fn begin_monster_frames(
             clock.frame = projected;
             clock.advanced = true;
             game.begin_frame(seconds(projected.time), seconds(projected.elapsed));
-            if let Some(addon) = addon.as_ref() {
-                q1_monster_addon_frame(addon, seconds(projected.elapsed));
+            if addon.is_some() {
+                q1_monster_addon_frame(game, seconds(projected.elapsed))?;
             }
         } else if let Some((clock, game)) = source.q2_frame_parts() {
             clock.advanced = false;
@@ -18702,13 +18721,12 @@ pub(super) fn begin_monster_frames(
 }
 
 /// Whether a QuakeC client advances its own punch (donor `clientPunchAdvances`).
-///
-/// Missing siblings: CQ owns `quakec_source.rs`; the client punch hook has no
-/// Rust home yet. Neutral `true` preserves the NetQuake skip shape.
 #[allow(dead_code)]
-fn quakec_client_punch_advances(source: &SourceRuntime, actor: &ActorId) -> bool {
-    let _ = (source, actor);
-    true
+fn quakec_client_punch_advances(source: &SourceRuntime, actor: &ActorId) -> Result<bool, RuntimeError> {
+    match source {
+        SourceRuntime::QuakeC { game } => game.client_punch_advances(actor).map_err(source_failure),
+        _ => Ok(true),
+    }
 }
 
 /// Advance Q1 punch angles (donor `advanceQ1Punch`, unowned scaffold).
@@ -18739,7 +18757,7 @@ pub(super) fn advance_q1_punch(
         );
         if quakec_netquake {
             let is_netquake = matches!(player.state, MovementState::Q1Netquake(_));
-            if is_netquake || !quakec_client_punch_advances(&state.source, &actor) {
+            if is_netquake || !quakec_client_punch_advances(&state.source, &actor)? {
                 continue;
             }
         }
@@ -18911,14 +18929,6 @@ pub(super) fn native_q3_guest_record(
         .ok_or_else(|| RuntimeError::Failure("Actor has no Q3 guest client UI".to_string()))
 }
 
-/// Player arsenal state (donor `arsenal`, C5 range).
-///
-/// Missing siblings: C5 ports `arsenal` (donor 3872); the merge replaces this
-/// player-state passthrough.
-fn arsenal_seam(player: &MovementPlayer) -> qa_world::movement::types::ArsenalState {
-    player.arsenal.clone()
-}
-
 impl SharedSimulation {
     /// Weapon slot projection (donor `slotProjection`, C6 range).
     pub fn slot_projection(
@@ -18941,13 +18951,16 @@ impl SharedSimulation {
         } else {
             self.primary_ui(actor)?
         };
-        let state = self.lock();
         let player = if native {
             None
         } else {
-            Some(require_sim_player(&state, &self.actors, actor)?)
+            Some(require_sim_player(&self.peek(), &self.actors, actor)?)
         };
-        let arsenal = player.as_ref().map(arsenal_seam);
+        let arsenal = player
+            .as_ref()
+            .map(|player| self.read_player_arsenal(player))
+            .transpose()?;
+        let state = self.lock();
         let q3_pending = match player.as_ref() {
             None => state.native_weapon_requests.get(actor).copied(),
             Some(player) => state
@@ -19322,11 +19335,13 @@ fn with_rerelease_primary_protection_seam<R>(
 
 /// Native configstrings (donor `source.game.configstrings`).
 ///
-/// Missing siblings: the q2-native lane owns configstring exposure on the
-/// guest worlds. Labels fall back to `""` per the donor `?? ""`.
+/// A world without a live guest reads as an empty store, so labels fall
+/// back to `""` per the donor `?? ""`.
 fn q2_native_configstrings(source: &Q2NativeSource) -> std::collections::HashMap<i32, String> {
-    let _ = source;
-    std::collections::HashMap::new()
+    match source {
+        Q2NativeSource::Classic { game, .. } => game.configstrings().unwrap_or_default(),
+        Q2NativeSource::Rerelease { game, .. } => game.configstrings().unwrap_or_default(),
+    }
 }
 
 /// Weapon request (donor `requestWeapon`, C11 range).
@@ -23174,10 +23189,14 @@ impl SharedSimulation {
                                 _ => Err(selected_source.fail("Selected Q2 source has no arsenal").into()),
                             }
                         })?;
-                        let mut state = self.state.borrow_mut();
-                        for player in state.player_states.values_mut() {
-                            let next = arsenal_seam(player);
-                            player.arsenal = next;
+                        let owners: Vec<OwnedActor> = self.state.borrow().player_states.keys().cloned().collect();
+                        for owner in &owners {
+                            let player = self.state.borrow().player_states.get(owner).cloned();
+                            let Some(player) = player else { continue };
+                            let next = self.read_player_arsenal(&player)?;
+                            if let Some(stored) = self.state.borrow_mut().player_states.get_mut(owner) {
+                                stored.arsenal = next;
+                            }
                         }
                     }
                 }
@@ -23450,10 +23469,14 @@ impl SharedSimulation {
                     }
                 }
                 {
-                    let mut lock = self.state.borrow_mut();
-                    for player in lock.player_states.values_mut() {
-                        let next = arsenal_seam(player);
-                        player.arsenal = next;
+                    let owners: Vec<OwnedActor> = self.state.borrow().player_states.keys().cloned().collect();
+                    for owner in &owners {
+                        let player = self.state.borrow().player_states.get(owner).cloned();
+                        let Some(player) = player else { continue };
+                        let next = self.read_player_arsenal(&player)?;
+                        if let Some(stored) = self.state.borrow_mut().player_states.get_mut(owner) {
+                            stored.arsenal = next;
+                        }
                     }
                 }
             } else if matches!(selected.value, Some(value) if !matches!(value, qa_world::save::value::SaveJson::Null)) {
@@ -24597,7 +24620,7 @@ impl SharedSimulation {
                 actor: owned,
                 command: &command.command,
                 frame,
-                arsenal: arsenal_seam(&pstate),
+                arsenal: self.read_player_arsenal(&pstate)?,
                 animation: pstate.animation.clone(),
                 environment,
                 gauntlet_hit: false,
@@ -32436,7 +32459,7 @@ impl super::weapon_slot::SourceWeaponHandoff for C11Q2Handoff {
             &q2_weapon_input_seam(&self.player),
             name.as_deref(),
         );
-        let active = arsenal_seam(&self.player).active_weapon;
+        let active = self.player.arsenal.active_weapon.clone();
         super::weapon_slot::ResumeOutcome::Immediate(item.is_none_or(|entry| active.as_ref() == Some(entry)))
     }
 
