@@ -33,17 +33,9 @@ use qa_client::render::types::{
     RenderView as ClientRenderView, RenderViewState, ResourceOwner, SourceTime, ViewClear, ViewTarget,
 };
 use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, SceneCamera};
-use qa_content::catalog::{
-    discover_installed_content, BehaviorMounts, CatalogError, DiscoverContentOptions, InstalledCatalog, LaunchPreset,
-    LaunchQvmCompatibility, LaunchWeaponSources, QvmCompatRole,
-};
-use qa_content::contract::{
-    ContentDigest, ExecutableRecipe, GameFamily, ModDescription, ModSelection, ProviderReference, ProviderTiming,
-    QvmAbiProfile, ResourceRequest,
-};
-use qa_content::mounts::MountPreparationScope;
+use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::cmd::Dialect;
-use qa_core::identity::{IdentityOwner, ProviderId, SeatId};
+use qa_core::identity::{IdentityOwner, SeatId};
 use qa_core::math::{angles_to_axis, vec3, vec4, Vec4};
 use qa_platform::controller::ControllerEvent;
 use qa_platform::controller::ControllerSelection;
@@ -62,16 +54,14 @@ use super::renderer::{
     RenderGlConfig, RenderImageRegistry, RenderWindowOptions, RenderWindowPresentation, RendererResourceOwner,
 };
 use super::startup::{StartupAction, StartupApplication, StartupBackend, StartupEntry, StartupError, StartupFrame};
-use super::startup_selection::{
-    PreparedQ3Catalog, PreparedTeamArena, QvmGrappleStyle, StartupArenaSelection, StartupPlayerProducts,
-    StartupSelectionCollaborators, StartupSelectionModel,
-};
+use super::startup_selection::StartupSelectionModel;
 use super::windowed_menu::WindowedMenu;
 use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, MenuLaunchQueue};
 use super::windowed_pacer::WindowedPacer;
+use super::windowed_preset::WindowedPresetCollaborators;
 use super::windowed_scene::WindowedPresentation;
 use super::windowed_world::{load_windowed_world, WindowedWorld};
-use crate::options::{ApplicationOptions, Network, Renderer};
+use crate::options::{ApplicationOptions, Renderer};
 use crate::startup::StartupConfig;
 
 /// SDL window-event id for close (donor `event.event === 14` quit check).
@@ -754,160 +744,6 @@ fn seat_event_seat(event: &SeatInputEvent) -> &SeatId {
         | SeatInputEvent::MouseWheel { seat, .. }
         | SeatInputEvent::ControllerButton { seat, .. }
         | SeatInputEvent::ControllerAxis { seat, .. } => seat,
-    }
-}
-
-/// Launch weapon sources for the windowed smoke run (never invoked: the
-/// smoke never resolves content).
-struct WindowedWeaponSources;
-
-impl LaunchWeaponSources for WindowedWeaponSources {
-    fn canonical_weapon_source(
-        &self,
-        _map: &ProviderReference,
-        weapon: &ProviderReference,
-        _catalog: &InstalledCatalog,
-    ) -> Result<ProviderReference, CatalogError> {
-        Ok(weapon.clone())
-    }
-
-    fn selected_weapon_resources(
-        &self,
-        _map: &ProviderReference,
-        _weapons: &[ProviderReference],
-        _catalog: &InstalledCatalog,
-    ) -> Result<Vec<ResourceRequest>, CatalogError> {
-        Ok(Vec::new())
-    }
-
-    fn selected_weapon_timing(
-        &self,
-        _map: &ProviderReference,
-        _weapons: &[ProviderReference],
-        _catalog: &InstalledCatalog,
-    ) -> Result<Vec<ProviderTiming>, CatalogError> {
-        Ok(Vec::new())
-    }
-
-    fn admit_weapon_timing(
-        &self,
-        _timing: &mut Vec<ProviderTiming>,
-        _weapon: &ProviderTiming,
-    ) -> Result<(), CatalogError> {
-        Ok(())
-    }
-
-    fn weapon_provider_ids(&self) -> Vec<ProviderId> {
-        Vec::new()
-    }
-}
-
-/// Launch QVM compatibility for the windowed smoke run (never invoked).
-struct WindowedQvmCompat;
-
-impl LaunchQvmCompatibility for WindowedQvmCompat {
-    fn read_qvm_compatibility(
-        &self,
-        _mounts: &dyn BehaviorMounts,
-        _artifact_path: &str,
-        _digest: &ContentDigest,
-        _role: QvmCompatRole,
-    ) -> Result<QvmAbiProfile, CatalogError> {
-        Err(CatalogError::Invalid("no qvm in windowed smoke".to_string()))
-    }
-}
-
-/// [`StartupSelectionCollaborators`] for the windowed smoke composition.
-/// Player products echo the selected product so selection options round-trip
-/// over a real (possibly content-less) catalog; launch-time collaborators
-/// report honestly because the smoke run never resolves content.
-pub(crate) struct WindowedCollaborators;
-
-impl StartupSelectionCollaborators for WindowedCollaborators {
-    fn duplicate(&self) -> Box<dyn StartupSelectionCollaborators> {
-        Box::new(WindowedCollaborators)
-    }
-
-    fn mod_choices(&self, _catalog: &InstalledCatalog) -> Result<Vec<ModDescription>, String> {
-        Ok(Vec::new())
-    }
-
-    fn apply_mods(
-        &self,
-        recipe: ExecutableRecipe,
-        _choices: &[ModDescription],
-        _mods: &[ModSelection],
-    ) -> Result<ExecutableRecipe, String> {
-        Ok(recipe)
-    }
-
-    fn read_arena_selection(
-        &self,
-        _catalog: &InstalledCatalog,
-        _options: &ApplicationOptions,
-    ) -> Result<StartupArenaSelection, String> {
-        Ok(StartupArenaSelection::default())
-    }
-
-    fn prepare_q3_product(
-        &self,
-        catalog: &InstalledCatalog,
-        _product_id: &str,
-        _initial: &ApplicationOptions,
-    ) -> Result<PreparedQ3Catalog, String> {
-        Ok(PreparedQ3Catalog {
-            catalog: catalog.clone(),
-            q3_product: None,
-        })
-    }
-
-    fn load_team_arena(
-        &self,
-        _catalog: &InstalledCatalog,
-        _initial: &ApplicationOptions,
-    ) -> Result<Option<PreparedTeamArena>, String> {
-        Ok(None)
-    }
-
-    fn qvm_grapple_selection(
-        &self,
-        _catalog: &InstalledCatalog,
-        _product_id: &str,
-        _mounts: &MountPreparationScope,
-    ) -> Result<Option<QvmGrappleStyle>, String> {
-        Ok(None)
-    }
-
-    fn player_products(
-        &self,
-        _catalog: &InstalledCatalog,
-        product: &str,
-        _movement: GameFamily,
-        _character: GameFamily,
-        _network: &Network,
-    ) -> Result<StartupPlayerProducts, String> {
-        Ok(StartupPlayerProducts {
-            movement: product.to_string(),
-            character: product.to_string(),
-        })
-    }
-
-    fn application_preset(
-        &self,
-        _catalog: &InstalledCatalog,
-        _options: &ApplicationOptions,
-        _movement: Option<&ProviderReference>,
-        _character: Option<&ProviderReference>,
-    ) -> Result<LaunchPreset, String> {
-        Err("no launch preset in windowed smoke".to_string())
-    }
-
-    fn launch_weapons(&self) -> Box<dyn LaunchWeaponSources> {
-        Box::new(WindowedWeaponSources)
-    }
-
-    fn launch_compat(&self) -> Box<dyn LaunchQvmCompatibility> {
-        Box::new(WindowedQvmCompat)
     }
 }
 
@@ -1687,7 +1523,7 @@ pub fn open_windowed_application(
     let config = StartupConfig::from_options(options).map_err(|error| error.to_string())?;
     let catalog = discover_installed_content(&DiscoverContentOptions::new(PathBuf::from(&options.corpus_root)))
         .map_err(|error| error.to_string())?;
-    let model = StartupSelectionModel::new(catalog, options.clone(), Box::new(WindowedCollaborators))
+    let model = StartupSelectionModel::new(catalog, options.clone(), Box::new(WindowedPresetCollaborators))
         .map_err(|error| error.to_string())?;
     let quit = Rc::new(Cell::new(false));
     let identity = IdentityOwner::create("windowed").map_err(|error| error.to_string())?;
@@ -1696,12 +1532,13 @@ pub fn open_windowed_application(
     let resource_owner = ResourceOwner::new(7, identity.session().clone(), 0);
     let mut backend = WindowedStartupBackend::new(&config, options.hidden, options.gamma, Rc::clone(&quit), identity);
     if entry == StartupEntry::Menu {
-        let menu_model = StartupSelectionModel::new(
+        let mut menu_model = StartupSelectionModel::new(
             model.catalog().clone(),
             options.clone(),
-            Box::new(WindowedCollaborators),
+            Box::new(WindowedPresetCollaborators),
         )
         .map_err(|error| error.to_string())?;
+        menu_model.prepare_maps().map_err(|error| error.to_string())?;
         let menu = WindowedMenu::open(
             menu_model,
             menu_seat,
@@ -1782,11 +1619,17 @@ pub(crate) static WINDOWED_GL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex
 #[cfg(test)]
 mod tests {
     use qa_client::input::router::{SdlRouterWindow, WINDOW_FOCUS_GAINED, WINDOW_FOCUS_LOST};
-    use qa_content::catalog::{CatalogProduct, ProductAvailability, ProductExpectation};
+    use qa_content::catalog::{CatalogProduct, InstalledCatalog, ProductAvailability, ProductExpectation};
     use qa_content::contract::ContentId;
+    use qa_content::contract::GameFamily;
+    use qa_content::contract::ProviderReference;
+    use qa_core::identity::ProviderId;
     use qa_platform::sdl::{decode_sdl_event, encode_sdl_event, SdlInjectedEvent};
 
+    use super::super::startup_selection::StartupSelectionCollaborators;
     use super::*;
+    use crate::options::GameFamily as OptionsFamily;
+    use crate::options::Network;
 
     fn steel_corpus_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
@@ -1836,15 +1679,15 @@ mod tests {
     }
 
     #[test]
-    fn windowed_collaborators_echo_products() {
+    fn windowed_preset_collaborators_resolve_live_preset() {
         let catalog = catalog();
-        let collaborators = WindowedCollaborators;
+        let collaborators = WindowedPresetCollaborators;
         let products = collaborators
             .player_products(
                 &catalog,
                 "q2-classic-baseq2",
                 GameFamily::Q2,
-                GameFamily::Q3,
+                GameFamily::Q2,
                 &Network::Offline,
             )
             .unwrap();
@@ -1855,9 +1698,24 @@ mod tests {
             .load_team_arena(&catalog, &ApplicationOptions::default())
             .unwrap()
             .is_none());
-        assert!(collaborators
-            .application_preset(&catalog, &ApplicationOptions::default(), None, None)
-            .is_err());
+        let options = ApplicationOptions {
+            movement: OptionsFamily::Q2,
+            character: OptionsFamily::Q2,
+            character_model: "male".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let movement = ProviderReference {
+            provider: ProviderId::new("q2", "movement"),
+            content: ContentId("q2-classic-baseq2".to_string()),
+        };
+        let character = ProviderReference {
+            provider: ProviderId::new("q2", "character"),
+            content: ContentId("q2-classic-baseq2".to_string()),
+        };
+        let preset = collaborators
+            .application_preset(&catalog, &options, Some(&movement), Some(&character))
+            .unwrap();
+        assert_eq!(preset.map.geometry.path, "maps/base1.bsp");
     }
 
     #[test]

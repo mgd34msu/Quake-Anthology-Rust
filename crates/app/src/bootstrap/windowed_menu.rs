@@ -697,7 +697,7 @@ mod tests {
 
     use super::super::startup::StartupEntry;
     use super::super::windowed::open_windowed_application;
-    use super::super::windowed::WindowedCollaborators;
+    use super::super::windowed_preset::WindowedPresetCollaborators;
     use super::*;
     use crate::options::ApplicationOptions;
 
@@ -738,7 +738,7 @@ mod tests {
         let model = StartupSelectionModel::new(
             catalog(),
             ApplicationOptions::default(),
-            Box::new(WindowedCollaborators),
+            Box::new(WindowedPresetCollaborators),
         )
         .unwrap();
         WindowedMenu::open(

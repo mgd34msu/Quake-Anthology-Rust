@@ -70,8 +70,8 @@ impl MenuLaunchQueue {
 /// the Run entry loads its world straight from options, so `play` and
 /// `load` read the draft options and let the world loader validate
 /// content; `load` relaunches the draft world because this build has no
-/// save subsystem yet. `preset` keeps the full donor path and fails
-/// honestly where the smoke collaborators cannot resolve presets).
+/// save subsystem yet. `preset` keeps the full donor path through the
+/// windowed preset collaborators, which resolve the ported launch preset).
 pub fn launch_options(model: &mut StartupSelectionModel, action: &StartupAction) -> Result<ApplicationOptions, String> {
     match action {
         StartupAction::Play | StartupAction::Load { .. } => model.options().map_err(|error| error.to_string()),
@@ -102,7 +102,7 @@ mod tests {
     use qa_content::contract::ContentId;
     use qa_content::contract::GameFamily;
 
-    use super::super::windowed::WindowedCollaborators;
+    use super::super::windowed_preset::WindowedPresetCollaborators;
     use super::*;
 
     fn model() -> StartupSelectionModel {
@@ -135,7 +135,12 @@ mod tests {
             None,
         )
         .unwrap();
-        StartupSelectionModel::new(catalog, ApplicationOptions::default(), Box::new(WindowedCollaborators)).unwrap()
+        StartupSelectionModel::new(
+            catalog,
+            ApplicationOptions::default(),
+            Box::new(WindowedPresetCollaborators),
+        )
+        .unwrap()
     }
 
     #[test]
