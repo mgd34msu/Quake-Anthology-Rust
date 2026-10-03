@@ -68,6 +68,7 @@ use super::startup_selection::{
 };
 use super::windowed_menu::WindowedMenu;
 use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, MenuLaunchQueue};
+use super::windowed_pacer::WindowedPacer;
 use super::windowed_scene::WindowedPresentation;
 use super::windowed_world::{load_windowed_world, WindowedWorld};
 use crate::options::{ApplicationOptions, Network, Renderer};
@@ -1290,6 +1291,20 @@ impl WindowedStartupBackend {
         self.world.as_ref().map(WindowedWorld::entity_count)
     }
 
+    /// Display refresh rate in Hz hosting the window, or 0 when the
+    /// window is not open or SDL reports none (the frame pacer falls
+    /// back to its default rate then).
+    #[must_use]
+    pub fn display_refresh_hz(&self) -> i32 {
+        self.share
+            .borrow()
+            .window
+            .as_ref()
+            .and_then(|window| window.borrow().display().ok())
+            .map(|display| display.refresh_rate)
+            .unwrap_or(0)
+    }
+
     /// Live drawable size: the window's current drawable when valid,
     /// otherwise the backend's dimensions, otherwise the configured size.
     fn live_size(&self) -> (i32, i32) {
@@ -1726,15 +1741,17 @@ pub fn open_windowed_application(
     Ok(WindowedApplication { app, quit })
 }
 
-/// Drive frames until quit, close, or the frame limit, pacing like the donor
-/// active-game cadence (4ms floor), then close and report stepped frames.
+/// Drive frames until quit, close, or the frame limit, pacing at the
+/// display rate (vsync through the real swap path where the driver
+/// honors the renderer's swap interval, plus a sleep-based minimum
+/// frame time fallback for drivers that ignore swap control), then
+/// close and report stepped frames.
 pub fn drive_windowed_application(
     app: &mut StartupApplication<WindowedStartupBackend>,
     quit: &Rc<Cell<bool>>,
     frame_limit: Option<u64>,
 ) -> Result<u64, StartupError> {
-    const FRAME_FLOOR: Duration = Duration::from_millis(4);
-    let mut last = Instant::now();
+    let mut pacer = WindowedPacer::for_refresh_hz(app.backend().display_refresh_hz());
     loop {
         if quit.get() || app.is_stopping() || app.is_closed() {
             break;
@@ -1750,11 +1767,7 @@ pub fn drive_windowed_application(
                 return Err(error);
             }
         }
-        let elapsed = last.elapsed();
-        if elapsed < FRAME_FLOOR {
-            thread::sleep(FRAME_FLOOR - elapsed);
-        }
-        last = Instant::now();
+        pacer.end_frame();
     }
     app.close()?;
     Ok(app.frames())

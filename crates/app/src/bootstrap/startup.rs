@@ -267,6 +267,12 @@ impl<B: StartupBackend> StartupApplication<B> {
         self.frames
     }
 
+    /// Live backend (the windowed drive loop reads the display rate from it).
+    #[must_use]
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
     /// Status line.
     #[must_use]
     pub fn status(&self) -> &str {
