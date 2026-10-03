@@ -9693,11 +9693,10 @@ impl SharedSimulation {
 
     /// Donor combat `beforeReaction` hook (donor runtime.ts 644).
     ///
-    /// Q3 source reactions need the opaque Q3 source runtime (q3 lane), Q2
-    /// character damage needs the `Q2CharacterHost` wiring (character
-    /// lane), and the Q3-character respawn clamp needs live Q3 characters
-    /// (q3 lane); those arms are skipped until their lanes land. Product
-    /// and player recording run whenever the Q2 product runtime is wired.
+    /// Q3 source reactions need the opaque Q3 source runtime (q3 lane),
+    /// and the Q3-character respawn clamp needs live Q3 characters (q3
+    /// lane); those arms are skipped until their lanes land. Product and
+    /// player recording run whenever the Q2 product runtime is wired.
     fn combat_before_reaction(&self, actor: &OwnedActor, decision: &super::events::DamageDecision) {
         self.lock()
             .last_attack
@@ -9774,6 +9773,17 @@ impl SharedSimulation {
                         .record_death(actor.id().clone(), &mut game, reaction);
                 }
             }
+        }
+        // Donor `confirmed` records character damage feedback (donor
+        // runtime.ts 659). The port runs it here: the decision is the
+        // same object `confirmed` would receive, `recordDamage` skips
+        // deaths, and the Q2 pain callback is a no-op, so running
+        // before the reaction dispatch is unobservable.
+        if self.peek().q2_characters.contains_key(actor) {
+            let guild = q2_damage_decision(decision);
+            self.with_q2_character_host(actor, |character, host| {
+                character.record_damage(host, &guild);
+            });
         }
     }
 
@@ -17917,8 +17927,7 @@ impl SharedSimulation {
     /// Selected-arsenal re-admission has no Rust surface yet (the arsenal
     /// lane owns admit/remove), so that arm is skipped until it lands.
     /// Hand-grenade respawn needs a Q2 game host, which a QuakeC source
-    /// never has, so it is skipped. Q2 character respawns need the q2
-    /// lane's `Q2CharacterHost` implementation; skipped until it lands.
+    /// never has, so it is skipped.
     pub fn quake_c_client_spawned(&self, actor: &ActorId) -> Result<(), RuntimeError> {
         let owned = match self.actors.borrow().resolve_owned(actor) {
             Some(owned) => owned,
@@ -17944,6 +17953,7 @@ impl SharedSimulation {
             }
         }
         self.respawn_q1_character(&owned)?;
+        self.respawn_q2_character(&owned)?;
         let refreshed = self.read_movement_state(&owned)?;
         {
             let mut state = self.lock();
@@ -17984,6 +17994,18 @@ impl SharedSimulation {
         };
         state.q1_characters.insert(actor.clone(), character);
         result.map_err(|error| RuntimeError::Failure(format!("{error:?}")))?;
+        Ok(())
+    }
+
+    /// Respawn the Q2 character actor (donor `q2Characters.get(actor)` +
+    /// `respawned`, donor runtime.ts 3711).
+    ///
+    /// A missing character is not an error (donor `?.`); the host is
+    /// the production character host.
+    fn respawn_q2_character(&self, actor: &OwnedActor) -> Result<(), RuntimeError> {
+        self.with_q2_character_host(actor, |character, host| {
+            character.respawned(host);
+        });
         Ok(())
     }
 
@@ -23726,6 +23748,100 @@ fn movement_kind_matches(state: &MovementState, profile: &MovementProfile) -> bo
     )
 }
 
+/// Deferred Q2 character entity motion update (donor `motion` entity
+/// half, donor runtime.ts 3808).
+#[derive(Debug, Clone, PartialEq)]
+struct Q2CharacterMotionUpdate {
+    /// Moved actor.
+    actor: OwnedActor,
+    /// Motion kind.
+    kind: qa_content::q2::foundation::host::Q2MotionKind,
+    /// Solidity.
+    solid: qa_content::q2::foundation::host::Q2Solid,
+}
+
+/// Map a sim water type to Q2 contents (donor `attachQ2Character`
+/// `movement` water-type arm, donor runtime.ts 3792).
+fn q2_character_water_type(water_type: f64) -> i32 {
+    if water_type < 0.0 {
+        if water_type == -3.0 {
+            32
+        } else if water_type == -4.0 {
+            16
+        } else if water_type == -5.0 {
+            8
+        } else {
+            0
+        }
+    } else {
+        water_type as i32
+    }
+}
+
+/// Build the host environment-damage request (donor `attachQ2Character`
+/// `environmentDamage`, donor runtime.ts 3801-3806).
+#[allow(clippy::too_many_arguments)]
+fn q2_character_environment_request(
+    time: qa_core::time::SourceTime,
+    sequence: u64,
+    target: ActorId,
+    attacker: Option<ActorId>,
+    inflictor: Option<ActorId>,
+    weapon_provider: ProviderId,
+    combat_provider: ProviderId,
+    inventory_provider: ProviderId,
+    movement_provider: ProviderId,
+    point: Vec3,
+    amount: f64,
+    means: i32,
+    flags: i32,
+) -> super::events::DamageRequest {
+    super::events::DamageRequest {
+        attack: super::events::AttackProvenance {
+            sequence,
+            time,
+            attacker,
+            inflictor,
+            originating_projectile: None,
+            weapon: None,
+            weapon_provider,
+            damage_powerup_owner: None,
+            combat_provider,
+            inventory_provider,
+            movement_provider,
+            cause: super::events::AttackCause::Q2 {
+                means_of_death: means,
+                damage_flags: flags,
+                native: None,
+            },
+        },
+        target,
+        amount,
+        knockback: 0.0,
+        direction: zero(),
+        point,
+        normal: zero(),
+        delivery: super::events::DamageDelivery::Direct,
+    }
+}
+
+/// Convert a runtime death reaction to a Q2 death reaction (donor
+/// `attachQ2Character` `die` binding, donor runtime.ts 3814).
+fn q2_character_death_reaction(reaction: &RuntimeDeathReaction) -> qa_content::q2::support::contracts::DeathReaction {
+    use qa_content::q2::support::contracts as q2;
+    q2::DeathReaction {
+        pain: q2::PainReaction {
+            attack: reaction.attack.as_ref().map(q2_attack_provenance),
+            this: reaction.target.clone(),
+            attacker: reaction.attacker.clone(),
+            kick: reaction.kick,
+            damage: reaction.damage,
+        },
+        inflictor: reaction.inflictor.clone(),
+        point: reaction.point,
+    }
+}
+
 impl SharedSimulation {
     /// Build the live player record (donor `createPlayer`, donor runtime.ts
     /// 3311, C4 canonical).
@@ -24134,10 +24250,252 @@ impl SharedSimulation {
         Ok(())
     }
 
-    /// Donor `attachQ2Character` (C10 seam; C4 owns the canonical port).
+    /// Build the production Q2 character host (donor `attachQ2Character`
+    /// host literal, donor runtime.ts 3789-3811).
     ///
-    /// Missing siblings: C4's character attach (q2-lane service/host wiring
-    /// for pain reactions and death); delete this seam when it lands.
+    /// Each closure mirrors one donor host member over the live tables:
+    /// shared body/combat/inventory tables cross through the C11 adapters,
+    /// the clock and random draws read the live frame state, and the
+    /// observation/sink members delegate to the same sim methods the
+    /// donor host calls (`requirePlayer`, `contents`, `playerUi`,
+    /// `reportNoise`, `combat.apply`, `dropPlayerInventory`,
+    /// `respawnPlayer`, `physics.setSolid`, `spawnCharacterGib`). Every
+    /// closure borrows transiently so the caller never holds the state
+    /// across a character call.
+    ///
+    /// The donor `motion` member also writes the map-resident character
+    /// entity, but the caller removes the character from the map while
+    /// the host runs (the closures borrow the state, so the map cannot
+    /// stay borrowed). Motion updates land in the returned outbox and
+    /// the caller applies them to the character entity afterwards.
+    fn q2_character_host(
+        &self,
+    ) -> (
+        qa_content::q2::base::player::character::Q2CharacterHostServices,
+        Rc<RefCell<Vec<Q2CharacterMotionUpdate>>>,
+    ) {
+        use qa_content::q2::base::player::character::Q2CharacterHostServices;
+        use qa_content::q2::foundation::host::Q2Solid;
+        let tables = C11Tables {
+            actors: self.actors_handle(),
+            bodies: self.bodies_handle(),
+            weak: self.weak(),
+        };
+        let content = self.peek().recipe.character.definition.content.clone();
+        let clock_sim = self.clone();
+        let random_sim = self.clone();
+        let movement_sim = self.clone();
+        let contents_sim = self.clone();
+        let powerups_sim = self.clone();
+        let weapon_sim = self.clone();
+        let emit_sim = self.clone();
+        let emit_content = content.clone();
+        let view_sim = self.clone();
+        let noise_sim = self.clone();
+        let env_sim = self.clone();
+        let died_sim = self.clone();
+        let respawn_sim = self.clone();
+        let motion_sim = self.clone();
+        let gib_sim = self.clone();
+        let motions: Rc<RefCell<Vec<Q2CharacterMotionUpdate>>> = Rc::new(RefCell::new(Vec::new()));
+        let motion_outbox = Rc::clone(&motions);
+        let host = Q2CharacterHostServices {
+            bodies: Box::new(C11Q2Bodies { tables: tables.clone() }),
+            combat: Box::new(C11Q2Combat { tables: tables.clone() }),
+            inventory: Box::new(C11Q2Inventory { tables }),
+            clock: Box::new(move || clock_sim.time_seconds()),
+            random: Box::new(move || f64::from(random_sim.lock().random.next_unit())),
+            movement: Box::new(move |actor| {
+                use qa_content::q2::base::player::types::Q2PlayerMovement;
+                let player = movement_sim
+                    .require_player(actor)
+                    .expect("q2 character movement needs an admitted player");
+                Q2PlayerMovement {
+                    view_angles: player.view_angles,
+                    command_angles: player.command_angles,
+                    water_level: player.water_level as i32,
+                    water_type: q2_character_water_type(player.water_type),
+                    grounded: !matches!(player.ground, TraceHit::None),
+                    ducked: player.bounds.max.z < player.standing_bounds.max.z,
+                    buttons: player.buttons as i32,
+                    standing_bounds: player.standing_bounds,
+                    animate_q2: true,
+                }
+            }),
+            point_contents: Box::new(move |point| {
+                contents_sim
+                    .contents(point, ContentsFamily::Q2)
+                    .expect("q2 character contents need recipe timing")
+            }),
+            powerups: Box::new(move |actor| {
+                use qa_content::q1::foundation::types::Q1Powerup;
+                use qa_content::q2::foundation::items::Q2PlayerPowerups;
+                let (quad, invulnerability, suit) = powerups_sim
+                    .q1_services()
+                    .and_then(|services| {
+                        services.borrow().player_ref(actor).map(|player| {
+                            (
+                                player.powerups.get(&Q1Powerup::Quad).copied().unwrap_or(0.0),
+                                player.powerups.get(&Q1Powerup::Invulnerability).copied().unwrap_or(0.0),
+                                player.powerups.get(&Q1Powerup::Suit).copied().unwrap_or(0.0),
+                            )
+                        })
+                    })
+                    .unwrap_or((0.0, 0.0, 0.0));
+                Q2PlayerPowerups {
+                    quad_until: quad,
+                    invulnerability_until: invulnerability,
+                    breather_until: suit,
+                    enviro_until: suit,
+                }
+            }),
+            weapon: Box::new(move |actor| {
+                use qa_content::q2::base::player::types::Q2CharacterWeapon;
+                let ammo = weapon_sim
+                    .player_ui(actor)
+                    .ok()
+                    .and_then(|ui| ui.ammo.map(|ammo| ammo.item));
+                Some(Q2CharacterWeapon {
+                    q2_name: None,
+                    ammo,
+                    kick_angles: zero(),
+                    kick_origin: zero(),
+                    loop_sound: String::new(),
+                })
+            }),
+            emit: Box::new(move |event| {
+                let time = emit_sim.peek().source_frame.time;
+                emit_sim.lock().events.emit_owned(
+                    None,
+                    &emit_content,
+                    super::types::SourcePresentationEvent::Q2(event),
+                    time,
+                    None,
+                );
+            }),
+            view: Box::new(move |actor, view| {
+                view_sim.lock().q2_views.insert(actor.clone(), view);
+            }),
+            noise: Box::new(move |actor, origin| {
+                let Some(game) = noise_sim.q2_game_services() else {
+                    return;
+                };
+                qa_content::q2::foundation::monsters::perception::report_noise(
+                    &mut game.borrow_mut(),
+                    actor.clone(),
+                    origin,
+                    false,
+                );
+            }),
+            environment_damage: Box::new(move |actor, amount, means, flags| {
+                let Some(body) = env_sim.bodies().read(actor.id()) else {
+                    return;
+                };
+                let (time, weapon_provider, combat_provider, inventory_provider, movement_provider) = {
+                    let state = env_sim.peek();
+                    (
+                        state.source_frame.time,
+                        state.weapon_provider.provider.clone(),
+                        state.recipe.combat.provider.clone(),
+                        state.recipe.inventory.provider.clone(),
+                        state.recipe.movement.provider.clone(),
+                    )
+                };
+                let world = env_sim.world_actor();
+                let request = q2_character_environment_request(
+                    time,
+                    env_sim.next_attack_sequence(),
+                    actor.id().clone(),
+                    world.clone(),
+                    world,
+                    weapon_provider,
+                    combat_provider,
+                    inventory_provider,
+                    movement_provider,
+                    body.origin,
+                    amount,
+                    means,
+                    flags,
+                );
+                let _ = env_sim.lock().combat.apply(request);
+            }),
+            died: Box::new(move |actor, _| {
+                if let Ok(player) = died_sim.require_player(actor.id()) {
+                    let _ = died_sim.drop_player_inventory(&player);
+                }
+            }),
+            request_respawn: Box::new(move |actor| {
+                if let Ok(player) = respawn_sim.require_player(actor.id()) {
+                    let _ = respawn_sim.respawn_player(&player);
+                }
+            }),
+            motion: Box::new(move |actor, kind, solid| {
+                use super::physics::{PhysicsFamily, SolidKind};
+                use qa_content::q2::foundation::host::Q2MotionKind;
+                motion_outbox.borrow_mut().push(Q2CharacterMotionUpdate {
+                    actor: actor.clone(),
+                    kind,
+                    solid,
+                });
+                let mut state = motion_sim.lock();
+                if let Some(player) = state.player_states.get_mut(actor) {
+                    if let MovementState::Q1Netquake(netquake) = &mut player.state {
+                        netquake.move_type = if kind == Q2MotionKind::Bounce { 10 } else { 6 };
+                    }
+                }
+                let physics_solid = match solid {
+                    Q2Solid::None => SolidKind::None,
+                    Q2Solid::Trigger => SolidKind::Trigger,
+                    Q2Solid::Box => SolidKind::Box,
+                    Q2Solid::Brush => SolidKind::Brush,
+                };
+                let _ = state
+                    .physics
+                    .set_solid(actor, physics_solid, None, PhysicsFamily::Q2, None);
+            }),
+            spawn_gib: Box::new(move |gib| {
+                let _ = gib_sim.spawn_character_gib(&gib);
+            }),
+        };
+        (host, motions)
+    }
+
+    /// Run a closure against a Q2 character with the production host.
+    ///
+    /// Removes the character while the host runs (host closures borrow
+    /// the state), drains the motion outbox onto the character entity
+    /// afterwards, and re-inserts it. Returns `None` when no character
+    /// is bound, so combat re-entry (damage applied by a host call)
+    /// skips instead of recursing.
+    fn with_q2_character_host<R>(
+        &self,
+        actor: &OwnedActor,
+        run: impl FnOnce(
+            &mut qa_content::q2::base::player::character::Q2CharacterActor,
+            &mut qa_content::q2::base::player::character::Q2CharacterHostServices,
+        ) -> R,
+    ) -> Option<R> {
+        let mut character = self.state.borrow_mut().q2_characters.remove(actor)?;
+        let (mut host, motions) = self.q2_character_host();
+        let output = run(&mut character, &mut host);
+        drop(host);
+        {
+            let mut state = self.state.borrow_mut();
+            for update in motions.borrow_mut().drain(..) {
+                if update.actor == *actor {
+                    character.entity.motion = update.kind;
+                    character.entity.solid = update.solid;
+                } else if let Some(other) = state.q2_characters.get_mut(&update.actor) {
+                    other.entity.motion = update.kind;
+                    other.entity.solid = update.solid;
+                }
+            }
+            state.q2_characters.insert(actor.clone(), character);
+        }
+        Some(output)
+    }
+
+    /// Donor `attachQ2Character` (donor runtime.ts 3787; C4 canonical).
     pub fn attach_q2_character(&self, player: &MovementPlayer) -> Result<(), RuntimeError> {
         use qa_content::q2::base::player::character::{Q2CharacterActor, Q2CharacterOptions};
         let actor = player.actor.clone();
@@ -24182,6 +24540,10 @@ impl SharedSimulation {
             state.q2_characters.insert(actor.clone(), character);
             let simulation = Rc::downgrade(&self.state);
             let pain_actor = actor.clone();
+            let weak = self.weak();
+            let die_actors = Rc::clone(&self.actors);
+            let die_bodies = Rc::clone(&self.bodies_table);
+            let die_actor = actor.clone();
             state.callbacks.borrow().bind(
                 &actors,
                 &actor,
@@ -24198,7 +24560,16 @@ impl SharedSimulation {
                             character.pain();
                         }
                     })),
-                    die: None,
+                    die: Some(Rc::new(move |reaction: &RuntimeDeathReaction| {
+                        let Some(state) = weak.upgrade() else {
+                            return;
+                        };
+                        let sim = join_handle(state, &die_actors, &die_bodies);
+                        let guild = q2_character_death_reaction(reaction);
+                        sim.with_q2_character_host(&die_actor, |character, host| {
+                            character.die(host, &guild);
+                        });
+                    })),
                 },
             )?;
         }
@@ -28552,20 +28923,15 @@ impl SharedSimulation {
 impl SharedSimulation {
     /// Run Q2 character post-client-think (donor
     /// `q2Characters.get(actor)?.afterClientThink()`, donor runtime.ts
-    /// 4582 and `content/q2/base/player/character.ts` 161-165).
+    /// 4583 and `content/q2/base/player/character.ts` 161-165).
     ///
-    /// Ports the button latch directly: the donor host's
-    /// `movement(actor).buttons` is the sim player's button bitmask
-    /// (donor runtime.ts 3791-3794), and the character state fields are
-    /// shared, so no host stands between the sim and the latch.
-    #[allow(clippy::cast_possible_truncation)]
-    fn q2_character_after_client_think(&self, owned: &OwnedActor, buttons: f64) {
-        let buttons = buttons as i32;
-        let mut state = self.state.borrow_mut();
-        if let Some(character) = state.q2_characters.get_mut(owned) {
-            character.state.latched_buttons |= buttons & !character.state.buttons;
-            character.state.buttons = buttons;
-        }
+    /// Buttons flow through the production host's `movement(actor)`
+    /// observation (donor runtime.ts 3791-3794), which reads the live
+    /// sim player's button bitmask.
+    fn q2_character_after_client_think(&self, owned: &OwnedActor) {
+        self.with_q2_character_host(owned, |character, host| {
+            character.after_client_think(host);
+        });
     }
 }
 
@@ -28984,9 +29350,9 @@ impl SharedSimulation {
                 }
             }
         }
-        // Donor 4581-4582: character post-move hooks.
+        // Donor 4581-4583: character post-move hooks.
         if self.peek().q2_characters.contains_key(owned) {
-            self.q2_character_after_client_think(owned, pstate.buttons);
+            self.q2_character_after_client_think(owned);
         }
         self.step_tail_q1_character_post_move(owned)?;
         // Donor 4583.
@@ -29613,16 +29979,13 @@ fn frame_selected_q2_weapon_seam(sim: &SharedSimulation, actor: &OwnedActor) -> 
     Ok(())
 }
 
-/// Begin the Q2 character frame (donor `q2Characters.get(actor)?.beginFrame()`).
-///
-/// Missing siblings: the character lane owns the `Q2CharacterHost`
-/// construction; the adapter
-/// (`qa_content::q2::base::player::character::Q2CharacterHostServices`)
-/// exists with test-only callers, and no production site builds it with
-/// live tables yet.
-#[allow(dead_code)]
-fn q2_character_begin_frame_seam(actor: &OwnedActor) {
-    let _ = actor;
+/// Begin the Q2 character frame (donor
+/// `q2Characters.get(actor)?.beginFrame()`, donor runtime.ts 4616/4688
+/// and `content/q2/base/player/character.ts` 166-174).
+fn q2_character_begin_frame_seam(sim: &SharedSimulation, actor: &OwnedActor) {
+    sim.with_q2_character_host(actor, |character, host| {
+        character.begin_frame(host);
+    });
 }
 
 /// Step the player weapon (donor `playerWeapon`, runtime.ts 3955-3960).
@@ -30001,7 +30364,7 @@ impl SharedSimulation {
         // Donor 4615-4619.
         if self.actors.borrow().is_live(actor.id()) {
             if self.peek().q2_characters.contains_key(actor) {
-                q2_character_begin_frame_seam(actor);
+                q2_character_begin_frame_seam(self, actor);
             }
             let health = self
                 .peek()
@@ -30292,7 +30655,7 @@ impl SharedSimulation {
         // Donor 4682-4684: player weapon.
         if self.peek().player_states.contains_key(actor) {
             if self.peek().q2_characters.contains_key(actor) {
-                q2_character_begin_frame_seam(actor);
+                q2_character_begin_frame_seam(self, actor);
             }
             let player = match self.peek().player_states.get(actor).cloned() {
                 Some(player) => player,
@@ -31006,13 +31369,13 @@ fn q3_dead_viewheight_seam(actor: &ActorId) {
 #[allow(dead_code)]
 fn q3_source_end_frame_seam() {}
 
-/// Run Q2 character end frame (donor `character.endFrame()`).
-///
-/// Missing siblings: the character lane owns the `Q2CharacterHost`
-/// wiring; the entity/animation reads around this call are real.
-#[allow(dead_code)]
-fn q2_character_end_frame_seam(actor: &ActorId) {
-    let _ = actor;
+/// Run Q2 character end frame (donor `character.endFrame()`, donor
+/// runtime.ts 4726-4729 and
+/// `content/q2/base/player/character.ts` 189-219).
+fn q2_character_end_frame_seam(sim: &SharedSimulation, actor: &OwnedActor) {
+    sim.with_q2_character_host(actor, |character, host| {
+        character.end_frame(host, false);
+    });
 }
 
 /// Whether a Q1 character takes the axe pose (donor
@@ -31435,7 +31798,7 @@ impl SharedSimulation {
                     let mut state = self.lock();
                     state.character_ticks.insert(owned.clone(), time_seconds + 0.1);
                 }
-                q2_character_end_frame_seam(owned.id());
+                q2_character_end_frame_seam(self, &owned);
                 let update = {
                     let state = self.peek();
                     state.q2_characters.get(&owned).map(|character| {
@@ -43064,5 +43427,994 @@ mod tests {
             crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&bad_edition)
                 .is_err()
         );
+    }
+
+    // --- Q2 character host rig (lane gu-1) ----------------------------------
+    //
+    // Minimal `SharedSimulation` over real tables: the registry, bodies,
+    // combat, inventory, events, physics, and scheduler are production
+    // constructions with the post-wrap live links installed (mirroring
+    // `construct_simulation`). The source stays `Loading`, so
+    // source-gated arms take their no-source branches; hooks are
+    // installed but tests never call `combat.apply` (the state guard
+    // stays held across hook dispatch there, a pre-existing hazard
+    // outside this lane).
+
+    struct Gu1Rig {
+        sim: SharedSimulation,
+        clients: Vec<ClientId>,
+    }
+
+    fn gu1_provider(content: &str) -> ProviderReference {
+        ProviderReference {
+            provider: ProviderId::new("q2", "test"),
+            content: ContentId(content.to_owned()),
+        }
+    }
+
+    fn gu1_recipe() -> ExecutableRecipe {
+        use qa_content::contract::{
+            CampaignSelection, CharacterSelection, ContentDigest, DopplerSelection, EnemySelection,
+            EnvironmentSelection, EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection,
+            LooseMount, MountId, MountIdentity, MountPlanId, PresentationSelection, ProviderTiming, RecipeId,
+            ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceProvenance,
+            ResourceResolution,
+        };
+        use qa_core::numeric::Q2_DONOR_PROFILE;
+        use qa_core::time::ClockProfile;
+        let clock = ClockProfile::Q1Netquake {
+            minimum_frame_seconds: 0.001,
+            maximum_frame_seconds: 0.1,
+            fixed_frame_seconds: None,
+        };
+        let geometry = ResolvedResourceReference {
+            id: ResourceId("resource:maps/e1m1.bsp".to_owned()),
+            requested_path: "maps/e1m1.bsp".to_owned(),
+            provenance: ResourceProvenance::Loose {
+                mount: LooseMount {
+                    identity: MountIdentity {
+                        id: MountId("mount:test:loose".to_owned()),
+                        content: ContentId("q2".to_owned()),
+                        generation: 1,
+                    },
+                    root_path: "/corpus".to_owned(),
+                },
+                member_path: "maps/e1m1.bsp".to_owned(),
+            },
+            digest: ContentDigest("sha256:00".to_owned()),
+            byte_length: 0,
+            resolution: ResourceResolution::DefaultOrder {
+                plan: MountPlanId("mount-plan:test:1".to_owned()),
+                rank: 0,
+            },
+        };
+        ExecutableRecipe {
+            weapon_behaviors: Vec::new(),
+            mods: Vec::new(),
+            schema_version: 3,
+            id: RecipeId("recipe:test:1".to_owned()),
+            preset: RecipeId("recipe:test:1".to_owned()),
+            map: ResolvedMap {
+                geometry_content: ContentId("q2".to_owned()),
+                geometry: geometry.clone(),
+                entities: gu1_provider("q2:base"),
+            },
+            campaign: CampaignSelection::None,
+            movement: gu1_provider("q2:base"),
+            character: CharacterSelection {
+                definition: gu1_provider("q2:base"),
+                appearance: gu1_provider("q2:base"),
+            },
+            weapons: Vec::new(),
+            equipment: EquipmentSelection {
+                grapple: GrappleSelection::Disabled,
+                hand_grenades: HandGrenadeSelection::Disabled,
+            },
+            enemies: EnemySelection::MapDefined,
+            presentation: PresentationSelection {
+                doppler: DopplerSelection::Source,
+                environment: EnvironmentSelection::AudioContent,
+                assets: ContentId("q2".to_owned()),
+                hud: gu1_provider("q2:base"),
+                effects: gu1_provider("q2:base"),
+                audio: gu1_provider("q2:base"),
+            },
+            engine_behavior: gu1_provider("q2:base"),
+            combat: gu1_provider("q2:base"),
+            inventory: gu1_provider("q2:base"),
+            r#match: gu1_provider("q2:base"),
+            transition: gu1_provider("q2:base"),
+            execution: Vec::new(),
+            mounts: ResolvedMountPlan {
+                id: MountPlanId("mount-plan:test:1".to_owned()),
+                mounts: Vec::new(),
+                default_order: Vec::new(),
+                prefix_orders: Vec::new(),
+            },
+            resources: vec![geometry],
+            timing: vec![ProviderTiming {
+                provider: ProviderId::new("q2", "test"),
+                clock,
+                numeric: Q2_DONOR_PROFILE,
+            }],
+            ordering: FrameOrdering::Mixed { providers: Vec::new() },
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn gu1_sim() -> Gu1Rig {
+        let owner = IdentityOwner::create("gu1-test").expect("owner");
+        let clients = (0..4).map(|slot| owner.client(slot, 0)).collect();
+        let session = owner.session().clone();
+        let actors = Rc::new(RefCell::new(SessionActorRegistry::new(owner, 65536).expect("registry")));
+        let bodies_table = Rc::new(RefCell::new(qa_world::body::BodyTable::new()));
+        let late = LateSimulation::new(Rc::clone(&actors), Rc::clone(&bodies_table));
+        let callbacks = Rc::new(RefCell::new(ActorCallbackTable::new()));
+        let scene = Rc::new(SharedSceneQueries::new("q2-bsp".to_string(), String::new()));
+        let recipe = gu1_recipe();
+        let numeric_profile = qa_core::numeric::Q2_DONOR_PROFILE;
+        let cargo = super::super::dropped_pickups::SourcePickupCargo::new(
+            RuntimeActors::new(Rc::clone(&actors)),
+            recipe.map.entities.provider.clone(),
+        );
+        let punch = super::super::q1_punch::Q1PlayerPunch::new(
+            RuntimeActors::new(Rc::clone(&actors)),
+            RuntimePunchSource::new(Weak::new(), Rc::clone(&actors), Rc::clone(&bodies_table)),
+        );
+        let match_late = late.clone();
+        let source_match =
+            ModMatchState::new(move |actor| match_late.sim().and_then(|sim| sim.primary_match_player(actor)));
+        let kill_late = late.clone();
+        let stop_late = late.clone();
+        let order_late = late.clone();
+        let world_late = late.clone();
+        let collision_late = late.clone();
+        let motion_late = late.clone();
+        let flags_late = late.clone();
+        let write_flags_late = late.clone();
+        let angular_late = late.clone();
+        let event_late = late.clone();
+        let water_late = late.clone();
+        let blocked_late = late.clone();
+        let physics = SharedPhysics::new(
+            super::super::physics::SharedPhysicsOptions {
+                numeric: numeric_profile,
+                source_order: Box::new(move |a, b| order_late.expect_sim().source_order(a, b)),
+                world_actor: Box::new(move || world_late.expect_sim().world_actor()),
+                on_blocked: Box::new(move |actor, other| {
+                    blocked_late.expect_sim().physics_blocked(actor, other);
+                }),
+                get_collision: Some(Box::new(move |actor| {
+                    collision_late.expect_sim().collision(actor).unwrap_or(None)
+                })),
+                get_motion: Some(Box::new(move |actor| motion_late.expect_sim().physics_motion(actor))),
+                get_flags: Some(Box::new(move |actor| flags_late.expect_sim().physics_flags(actor))),
+                write_flags: Some(Box::new(move |actor, changes| {
+                    write_flags_late.expect_sim().write_physics_flags(actor, changes);
+                })),
+                write_angular_velocity: Some(Box::new(move |actor, velocity| {
+                    angular_late.expect_sim().write_physics_angular(actor, velocity);
+                })),
+                event: Some(Box::new(move |event| {
+                    event_late.expect_sim().physics_event(event);
+                })),
+                gravity: None,
+                max_velocity: None,
+                q2_edition: Some(qa_content::q2::foundation::host::Q2Edition::Classic),
+                stop_speed: Some(Box::new(move || stop_late.expect_sim().physics_stop_speed())),
+                take_kill_velocity: Some(Box::new(move |actor| {
+                    kill_late.expect_sim().physics_take_kill_velocity(actor)
+                })),
+                q1_water_transition: Some(Box::new(move |actor| {
+                    water_late.expect_sim().physics_water_transition(actor);
+                })),
+            },
+            Box::new(RuntimeActors::new(Rc::clone(&actors))),
+            Box::new(RuntimeBodies::new(Rc::clone(&actors), Rc::clone(&bodies_table))),
+            Box::new(RuntimePhysicsScene::new(Rc::clone(&actors), Rc::clone(&bodies_table))),
+            Box::new(RuntimeCallbacks::new(Rc::clone(&callbacks), Rc::clone(&actors))),
+        )
+        .expect("physics");
+        let mut inventory = SharedInventoryTable::new();
+        inventory.set_actors(Rc::clone(&actors));
+        let client_late = late.clone();
+        let fog_alive = Rc::clone(&actors);
+        let fog_options = super::super::q1_fog::SimulationQ1FogOptions {
+            content: recipe.map.entities.content.clone(),
+            alive: Box::new(move |actor: &ActorId| fog_alive.borrow().is_live(actor)),
+            accepted_contents: Some(HashSet::new()),
+            entities: String::new(),
+        };
+        let events = SimulationEvents::new(
+            Box::new(RuntimeBodies::new(Rc::clone(&actors), Rc::clone(&bodies_table))),
+            Box::new(move |actor| client_late.expect_sim().player(actor).map(|player| player.client)),
+            Box::new(RuntimePresentation::new(
+                Weak::new(),
+                Rc::clone(&actors),
+                Rc::clone(&bodies_table),
+                None,
+                None,
+            )),
+        );
+        let mut combat = GameplayAuthority::new();
+        combat.set_actors(Rc::clone(&actors));
+        combat.set_callbacks(Rc::clone(&callbacks));
+        let team_late = late.clone();
+        let damage_late = late.clone();
+        let impulse_late = late.clone();
+        let reaction_late = late.clone();
+        let confirmed_late = late.clone();
+        combat.set_hooks(GameplayAuthorityHooks {
+            team: Rc::new(move |actor, original| team_late.expect_sim().canonical_team(actor, original.as_deref())),
+            damage_allowed: Rc::new(move |request| damage_late.expect_sim().combat_damage_allowed(request)),
+            impulse: Rc::new(move |actor, impulse, movement| {
+                impulse_late.expect_sim().combat_impulse(actor, impulse, movement);
+            }),
+            before_reaction: Rc::new(move |actor, decision| {
+                reaction_late.expect_sim().combat_before_reaction(actor, decision);
+            }),
+            confirmed: Rc::new(move |outcome| {
+                confirmed_late.expect_sim().combat_confirmed(outcome);
+            }),
+        });
+        let original_pickups = SharedOriginalPickupAdmission::new(|_offer| true);
+        let scheduler = FrameScheduler::new(
+            qa_world::scheduler::FrameOrdering::Mixed { providers: Vec::new() },
+            recipe
+                .timing
+                .iter()
+                .map(|entry| (entry.provider.clone(), entry.clock))
+                .collect::<Vec<_>>(),
+        )
+        .expect("scheduler");
+        let bot_services = SimulationBotServices::new();
+        let q1_client_visibility = Q1ClientVisibility::new();
+        let weapon_behavior = SharedSimulation::build_weapon_behaviors(
+            &late,
+            &scene,
+            super::super::types::SimulationMode::Singleplayer,
+            1234,
+            Vec::new(),
+        )
+        .expect("weapon behaviors");
+        let apps_live_actors = Rc::clone(&actors);
+        let mod_client_applications =
+            ModClientApplications::new(move |identity| apps_live_actors.borrow().is_live(&identity.actor));
+        let outputs_live_actors = Rc::clone(&actors);
+        let mod_client_outputs = ModClientOutputs::new(move |actor| outputs_live_actors.borrow().is_live(actor));
+        let mod_clients = ModClientServices { maximum: 4 };
+        let monster_ops = qa_core::numeric::NumericOps::select(numeric_profile).expect("numeric profile selects");
+        let q1_movement = Rc::new(RefCell::new(qa_world::movement::q1::monsters::Q1MonsterMovement::new(
+            RuntimeMonsterServices::new(
+                Weak::new(),
+                Rc::clone(&actors),
+                Rc::clone(&bodies_table),
+                monster_ops,
+                None,
+            ),
+        )));
+        let clock = SourceClock::new(SourceTime::Seconds(0.0)).expect("clock");
+        let source_frame = clock.frame();
+        let random = SourceRandom::new(1234);
+        let q1_campaign = qa_content::q1::base::provider::Q1CampaignState::new(0, 1);
+        let weapon_provider = recipe.movement.clone();
+        let host_milliseconds = 0.0;
+        let state = SharedSimulationState {
+            session,
+            recipe,
+            callbacks,
+            scene,
+            physics,
+            combat,
+            inventory,
+            original_pickups,
+            scheduler,
+            random,
+            bot_services,
+            clock,
+            events,
+            actor_executions: HashMap::new(),
+            player_states: HashMap::new(),
+            q1_punch: punch,
+            q2_characters: HashMap::new(),
+            character_ticks: HashMap::new(),
+            entry_carry: HashMap::new(),
+            start_items: String::new(),
+            initial_spawn_point: String::new(),
+            pending_start_items: HashSet::new(),
+            pending_shared_restore: None,
+            detached_models: HashMap::new(),
+            q1_characters: HashMap::new(),
+            q1_character_foundation: None,
+            q1_character_adjuncts: HashSet::new(),
+            q2_views: HashMap::new(),
+            q1_campaign,
+            characters: HashMap::new(),
+            q3_character_death_animations: Rc::new(RefCell::new(
+                qa_content::q3::foundation::character::Q3DeathAnimationSequence::new(),
+            )),
+            q3_entity_refs: HashMap::new(),
+            character_starts: HashMap::new(),
+            grapple: None,
+            qvm_grapple_source: None,
+            pending_qvm_grapple_restore: None,
+            source_items_restore: None,
+            weapon_slots: HashMap::new(),
+            native_equipment_players: HashSet::new(),
+            native_equipment_alive: HashMap::new(),
+            native_weapon_requests: HashMap::new(),
+            native_equipment_velocity: HashMap::new(),
+            grapple_frame: source_frame,
+            hand_grenades: None,
+            equipment_frame: source_frame,
+            selected_q3_source: None,
+            selected_ammo_timers: None,
+            selected_q3_time: 0.0,
+            selected_q3_next: 0.0,
+            selected_q3_strings: HashMap::new(),
+            weapon_behavior,
+            native_navigation: None,
+            selected_milliseconds: host_milliseconds,
+            selected_arsenal: None,
+            selected_weapon_source: None,
+            primary_command_blocks: HashSet::new(),
+            selected_supply: None,
+            dropped_pickups: cargo,
+            selected_original_supply: None,
+            selected_original_weapons: None,
+            selected_pickup_policy: None,
+            selected_original_pickups: Vec::new(),
+            q3_arsenals: HashMap::new(),
+            q3_commands: HashMap::new(),
+            death_animations: qa_content::q3::base::game::death::Q3DeathAnimationSequence::new(),
+            source_models: HashMap::new(),
+            view_models: HashMap::new(),
+            transitions: Vec::new(),
+            level_change: None,
+            weapon_provider,
+            q1_movement,
+            selected_monsters: None,
+            monster_sources: HashMap::new(),
+            monster_missions: HashMap::new(),
+            q2_server_registry: None,
+            q2_product: None,
+            debug_line_store: crate::debug::WorldDebugLineStore::new(),
+            debug_line_frame: 0,
+            debug_line_snapshot: Vec::new(),
+            world_text_store: qa_client::text::ui_world::WorldTextStore::new(),
+            world_text_frame: 0,
+            world_text_snapshot: Vec::new(),
+            source: SourceRuntime::Loading,
+            pending_native_travel: None,
+            dispose_source_combat: None,
+            source_frame,
+            host_milliseconds,
+            q1_pause_state: false,
+            source_scheduling_milliseconds: host_milliseconds,
+            closed: false,
+            mod_owner: None,
+            mod_client_listeners: Vec::new(),
+            mod_client_admissions: HashSet::new(),
+            mod_client_commands: HashMap::new(),
+            dispose_native_pickup_supply: None,
+            native_primary_commands: None,
+            native_primary_inventory: None,
+            native_primary_drop: None,
+            restored_native_inventory_selections: HashMap::new(),
+            native_primary_weapons: None,
+            native_weapon_applications: Vec::new(),
+            native_travel_consumed: HashSet::new(),
+            native_weapon_times: HashMap::new(),
+            native_weapon_turn: None,
+            current_qvm_arsenal_application: None,
+            qvm_weapon_decisions: Vec::new(),
+            selected_pickup_bindings: HashMap::new(),
+            mod_client_applications,
+            mod_client_drops: Vec::new(),
+            mod_client_outputs,
+            mod_clients,
+            source_match,
+            stepping: false,
+            checkpoint_in_progress: false,
+            source_round_settlement: SourceRoundSettlement::None,
+            checking_q2_rules: false,
+            q1_client_visibility,
+            attack_sequence: 0,
+            q1_restart: false,
+            last_attack: HashMap::new(),
+            area_portals: HashMap::new(),
+            quake_world_commands: Vec::new(),
+            quake_world_touched: None,
+            source_collision_settings: None,
+            next_token: 0,
+            options_mode: super::super::types::SimulationMode::Singleplayer,
+            options_skill: 1,
+            options_max_clients: 4,
+            options_restored_clients: None,
+            options_seed: 1234,
+            options_travel: None,
+            options_native_q2_travel: None,
+            options_q2_guest: None,
+            options_q3_guest: None,
+            world_entities: String::new(),
+            world_kind: "q2-bsp".to_string(),
+            map_path: "maps/e1m1.bsp".to_string(),
+            options_weapon_behavior_real_time: None,
+            options_weapon_behavior_clock: None,
+            options_prepared_qvm_grapple: None,
+            hand_grenade_game: None,
+            grapple_execution_actors: HashSet::new(),
+            grenade_execution_actors: HashSet::new(),
+            execution_providers: HashMap::new(),
+        };
+        let state = Rc::new(RefCell::new(state));
+        late.fill(Rc::downgrade(&state));
+        let simulation = join_handle(state, &actors, &bodies_table);
+        let live_punch = super::super::q1_punch::Q1PlayerPunch::new(
+            RuntimeActors::new(simulation.actors_handle()),
+            RuntimePunchSource::new(
+                simulation.weak(),
+                simulation.actors_handle(),
+                simulation.bodies_handle(),
+            ),
+        );
+        simulation.lock().q1_punch = live_punch;
+        let live_client_late = late.clone();
+        let live_events = SimulationEvents::new(
+            Box::new(RuntimeBodies::new(
+                simulation.actors_handle(),
+                simulation.bodies_handle(),
+            )),
+            Box::new(move |actor| live_client_late.expect_sim().player(actor).map(|player| player.client)),
+            Box::new(RuntimePresentation::new(
+                simulation.weak(),
+                simulation.actors_handle(),
+                simulation.bodies_handle(),
+                None,
+                Some(fog_options),
+            )),
+        );
+        simulation.lock().events = live_events;
+        simulation.lock().inventory.set_state(simulation.weak());
+        let live_movement = simulation.create_monster_movement(numeric_profile, None);
+        simulation.lock().q1_movement = Rc::new(RefCell::new(live_movement));
+        Gu1Rig {
+            sim: simulation,
+            clients,
+        }
+    }
+
+    fn gu1_bounds() -> Bounds {
+        Bounds {
+            min: Vec3 {
+                x: -16.0,
+                y: -16.0,
+                z: -24.0,
+            },
+            max: Vec3 {
+                x: 16.0,
+                y: 16.0,
+                z: 32.0,
+            },
+        }
+    }
+
+    fn gu1_player(sim: &SharedSimulation, actor: &OwnedActor, client: &ClientId) -> MovementPlayer {
+        use qa_world::movement::q1::types::Q1MovementState;
+        let recipe = sim.peek().recipe.clone();
+        let profile = movement_profile(&recipe).expect("movement profile");
+        let standing = gu1_bounds();
+        MovementPlayer {
+            actor: actor.clone(),
+            client: client.clone(),
+            recipe,
+            character: GameFamily::Q2,
+            standing_bounds: standing,
+            profile,
+            state: MovementState::Q1Netquake(Q1MovementState {
+                origin: zero(),
+                velocity: zero(),
+                angles: zero(),
+                old_origin: zero(),
+                angular_velocity: zero(),
+                view_angles: zero(),
+                punch_angles: zero(),
+                move_type: 6,
+                flags: 0,
+                ground: TraceHit::None,
+                water_level: 0,
+                water_type: 0,
+                teleport_time_seconds: 0.0,
+                water_jump_direction: zero(),
+                ideal_pitch: 0.0,
+                fix_angle: false,
+                health: 100.0,
+            }),
+            arsenal: ArsenalState {
+                provider: ProviderId::new("q2", "test"),
+                active_weapon: None,
+                state: WeaponState::Q2 {
+                    gun_frame: 0,
+                    state: 0,
+                    pending_weapon: None,
+                    machinegun_shots: 0,
+                    grenade_time: SourceTime::Seconds(0.0),
+                    grenade_blew_up: false,
+                },
+                ammo: Vec::new(),
+            },
+            animation: ActorAnimationState {
+                provider: ProviderId::new("q2", "test"),
+                state: qa_world::movement::types::AnimationState::Q2 {
+                    frame: 0,
+                    end_frame: 39,
+                    priority: 0,
+                    duck: false,
+                    run: false,
+                },
+            },
+            view_angles: zero(),
+            command_angles: zero(),
+            view_height: 22.0,
+            bounds: standing,
+            ground: TraceHit::None,
+            water_level: 0.0,
+            water_type: 0.0,
+            intermission: false,
+            cutscene: None,
+            fixed_pose_active: false,
+            body_shape_base: None,
+            gravity_multiplier: 1.0,
+            flight: false,
+            world_gravity: 800.0,
+            buttons: 0.0,
+            previous_buttons: 0.0,
+            last_sequence: 0,
+            net_quake_command: None,
+            last_weapon_seconds: f64::NEG_INFINITY,
+            arsenal_intent: None,
+            source_movement: None,
+            source_environment: None,
+            q2_movement_config: None,
+            movement_speed_multiplier: 1.0,
+        }
+    }
+
+    /// Admit a Q2 player with body, combat, and an attached character.
+    fn gu1_admit(rig: &Gu1Rig, slot: usize) -> (OwnedActor, MovementPlayer) {
+        let sim = &rig.sim;
+        let actor = sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        let player = gu1_player(sim, &actor, &rig.clients[slot]);
+        sim.bodies()
+            .create(
+                &actor,
+                qa_world::body::BodyState {
+                    origin: zero(),
+                    velocity: zero(),
+                    angles: zero(),
+                    bounds: gu1_bounds(),
+                    ground: None,
+                },
+            )
+            .expect("body");
+        sim.lock()
+            .combat
+            .write(actor.id(), qa_world::combat::CombatState::default());
+        sim.lock().player_states.insert(actor.clone(), player.clone());
+        sim.attach_q2_character(&player).expect("attach");
+        (actor, player)
+    }
+
+    fn gu1_attack() -> super::super::events::AttackProvenance {
+        super::super::events::AttackProvenance {
+            sequence: 7,
+            time: SourceTime::Seconds(1.0),
+            attacker: None,
+            inflictor: None,
+            originating_projectile: None,
+            weapon: None,
+            weapon_provider: ProviderId::new("q2", "test"),
+            damage_powerup_owner: None,
+            combat_provider: ProviderId::new("q2", "test"),
+            inventory_provider: ProviderId::new("q2", "test"),
+            movement_provider: ProviderId::new("q2", "test"),
+            cause: super::super::events::AttackCause::Q2 {
+                means_of_death: 1,
+                damage_flags: 0,
+                native: None,
+            },
+        }
+    }
+
+    #[test]
+    fn q2_host_water_type_maps_donor_buckets() {
+        assert_eq!(q2_character_water_type(-3.0), 32);
+        assert_eq!(q2_character_water_type(-4.0), 16);
+        assert_eq!(q2_character_water_type(-5.0), 8);
+        assert_eq!(q2_character_water_type(-1.0), 0);
+        assert_eq!(q2_character_water_type(0.0), 0);
+        assert_eq!(q2_character_water_type(5.0), 5);
+    }
+
+    #[test]
+    fn q2_host_environment_request_shapes_world_attack() {
+        use qa_core::identity::IdentityOwner;
+        let owner = IdentityOwner::create("gu1-env").expect("owner");
+        let target = owner.actor(3, 0);
+        let world = owner.actor(1, 0);
+        let request = q2_character_environment_request(
+            SourceTime::Seconds(2.0),
+            9,
+            target.clone(),
+            Some(world.clone()),
+            Some(world.clone()),
+            ProviderId::new("q2", "test"),
+            ProviderId::new("q2", "test"),
+            ProviderId::new("q2", "test"),
+            ProviderId::new("q2", "test"),
+            Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            12.0,
+            21,
+            32,
+        );
+        assert_eq!(request.target, target);
+        assert_eq!(request.amount, 12.0);
+        assert_eq!(request.knockback, 0.0);
+        assert_eq!(request.point, Vec3 { x: 1.0, y: 2.0, z: 3.0 });
+        assert!(matches!(request.delivery, super::super::events::DamageDelivery::Direct));
+        assert_eq!(request.attack.sequence, 9);
+        assert_eq!(request.attack.time, SourceTime::Seconds(2.0));
+        assert_eq!(request.attack.attacker, Some(world.clone()));
+        assert_eq!(request.attack.inflictor, Some(world));
+        assert_eq!(request.attack.weapon, None);
+        assert!(matches!(
+            request.attack.cause,
+            super::super::events::AttackCause::Q2 {
+                means_of_death: 21,
+                damage_flags: 32,
+                native: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn q2_host_death_reaction_converts_provenance() {
+        use qa_core::identity::IdentityOwner;
+        let owner = IdentityOwner::create("gu1-die").expect("owner");
+        let target = owner
+            .owned_actor(&owner.actor(3, 0), ProviderId::new("q2", "test"))
+            .expect("owned");
+        let attacker = owner.actor(5, 0);
+        let reaction = RuntimeDeathReaction {
+            attack: Some(gu1_attack()),
+            target: target.clone(),
+            attacker: Some(attacker.clone()),
+            kick: 4.0,
+            damage: 25.0,
+            inflictor: Some(attacker.clone()),
+            point: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+        };
+        let guild = q2_character_death_reaction(&reaction);
+        assert_eq!(guild.pain.this, target);
+        assert_eq!(guild.pain.attacker, Some(attacker.clone()));
+        assert_eq!(guild.pain.kick, 4.0);
+        assert_eq!(guild.pain.damage, 25.0);
+        assert_eq!(guild.inflictor, Some(attacker));
+        assert_eq!(guild.point, Vec3 { x: 1.0, y: 0.0, z: 0.0 });
+        let attack = guild.pain.attack.expect("attack");
+        assert_eq!(attack.sequence, 7);
+        assert!(matches!(
+            attack.cause,
+            qa_content::q2::support::contracts::AttackCause::Q2 { means_of_death: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn q2_host_movement_maps_live_player() {
+        use qa_content::q2::base::player::character::Q2CharacterHost;
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let player = state.player_states.get_mut(&actor).expect("player");
+            player.water_type = -3.0;
+            player.buttons = 5.0;
+            player.bounds.max.z = 0.0;
+        }
+        let (mut host, _) = rig.sim.q2_character_host();
+        let movement = host.movement(actor.id());
+        assert_eq!(movement.water_type, 32);
+        assert_eq!(movement.buttons, 5);
+        assert!(movement.ducked);
+        assert!(!movement.grounded);
+        assert!(movement.animate_q2);
+        assert_eq!(movement.standing_bounds, gu1_bounds());
+    }
+
+    #[test]
+    fn q2_attach_binds_die_through_host() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            if let Some(player) = state.player_states.get_mut(&actor) {
+                if let MovementState::Q1Netquake(netquake) = &mut player.state {
+                    netquake.move_type = 10;
+                }
+            }
+        }
+        let reaction = RuntimeDeathReaction {
+            attack: None,
+            target: actor.clone(),
+            attacker: None,
+            kick: 0.0,
+            damage: 25.0,
+            inflictor: None,
+            point: zero(),
+        };
+        let fired = {
+            let registry = rig.sim.actors.borrow();
+            let table = rig.sim.lock().callbacks.clone();
+            let fired = table.borrow().fire_die(&registry, &reaction).expect("fire");
+            fired
+        };
+        assert!(fired);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert!(character.state.dead);
+        assert_eq!(character.state.respawn_time, 1.0);
+        assert_eq!(character.state.animation_priority, 5);
+        assert!(matches!(
+            character.entity.motion,
+            qa_content::q2::foundation::host::Q2MotionKind::Toss
+        ));
+        assert!(matches!(
+            character.entity.solid,
+            qa_content::q2::foundation::host::Q2Solid::Box
+        ));
+        let player = state.player_states.get(&actor).expect("player");
+        if let MovementState::Q1Netquake(netquake) = &player.state {
+            assert_eq!(netquake.move_type, 6);
+        } else {
+            panic!("expected netquake state");
+        }
+        drop(state);
+        let presentations = rig.sim.lock().events.take_presentation();
+        assert!(
+            presentations.iter().any(|presentation| matches!(
+                presentation.event,
+                super::super::types::SourcePresentationEvent::Q2(
+                    qa_content::q2::foundation::host::Q2PresentationEvent::Model(_)
+                )
+            )),
+            "die shows the death model"
+        );
+    }
+
+    #[test]
+    fn q2_die_gibs_through_host() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            if let Some(mut combat) = state.combat.read(actor.id()) {
+                combat.health = -50.0;
+                state.combat.write(actor.id(), combat);
+            }
+        }
+        let reaction = RuntimeDeathReaction {
+            attack: None,
+            target: actor.clone(),
+            attacker: None,
+            kick: 0.0,
+            damage: 200.0,
+            inflictor: None,
+            point: zero(),
+        };
+        // Invoke the bound closure directly: `fire_die` holds the
+        // registry borrow while gib spawn allocates, a pre-existing
+        // dispatch hazard outside this lane.
+        let die = {
+            let table = rig.sim.lock().callbacks.clone();
+            let die = table
+                .borrow()
+                .callback_bindings
+                .borrow()
+                .get(actor.id())
+                .and_then(|bound| bound.die.clone())
+                .expect("die binding");
+            die
+        };
+        die(&reaction);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert!(character.state.gibbed);
+        assert!(matches!(
+            character.entity.motion,
+            qa_content::q2::foundation::host::Q2MotionKind::Bounce
+        ));
+        assert!(matches!(
+            character.entity.solid,
+            qa_content::q2::foundation::host::Q2Solid::None
+        ));
+        let combat = state.combat.read(actor.id()).expect("combat");
+        assert!(!combat.can_take_damage);
+        assert_eq!(state.detached_models.len(), 4);
+        let player = state.player_states.get(&actor).expect("player");
+        if let MovementState::Q1Netquake(netquake) = &player.state {
+            assert_eq!(netquake.move_type, 10);
+        } else {
+            panic!("expected netquake state");
+        }
+    }
+
+    #[test]
+    fn q2_combat_records_damage_through_host() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        let decision = super::super::events::DamageDecision {
+            request: super::super::events::DamageRequest {
+                attack: gu1_attack(),
+                target: actor.id().clone(),
+                amount: 25.0,
+                knockback: 5.0,
+                direction: zero(),
+                point: zero(),
+                normal: zero(),
+                delivery: super::super::events::DamageDelivery::Direct,
+            },
+            mutations: Vec::new(),
+            applied_damage: 25.0,
+            reaction: super::super::events::DamageReaction::Pain,
+            feedback: Some(super::super::events::DamageFeedback::Q2 {
+                power_armor: 1.0,
+                armor: 2.0,
+                blood: 10.0,
+                knockback: 5.0,
+            }),
+        };
+        rig.sim.combat_before_reaction(&actor, &decision);
+        {
+            let state = rig.sim.peek();
+            let character = state.q2_characters.get(&actor).expect("character");
+            assert_eq!(character.state.damage_blood, 10.0);
+            assert_eq!(character.state.damage_armor, 2.0);
+            assert_eq!(character.state.damage_power_armor, 1.0);
+            assert_eq!(character.state.power_armor_time, 0.2);
+            assert!(state.last_attack.contains_key(&actor));
+        }
+        let death = super::super::events::DamageDecision {
+            reaction: super::super::events::DamageReaction::Death,
+            ..decision
+        };
+        rig.sim.combat_before_reaction(&actor, &death);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert_eq!(character.state.damage_blood, 10.0);
+    }
+
+    #[test]
+    fn q2_begin_frame_clears_latch_when_alive() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let character = state.q2_characters.get_mut(&actor).expect("character");
+            character.state.latched_buttons = 7;
+            character.state.buttons = 3;
+        }
+        q2_character_begin_frame_seam(&rig.sim, &actor);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert_eq!(character.state.latched_buttons, 0);
+        assert_eq!(character.state.buttons, 3);
+    }
+
+    #[test]
+    fn q2_begin_frame_requests_respawn_when_dead_and_due() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let character = state.q2_characters.get_mut(&actor).expect("character");
+            character.state.dead = true;
+            character.state.respawn_time = -1.0;
+            character.state.latched_buttons = 1;
+        }
+        q2_character_begin_frame_seam(&rig.sim, &actor);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert_eq!(character.state.latched_buttons, 0);
+    }
+
+    #[test]
+    fn q2_end_frame_publishes_view_and_angles() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let player = state.player_states.get_mut(&actor).expect("player");
+            player.view_angles = Vec3 {
+                x: 30.0,
+                y: 90.0,
+                z: 0.0,
+            };
+        }
+        q2_character_end_frame_seam(&rig.sim, &actor);
+        assert!(rig.sim.peek().q2_views.contains_key(actor.id()));
+        let body = rig.sim.bodies().read(actor.id()).expect("body");
+        assert_eq!(body.angles.x, 10.0);
+        assert_eq!(body.angles.y, 90.0);
+        let presentations = rig.sim.lock().events.take_presentation();
+        assert!(
+            presentations.iter().any(|presentation| matches!(
+                presentation.event,
+                super::super::types::SourcePresentationEvent::Q2(
+                    qa_content::q2::foundation::host::Q2PresentationEvent::Model(_)
+                )
+            )),
+            "end frame shows the model"
+        );
+    }
+
+    #[test]
+    fn q2_after_client_think_latches_through_host() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        rig.sim.lock().player_states.get_mut(&actor).expect("player").buttons = 3.0;
+        rig.sim.q2_character_after_client_think(&actor);
+        {
+            let state = rig.sim.peek();
+            let character = state.q2_characters.get(&actor).expect("character");
+            assert_eq!(character.state.buttons, 3);
+            assert_eq!(character.state.latched_buttons, 3);
+        }
+        rig.sim.lock().player_states.get_mut(&actor).expect("player").buttons = 2.0;
+        rig.sim.q2_character_after_client_think(&actor);
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert_eq!(character.state.buttons, 2);
+        assert_eq!(character.state.latched_buttons, 3);
+    }
+
+    #[test]
+    fn q2_respawn_resets_through_host() {
+        use qa_content::q2::base::player::character::Q2CharacterAnimation;
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let character = state.q2_characters.get_mut(&actor).expect("character");
+            character.state.dead = true;
+            character.state.gibbed = true;
+            character.state.damage_blood = 5.0;
+            character.set_animation(Q2CharacterAnimation::Pain, 99, 100);
+        }
+        rig.sim.respawn_q2_character(&actor).expect("respawn");
+        let state = rig.sim.peek();
+        let character = state.q2_characters.get(&actor).expect("character");
+        assert!(!character.state.dead);
+        assert!(!character.state.gibbed);
+        assert_eq!(character.state.damage_blood, 0.0);
+        assert_eq!(character.entity.frame(), 0);
+        assert_eq!(character.state.event, "q2:player-teleport");
+    }
+
+    #[test]
+    fn q2_host_skips_when_unbound() {
+        let rig = gu1_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        assert!(rig.sim.with_q2_character_host(&actor, |_, _| {}).is_none());
+        q2_character_begin_frame_seam(&rig.sim, &actor);
+        assert!(!rig.sim.peek().q2_characters.contains_key(&actor));
     }
 }
