@@ -3930,7 +3930,7 @@ pub enum SelectedWeaponSource {
     /// Quake II weapon services.
     Q2 {
         /// Entity services.
-        game: Q2EntityServices,
+        game: qa_content::q2::foundation::host::Q2GameServices,
         /// Weapon services.
         weapons: Q2Weapons,
         /// Source random.
@@ -3946,49 +3946,23 @@ pub enum SelectedWeaponSource {
     },
 }
 
-/// Quake II entity services seam (donor `Q2EntityServices`).
+/// Quake II weapon services handle (donor `Q2Weapons`).
 ///
-/// Mirror of donor `src/content/q2/foundation/entity-services.ts`
-/// (canonical home: `qa_content::q2`); unify post-merge.
-#[derive(Debug, Clone)]
-pub struct Q2EntityServices {
-    #[allow(dead_code)]
-    opaque: bool,
-}
-
-impl Q2EntityServices {
-    /// Create an opaque seam value.
-    pub fn new() -> Self {
-        Self { opaque: true }
-    }
-}
-
-impl Default for Q2EntityServices {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Quake II weapon services seam (donor `Q2Weapons`).
-///
-/// Mirror of donor Q2 weapons (canonical home: `qa_content::q2`); unify
-/// post-merge.
-#[derive(Debug, Clone)]
-pub struct Q2Weapons {
-    #[allow(dead_code)]
-    opaque: bool,
-}
+/// Weapon definitions and per-actor state live in the game arena in
+/// the port, so the handle carries no state; [`restore`](Self::restore)
+/// delegates to the content checkpoint restore (donor
+/// `Q2Weapons::restore`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Q2Weapons;
 
 impl Q2Weapons {
-    /// Create an opaque seam value.
-    pub fn new() -> Self {
-        Self { opaque: true }
-    }
-}
-
-impl Default for Q2Weapons {
-    fn default() -> Self {
-        Self::new()
+    /// Restore weapon state into the selected game.
+    pub fn restore(
+        &self,
+        game: &mut qa_content::q2::foundation::host::Q2GameServices,
+        checkpoint: &qa_content::q2::foundation::weapons::checkpoint::Q2WeaponsCheckpoint,
+    ) {
+        qa_content::q2::foundation::weapons::checkpoint::restore_q2_weapons(game, checkpoint);
     }
 }
 
@@ -26621,6 +26595,61 @@ fn sync_q1_hydrate_max_health(
     Ok(())
 }
 
+/// Restore the live Q2 product from save providers (donor
+/// `restoreQ2Product` arm, donor runtime.ts 6624-6627 and
+/// `src/content/composition/q2/save.ts` 46-103).
+///
+/// Decodes the `q2:foundation` provider record, converts it with
+/// [`saved_to_foundation`], assembles the content checkpoint through
+/// the product bridge (which validates composition identity
+/// fail-closed before any module state is returned), restores the
+/// live product through the content path, then restores saved server
+/// cvars in donor order.
+fn restore_q2_product_from_save(
+    product: &qa_content::q2::composition::product::Q2ProductRuntime,
+    game: &Rc<RefCell<qa_content::q2::foundation::host::Q2GameServices>>,
+    server_registry: Option<&Rc<RefCell<qa_core::cvar::CvarRegistry>>>,
+    save: &super::save::SimulationSaveImage,
+) -> Result<(), RuntimeError> {
+    let config = super::q2_product_bridge::restore_config(product);
+    let foundation_bytes =
+        super::save::simulation_provider_checkpoint(save, "q2:foundation").map_err(source_failure)?;
+    let saved_foundation = crate::persistence::q2::foundation::decode_q2_foundation_checkpoint(&foundation_bytes.bytes)
+        .map_err(source_failure)?;
+    let foundation = saved_to_foundation(&saved_foundation).map_err(source_failure)?;
+    let edition = game.borrow().options.edition;
+    let checkpoint = super::q2_product_bridge::read_q2_product_checkpoint(save, &config, edition, foundation)
+        .map_err(source_failure)?;
+    qa_content::q2::composition::save::restore_q2_product(&mut game.borrow_mut(), product, &checkpoint);
+    let saved_cvars = super::save::saved_source_cvars(save).map_err(source_failure)?;
+    if let (Some(saved), Some(registry)) = (saved_cvars.as_ref(), server_registry) {
+        crate::settings::server::restore_q2_server_cvars(&mut registry.borrow_mut(), saved).map_err(source_failure)?;
+    }
+    Ok(())
+}
+
+/// Restore a selected Q2 source game from its embedded checkpoints
+/// (donor runtime.ts 6608-6609).
+///
+/// Decodes the `entities`/`weapons` readers, converts them to the
+/// content shape, and restores the live selected game.
+fn restore_selected_q2_source(
+    game: &mut qa_content::q2::foundation::host::Q2GameServices,
+    weapons: &Q2Weapons,
+    entities: qa_world::save::value::SaveReader,
+    saved_weapons: qa_world::save::value::SaveReader,
+) -> Result<(), RuntimeError> {
+    let saved_entities =
+        crate::persistence::q2::foundation::read_q2_foundation_checkpoint(entities).map_err(source_failure)?;
+    let saved_weapons =
+        crate::persistence::q2::weapons::read_q2_weapons_checkpoint(saved_weapons).map_err(source_failure)?;
+    let foundation = saved_to_foundation(&saved_entities).map_err(source_failure)?;
+    let arsenal = super::q2_product_bridge::convert_persistence_q2_weapons(&saved_weapons).map_err(source_failure)?;
+    game.restore_foundation(&foundation);
+    weapons.restore(game, &arsenal);
+    Ok(())
+}
+
 impl SharedSimulation {
     /// Donor `restore` tail (C10: donor `runtime.ts` 6455-6846 save/load/close tail).
     ///
@@ -27439,13 +27468,24 @@ impl SharedSimulation {
                             .fail("Selected Q2 source deadline must follow admitted map progress")
                             .into());
                     }
-                    // The selected-q2 entity/weapon restore needs the q2
-                    // lane's opaque-service restore; fail closed in donor
-                    // order (the turn replays below run once it lands).
-                    return fail(
-                        "Missing siblings: q2 selected-source entity/weapon restore (opaque Q2EntityServices/Q2Weapons)",
-                    );
-                    #[allow(unreachable_code)]
+                    // Donor selected-q2 entity/weapon restore (donor
+                    // runtime.ts 6608-6609): restore the live selected game
+                    // from the embedded checkpoints before replaying the
+                    // saved turns.
+                    {
+                        let mut state = self.state.borrow_mut();
+                        match state.selected_weapon_source.as_mut() {
+                            Some(SelectedWeaponSource::Q2 { game, weapons, .. }) => {
+                                restore_selected_q2_source(
+                                    game,
+                                    weapons,
+                                    selected_source.field("entities"),
+                                    selected_source.field("weapons"),
+                                )?;
+                            }
+                            _ => return fail("Selected Q2 source is not bound"),
+                        }
+                    }
                     {
                         selected_source.field("turns").list(|value| {
                             let state = value.field("state");
@@ -27538,20 +27578,22 @@ impl SharedSimulation {
                     .restore(&converted, false)
                     .map_err(source_failure)?;
             } else if is_q2 {
-                return fail(
-                    "Missing siblings: q2 lane restoreQ2Product (opaque Q2ProductRuntime plus persistence->content checkpoint bridge)",
-                );
-                #[allow(unreachable_code)]
-                {
-                    let saved_cvars = super::save::saved_source_cvars(save).map_err(source_failure)?;
-                    if let Some(saved) = saved_cvars.as_ref() {
-                        let state = self.peek();
-                        if let Some(registry) = state.q2_server_registry.as_ref() {
-                            crate::settings::server::restore_q2_server_cvars(&mut registry.borrow_mut(), saved)
-                                .map_err(source_failure)?;
-                        }
-                    }
-                }
+                // Donor Q2 product restore (donor runtime.ts 6624-6627):
+                // the opaque seam on `SourceRuntime::Q2` carries identity
+                // only, so the live assembled product travels on
+                // `q2_product`; fail closed until the q2 lane assembles it
+                // at §3e.
+                let (product, game, server_registry) = {
+                    let state = self.peek();
+                    let SourceRuntime::Q2 { game, .. } = &state.source else {
+                        return fail("Q2 source game is not bound");
+                    };
+                    let Some(product) = state.q2_product.clone() else {
+                        return fail("Q2 source product is not admitted");
+                    };
+                    (product, Rc::clone(game), state.q2_server_registry.clone())
+                };
+                restore_q2_product_from_save(&product.borrow(), &game, server_registry.as_ref(), save)?;
             }
         }
         // Donor native weapon clocks (donor 6630-6637).
@@ -40127,7 +40169,7 @@ pub enum Q2WeaponSourceRef<'a> {
     /// Selected-arsenal services bundle.
     Selected {
         /// Entity services.
-        game: &'a Q2EntityServices,
+        game: &'a qa_content::q2::foundation::host::Q2GameServices,
         /// Weapon services.
         weapons: &'a Q2Weapons,
     },
@@ -44731,7 +44773,7 @@ impl SharedSimulation {
 #[cfg(test)]
 mod tests {
     use super::super::save::SimSavedInventory;
-    use super::super::test_hosts::{test_q1_game, SimActors};
+    use super::super::test_hosts::{test_q1_game, test_q2_game, SimActors};
     use super::*;
     use qa_core::identity::IdentityOwner;
 
@@ -47134,5 +47176,768 @@ mod tests {
         assert!(rig.sim.with_q2_character_host(&actor, |_, _| {}).is_none());
         q2_character_begin_frame_seam(&rig.sim, &actor);
         assert!(!rig.sim.peek().q2_characters.contains_key(&actor));
+    }
+
+    // -- Q2 product restore arm (donor `restoreQ2Product`) --------------------
+
+    type Q2TestGame = qa_content::q2::foundation::host::Q2GameServices;
+
+    fn q2_product_stub_weapon_picked(
+        _actor: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+        _item: qa_content::contract::ItemId,
+        _instant: bool,
+    ) {
+    }
+
+    fn q2_product_stub_silencer(_actor: qa_core::identity::ActorId, _charges: f64) {}
+
+    fn q2_product_stub_power_armor(
+        _actor: qa_core::identity::ActorId,
+        _kind: qa_content::q2::foundation::items::Q2PowerArmorKind,
+    ) {
+    }
+
+    fn q2_product_stub_mover_path(
+        _actor: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+        _path: qa_core::identity::ActorId,
+    ) {
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn q2_product_stub_fire_blaster(
+        shooter: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+        _start: qa_core::math::Vec3,
+        _direction: qa_core::math::Vec3,
+        _damage: f64,
+        _speed: f64,
+        _effects: i64,
+        _hyper: bool,
+        _color: i32,
+    ) -> qa_core::identity::ActorId {
+        shooter
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn q2_product_stub_fire_rocket(
+        shooter: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+        _start: qa_core::math::Vec3,
+        _direction: qa_core::math::Vec3,
+        _damage: f64,
+        _radius_damage: f64,
+        _speed: f64,
+        _radius: f64,
+    ) -> qa_core::identity::ActorId {
+        shooter
+    }
+
+    fn q2_product_stub_teleport(
+        _actor: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+        _origin: qa_core::math::Vec3,
+        _angles: qa_core::math::Vec3,
+    ) {
+    }
+
+    fn q2_product_stub_push(_actor: qa_core::identity::ActorId, _velocity: qa_core::math::Vec3) {}
+
+    fn q2_product_stub_gravity(_actor: qa_core::identity::ActorId, _gravity: f64) {}
+
+    fn q2_product_stub_local_time() -> qa_content::q2::base::entities::types::Q2LocalTime {
+        qa_content::q2::base::entities::types::Q2LocalTime {
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }
+    }
+
+    fn q2_product_stub_turret_driver(
+        actor: qa_core::identity::ActorId,
+        game: &mut Q2TestGame,
+    ) -> qa_content::q2::foundation::monsters::types::MonsterContext<'_> {
+        qa_content::q2::foundation::monsters::types::MonsterContext::new(actor, game)
+    }
+
+    fn q2_product_stub_monster_lookup(_game: &Q2TestGame, _actor: &qa_core::identity::ActorId) -> bool {
+        false
+    }
+
+    fn q2_product_stub_resume(_actor: qa_core::identity::ActorId, _game: &mut Q2TestGame) {}
+
+    fn q2_product_stub_movement(_actor: qa_core::identity::ActorId) -> qa_content::q2::base::player::Q2PlayerMovement {
+        qa_content::q2::base::player::Q2PlayerMovement {
+            view_angles: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            command_angles: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            water_level: 0,
+            water_type: 0,
+            grounded: true,
+            ducked: false,
+            buttons: 0,
+            standing_bounds: qa_core::math::Bounds {
+                min: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                max: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            },
+            animate_q2: false,
+        }
+    }
+
+    fn q2_product_stub_set_movement(
+        _actor: qa_core::identity::ActorId,
+        _change: qa_content::q2::base::player::Q2PlayerMovementChange,
+    ) {
+    }
+
+    fn q2_product_stub_emit(_event: qa_content::q2::base::player::Q2PlayerEvent) {}
+
+    fn q2_product_stub_noise(_actor: qa_core::identity::ActorId, _origin: qa_core::math::Vec3) {}
+
+    fn q2_product_stub_weapon_input(
+        _actor: qa_core::identity::ActorId,
+        _game: &mut Q2TestGame,
+    ) -> qa_content::q2::foundation::weapons::types::Q2WeaponInput {
+        qa_content::q2::foundation::weapons::types::Q2WeaponInput {
+            attack: false,
+            latched_attack: false,
+            holster: false,
+            angles: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            ducked: false,
+            spectator: false,
+            notarget: false,
+            hand: qa_content::q2::foundation::weapons::types::WeaponHand::default(),
+            animate_player: false,
+            quad_until: 0.0,
+            double_until: 0.0,
+            quad_fire_until: 0.0,
+            haste: false,
+            no_stack_double: false,
+            instant_switch: false,
+            quick_switch: false,
+            infinite_ammo: false,
+            players_collide: false,
+            gravity: 800.0,
+            weapon_thunk: false,
+            view_height: 22.0,
+        }
+    }
+
+    fn q2_product_stub_banned(_address: &str) -> bool {
+        false
+    }
+
+    fn q2_product_stub_session_gravity() -> f64 {
+        800.0
+    }
+
+    fn q2_product_stub_composition_emit(_event: qa_content::q2::composition::types::Q2CompositionEvent) {}
+
+    fn q2_product_stub_foreign_powerups(
+        _actor: qa_core::identity::ActorId,
+    ) -> qa_content::q2::composition::types::Q2ForeignPowerups {
+        qa_content::q2::composition::types::Q2ForeignPowerups {
+            quad_until: 0.0,
+            double_until: 0.0,
+            invulnerability_until: 0.0,
+        }
+    }
+
+    fn q2_product_test_runtime() -> qa_content::q2::composition::product::Q2ProductRuntime {
+        use qa_content::q2::base::entities::{create_q2_base_entity_module, types::Q2BaseEntityHooks};
+        use qa_content::q2::base::player::{create_q2_players, Q2PlayerHooks};
+        use qa_content::q2::composition::{Q2MatchSelection, Q2ProductMatch, Q2ProductRuntime};
+        use qa_content::q2::foundation::items::{create_q2_item_module, Q2ItemHooks};
+        use qa_content::q2::foundation::movers::{create_q2_mover_module, Q2MoverHooks};
+        let item_hooks = Q2ItemHooks {
+            weapon_picked: q2_product_stub_weapon_picked,
+            silencer: q2_product_stub_silencer,
+            power_armor: q2_product_stub_power_armor,
+            ammo_pack: None,
+            random_respawn: None,
+            weapon_respawn_seconds: None,
+        };
+        let mover_hooks = Q2MoverHooks {
+            path_corner: q2_product_stub_mover_path,
+            combat_point: q2_product_stub_mover_path,
+        };
+        let movers = create_q2_mover_module(mover_hooks);
+        let items = create_q2_item_module(item_hooks);
+        let player_hooks = Q2PlayerHooks {
+            quad_fire_drop_until: None,
+            grant_selected_arsenal: None,
+            give_selected_item: None,
+            weapon_state: None,
+            movement: q2_product_stub_movement,
+            set_movement: q2_product_stub_set_movement,
+            emit: q2_product_stub_emit,
+            noise: q2_product_stub_noise,
+            weapon_input: q2_product_stub_weapon_input,
+            banned: q2_product_stub_banned,
+            score: None,
+            player_spawned: None,
+            persistent_inventory_initialized: None,
+            select_spawn: None,
+            death: None,
+            drop_inventory: None,
+            before_death_inventory: None,
+            disconnect: None,
+            command: None,
+        };
+        Q2ProductRuntime {
+            program: "baseq2".to_string(),
+            selection: Q2MatchSelection::Standard,
+            product_match: Q2ProductMatch {
+                selection: Q2MatchSelection::Standard,
+            },
+            items,
+            movers,
+            base_entities: create_q2_base_entity_module(Q2BaseEntityHooks {
+                movers,
+                fire_blaster: q2_product_stub_fire_blaster,
+                fire_rocket: q2_product_stub_fire_rocket,
+                teleport_player: q2_product_stub_teleport,
+                player_push: q2_product_stub_push,
+                set_actor_gravity: q2_product_stub_gravity,
+                local_time: q2_product_stub_local_time,
+                turret_driver: q2_product_stub_turret_driver,
+                monster_context: q2_product_stub_monster_lookup,
+                resume_monster: q2_product_stub_resume,
+            }),
+            players: create_q2_players(items, player_hooks),
+            armory: None,
+            expansions: Vec::new(),
+            rerelease: None,
+            rogue_spawns: None,
+            movement_stop_speed: None,
+            packs: Vec::new(),
+            item_hooks,
+            player_hooks,
+            clear_expansion_powerups: None,
+        }
+    }
+
+    fn q2_product_test_record(schema: &str, bytes: Vec<u8>) -> qa_world::save::ownership::ProviderCheckpoint {
+        qa_world::save::ownership::ProviderCheckpoint {
+            provider: "q2:game".to_string(),
+            schema: schema.to_string(),
+            version: 1,
+            bytes,
+        }
+    }
+
+    fn q2_product_test_image(
+        composition: qa_world::save::value::SaveJson,
+        foundation: &crate::persistence::q2::foundation::Q2FoundationCheckpoint,
+        registered_weapons: Vec<String>,
+        extra: Vec<qa_world::save::ownership::ProviderCheckpoint>,
+    ) -> super::super::save::SimulationSaveImage {
+        use qa_world::save::value::encode_checkpoint_value;
+        let mut records = vec![q2_product_test_record(
+            "q2:composition",
+            encode_checkpoint_value(&composition),
+        )];
+        records.push(q2_product_test_record(
+            "q2:foundation",
+            crate::persistence::q2::foundation::encode_q2_foundation_checkpoint(foundation),
+        ));
+        records.extend(q2_product_test_module_records(registered_weapons));
+        records.extend(extra);
+        q2_product_test_image_with(records)
+    }
+
+    fn q2_product_test_module_records(
+        registered_weapons: Vec<String>,
+    ) -> Vec<qa_world::save::ownership::ProviderCheckpoint> {
+        use crate::persistence::q2::base_entities::Q2BaseEntitiesCheckpoint;
+        use crate::persistence::q2::items::Q2ItemsCheckpoint;
+        use crate::persistence::q2::monsters::{Q2MonsterPerception, Q2MonstersCheckpoint};
+        use crate::persistence::q2::movers::Q2MoversCheckpoint;
+        use crate::persistence::q2::players::{Q2PlayerIntermission, Q2PlayerRules, Q2PlayersCheckpoint};
+        use crate::persistence::q2::weapons::Q2WeaponsCheckpoint;
+        vec![
+            q2_product_test_record(
+                "q2:items",
+                crate::persistence::q2::items::encode_q2_items_checkpoint(&Q2ItemsCheckpoint {
+                    power_cube_count: 0.0,
+                    pickups: Vec::new(),
+                    powers: Vec::new(),
+                    power_armor_bindings: Vec::new(),
+                }),
+            ),
+            q2_product_test_record(
+                "q2:movers",
+                crate::persistence::q2::movers::encode_q2_movers_checkpoint(&Q2MoversCheckpoint {
+                    doors: Vec::new(),
+                    trains: Vec::new(),
+                    linear: Vec::new(),
+                    angular: Vec::new(),
+                }),
+            ),
+            q2_product_test_record(
+                "q2:monsters",
+                crate::persistence::q2::monsters::encode_q2_monsters_checkpoint(&Q2MonstersCheckpoint {
+                    actors: Vec::new(),
+                    perception: Q2MonsterPerception::default(),
+                }),
+            ),
+            q2_product_test_record(
+                "q2:weapons",
+                crate::persistence::q2::weapons::encode_q2_weapons_checkpoint(&Q2WeaponsCheckpoint {
+                    silencer_charges: Vec::new(),
+                    source_rules: "base".to_string(),
+                    registered: registered_weapons,
+                    fallback_order: None,
+                    states: Vec::new(),
+                    inputs: Vec::new(),
+                    noises: Vec::new(),
+                    sound_entity: None,
+                    sound2_entity: None,
+                    blaster_causes: Vec::new(),
+                }),
+            ),
+            q2_product_test_record(
+                "q2:players",
+                crate::persistence::q2::players::encode_q2_players_checkpoint(&Q2PlayersCheckpoint {
+                    corpse_index: 0,
+                    death_animation: 0.0,
+                    pain_animation: 0.0,
+                    rules: Q2PlayerRules {
+                        password: String::new(),
+                        spectator_password: String::new(),
+                        max_spectators: 4.0,
+                        cheats: false,
+                        time_limit_minutes: 0.0,
+                        frag_limit: 0.0,
+                        map_list: Vec::new(),
+                        map_list_shuffle: false,
+                        next_map: String::new(),
+                        spawn_point: String::new(),
+                        flood_messages: 4.0,
+                        flood_seconds: 8.0,
+                        flood_wait_seconds: 10.0,
+                        roll_speed: 200.0,
+                        roll_angle: 2.0,
+                        run_pitch: 0.002,
+                        run_roll: 0.005,
+                        bob_up: 0.005,
+                        bob_pitch: 0.002,
+                        bob_roll: 0.002,
+                        gun_offset: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                    },
+                    intermission: Q2PlayerIntermission::Playing,
+                    players: Vec::new(),
+                }),
+            ),
+            q2_product_test_record(
+                "q2:base-entities",
+                crate::persistence::q2::base_entities::encode_q2_base_entities_checkpoint(&Q2BaseEntitiesCheckpoint {
+                    platforms: Vec::new(),
+                    secrets: Vec::new(),
+                    linear: Vec::new(),
+                    animations: Vec::new(),
+                    clocks: Vec::new(),
+                    breaches: Vec::new(),
+                    drivers: Vec::new(),
+                    wind_times: Vec::new(),
+                }),
+            ),
+        ]
+    }
+
+    fn q2_product_test_image_with(
+        records: Vec<qa_world::save::ownership::ProviderCheckpoint>,
+    ) -> super::super::save::SimulationSaveImage {
+        use qa_world::save::value::num;
+        let frame_time = num(1.0);
+        super::super::save::SimulationSaveImage {
+            providers: records,
+            recipe: super::super::save::SimSavedRecipe {
+                execution: Vec::new(),
+                map_entities_provider: "q2:game".to_string(),
+                map_geometry_path: "maps/q2dm1.bsp".to_string(),
+            },
+            guests: Vec::new(),
+            clocks: vec![super::super::save::SimSaveClock {
+                provider: "q2:game".to_string(),
+                time: frame_time.clone(),
+            }],
+            random: vec![super::super::save::SimSaveRandom {
+                provider: "q2:game".to_string(),
+                state: qa_world::save::shared::SaveRandomState::GlibcRandom {
+                    words: Vec::new(),
+                    front: 0,
+                    rear: 0,
+                    draws: 0,
+                },
+            }],
+            bodies: Vec::new(),
+            combat: Vec::new(),
+            inventories: Vec::new(),
+            configurations: Vec::new(),
+            thinks: Vec::new(),
+            frame_time,
+            mods: None,
+            schema_version: 3,
+            legacy_armor_layout: false,
+            frame: qa_core::time::FrameContext {
+                frame: 0,
+                time: qa_core::time::SourceTime::Seconds(0.0),
+                elapsed: qa_core::time::SourceTime::Seconds(0.0),
+                phase: qa_core::time::FramePhase::FrameEntry,
+            },
+            next_event_sequence: 0,
+            actors: Vec::new(),
+        }
+    }
+
+    fn q2_product_test_foundation() -> crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+        use crate::persistence::q2::foundation::{Q2FoundationCheckpoint, Q2FoundationCounters};
+        Q2FoundationCheckpoint {
+            next_source_slot: 9,
+            sequence: 3,
+            freed_slots: Vec::new(),
+            counters: Q2FoundationCounters {
+                total_secrets: 5.0,
+                found_secrets: 2.0,
+                total_goals: 0.0,
+                found_goals: 0.0,
+                total_monsters: 0.0,
+                killed_monsters: 0.0,
+                server_flags: 0.0,
+            },
+            entities: Vec::new(),
+        }
+    }
+
+    fn q2_product_test_composition(program: &str, deathmatch_flags: i64) -> qa_world::save::value::SaveJson {
+        use qa_world::save::value::{int, obj, str};
+        obj(vec![
+            ("edition", str("classic")),
+            ("program", str(program)),
+            ("match", obj(vec![("kind", str("standard"))])),
+            ("deathmatchFlags", int(deathmatch_flags)),
+        ])
+    }
+
+    #[test]
+    fn restore_q2_product_from_save_restores_live_product() {
+        use qa_world::save::value::{arr, encode_checkpoint_value, int, obj, str, SaveJson};
+        let (game, _handles) = test_q2_game();
+        let game = Rc::new(RefCell::new(game));
+        let runtime = q2_product_test_runtime();
+        {
+            // Mirror the factory: the assembled product registers its
+            // services and runtime on the arena before restore runs.
+            let mut live = game.borrow_mut();
+            live.composition.services = Some(qa_content::q2::composition::types::Q2CompositionServices {
+                deathmatch_flags: None,
+                shared_grapple: None,
+                random_items: None,
+                drop_quad_fire: None,
+                gravity: q2_product_stub_session_gravity,
+                emit: q2_product_stub_composition_emit,
+                hunter_camera: false,
+                strong_mines: false,
+                foreign_powerups: q2_product_stub_foreign_powerups,
+            });
+            live.composition.product = Some(runtime.clone());
+        }
+        let cvars = obj(vec![
+            ("dialect", str("q2-classic")),
+            (
+                "variables",
+                arr(vec![obj(vec![
+                    ("name", str("sv_gravity")),
+                    ("value", str("800")),
+                    ("resetValue", str("800")),
+                    ("latchedValue", SaveJson::Null),
+                    ("flags", int(0)),
+                ])]),
+            ),
+        ]);
+        // The weapon restore validates the saved arsenal against the
+        // live definitions, so the fixture captures the live set like a
+        // real save does.
+        let registered = {
+            let live = game.borrow();
+            let mut registered: Vec<String> = live.weapons.definitions.keys().cloned().collect();
+            registered.sort();
+            registered
+        };
+        let image = q2_product_test_image(
+            q2_product_test_composition("baseq2", 7),
+            &q2_product_test_foundation(),
+            registered,
+            vec![q2_product_test_record(
+                "world:source-cvars",
+                encode_checkpoint_value(&cvars),
+            )],
+        );
+        let registry = Rc::new(RefCell::new(qa_core::cvar::CvarRegistry::new(
+            qa_core::cmd::Dialect::Q2Classic,
+        )));
+        restore_q2_product_from_save(&runtime, &game, Some(&registry), &image).expect("restore product");
+        let live = game.borrow();
+        assert_eq!(live.options.deathmatch_flags, 7);
+        assert_eq!(live.counters.total_secrets, 5);
+        assert_eq!(live.counters.found_secrets, 2);
+        assert_eq!(live.next_source_slot, 9);
+        assert_eq!(live.sequence, 3);
+        assert_eq!(
+            registry
+                .borrow()
+                .get("sv_gravity")
+                .map(|snapshot| snapshot.value.clone()),
+            Some("800".to_string())
+        );
+    }
+
+    #[test]
+    fn restore_q2_product_from_save_rejects_foreign_composition() {
+        let (game, _handles) = test_q2_game();
+        let game = Rc::new(RefCell::new(game));
+        let runtime = q2_product_test_runtime();
+        let image = q2_product_test_image(
+            q2_product_test_composition("xatrix", 0),
+            &q2_product_test_foundation(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let error = restore_q2_product_from_save(&runtime, &game, None, &image).unwrap_err();
+        assert!(error.to_string().contains("different source product"), "{error:?}");
+        assert_eq!(game.borrow().options.deathmatch_flags, 0);
+    }
+
+    #[test]
+    fn restore_q2_product_from_save_requires_module_records() {
+        let (game, _handles) = test_q2_game();
+        let game = Rc::new(RefCell::new(game));
+        let runtime = q2_product_test_runtime();
+        let image = q2_product_test_image_with(vec![
+            q2_product_test_record(
+                "q2:composition",
+                qa_world::save::value::encode_checkpoint_value(&q2_product_test_composition("baseq2", 0)),
+            ),
+            q2_product_test_record(
+                "q2:foundation",
+                crate::persistence::q2::foundation::encode_q2_foundation_checkpoint(&q2_product_test_foundation()),
+            ),
+        ]);
+        assert!(restore_q2_product_from_save(&runtime, &game, None, &image).is_err());
+    }
+
+    // -- Selected Q2 source restore (donor runtime.ts 6608-6609) ---------------
+
+    fn selected_q2_test_weapons(registered: Vec<String>) -> crate::persistence::q2::weapons::Q2WeaponsCheckpoint {
+        use crate::persistence::q2::weapons::Q2WeaponsCheckpoint;
+        Q2WeaponsCheckpoint {
+            silencer_charges: Vec::new(),
+            source_rules: "base".to_string(),
+            registered,
+            fallback_order: None,
+            states: Vec::new(),
+            inputs: Vec::new(),
+            noises: Vec::new(),
+            sound_entity: None,
+            sound2_entity: None,
+            blaster_causes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn restore_selected_q2_source_restores_game_and_weapons() {
+        use qa_world::save::value::{decode_checkpoint_value, SaveReader};
+        let (mut game, _handles) = test_q2_game();
+        let registered = {
+            let mut registered: Vec<String> = game.weapons.definitions.keys().cloned().collect();
+            registered.sort();
+            registered
+        };
+        game.weapons.fallback_order = Some(vec!["stale".to_string()]);
+        let entities_json = decode_checkpoint_value(
+            &crate::persistence::q2::foundation::encode_q2_foundation_checkpoint(&q2_product_test_foundation()),
+        )
+        .expect("decode entities");
+        let weapons_json = decode_checkpoint_value(&crate::persistence::q2::weapons::encode_q2_weapons_checkpoint(
+            &selected_q2_test_weapons(registered),
+        ))
+        .expect("decode weapons");
+        let weapons = Q2Weapons;
+        restore_selected_q2_source(
+            &mut game,
+            &weapons,
+            SaveReader::at(&entities_json, "selected-entities"),
+            SaveReader::at(&weapons_json, "selected-weapons"),
+        )
+        .expect("restore selected q2");
+        assert_eq!(game.counters.total_secrets, 5);
+        assert_eq!(game.counters.found_secrets, 2);
+        assert_eq!(game.next_source_slot, 9);
+        assert_eq!(game.sequence, 3);
+        assert_eq!(game.weapons.fallback_order, None);
+    }
+
+    // -- Source-item binding hardening (no production callers yet) --------------
+
+    fn source_items_test_table() -> (Rc<RefCell<SessionActorRegistry>>, SharedInventoryTable, OwnedActor) {
+        let mut registry = test_registry();
+        let owner = registry.allocate(test_provider(), "q1:player").unwrap();
+        let actors = Rc::new(RefCell::new(registry));
+        let mut table = SharedInventoryTable::new();
+        table.set_actors(Rc::clone(&actors));
+        {
+            let borrowed = actors.borrow();
+            table
+                .inner_mut()
+                .create(
+                    borrowed.inner(),
+                    &owner,
+                    &[qa_world::inventory::InventoryEntry {
+                        item: "q1:shells".to_string(),
+                        count: 10.0,
+                        capacity: 100.0,
+                        count_policy: None,
+                    }],
+                )
+                .unwrap();
+        }
+        (actors, table, owner)
+    }
+
+    fn source_items_test_request(item: &str) -> SourceItemRequest {
+        SourceItemRequest {
+            definition: RuntimeItemDefinition {
+                item: item.to_string(),
+                kind: "counter".to_string(),
+                label: "Cells".to_string(),
+                source: ProviderReference {
+                    provider: test_provider(),
+                    content: ContentId("q1:id1:items".to_string()),
+                },
+                actions: Vec::new(),
+                ammo: None,
+                icon: None,
+            },
+            admission: SourceItemAdmissionKind::Add,
+            entry: qa_content::contract::InventoryEntry {
+                item: item.to_string(),
+                count: 5.0,
+                capacity: 100.0,
+                count_policy: None,
+            },
+        }
+    }
+
+    #[test]
+    fn bind_source_items_admits_group_and_definitions() {
+        let (actors, mut table, owner) = source_items_test_table();
+        let lease = table
+            .bind_source_items(
+                &actors.borrow(),
+                &owner,
+                test_provider(),
+                vec![source_items_test_request("q1:cells")],
+                None,
+            )
+            .expect("bind group");
+        assert!(lease.current());
+        let borrowed = actors.borrow();
+        let definitions = table.item_definitions(&borrowed, owner.id());
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].item, "q1:cells");
+        assert_eq!(
+            table.item_owner(&borrowed, owner.id(), &"q1:cells".to_string()),
+            Some(test_provider())
+        );
+    }
+
+    #[test]
+    fn bind_source_items_rejects_conflicts() {
+        let (actors, mut table, owner) = source_items_test_table();
+        let borrowed = actors.borrow();
+        assert!(table
+            .bind_source_items(&borrowed, &owner, test_provider(), Vec::new(), None)
+            .is_err());
+        let duplicate = vec![
+            source_items_test_request("q1:cells"),
+            source_items_test_request("q1:cells"),
+        ];
+        assert!(table
+            .bind_source_items(&borrowed, &owner, test_provider(), duplicate, None)
+            .is_err());
+        let mut foreign = source_items_test_request("q1:cells");
+        foreign.definition.source.provider = ProviderId::new("q2", "game");
+        assert!(table
+            .bind_source_items(&borrowed, &owner, test_provider(), vec![foreign], None)
+            .is_err());
+    }
+
+    #[test]
+    fn source_item_lease_close_retires_group() {
+        let (actors, mut table, owner) = source_items_test_table();
+        let lease = table
+            .bind_source_items(
+                &actors.borrow(),
+                &owner,
+                test_provider(),
+                vec![source_items_test_request("q1:cells")],
+                None,
+            )
+            .expect("bind group");
+        assert!(lease.current());
+        lease.close();
+        assert!(!lease.current());
+        let borrowed = actors.borrow();
+        assert!(table.item_definitions(&borrowed, owner.id()).is_empty());
+    }
+
+    #[test]
+    fn source_item_action_dispatches_to_owner() {
+        let (actors, mut table, owner) = source_items_test_table();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&calls);
+        let mut request = source_items_test_request("q1:cells");
+        request.definition.actions = vec!["use".to_string()];
+        let lease = table
+            .bind_source_items(
+                &actors.borrow(),
+                &owner,
+                test_provider(),
+                vec![request],
+                Some(Rc::new(move |item: &ItemId, action: &str| {
+                    seen.borrow_mut().push((item.clone(), action.to_string()));
+                })),
+            )
+            .expect("bind group");
+        assert!(lease.current());
+        let borrowed = actors.borrow();
+        let action = table
+            .item_action(&borrowed, owner.id(), &"q1:cells".to_string(), "use")
+            .expect("use action");
+        drop(borrowed);
+        action();
+        assert_eq!(*calls.borrow(), vec![("q1:cells".to_string(), "use".to_string())]);
+    }
+
+    #[test]
+    fn restore_selected_q2_source_rejects_malformed_checkpoints() {
+        use qa_world::save::value::{decode_checkpoint_value, obj, SaveReader};
+        let (mut game, _handles) = test_q2_game();
+        let weapons = Q2Weapons;
+        let bad_entities = obj(Vec::new());
+        let weapons_json = decode_checkpoint_value(&crate::persistence::q2::weapons::encode_q2_weapons_checkpoint(
+            &selected_q2_test_weapons(Vec::new()),
+        ))
+        .expect("decode weapons");
+        let error = restore_selected_q2_source(
+            &mut game,
+            &weapons,
+            SaveReader::at(&bad_entities, "selected-entities"),
+            SaveReader::at(&weapons_json, "selected-weapons"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("version"), "{error:?}");
+        assert_eq!(game.counters.total_secrets, 0);
     }
 }
