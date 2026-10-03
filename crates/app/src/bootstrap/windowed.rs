@@ -64,6 +64,7 @@ use super::startup_selection::{
     PreparedQ3Catalog, PreparedTeamArena, QvmGrappleStyle, StartupArenaSelection, StartupPlayerProducts,
     StartupSelectionCollaborators, StartupSelectionModel,
 };
+use super::windowed_menu::WindowedMenu;
 use super::windowed_scene::WindowedPresentation;
 use super::windowed_world::{load_windowed_world, WindowedWorld};
 use crate::options::{ApplicationOptions, Network, Renderer};
@@ -794,7 +795,7 @@ impl LaunchQvmCompatibility for WindowedQvmCompat {
 /// Player products echo the selected product so selection options round-trip
 /// over a real (possibly content-less) catalog; launch-time collaborators
 /// report honestly because the smoke run never resolves content.
-struct WindowedCollaborators;
+pub(crate) struct WindowedCollaborators;
 
 impl StartupSelectionCollaborators for WindowedCollaborators {
     fn duplicate(&self) -> Box<dyn StartupSelectionCollaborators> {
@@ -1162,6 +1163,7 @@ pub struct WindowedStartupBackend {
     input_log: VecDeque<SeatInputEvent>,
     scene: Option<WindowedScene>,
     world: Option<WindowedWorld>,
+    menu: Option<WindowedMenu>,
 }
 
 impl WindowedStartupBackend {
@@ -1189,7 +1191,13 @@ impl WindowedStartupBackend {
             input_log: VecDeque::new(),
             scene: None,
             world: None,
+            menu: None,
         }
+    }
+
+    /// Adopt the menu overlay for the menu entry (donor frontend menu).
+    fn set_menu(&mut self, menu: WindowedMenu) {
+        self.menu = Some(menu);
     }
 
     /// Adopt a loaded map world, publishing its scene view: the world
@@ -1273,11 +1281,37 @@ impl WindowedStartupBackend {
     }
 
     /// Build one frame's commands plus the image uploads the backend must
-    /// apply before executing them.
+    /// apply before executing them. The menu entry presents the menu
+    /// overlay; anything else keeps the direct-launch scene path.
     fn frame_commands(&mut self) -> (Vec<RenderCommand>, Vec<ImageResourceOperation>) {
         let (width, height) = self.live_size();
         let time_ms = self.now_ms();
         let seat = self.input_seat.clone();
+        if let Some(menu) = self.menu.as_mut() {
+            if let Some((view, image_operations)) = menu.frame_view(width, height, seat.as_ref(), time_ms) {
+                return (
+                    vec![
+                        RenderCommand::DrawBuffer {
+                            buffer: DrawBuffer::Back,
+                            clear: false,
+                        },
+                        RenderCommand::View(view),
+                        RenderCommand::SwapBuffers,
+                    ],
+                    image_operations,
+                );
+            }
+            return (
+                vec![
+                    RenderCommand::DrawBuffer {
+                        buffer: DrawBuffer::Back,
+                        clear: true,
+                    },
+                    RenderCommand::SwapBuffers,
+                ],
+                Vec::new(),
+            );
+        }
         build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut())
     }
 
@@ -1404,6 +1438,9 @@ impl StartupBackend for WindowedStartupBackend {
             self.input_log.pop_front();
         }
         self.input_log.push_back(event.clone());
+        if let Some(menu) = self.menu.as_ref() {
+            menu.input(&super::windowed_menu::convert_router_event(event));
+        }
         true
     }
 
@@ -1436,6 +1473,16 @@ impl StartupBackend for WindowedStartupBackend {
             }
         }
         self.input_router = None;
+        if let Some(menu) = self.menu.as_ref() {
+            let releases = menu.release_images();
+            if !releases.is_empty() {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    for operation in &releases {
+                        renderer.backend_mut().apply_image_resource(operation);
+                    }
+                }
+            }
+        }
         if let Some(renderer) = self.renderer.as_mut() {
             if let Err(error) = renderer.close() {
                 failures.push(error.to_string());
@@ -1444,6 +1491,7 @@ impl StartupBackend for WindowedStartupBackend {
         self.renderer = None;
         self.scene = None;
         self.world = None;
+        self.menu = None;
         if let Some(mut audio) = self.audio.take() {
             let _ignored = audio.close();
         }
@@ -1479,31 +1527,44 @@ pub fn open_windowed_application(
         .map_err(|error| error.to_string())?;
     let quit = Rc::new(Cell::new(false));
     let identity = IdentityOwner::create("windowed").map_err(|error| error.to_string())?;
+    let menu_seat = identity.seat(0);
+    let menu_client = identity.client(0, 0);
     let resource_owner = ResourceOwner::new(7, identity.session().clone(), 0);
     let mut backend = WindowedStartupBackend::new(&config, options.hidden, options.gamma, Rc::clone(&quit), identity);
-    match load_windowed_world(&config, model.catalog(), options, resource_owner) {
-        Ok(world) => {
-            eprintln!(
-                "windowed: spawned {} of {} map entities ({} {})",
-                world.spawned(),
-                world.entity_records(),
-                world.content(),
-                world.map()
-            );
-            if let Some(presentation) = world.presentation() {
+    if entry == StartupEntry::Menu {
+        let menu_model = StartupSelectionModel::new(
+            model.catalog().clone(),
+            options.clone(),
+            Box::new(WindowedCollaborators),
+        )
+        .map_err(|error| error.to_string())?;
+        let menu = WindowedMenu::open(menu_model, menu_seat, menu_client, resource_owner, Rc::clone(&quit))?;
+        backend.set_menu(menu);
+    } else {
+        match load_windowed_world(&config, model.catalog(), options, resource_owner) {
+            Ok(world) => {
                 eprintln!(
-                    "windowed: presenting {} world surfaces, {} model entities, {} inline models ({} skipped models)",
-                    presentation.surface_count(),
-                    presentation.entities().len(),
-                    presentation.inline_models().len(),
-                    presentation.skipped_models().len()
+                    "windowed: spawned {} of {} map entities ({} {})",
+                    world.spawned(),
+                    world.entity_records(),
+                    world.content(),
+                    world.map()
                 );
-            } else if let Some(reason) = world.presentation_error() {
-                eprintln!("windowed: no scene presentation ({reason})");
+                if let Some(presentation) = world.presentation() {
+                    eprintln!(
+                        "windowed: presenting {} world surfaces, {} model entities, {} inline models ({} skipped models)",
+                        presentation.surface_count(),
+                        presentation.entities().len(),
+                        presentation.inline_models().len(),
+                        presentation.skipped_models().len()
+                    );
+                } else if let Some(reason) = world.presentation_error() {
+                    eprintln!("windowed: no scene presentation ({reason})");
+                }
+                backend.set_world(world);
             }
-            backend.set_world(world);
+            Err(error) => eprintln!("windowed: no map world ({error})"),
         }
-        Err(error) => eprintln!("windowed: no map world ({error})"),
     }
     let app = StartupApplication::open(model, backend, entry).map_err(|error| error.to_string())?;
     Ok(WindowedApplication { app, quit })
@@ -1542,6 +1603,12 @@ pub fn drive_windowed_application(
     app.close()?;
     Ok(app.frames())
 }
+
+/// Serializes tests that open real windows: SDL video init/quit is
+/// process-wide, so parallel window tests tear down each other's X
+/// connection.
+#[cfg(test)]
+pub(crate) static WINDOWED_GL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -1979,6 +2046,7 @@ mod tests {
     fn live_windowed_smoke_runs_frames() {
         // Passes with or without a display: a real windowed run is exercised
         // when GL is available, otherwise the honest open failure is required.
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
         let options = windowed_options();
         match open_windowed_application(&options, StartupEntry::Run) {
             Ok(composed) => {
