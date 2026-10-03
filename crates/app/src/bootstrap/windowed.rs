@@ -1,14 +1,18 @@
 //! Windowed game path: native SDL window, GL renderer, and startup driver.
 //!
 //! Donor provenance: `src/app/bootstrap/startup.ts`
-//! (`StartupApplication.open` graphics tail) and
-//! `src/app/bootstrap/renderer.ts` (`NativeRenderer.open`, `openBackend`).
+//! (`StartupApplication.open` graphics tail),
+//! `src/app/bootstrap/renderer.ts` (`NativeRenderer.open`, `openBackend`),
+//! and `src/render/commands/frame.ts` (`SceneFrameBuilder`) plus the client
+//! view submission (`RenderView` with scene entities and camera state).
 //! The window factory opens an [`SdlWindow`] with GL options (the
 //! `SDL_GL_CreateContext` path); the backend factory adopts that context
 //! through the SDL render-context transfer protocol and builds a
 //! [`GlRenderer`] over [`PlatformGlContext`]; both compose through
 //! [`NativeRenderer::open`]; [`WindowedStartupBackend`] drives
-//! [`StartupApplication::open`] for `--windowed` runs.
+//! [`StartupApplication::open`] for `--windowed` runs, submitting one
+//! draw-buffer plus scene view plus swap frame per tick from its live world
+//! state and degrading to clear plus swap when no scene is loaded.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -19,11 +23,16 @@ use std::time::{Duration, Instant};
 
 use qa_client::audio::engine::{SdlDeviceFactory, UnifiedAudio, UnifiedAudioOptions};
 use qa_client::input::router::{InputRouter, RouterError, RouterWindow, Seat, SeatInputEvent, SeatRoute, UiCallback};
+use qa_client::render::dynamic_texture::resolve_draw_textures;
 use qa_client::render::gl::platform::PlatformGlContext;
 use qa_client::render::gl::renderer::GlRenderer;
 use qa_client::render::gl::{GlContext, DEPTH_BITS, MAX_TEXTURE_COORDS, MAX_TEXTURE_IMAGE_UNITS, MAX_TEXTURE_SIZE};
 use qa_client::render::scene::resources::SceneImageRegistry;
-use qa_client::render::types::{DrawBuffer, ImageResourceOperation, OrderedBackend, ResourceOwner};
+use qa_client::render::types::{
+    DrawBatch, DrawBuffer, ImageResourceOperation, OrderedBackend, Rect as ClientRect, RenderOperation,
+    RenderView as ClientRenderView, RenderViewState, ResourceOwner, SourceTime, ViewClear, ViewTarget,
+};
+use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, SceneCamera};
 use qa_content::catalog::{
     discover_installed_content, BehaviorMounts, CatalogError, DiscoverContentOptions, InstalledCatalog, LaunchPreset,
     LaunchQvmCompatibility, LaunchWeaponSources, QvmCompatRole,
@@ -35,7 +44,7 @@ use qa_content::contract::{
 use qa_content::mounts::MountPreparationScope;
 use qa_core::cmd::Dialect;
 use qa_core::identity::{IdentityOwner, ProviderId, SeatId};
-use qa_core::math::vec4;
+use qa_core::math::{angles_to_axis, vec3, vec4, Vec4};
 use qa_platform::controller::ControllerSelection;
 use qa_platform::native_libraries::NativeLibraryOptions;
 use qa_platform::sdl::{
@@ -254,6 +263,63 @@ struct NativeGlBackend {
     height: i32,
     driver: Option<RenderDriverInfo>,
     worker_interval: i32,
+    color: Vec4,
+}
+
+/// Execute one ordered operation against the live [`GlRenderer`], resolving
+/// dynamic textures before drawing (donor `RenderExecutor` draw path).
+fn execute_windowed_operation(renderer: &mut GlRenderer<PlatformGlContext<'static>>, operation: &RenderOperation) {
+    match operation {
+        RenderOperation::Draw(batches) => {
+            for batch in batches {
+                let mut pending = Vec::new();
+                let resolved = resolve_draw_textures(batch, &mut |operation| pending.push(operation));
+                for operation in pending {
+                    renderer.apply_image_resource(&operation);
+                }
+                renderer.draw_batch(&resolved);
+            }
+        }
+        RenderOperation::ObjectOpacity { opacity, batches } => {
+            if *opacity <= 0.0 {
+                return;
+            }
+            if *opacity >= 1.0 {
+                execute_windowed_operation(renderer, &RenderOperation::Draw(batches.clone()));
+                return;
+            }
+            let mut pending = Vec::new();
+            let mut resolved_batches = Vec::with_capacity(batches.len());
+            for batch in batches {
+                let mut operations = Vec::new();
+                let resolved = resolve_draw_textures(batch, &mut |operation| operations.push(operation));
+                pending.extend(operations);
+                resolved_batches.push(resolved);
+            }
+            for operation in pending {
+                renderer.apply_image_resource(&operation);
+            }
+            renderer.with_object_opacity(*opacity, |renderer| {
+                for batch in &resolved_batches {
+                    renderer.draw_batch(batch);
+                }
+            });
+        }
+        other => renderer.draw_immediate(other),
+    }
+}
+
+/// Execute one ordered view: before-view operations, the view state
+/// (viewport, clear, clip), then the view operations (donor
+/// `RenderExecutor` view path).
+fn execute_windowed_view(renderer: &mut GlRenderer<PlatformGlContext<'static>>, view: &ClientRenderView) {
+    for operation in &view.before_view {
+        execute_windowed_operation(renderer, operation);
+    }
+    renderer.begin_view(&view.state);
+    for operation in &view.operations {
+        execute_windowed_operation(renderer, operation);
+    }
 }
 
 impl NativeGlBackend {
@@ -325,14 +391,24 @@ impl NativeRenderBackend for NativeGlBackend {
     }
 
     fn execute_serial_command(&mut self, command: &RenderCommand) {
-        // The smoke composition carries no draws, so SetColor paints the
-        // donor magenta clear directly; painting at command time (rather than
-        // at presentation) keeps armed captures truthful, because captures
-        // read before the swap.
-        if matches!(command, RenderCommand::SetColor { .. }) {
-            if let Some(parts) = self.parts.as_mut() {
-                parts.renderer.select_draw_buffer(DrawBuffer::Back, true);
+        match command {
+            RenderCommand::SetColor { color } => {
+                self.color = *color;
             }
+            RenderCommand::DrawBuffer { buffer, clear } => {
+                // Painting at command time (rather than at presentation)
+                // keeps armed captures truthful, because captures read
+                // before the swap.
+                if let Some(parts) = self.parts.as_mut() {
+                    parts.renderer.select_draw_buffer(*buffer, *clear);
+                }
+            }
+            RenderCommand::View(view) => {
+                if let Some(parts) = self.parts.as_mut() {
+                    execute_windowed_view(&mut parts.renderer, view);
+                }
+            }
+            RenderCommand::Draw | RenderCommand::SwapBuffers => {}
         }
     }
 
@@ -505,6 +581,7 @@ impl NativeBackendFactory for NativeGlBackendFactory {
                 shading_language: driver.shading_language.clone(),
             }),
             worker_interval: 1,
+            color: vec4(1.0, 1.0, 1.0, 1.0),
         };
         self.share.borrow_mut().detached = true;
         Ok(backend)
@@ -852,6 +929,142 @@ fn refresh_windowed_audio(audio: &mut Option<UnifiedAudio>, work_ms: f64) {
     }
 }
 
+/// Live world state for one windowed frame: scene entities plus the clear
+/// color. The view/camera (viewport, projection, target, time) is derived
+/// per frame from the backend's live drawable size, seat, and clock, so the
+/// stored batches stay valid across resizes.
+#[derive(Debug, Clone, PartialEq)]
+struct WindowedScene {
+    /// Scene entity batches submitted inside the view.
+    batches: Vec<DrawBatch>,
+    /// View clear color (donor world-view clear).
+    clear_color: Vec4,
+}
+
+impl WindowedScene {
+    /// Scene over explicit batches and clear color.
+    #[cfg(test)]
+    fn new(batches: Vec<DrawBatch>, clear_color: Vec4) -> Self {
+        Self { batches, clear_color }
+    }
+}
+
+/// Horizontal field of view for the windowed camera (donor default).
+const WINDOWED_FOV_X: f32 = 90.0;
+
+/// Vertical field of view for a horizontal one (donor `fovY` form).
+fn windowed_vertical_fov(fov_x: f32, width: i32, height: i32) -> f32 {
+    ((f64::from(height) / f64::from(width) * (f64::from(fov_x) * std::f64::consts::PI / 360.0).tan()).atan() * 360.0
+        / std::f64::consts::PI) as f32
+}
+
+/// Default windowed camera over the live drawable size. Returns `None`
+/// when the dimensions cannot produce a valid projection, in which case
+/// the frame degrades to clear plus swap.
+fn windowed_camera(width: i32, height: i32) -> Option<SceneCamera> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let fov_y = windowed_vertical_fov(WINDOWED_FOV_X, width, height);
+    if !fov_y.is_finite() || fov_y <= 0.0 || fov_y >= 180.0 {
+        return None;
+    }
+    let projection = perspective_projection(WINDOWED_FOV_X, fov_y, 16384.0, 4.0).ok()?;
+    Some(SceneCamera {
+        origin: vec3(0.0, 0.0, 0.0),
+        axis: angles_to_axis(vec3(0.0, 0.0, 0.0)),
+        viewport: ViewRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        projection,
+        clip: CameraClip::None,
+    })
+}
+
+/// Ordered view for a loaded scene: full-window viewport, depth plus color
+/// clear, seat (or preview) target, and the scene entity batches. Returns
+/// `None` when the live dimensions cannot produce a camera.
+fn windowed_scene_view(
+    width: i32,
+    height: i32,
+    seat: Option<&SeatId>,
+    time_ms: f64,
+    scene: &WindowedScene,
+) -> Option<ClientRenderView> {
+    let camera = windowed_camera(width, height)?;
+    let viewport = ClientRect {
+        x: 0.0,
+        y: 0.0,
+        width: f64::from(camera.viewport.width) as f32,
+        height: f64::from(camera.viewport.height) as f32,
+    };
+    let target = match seat {
+        Some(seat) => ViewTarget::Seat(seat.clone()),
+        None => ViewTarget::Preview("windowed".to_string()),
+    };
+    let operations = if scene.batches.is_empty() {
+        Vec::new()
+    } else {
+        vec![RenderOperation::Draw(scene.batches.clone())]
+    };
+    Some(ClientRenderView {
+        state: RenderViewState {
+            viewport,
+            clear: Some(ViewClear {
+                depth: 1.0,
+                color: Some(scene.clear_color),
+                stencil: false,
+            }),
+            clip_plane: None,
+        },
+        target,
+        time: SourceTime::Milliseconds(time_ms),
+        before_view: Vec::new(),
+        operations,
+    })
+}
+
+/// Faithful frame commands (donor `SceneFrameBuilder` shape): draw-buffer
+/// selection, one scene view when a scene is loaded, then the buffer swap.
+/// No scene (or an unusable live size) degrades to clear plus swap.
+fn build_windowed_commands(
+    width: i32,
+    height: i32,
+    seat: Option<&SeatId>,
+    time_ms: f64,
+    scene: Option<&WindowedScene>,
+) -> Vec<RenderCommand> {
+    match scene {
+        None => vec![
+            RenderCommand::DrawBuffer {
+                buffer: DrawBuffer::Back,
+                clear: true,
+            },
+            RenderCommand::SwapBuffers,
+        ],
+        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene) {
+            Some(view) => vec![
+                RenderCommand::DrawBuffer {
+                    buffer: DrawBuffer::Back,
+                    clear: false,
+                },
+                RenderCommand::View(view),
+                RenderCommand::SwapBuffers,
+            ],
+            None => vec![
+                RenderCommand::DrawBuffer {
+                    buffer: DrawBuffer::Back,
+                    clear: true,
+                },
+                RenderCommand::SwapBuffers,
+            ],
+        },
+    }
+}
+
 /// Production [`StartupBackend`] presenting frames on a native GL window.
 pub struct WindowedStartupBackend {
     width: u32,
@@ -869,6 +1082,7 @@ pub struct WindowedStartupBackend {
     input_seat: Option<SeatId>,
     input_queue: WindowedInputQueue,
     input_log: VecDeque<SeatInputEvent>,
+    scene: Option<WindowedScene>,
 }
 
 impl WindowedStartupBackend {
@@ -890,7 +1104,24 @@ impl WindowedStartupBackend {
             input_seat: None,
             input_queue: Rc::new(RefCell::new(Vec::new())),
             input_log: VecDeque::new(),
+            scene: None,
         }
+    }
+
+    /// Live drawable size: the window's current drawable when valid,
+    /// otherwise the backend's dimensions, otherwise the configured size.
+    fn live_size(&self) -> (i32, i32) {
+        if let Some(renderer) = self.renderer.as_ref() {
+            let (width, height) = renderer.window().drawable_size();
+            if width > 0 && height > 0 {
+                return (width, height);
+            }
+            let (width, height) = (renderer.backend().width(), renderer.backend().height());
+            if width > 0 && height > 0 {
+                return (width, height);
+            }
+        }
+        (self.width as i32, self.height as i32)
     }
 
     /// Borrow the live renderer, driver factory, and owner.
@@ -939,6 +1170,10 @@ impl WindowedStartupBackend {
 
     /// Arm a capture, present one frame, and return its pixels.
     fn present_and_capture(&mut self) -> Result<Vec<u8>, String> {
+        let (width, height) = self.live_size();
+        let time_ms = self.now_ms();
+        let seat = self.input_seat.clone();
+        let scene = self.scene.clone();
         let (renderer, backends, owner) = self.live_parts()?;
         let slot: Rc<RefCell<Option<Result<ImageLevel, String>>>> = Rc::new(RefCell::new(None));
         let writer = Rc::clone(&slot);
@@ -949,12 +1184,7 @@ impl WindowedStartupBackend {
             .map_err(|error| error.to_string())?;
         let frame = RenderFrame {
             owner,
-            commands: vec![
-                RenderCommand::SetColor {
-                    color: vec4(1.0, 1.0, 1.0, 1.0),
-                },
-                RenderCommand::SwapBuffers,
-            ],
+            commands: build_windowed_commands(width, height, seat.as_ref(), time_ms, scene.as_ref()),
         };
         renderer.execute(&frame, backends).map_err(|error| error.to_string())?;
         let captured = slot.borrow_mut().take();
@@ -1040,15 +1270,14 @@ impl StartupBackend for WindowedStartupBackend {
     }
 
     fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
+        let (width, height) = self.live_size();
+        let time_ms = self.now_ms();
+        let seat = self.input_seat.clone();
+        let scene = self.scene.clone();
         let (renderer, backends, owner) = self.live_parts()?;
         let frame = RenderFrame {
             owner,
-            commands: vec![
-                RenderCommand::SetColor {
-                    color: vec4(1.0, 1.0, 1.0, 1.0),
-                },
-                RenderCommand::SwapBuffers,
-            ],
+            commands: build_windowed_commands(width, height, seat.as_ref(), time_ms, scene.as_ref()),
         };
         renderer.execute(&frame, backends).map_err(|error| error.to_string())?;
         refresh_windowed_audio(&mut self.audio, ctx.elapsed_ms);
@@ -1083,7 +1312,7 @@ impl StartupBackend for WindowedStartupBackend {
     }
 
     fn has_active_game(&self) -> bool {
-        false
+        self.scene.is_some()
     }
 
     fn input_seat(&self) -> Option<SeatId> {
@@ -1104,6 +1333,7 @@ impl StartupBackend for WindowedStartupBackend {
             }
         }
         self.renderer = None;
+        self.scene = None;
         if let Some(mut audio) = self.audio.take() {
             let _ignored = audio.close();
         }
@@ -1619,6 +1849,152 @@ mod tests {
             }
             Err(error) => assert!(!error.is_empty(), "honest open failure"),
         }
+    }
+
+    #[test]
+    fn windowed_camera_tracks_live_size() {
+        let camera = windowed_camera(64, 48).expect("valid camera");
+        assert_eq!((camera.viewport.width, camera.viewport.height), (64, 48));
+        assert!(matches!(camera.clip, CameraClip::None));
+        assert!(windowed_camera(0, 64).is_none());
+        assert!(windowed_camera(64, 0).is_none());
+        assert!(windowed_camera(-1, 64).is_none());
+    }
+
+    fn test_batch() -> DrawBatch {
+        use qa_client::render::types::{
+            BatchLighting, BatchPrimitive, BatchVertices, CullFace, RenderState, RenderVertex, TextureBinding,
+        };
+        use qa_core::math::vec2;
+        DrawBatch {
+            fog: None,
+            luminance_alpha: false,
+            indices: vec![0, 1, 2],
+            texture: TextureBinding::RetainCurrentTexture,
+            state: RenderState::opaque(CullFace::None),
+            lighting: BatchLighting::Vertex,
+            primitive: BatchPrimitive::Triangles,
+            vertices: BatchVertices::Single(vec![
+                RenderVertex {
+                    position: vec4(0.0, 0.0, 0.0, 1.0),
+                    tex_coord: vec2(0.0, 0.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+                RenderVertex {
+                    position: vec4(1.0, 0.0, 0.0, 1.0),
+                    tex_coord: vec2(1.0, 0.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+                RenderVertex {
+                    position: vec4(0.0, 1.0, 0.0, 1.0),
+                    tex_coord: vec2(0.0, 1.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+            ]),
+        }
+    }
+
+    #[test]
+    fn windowed_commands_degrade_without_scene() {
+        let commands = build_windowed_commands(64, 64, None, 12.0, None);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            commands[0],
+            RenderCommand::DrawBuffer {
+                buffer: DrawBuffer::Back,
+                clear: true
+            }
+        ));
+        assert!(matches!(commands[1], RenderCommand::SwapBuffers));
+    }
+
+    #[test]
+    fn windowed_commands_submit_scene_view_with_swap() {
+        let owner = IdentityOwner::create("windowed-scene-test").unwrap();
+        let seat = owner.seat(0);
+        let scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
+        let commands = build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&scene));
+        assert_eq!(commands.len(), 3);
+        assert!(matches!(
+            commands[0],
+            RenderCommand::DrawBuffer {
+                buffer: DrawBuffer::Back,
+                clear: false
+            }
+        ));
+        let RenderCommand::View(view) = &commands[1] else {
+            panic!("expected view, got {:?}", commands[1]);
+        };
+        assert_eq!(view.state.viewport.width, 64.0);
+        assert_eq!(view.state.viewport.height, 48.0);
+        assert!(matches!(view.target, ViewTarget::Seat(_)));
+        assert_eq!(view.time, SourceTime::Milliseconds(33.0));
+        assert_eq!(view.operations.len(), 1);
+        assert!(matches!(
+            view.operations[0],
+            RenderOperation::Draw(ref batches) if batches.len() == 1
+        ));
+        assert!(matches!(commands[2], RenderCommand::SwapBuffers));
+    }
+
+    #[test]
+    fn windowed_scene_view_uses_preview_without_seat_and_live_size() {
+        let scene = WindowedScene::new(Vec::new(), vec4(0.1, 0.2, 0.3, 1.0));
+        let view = windowed_scene_view(128, 96, None, 7.0, &scene).expect("preview view");
+        assert_eq!((view.state.viewport.width, view.state.viewport.height), (128.0, 96.0));
+        assert!(matches!(view.target, ViewTarget::Preview(_)));
+        assert!(view.operations.is_empty());
+        let clear = view.state.clear.expect("view clears");
+        assert_eq!(clear.depth, 1.0);
+        assert_eq!(clear.color, Some(vec4(0.1, 0.2, 0.3, 1.0)));
+        let other = windowed_scene_view(32, 32, None, 7.0, &scene).expect("other size");
+        assert_eq!((other.state.viewport.width, other.state.viewport.height), (32.0, 32.0));
+    }
+
+    #[test]
+    fn windowed_invalid_size_degrades_even_with_scene() {
+        let scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
+        assert!(windowed_scene_view(0, 64, None, 0.0, &scene).is_none());
+        let commands = build_windowed_commands(0, 64, None, 0.0, Some(&scene));
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], RenderCommand::DrawBuffer { clear: true, .. }));
+        assert!(matches!(commands[1], RenderCommand::SwapBuffers));
+    }
+
+    #[test]
+    fn windowed_backend_scene_tracks_active_game() {
+        let config = StartupConfig::from_options(&windowed_options()).unwrap();
+        let mut backend = WindowedStartupBackend::new(&config, false, 1.0, Rc::new(Cell::new(false)));
+        assert!(!backend.has_active_game());
+        backend.scene = Some(WindowedScene::new(Vec::new(), vec4(0.0, 0.0, 0.0, 1.0)));
+        assert!(backend.has_active_game());
+        assert!(backend.close().is_empty());
+        assert!(!backend.has_active_game());
+    }
+
+    #[test]
+    fn windowed_gl_backend_serial_commands_degrade_without_parts() {
+        let mut backend = NativeGlBackend {
+            parts: None,
+            width: 64,
+            height: 64,
+            driver: None,
+            worker_interval: 1,
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+        };
+        backend.execute_serial_command(&RenderCommand::SetColor {
+            color: vec4(0.5, 0.5, 0.5, 1.0),
+        });
+        assert_eq!(backend.color, vec4(0.5, 0.5, 0.5, 1.0));
+        backend.execute_serial_command(&RenderCommand::DrawBuffer {
+            buffer: DrawBuffer::Back,
+            clear: true,
+        });
+        let scene = WindowedScene::new(Vec::new(), vec4(0.0, 0.0, 0.0, 1.0));
+        let view = windowed_scene_view(64, 64, None, 0.0, &scene).unwrap();
+        backend.execute_serial_command(&RenderCommand::View(view));
+        backend.execute_serial_command(&RenderCommand::Draw);
+        backend.execute_serial_command(&RenderCommand::SwapBuffers);
     }
 
     /// Live `SdlRouterWindow::attach` protocol check: push an injected key,
