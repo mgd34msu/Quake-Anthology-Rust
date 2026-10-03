@@ -150,4 +150,5 @@ pub mod weapon_view;
 pub mod windowed;
 pub mod windowed_menu;
 pub mod windowed_scene;
+pub mod windowed_skins;
 pub mod windowed_world;

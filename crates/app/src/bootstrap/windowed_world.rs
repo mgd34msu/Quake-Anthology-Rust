@@ -703,6 +703,80 @@ mod tests {
     }
 
     #[test]
+    fn live_steel_q3_entity_batches_bind_loaded_skins() {
+        use qa_client::render::types::{ImageSource, SourceTime, TextureBinding};
+        use qa_client::view::perspective_projection;
+        use qa_core::math::{add3, angles_to_axis, normalize3, sub3, vec3, vector_to_angles};
+
+        let Some(catalog) = steel_catalog() else {
+            eprintln!("skipped: Steel corpus root has no game data");
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q3-baseq3".to_string(),
+            map: "maps/q3dm1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");
+                return;
+            }
+        };
+        let presentation = world
+            .take_presentation()
+            .unwrap_or_else(|| panic!("expected a scene presentation ({:?})", world.presentation_error()));
+        assert!(!presentation.entities().is_empty(), "q3dm1 has item entities");
+        // Close-up cameras over the first entities; every submitted batch
+        // counts by image source. White/missing fallbacks are generated;
+        // resolved skins are mount-loaded resources.
+        let mut resource = 0;
+        let mut generated = 0;
+        let mut other = 0;
+        for entity in presentation.entities().iter().take(8) {
+            let target = entity.transform.origin;
+            let origin = add3(target, vec3(48.0, 0.0, 24.0));
+            let camera = qa_client::view::SceneCamera {
+                origin,
+                axis: angles_to_axis(vector_to_angles(normalize3(sub3(target, origin)))),
+                viewport: qa_client::view::Rect {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                },
+                projection: perspective_projection(90.0, 90.0, 16384.0, 4.0).unwrap(),
+                clip: qa_client::view::CameraClip::None,
+            };
+            let batches = presentation
+                .prepare_entity_batches(camera, SourceTime::Milliseconds(33.0))
+                .expect("entity batches");
+            for batch in &batches {
+                match &batch.texture {
+                    TextureBinding::BindImage(image) => match &image.source {
+                        ImageSource::Resource { requested_path } => {
+                            resource += 1;
+                            eprintln!("q3dm1 textured batch: {requested_path}");
+                        }
+                        ImageSource::Generated { name } => {
+                            generated += 1;
+                            eprintln!("q3dm1 fallback batch: {name}");
+                        }
+                    },
+                    _ => other += 1,
+                }
+            }
+        }
+        eprintln!("q3dm1 skin bindings: {resource} resource, {generated} generated, {other} other");
+        assert!(
+            resource > 0,
+            "expected entity batches bound to mount-loaded skins, got {resource} resource vs {generated} generated"
+        );
+    }
+
+    #[test]
     fn live_steel_q1_presentation_prepares_draw_batches() {
         if steel_presentation_batches("q1-classic-id1", "maps/e1m1.bsp").is_none() {
             eprintln!("skipped: Steel corpus root has no game data");
