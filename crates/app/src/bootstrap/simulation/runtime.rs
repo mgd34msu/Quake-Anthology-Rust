@@ -20758,12 +20758,55 @@ impl SharedSimulation {
         Ok(())
     }
 
-    /// Donor `resumeQ2Presentation` (C10 seam; C4 owns the canonical port).
+    /// Donor `resumeQ2Presentation` (donor runtime.ts 3726-3737).
     ///
-    /// The q2 product runtime is still opaque, so there is no rerelease sky,
-    /// story, fog, or flashlight state to re-emit yet.
-    /// Missing siblings: q2-product lane rerelease state; delete this seam when it lands.
+    /// Re-emits the rerelease sky, story, per-player fog, and flashlights
+    /// through the content hooks, then resumes module presentation for
+    /// every admitted player. Returns without emitting unless a Q2 source
+    /// with a rerelease slice is bound.
     pub fn resume_q2_presentation(&self) -> Result<(), RuntimeError> {
+        use qa_content::q2::rerelease::players::rerelease_emit_flashlight;
+        use qa_content::q2::rerelease::rerelease_hooks;
+        use qa_content::q2::rerelease::types::Q2RereleaseEvent;
+        let state = self.peek();
+        let (game, product) = match (&state.source, state.q2_product.as_ref()) {
+            (SourceRuntime::Q2 { game, .. }, Some(product)) => (Rc::clone(game), Rc::clone(product)),
+            _ => return Ok(()),
+        };
+        let Some(rerelease) = product.borrow().rerelease else {
+            return Ok(());
+        };
+        drop(state);
+        let mut game = game.borrow_mut();
+        let sky = game.rerelease.sky.clone();
+        (rerelease_hooks(&game).emit)(
+            &mut game,
+            Q2RereleaseEvent::Sky {
+                name: sky.name,
+                rotation: sky.rotation,
+                auto_rotate: sky.auto_rotate,
+                axis: sky.axis,
+            },
+        );
+        let story = game.rerelease.story.clone();
+        (rerelease_hooks(&game).emit)(&mut game, Q2RereleaseEvent::Story { text: story });
+        let mut actors: Vec<ActorId> = game.rerelease.states.keys().cloned().collect();
+        actors.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        for actor in actors {
+            let Some(fog) = game.rerelease.states.get(&actor).map(|state| state.fog) else {
+                continue;
+            };
+            (rerelease_hooks(&game).emit)(
+                &mut game,
+                Q2RereleaseEvent::Fog {
+                    actor: actor.clone(),
+                    value: fog,
+                    transition_milliseconds: 0.0,
+                },
+            );
+            rerelease_emit_flashlight(actor, &mut game);
+        }
+        rerelease.entities.resume_presentation(&mut game, None);
         Ok(())
     }
 
@@ -21805,15 +21848,173 @@ fn receive_net_quake_seam(player: &mut MovementPlayer, command: &ActorCommand) {
     player.net_quake_command = twin;
 }
 
-/// Apply arsenal intent to a command (donor `prepareArsenalCommand`).
+/// Parse a net intent provider/weapon pair into a slot weapon reference.
 ///
-/// Missing siblings: the arsenal lane owns intent application (weapon
-/// select, impulse routing); the command passes through unchanged until
-/// it lands.
-#[allow(dead_code)]
-fn prepare_arsenal_command_seam(player: &MovementPlayer, command: &ActorCommand, paused: bool) -> ActorCommand {
-    let _ = (player, paused);
-    command.clone()
+/// A provider outside `namespace:name` shape cannot name a slot weapon,
+/// so it fails with the donor's unavailable-weapon error.
+fn parse_intent_weapon_reference(
+    provider: &str,
+    weapon: &str,
+) -> Result<super::weapon_slot::WeaponReference, RuntimeError> {
+    let Some((namespace, name)) = provider.split_once(':') else {
+        return fail("Weapon request is unavailable to this actor");
+    };
+    Ok(super::weapon_slot::WeaponReference {
+        provider: qa_core::identity::ProviderId::new(namespace, name),
+        item: weapon.to_owned(),
+    })
+}
+
+impl SharedSimulation {
+    /// Apply arsenal intent to a command (donor `prepareArsenalCommand`,
+    /// donor runtime.ts 4115-4151).
+    ///
+    /// Ports the weapon-slot request routing, the selected-arsenal
+    /// provider checks, the Threewave slot grapple input, and the
+    /// selected-Q3 ballistics block (source command, grapple-point flags,
+    /// pull velocity). The impulse-byte validation and Q1 impulse
+    /// zeroing (donor 4116-4119) are vacuous: the net `ArsenalIntent`
+    /// twin carries no impulse (see `PlayerArsenalIntent`).
+    fn prepare_arsenal_command(
+        &self,
+        player: &MovementPlayer,
+        received: &ActorCommand,
+        paused: bool,
+    ) -> Result<ActorCommand, RuntimeError> {
+        use qa_net::common::commands::MovementDialect;
+        let mut command = received.clone();
+        if !paused {
+            let (has_slot, weapon_provider, selected_none, kind) = {
+                let state = self.peek();
+                (
+                    state.weapon_slots.contains_key(player.actor.id()),
+                    provider_text(&state.weapon_provider.provider),
+                    state.selected_arsenal.is_none(),
+                    state.source.kind().to_string(),
+                )
+            };
+            if has_slot {
+                if let Some(intent) = command.arsenal.clone() {
+                    if let Some(weapon) = intent.weapon.as_ref() {
+                        let reference = parse_intent_weapon_reference(&intent.provider, weapon)?;
+                        if !self.request_weapon(player.actor.id(), &reference)? {
+                            return fail("Weapon request is unavailable to this actor");
+                        }
+                    }
+                    command.arsenal = Some(ArsenalIntent {
+                        provider: weapon_provider,
+                        weapon: None,
+                        use_holdable: intent.use_holdable,
+                    });
+                }
+            } else if selected_none && command.arsenal.is_some() && matches!(kind.as_str(), "q1" | "q2" | "quakec") {
+                let intent = command.arsenal.clone().expect("arsenal checked above");
+                if intent.provider != weapon_provider {
+                    return fail("Arsenal command belongs to a different provider");
+                }
+                if let Some(weapon) = intent.weapon.as_ref() {
+                    let active = self.read_player_arsenal(player)?.active_weapon;
+                    let selectable = kind == "q2" || Some(weapon) != active.as_ref();
+                    if selectable {
+                        let reference = parse_intent_weapon_reference(&intent.provider, weapon)?;
+                        if !self.request_weapon(player.actor.id(), &reference)? {
+                            return fail("Weapon request is unavailable to this actor");
+                        }
+                    }
+                }
+                command.arsenal = Some(ArsenalIntent {
+                    provider: weapon_provider,
+                    weapon: None,
+                    use_holdable: intent.use_holdable,
+                });
+            }
+        }
+        if !paused {
+            let state = self.peek();
+            let slot_bound = state.grapple.as_ref().is_some_and(|grapple| {
+                matches!(
+                    grapple.selection(),
+                    qa_content::contract::GrappleSelection::Enabled {
+                        binding: qa_content::contract::GrappleBinding::Slot,
+                        ..
+                    }
+                )
+            });
+            if slot_bound {
+                let held = step_button_bits(command.command.buttons()) & 1 != 0;
+                if let Some(grapple) = state.grapple.as_ref() {
+                    grapple
+                        .input(player.actor.id(), held)
+                        .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+                }
+            }
+        }
+        if !paused && self.peek().selected_q3_source.is_some() {
+            let arsenal = self.read_player_arsenal(player)?;
+            let primary = self
+                .peek()
+                .weapon_slots
+                .get(player.actor.id())
+                .is_none_or(|slot| slot.primary_selected());
+            let buttons = step_button_bits(command.command.buttons());
+            let is_q3 = matches!(command.command.dialect(), MovementDialect::Q3);
+            let attack =
+                buttons & 1 != 0 && (!is_q3 || buttons & qa_world::movement::q3::constants::command_buttons::TALK == 0);
+            let selected = primary
+                && matches!(
+                    arsenal.state,
+                    qa_world::movement::types::WeaponState::Q3 { source_weapon: 10, .. }
+                );
+            let alive = !player.intermission
+                && player.cutscene.is_none()
+                && self
+                    .peek()
+                    .combat
+                    .read(player.actor.id())
+                    .is_some_and(|combat| combat.health > 0.0);
+            let is_q3_state = matches!(player.state, MovementState::Q3(_));
+            let (point, velocity) = {
+                let state = self.peek();
+                let ballistics = state.selected_q3_source.as_ref().expect("source checked above");
+                ballistics
+                    .command(&player.actor, attack, selected, alive)
+                    .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+                let point = ballistics.grapple_point(player.actor.id());
+                let velocity = if is_q3_state {
+                    None
+                } else {
+                    ballistics.pull(&player.actor)
+                };
+                (point, velocity)
+            };
+            if is_q3_state {
+                let mut patched = player.clone();
+                if let MovementState::Q3(inner) = &mut patched.state {
+                    if point.is_none() {
+                        inner.movement_flags &= !qa_world::movement::q3::constants::move_flags::GRAPPLE_PULL;
+                    } else {
+                        inner.movement_flags |= qa_world::movement::q3::constants::move_flags::GRAPPLE_PULL;
+                    }
+                    inner.grapple_point = point.unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+                }
+                self.step_writeback_player(&player.actor, &patched);
+            } else if let Some(velocity) = velocity {
+                let bodies = self.bodies_handle();
+                let actors = self.actors.borrow();
+                let body = bodies.borrow().read(actors.inner(), player.actor.id());
+                if let Some(body) = body {
+                    let mut next = body;
+                    next.velocity = velocity;
+                    next.ground = None;
+                    bodies
+                        .borrow_mut()
+                        .write(actors.inner(), &player.actor, next)
+                        .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+                }
+            }
+        }
+        Ok(command)
+    }
 }
 
 /// Prepare NetQuake movement for one player (donor `player.prepareNetQuake`).
@@ -21832,17 +22033,6 @@ fn prepare_net_quake_seam(
 ) -> Result<(), RuntimeError> {
     let _ = (player, frame, applications_active, pending);
     Ok(())
-}
-
-/// Frame Q1 mission weapons for the selected source (donor
-/// `selectedWeaponSource.missionWeapons.frame`).
-///
-/// Missing siblings: the arsenal/Q1 lane owns mission weapons
-/// (`SelectedWeaponSource::Q1` carries game/random only); the selected
-/// game/arsenal frames around this call are real.
-#[allow(dead_code)]
-fn selected_q1_mission_weapons_frame_seam(elapsed_seconds: f64) {
-    let _ = elapsed_seconds;
 }
 
 /// Begin one Threewave grapple-source frame (donor
@@ -22022,8 +22212,20 @@ impl SharedSimulation {
                 if let Some(SelectedArsenal::Q1(q1)) = state.selected_arsenal.as_mut() {
                     q1.game().borrow_mut().begin_frame(time_s, elapsed_s);
                 }
-                if matches!(state.selected_weapon_source, Some(SelectedWeaponSource::Q1 { .. })) {
-                    selected_q1_mission_weapons_frame_seam(elapsed_s);
+                if matches!(state.selected_weapon_source, Some(SelectedWeaponSource::Q1 { .. }))
+                    && state.weapon_provider.content.as_str().split(':').nth(2) == Some("mg3")
+                {
+                    // Donor `selectedWeaponSource.missionWeapons.frame(elapsed)`
+                    // advances addon frame time, and only the mg3 program
+                    // bundle does anything (`SelectedQ1Arsenal::frame`); skip
+                    // games without a registered addon context instead of
+                    // failing the frame.
+                    if let Some(SelectedWeaponSource::Q1 { game, .. }) = state.selected_weapon_source.as_mut() {
+                        if qa_content::q1::addons::context::addons_registered(game) {
+                            qa_content::q1::addons::context::frame_addons(game, elapsed_s)
+                                .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+                        }
+                    }
                 }
                 if let Some(SelectedArsenal::Q1(q1)) = state.selected_arsenal.as_mut() {
                     q1.frame(time_s)
@@ -22190,7 +22392,7 @@ impl SharedSimulation {
                     pending.insert(player.actor.id().clone(), command.clone());
                 }
             } else {
-                let prepared = prepare_arsenal_command_seam(&player, command, false);
+                let prepared = self.prepare_arsenal_command(&player, command, false)?;
                 {
                     let mut state = self.lock();
                     if let Some(entry) = state.player_states.get_mut(&player.actor) {
@@ -22364,10 +22566,31 @@ impl SharedSimulation {
 impl Q1ClientVisibility {
     /// Donor `q1ClientVisibility.restore` (C10 seam; the q1-client lane owns the type).
     ///
-    /// Visibility is rendering-only; the saved value is accepted and dropped
-    /// until the lane lands.
-    /// Missing siblings: q1-client lane visibility restore; delete this seam when it lands.
-    pub fn restore(&mut self, _value: Option<&qa_world::save::value::SaveJson>) -> Result<(), RuntimeError> {
+    /// Port of the donor range checks (`src/world/gameplay/q1-client-visibility.ts`
+    /// 58-66): a present value must carry a non-negative slot, a finite
+    /// check time, and a consistent initial cache (slot 0 pairs with a
+    /// null cluster and a zero time). The slot/client upper bounds need
+    /// the lane's reserved-slot services, and the accepted state still has
+    /// no storage on this seam, so a valid value is dropped after
+    /// validation. A missing value stays accepted: no Rust capture writer
+    /// emits the field yet.
+    /// Missing siblings: q1-client lane visibility state storage plus
+    /// reserved-slot services for the upper-bound checks.
+    pub fn restore(&mut self, value: Option<&qa_world::save::value::SaveJson>) -> Result<(), RuntimeError> {
+        use qa_world::save::value::SaveReader;
+        let Some(value) = value else {
+            return Ok(());
+        };
+        let reader = SaveReader::at(value, "q1-client-visibility");
+        let slot = reader.field("lastCheckSlot").integer(0)?;
+        let time = reader.field("lastCheckTime").finite()?;
+        let cluster = reader.field("checkedCluster").nullable(|field| field.integer(-1))?;
+        if time < 0.0 {
+            return Err(reader.fail("visibility cache outside source range").into());
+        }
+        if (slot == 0) != cluster.is_none() || (slot == 0 && time != 0.0) {
+            return Err(reader.fail("invalid initial visibility cache").into());
+        }
         Ok(())
     }
 }
@@ -24418,14 +24641,142 @@ struct StepWeaponInput<'a> {
     gauntlet_hit: bool,
 }
 
+/// Map a net command to its world twin for the selected-arsenal step.
+///
+/// Mirrors the private `net_to_world` in `players.rs` (same field mapping,
+/// including the `i32`/`f32` narrowing); the step trait takes the world
+/// twin.
+fn step_net_to_world_command(
+    command: &qa_net::common::commands::UserCommand,
+) -> qa_world::movement::types::UserCommand {
+    use qa_net::common::commands::UserCommand as NetUserCommand;
+    use qa_world::movement::types::UserCommand as WorldUserCommand;
+    match command {
+        NetUserCommand::Q1Netquake {
+            acknowledged_server_time_seconds,
+            view_angles,
+            forward_move,
+            side_move,
+            up_move,
+            buttons,
+            impulse,
+        } => WorldUserCommand::Q1Netquake(qa_world::movement::types::Q1UserCommand {
+            acknowledged_server_time_seconds: *acknowledged_server_time_seconds,
+            view_angles: qa_core::math::vec3(view_angles[0] as f32, view_angles[1] as f32, view_angles[2] as f32),
+            forward_move: *forward_move,
+            side_move: *side_move,
+            up_move: *up_move,
+            buttons: *buttons as i32,
+            impulse: *impulse as i32,
+        }),
+        NetUserCommand::Q1Quakeworld {
+            milliseconds,
+            angles,
+            forward_move,
+            side_move,
+            up_move,
+            buttons,
+            impulse,
+        } => WorldUserCommand::Q1Quakeworld(qa_world::movement::types::QwUserCommand {
+            milliseconds: *milliseconds as i32,
+            angles: qa_core::math::vec3(angles[0] as f32, angles[1] as f32, angles[2] as f32),
+            forward_move: *forward_move,
+            side_move: *side_move,
+            up_move: *up_move,
+            buttons: *buttons as i32,
+            impulse: *impulse as i32,
+        }),
+        NetUserCommand::Q2Classic {
+            milliseconds,
+            angle_shorts,
+            forward_move,
+            side_move,
+            up_move,
+            buttons,
+            impulse,
+            light_level,
+        } => WorldUserCommand::Q2Classic(qa_world::movement::types::Q2UserCommand {
+            milliseconds: *milliseconds as i32,
+            angle_shorts: [angle_shorts[0] as i32, angle_shorts[1] as i32, angle_shorts[2] as i32],
+            forward_move: *forward_move,
+            side_move: *side_move,
+            up_move: *up_move,
+            buttons: *buttons as i32,
+            impulse: *impulse as i32,
+            light_level: *light_level as i32,
+        }),
+        NetUserCommand::Q2Rerelease {
+            milliseconds,
+            angles,
+            forward_move,
+            side_move,
+            buttons,
+            server_frame,
+        } => WorldUserCommand::Q2Rerelease(qa_world::movement::types::Q2RereleaseUserCommand {
+            milliseconds: *milliseconds as i32,
+            angles: qa_core::math::vec3(angles[0] as f32, angles[1] as f32, angles[2] as f32),
+            forward_move: *forward_move,
+            side_move: *side_move,
+            buttons: *buttons as i32,
+            server_frame: *server_frame as i32,
+        }),
+        NetUserCommand::Q3 {
+            server_time_milliseconds,
+            angle_words,
+            buttons,
+            weapon,
+            forward_move,
+            right_move,
+            up_move,
+        } => WorldUserCommand::Q3(qa_world::movement::types::Q3UserCommand {
+            server_time_milliseconds: *server_time_milliseconds as i32,
+            angle_words: [angle_words[0] as i32, angle_words[1] as i32, angle_words[2] as i32],
+            buttons: *buttons as i32,
+            weapon: *weapon as i32,
+            forward_move: *forward_move as i32,
+            right_move: *right_move as i32,
+            up_move: *up_move as i32,
+        }),
+    }
+}
+
 /// Selected-arsenal weapon step (donor `weaponStep`).
 ///
-/// Missing siblings: the arsenal lane owns the weapon step; arsenal and
-/// animation pass through unchanged until it lands.
-#[allow(dead_code)]
-fn weapon_step_seam(player: &MovementPlayer, input: &StepWeaponInput<'_>) -> (ArsenalState, ActorAnimationState) {
-    let _ = (player, input);
-    (player.arsenal.clone(), player.animation.clone())
+/// Runs the family [`SelectedArsenal`](super::arsenal::selected::SelectedArsenal)
+/// `step` (donor `selectedArsenal` weapon tick + read); weapon selection
+/// already happened upstream in `prepareArsenalCommand`, so no intent is
+/// passed. Unadmitted actors keep the passthrough (donor `read` has no
+/// rows for them); ordered effects stay unconsumed until the q3 lane can
+/// publish them to the source client.
+fn weapon_step_seam(
+    selected: &mut SelectedArsenal,
+    player: &MovementPlayer,
+    input: &StepWeaponInput<'_>,
+) -> (ArsenalState, ActorAnimationState) {
+    use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+    let admitted = match selected {
+        SelectedArsenal::Q1(arsenal) => arsenal.has(input.actor.id()),
+        SelectedArsenal::Q2(arsenal) => arsenal.has(input.actor.id()),
+        SelectedArsenal::Q3(arsenal) => arsenal.has(input.actor.id()),
+    };
+    if !admitted {
+        return (player.arsenal.clone(), player.animation.clone());
+    }
+    let stepped = super::arsenal::selected::WeaponStepInput {
+        actor: (*input.actor).clone(),
+        command: step_net_to_world_command(input.command),
+        frame: input.frame,
+        arsenal: input.arsenal.clone(),
+        animation: input.animation.clone(),
+        environment: input.environment,
+        gauntlet_hit: input.gauntlet_hit,
+    };
+    let result = match selected {
+        SelectedArsenal::Q1(arsenal) => arsenal.step(&stepped, None),
+        SelectedArsenal::Q2(arsenal) => arsenal.step(&stepped, None),
+        SelectedArsenal::Q3(arsenal) => arsenal.step(&stepped, None),
+    };
+    (result.arsenal, result.animation)
 }
 
 /// Whether the LMCTF match pins an actor (donor `lmctf.canMove`).
@@ -24664,13 +25015,11 @@ impl SharedSimulation {
             }
         }
         // Donor 4528: arsenal intent.
-        let prepared = {
-            let state = self.peek();
-            match state.player_states.get(owned) {
-                Some(player) => prepare_arsenal_command_seam(player, command, paused),
-                None => return Ok(()),
-            }
+        let player = self.peek().player_states.get(owned).cloned();
+        let Some(player) = player else {
+            return Ok(());
         };
+        let prepared = self.prepare_arsenal_command(&player, command, paused)?;
         *command = prepared;
         let mut pstate = match self.peek().player_states.get(owned).cloned() {
             Some(player) => player,
@@ -24850,7 +25199,10 @@ impl SharedSimulation {
                 environment,
                 gauntlet_hit: false,
             };
-            let (arsenal, animation) = weapon_step_seam(&pstate, &input);
+            let (arsenal, animation) = match self.lock().selected_arsenal.as_mut() {
+                Some(selected) => weapon_step_seam(selected, &pstate, &input),
+                None => (pstate.arsenal.clone(), pstate.animation.clone()),
+            };
             pstate.arsenal = arsenal;
             pstate.animation = animation;
         }
