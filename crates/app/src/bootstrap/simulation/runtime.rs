@@ -8013,7 +8013,7 @@ impl SharedSimulation {
     /// Donor `createMonsterMovement` (donor runtime.ts 1294-1316).
     ///
     /// The donor closures are the existing [`RuntimeMonsterServices`]
-    /// adapter. Unification note: the per-source random stream (the
+    /// adapter. Missing siblings: the per-source random stream (the
     /// adapter draws the shared table; the `_random` parameter is
     /// currently unused).
     fn create_monster_movement(
@@ -8106,9 +8106,10 @@ impl SharedSimulation {
 
 /// Construction gates (donor constructor 489-560).
 ///
-/// Returns the selected weapon provider. Save restore is rejected up front:
-/// construction cannot rebuild saved clocks, registries, and sources yet, so
-/// every `options.restore` image fails here instead of partially restoring.
+/// Returns the selected weapon provider. Save restore always fails: the
+/// save-restore lane owns `SharedSimulation::restore` and has not landed,
+/// so every `options.restore` image is rejected up front instead of
+/// validated piecemeal.
 fn validate_construction_options(
     options: &SimulationOptions<'_>,
     native_loading: bool,
@@ -8118,7 +8119,7 @@ fn validate_construction_options(
         NativeModuleApi, QuakeCApiIdentity,
     };
     if options.restore.is_some() {
-        return fail("Saved simulation restore is not supported by this constructor");
+        return fail("Missing siblings: simulation save restore (SharedSimulation::restore)");
     }
     if !native_loading {
         if let GrappleSelection::Enabled { mechanic, .. } = &options.recipe.equipment.grapple {
@@ -9002,7 +9003,7 @@ fn finish_construction_inner(
             .as_ref()
             .and_then(|guest| guest.prepared.primary.input.clone());
         if definition.is_some() {
-            return fail("QVM guest input requires the mod-client input binding");
+            return fail("Missing siblings: QVM input application bridge (bindInput)");
         }
     }
     // Donor 739-742: the foreign-weapons worldspawn body for QVM maps.
@@ -13449,7 +13450,7 @@ impl SessionActorRegistry {
     /// Resolve a saved actor reference to a live handle (C11).
     ///
     /// Donor `resolveSaved`: matches by slot/generation against the live
-    /// set. Unification note: C4's canonical saved-domain lookup; delete
+    /// set. Missing siblings: C4's canonical saved-domain lookup; delete
     /// this seam when it lands.
     pub fn resolve_saved(&self, saved: qa_core::identity::SavedActorId) -> Option<OwnedActor> {
         let found = self
@@ -15026,7 +15027,7 @@ impl SharedSimulation {
     /// Step hand grenades for an actor (donor `stepHandGrenade`, donor
     /// runtime.ts 2490, C11's range).
     ///
-    /// Unification note: C11's canonical method; delete this seam when it
+    /// Missing siblings: C11's canonical method; delete this seam when it
     /// lands. The seam is a no-op: stepping needs equipment input,
     /// player views, and grenade availability from later lanes.
     pub fn step_hand_grenade(&self, _actor: &ActorId, _reason: Option<&str>) {}
@@ -17388,7 +17389,7 @@ fn neutral_player_view() -> PlayerView {
 
 /// Player view (donor `playerView`, C7 range).
 ///
-/// Unification note: C7 ports `playerView` (donor 5270).
+/// Missing siblings: C7 ports `playerView` (donor 5270).
 fn player_view_seam(
     _state: &SharedSimulationState,
     _actors: &Rc<RefCell<SessionActorRegistry>>,
@@ -17800,7 +17801,7 @@ pub struct NativeDropProjection {
 /// Rerelease primary protection around a debit/consume effect (donor
 /// `withRereleasePrimaryProtection`).
 ///
-/// Unification note: the rerelease/compat lane owns the guest-memory armor
+/// Missing siblings: the rerelease/compat lane owns the guest-memory armor
 /// protection (`source.game.source.host` has no Rust home, and the guest
 /// worlds implement no `NativePrimaryWeaponWorld`). The ownership check and
 /// the effect run; only the armor-memory shielding is omitted.
@@ -18394,7 +18395,7 @@ impl std::fmt::Debug for CombatPolicy {
 impl GameplayAuthority {
     /// Donor `GameplayAuthority.register` (C10 seam; C4 owns the canonical combat port).
     ///
-    /// Unification note: C4's decide dispatch; delete this seam when it lands.
+    /// Missing siblings: C4's decide dispatch; delete this seam when it lands.
     pub fn register(&mut self, policy: CombatPolicy) -> Result<ProviderId, RuntimeError> {
         if self.policies.contains_key(&policy.id) {
             return fail(format!(
@@ -20071,7 +20072,7 @@ fn selected_q1_mission_weapons_frame_seam(elapsed_seconds: f64) {
 /// Begin one Threewave grapple-source frame (donor
 /// `grapple.source.game.beginFrame` on `q1-threewave`).
 ///
-/// Unification note: the grapple lane owns the source game handle
+/// Missing siblings: the grapple lane owns the source game handle
 /// (`GrappleRuntime` carries selection/bridge/inner only).
 #[allow(dead_code)]
 fn grapple_threewave_begin_frame_seam(time_seconds: f64, elapsed_seconds: f64) {
@@ -20081,7 +20082,7 @@ fn grapple_threewave_begin_frame_seam(time_seconds: f64, elapsed_seconds: f64) {
 /// Begin one QVM grapple-source frame (donor
 /// `grapple.source.game.beginFrame` + the `pull` loop on `q3-qvm`).
 ///
-/// Unification note: the grapple lane owns the source game handle; the
+/// Missing siblings: the grapple lane owns the source game handle; the
 /// rounded millisecond clock, the frame ordinal, and the per-player pull
 /// list around this call are real.
 #[allow(dead_code)]
@@ -20582,7 +20583,7 @@ impl SourceItemsRestore {
     /// Donor `sourceItemsRestore.effective` (C10 seam; the source-items lane owns the type).
     ///
     /// Identity until the lane lands source-item overrides.
-    /// Unification note: source-items lane `effective`; delete this seam when it lands.
+    /// Missing siblings: source-items lane `effective`; delete this seam when it lands.
     pub fn effective(&self, inventories: Vec<super::save::SimSavedInventory>) -> Vec<super::save::SimSavedInventory> {
         inventories
     }
@@ -20608,7 +20609,7 @@ impl Q3SourceRuntime {
 
 /// Donor `actors.referenceSaved(saved)` in the checkpoint domain (C10).
 ///
-/// Unification note: C4's canonical saved-domain lookup; delete this helper
+/// Missing siblings: C4's canonical saved-domain lookup; delete this helper
 /// when it lands.
 #[allow(dead_code)]
 fn reference_saved_actor(
@@ -23506,7 +23507,7 @@ fn run_quake_world_new_missile_seam() {}
 
 /// Execute one actor execution entry (donor `executeActor`).
 ///
-/// Unification note: the actor lane (C4) owns execution dispatch — entries
+/// Missing siblings: the actor lane (C4) owns execution dispatch — entries
 /// carry identity only, and no `ExecutionBodies`/`ExecutionScheduler`
 /// adapters exist yet. The frame, times, and commit around this call are
 /// real.
@@ -23622,7 +23623,7 @@ fn step_execution_frame(
 
 /// Run one actor think (donor `scheduler.run`).
 ///
-/// Unification note: think bindings (`fire_think`) and due times
+/// Missing siblings: think bindings (`fire_think`) and due times
 /// (`FrameScheduler`) are not wired into a single runner yet; firing
 /// unconditionally would run thinks early, so the scheduler lane owns the
 /// merge and this call waits for it.
@@ -24570,7 +24571,7 @@ impl qa_compat::q2::rerelease::navigation::NavigationServices for C3RereleaseNav
 /// The donor passes the save through; the port split rich persistence
 /// saves from the host shape, so attack/request context is dropped.
 ///
-/// Unification note: compat-lane rich deferred saves.
+/// Missing siblings: compat-lane rich deferred saves.
 fn rr_source_save_to_host(
     save: &super::native_q2_rerelease_save::RereleaseSourceSave,
 ) -> qa_compat::q2::rerelease::host::SourceSave {
@@ -24603,7 +24604,7 @@ fn rr_source_save_to_host(
 // ---------------------------------------------------------------------------
 /// Host travel save to checkpoint save (inverse of [`rr_source_save_to_host`]).
 ///
-/// Unification note: the compat host summarizes deferred damage as
+/// Missing siblings: the compat host summarizes deferred damage as
 /// `{target_slot, blood}` and projections as slot-only pairs, so full
 /// `RereleaseDeferredDamageSave` checkpoints and actor generations need
 /// the compat lane's rich travel write. Native bytes travel verbatim;
@@ -25389,13 +25390,13 @@ impl SharedSimulation {
 
 impl SessionMods {
     /// Donor `modOwner.close` (C10 seam; the mods lane owns the type).
-    /// Unification note: mods lane close; delete this seam when it lands.
+    /// Missing siblings: mods lane close; delete this seam when it lands.
     pub fn close(&mut self) {}
 }
 
 impl FrameScheduler {
     /// Donor `scheduler.close` (C10 seam; the scheduler lane owns the type).
-    /// Unification note: scheduler lane close; delete this seam when it lands.
+    /// Missing siblings: scheduler lane close; delete this seam when it lands.
     pub fn close(&mut self) {}
 }
 
@@ -30955,7 +30956,7 @@ fn equipment_player_available_in(
             if player_client_in(state, actors, actor).is_none() {
                 return false;
             }
-            // Unification note: `NativePrimaryWeapons::available` needs the
+            // Missing siblings: `NativePrimaryWeapons::available` needs the
             // native-weapon lane's synthetic host, so the donor's native
             // arm reads empty and every owner takes the health fallback.
             state.combat.read(actor).map(|entry| entry.health).unwrap_or(100.0) > 0.0
@@ -30991,7 +30992,7 @@ fn c11_weapon_character_animation_in(
                 "Original native selected weapons have no qualified owner"
             );
             return Err(RuntimeError::Failure(
-                "Native attack animation requires the bound native weapon host".to_string(),
+                "Missing siblings: native attack animation needs the native-weapon lane's synthetic host".to_string(),
             ));
         }
         return Ok(());
