@@ -69,7 +69,15 @@
 //! [`q3_client::qvm_scalars`](super::q3_client::qvm_scalars), and the
 //! connection, which the host factory captures directly.
 //!
-//! Missing siblings (host seams, referenced but NOT ported here): `assets.ts`.
+//! Assets stay host-owned (donor `assets.ts`): the donor builds
+//! `ApplicationQ3Assets` media from `options.assets` (donor
+//! q3-client.ts:271) and feeds the media and world into the presentation
+//! (donor q3-client.ts:362-363); the port receives its backends from the
+//! host factories ([`Q3CreateNative`]/[`Q3CreateQvm`],
+//! `Q3ClientCommonOptions::create_native`/`create_qvm`), which capture
+//! assets host-side. Media, the render pipeline, and services likewise
+//! arrive as host seams (`Q3ClientMedia` builds the light sampler; the
+//! visibility selector takes a leaf count instead of the world).
 //!
 //! Canonical siblings (ported; not host seams): `keys.ts`
 //! (`crate::bootstrap::keys::ApplicationKeys` over

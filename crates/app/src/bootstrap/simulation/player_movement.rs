@@ -1491,11 +1491,16 @@ struct Q3PredictionBaseline {
 
 /// Resolve the Q3 source baseline.
 ///
-/// Missing siblings: the native Q3 source records (`Q3SourceRuntime`
-/// is opaque) have no worktree home, so the baseline stays empty and
-/// prediction falls back to the player snapshot state and arsenal,
-/// matching the donor null-source path; the live-source reads land
-/// with the records home.
+/// Implements the donor null-source path (donor player-movement.ts:117-126):
+/// with no bound Q3 entity, prediction falls back to the player snapshot
+/// state, the player arsenal (or a fresh `Baseq3` runtime), and the arsenal
+/// source weapon (donor player-movement.ts:163). Live-source reads
+/// (`readQ3MovementState`/`readQ3ArsenalRuntime` over the entity pool and
+/// records) need the q3 lane's native source host: `SharedSimulation`
+/// holds the opaque `Q3SourceRuntime` seam (`simulation/runtime.rs:4154`,
+/// exposed through `with_q3_source` at `simulation/runtime.rs:7774` with
+/// the bound product only), so no pool, records, or level time is
+/// reachable here; extend this resolver when that seam lands.
 fn q3_prediction_baseline(
     _simulation: &SharedSimulation,
     _player: &MovementPredictionPlayer,

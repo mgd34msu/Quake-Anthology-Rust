@@ -62,6 +62,15 @@
 //!   selects [`TravelMode::Crouch`] for the donor's -400 z command.
 //! * Checkpoint client lists are sorted by slot (the donor keeps map
 //!   insertion order; the cache here is a `HashMap`).
+//! * `SelectedBotNavigation` (donor `Pick<SourceBotNavigationHost,
+//!   "runtime" | "forClient" | "crouchedBounds" | "predictClientMovement"
+//!   | "travelWeapon">`, donor navigation.ts:39-43) has no worktree home:
+//!   the five members live here as inherent methods with Rust-adapted
+//!   shapes (borrowing
+//!   [`with_runtime`](ApplicationBotNavigation::with_runtime) and
+//!   [`with_client_runtime`](ApplicationBotNavigation::with_client_runtime)
+//!   instead of `runtime`/`forClient`, plus `crouched_bounds`,
+//!   `predict_client_movement`, and `travel_weapon`).
 //!
 //! Sibling homes:
 //!
@@ -75,23 +84,27 @@
 //!   ([`Q1SharedInventoryTable::count`](qa_content::q1::foundation::host::Q1SharedInventoryTable::count))
 //!   in `keyed_door_needs_key`; the shared table home is
 //!   [`count`](qa_world::inventory::InventoryTable::count).
+//! * Q2 expansion movers read the assembled product from the game arena
+//!   (`Q2GameServices::composition.product`, donor `q2.product`)
+//!   with Rogue platform state
+//!   (`Q2RogueMovers::platform_state`, donor
+//!   `expansion.entities.movers?.platformState`); the `SharedSimulation`
+//!   product seam stays identity-only.
 //!
 //! Missing siblings (no Rust home in this worktree; unify post-merge):
 //!
-//! * Scene actor rows: `SharedSceneQueries::query_actors` answers empty
-//!   until the collision lane lands, so entity/hazard/train reads are
-//!   inert (same seam as the player-movement empty-world traces); the
-//!   loops below activate unchanged once rows flow.
+//! * Scene actor rows: `SharedSceneQueries::query_actors`
+//!   (`simulation/runtime.rs:2012`) answers empty by construction, so
+//!   entity/hazard/train reads are inert (same seam as the
+//!   player-movement empty-world traces); the loops below activate
+//!   unchanged once rows flow. The live spatial table
+//!   (`RuntimePhysicsScene`, `simulation/runtime.rs:4429`) is reachable
+//!   only through the private simulation state borrow (`peek`/`lock`,
+//!   `simulation/runtime.rs:7648-7653`), so wiring the facade needs
+//!   `runtime.rs` edits owned by another lane.
 //! * Q3 native entity records (donor `records.nativeByActor`, mover
 //!   state, door triggers, `trigger_hurt`): the Q3 entity/hazard arms
 //!   land with the records home.
-//! * Q2 expansion mover modules (donor `product.expansions`): the Q2
-//!   product runtime in `SharedSimulation` is opaque, so only base
-//!   platform/traversal readers run.
-//! * `SelectedBotNavigation` (donor `Pick<SourceBotNavigationHost,
-//!   "runtime" | "forClient" | "crouchedBounds" | "predictClientMovement"
-//!   | "travelWeapon">`): no worktree home; the five members live here as
-//!   inherent methods with Rust-adapted shapes.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -130,6 +143,8 @@ use qa_content::q1::foundation::types::Q1Solid;
 use qa_content::q2::base::entities::movers::{mover_platform_state, mover_traversal, Q2PlatformPhase, Q2PlatformState};
 use qa_content::q2::foundation::host::{Q2Edition, Q2Entity, Q2GameServices, Q2Solid};
 use qa_content::q2::foundation::movers::{create_q2_mover_module, Q2MoverModule, Q2TrainRoute};
+use qa_content::q2::missionpacks::entities::movers::{Q2Plat2Phase, Q2RogueMovers};
+use qa_content::q2::missionpacks::types::Q2MissionPack;
 use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::NumericProfile;
@@ -1086,7 +1101,7 @@ impl ApplicationNavigationWorld {
         };
         let platform = {
             let game = view.game.borrow();
-            mover_platform_state(&game, actor.id())
+            mover_platform_state(&game, actor.id()).or_else(|| q2_expansion_platform(&game, actor.id()))
         };
         let module = {
             let game = view.game.borrow();
@@ -1234,6 +1249,50 @@ fn q2_elevator_phase(phase: Q2PlatformPhase) -> ElevatorPhase {
         Q2PlatformPhase::Up => ElevatorPhase::Up,
         Q2PlatformPhase::Top => ElevatorPhase::Top,
         Q2PlatformPhase::Down => ElevatorPhase::Down,
+    }
+}
+
+/// Q2 expansion platform state (donor `product.expansions` arm,
+/// navigation.ts:114-115).
+///
+/// Reads the assembled product from the game arena; only Rogue packs
+/// carry movers (`Q2RogueMovers::platform_state`, donor
+/// `expansion.entities.movers?.platformState`), so other packs read as
+/// absent. The caller establishes entity presence first
+/// (`Q2RogueMovers::platform_state` resolves through `require_entity`).
+fn q2_expansion_platform(game: &Q2GameServices, actor: &ActorId) -> Option<Q2PlatformState> {
+    let product = game.composition.product.as_ref()?;
+    for expansion in &product.expansions {
+        if expansion.pack != Q2MissionPack::Rogue {
+            continue;
+        }
+        let movers = Q2RogueMovers {
+            hooks: expansion.entities.hooks,
+        };
+        if let Some((top, bottom, phase)) = movers.platform_state(actor, game) {
+            return Some(q2_rogue_platform_state(top, bottom, phase));
+        }
+    }
+    None
+}
+
+/// Rogue platform state as a base platform state (donor `{ top: pos1,
+/// bottom: pos2, phase }`, movers.ts:21-24).
+fn q2_rogue_platform_state(top: Vec3, bottom: Vec3, phase: Q2Plat2Phase) -> Q2PlatformState {
+    Q2PlatformState {
+        top,
+        bottom,
+        phase: q2_rogue_platform_phase(phase),
+    }
+}
+
+/// Rogue platform phase as a base platform phase.
+fn q2_rogue_platform_phase(phase: Q2Plat2Phase) -> Q2PlatformPhase {
+    match phase {
+        Q2Plat2Phase::Top => Q2PlatformPhase::Top,
+        Q2Plat2Phase::Bottom => Q2PlatformPhase::Bottom,
+        Q2Plat2Phase::Up => Q2PlatformPhase::Up,
+        Q2Plat2Phase::Down => Q2PlatformPhase::Down,
     }
 }
 
@@ -1739,6 +1798,28 @@ mod tests {
         assert!(!keyed_door_needs_key(Some("q1:key/gold"), true, Some(1.0)));
         assert!(!keyed_door_needs_key(None, true, None));
         assert!(!keyed_door_needs_key(Some("q1:key/gold"), false, None));
+    }
+
+    /// Rogue expansion platforms map onto base platform states verbatim.
+    #[test]
+    fn rogue_platforms_map_onto_base_states() {
+        let top = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 64.0,
+        };
+        let bottom = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+        for (rogue, base) in [
+            (Q2Plat2Phase::Top, Q2PlatformPhase::Top),
+            (Q2Plat2Phase::Bottom, Q2PlatformPhase::Bottom),
+            (Q2Plat2Phase::Up, Q2PlatformPhase::Up),
+            (Q2Plat2Phase::Down, Q2PlatformPhase::Down),
+        ] {
+            let state = q2_rogue_platform_state(top, bottom, rogue);
+            assert_eq!(state.top, top);
+            assert_eq!(state.bottom, bottom);
+            assert_eq!(state.phase, base);
+        }
     }
 
     /// Locomotion fixture over a q3 profile.
