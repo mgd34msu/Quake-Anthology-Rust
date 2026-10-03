@@ -354,7 +354,7 @@ mod tests {
     use super::*;
 
     fn steel_corpus_root() -> PathBuf {
-        PathBuf::from("/home/buzzkill/Projects/qa-muse/target")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
     }
 
     fn steel_catalog() -> Option<InstalledCatalog> {
