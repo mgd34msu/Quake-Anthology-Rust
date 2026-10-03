@@ -2251,6 +2251,121 @@ mod tests {
         backend.execute_serial_command(&RenderCommand::SwapBuffers);
     }
 
+    /// Full-window NDC triangle over one texture binding, for the
+    /// viewport-fill capture proof below.
+    fn fullscreen_batch(texture: qa_client::render::types::TextureBinding) -> DrawBatch {
+        use qa_client::render::types::{
+            BatchLighting, BatchPrimitive, BatchVertices, CullFace, RenderState, RenderVertex,
+        };
+        use qa_core::math::vec2;
+        DrawBatch {
+            fog: None,
+            luminance_alpha: false,
+            indices: vec![0, 1, 2],
+            texture,
+            state: RenderState::opaque(CullFace::None),
+            lighting: BatchLighting::Vertex,
+            primitive: BatchPrimitive::Triangles,
+            vertices: BatchVertices::Single(vec![
+                RenderVertex {
+                    position: vec4(-1.0, -1.0, 0.5, 1.0),
+                    tex_coord: vec2(0.0, 0.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+                RenderVertex {
+                    position: vec4(3.0, -1.0, 0.5, 1.0),
+                    tex_coord: vec2(1.0, 0.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+                RenderVertex {
+                    position: vec4(-1.0, 3.0, 0.5, 1.0),
+                    tex_coord: vec2(0.0, 1.0),
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+            ]),
+        }
+    }
+
+    /// Non-black bounding box plus lit count over RGBA capture pixels.
+    fn capture_bbox(pixels: &[u8], width: u32, height: u32) -> (u32, u32, u32, u32, usize) {
+        let (mut minx, mut miny, mut maxx, mut maxy) = (width, height, 0u32, 0u32);
+        let mut count = 0usize;
+        for y in 0..height {
+            for x in 0..width {
+                let i = ((y * width + x) * 4) as usize;
+                if pixels[i] != 0 || pixels[i + 1] != 0 || pixels[i + 2] != 0 {
+                    count += 1;
+                    minx = minx.min(x);
+                    miny = miny.min(y);
+                    maxx = maxx.max(x);
+                    maxy = maxy.max(y);
+                }
+            }
+        }
+        (minx, miny, maxx, maxy, count)
+    }
+
+    #[test]
+    fn windowed_capture_fills_drawable() {
+        // Viewport-fill proof: a full-window NDC triangle captured through
+        // the real GL backend must light every drawable pixel. Passes with
+        // or without a display: without GL the honest open failure skips.
+        let mut options = windowed_options();
+        options.width = 160;
+        options.height = 120;
+        let config = StartupConfig::from_options(&options).unwrap();
+        let mut backend = WindowedStartupBackend::new(
+            &config,
+            true,
+            1.0,
+            Rc::new(Cell::new(false)),
+            IdentityOwner::create("windowed-fill-test").unwrap(),
+        );
+        if backend.open().is_err() {
+            return;
+        }
+        // Upload a white 1x1 so the triangle's vertex colors survive texturing.
+        use qa_client::render::types::{ImageLevel, RenderImage, TextureFilter, TextureSampling};
+        let owner = ResourceOwner::new(7, backend.identity.session().clone(), 0);
+        let mut registry = SceneImageRegistry::new(owner);
+        let white = registry
+            .register(
+                "*fillwhite",
+                RenderImage::Rgba8 {
+                    levels: vec![ImageLevel {
+                        width: 1,
+                        height: 1,
+                        pixels: vec![255, 255, 255, 255],
+                    }],
+                    border_color: vec4(1.0, 1.0, 1.0, 1.0),
+                },
+                TextureSampling {
+                    repeat: true,
+                    filter: TextureFilter::Nearest,
+                },
+            )
+            .expect("white registers");
+        let ops = registry.drain_operations();
+        backend
+            .renderer
+            .as_mut()
+            .expect("open renderer")
+            .backend_mut()
+            .apply_image_resource(&ops[0]);
+        backend.scene = Some(WindowedScene::new(
+            vec![fullscreen_batch(qa_client::render::types::TextureBinding::BindImage(
+                white,
+            ))],
+            vec4(0.0, 0.0, 0.0, 1.0),
+        ));
+        let pixels = backend.capture_next_frame().expect("capture works");
+        assert_eq!(pixels.len(), 160 * 120 * 4);
+        let (minx, miny, maxx, maxy, count) = capture_bbox(&pixels, 160, 120);
+        assert_eq!((minx, miny, maxx, maxy), (0, 0, 159, 119), "capture fills the drawable");
+        assert_eq!(count, 160 * 120, "every captured pixel is lit");
+        assert!(backend.close().is_empty());
+    }
+
     /// Live `SdlRouterWindow::attach` protocol check: push an injected key,
     /// attach, pump, and assert the decoded seat event arrives. Runs after the
     /// smoke application closes so the SDL input lease is free.

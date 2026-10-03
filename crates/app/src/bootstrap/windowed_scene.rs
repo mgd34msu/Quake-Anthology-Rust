@@ -855,6 +855,38 @@ mod tests {
     }
 
     #[test]
+    fn spawn_skips_worldspawn_and_non_spawn_records() {
+        // BSP entity strings always lead with worldspawn; non-spawn
+        // records must never abort the scan (regression: the windowed
+        // camera used to fall back to the world origin on every map).
+        let records = vec![
+            record(&[("classname", "worldspawn"), ("sky", "unit1_")]),
+            record(&[("classname", "light"), ("origin", "9 9 9")]),
+            record(&[
+                ("classname", "info_player_deathmatch"),
+                ("origin", "216 1328 24"),
+                ("angle", "270"),
+            ]),
+            record(&[("classname", "trigger_multiple"), ("origin", "1 1 1")]),
+            record(&[("classname", "info_player_deathmatch"), ("origin", "7 8 9")]),
+        ];
+        let spawn = select_spawn(&records, BspKind::Q3).expect("spawn past worldspawn");
+        assert_eq!(spawn.origin, vec3(216.0, 1328.0, 24.0 + 26.0));
+        assert_eq!(spawn.angles, vec3(0.0, 270.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_skips_unparseable_origins_and_continues() {
+        let records = vec![
+            record(&[("classname", "info_player_deathmatch"), ("origin", "bogus")]),
+            record(&[("classname", "info_player_deathmatch")]),
+            record(&[("classname", "info_player_deathmatch"), ("origin", "1 2 3")]),
+        ];
+        let spawn = select_spawn(&records, BspKind::Q1).expect("spawn past bad origins");
+        assert_eq!(spawn.origin, vec3(1.0, 2.0, 3.0 + 22.0));
+    }
+
+    #[test]
     fn q3_item_classnames_resolve_to_world_models() {
         assert_eq!(
             q3_item_model("weapon_rocketlauncher"),
