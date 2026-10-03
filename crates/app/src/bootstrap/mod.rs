@@ -7,6 +7,7 @@
 
 pub mod addon_library;
 pub mod application_tools;
+pub mod assets;
 pub mod audio;
 pub mod audio_settings;
 pub mod authored_start;
@@ -60,6 +61,8 @@ pub mod match_preflight;
 pub mod media;
 pub mod menu_art;
 pub mod menu_font;
+pub mod mod_presentation;
+pub mod mod_presentations;
 pub mod mod_selection;
 pub mod model_loader;
 pub mod native_held_weapon;

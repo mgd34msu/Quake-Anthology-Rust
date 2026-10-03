@@ -4,8 +4,9 @@
 //! (`Q1MessageLocalization`). Catalog tables, tier loading, and classic formatting come from
 //! the ported [`LocalizationCatalog`](qa_client::text::localization::LocalizationCatalog)
 //! and [`classic_q1_text`](qa_content::q1::foundation::text::classic_q1_text); the content
-//! catalog and mounts (`./assets.ts`, out of scope) arrive through the [`Q1MessageAssets`]
-//! seam, and the donor's async loads are sync through the host. One documented gap: the
+//! catalog and mounts arrive through the [`Q1MessageAssets`] seam, canonically backed by
+//! [`ApplicationAssets`](super::assets::ApplicationAssets), and the donor's async loads
+//! are sync through the host. One documented gap: the
 //! donor's per-slot splice for a known entry with unknown `$args` needs entry argument
 //! slots that the merged table keeps private, so that case falls back to plain `localize`
 //! (unknown `$args` render without their `$`, exactly as `localizeSource` does).
@@ -14,9 +15,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_client::text::localization::{LocLoadTier, LocReloadOptions, LocalizationCatalog, LocalizationProfile};
-use qa_content::contract::ContentId;
+use qa_content::contract::{ContentId, GameFamily};
 use qa_content::q1::foundation::text::{classic_q1_text, Q1TextArg};
 use qa_core::identity::SeatId;
+
+use super::assets::{ApplicationAssets, AssetScene};
+use super::content::ApplicationContentPreparer;
+use super::menu_font::{MenuCharsetImages, MountedMenuFonts, TypographyMounts};
 
 /// A message format argument (donor `string | number`).
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +56,42 @@ pub trait Q1MessageAssets {
     fn product(&self, content: &ContentId) -> Q1MessageProduct;
     /// Open a mounted file, or [`None`] when absent.
     fn open(&mut self, content: &ContentId, path: &str) -> Option<Vec<u8>>;
+}
+
+/// Canonical [`ApplicationAssets`] backing (donor `this.assets.content`
+/// reads): the catalog product expectation plus per-content mounts. Unknown
+/// content reports a non-q1 product instead of throwing, so foreign content
+/// resolves text untouched.
+impl<
+        'a,
+        P: ApplicationContentPreparer,
+        S: AssetScene,
+        C: MenuCharsetImages,
+        F: MountedMenuFonts,
+        M: TypographyMounts,
+    > Q1MessageAssets for ApplicationAssets<'a, P, S, C, F, M>
+{
+    fn product(&self, content: &ContentId) -> Q1MessageProduct {
+        match self.content.catalog.product(content.as_str()) {
+            Ok(product) => Q1MessageProduct {
+                q1_family: product.expectation.family == GameFamily::Q1,
+                rerelease: product.expectation.edition == "rerelease",
+            },
+            Err(_) => Q1MessageProduct {
+                q1_family: false,
+                rerelease: false,
+            },
+        }
+    }
+
+    fn open(&mut self, content: &ContentId, path: &str) -> Option<Vec<u8>> {
+        let mounts = self.content.for_content(content).ok()?;
+        mounts
+            .open(path, |_| true)
+            .ok()
+            .flatten()
+            .map(|resource| resource.bytes)
+    }
 }
 
 /// Format a numeric argument the way JavaScript `String(number)` does.
