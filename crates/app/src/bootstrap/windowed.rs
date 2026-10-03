@@ -11,12 +11,13 @@
 //! [`StartupApplication::open`] for `--windowed` runs.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use qa_client::input::router::SeatInputEvent;
+use qa_client::input::router::{InputRouter, RouterError, RouterWindow, Seat, SeatInputEvent, SeatRoute, UiCallback};
 use qa_client::render::gl::platform::PlatformGlContext;
 use qa_client::render::gl::renderer::GlRenderer;
 use qa_client::render::gl::{GlContext, DEPTH_BITS, MAX_TEXTURE_COORDS, MAX_TEXTURE_IMAGE_UNITS, MAX_TEXTURE_SIZE};
@@ -31,14 +32,18 @@ use qa_content::contract::{
     QvmAbiProfile, ResourceRequest,
 };
 use qa_content::mounts::MountPreparationScope;
+use qa_core::cmd::Dialect;
 use qa_core::identity::{IdentityOwner, ProviderId, SeatId};
 use qa_core::math::vec4;
+use qa_platform::controller::ControllerSelection;
 use qa_platform::native_libraries::NativeLibraryOptions;
 use qa_platform::sdl::{
-    SdlBackend, SdlDisplayMode, SdlEvent, SdlGlOptions, SdlWindow, SdlWindowOptions, SdlWindowPresentation,
+    SdlBackend, SdlDisplayMode, SdlEvent, SdlGlOptions, SdlInputLease, SdlWindow, SdlWindowOptions,
+    SdlWindowPresentation,
 };
 use qa_platform::sdl_render_context::SdlWorkerRenderContext;
 
+use super::input::NullRegistry;
 use super::renderer::{
     CaptureId, ImageLevel, NativeBackendFactory, NativeRenderBackend, NativeRenderWindow, NativeRenderer,
     NativeRendererOptions, NativeWindowFactory, RenderBackendKind, RenderCommand, RenderDriverInfo, RenderFrame,
@@ -528,6 +533,123 @@ impl RenderImageRegistry for NativeImages {
     }
 }
 
+/// Cap on recorded windowed seat events (a diagnostic record; the smoke run
+/// has no game client consuming them).
+const WINDOWED_INPUT_LOG_CAP: usize = 256;
+
+/// Shared queue receiving seat events forwarded from the router UI tap.
+type WindowedInputQueue = Rc<RefCell<Vec<SeatInputEvent>>>;
+
+/// [`RouterWindow`] over the shared windowed [`SdlWindow`].
+///
+/// The windowed GL path shares its [`SdlWindow`] between the render window
+/// and the backend factory, so the window cannot move into an
+/// [`SdlRouterWindow`](qa_client::input::router::SdlRouterWindow); this
+/// adapter replicates the `SdlRouterWindow::attach` protocol (an SDL input
+/// lease plus the router window surface) over the shared handle. The router
+/// never polls through this adapter: [`WindowedStartupBackend::poll`] pumps
+/// once through the render window and feeds each [`SdlEvent`] to
+/// [`InputRouter::handle_platform`], so the adapter only serves sizing and
+/// relative-mouse capture.
+struct WindowedRouterWindow {
+    window: Rc<RefCell<SdlWindow>>,
+    lease: Option<SdlInputLease>,
+}
+
+impl WindowedRouterWindow {
+    /// Attach to the shared window, acquiring the SDL input lease.
+    fn attach(window: Rc<RefCell<SdlWindow>>) -> Result<Self, String> {
+        let lease = window.borrow_mut().begin_input().map_err(|error| error.to_string())?;
+        Ok(Self {
+            window,
+            lease: Some(lease),
+        })
+    }
+}
+
+impl RouterWindow for WindowedRouterWindow {
+    fn logical_size(&mut self) -> Result<(i32, i32), RouterError> {
+        self.window
+            .borrow()
+            .logical_size()
+            .map_err(|error| RouterError::Platform(error.to_string()))
+    }
+
+    fn drawable_size(&mut self) -> Result<(i32, i32), RouterError> {
+        self.window
+            .borrow()
+            .drawable_size_signed()
+            .map_err(|error| RouterError::Platform(error.to_string()))
+    }
+
+    fn poll_events(&mut self) -> Result<Vec<SdlEvent>, RouterError> {
+        self.window
+            .borrow_mut()
+            .poll_events()
+            .map_err(|error| RouterError::Platform(error.to_string()))
+    }
+
+    fn set_relative_mouse(&mut self, enabled: bool) -> Result<(), RouterError> {
+        if let Some(lease) = &self.lease {
+            lease
+                .set_relative_mouse(enabled)
+                .map_err(|error| RouterError::Platform(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for WindowedRouterWindow {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            let _ = lease.close();
+        }
+    }
+}
+
+/// Build the windowed seat router: one keyboard seat whose UI tap forwards
+/// every [`SeatInputEvent`] into `queue` for
+/// [`WindowedStartupBackend::poll`] to deliver through
+/// [`StartupBackend::input`](super::startup::StartupBackend::input).
+fn open_windowed_input(seat: SeatId, queue: WindowedInputQueue, start: Instant) -> Result<InputRouter, String> {
+    let tap = Rc::clone(&queue);
+    let ui_event: UiCallback = Box::new(move |event, _focus| {
+        tap.borrow_mut().push(event.clone());
+        false
+    });
+    let routes = vec![SeatRoute {
+        seat: Seat::new(seat.clone(), Dialect::Q2Classic, ui_event),
+        controller: ControllerSelection::None,
+    }];
+    InputRouter::new(
+        routes,
+        Some(seat),
+        None,
+        Box::new(NullRegistry),
+        Box::new(move || start.elapsed().as_secs_f64() * 1000.0),
+        Box::new(move || start.elapsed().as_millis() as u32),
+        false,
+        Box::new(|_| {}),
+        false,
+        None,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Seat id carried by a seat input event.
+fn seat_event_seat(event: &SeatInputEvent) -> &SeatId {
+    match event {
+        SeatInputEvent::Focus { seat, .. }
+        | SeatInputEvent::Key { seat, .. }
+        | SeatInputEvent::Text { seat, .. }
+        | SeatInputEvent::MouseMotion { seat, .. }
+        | SeatInputEvent::MouseButton { seat, .. }
+        | SeatInputEvent::MouseWheel { seat, .. }
+        | SeatInputEvent::ControllerButton { seat, .. }
+        | SeatInputEvent::ControllerAxis { seat, .. } => seat,
+    }
+}
+
 /// Launch weapon sources for the windowed smoke run (never invoked: the
 /// smoke never resolves content).
 struct WindowedWeaponSources;
@@ -694,6 +816,10 @@ pub struct WindowedStartupBackend {
     share: Rc<RefCell<WindowedShare>>,
     quit: Rc<Cell<bool>>,
     start: Instant,
+    input_router: Option<InputRouter>,
+    input_seat: Option<SeatId>,
+    input_queue: WindowedInputQueue,
+    input_log: VecDeque<SeatInputEvent>,
 }
 
 impl WindowedStartupBackend {
@@ -710,6 +836,10 @@ impl WindowedStartupBackend {
             share: Rc::new(RefCell::new(WindowedShare::default())),
             quit,
             start: Instant::now(),
+            input_router: None,
+            input_seat: None,
+            input_queue: Rc::new(RefCell::new(Vec::new())),
+            input_log: VecDeque::new(),
         }
     }
 
@@ -730,6 +860,31 @@ impl WindowedStartupBackend {
             return Err("windowed backend is not open".to_string());
         };
         Ok((renderer, backends, owner))
+    }
+
+    /// Feed pumped window events through the seat router, then deliver the
+    /// resulting seat events through backend input.
+    fn handle_window_events(&mut self, events: Vec<SdlEvent>) -> Result<(), String> {
+        for event in events {
+            if matches!(
+                event,
+                SdlEvent::Quit { .. }
+                    | SdlEvent::Window {
+                        event: SDL_WINDOWEVENT_CLOSE,
+                        ..
+                    }
+            ) {
+                self.quit.set(true);
+            }
+            if let Some(router) = self.input_router.as_mut() {
+                router.handle_platform(event).map_err(|error| error.to_string())?;
+            }
+        }
+        let forwarded = std::mem::take(&mut *self.input_queue.borrow_mut());
+        for event in forwarded {
+            self.input(&event);
+        }
+        Ok(())
     }
 
     /// Arm a capture, present one frame, and return its pixels.
@@ -807,26 +962,30 @@ impl StartupBackend for WindowedStartupBackend {
         self.owner = Some(owner);
         self.renderer = Some(renderer);
         self.backends = Some(backends);
+        let seat = identity.seat(0);
+        let mut router = open_windowed_input(seat.clone(), Rc::clone(&self.input_queue), self.start)?;
+        let window = self
+            .share
+            .borrow()
+            .window
+            .clone()
+            .ok_or_else(|| "windowed backend has no window".to_string())?;
+        router
+            .attach_window(Box::new(WindowedRouterWindow::attach(window)?))
+            .map_err(|error| error.to_string())?;
+        self.input_router = Some(router);
+        self.input_seat = Some(seat);
         Ok(())
     }
 
     fn poll(&mut self) -> Result<(), String> {
-        let Some(renderer) = self.renderer.as_mut() else {
-            return Ok(());
+        let events = {
+            let Some(renderer) = self.renderer.as_mut() else {
+                return Ok(());
+            };
+            renderer.window().poll_events()?
         };
-        for event in renderer.window().poll_events()? {
-            if matches!(
-                event,
-                SdlEvent::Quit { .. }
-                    | SdlEvent::Window {
-                        event: SDL_WINDOWEVENT_CLOSE,
-                        ..
-                    }
-            ) {
-                self.quit.set(true);
-            }
-        }
-        Ok(())
+        self.handle_window_events(events)
     }
 
     fn frame(&mut self, _ctx: &mut StartupFrame<'_>) -> Result<(), String> {
@@ -843,8 +1002,18 @@ impl StartupBackend for WindowedStartupBackend {
         renderer.execute(&frame, backends).map_err(|error| error.to_string())
     }
 
-    fn input(&mut self, _event: &SeatInputEvent) -> bool {
-        false
+    fn input(&mut self, event: &SeatInputEvent) -> bool {
+        let Some(seat) = self.input_seat.as_ref() else {
+            return false;
+        };
+        if seat_event_seat(event) != seat {
+            return false;
+        }
+        if self.input_log.len() >= WINDOWED_INPUT_LOG_CAP {
+            self.input_log.pop_front();
+        }
+        self.input_log.push_back(event.clone());
+        true
     }
 
     fn request_quit(&mut self) {
@@ -865,11 +1034,17 @@ impl StartupBackend for WindowedStartupBackend {
     }
 
     fn input_seat(&self) -> Option<SeatId> {
-        None
+        self.input_seat.clone()
     }
 
     fn close(&mut self) -> Vec<String> {
         let mut failures = Vec::new();
+        if let Some(router) = self.input_router.as_mut() {
+            if let Err(error) = router.close() {
+                failures.push(error.to_string());
+            }
+        }
+        self.input_router = None;
         if let Some(renderer) = self.renderer.as_mut() {
             if let Err(error) = renderer.close() {
                 failures.push(error.to_string());
@@ -948,8 +1123,10 @@ pub fn drive_windowed_application(
 
 #[cfg(test)]
 mod tests {
+    use qa_client::input::router::{SdlRouterWindow, WINDOW_FOCUS_GAINED, WINDOW_FOCUS_LOST};
     use qa_content::catalog::{CatalogProduct, ProductAvailability, ProductExpectation};
     use qa_content::contract::ContentId;
+    use qa_platform::sdl::{decode_sdl_event, encode_sdl_event, SdlInjectedEvent};
 
     use super::*;
 
@@ -1058,6 +1235,272 @@ mod tests {
         assert!(backend.close().is_empty());
     }
 
+    fn test_input() -> (SeatId, WindowedInputQueue, InputRouter) {
+        let owner = IdentityOwner::create("windowed-input-test").unwrap();
+        let seat = owner.seat(0);
+        let queue: WindowedInputQueue = Rc::new(RefCell::new(Vec::new()));
+        let router = open_windowed_input(seat.clone(), Rc::clone(&queue), Instant::now()).unwrap();
+        (seat, queue, router)
+    }
+
+    fn drain_queue(queue: &WindowedInputQueue) -> Vec<SeatInputEvent> {
+        std::mem::take(&mut *queue.borrow_mut())
+    }
+
+    fn key_event(timestamp: u32, down: bool) -> SdlEvent {
+        SdlEvent::Key {
+            timestamp,
+            down,
+            repeat: false,
+            scancode: 4,
+            keycode: 65,
+            modifiers: 0,
+        }
+    }
+
+    #[test]
+    fn windowed_key_events_map_through_router() {
+        let (seat, queue, mut router) = test_input();
+        router.handle_platform(key_event(100, true)).unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            SeatInputEvent::Key {
+                code: 97,
+                down: true,
+                ..
+            }
+        ));
+        assert_eq!(seat_event_seat(&events[0]), &seat);
+        router.handle_platform(key_event(101, false)).unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            SeatInputEvent::Key {
+                code: 97,
+                down: false,
+                ..
+            }
+        ));
+        router
+            .handle_platform(SdlEvent::Key {
+                timestamp: 102,
+                down: true,
+                repeat: false,
+                scancode: 9,
+                keycode: 0,
+                modifiers: 0,
+            })
+            .unwrap();
+        assert!(drain_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn windowed_text_and_pointer_events_map_through_router() {
+        let (_seat, queue, mut router) = test_input();
+        router
+            .handle_platform(SdlEvent::Text {
+                timestamp: 200,
+                text: "hi".to_string(),
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        let SeatInputEvent::Text { text, .. } = &events[0] else {
+            panic!("expected text, got {:?}", events[0]);
+        };
+        assert_eq!(text, "hi");
+        router
+            .handle_platform(SdlEvent::MouseMotion {
+                timestamp: 201,
+                buttons: 0,
+                x: 10,
+                y: 20,
+                dx: 3,
+                dy: -2,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        let SeatInputEvent::MouseMotion { position, delta, .. } = &events[0] else {
+            panic!("expected motion, got {:?}", events[0]);
+        };
+        // No window is attached in the unit harness, so positions pass through raw.
+        assert_eq!(*position, (10.0, 20.0));
+        assert_eq!(*delta, (3.0, -2.0));
+        router
+            .handle_platform(SdlEvent::MouseButton {
+                timestamp: 202,
+                down: true,
+                button: 1,
+                clicks: 1,
+                x: 5,
+                y: 6,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            SeatInputEvent::MouseButton {
+                button: 1,
+                down: true,
+                ..
+            }
+        ));
+        router
+            .handle_platform(SdlEvent::MouseWheel {
+                timestamp: 203,
+                x: 0,
+                y: 1,
+                precise_x: 0.0,
+                precise_y: 1.0,
+                flipped: false,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        let SeatInputEvent::MouseWheel { delta, .. } = &events[0] else {
+            panic!("expected wheel, got {:?}", events[0]);
+        };
+        assert_eq!(*delta, (0.0, 1.0));
+        router
+            .handle_platform(SdlEvent::MouseWheel {
+                timestamp: 204,
+                x: 0,
+                y: 1,
+                precise_x: 0.0,
+                precise_y: 1.0,
+                flipped: true,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        let SeatInputEvent::MouseWheel { delta, .. } = &events[0] else {
+            panic!("expected wheel, got {:?}", events[0]);
+        };
+        assert_eq!(*delta, (0.0, -1.0));
+    }
+
+    #[test]
+    fn windowed_focus_events_gate_delivery() {
+        let (_seat, queue, mut router) = test_input();
+        router
+            .handle_platform(SdlEvent::Window {
+                timestamp: 300,
+                event: WINDOW_FOCUS_LOST,
+                data1: 0,
+                data2: 0,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SeatInputEvent::Focus { focused: false, .. }));
+        router.handle_platform(key_event(301, true)).unwrap();
+        assert!(drain_queue(&queue).is_empty());
+        router
+            .handle_platform(SdlEvent::Window {
+                timestamp: 302,
+                event: WINDOW_FOCUS_GAINED,
+                data1: 0,
+                data2: 0,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SeatInputEvent::Focus { focused: true, .. }));
+        router.handle_platform(key_event(303, true)).unwrap();
+        assert_eq!(drain_queue(&queue).len(), 1);
+    }
+
+    #[test]
+    fn windowed_quit_events_stay_outside_seat_delivery() {
+        let (_seat, queue, mut router) = test_input();
+        router.handle_platform(SdlEvent::Quit { timestamp: 400 }).unwrap();
+        router
+            .handle_platform(SdlEvent::Window {
+                timestamp: 401,
+                event: SDL_WINDOWEVENT_CLOSE,
+                data1: 0,
+                data2: 0,
+            })
+            .unwrap();
+        assert!(drain_queue(&queue).is_empty());
+    }
+
+    #[test]
+    fn windowed_decode_chain_maps_injected_keys() {
+        let (_seat, queue, mut router) = test_input();
+        let injected = SdlInjectedEvent::Key {
+            timestamp: 500,
+            down: true,
+            repeat: false,
+            scancode: 4,
+            keycode: 65,
+            modifiers: 0,
+        };
+        let bytes = encode_sdl_event(&injected, 7).unwrap();
+        let decoded = decode_sdl_event(&bytes).unwrap();
+        assert!(matches!(
+            decoded,
+            SdlEvent::Key {
+                keycode: 65,
+                down: true,
+                ..
+            }
+        ));
+        router.handle_platform(decoded).unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            SeatInputEvent::Key {
+                code: 97,
+                down: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn windowed_backend_delivers_router_events_to_input() {
+        let config = StartupConfig::from_options(&windowed_options()).unwrap();
+        let quit = Rc::new(Cell::new(false));
+        let mut backend = WindowedStartupBackend::new(&config, false, 1.0, Rc::clone(&quit));
+        let owner = IdentityOwner::create("windowed-delivery-test").unwrap();
+        let seat = owner.seat(0);
+        let queue: WindowedInputQueue = Rc::new(RefCell::new(Vec::new()));
+        let router = open_windowed_input(seat.clone(), Rc::clone(&queue), Instant::now()).unwrap();
+        backend.input_queue = Rc::clone(&queue);
+        backend.input_router = Some(router);
+        backend.input_seat = Some(seat.clone());
+        backend
+            .handle_window_events(vec![key_event(600, true), SdlEvent::Quit { timestamp: 601 }])
+            .unwrap();
+        assert!(quit.get());
+        assert_eq!(backend.input_log.len(), 1);
+        assert!(matches!(
+            backend.input_log[0],
+            SeatInputEvent::Key {
+                code: 97,
+                down: true,
+                ..
+            }
+        ));
+        assert_eq!(backend.input_seat(), Some(seat.clone()));
+        let foreign = IdentityOwner::create("windowed-foreign-test").unwrap().seat(0);
+        let rejected = SeatInputEvent::Key {
+            seat: foreign,
+            time_ms: 0.0,
+            code: 97,
+            down: true,
+        };
+        assert!(!backend.input(&rejected));
+        assert_eq!(backend.input_log.len(), 1);
+    }
+
     #[test]
     fn live_windowed_smoke_runs_frames() {
         // Passes with or without a display: a real windowed run is exercised
@@ -1066,6 +1509,15 @@ mod tests {
         match open_windowed_application(&options, StartupEntry::Run) {
             Ok(composed) => {
                 let mut composed = composed;
+                assert!(composed.app.input_seat().is_some(), "windowed input seat is published");
+                let seat = composed.app.input_seat().unwrap();
+                let probe = SeatInputEvent::Key {
+                    seat,
+                    time_ms: 0.0,
+                    code: 97,
+                    down: true,
+                };
+                assert!(composed.app.input(&probe), "windowed backend accepts seat input");
                 let pixels = composed.app.capture_next_frame().expect("windowed capture works");
                 assert_eq!(pixels.len(), 64 * 64 * 4);
                 for pixel in pixels.as_chunks::<4>().0.iter().step_by(1024) {
@@ -1078,8 +1530,50 @@ mod tests {
                     .expect("windowed drive works");
                 assert_eq!(frames, 3);
                 assert!(composed.app.is_closed());
+                windowed_sdl_router_attach_pumps_keys();
             }
             Err(error) => assert!(!error.is_empty(), "honest open failure"),
         }
+    }
+
+    /// Live `SdlRouterWindow::attach` protocol check: push an injected key,
+    /// attach, pump, and assert the decoded seat event arrives. Runs after the
+    /// smoke application closes so the SDL input lease is free.
+    fn windowed_sdl_router_attach_pumps_keys() {
+        let options = SdlWindowOptions {
+            title: "qa-muse-input-check".to_string(),
+            width: 32,
+            height: 32,
+            hidden: true,
+            ..SdlWindowOptions::default()
+        };
+        let mut scratch = SdlWindow::open(&options).expect("scratch window opens");
+        scratch
+            .push_event(&SdlInjectedEvent::Key {
+                timestamp: 7,
+                down: true,
+                repeat: false,
+                scancode: 4,
+                keycode: 65,
+                modifiers: 0,
+            })
+            .expect("scratch key injects");
+        let attached = SdlRouterWindow::attach(scratch).expect("router window attaches");
+        let owner = IdentityOwner::create("windowed-attach-test").unwrap();
+        let seat = owner.seat(0);
+        let queue: WindowedInputQueue = Rc::new(RefCell::new(Vec::new()));
+        let mut router = open_windowed_input(seat, Rc::clone(&queue), Instant::now()).unwrap();
+        router.attach_window(Box::new(attached)).unwrap();
+        router.pump().unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1, "pumped key arrives: {events:?}");
+        assert!(matches!(
+            events[0],
+            SeatInputEvent::Key {
+                code: 97,
+                down: true,
+                ..
+            }
+        ));
     }
 }
