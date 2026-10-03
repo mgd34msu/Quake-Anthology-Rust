@@ -64,6 +64,7 @@ use super::startup_selection::{
     PreparedQ3Catalog, PreparedTeamArena, QvmGrappleStyle, StartupArenaSelection, StartupPlayerProducts,
     StartupSelectionCollaborators, StartupSelectionModel,
 };
+use super::windowed_world::{load_windowed_world, WindowedWorld};
 use crate::options::{ApplicationOptions, Network, Renderer};
 use crate::startup::StartupConfig;
 
@@ -1083,6 +1084,7 @@ pub struct WindowedStartupBackend {
     input_queue: WindowedInputQueue,
     input_log: VecDeque<SeatInputEvent>,
     scene: Option<WindowedScene>,
+    world: Option<WindowedWorld>,
 }
 
 impl WindowedStartupBackend {
@@ -1105,7 +1107,25 @@ impl WindowedStartupBackend {
             input_queue: Rc::new(RefCell::new(Vec::new())),
             input_log: VecDeque::new(),
             scene: None,
+            world: None,
         }
+    }
+
+    /// Adopt a loaded map world, publishing its (geometry-less) scene view.
+    /// Batches stay empty until model/geometry presentation lands; the live
+    /// actor count is available through [`Self::world_entity_count`].
+    fn set_world(&mut self, world: WindowedWorld) {
+        self.scene = Some(WindowedScene {
+            batches: Vec::new(),
+            clear_color: vec4(0.0, 0.0, 0.0, 1.0),
+        });
+        self.world = Some(world);
+    }
+
+    /// Live map-entity count, or `None` when no map world loaded.
+    #[must_use]
+    pub fn world_entity_count(&self) -> Option<usize> {
+        self.world.as_ref().map(WindowedWorld::entity_count)
     }
 
     /// Live drawable size: the window's current drawable when valid,
@@ -1334,6 +1354,7 @@ impl StartupBackend for WindowedStartupBackend {
         }
         self.renderer = None;
         self.scene = None;
+        self.world = None;
         if let Some(mut audio) = self.audio.take() {
             let _ignored = audio.close();
         }
@@ -1368,7 +1389,20 @@ pub fn open_windowed_application(
     let model = StartupSelectionModel::new(catalog, options.clone(), Box::new(WindowedCollaborators))
         .map_err(|error| error.to_string())?;
     let quit = Rc::new(Cell::new(false));
-    let backend = WindowedStartupBackend::new(&config, options.hidden, options.gamma, Rc::clone(&quit));
+    let mut backend = WindowedStartupBackend::new(&config, options.hidden, options.gamma, Rc::clone(&quit));
+    match load_windowed_world(&config, model.catalog(), options) {
+        Ok(world) => {
+            eprintln!(
+                "windowed: spawned {} of {} map entities ({} {})",
+                world.spawned(),
+                world.entity_records(),
+                world.content(),
+                world.map()
+            );
+            backend.set_world(world);
+        }
+        Err(error) => eprintln!("windowed: no map world ({error})"),
+    }
     let app = StartupApplication::open(model, backend, entry).map_err(|error| error.to_string())?;
     Ok(WindowedApplication { app, quit })
 }
