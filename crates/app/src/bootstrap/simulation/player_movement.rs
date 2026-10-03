@@ -24,6 +24,7 @@ use qa_bots::movement_contract::{
 use qa_bots::scene::{LeafContents, Q1MoveRule, TracePolicy};
 use qa_bots::types::{TravelMode, TraversalRequest};
 use qa_content::contract::{ExecutableRecipe, GameFamily};
+use qa_content::q3::base::records::EntityRef as RecordsEntityRef;
 use qa_content::q3::base::shared::definitions::Product;
 use qa_content::q3::foundation::arsenal::Q3ArsenalRuntimeState;
 use qa_content::q3::foundation::movement_hooks::{
@@ -74,6 +75,7 @@ use qa_world::movement::types::{
 use qa_world::movement::Q1MovementParameters;
 
 use super::player_input_application::{MovementProfile, MovementState};
+use super::q3::player_state::read_q3_arsenal_runtime;
 use super::runtime::{
     movement_origin, movement_profile, provider_family, provider_text, ClientMovementOptions, MovementPlayer,
     Q2MovementConfig, SharedSimulation,
@@ -1494,26 +1496,61 @@ struct Q3PredictionBaseline {
 /// Implements the donor null-source path (donor player-movement.ts:117-126):
 /// with no bound Q3 entity, prediction falls back to the player snapshot
 /// state, the player arsenal (or a fresh `Baseq3` runtime), and the arsenal
-/// source weapon (donor player-movement.ts:163). Live-source reads
-/// (`readQ3MovementState`/`readQ3ArsenalRuntime` over the entity pool and
-/// records) need the q3 lane's native source host: `SharedSimulation`
-/// holds the opaque `Q3SourceRuntime` seam (`simulation/runtime.rs:4154`,
-/// exposed through `with_q3_source` at `simulation/runtime.rs:7774` with
-/// the bound product only), so no pool, records, or level time is
-/// reachable here; extend this resolver when that seam lands.
+/// source weapon (donor player-movement.ts:163). With a bound entity, the
+/// arsenal runtime and the selected weapon read live (donor
+/// player-movement.ts:126+163): the entity resolves by actor through the
+/// attached native source host (`native_by_actor`; the donor indexes the
+/// entity pool by client slot, which the host does not expose) and the
+/// previous runtime spawns from the host product. The movement read stays
+/// on the fallback: `readQ3MovementState` needs the entity records and the
+/// host exposes no records or pool handle.
 ///
-/// Missing siblings: q3 native source host for live prediction reads
-/// (`readQ3MovementState`/`readQ3ArsenalRuntime`; blocked on the
-/// `Q3SourceRuntime` seam at `simulation/runtime.rs:4154`).
+/// Missing siblings: q3 native source records for the live movement read
+/// (`readQ3MovementState`; `Q3SourceRuntime` at `q3/runtime.rs` exposes
+/// `native_by_actor` but no records or pool handle).
 fn q3_prediction_baseline(
-    _simulation: &SharedSimulation,
-    _player: &MovementPredictionPlayer,
+    simulation: &SharedSimulation,
+    player: &MovementPredictionPlayer,
     _profile: &MovementProfile,
 ) -> Q3PredictionBaseline {
-    Q3PredictionBaseline {
+    let host = simulation.with_q3_source(|game| game.host()).flatten();
+    let Some(host) = host else {
+        return Q3PredictionBaseline {
+            movement: None,
+            arsenal: None,
+            weapon: None,
+        };
+    };
+    let entity = host.native_by_actor(player.actor.id());
+    q3_prediction_live_baseline(entity.as_ref(), host.options.product)
+}
+
+/// Baseline over a bound Q3 entity, if any.
+///
+/// Without an entity (or without its admitted client record) every read
+/// stays empty and the caller falls back; otherwise the arsenal runtime
+/// reads over a fresh previous spawned from the source product (donor
+/// player-movement.ts:126) and the weapon reads from the client player
+/// state (donor player-movement.ts:163). The movement read stays empty
+/// until the host exposes its records.
+fn q3_prediction_live_baseline(entity: Option<&RecordsEntityRef>, product: Product) -> Q3PredictionBaseline {
+    let none = || Q3PredictionBaseline {
         movement: None,
         arsenal: None,
         weapon: None,
+    };
+    let Some(entity) = entity else {
+        return none();
+    };
+    let weapon = entity.borrow().client.as_ref().map(|client| client.borrow().ps.weapon);
+    let Some(weapon) = weapon else {
+        return none();
+    };
+    let previous = spawn_arsenal_runtime(product, 100.0);
+    Q3PredictionBaseline {
+        movement: None,
+        arsenal: Some(read_q3_arsenal_runtime(entity, &previous)),
+        weapon: Some(weapon),
     }
 }
 
@@ -1699,5 +1736,276 @@ pub fn movement_observation(step: &PredictedMovementStep) -> MovementObservation
             matches!(&ordered.effect, MovementEffect::Event(event)
                 if event.event == entity_event::FALL_MEDIUM || event.event == entity_event::FALL_FAR)
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::collections::HashMap;
+
+    use qa_content::contract::ItemId;
+    use qa_content::q3::base::records::{
+        ActorCallbacks, CombatState, DamageAdmissionFn, DamageRequest, EntityRef, GameClient, Q3ActorCallbacks,
+        Q3BaseError, Q3DamageCall, Q3EntityRecords, Q3RecordHost, Q3SessionActors, Q3SessionBodies, Q3SessionCombat,
+        Q3SessionInventory,
+    };
+    use qa_content::q3::base::shared::definitions::MoveType;
+    use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId};
+    use qa_world::body::BodyState;
+    use qa_world::movement::q3::constants::move_flags;
+
+    use super::*;
+
+    struct FakeActors {
+        owner: IdentityOwner,
+        owned: RefCell<HashMap<ActorId, OwnedActor>>,
+        live: RefCell<Vec<ActorId>>,
+        next_generation: Cell<u32>,
+    }
+
+    impl Q3SessionActors for FakeActors {
+        fn assert_owned(&self, actor: &OwnedActor) -> Result<(), Q3BaseError> {
+            if self.owner.owns_owned(actor) {
+                Ok(())
+            } else {
+                Err(Q3BaseError::Invalid("foreign actor".to_string()))
+            }
+        }
+
+        fn allocate_at_source(&self, provider: &ProviderId, slot: usize, _definition: &str) -> OwnedActor {
+            let generation = self.next_generation.get();
+            self.next_generation.set(generation + 1);
+            let id = self.owner.actor(slot as u32, generation);
+            let owned = self.owner.owned_actor(&id, provider.clone()).unwrap();
+            self.owned.borrow_mut().insert(id.clone(), owned.clone());
+            self.live.borrow_mut().push(id);
+            owned
+        }
+
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.borrow().contains(actor)
+        }
+
+        fn on_release(&self, _callback: Box<dyn Fn(&OwnedActor)>) -> Box<dyn Fn()> {
+            Box::new(|| {})
+        }
+
+        fn release(&self, actor: &OwnedActor) {
+            self.live.borrow_mut().retain(|id| id != actor.id());
+        }
+
+        fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
+            self.owned.borrow().get(actor).cloned()
+        }
+    }
+
+    struct FakeBodies {
+        states: RefCell<HashMap<ActorId, BodyState>>,
+    }
+
+    impl Q3SessionBodies for FakeBodies {
+        fn create(&self, actor: &OwnedActor, state: BodyState) {
+            self.states.borrow_mut().insert(actor.id().clone(), state);
+        }
+
+        fn read(&self, actor: &ActorId) -> Option<BodyState> {
+            self.states.borrow().get(actor).cloned()
+        }
+
+        fn write(&self, actor: &OwnedActor, state: BodyState) {
+            self.states.borrow_mut().insert(actor.id().clone(), state);
+        }
+
+        fn linked(&self, _actor: &ActorId) -> Option<qa_world::body::LinkedBody> {
+            None
+        }
+
+        fn link(&self, _actor: &OwnedActor, _origin: Option<Vec3>) {}
+
+        fn unlink(&self, _actor: &OwnedActor) {}
+    }
+
+    struct FakeCombat {
+        states: RefCell<HashMap<ActorId, CombatState>>,
+    }
+
+    impl Q3SessionCombat for FakeCombat {
+        fn read(&self, actor: &ActorId) -> Option<CombatState> {
+            self.states.borrow().get(actor).cloned()
+        }
+
+        fn create(&self, actor: &OwnedActor, initial: CombatState, _admit_damage: Option<DamageAdmissionFn>) {
+            self.states.borrow_mut().insert(actor.id().clone(), initial);
+        }
+
+        fn set_health(&self, actor: &OwnedActor, health: i32) {
+            if let Some(state) = self.states.borrow_mut().get_mut(actor.id()) {
+                state.health = health;
+            }
+        }
+
+        fn set_can_take_damage(&self, actor: &OwnedActor, can_take_damage: bool) {
+            if let Some(state) = self.states.borrow_mut().get_mut(actor.id()) {
+                state.can_take_damage = can_take_damage;
+            }
+        }
+
+        fn set_regular_points(
+            &self,
+            _actor: &OwnedActor,
+            _points: i32,
+            _initial: qa_content::q3::base::records::RegularArmorState,
+        ) {
+        }
+
+        fn bind_damage_admission(&self, _actor: &OwnedActor, _admit_damage: DamageAdmissionFn) {}
+
+        fn apply(&self, request: DamageRequest) -> qa_content::q3::base::records::DamageOutcome {
+            qa_content::q3::base::records::DamageOutcome::StaleTarget { request }
+        }
+    }
+
+    struct FakeInventory;
+    impl Q3SessionInventory for FakeInventory {
+        fn has(&self, _actor: &ActorId) -> bool {
+            true
+        }
+
+        fn create(&self, _actor: &OwnedActor, _entries: Vec<qa_content::q3::base::records::InventoryEntry>) {}
+
+        fn count(&self, _actor: &ActorId, _item: &ItemId) -> i32 {
+            0
+        }
+
+        fn configure(&self, _actor: &OwnedActor, _item: &ItemId, _count: i32, _capacity: i32) {}
+    }
+
+    struct FakeCallbacks;
+    impl Q3ActorCallbacks for FakeCallbacks {
+        fn bind(&self, _actor: &OwnedActor, _callbacks: ActorCallbacks) {}
+    }
+
+    struct FakeRecordHost {
+        actors: Rc<FakeActors>,
+        bodies: Rc<FakeBodies>,
+        combat: Rc<FakeCombat>,
+        inventory: Rc<FakeInventory>,
+        callbacks: Rc<FakeCallbacks>,
+    }
+
+    impl Q3RecordHost for FakeRecordHost {
+        fn actors(&self) -> Rc<dyn Q3SessionActors> {
+            self.actors.clone()
+        }
+
+        fn bodies(&self) -> Rc<dyn Q3SessionBodies> {
+            self.bodies.clone()
+        }
+
+        fn combat(&self) -> Rc<dyn Q3SessionCombat> {
+            self.combat.clone()
+        }
+
+        fn inventory(&self) -> Rc<dyn Q3SessionInventory> {
+            self.inventory.clone()
+        }
+
+        fn callbacks(&self) -> Rc<dyn Q3ActorCallbacks> {
+            self.callbacks.clone()
+        }
+
+        fn schedule(&self, _actor: &OwnedActor, _due_milliseconds: Option<i32>) {}
+
+        fn run_think(&self, _actor: &OwnedActor, _time_milliseconds: i32) {}
+
+        fn damage_call(&self) -> Option<Q3DamageCall> {
+            None
+        }
+
+        fn foreign(&self, _actor: &ActorId) -> Option<EntityRef> {
+            None
+        }
+
+        fn is_player(&self, _actor: &ActorId) -> bool {
+            true
+        }
+    }
+
+    fn records() -> (Rc<FakeRecordHost>, Q3EntityRecords) {
+        let host = Rc::new(FakeRecordHost {
+            actors: Rc::new(FakeActors {
+                owner: IdentityOwner::create("q3-prediction-baseline").unwrap(),
+                owned: RefCell::new(HashMap::new()),
+                live: RefCell::new(Vec::new()),
+                next_generation: Cell::new(1),
+            }),
+            bodies: Rc::new(FakeBodies {
+                states: RefCell::new(HashMap::new()),
+            }),
+            combat: Rc::new(FakeCombat {
+                states: RefCell::new(HashMap::new()),
+            }),
+            inventory: Rc::new(FakeInventory),
+            callbacks: Rc::new(FakeCallbacks),
+        });
+        let records = Q3EntityRecords::new(
+            host.clone(),
+            ProviderId::new("q3", "prediction-baseline-test"),
+            Product::Baseq3,
+        );
+        (host, records)
+    }
+
+    fn player(host: &FakeRecordHost, records: &Q3EntityRecords, slot: usize, admit: bool) -> EntityRef {
+        let actor = host
+            .actors
+            .allocate_at_source(&ProviderId::new("q3", "prediction-baseline-test"), slot, "test");
+        let entity = records.attach(slot, actor, admit).unwrap();
+        if admit {
+            entity.borrow_mut().client = Some(Rc::new(RefCell::new(GameClient::new(Product::Baseq3, None, None))));
+        }
+        entity
+    }
+
+    #[test]
+    fn live_baseline_reads_arsenal_and_weapon() {
+        let (host, records) = records();
+        let entity = player(&host, &records, 0, true);
+        {
+            let borrowed = entity.borrow();
+            let mut client = borrowed.client.as_ref().unwrap().borrow_mut();
+            client.ps.weapon = 7;
+            client.ps.pm_type = MoveType::PmSpectator as i32;
+            client.ps.pm_flags = move_flags::RESPAWNED | move_flags::USE_ITEM_HELD;
+            client.ps.event_sequence = 41;
+        }
+        let baseline = q3_prediction_live_baseline(Some(&entity), Product::Baseq3);
+        assert!(baseline.movement.is_none());
+        assert_eq!(baseline.weapon, Some(7));
+        let arsenal = baseline.arsenal.expect("live arsenal");
+        assert_eq!(arsenal.product, Product::Baseq3);
+        assert!(arsenal.spectator);
+        assert!(arsenal.respawned);
+        assert!(arsenal.use_item_held);
+        assert_eq!(arsenal.event_sequence, 41);
+    }
+
+    #[test]
+    fn live_baseline_without_entity_stays_empty() {
+        let baseline = q3_prediction_live_baseline(None, Product::Baseq3);
+        assert!(baseline.movement.is_none());
+        assert!(baseline.arsenal.is_none());
+        assert!(baseline.weapon.is_none());
+    }
+
+    #[test]
+    fn live_baseline_without_client_stays_empty() {
+        let (host, records) = records();
+        let entity = player(&host, &records, 1, false);
+        let baseline = q3_prediction_live_baseline(Some(&entity), Product::Baseq3);
+        assert!(baseline.movement.is_none());
+        assert!(baseline.arsenal.is_none());
+        assert!(baseline.weapon.is_none());
     }
 }
