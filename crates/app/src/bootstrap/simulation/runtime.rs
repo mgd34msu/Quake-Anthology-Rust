@@ -3,15 +3,14 @@
 //! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/runtime.ts`
 //! (`SharedSimulation`, `createSimulation`, `orderedActorTurns`, `loadSimulation`).
 //!
-//! Missing siblings (no Rust home in this worktree; mirrored below, unify post-merge):
-//! `players.ts` ([`MovementPlayer`], `movementOrigin`, `movementVelocity`,
-//! `movementProfile`, `providerFamily`, `providerTiming`), `bots.ts`
-//! ([`SimulationBotServices`]), `bot-mover-connections.ts`
-//! (`applicationTrainConnections`), `bot-prediction.ts`
-//! (`predictApplicationBotMovement`), `../content.ts`
-//! (`LoadedApplicationContent`, only behind seams), and
-//! `../weapon-behavior-selection.ts` (`PreparedWeaponBehavior` selection,
-//! already mirrored as [`PreparedWeaponBehavior`](super::types::PreparedWeaponBehavior)).
+//! Local mirrors of sibling modules (unify post-merge): [`MovementPlayer`],
+//! `movementProfile`, `providerFamily`, `providerTiming`, `bots.ts`
+//! ([`SimulationBotServices`]), `../content.ts` (`LoadedApplicationContent`,
+//! only behind seams), and `../weapon-behavior-selection.ts`
+//! (`PreparedWeaponBehavior` selection, already mirrored as
+//! [`PreparedWeaponBehavior`](super::types::PreparedWeaponBehavior)).
+//! `movementOrigin`/`movementVelocity` delegate to `super::players`;
+//! `bot-mover-connections.ts` and `bot-prediction.ts` have no callers here.
 //!
 //! Structural divergences from the donor, all forced by Rust ownership:
 //!
@@ -277,38 +276,18 @@ pub fn movement_profile(recipe: &ExecutableRecipe) -> Result<MovementProfile, Ru
 
 /// Origin carried by a movement state.
 ///
-/// Port of `movementOrigin` from donor
-/// `src/app/bootstrap/simulation/players.ts`.
+/// Delegates to the players lane
+/// ([`movement_origin`](super::players::movement_origin)).
 pub fn movement_origin(state: &MovementState) -> Vec3 {
-    match state {
-        MovementState::Q2Classic(state) => Vec3 {
-            x: state.origin_eighths[0] as f32 / 8.0,
-            y: state.origin_eighths[1] as f32 / 8.0,
-            z: state.origin_eighths[2] as f32 / 8.0,
-        },
-        MovementState::Q1Netquake(state) => state.origin,
-        MovementState::Q1Quakeworld(state) => state.origin,
-        MovementState::Q2Rerelease(state) => state.origin,
-        MovementState::Q3(state) => state.origin,
-    }
+    super::players::movement_origin(state)
 }
 
 /// Velocity carried by a movement state.
 ///
-/// Port of `movementVelocity` from donor
-/// `src/app/bootstrap/simulation/players.ts`.
+/// Delegates to the players lane
+/// ([`movement_velocity`](super::players::movement_velocity)).
 pub fn movement_velocity(state: &MovementState) -> Vec3 {
-    match state {
-        MovementState::Q2Classic(state) => Vec3 {
-            x: state.velocity_eighths[0] as f32 / 8.0,
-            y: state.velocity_eighths[1] as f32 / 8.0,
-            z: state.velocity_eighths[2] as f32 / 8.0,
-        },
-        MovementState::Q1Netquake(state) => state.velocity,
-        MovementState::Q1Quakeworld(state) => state.velocity,
-        MovementState::Q2Rerelease(state) => state.velocity,
-        MovementState::Q3(state) => state.velocity,
-    }
+    super::players::movement_velocity(state)
 }
 
 /// Cutscene camera pose (`MovementPlayer["cutscene"]`).
@@ -1702,6 +1681,37 @@ pub struct SessionActorRegistry {
     inner: qa_world::registry::ActorRegistry,
     release_listeners: Vec<(u64, Rc<dyn Fn(&OwnedActor, &qa_world::registry::ActorRegistry)>)>,
     next_listener: u64,
+    closed: bool,
+    /// Pending checkpoint reconstructions by provider key (donor
+    /// `restoredSources`).
+    restored_sources: HashMap<String, Vec<RestoredSourceEntry>>,
+    /// Remapped saved slots (donor `restoredActors`).
+    restored_actors: HashMap<u32, RestoredActor>,
+    /// Saved slots by reconstructed actor (donor `restoredActorSlots`).
+    restored_actor_slots: HashMap<OwnedActor, u32>,
+    /// Resolved saved references (donor `savedReferences`).
+    saved_references: HashMap<String, ActorId>,
+}
+
+/// One pending checkpoint reconstruction row (donor
+/// `restoredSources` entry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoredSourceEntry {
+    /// Reconstructed source slot.
+    source_slot: u32,
+    /// Saved registry slot.
+    saved_slot: u32,
+    /// Saved slot generation.
+    saved_generation: u32,
+}
+
+/// One remapped saved slot (donor `restoredActors` value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoredActor {
+    /// Saved slot generation.
+    saved_generation: u32,
+    /// Reconstructed actor.
+    actor: OwnedActor,
 }
 
 impl SessionActorRegistry {
@@ -1711,6 +1721,11 @@ impl SessionActorRegistry {
             inner: qa_world::registry::ActorRegistry::new(owner, capacity)?,
             release_listeners: Vec::new(),
             next_listener: 1,
+            closed: false,
+            restored_sources: HashMap::new(),
+            restored_actors: HashMap::new(),
+            restored_actor_slots: HashMap::new(),
+            saved_references: HashMap::new(),
         })
     }
 
@@ -1725,6 +1740,11 @@ impl SessionActorRegistry {
             inner: qa_world::registry::ActorRegistry::restore(owner, checkpoints, sources, capacity)?,
             release_listeners: Vec::new(),
             next_listener: 1,
+            closed: false,
+            restored_sources: HashMap::new(),
+            restored_actors: HashMap::new(),
+            restored_actor_slots: HashMap::new(),
+            saved_references: HashMap::new(),
         })
     }
 
@@ -1822,6 +1842,11 @@ impl SessionActorRegistry {
     pub fn close(&mut self) {
         self.inner.close();
         self.release_listeners.clear();
+        self.closed = true;
+        self.restored_sources.clear();
+        self.restored_actors.clear();
+        self.restored_actor_slots.clear();
+        self.saved_references.clear();
     }
 }
 
@@ -2062,6 +2087,8 @@ pub struct GameplayAuthority {
     /// Registered combat policies by id (C10: donor `policies`; C4 decide
     /// dispatch in `CombatPolicy.kind`).
     policies: HashMap<ProviderId, CombatPolicy>,
+    /// Next policy registration revision (donor disposer identity).
+    next_policy_revision: u64,
 }
 
 /// Donor `GameplayAuthority` hooks (constructor options).
@@ -2089,6 +2116,7 @@ impl GameplayAuthority {
             actors: None,
             callbacks: None,
             policies: HashMap::new(),
+            next_policy_revision: 0,
         }
     }
 
@@ -2126,6 +2154,9 @@ impl Default for GameplayAuthority {
 /// unify post-merge.)
 pub struct SharedInventoryTable {
     inner: qa_world::inventory::InventoryTable,
+    groups: Rc<RefCell<HashMap<OwnedActor, ActorSourceItems>>>,
+    actors: Option<Rc<RefCell<SessionActorRegistry>>>,
+    state: Option<Weak<RefCell<SharedSimulationState>>>,
 }
 
 impl SharedInventoryTable {
@@ -2133,7 +2164,20 @@ impl SharedInventoryTable {
     pub fn new() -> Self {
         Self {
             inner: qa_world::inventory::InventoryTable::new(),
+            groups: Rc::new(RefCell::new(HashMap::new())),
+            actors: None,
+            state: None,
         }
+    }
+
+    /// Wire the live-actor registry used to resolve source-item owners.
+    pub fn set_actors(&mut self, actors: Rc<RefCell<SessionActorRegistry>>) {
+        self.actors = Some(actors);
+    }
+
+    /// Wire the simulation state used to commit source-item stores.
+    pub fn set_state(&mut self, state: Weak<RefCell<SharedSimulationState>>) {
+        self.state = Some(state);
     }
 
     /// Count an item for an actor (donor `count`).
@@ -4155,6 +4199,7 @@ pub struct Q3SourceRuntime {
     #[allow(dead_code)]
     opaque: bool,
     product: Option<qa_content::q3::base::shared::definitions::Product>,
+    host: Option<Rc<super::q3::runtime::Q3SourceRuntime>>,
 }
 
 impl Q3SourceRuntime {
@@ -4163,6 +4208,7 @@ impl Q3SourceRuntime {
         Self {
             opaque: true,
             product: None,
+            host: None,
         }
     }
 
@@ -4174,6 +4220,22 @@ impl Q3SourceRuntime {
     /// Bound source product (C7; donor `game.options.product` reads).
     pub fn product(&self) -> Option<qa_content::q3::base::shared::definitions::Product> {
         self.product
+    }
+
+    /// Attach the canonical source host (donor `Q3SourceRuntime` instance).
+    ///
+    /// The construction lane attaches the live host it builds; admission,
+    /// spawn, movement, and map-load paths delegate their host-owned calls
+    /// through this handle.
+    pub fn attach_host(&mut self, host: Rc<super::q3::runtime::Q3SourceRuntime>) {
+        self.opaque = false;
+        self.product = Some(host.options.product);
+        self.host = Some(host);
+    }
+
+    /// Attached canonical source host, if construction attached one.
+    pub fn host(&self) -> Option<Rc<super::q3::runtime::Q3SourceRuntime>> {
+        self.host.clone()
     }
 }
 
@@ -6260,14 +6322,18 @@ impl Default for Q2CharacterActor {
 
 /// Q3 character actor seam (donor `Q3CharacterActor`).
 ///
-/// Mirror of donor Q3 character actors (canonical home: `qa_content::q3`);
-/// unify post-merge.
+/// The stored snapshot keeps the C6/C11 read/write paths; `live` retains
+/// the canonical actor (canonical home:
+/// [`qa_content::q3::foundation::character::Q3CharacterActor`]) once
+/// admission wires it, so later spawn/commit/restore calls run through the
+/// real type instead of the snapshot.
 pub struct Q3CharacterActor {
     #[allow(dead_code)]
     opaque: bool,
     /// Latest animation snapshot (donor `character.animation`; `None`
     /// while the seam is opaque, C6).
     pub animation: Option<ActorAnimationState>,
+    live: Option<qa_content::q3::foundation::character::Q3CharacterActor<RuntimeQ3CharacterServices>>,
 }
 
 impl Q3CharacterActor {
@@ -6276,18 +6342,434 @@ impl Q3CharacterActor {
         Self {
             opaque: true,
             animation: None,
+            live: None,
         }
+    }
+
+    /// Attach the canonical live actor after admission wires it.
+    pub fn attach_live(
+        &mut self,
+        live: qa_content::q3::foundation::character::Q3CharacterActor<RuntimeQ3CharacterServices>,
+    ) {
+        self.opaque = false;
+        self.animation = Some(live.animation());
+        self.live = Some(live);
+    }
+
+    /// Canonical live actor, once admission wires it.
+    pub fn live(&self) -> Option<&qa_content::q3::foundation::character::Q3CharacterActor<RuntimeQ3CharacterServices>> {
+        self.live.as_ref()
     }
 
     /// Latest animation snapshot, when the seam carries one (C6).
     pub fn animation(&self) -> Option<ActorAnimationState> {
-        self.animation.clone()
+        self.animation
+            .clone()
+            .or_else(|| self.live.as_ref().map(|live| live.animation()))
     }
 }
 
 impl Default for Q3CharacterActor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Runtime services behind the canonical Q3 character actor.
+///
+/// Ports the donor `admitPlayer`/`spawnQ3Player` inline services object
+/// (donor runtime.ts 3658-3666, 3441-3449): shared bodies, callbacks,
+/// combat, inventory, millisecond clock, character-event emission,
+/// source-game placement, and the last-attack death context. Holds only a
+/// weak state handle plus the shared table handles, so the canonical actor
+/// retained in [`Q3CharacterActor`] never pins the simulation `Rc` cycle.
+#[derive(Clone)]
+pub struct RuntimeQ3CharacterServices {
+    state: Weak<RefCell<SharedSimulationState>>,
+    actors: Rc<RefCell<SessionActorRegistry>>,
+    bodies: Rc<RefCell<qa_world::body::BodyTable>>,
+}
+
+impl RuntimeQ3CharacterServices {
+    /// Bind the services to a simulation without retaining it.
+    pub fn new(sim: &SharedSimulation) -> Self {
+        Self {
+            state: sim.weak(),
+            actors: sim.actors_handle(),
+            bodies: sim.bodies_handle(),
+        }
+    }
+}
+
+fn character_body_to_world(body: &qa_content::q3::foundation::character::BodyState) -> qa_world::body::BodyState {
+    qa_world::body::BodyState {
+        origin: body.origin,
+        angles: body.angles,
+        velocity: body.velocity,
+        bounds: body.bounds,
+        ground: body.ground.clone(),
+    }
+}
+
+fn world_body_to_character(body: &qa_world::body::BodyState) -> qa_content::q3::foundation::character::BodyState {
+    qa_content::q3::foundation::character::BodyState {
+        origin: body.origin,
+        angles: body.angles,
+        velocity: body.velocity,
+        bounds: body.bounds,
+        ground: body.ground.clone(),
+    }
+}
+
+fn world_combat_to_character(
+    combat: &qa_world::combat::CombatState,
+) -> qa_content::q3::foundation::character::CombatState {
+    qa_content::q3::foundation::character::CombatState {
+        health: combat.health as i32,
+        armor: world_armor_to_contract(&combat.armor),
+        mass: combat.mass,
+        can_take_damage: combat.can_take_damage,
+        invulnerable: combat.invulnerable,
+        no_knockback: combat.no_knockback,
+        team: combat.team.clone(),
+    }
+}
+
+fn character_combat_to_world(
+    combat: &qa_content::q3::foundation::character::CombatState,
+) -> qa_world::combat::CombatState {
+    qa_world::combat::CombatState {
+        health: f64::from(combat.health),
+        armor: contract_armor_to_world(&combat.armor),
+        mass: combat.mass,
+        can_take_damage: combat.can_take_damage,
+        invulnerable: combat.invulnerable,
+        no_knockback: combat.no_knockback,
+        team: combat.team.clone(),
+    }
+}
+
+impl qa_content::q3::foundation::character::Q3CharacterServices for RuntimeQ3CharacterServices {
+    fn read_body(&self, actor: &ActorId) -> Option<qa_content::q3::foundation::character::BodyState> {
+        let actors = self.actors.borrow();
+        self.bodies
+            .borrow()
+            .read(actors.inner(), actor)
+            .as_ref()
+            .map(world_body_to_character)
+    }
+
+    fn write_body(&self, actor: &OwnedActor, body: qa_content::q3::foundation::character::BodyState) {
+        let actors = self.actors.borrow();
+        let _ = self
+            .bodies
+            .borrow_mut()
+            .write(actors.inner(), actor, character_body_to_world(&body));
+    }
+
+    fn link_body(&self, actor: &OwnedActor) {
+        let actors = self.actors.borrow();
+        let _ = self.bodies.borrow_mut().link(actors.inner(), actor, None);
+    }
+
+    fn unlink_body(&self, actor: &OwnedActor) {
+        let actors = self.actors.borrow();
+        let _ = self.bodies.borrow_mut().unlink(actors.inner(), actor);
+    }
+
+    fn bind_callbacks(
+        &self,
+        actor: &OwnedActor,
+        callbacks: qa_content::q3::foundation::character::Q3CharacterCallbackSet,
+    ) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let state = state.borrow();
+        let actors = self.actors.borrow();
+        let qa_content::q3::foundation::character::Q3CharacterCallbackSet { pain, die } = callbacks;
+        let _ = state.callbacks.borrow().bind(
+            &actors,
+            actor,
+            ActorCallbacks {
+                think: None,
+                touch: None,
+                use_action: None,
+                pain: Some(Rc::new(move |_| pain())),
+                die: Some(Rc::new(move |_| die())),
+            },
+        );
+    }
+
+    fn read_combat(&self, actor: &ActorId) -> Option<qa_content::q3::foundation::character::CombatState> {
+        let state = self.state.upgrade()?;
+        let combat = state
+            .borrow()
+            .combat
+            .read(actor)
+            .as_ref()
+            .map(world_combat_to_character);
+        combat
+    }
+
+    fn create_combat(&self, actor: &OwnedActor, combat: qa_content::q3::foundation::character::CombatState) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let _ = state.borrow().combat.create(actor, character_combat_to_world(&combat));
+    }
+
+    fn set_health(&self, actor: &OwnedActor, health: i32) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let _ = state.borrow().combat.set_health(actor, f64::from(health));
+    }
+
+    fn set_armor(&self, actor: &OwnedActor, armor: qa_content::contract::ArmorState) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let _ = state.borrow().combat.set_armor(actor, contract_armor_to_world(&armor));
+    }
+
+    fn set_traits(&self, actor: &OwnedActor, traits: qa_content::q3::foundation::character::CombatTraitChanges) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let _ = state.borrow().combat.set_traits(
+            actor,
+            qa_content::q2::support::contracts::CombatTraitChanges {
+                can_take_damage: traits.can_take_damage,
+                mass: traits.mass,
+                invulnerable: traits.invulnerable,
+                team: traits.team,
+                no_knockback: traits.no_knockback,
+            },
+        );
+    }
+
+    fn has_inventory(&self, actor: &ActorId) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        let state = state.borrow();
+        let actors = self.actors.borrow();
+        state.inventory.inner().has(actors.inner(), actor)
+    }
+
+    fn create_inventory(&self, actor: &OwnedActor, entries: Vec<qa_content::contract::InventoryEntry>) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let actors = self.actors.borrow();
+        let entries: Vec<qa_world::inventory::InventoryEntry> = entries.iter().map(contract_entry_to_world).collect();
+        let _ = state
+            .borrow_mut()
+            .inventory
+            .inner_mut()
+            .create(actors.inner(), actor, &entries);
+    }
+
+    fn inventory_entries(&self, actor: &ActorId) -> Vec<qa_content::contract::InventoryEntry> {
+        let Some(state) = self.state.upgrade() else {
+            return Vec::new();
+        };
+        let state = state.borrow();
+        let actors = self.actors.borrow();
+        state
+            .inventory
+            .inner()
+            .entries(actors.inner(), actor)
+            .iter()
+            .map(world_entry_to_contract)
+            .collect()
+    }
+
+    fn configure_inventory(&self, actor: &OwnedActor, entry: qa_content::contract::InventoryEntry) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let actors = self.actors.borrow();
+        let _ =
+            state
+                .borrow_mut()
+                .inventory
+                .inner_mut()
+                .configure(actors.inner(), actor, contract_entry_to_world(&entry));
+    }
+
+    fn time_ms(&self) -> i32 {
+        let Some(state) = self.state.upgrade() else {
+            return 0;
+        };
+        let time = seconds(state.borrow().source_frame.time);
+        (time * 1000.0).trunc() as i32
+    }
+
+    fn emit(&self, event: qa_content::q3::foundation::character::Q3CharacterEvent) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
+        let content = state.recipe.character.definition.content.clone();
+        let time = state.source_frame.time;
+        state.events.emit_owned(
+            None,
+            &content,
+            super::types::SourcePresentationEvent::Q3Character(super::types::Q3CharacterPresentationEvent {
+                actor: event.actor.id().clone(),
+                sequence: event.sequence,
+                time_ms: event.time_ms,
+                event: event.event,
+                parameter: event.parameter,
+            }),
+            time,
+            None,
+        );
+    }
+
+    fn death_context(&self, actor: &OwnedActor) -> qa_content::q3::foundation::character::Q3CharacterDeathContext {
+        let (attack, actors) = match self.state.upgrade() {
+            Some(state) => {
+                let attack = state.borrow().last_attack.get(actor).cloned();
+                (attack, Some(self.actors.borrow()))
+            }
+            None => (None, None),
+        };
+        let suicide = attack
+            .as_ref()
+            .is_some_and(|attack| matches!(attack.cause, super::events::AttackCause::Q3 { means_of_death: 20, .. }));
+        let killer_source_slot = attack
+            .as_ref()
+            .and_then(|attack| attack.attacker.as_ref())
+            .and_then(|attacker| actors.as_ref().and_then(|actors| actors.source_of(attacker)))
+            .map(|(_, slot)| slot as i32)
+            .unwrap_or(1022);
+        qa_content::q3::foundation::character::Q3CharacterDeathContext {
+            blood: true,
+            no_drop: false,
+            suicide,
+            killer_source_slot,
+        }
+    }
+
+    fn placement(&self) -> qa_content::q3::foundation::character::Q3Placement {
+        qa_content::q3::foundation::character::Q3Placement::SourceGame
+    }
+
+    fn spawn_targets(&self, actor: &OwnedActor) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let (start, services) = {
+            let state = state.borrow();
+            let start = state.character_starts.get(actor).cloned().flatten();
+            let services = match &state.source {
+                SourceRuntime::Q1 { services, .. } => Some(Rc::clone(services)),
+                _ => None,
+            };
+            (start, services)
+        };
+        if let (Some(start), Some(services)) = (start, services) {
+            let _ = services.borrow_mut().use_targets(&start, Some(actor.id()));
+        }
+    }
+
+    fn kill_box(&self, actor: &OwnedActor) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let body = {
+            let actors = self.actors.borrow();
+            let Some(body) = self.bodies.borrow().read(actors.inner(), actor.id()) else {
+                return;
+            };
+            body
+        };
+        let observations = self.actors.borrow().observations();
+        let mut targets = Vec::new();
+        {
+            let state = state.borrow();
+            for candidate in &observations {
+                if candidate.id == *actor.id() {
+                    continue;
+                }
+                let damageable = state
+                    .combat
+                    .read(&candidate.id)
+                    .is_some_and(|entry| entry.can_take_damage);
+                if !damageable {
+                    continue;
+                }
+                let actors = self.actors.borrow();
+                let Some(other) = self.bodies.borrow().read(actors.inner(), &candidate.id) else {
+                    continue;
+                };
+                if body.origin.x + body.bounds.min.x > other.origin.x + other.bounds.max.x
+                    || body.origin.x + body.bounds.max.x < other.origin.x + other.bounds.min.x
+                    || body.origin.y + body.bounds.min.y > other.origin.y + other.bounds.max.y
+                    || body.origin.y + body.bounds.max.y < other.origin.y + other.bounds.min.y
+                    || body.origin.z + body.bounds.min.z > other.origin.z + other.bounds.max.z
+                    || body.origin.z + body.bounds.max.z < other.origin.z + other.bounds.min.z
+                {
+                    continue;
+                }
+                targets.push(candidate.id.clone());
+            }
+        }
+        for target in targets {
+            let (time, weapon_provider, combat_provider, inventory_provider, movement_provider, is_q1) = {
+                let state = state.borrow();
+                (
+                    state.source_frame.time,
+                    state.weapon_provider.provider.clone(),
+                    state.recipe.combat.provider.clone(),
+                    state.recipe.inventory.provider.clone(),
+                    state.recipe.movement.provider.clone(),
+                    state.source.kind() == "q1",
+                )
+            };
+            let cause = if is_q1 {
+                super::events::AttackCause::Q1 {
+                    death_type: "telefrag".to_string(),
+                    armor_effect: None,
+                }
+            } else {
+                super::events::AttackCause::Q2 {
+                    means_of_death: 21,
+                    damage_flags: 32,
+                    native: None,
+                }
+            };
+            let mut locked = state.borrow_mut();
+            let sequence = locked.attack_sequence;
+            locked.attack_sequence += 1;
+            let request = super::events::DamageRequest {
+                attack: super::events::AttackProvenance {
+                    sequence,
+                    time,
+                    attacker: Some(actor.id().clone()),
+                    inflictor: Some(actor.id().clone()),
+                    originating_projectile: None,
+                    weapon: None,
+                    weapon_provider,
+                    damage_powerup_owner: None,
+                    combat_provider,
+                    inventory_provider,
+                    movement_provider,
+                    cause,
+                },
+                target,
+                amount: 100_000.0,
+                knockback: 0.0,
+                direction: zero(),
+                point: body.origin,
+                normal: zero(),
+                delivery: super::events::DamageDelivery::Direct,
+            };
+            let _ = locked.combat.apply(request);
+        }
     }
 }
 
@@ -6576,6 +7058,12 @@ pub struct SharedSimulationState {
     pub q1_campaign: qa_content::q1::base::provider::Q1CampaignState,
     /// Donor `characters`.
     pub characters: HashMap<OwnedActor, Q3CharacterActor>,
+    /// Donor `deathAnimations` shared by every Q3 character actor.
+    pub q3_character_death_animations: Rc<RefCell<qa_content::q3::foundation::character::Q3DeathAnimationSequence>>,
+    /// Records-layer entity refs retained from Q3 host admission (donor
+    /// `records.byActor` reads resolve through this map; the host owns the
+    /// records store itself).
+    pub q3_entity_refs: HashMap<OwnedActor, qa_content::q3::base::records::EntityRef>,
     /// Donor `characterStarts`.
     pub character_starts: HashMap<OwnedActor, Option<ActorId>>,
     /// Donor `grapple`.
@@ -8020,16 +8508,17 @@ impl SharedSimulation {
     }
 
     fn new_inner(options: SimulationOptions<'_>, native_loading: bool) -> Result<Self, RuntimeError> {
-        let weapon_provider = validate_construction_options(&options, native_loading)?;
-        Self::construct(options, weapon_provider, native_loading)
+        let (weapon_provider, restore_settings) = validate_construction_options(&options, native_loading)?;
+        Self::construct(options, weapon_provider, restore_settings, native_loading)
     }
     #[allow(dead_code)]
     fn construct(
         options: SimulationOptions<'_>,
         weapon_provider: ProviderReference,
+        restore_settings: Option<super::save::SavedSimulationSettings>,
         native_loading: bool,
     ) -> Result<Self, RuntimeError> {
-        construct_simulation(options, weapon_provider, native_loading)
+        construct_simulation(options, weapon_provider, restore_settings, native_loading)
     }
 }
 
@@ -8896,23 +9385,195 @@ impl SharedSimulation {
     }
 }
 
+/// Session-mode name in save spelling.
+fn simulation_mode_name(mode: &super::types::SimulationMode) -> &'static str {
+    match mode {
+        super::types::SimulationMode::Singleplayer => "singleplayer",
+        super::types::SimulationMode::Coop => "coop",
+        super::types::SimulationMode::Deathmatch => "deathmatch",
+    }
+}
+
+/// Bots decode closure for save validation (donor
+/// `decodeApplicationBotsCheckpoint`, via
+/// [`decode_application_bots_checkpoint`](super::bots::decode_application_bots_checkpoint)).
+fn restore_decode_bots() -> super::save::DecodeApplicationBotsCheckpointFn {
+    use super::save::{
+        ApplicationBotTransportCheckpoint, BotConnection, BotObservation, BotSnapshot,
+        DecodedApplicationBotsCheckpoint, SimulationSaveError,
+    };
+    Rc::new(move |value| {
+        let decoded = super::bots::decode_application_bots_checkpoint(value)
+            .map_err(|error| SimulationSaveError::invalid(error.to_string()))?;
+        let version = u32::try_from(decoded.version)
+            .map_err(|_| SimulationSaveError::invalid("Saved bots checkpoint has a bad version"))?;
+        let transport_version = u32::try_from(decoded.transport.version)
+            .map_err(|_| SimulationSaveError::invalid("Saved bots transport has a bad version"))?;
+        Ok(DecodedApplicationBotsCheckpoint {
+            version,
+            transport: ApplicationBotTransportCheckpoint {
+                version: transport_version,
+                elapsed_milliseconds: decoded.transport.elapsed_milliseconds,
+                connections: decoded
+                    .transport
+                    .connections
+                    .into_iter()
+                    .map(|connection| BotConnection {
+                        client_slot: i64::from(connection.client.slot),
+                        client_generation: i64::from(connection.client.generation),
+                        actor: connection.actor,
+                        reliable_sequence: connection.reliable.sequence,
+                        reliable_acknowledge: connection.reliable.acknowledge,
+                        reliable_slots: connection.reliable.slots,
+                    })
+                    .collect(),
+                snapshots: decoded
+                    .transport
+                    .snapshots
+                    .into_iter()
+                    .map(|snapshot| BotSnapshot {
+                        client: snapshot.client,
+                        entities: snapshot.entities,
+                    })
+                    .collect(),
+            },
+            director: decoded.director,
+            navigation: decoded.navigation,
+            knowledge: decoded.knowledge,
+            shared_world: decoded.shared_world,
+            observations: decoded
+                .observations
+                .into_iter()
+                .map(|observation| BotObservation {
+                    number: observation.number,
+                    actor: observation.actor,
+                })
+                .collect(),
+        })
+    })
+}
+
+/// Q3 guest-client closure for save validation.
+///
+/// The contract checkpoint carries no guest host state, so QVM-guest
+/// restores stay unsupported; other images never invoke this.
+fn restore_q3_clients() -> super::save::SavedQ3GuestClientsFn {
+    use super::save::SimulationSaveError;
+    Rc::new(move |_| {
+        Err(SimulationSaveError::invalid(
+            "QVM guest client slots need the guest runtime",
+        ))
+    })
+}
+
+/// Whether a saved recipe matches the mounted recipe (donor
+/// `isDeepStrictEqual(saved.recipe, options.recipe)` over the recipe
+/// subset the image carries: map providers, geometry path, and the
+/// execution role/kind/owner rows).
+fn saved_recipe_matches(saved: &super::save::SimSavedRecipe, recipe: &ExecutableRecipe) -> bool {
+    use qa_content::contract::{ExecutionModule, ModuleRole};
+    if saved.map_entities_provider != provider_text(&recipe.map.entities.provider)
+        || saved.map_geometry_path != recipe.map.geometry.requested_path
+        || saved.execution.len() != recipe.execution.len()
+    {
+        return false;
+    }
+    saved
+        .execution
+        .iter()
+        .zip(recipe.execution.iter())
+        .all(|(saved, module)| {
+            let (kind, owner, role) = match module {
+                ExecutionModule::Typescript { owner, role, .. } => {
+                    (super::save::SimExecutionKind::Typescript, owner, *role)
+                }
+                ExecutionModule::Quakec { owner, .. } => {
+                    (super::save::SimExecutionKind::Quakec, owner, ModuleRole::ServerGame)
+                }
+                ExecutionModule::Qvm { owner, role, .. } => (super::save::SimExecutionKind::Qvm, owner, *role),
+                ExecutionModule::Native { owner, role, .. } => (super::save::SimExecutionKind::Native, owner, *role),
+            };
+            let role = match role {
+                ModuleRole::ServerGame => "server-game",
+                ModuleRole::ClientGame => "client-game",
+                ModuleRole::Ui => "ui",
+            };
+            saved.kind == kind && saved.owner_provider == provider_text(&owner.provider) && saved.role == role
+        })
+}
+
+/// Validate a restore image (donor constructor 545-556).
+///
+/// Returns the saved settings for construction adoption. Images with
+/// source-item records are rejected: splitting them into the primary
+/// image needs `prepareSourceItemRestore` (donor
+/// `src/persistence/source-items.ts`), which has no Rust home.
+fn validate_restore_image(
+    image: &super::save::SimulationSaveImage,
+    options: &SimulationOptions<'_>,
+) -> Result<super::save::SavedSimulationSettings, RuntimeError> {
+    if image
+        .providers
+        .iter()
+        .any(|record| record.schema == "world:source-items")
+    {
+        return fail("Saved source items need their restore split (unsupported)");
+    }
+    super::save::validate_simulation_save(image, &restore_decode_bots()).map_err(source_failure)?;
+    let settings = super::save::saved_simulation_settings(image, &restore_q3_clients()).map_err(source_failure)?;
+    if settings.skill != i64::from(options.skill)
+        || settings.mode != simulation_mode_name(&options.mode)
+        || settings.max_clients != i64::try_from(options.max_clients).unwrap_or(i64::MAX)
+    {
+        return fail("Saved simulation rules differ from construction settings");
+    }
+    if !saved_recipe_matches(&image.recipe, &options.recipe) {
+        return fail("Saved simulation recipe differs from the mounted recipe");
+    }
+    if options
+        .restored_clients
+        .as_ref()
+        .is_some_and(|clients| clients.iter().any(|client| !options.identity.owns_client(client)))
+    {
+        return fail("Restored client belongs to another session");
+    }
+    let clients = options.restored_clients.clone().unwrap_or_default();
+    let mut slots: Vec<u32> = clients.iter().map(|client| client.slot()).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    let mut saved_slots = settings.client_slots.clone();
+    saved_slots.sort_unstable();
+    saved_slots.dedup();
+    let client_slots: Vec<i64> = clients.iter().map(|client| i64::from(client.slot())).collect();
+    if slots.len() != clients.len()
+        || saved_slots.len() != settings.client_slots.len()
+        || clients.len() != settings.client_slots.len()
+        || settings.client_slots.iter().any(|slot| !client_slots.contains(slot))
+    {
+        return fail("Saved players do not match the restored client slots");
+    }
+    Ok(settings)
+}
+
 /// Construction gates (donor constructor 489-560).
 ///
-/// Returns the selected weapon provider. Save restore always fails: the
-/// save-restore lane owns `SharedSimulation::restore` and has not landed,
-/// so every `options.restore` image is rejected up front instead of
-/// validated piecemeal.
+/// Returns the selected weapon provider plus the validated restore
+/// settings, if any. Restore images validate through
+/// [`validate_restore_image`] (donor 545-556); construction adopts the
+/// saved settings and registry.
 fn validate_construction_options(
     options: &SimulationOptions<'_>,
     native_loading: bool,
-) -> Result<ProviderReference, RuntimeError> {
+) -> Result<(ProviderReference, Option<super::save::SavedSimulationSettings>), RuntimeError> {
     use qa_content::contract::{
         EnemySelection, ExecutionModule, GrappleMechanicDetail, GrappleSelection, ModuleRole, NativeAbi,
         NativeModuleApi, QuakeCApiIdentity,
     };
-    if options.restore.is_some() {
-        return fail("Missing siblings: simulation save restore (SharedSimulation::restore)");
-    }
+    let restore_settings = options
+        .restore
+        .as_ref()
+        .map(|image| validate_restore_image(image, options))
+        .transpose()?;
     if !native_loading {
         if let GrappleSelection::Enabled { mechanic, .. } = &options.recipe.equipment.grapple {
             if matches!(mechanic, GrappleMechanicDetail::Q3Qvm { .. }) {
@@ -8921,6 +9582,10 @@ fn validate_construction_options(
         }
         let mods = options.prepared_mods.as_ref().is_some_and(|mods| !mods.is_empty())
             || options.enabled_mods.as_ref().is_some_and(|mods| !mods.is_empty())
+            || options
+                .restore
+                .as_ref()
+                .is_some_and(|image| image.mods.as_ref().is_some_and(|mods| !mods.mods.is_empty()))
             || options.mod_travel.is_some();
         if mods {
             return fail("Selected gameplay mods require asynchronous loadSimulation");
@@ -9088,7 +9753,7 @@ fn validate_construction_options(
     if options.initial_source_milliseconds.is_some_and(|initial| initial < 0) {
         return fail("Initial source time must be finite and nonnegative");
     }
-    Ok(options.recipe.weapons[0].clone())
+    Ok((options.recipe.weapons[0].clone(), restore_settings))
 }
 
 /// Shared simulation construction (donor `SharedSimulation` constructor,
@@ -9104,6 +9769,7 @@ fn validate_construction_options(
 fn construct_simulation(
     options: SimulationOptions<'_>,
     weapon_provider: ProviderReference,
+    restore_settings: Option<super::save::SavedSimulationSettings>,
     native_loading: bool,
 ) -> Result<SharedSimulation, RuntimeError> {
     // Donor 517-518: session and Q1 campaign carry.
@@ -9113,14 +9779,23 @@ fn construct_simulation(
         _ => (0, i32::from(options.skill)),
     };
     let q1_campaign = qa_content::q1::base::provider::Q1CampaignState::new(campaign_flags, campaign_skill);
-    // Donor 526-528: start items and spawn point (restore is rejected, so the
-    // saved-settings arms are dead).
-    let start_items = options.start_items.clone().unwrap_or_default();
+    // Donor 526-528: start items and spawn point; a restore image
+    // supplies the saved-settings arms.
+    let start_items = restore_settings
+        .as_ref()
+        .map(|settings| settings.start_items.clone())
+        .or_else(|| options.start_items.clone())
+        .unwrap_or_default();
     let initial_spawn_point = options
         .native_q2_travel
         .as_ref()
         .map(|travel| travel.spawn_point().to_string())
         .or_else(|| options.travel.as_ref().map(|travel| travel.spawn_point.clone()))
+        .or_else(|| {
+            restore_settings
+                .as_ref()
+                .map(|settings| settings.initial_spawn_point.clone())
+        })
         .or_else(|| options.initial_spawn_point.clone())
         .unwrap_or_default();
     // Donor 547, 561-571: provider timing, source clock, frames, RNG.
@@ -9148,9 +9823,14 @@ fn construct_simulation(
     } else {
         SourceRandom::new(options.seed)
     };
-    // Donor 572: live actor registry (restore is rejected, so no checkpoint
-    // arm) plus the shared body table and late-construction handle.
-    let actors = Rc::new(RefCell::new(SessionActorRegistry::new(options.identity, 65536)?));
+    // Donor 572: live actor registry (a restore image rebuilds the
+    // registry from its saved slots; the image carries no source-slot
+    // checkpoints) plus the shared body table and late-construction
+    // handle.
+    let actors = Rc::new(RefCell::new(match options.restore.as_ref() {
+        Some(image) => SessionActorRegistry::restore(options.identity, &image.actors, &[], 65536)?,
+        None => SessionActorRegistry::new(options.identity, 65536)?,
+    }));
     let bodies_table = Rc::new(RefCell::new(qa_world::body::BodyTable::new()));
     let late = LateSimulation::new(Rc::clone(&actors), Rc::clone(&bodies_table));
     // Donor 577-578: think callbacks and scene queries.
@@ -9233,7 +9913,8 @@ fn construct_simulation(
     )
     .map_err(source_failure)?;
     // Donor 632: shared inventory table.
-    let inventory = SharedInventoryTable::new();
+    let mut inventory = SharedInventoryTable::new();
+    inventory.set_actors(Rc::clone(&actors));
     // Donor 633: simulation events. The presentation carries the Q1 fog
     // seed (entity content, accepted mount contents, Q1 entity text); the
     // global fog state exists only for Q1 maps. The presentation weak
@@ -9395,6 +10076,10 @@ fn construct_simulation(
         q2_views: HashMap::new(),
         q1_campaign,
         characters: HashMap::new(),
+        q3_character_death_animations: Rc::new(RefCell::new(
+            qa_content::q3::foundation::character::Q3DeathAnimationSequence::new(),
+        )),
+        q3_entity_refs: HashMap::new(),
         character_starts: HashMap::new(),
         grapple: None,
         qvm_grapple_source: None,
@@ -9541,6 +10226,7 @@ fn construct_simulation(
         )),
     );
     simulation.lock().events = live_events;
+    simulation.lock().inventory.set_state(simulation.weak());
     let live_movement = simulation.create_monster_movement(numeric_profile, None);
     simulation.lock().q1_movement = Rc::new(RefCell::new(live_movement));
     // Post-wrap inputs: guests and registries move out of options (the
@@ -9655,6 +10341,589 @@ fn finish_construction(
     }
 }
 
+/// Foundation checkpoint bridge over the live grenade arena.
+///
+/// Implements
+/// [`Q2FoundationCheckpointBridge`](super::equipment_runtime::Q2FoundationCheckpointBridge)
+/// with the content capture/restore pair
+/// (`Q2GameServices::capture_foundation` at
+/// `crates/content/src/q2/foundation/entity_services.rs:69` and
+/// `restore_foundation` at `:120`), converting between the content
+/// checkpoint shape and the persistence shape the equipment runtime
+/// stores.
+struct RuntimeQ2FoundationBridge;
+
+impl super::equipment_runtime::Q2FoundationCheckpointBridge for RuntimeQ2FoundationBridge {
+    fn capture_entities(
+        &self,
+        game: &qa_content::q2::foundation::host::Q2GameServices,
+    ) -> crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+        foundation_to_saved(&game.capture_foundation())
+    }
+
+    fn restore_entities(
+        &self,
+        game: &mut qa_content::q2::foundation::host::Q2GameServices,
+        checkpoint: &crate::persistence::q2::foundation::Q2FoundationCheckpoint,
+    ) -> Result<(), qa_world::WorldError> {
+        game.restore_foundation(&saved_to_foundation(checkpoint)?);
+        Ok(())
+    }
+}
+
+/// Convert a content foundation checkpoint to the persistence shape.
+fn foundation_to_saved(
+    checkpoint: &qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint,
+) -> crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+    use crate::persistence::q2::foundation::Q2FoundationCounters;
+    use qa_content::q2::foundation::host::Q2Counters;
+    let counters = |counters: &Q2Counters| Q2FoundationCounters {
+        total_secrets: f64::from(counters.total_secrets),
+        found_secrets: f64::from(counters.found_secrets),
+        total_goals: f64::from(counters.total_goals),
+        found_goals: f64::from(counters.found_goals),
+        total_monsters: f64::from(counters.total_monsters),
+        killed_monsters: f64::from(counters.killed_monsters),
+        server_flags: f64::from(counters.server_flags),
+    };
+    crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+        next_source_slot: u64::from(checkpoint.next_source_slot),
+        sequence: checkpoint.sequence,
+        freed_slots: checkpoint
+            .freed_slots
+            .iter()
+            .map(|(slot, time)| (u64::from(*slot), *time))
+            .collect(),
+        counters: counters(&checkpoint.counters),
+        entities: checkpoint.entities.iter().map(foundation_entity_to_saved).collect(),
+    }
+}
+
+/// Convert a content entity checkpoint to the persistence shape.
+fn foundation_entity_to_saved(
+    entity: &qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint,
+) -> crate::persistence::q2::foundation::Q2EntityCheckpoint {
+    use crate::persistence::q2::foundation::{Q2EntityCallbacks, Q2EntityLinks};
+    use qa_content::q2::foundation::host::{Q2MotionKind, Q2Solid};
+    let solid = match entity.values.solid {
+        Q2Solid::None => "none",
+        Q2Solid::Trigger => "trigger",
+        Q2Solid::Box => "box",
+        Q2Solid::Brush => "brush",
+    }
+    .to_string();
+    let motion = match entity.values.motion {
+        Q2MotionKind::Stationary => "stationary",
+        Q2MotionKind::Push => "push",
+        Q2MotionKind::Stop => "stop",
+        Q2MotionKind::Toss => "toss",
+        Q2MotionKind::NewToss => "new-toss",
+        Q2MotionKind::Bounce => "bounce",
+        Q2MotionKind::WallBounce => "wall-bounce",
+        Q2MotionKind::Fly => "fly",
+        Q2MotionKind::FlyMissile => "fly-missile",
+        Q2MotionKind::Step => "step",
+    }
+    .to_string();
+    let values = &entity.values;
+    crate::persistence::q2::foundation::Q2EntityCheckpoint {
+        actor: entity.actor,
+        source_slot: entity.source_slot.map(u64::from),
+        spawn_classname: entity.classname.clone(),
+        spawn_ordinal: i64::from(entity.ordinal),
+        spawn_values: entity.spawn_values.clone(),
+        values: crate::persistence::q2::foundation::Q2EntityValues {
+            classname: values.classname.clone(),
+            target: values.target.clone(),
+            targetname: values.targetname.clone(),
+            killtarget: values.killtarget.clone(),
+            combat_target: values.combat_target.clone(),
+            death_target: values.death_target.clone(),
+            health_target: values.health_target.clone(),
+            item_target: values.item_target.clone(),
+            message: values.message.clone(),
+            model: values.model.clone(),
+            model2: values.model2.clone(),
+            model3: values.model3.clone(),
+            model4: values.model4.clone(),
+            spawnflags: f64::from(values.spawnflags),
+            delay: values.delay,
+            wait: values.wait,
+            speed: values.speed,
+            accel: values.accel,
+            decel: values.decel,
+            damage: values.damage,
+            damage_radius: values.damage_radius,
+            radius_damage: values.radius_damage,
+            count: f64::from(values.count),
+            max_health: values.max_health,
+            view_height: f64::from(values.view_height),
+            frame: f64::from(values.frame),
+            old_frame: f64::from(values.old_frame),
+            scale: values.scale,
+            alpha: values.alpha,
+            skin: f64::from(values.skin),
+            effects: i64_to_save_number(values.effects),
+            render_flags: f64::from(values.render_flags),
+            flags: i64_to_save_number(values.flags),
+            server_flags: f64::from(values.server_flags),
+            light_level: f64::from(values.light_level),
+            power_cubes: f64::from(values.power_cubes),
+            timestamp: values.timestamp,
+            noise: values.noise.clone(),
+            sound: values.sound.clone(),
+            volume: values.volume,
+            attenuation: values.attenuation,
+            random: values.random,
+            map: values.map.clone(),
+            style: f64::from(values.style),
+            transition_started: values.transition_started,
+            clip_mask: f64::from(values.clip_mask),
+            projectile: values.projectile,
+            dodgeable: values.dodgeable,
+            laser_immune: values.laser_immune,
+            damageable_target: values.damageable_target,
+            visible: values.visible,
+            solid,
+            motion,
+            gravity: values.gravity,
+            gravity_vector: values.gravity_vector,
+            angular_velocity: values.angular_velocity,
+            movedir: values.movedir,
+            pos1: values.pos1,
+            pos2: values.pos2,
+            next_think: values.next_think,
+        },
+        links: Q2EntityLinks {
+            activator: entity.links.activator,
+            enemy: entity.links.enemy,
+            owner: entity.links.owner,
+            goal: entity.links.goal,
+            team_master: entity.links.team_master,
+            team_chain: entity.links.team_chain,
+            chain: entity.links.chain,
+            beam: entity.links.beam,
+            beam2: entity.links.beam2,
+            proboscus: entity.links.proboscus,
+        },
+        last_attack: entity.last_attack.as_ref().map(foundation_attack_to_saved),
+        callbacks: Q2EntityCallbacks {
+            think: entity.callbacks.think.clone(),
+            prethink: entity.callbacks.prethink.clone(),
+            postthink: entity.callbacks.postthink.clone(),
+            use_callback: entity.callbacks.use_.clone(),
+            touch: entity.callbacks.touch.clone(),
+            pain: entity.callbacks.pain.clone(),
+            die: entity.callbacks.die.clone(),
+            blocked: entity.callbacks.blocked.clone(),
+        },
+    }
+}
+
+/// Convert a content attack checkpoint to the persistence shape.
+fn foundation_attack_to_saved(
+    attack: &qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint,
+) -> crate::persistence::q2::foundation::Q2AttackCheckpoint {
+    use crate::persistence::q2::foundation::{Q2AttackCause, Q2NativeCause};
+    use qa_content::q2::support::contracts::{
+        AttackCause, EnvironmentHazard, Q1ArmorEffect, Q2NativeCause as ContentNative, Q2NativeGame,
+    };
+    let cause = match &attack.attack.cause {
+        AttackCause::Q1 {
+            death_type,
+            armor_effect,
+        } => Q2AttackCause::Q1 {
+            death_type: death_type.clone(),
+            armor_effect: armor_effect.map(|effect| {
+                match effect {
+                    Q1ArmorEffect::Bypass => "bypass",
+                    Q1ArmorEffect::HalfEffectiveness => "half-effectiveness",
+                }
+                .to_string()
+            }),
+        },
+        AttackCause::Q2 {
+            means_of_death,
+            damage_flags,
+            native,
+        } => Q2AttackCause::Q2 {
+            means_of_death: i64::from(*means_of_death),
+            damage_flags: i64::from(*damage_flags),
+            native: native.as_ref().map(|cause| match cause {
+                ContentNative::Classic { game, value } => Q2NativeCause::Classic {
+                    game: match game {
+                        Q2NativeGame::Base => "base",
+                        Q2NativeGame::Xatrix => "xatrix",
+                        Q2NativeGame::Rogue => "rogue",
+                        Q2NativeGame::Ctf => "ctf",
+                    }
+                    .to_string(),
+                    value: i64::from(*value),
+                },
+                ContentNative::Rerelease {
+                    id,
+                    friendly_fire,
+                    no_point_loss,
+                } => {
+                    // Bit-preserving wrap: `saved_to_foundation` casts
+                    // back with `as i32`, so negative ids round-trip.
+                    Q2NativeCause::Rerelease {
+                        id: u64::from(*id as u32),
+                        friendly_fire: *friendly_fire,
+                        no_point_loss: *no_point_loss,
+                    }
+                }
+            }),
+        },
+        AttackCause::Q3 {
+            means_of_death,
+            damage_flags,
+        } => Q2AttackCause::Q3 {
+            means_of_death: i64::from(*means_of_death),
+            damage_flags: i64::from(*damage_flags),
+        },
+        AttackCause::Environment { hazard } => Q2AttackCause::Environment {
+            hazard: match hazard {
+                EnvironmentHazard::Fall => "fall",
+                EnvironmentHazard::Drown => "drown",
+                EnvironmentHazard::Lava => "lava",
+                EnvironmentHazard::Slime => "slime",
+                EnvironmentHazard::Crush => "crush",
+                EnvironmentHazard::Trigger => "trigger",
+            }
+            .to_string(),
+        },
+    };
+    let provenance = &attack.attack;
+    crate::persistence::q2::foundation::Q2AttackCheckpoint {
+        sequence: provenance.sequence,
+        time: provenance.time,
+        attacker: attack.attacker,
+        inflictor: attack.inflictor,
+        originating_projectile: attack.originating_projectile,
+        damage_powerup_owner: provenance
+            .damage_powerup_owner
+            .as_ref()
+            .map(qa_world::registry::provider_key),
+        weapon: provenance.weapon.clone(),
+        weapon_provider: qa_world::registry::provider_key(&provenance.weapon_provider),
+        combat_provider: qa_world::registry::provider_key(&provenance.combat_provider),
+        inventory_provider: qa_world::registry::provider_key(&provenance.inventory_provider),
+        movement_provider: qa_world::registry::provider_key(&provenance.movement_provider),
+        cause,
+    }
+}
+
+/// Convert a 64-bit flag word to a save number (save JSON has no
+/// integers past binary53; flag words stay exact below that).
+#[allow(clippy::cast_precision_loss)]
+fn i64_to_save_number(value: i64) -> f64 {
+    value as f64
+}
+
+/// Read an integral save number as `i32`.
+fn saved_int(value: f64, field: &str) -> Result<i32, qa_world::WorldError> {
+    #[allow(clippy::cast_possible_truncation)]
+    if value.is_finite() && value.fract() == 0.0 && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
+        Ok(value as i32)
+    } else {
+        Err(qa_world::WorldError::BadSave(format!(
+            "Q2 foundation checkpoint has a non-integral {field}"
+        )))
+    }
+}
+
+/// Read an integral save number as `i64`.
+fn saved_long(value: f64, field: &str) -> Result<i64, qa_world::WorldError> {
+    #[allow(clippy::cast_possible_truncation)]
+    if value.is_finite() && value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_992.0 {
+        Ok(value as i64)
+    } else {
+        Err(qa_world::WorldError::BadSave(format!(
+            "Q2 foundation checkpoint has a non-integral {field}"
+        )))
+    }
+}
+
+/// Parse a `namespace:name` provider reference.
+fn saved_provider(text: &str) -> Result<qa_core::identity::ProviderId, qa_world::WorldError> {
+    text.split_once(':')
+        .map(|(namespace, name)| qa_core::identity::ProviderId::new(namespace, name))
+        .ok_or_else(|| qa_world::WorldError::BadSave(format!("Q2 foundation checkpoint has a bad provider {text}")))
+}
+
+/// Convert a persistence foundation checkpoint to the content shape.
+fn saved_to_foundation(
+    checkpoint: &crate::persistence::q2::foundation::Q2FoundationCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint, qa_world::WorldError> {
+    use crate::persistence::q2::foundation::Q2FoundationCounters;
+    use qa_content::q2::foundation::host::Q2Counters;
+    let bad = |field: &str| qa_world::WorldError::BadSave(format!("Q2 foundation checkpoint has a bad {field}"));
+    let counters = |counters: &Q2FoundationCounters| -> Result<Q2Counters, qa_world::WorldError> {
+        Ok(Q2Counters {
+            total_secrets: saved_int(counters.total_secrets, "totalSecrets")?,
+            found_secrets: saved_int(counters.found_secrets, "foundSecrets")?,
+            total_goals: saved_int(counters.total_goals, "totalGoals")?,
+            found_goals: saved_int(counters.found_goals, "foundGoals")?,
+            total_monsters: saved_int(counters.total_monsters, "totalMonsters")?,
+            killed_monsters: saved_int(counters.killed_monsters, "killedMonsters")?,
+            server_flags: saved_int(counters.server_flags, "serverFlags")?,
+        })
+    };
+    let mut entities = Vec::with_capacity(checkpoint.entities.len());
+    for entity in &checkpoint.entities {
+        entities.push(saved_entity_to_foundation(entity)?);
+    }
+    Ok(qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint {
+        version: 1,
+        next_source_slot: u32::try_from(checkpoint.next_source_slot).map_err(|_| bad("nextSourceSlot"))?,
+        sequence: checkpoint.sequence,
+        freed_slots: checkpoint
+            .freed_slots
+            .iter()
+            .map(|(slot, time)| {
+                u32::try_from(*slot)
+                    .map(|slot| (slot, *time))
+                    .map_err(|_| bad("freedSlots"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        counters: counters(&checkpoint.counters)?,
+        entities,
+    })
+}
+
+/// Convert a persistence entity checkpoint to the content shape.
+fn saved_entity_to_foundation(
+    entity: &crate::persistence::q2::foundation::Q2EntityCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint, qa_world::WorldError> {
+    use qa_content::q2::foundation::host::{Q2MotionKind, Q2Solid};
+    let bad = |field: &str| qa_world::WorldError::BadSave(format!("Q2 foundation checkpoint has a bad {field}"));
+    let values = &entity.values;
+    let solid = match values.solid.as_str() {
+        "none" => Q2Solid::None,
+        "trigger" => Q2Solid::Trigger,
+        "box" => Q2Solid::Box,
+        "brush" => Q2Solid::Brush,
+        other => return Err(bad(&format!("solidity {other}"))),
+    };
+    let motion = match values.motion.as_str() {
+        "stationary" => Q2MotionKind::Stationary,
+        "push" => Q2MotionKind::Push,
+        "stop" => Q2MotionKind::Stop,
+        "toss" => Q2MotionKind::Toss,
+        "new-toss" => Q2MotionKind::NewToss,
+        "bounce" => Q2MotionKind::Bounce,
+        "wall-bounce" => Q2MotionKind::WallBounce,
+        "fly" => Q2MotionKind::Fly,
+        "fly-missile" => Q2MotionKind::FlyMissile,
+        "step" => Q2MotionKind::Step,
+        other => return Err(bad(&format!("motion {other}"))),
+    };
+    let last_attack = entity
+        .last_attack
+        .as_ref()
+        .map(saved_attack_to_foundation)
+        .transpose()?;
+    Ok(qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint {
+        actor: entity.actor,
+        source_slot: entity
+            .source_slot
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| bad("sourceSlot"))?,
+        classname: entity.spawn_classname.clone(),
+        ordinal: i32::try_from(entity.spawn_ordinal).map_err(|_| bad("spawnOrdinal"))?,
+        spawn_values: entity.spawn_values.clone(),
+        values: qa_content::q2::foundation::checkpoint::Q2EntityValues {
+            classname: values.classname.clone(),
+            target: values.target.clone(),
+            targetname: values.targetname.clone(),
+            killtarget: values.killtarget.clone(),
+            combat_target: values.combat_target.clone(),
+            death_target: values.death_target.clone(),
+            health_target: values.health_target.clone(),
+            item_target: values.item_target.clone(),
+            message: values.message.clone(),
+            model: values.model.clone(),
+            model2: values.model2.clone(),
+            model3: values.model3.clone(),
+            model4: values.model4.clone(),
+            spawnflags: saved_int(values.spawnflags, "spawnflags")?,
+            delay: values.delay,
+            wait: values.wait,
+            speed: values.speed,
+            accel: values.accel,
+            decel: values.decel,
+            damage: values.damage,
+            damage_radius: values.damage_radius,
+            radius_damage: values.radius_damage,
+            count: saved_int(values.count, "count")?,
+            max_health: values.max_health,
+            view_height: saved_int(values.view_height, "viewHeight")?,
+            frame: saved_int(values.frame, "frame")?,
+            old_frame: saved_int(values.old_frame, "oldFrame")?,
+            scale: values.scale,
+            alpha: values.alpha,
+            skin: saved_int(values.skin, "skin")?,
+            effects: saved_long(values.effects, "effects")?,
+            render_flags: saved_int(values.render_flags, "renderFlags")?,
+            flags: saved_long(values.flags, "flags")?,
+            server_flags: saved_int(values.server_flags, "serverFlags")?,
+            light_level: saved_int(values.light_level, "lightLevel")?,
+            power_cubes: saved_int(values.power_cubes, "powerCubes")?,
+            timestamp: values.timestamp,
+            noise: values.noise.clone(),
+            sound: values.sound.clone(),
+            volume: values.volume,
+            attenuation: values.attenuation,
+            random: values.random,
+            map: values.map.clone(),
+            style: saved_int(values.style, "style")?,
+            transition_started: values.transition_started,
+            clip_mask: saved_int(values.clip_mask, "clipMask")?,
+            projectile: values.projectile,
+            dodgeable: values.dodgeable,
+            laser_immune: values.laser_immune,
+            damageable_target: values.damageable_target,
+            visible: values.visible,
+            solid,
+            motion,
+            gravity: values.gravity,
+            gravity_vector: values.gravity_vector,
+            angular_velocity: values.angular_velocity,
+            movedir: values.movedir,
+            pos1: values.pos1,
+            pos2: values.pos2,
+            next_think: values.next_think,
+        },
+        links: qa_content::q2::foundation::checkpoint::Q2EntityLinks {
+            activator: entity.links.activator,
+            enemy: entity.links.enemy,
+            owner: entity.links.owner,
+            goal: entity.links.goal,
+            team_master: entity.links.team_master,
+            team_chain: entity.links.team_chain,
+            chain: entity.links.chain,
+            beam: entity.links.beam,
+            beam2: entity.links.beam2,
+            proboscus: entity.links.proboscus,
+        },
+        last_attack,
+        callbacks: qa_content::q2::foundation::checkpoint::Q2EntityCallbackNames {
+            think: entity.callbacks.think.clone(),
+            prethink: entity.callbacks.prethink.clone(),
+            postthink: entity.callbacks.postthink.clone(),
+            use_: entity.callbacks.use_callback.clone(),
+            touch: entity.callbacks.touch.clone(),
+            pain: entity.callbacks.pain.clone(),
+            die: entity.callbacks.die.clone(),
+            blocked: entity.callbacks.blocked.clone(),
+        },
+    })
+}
+
+/// Convert a persistence attack checkpoint to the content shape.
+///
+/// Provenance actor fields stay `None`: `restore_q2_attack` rebuilds
+/// them from the saved ids, matching `save_q2_attack`.
+fn saved_attack_to_foundation(
+    attack: &crate::persistence::q2::foundation::Q2AttackCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint, qa_world::WorldError> {
+    use crate::persistence::q2::foundation::{Q2AttackCause, Q2NativeCause};
+    use qa_content::q2::support::contracts::{
+        AttackCause, AttackProvenance, EnvironmentHazard, Q1ArmorEffect, Q2NativeCause as ContentNative, Q2NativeGame,
+    };
+    let bad = |field: &str| qa_world::WorldError::BadSave(format!("Q2 foundation checkpoint has a bad {field}"));
+    let cause = match &attack.cause {
+        Q2AttackCause::Q1 {
+            death_type,
+            armor_effect,
+        } => AttackCause::Q1 {
+            death_type: death_type.clone(),
+            armor_effect: armor_effect
+                .as_deref()
+                .map(|effect| match effect {
+                    "bypass" => Ok(Q1ArmorEffect::Bypass),
+                    "half-effectiveness" => Ok(Q1ArmorEffect::HalfEffectiveness),
+                    other => Err(bad(&format!("armor effect {other}"))),
+                })
+                .transpose()?,
+        },
+        Q2AttackCause::Q2 {
+            means_of_death,
+            damage_flags,
+            native,
+        } => AttackCause::Q2 {
+            means_of_death: i32::try_from(*means_of_death).map_err(|_| bad("meansOfDeath"))?,
+            damage_flags: i32::try_from(*damage_flags).map_err(|_| bad("damageFlags"))?,
+            native: native
+                .as_ref()
+                .map(|cause| match cause {
+                    Q2NativeCause::Classic { game, value } => {
+                        let game = match game.as_str() {
+                            "base" => Q2NativeGame::Base,
+                            "xatrix" => Q2NativeGame::Xatrix,
+                            "rogue" => Q2NativeGame::Rogue,
+                            "ctf" => Q2NativeGame::Ctf,
+                            other => return Err(bad(&format!("native game {other}"))),
+                        };
+                        Ok(ContentNative::Classic {
+                            game,
+                            value: i32::try_from(*value).map_err(|_| bad("nativeValue"))?,
+                        })
+                    }
+                    Q2NativeCause::Rerelease {
+                        id,
+                        friendly_fire,
+                        no_point_loss,
+                    } => Ok(ContentNative::Rerelease {
+                        id: u32::try_from(*id).map_err(|_| bad("nativeId"))? as i32,
+                        friendly_fire: *friendly_fire,
+                        no_point_loss: *no_point_loss,
+                    }),
+                })
+                .transpose()?,
+        },
+        Q2AttackCause::Q3 {
+            means_of_death,
+            damage_flags,
+        } => AttackCause::Q3 {
+            means_of_death: i32::try_from(*means_of_death).map_err(|_| bad("meansOfDeath"))?,
+            damage_flags: i32::try_from(*damage_flags).map_err(|_| bad("damageFlags"))?,
+        },
+        Q2AttackCause::Environment { hazard } => AttackCause::Environment {
+            hazard: match hazard.as_str() {
+                "fall" => EnvironmentHazard::Fall,
+                "drown" => EnvironmentHazard::Drown,
+                "lava" => EnvironmentHazard::Lava,
+                "slime" => EnvironmentHazard::Slime,
+                "crush" => EnvironmentHazard::Crush,
+                "trigger" => EnvironmentHazard::Trigger,
+                other => return Err(bad(&format!("hazard {other}"))),
+            },
+        },
+    };
+    Ok(qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint {
+        attacker: attack.attacker,
+        inflictor: attack.inflictor,
+        originating_projectile: attack.originating_projectile,
+        attack: AttackProvenance {
+            sequence: attack.sequence,
+            time: attack.time,
+            attacker: None,
+            inflictor: None,
+            originating_projectile: None,
+            weapon: attack.weapon.clone(),
+            weapon_provider: saved_provider(&attack.weapon_provider)?,
+            damage_powerup_owner: attack.damage_powerup_owner.as_deref().map(saved_provider).transpose()?,
+            combat_provider: saved_provider(&attack.combat_provider)?,
+            inventory_provider: saved_provider(&attack.inventory_provider)?,
+            movement_provider: saved_provider(&attack.movement_provider)?,
+            cause,
+        },
+    })
+}
+
 /// Release wiring plus the post-wrap construction body (donor 680-691,
 /// 710-841).
 ///
@@ -9699,11 +10968,13 @@ fn finish_construction_inner(
         // state, so the donor releases have nothing to drop.
         locked.restored_native_inventory_selections.remove(&id);
         locked.weapon_slots.remove(&id);
+        locked.inventory.release_source_items(actor);
         locked.player_states.remove(actor);
         locked.characters.remove(actor);
         locked.character_starts.remove(actor);
         locked.q3_arsenals.remove(actor);
         locked.q3_commands.remove(actor);
+        locked.q3_entity_refs.remove(actor);
         locked.q1_characters.remove(actor);
         locked.q2_views.remove(&id);
         locked.q2_characters.remove(actor);
@@ -9958,8 +11229,14 @@ fn finish_construction_inner(
         );
         let grenade_controller =
             qa_content::q2::equipment::hand_grenades::Q2HandGrenadeEquipment::new(&mut grenade_game);
-        let _ = (grenade_game, grenade_controller);
-        return fail("Missing siblings: hand-grenade checkpoint bridge (Q2FoundationCheckpointBridge)");
+        let grenade_runtime = super::equipment_runtime::HandGrenadeRuntime::new(
+            grenade_selection.clone(),
+            grenade_controller,
+            Box::new(RuntimeQ2FoundationBridge),
+        )
+        .map_err(source_failure)?;
+        simulation.lock().hand_grenade_game = Some(Rc::new(RefCell::new(grenade_game)));
+        simulation.lock().hand_grenades = Some(grenade_runtime);
     }
     simulation.lock().grapple = simulation.create_grapple()?;
     // Donor 745-754: a foreign weapon provider gets a selected arsenal.
@@ -10148,9 +11425,34 @@ fn finish_construction_inner(
         game.spawn_map()
             .map_err(|error| RuntimeError::Failure(error.to_string()))?;
     } else if matches!(simulation.peek().source, SourceRuntime::Q3 { .. }) {
-        // Donor 803-808: the Q3 map load needs the q3-lane host bridge
-        // (cvars/combat/load); q3-kind sources fail closed until it lands.
-        return fail("Missing siblings: Q3 source map load (host/cvars/combat bridge)");
+        // Donor 803-808: clear the max-clients flag, register source
+        // combat for q3 combat providers, load the map, and clear the
+        // game-type flag. Source combat registration needs the host's
+        // combat bridge policy, which the host does not expose and the
+        // combat authority has no Q3 policy kind for, so q3 combat
+        // providers fail closed before the map loads.
+        let host = simulation.with_q3_source(|game| game.host()).flatten();
+        let Some(host) = host else {
+            return fail("Q3 map load has no attached source host");
+        };
+        host.host
+            .cvars()
+            .borrow_mut()
+            .clear_modified("sv_maxclients")
+            .map_err(source_failure)?;
+        let combat_family = {
+            let state = simulation.peek();
+            provider_family(&provider_text(&state.recipe.combat.provider))?
+        };
+        if combat_family == GameFamily::Q3 {
+            return fail("Q3 source combat has no attached bridge policy");
+        }
+        let _ = host.load();
+        host.host
+            .cvars()
+            .borrow_mut()
+            .clear_modified("g_gametype")
+            .map_err(source_failure)?;
     } else if matches!(simulation.peek().source, SourceRuntime::Q2Native(_)) {
         // Donor 809-814: fresh native guests init and spawn.
         if simulation.peek().options_native_q2_travel.is_none() && !native_loading {
@@ -11016,6 +12318,16 @@ impl GameplayAuthority {
             return fail("Actor has no combat binding");
         };
         state.health = health;
+        Ok(())
+    }
+
+    /// Write armor (donor `setArmor`).
+    pub fn set_armor(&self, actor: &OwnedActor, armor: qa_world::combat::ArmorState) -> Result<(), RuntimeError> {
+        let mut states = self.combat_states.borrow_mut();
+        let Some(state) = states.get_mut(actor.id()) else {
+            return fail("Actor has no combat binding");
+        };
+        state.armor = armor;
         Ok(())
     }
 
@@ -11959,10 +13271,10 @@ impl SharedSimulation {
         let family = provider_text(&id);
         if family.starts_with("q1:") {
             let kind = self.q1_combat_policy_kind();
-            self.lock().combat.register(CombatPolicy { id, kind })?;
+            self.lock().combat.register(CombatPolicy { id, kind, revision: 0 })?;
         } else if family.starts_with("q2:") {
             let kind = self.q2_combat_policy_kind()?;
-            self.lock().combat.register(CombatPolicy { id, kind })?;
+            self.lock().combat.register(CombatPolicy { id, kind, revision: 0 })?;
         }
         Ok(())
     }
@@ -14268,9 +15580,16 @@ impl C11Tables {
 impl SessionActorRegistry {
     /// Resolve a saved actor reference to a live handle (C11).
     ///
-    /// Donor `resolveSaved`: matches by slot/generation against the live
-    /// set, via [`qa_world::registry::ActorRegistry::resolve_saved`].
+    /// Donor `resolveSaved` (donor `src/world/actors/registry.ts`
+    /// 164-168): remapped saved slots first, then the live slot occupant
+    /// via [`qa_world::registry::ActorRegistry::resolve_saved`].
     pub fn resolve_saved(&self, saved: qa_core::identity::SavedActorId) -> Option<OwnedActor> {
+        if let Some(restored) = self.restored_actors.get(&saved.slot) {
+            if restored.saved_generation == saved.generation && self.is_live(restored.actor.id()) {
+                return Some(restored.actor.clone());
+            }
+            return None;
+        }
         self.inner.resolve_saved(&saved)
     }
 }
@@ -15303,23 +16622,365 @@ pub struct RuntimeItemDefinition {
     pub icon: Option<String>,
 }
 
-impl SharedInventoryTable {
-    /// Item definitions for an actor (donor `itemDefinitions`).
-    ///
-    /// Missing siblings: the inventory component registry
-    /// (`qa_world::inventory` item definitions) has no Rust home yet.
-    pub fn item_definitions(&self, actor: &ActorId) -> Vec<RuntimeItemDefinition> {
-        let _ = actor;
-        Vec::new()
+/// Source-item admission kind (donor `SourceItemAdmission["admission"]`,
+/// `src/contracts/source-items.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceItemAdmissionKind {
+    /// New item absent from the primary store.
+    Add,
+    /// Item shadowing a primary entry while bound.
+    ReplacePrimary,
+}
+
+/// One requested source-item admission (donor `SourceItemAdmission` row
+/// plus the initial value the shared table installs).
+#[derive(Debug, Clone)]
+pub struct SourceItemRequest {
+    /// Admitted definition.
+    pub definition: RuntimeItemDefinition,
+    /// Admission kind.
+    pub admission: SourceItemAdmissionKind,
+    /// Initial value installed into the shared store.
+    pub entry: qa_content::contract::InventoryEntry,
+}
+
+/// Source-item action dispatcher (donor `invoke`).
+type SourceItemInvoke = Rc<dyn Fn(&ItemId, &str)>;
+
+/// One bound source-item group (donor `BoundItems`, storage-excepted).
+///
+/// The donor gives every group a private `InventoryStateBinding`; the
+/// shared table holds one store per actor, so group values live in that
+/// store and `shadowed` keeps the primary values a
+/// [`SourceItemAdmissionKind::ReplacePrimary`] admission covers until
+/// `close` restores them.
+struct SourceItemGroup {
+    owner: ProviderId,
+    definitions: Vec<RuntimeItemDefinition>,
+    shadowed: HashMap<ItemId, qa_world::inventory::InventoryEntry>,
+    invoke: Option<SourceItemInvoke>,
+    active: bool,
+}
+
+/// Source-item groups admitted for one actor (donor store `items`/`groups`).
+struct ActorSourceItems {
+    groups: Vec<SourceItemGroup>,
+    items: HashMap<ItemId, usize>,
+}
+
+/// Committed source-item store (donor `SourceItemStore`).
+#[derive(Debug, Clone)]
+pub struct SourceItemStore {
+    /// Value before the commit.
+    pub before: qa_world::inventory::InventoryEntry,
+    /// Value after the commit.
+    pub after: qa_world::inventory::InventoryEntry,
+}
+
+/// Source-item group lease (donor `SourceItemLease`).
+#[derive(Clone)]
+pub struct SourceItemLease {
+    groups: Rc<RefCell<HashMap<OwnedActor, ActorSourceItems>>>,
+    actors: Rc<RefCell<SessionActorRegistry>>,
+    state: Option<Weak<RefCell<SharedSimulationState>>>,
+    actor: OwnedActor,
+    owner: ProviderId,
+    index: usize,
+}
+
+impl SourceItemLease {
+    /// Whether the lease still delivers committed stores (donor `current`).
+    pub fn current(&self) -> bool {
+        if self.actors.borrow().resolve_owned(self.actor.id()) != Some(self.actor.clone()) {
+            return false;
+        }
+        self.groups.borrow().get(&self.actor).is_some_and(|row| {
+            row.groups
+                .get(self.index)
+                .is_some_and(|group| group.active && group.owner == self.owner)
+        })
     }
 
-    /// Bound item action (donor `itemAction`).
+    /// Commit source stores (donor `stored`).
     ///
-    /// Missing siblings: the inventory component registry
-    /// (`qa_world::inventory` item actions) has no Rust home yet.
-    pub fn item_action(&self, actor: &ActorId, item: &ItemId, action: &str) -> Option<Box<dyn FnOnce()>> {
-        let _ = (actor, item, action);
-        None
+    /// Validation is the donor algorithm; publication configures the
+    /// shared store directly (the donor dispatches through the
+    /// operations pipeline, which has no Rust home). Call outside any
+    /// simulation-state borrow: committing borrows the state mutably.
+    pub fn stored(&self, changes: &[SourceItemStore]) -> Result<(), RuntimeError> {
+        if !self.current() {
+            return fail("Committed inventory source is no longer current");
+        }
+        let state =
+            self.state.as_ref().and_then(Weak::upgrade).ok_or_else(|| {
+                RuntimeError::Failure("Committed inventory source has no simulation state".to_string())
+            })?;
+        let mut changed = HashSet::new();
+        for change in changes {
+            if change.before.item != change.after.item
+                || !changed.insert(change.after.item.clone())
+                || !self
+                    .groups
+                    .borrow()
+                    .get(&self.actor)
+                    .is_some_and(|row| row.items.get(&change.after.item) == Some(&self.index))
+            {
+                return fail("Committed inventory differs from its source binding");
+            }
+            let actual = {
+                let locked = state.borrow();
+                let actors = self.actors.borrow();
+                locked
+                    .inventory
+                    .inner()
+                    .entries(actors.inner(), self.actor.id())
+                    .into_iter()
+                    .find(|entry| entry.item == change.after.item)
+            };
+            if actual != Some(change.after.clone()) {
+                return fail("Committed inventory differs from its source binding");
+            }
+            if !self.current() {
+                return fail("Committed inventory source is no longer current");
+            }
+            state
+                .borrow_mut()
+                .inventory
+                .inner_mut()
+                .configure(self.actors.borrow().inner(), &self.actor, change.after.clone())
+                .map_err(source_failure)?;
+            if !self.current() {
+                return fail("Committed inventory source is no longer current");
+            }
+        }
+        Ok(())
+    }
+
+    /// Retire the group and restore shadowed primary values (donor `close`).
+    pub fn close(&self) {
+        let mut groups = self.groups.borrow_mut();
+        let Some(row) = groups.get_mut(&self.actor) else {
+            return;
+        };
+        let Some(group) = row.groups.get_mut(self.index) else {
+            return;
+        };
+        if !group.active {
+            return;
+        }
+        group.active = false;
+        let shadowed: Vec<qa_world::inventory::InventoryEntry> = group.shadowed.values().cloned().collect();
+        row.items.retain(|_, index| *index != self.index);
+        if let Some(state) = self.state.as_ref().and_then(Weak::upgrade) {
+            let actors = self.actors.borrow();
+            if actors.resolve_owned(self.actor.id()).is_some() {
+                let mut locked = state.borrow_mut();
+                for entry in shadowed {
+                    let _ = locked
+                        .inventory
+                        .inner_mut()
+                        .configure(actors.inner(), &self.actor, entry);
+                }
+            }
+        }
+    }
+}
+
+impl SharedInventoryTable {
+    /// Bind a source-item group (donor `bindItems`, donor
+    /// `src/world/gameplay/inventory.ts` 118-173).
+    ///
+    /// The pickup-delegate conflict check is skipped: pickup delegates
+    /// (`bindPickup`) belong to the world lane and no delegate map
+    /// exists here yet. Storage validation is adapted to the shared
+    /// store (subset, not exact: the store also holds primary entries).
+    pub fn bind_source_items(
+        &mut self,
+        registry: &SessionActorRegistry,
+        actor: &OwnedActor,
+        owner: ProviderId,
+        items: Vec<SourceItemRequest>,
+        invoke: Option<SourceItemInvoke>,
+    ) -> Result<SourceItemLease, RuntimeError> {
+        registry.assert_owned(actor)?;
+        if items.is_empty() || !self.inner.has(registry.inner(), actor.id()) {
+            return fail("Source items require an existing primary inventory and a nonempty group");
+        }
+        let actors_handle = self
+            .actors
+            .clone()
+            .ok_or_else(|| RuntimeError::Failure("Source items require a wired actor registry".to_string()))?;
+        let mut groups = self.groups.borrow_mut();
+        let row = groups.entry(actor.clone()).or_insert_with(|| ActorSourceItems {
+            groups: Vec::new(),
+            items: HashMap::new(),
+        });
+        let primary: HashSet<ItemId> = self
+            .inner
+            .entries(registry.inner(), actor.id())
+            .into_iter()
+            .map(|entry| entry.item)
+            .filter(|item| !row.items.contains_key(item))
+            .collect();
+        let mut seen = HashSet::new();
+        for request in &items {
+            let definition = &request.definition;
+            let conflict = !seen.insert(definition.item.clone())
+                || definition.source.provider != owner
+                || definition.label.is_empty()
+                || row.items.contains_key(&definition.item)
+                || match request.admission {
+                    SourceItemAdmissionKind::Add => primary.contains(&definition.item),
+                    SourceItemAdmissionKind::ReplacePrimary => !primary.contains(&definition.item),
+                };
+            if conflict {
+                return fail(format!(
+                    "Source item {} conflicts with its current owner or admission",
+                    definition.item
+                ));
+            }
+            if !definition.actions.is_empty()
+                && (definition.actions.iter().collect::<HashSet<_>>().len() != definition.actions.len()
+                    || definition
+                        .actions
+                        .iter()
+                        .any(|action| action != "use" && action != "drop")
+                    || invoke.is_none())
+            {
+                return fail("Source item actions require distinct declared operations and their owner");
+            }
+            if definition.kind == "weapon" && definition.actions.iter().any(|action| action == "use") {
+                return fail("Source weapons select through their weapon-slot owner, not a separate use action");
+            }
+        }
+        let mut shadowed = HashMap::new();
+        for request in &items {
+            if request.admission == SourceItemAdmissionKind::ReplacePrimary {
+                let current = self
+                    .inner
+                    .entries(registry.inner(), actor.id())
+                    .into_iter()
+                    .find(|entry| entry.item == request.definition.item)
+                    .ok_or_else(|| {
+                        RuntimeError::Failure(format!(
+                            "Source item {} conflicts with its current owner or admission",
+                            request.definition.item
+                        ))
+                    })?;
+                shadowed.insert(request.definition.item.clone(), current);
+            }
+            self.inner
+                .configure(registry.inner(), actor, contract_entry_to_world(&request.entry))
+                .map_err(source_failure)?;
+        }
+        for request in &items {
+            let stored = self
+                .inner
+                .entries(registry.inner(), actor.id())
+                .into_iter()
+                .any(|entry| entry.item == request.definition.item);
+            if !stored {
+                return fail("Source item storage differs from its admitted definitions");
+            }
+        }
+        let definitions: Vec<RuntimeItemDefinition> = items.into_iter().map(|request| request.definition).collect();
+        for definition in &definitions {
+            row.items.insert(definition.item.clone(), row.groups.len());
+        }
+        row.groups.push(SourceItemGroup {
+            owner: owner.clone(),
+            definitions,
+            shadowed,
+            invoke,
+            active: true,
+        });
+        Ok(SourceItemLease {
+            groups: Rc::clone(&self.groups),
+            actors: actors_handle,
+            state: self.state.clone(),
+            actor: actor.clone(),
+            owner,
+            index: row.groups.len() - 1,
+        })
+    }
+
+    /// Drop an actor's source-item groups (donor release path).
+    pub fn release_source_items(&self, actor: &OwnedActor) {
+        self.groups.borrow_mut().remove(actor);
+    }
+
+    /// Item definitions for an actor (donor `itemDefinitions`, donor
+    /// `src/world/gameplay/inventory.ts` 186-190).
+    pub fn item_definitions(&self, registry: &SessionActorRegistry, actor: &ActorId) -> Vec<RuntimeItemDefinition> {
+        let Some(owner) = registry.resolve_owned(actor) else {
+            return Vec::new();
+        };
+        self.groups.borrow().get(&owner).map_or_else(Vec::new, |row| {
+            row.groups
+                .iter()
+                .filter(|group| group.active)
+                .flat_map(|group| group.definitions.clone())
+                .collect()
+        })
+    }
+
+    /// Bound item action (donor `itemAction`, donor
+    /// `src/world/gameplay/inventory.ts` 175-184).
+    ///
+    /// The missing-`invoke` branch is unreachable through
+    /// [`bind_source_items`](Self::bind_source_items) (binding rejects
+    /// actions without an owner) and reads as no action; the returned
+    /// closure panics on a retired owner like the donor throw.
+    pub fn item_action(
+        &self,
+        registry: &SessionActorRegistry,
+        actor: &ActorId,
+        item: &ItemId,
+        action: &str,
+    ) -> Option<Box<dyn FnOnce()>> {
+        let owner = registry.resolve_owned(actor)?;
+        let groups = self.groups.borrow();
+        let row = groups.get(&owner)?;
+        let index = *row.items.get(item)?;
+        let group = row.groups.get(index)?;
+        if !group.active
+            || !group
+                .definitions
+                .iter()
+                .find(|definition| &definition.item == item)
+                .is_some_and(|definition| definition.actions.iter().any(|name| name == action))
+        {
+            return None;
+        }
+        let invoke = group.invoke.clone()?;
+        let actors = self.actors.clone()?;
+        let groups = Rc::clone(&self.groups);
+        let actor = actor.clone();
+        let item = item.clone();
+        let action = action.to_string();
+        Some(Box::new(move || {
+            let live = actors.borrow().resolve_owned(&actor) == Some(owner.clone())
+                && groups.borrow().get(&owner).is_some_and(|row| {
+                    row.items.get(&item) == Some(&index) && row.groups.get(index).is_some_and(|group| group.active)
+                });
+            if !live {
+                panic!("Source item action belongs to a retired inventory owner");
+            }
+            invoke(&item, &action);
+        }))
+    }
+
+    /// Owning provider of an actor's item (donor `itemOwner`, donor
+    /// `src/world/gameplay/inventory.ts` 192-195).
+    pub fn item_owner(&self, registry: &SessionActorRegistry, actor: &ActorId, item: &ItemId) -> Option<ProviderId> {
+        let owner = registry.resolve_owned(actor)?;
+        let groups = self.groups.borrow();
+        let row = groups.get(&owner)?;
+        row.items
+            .get(item)
+            .and_then(|index| row.groups.get(*index))
+            .filter(|group| group.active)
+            .map(|group| group.owner.clone())
     }
 }
 
@@ -16442,17 +18103,322 @@ impl SharedSimulation {
     }
 
     /// Set player movement (donor `setPlayerMovement`, donor runtime.ts
-    /// 3981, C5's range).
+    /// 3981-4022).
     ///
-    /// Missing siblings: C5's canonical method; delete this seam when it
-    /// lands. The seam is a no-op: movement transitions need the
-    /// movement lane.
+    /// Donor throws surface as panics: the signature stays infallible for
+    /// the cross-range callers. Noclip returns before the view-reset emit,
+    /// exactly like the donor early return.
     pub fn set_player_movement(
         &self,
-        _actor: &ActorId,
-        _change: qa_content::q2::base::player::types::Q2PlayerMovementChange,
-        _link: bool,
+        actor: &ActorId,
+        change: qa_content::q2::base::player::types::Q2PlayerMovementChange,
+        link: bool,
     ) {
+        use qa_content::q2::base::player::types::Q2PlayerMovementChange;
+        use qa_world::movement::q3::constants::move_flags;
+        let player = self.require_player(actor).unwrap_or_else(|error| panic!("{error}"));
+        let body = self
+            .bodies()
+            .read(actor)
+            .unwrap_or_else(|| panic!("Player has no body"));
+        let owned = player.actor.clone();
+        let state = self
+            .read_player_state(&player)
+            .unwrap_or_else(|error| panic!("{error}"));
+        if matches!(change, Q2PlayerMovementChange::Teleport(_)) {
+            if let Some(grapple) = self.peek().grapple.as_ref() {
+                grapple.release(actor).unwrap_or_else(|error| panic!("{error}"));
+            }
+            if let Some(selected) = self.peek().selected_q3_source.as_ref() {
+                selected.release_hook(actor).unwrap_or_else(|error| panic!("{error}"));
+            }
+        }
+        if let Q2PlayerMovementChange::Noclip { enabled } = &change {
+            let enabled = *enabled;
+            let mut locked = self.state.borrow_mut();
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                panic!("Actor is not an admitted player");
+            };
+            entry.flight = false;
+            entry.state = match &entry.state {
+                MovementState::Q1Netquake(state) => {
+                    let mut next = state.clone();
+                    next.move_type = if enabled { 8 } else { 3 };
+                    MovementState::Q1Netquake(next)
+                }
+                MovementState::Q2Classic(state) => {
+                    let mut next = *state;
+                    next.move_type = if enabled { 1 } else { 0 };
+                    MovementState::Q2Classic(next)
+                }
+                MovementState::Q2Rerelease(state) => {
+                    let mut next = *state;
+                    next.move_type = if enabled { 1 } else { 0 };
+                    MovementState::Q2Rerelease(next)
+                }
+                MovementState::Q3(state) => {
+                    let mut next = state.clone();
+                    next.movement_type = if enabled { 1 } else { 0 };
+                    MovementState::Q3(next)
+                }
+                MovementState::Q1Quakeworld(state) => {
+                    let mut next = state.clone();
+                    next.spectator = if enabled { 1 } else { 0 };
+                    MovementState::Q1Quakeworld(next)
+                }
+            };
+            return;
+        }
+        let (angles, origin, velocity, hold_milliseconds, is_spawn, is_freeze, reason) = match &change {
+            Q2PlayerMovementChange::Spawn(change) => (
+                change.angles,
+                change.origin,
+                change.velocity,
+                change.hold_milliseconds,
+                true,
+                false,
+                super::types::ViewResetReason::Spawn,
+            ),
+            Q2PlayerMovementChange::Teleport(change) => (
+                change.angles,
+                change.origin,
+                change.velocity,
+                change.hold_milliseconds,
+                false,
+                false,
+                super::types::ViewResetReason::Teleport,
+            ),
+            Q2PlayerMovementChange::Freeze { origin, angles } => (
+                *angles,
+                *origin,
+                zero(),
+                0,
+                false,
+                true,
+                super::types::ViewResetReason::Freeze,
+            ),
+            Q2PlayerMovementChange::Noclip { .. } => unreachable!("noclip returns above"),
+        };
+        {
+            let mut locked = self.state.borrow_mut();
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                panic!("Actor is not an admitted player");
+            };
+            entry.view_angles = angles;
+            if is_spawn {
+                entry.flight = false;
+                entry.cutscene = None;
+                entry.bounds = entry.standing_bounds;
+                entry.body_shape_base = None;
+                entry.view_height = if entry.character == GameFamily::Q3 { 26.0 } else { 22.0 };
+            }
+            entry.intermission = is_freeze;
+        }
+        if is_freeze {
+            self.peek()
+                .combat
+                .set_traits(
+                    &owned,
+                    qa_content::q2::support::contracts::CombatTraitChanges {
+                        can_take_damage: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        self.bodies()
+            .write(
+                &owned,
+                qa_world::body::BodyState {
+                    origin,
+                    velocity,
+                    angles,
+                    ground: None,
+                    ..body
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        let now = self.time_seconds();
+        let source_kind = self.peek().source.kind();
+        {
+            let mut locked = self.state.borrow_mut();
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                panic!("Actor is not an admitted player");
+            };
+            entry.ground = TraceHit::None;
+            entry.state = match state {
+                MovementState::Q1Netquake(mut next) => {
+                    next.origin = origin;
+                    next.old_origin = origin;
+                    next.velocity = velocity;
+                    next.view_angles = angles;
+                    next.angles = angles;
+                    next.flags &= !512;
+                    next.move_type = if is_spawn {
+                        3
+                    } else if is_freeze {
+                        0
+                    } else {
+                        next.move_type
+                    };
+                    next.ground = TraceHit::None;
+                    next.fix_angle = false;
+                    next.teleport_time_seconds = now
+                        + if is_freeze {
+                            0.0
+                        } else {
+                            f64::from(hold_milliseconds) / 1000.0
+                        };
+                    MovementState::Q1Netquake(next)
+                }
+                MovementState::Q2Classic(mut next) => {
+                    next.origin_eighths = [
+                        (f64::from(origin.x) * 8.0).trunc() as i32,
+                        (f64::from(origin.y) * 8.0).trunc() as i32,
+                        (f64::from(origin.z) * 8.0).trunc() as i32,
+                    ];
+                    next.velocity_eighths = [
+                        (f64::from(velocity.x) * 8.0).trunc() as i32,
+                        (f64::from(velocity.y) * 8.0).trunc() as i32,
+                        (f64::from(velocity.z) * 8.0).trunc() as i32,
+                    ];
+                    next.flags = if is_freeze {
+                        next.flags
+                    } else {
+                        (if is_spawn { 0 } else { next.flags & !56 }) | if hold_milliseconds > 0 { 32 } else { 0 }
+                    };
+                    next.time_eight_milliseconds = if is_freeze { 0 } else { hold_milliseconds / 8 };
+                    next.delta_angle_shorts = [0, 0, 0];
+                    next.move_type = if is_freeze { 4 } else { 0 };
+                    MovementState::Q2Classic(next)
+                }
+                MovementState::Q2Rerelease(mut next) => {
+                    next.origin = origin;
+                    next.velocity = velocity;
+                    next.flags = if is_freeze {
+                        next.flags
+                    } else {
+                        (if is_spawn { 0 } else { next.flags & !56 }) | if hold_milliseconds > 0 { 32 } else { 0 }
+                    };
+                    next.time_milliseconds = if is_freeze { 0 } else { hold_milliseconds };
+                    next.delta_angles = zero();
+                    next.move_type = if is_freeze { 5 } else { 0 };
+                    MovementState::Q2Rerelease(next)
+                }
+                MovementState::Q3(mut next) => {
+                    next.origin = origin;
+                    next.velocity = velocity;
+                    next.view_angles = angles;
+                    if source_kind != "q3" && source_kind != "q3-qvm" {
+                        next.delta_angle_words = [0, 0, 0];
+                    }
+                    next.movement_type = if is_freeze { 4 } else { 0 };
+                    next.ground = TraceHit::None;
+                    next.movement_flags = if is_freeze {
+                        next.movement_flags
+                    } else {
+                        (next.movement_flags
+                            & !(move_flags::TIME_LAND | move_flags::TIME_KNOCKBACK | move_flags::TIME_WATERJUMP))
+                            | if hold_milliseconds > 0 {
+                                move_flags::TIME_KNOCKBACK
+                            } else {
+                                0
+                            }
+                    };
+                    next.movement_time_milliseconds = if is_freeze { 0 } else { hold_milliseconds };
+                    MovementState::Q3(next)
+                }
+                MovementState::Q1Quakeworld(mut next) => {
+                    next.origin = origin;
+                    next.velocity = velocity;
+                    next.angles = angles;
+                    next.ground = TraceHit::None;
+                    MovementState::Q1Quakeworld(next)
+                }
+            };
+        }
+        if is_spawn {
+            let respawn = self
+                .peek()
+                .characters
+                .get(&owned)
+                .and_then(|character| character.live())
+                .is_some_and(|live| live.source_flags() & 1 != 0);
+            if respawn {
+                let current = self
+                    .bodies()
+                    .read(actor)
+                    .unwrap_or_else(|| panic!("Respawning character has no body"));
+                let standing = self
+                    .peek()
+                    .player_states
+                    .get(&owned)
+                    .map(|entry| entry.standing_bounds)
+                    .unwrap_or(current.bounds);
+                let mut spawn_body = world_body_to_character(&current);
+                spawn_body.bounds = standing;
+                let combat = qa_content::q3::foundation::character::q3_initial_combat("100", None)
+                    .unwrap_or_else(|error| panic!("{error}"));
+                let entries = {
+                    let locked = self.state.borrow();
+                    let actors = self.actors.borrow();
+                    locked
+                        .inventory
+                        .inner()
+                        .entries(actors.inner(), actor)
+                        .iter()
+                        .map(world_entry_to_contract)
+                        .collect::<Vec<_>>()
+                };
+                // Clone the shared live handle and release the state guard:
+                // spawn re-enters the state through services (bodies,
+                // combat, inventory, callbacks), so no guard may be held.
+                let live = {
+                    let locked = self.state.borrow();
+                    let Some(character) = locked.characters.get(&owned) else {
+                        panic!("Respawning character has no body");
+                    };
+                    let Some(live) = character.live() else {
+                        panic!("Respawning character has no body");
+                    };
+                    live.clone()
+                };
+                live.spawn(&qa_content::q3::foundation::character::Q3CharacterSpawn {
+                    body: spawn_body,
+                    combat,
+                    inventory: entries,
+                })
+                .unwrap_or_else(|error| panic!("{error}"));
+                let animation = live.animation();
+                let mut locked = self.state.borrow_mut();
+                if let Some(entry) = locked.player_states.get_mut(&owned) {
+                    entry.bounds = entry.standing_bounds;
+                    entry.body_shape_base = None;
+                    entry.view_height = 26.0;
+                    entry.animation = animation.clone();
+                }
+                if let Some(character) = locked.characters.get_mut(&owned) {
+                    character.animation = Some(animation);
+                }
+            }
+        }
+        if link {
+            self.bodies().link(&owned).unwrap_or_else(|error| panic!("{error}"));
+        }
+        let mut locked = self.state.borrow_mut();
+        let content = locked.recipe.map.entities.content.clone();
+        let time = locked.source_frame.time;
+        locked.events.emit_owned(
+            None,
+            &content,
+            super::types::SourcePresentationEvent::ViewReset {
+                reason,
+                actor: actor.clone(),
+                angles,
+            },
+            time,
+            None,
+        );
     }
 
     /// Active mod-client movement outputs for an actor (donor
@@ -18032,13 +19998,7 @@ impl SharedSimulation {
             return fail("Q3 guest admission requires the awaited native network lifecycle");
         }
         if kind == "q3" {
-            let _ = travel;
-            let _ = userinfo;
-            let state = self.peek();
-            let SourceRuntime::Q3 { game, .. } = &state.source else {
-                return fail("Q3 admission lost its source");
-            };
-            return self.admit_q3_player(client, game);
+            return self.admit_q3_player(client);
         }
         self.admit_foundation_player(client, travel, userinfo)
     }
@@ -18212,15 +20172,51 @@ impl SharedSimulation {
             q2_entity = Some(id);
         }
         if character == GameFamily::Q3 {
-            return fail("Missing siblings: Q3 character admission (q3 lane owns Q3CharacterActor)");
-        }
-        self.peek()
-            .combat
-            .create(&actor, qa_world::combat::CombatState::default())?;
-        {
-            let actors = self.actors.borrow();
-            let mut state = self.state.borrow_mut();
-            state.inventory.inner_mut().create(actors.inner(), &actor, &[])?;
+            use qa_content::q3::foundation::character::{
+                Q3CharacterActor as CanonicalQ3CharacterActor, Q3CharacterSpawn,
+            };
+            use qa_world::movement::q3::types::Q3Product;
+            self.state.borrow_mut().character_starts.insert(actor.clone(), None);
+            let provider = self.peek().recipe.character.definition.provider.clone();
+            let death_animations = self.peek().q3_character_death_animations.clone();
+            let live = CanonicalQ3CharacterActor::new(
+                actor.clone(),
+                provider,
+                Q3Product::BaseQ3,
+                Rc::new(RuntimeQ3CharacterServices::new(self)),
+                death_animations,
+            );
+            let body = self
+                .bodies()
+                .read(actor.id())
+                .ok_or_else(|| RuntimeError::Failure("Foundation admission lost its body".to_string()))?;
+            let combat =
+                qa_content::q3::foundation::character::q3_initial_combat("100", None).map_err(source_failure)?;
+            live.spawn(&Q3CharacterSpawn {
+                body: world_body_to_character(&body),
+                combat,
+                inventory: Vec::new(),
+            })
+            .map_err(source_failure)?;
+            let animation = live.animation();
+            let mut seam = Q3CharacterActor::new();
+            seam.attach_live(live);
+            {
+                let mut state = self.state.borrow_mut();
+                state.characters.insert(actor.clone(), seam);
+                if let Some(record) = state.player_states.get_mut(&actor) {
+                    record.animation = animation;
+                }
+            }
+        } else {
+            self.peek()
+                .combat
+                .create(&actor, qa_world::combat::CombatState::default())?;
+            {
+                let actors = self.actors.borrow();
+                let mut state = self.state.borrow_mut();
+                state.inventory.inner_mut().create(actors.inner(), &actor, &[])?;
+            }
         }
         if source_is_q1 {
             let services = match self.q1_services() {
@@ -18253,7 +20249,56 @@ impl SharedSimulation {
                 .attach(&mut services.borrow_mut(), &actor, &admission)
                 .map_err(source_failure)?;
         } else {
-            return fail("Missing siblings: q2 items/product admission (q2 lane owns the game-wrapper surface)");
+            use qa_content::q2::base::player::Q2PlayerAdmission;
+            let game = match self.q2_game_services() {
+                Some(game) => game,
+                None => return fail("Q2 admission has no live game services"),
+            };
+            let product = match self.peek().q2_product.clone() {
+                Some(product) => product,
+                None => return fail("Q2 admission has no live product runtime"),
+            };
+            let model = if character == GameFamily::Q2 {
+                provider_text(&self.peek().recipe.character.appearance.provider)
+                    .split('/')
+                    .next_back()
+                    .unwrap_or("male")
+                    .to_string()
+            } else {
+                "male".to_string()
+            };
+            let fallback = format!(
+                "\\\\name\\\\Player {}\\\\skin\\\\{}/grunt\\\\fov\\\\90",
+                client.slot() + 1,
+                model
+            );
+            let admission = Q2PlayerAdmission {
+                slot: client.slot() as i32,
+                userinfo: userinfo.unwrap_or(fallback.as_str()).to_string(),
+                initialize_inventory: false,
+                use_q2_weapons: Some(self.peek().selected_arsenal.is_none()),
+                use_q2_inventory: None,
+                carry: None,
+            };
+            let landmark = travel.and_then(|travel| match &travel.source {
+                super::types::SimulationTravelSource::Q2 { landmark, .. } => landmark
+                    .as_ref()
+                    .filter(|mark| mark.client_slot == client.slot())
+                    .map(|mark| qa_content::q2::foundation::host::Q2LandmarkCarry {
+                        player: actor.id().clone(),
+                        name: mark.name.clone(),
+                        relative_origin: mark.relative_origin,
+                        relative_velocity: mark.relative_velocity,
+                        relative_view_angles: mark.relative_view_angles,
+                    }),
+                _ => None,
+            });
+            let mut game = game.borrow_mut();
+            let product = product.borrow();
+            product.items.configure_player(&actor, &mut game, true);
+            if q2_entity.is_some() {
+                product.admit(actor.clone(), &mut game, admission, landmark);
+            }
         }
         {
             let state = self.peek();
@@ -18438,6 +20483,60 @@ impl SharedSimulation {
     }
 }
 
+/// Q3 source product and team flag (donor `source.options.product` and
+/// `source.gameType === 3` reads).
+///
+/// The product resolves from the attached host's options when present, else
+/// from the recipe by the same selected-program rule source construction
+/// uses; the team flag reads the attached host's game type, else the
+/// construction default (only game type 3 is a team game, and construction
+/// seeds 0 or 2).
+fn q3_source_product_and_team(
+    sim: &SharedSimulation,
+) -> Result<(qa_content::q3::base::shared::definitions::Product, bool), RuntimeError> {
+    use qa_content::q3::base::shared::definitions::Product;
+    let (bound_product, team) = sim
+        .with_q3_source(|game| (game.product(), game.host().is_some_and(|host| host.game_type() == 3)))
+        .unwrap_or((None, false));
+    let product = match bound_product {
+        Some(product) => product,
+        None => {
+            let state = sim.peek();
+            let program =
+                qa_content::catalog::selected_source_program(&state.recipe.execution, &state.recipe.map.entities)
+                    .map_err(source_failure)?;
+            if program.as_deref() == Some("missionpack") {
+                Product::Missionpack
+            } else {
+                Product::Baseq3
+            }
+        }
+    };
+    Ok((product, team))
+}
+
+/// Movement loadout ammo as contract inventory entries with donor
+/// capacities (donor `src/content/q3/foundation/arsenal.ts` 170-171:
+/// weapons 1, ammunition 200), restored by item identity because the
+/// movement-entry projection drops them.
+fn q3_loadout_contract_entries(
+    ammo: &[qa_world::movement::types::InventoryEntry],
+) -> Vec<qa_content::contract::InventoryEntry> {
+    ammo.iter()
+        .map(|entry| {
+            let weapon_item = qa_content::q3::foundation::arsenal::Q3_WEAPON_ITEMS
+                .iter()
+                .any(|weapon| weapon.item == entry.item);
+            qa_content::contract::InventoryEntry {
+                item: entry.item.clone(),
+                count: entry.count,
+                capacity: if weapon_item { 1.0 } else { 200.0 },
+                count_policy: None,
+            }
+        })
+        .collect()
+}
+
 impl SharedSimulation {
     /// Donor `prepareBotClient` (donor runtime.ts 3400).
     pub fn prepare_bot_client(&self, client: &ClientId) -> Result<OwnedActor, RuntimeError> {
@@ -18473,45 +20572,105 @@ impl SharedSimulation {
         {
             return fail("Bot client is not an available session slot");
         }
-        let state = self.peek();
-        let SourceRuntime::Q3 { game, .. } = &state.source else {
-            return fail("Bot admission requires a supported source observation binding");
-        };
-        let _actor = self.prepare_q3_client(client, game)?;
-        fail("Missing siblings: Q3 source prepareClient (q3 lane owns the source host)")
+        if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
+            return fail("Q3 bot admission has no attached source host");
+        }
+        let actor = self.prepare_q3_client(client)?;
+        let host = self
+            .with_q3_source(|game| game.host())
+            .flatten()
+            .expect("Q3 source host checked above");
+        let entity = host.prepare_client(&actor, client.slot() as i32);
+        self.state.borrow_mut().q3_entity_refs.insert(actor.clone(), entity);
+        Ok(actor)
     }
 
     /// Donor `prepareQ3Client` (donor runtime.ts 3413).
     ///
-    /// Missing siblings: the q3 lane owns the source host
-    /// (`options.product`, `gameType`, records, spawns). Fails before
-    /// allocating so no half-admitted actor leaks.
-    pub fn prepare_q3_client(&self, client: &ClientId, source: &Q3SourceRuntime) -> Result<OwnedActor, RuntimeError> {
-        let _ = client;
-        let _ = source;
-        fail("Missing siblings: Q3 source options/gameType (q3 lane owns the source host)")
+    /// The product resolves from the attached host's options when present,
+    /// else from the recipe by the same selected-program rule source
+    /// construction uses; the team flag reads the attached host's game
+    /// type, else the construction default (only game type 3 is a team
+    /// game, and construction seeds 0 or 2). Resolves through the state
+    /// instead of taking the donor's source alias, per the module's
+    /// ownership rules. Fails before allocating so no half-admitted actor
+    /// leaks.
+    pub fn prepare_q3_client(&self, client: &ClientId) -> Result<OwnedActor, RuntimeError> {
+        let recipe = self.peek().recipe.clone();
+        let (product, team) = q3_source_product_and_team(self)?;
+        let actor = self.actors.borrow_mut().allocate_at_source(
+            recipe.map.entities.provider.clone(),
+            client.slot(),
+            &provider_text(&recipe.character.definition.provider),
+        )?;
+        let weapon_provider = self.peek().weapon_provider.provider.clone();
+        let arsenal = qa_content::q3::foundation::arsenal::q3_spawn_loadout(weapon_provider, product, team);
+        let player = self.create_player(&actor, client, zero(), zero(), arsenal.clone())?;
+        let bounds = player.standing_bounds;
+        self.state.borrow_mut().player_states.insert(actor.clone(), player);
+        self.bodies().create(
+            &actor,
+            qa_world::body::BodyState {
+                origin: zero(),
+                angles: zero(),
+                velocity: zero(),
+                bounds,
+                ground: None,
+            },
+        )?;
+        let combat = qa_content::q3::foundation::character::q3_initial_combat("100", None).map_err(source_failure)?;
+        self.peek().combat.create(&actor, character_combat_to_world(&combat))?;
+        {
+            let ammo: Vec<qa_world::inventory::InventoryEntry> = q3_loadout_contract_entries(&arsenal.ammo)
+                .iter()
+                .map(contract_entry_to_world)
+                .collect();
+            let actors = self.actors.borrow();
+            let mut state = self.state.borrow_mut();
+            state.inventory.inner_mut().create(actors.inner(), &actor, &ammo)?;
+        }
+        Ok(actor)
     }
 
     /// Donor `admitQ3Player` (donor runtime.ts 3423).
     ///
-    /// Hand-grenade admission needs a Q2 game host, which a Q3 source
-    /// never has, so it is skipped. The Q3 source `admitPlayer` has no
-    /// Rust home yet (the q3 lane owns the source host).
-    fn admit_q3_player(
-        &self,
-        client: &ClientId,
-        source: &Q3SourceRuntime,
-    ) -> Result<super::types::PlayerAdmission, RuntimeError> {
-        let _actor = self.prepare_q3_client(client, source)?;
-        let _ = source;
-        fail("Missing siblings: Q3 source admitPlayer (q3 lane owns the source host)")
+    /// Resolves through the state instead of taking the donor's source
+    /// alias, per the module's ownership rules. Fails before allocating
+    /// when the source host is not attached so no half-admitted actor
+    /// leaks.
+    fn admit_q3_player(&self, client: &ClientId) -> Result<super::types::PlayerAdmission, RuntimeError> {
+        if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
+            return fail("Q3 admission has no attached source host");
+        }
+        let actor = self.prepare_q3_client(client)?;
+        let host = self
+            .with_q3_source(|game| game.host())
+            .flatten()
+            .expect("Q3 source host checked above");
+        let entity = host.admit_player(&actor, client.slot() as i32);
+        self.state.borrow_mut().q3_entity_refs.insert(actor.clone(), entity);
+        if self.peek().hand_grenades.is_some() {
+            let _ = self
+                .with_hand_grenades(|grenades, game| grenades.admit(actor.id(), game, None))?
+                .transpose()
+                .map_err(source_failure)?;
+        }
+        self.admit_grapple(actor.id())?;
+        self.notify_client_event(ModClientEventKind::Admitted, actor.id())?;
+        let view_height = self.require_player(actor.id())?.view_height;
+        Ok(super::types::PlayerAdmission {
+            actor: actor.id().clone(),
+            view_height,
+        })
     }
 
-    /// Donor `spawnQ3Player` (donor runtime.ts 3430).
+    /// Donor `spawnQ3Player` (donor runtime.ts 3430-3474).
     ///
-    /// Missing siblings: the q3 lane owns the source host
-    /// (`options.product`, `gameType`, spawns) and `Q3CharacterActor`
-    /// (spawn/animation/commit). Guards run; the spawn fails loudly.
+    /// The client record resolves through the retained records-layer ref
+    /// from admission. Foreign-character respawns re-attach: the Q2
+    /// character host has no Rust home and the Q1 foundation game is
+    /// absent on Q3 sources, so the donor `respawned`/`respawn` calls are
+    /// reached as a fresh attach, which lands the same spawn-time state.
     pub fn spawn_q3_player(
         &self,
         entity: &qa_content::q3::base::game::state::GameEntity,
@@ -18520,57 +20679,528 @@ impl SharedSimulation {
         if self.peek().source.kind() != "q3" {
             return fail("Q3 spawn before source attachment");
         }
-        let _ = self.require_player(&entity.actor)?;
-        let _ = pose;
-        fail("Missing siblings: Q3 spawn surface (q3 lane owns the source host and Q3CharacterActor)")
+        let player = self.require_player(&entity.actor)?;
+        let owned = player.actor.clone();
+        let (product, team) = q3_source_product_and_team(self)?;
+        let weapon_provider = self.peek().weapon_provider.provider.clone();
+        let loadout = qa_content::q3::foundation::arsenal::q3_spawn_loadout(weapon_provider, product, team);
+        {
+            let mut locked = self.state.borrow_mut();
+            locked.q3_arsenals.insert(
+                owned.clone(),
+                qa_content::q3::foundation::arsenal::q3_spawn_arsenal_runtime(product, 100.0, 0),
+            );
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                return fail("Q3 spawn lost its player");
+            };
+            entry.arsenal = loadout;
+            entry.bounds = entry.standing_bounds;
+            entry.body_shape_base = None;
+            entry.view_height = if entry.character == GameFamily::Q3 { 26.0 } else { 22.0 };
+        }
+        let body = qa_world::body::BodyState {
+            origin: pose.origin,
+            angles: pose.angles,
+            velocity: zero(),
+            bounds: player.standing_bounds,
+            ground: None,
+        };
+        if player.character == GameFamily::Q3 {
+            self.spawn_q3_character(&owned, &body)?;
+        } else {
+            self.bodies().write(&owned, body)?;
+            self.peek().combat.set_health(&owned, 100.0)?;
+            self.peek().combat.set_traits(
+                &owned,
+                qa_content::q2::support::contracts::CombatTraitChanges {
+                    can_take_damage: Some(true),
+                    invulnerable: Some(false),
+                    ..Default::default()
+                },
+            )?;
+            {
+                let actors = self.actors.borrow();
+                let locked = self.state.borrow();
+                let cleared: Vec<qa_world::inventory::InventoryEntry> = locked
+                    .inventory
+                    .inner()
+                    .entries(actors.inner(), owned.id())
+                    .iter()
+                    .map(|entry| {
+                        let mut entry = entry.clone();
+                        entry.count = 0.0;
+                        entry
+                    })
+                    .collect();
+                let ammo: Vec<qa_world::inventory::InventoryEntry> = locked
+                    .player_states
+                    .get(&owned)
+                    .map(|entry| {
+                        q3_loadout_contract_entries(&entry.arsenal.ammo)
+                            .iter()
+                            .map(contract_entry_to_world)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                drop(locked);
+                let mut locked = self.state.borrow_mut();
+                for entry in cleared.into_iter().chain(ammo) {
+                    locked.inventory.inner_mut().configure(actors.inner(), &owned, entry)?;
+                }
+            }
+            if player.character == GameFamily::Q2 {
+                self.attach_q2_character(&player)?;
+            } else {
+                self.attach_q1_character(&player)?;
+            }
+        }
+        let selected = self.peek().selected_arsenal.is_some();
+        if selected {
+            let arsenal = {
+                let mut locked = self.state.borrow_mut();
+                let Some(selected) = locked.selected_arsenal.as_mut() else {
+                    return fail("Q3 spawn lost its selected arsenal");
+                };
+                selected.remove(owned.id());
+                selected.admit(owned.clone(), 100.0, false)
+            };
+            let mut locked = self.state.borrow_mut();
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                return fail("Q3 spawn lost its player");
+            };
+            entry.arsenal = arsenal;
+        }
+        let _ = self
+            .with_hand_grenades(|grenades, game| grenades.respawn(owned.id(), game))?
+            .transpose()
+            .map_err(source_failure)?;
+        {
+            let locked = self.state.borrow();
+            if let Some(grapple) = locked.grapple.as_ref() {
+                grapple.release(owned.id()).map_err(source_failure)?;
+            }
+        }
+        self.admit_grapple(owned.id())?;
+        let command_angles = self
+            .peek()
+            .player_states
+            .get(&owned)
+            .map(|entry| entry.command_angles)
+            .unwrap_or(zero());
+        self.set_player_movement(
+            owned.id(),
+            qa_content::q2::base::player::types::Q2PlayerMovementChange::Spawn(
+                qa_content::q2::base::player::types::Q2PlayerSpawnChange {
+                    origin: pose.origin,
+                    velocity: zero(),
+                    angles: pose.angles,
+                    command_angles,
+                    hold_milliseconds: 100,
+                    spectator: false,
+                },
+            ),
+            false,
+        );
+        {
+            let locked = self.state.borrow();
+            let Some(entity_ref) = locked.q3_entity_refs.get(&owned).cloned() else {
+                return fail("Q3 spawn lost its source record");
+            };
+            let (view_height, arsenal) = locked
+                .player_states
+                .get(&owned)
+                .map(|entry| (entry.view_height, entry.arsenal.clone()))
+                .unwrap_or((22.0, player.arsenal.clone()));
+            drop(locked);
+            let borrowed = entity_ref.borrow();
+            let Some(client) = borrowed.client.clone() else {
+                return fail("Q3 spawn lost its source record");
+            };
+            drop(borrowed);
+            let mut client = client.borrow_mut();
+            client.ps.viewheight = view_height as i32;
+            client.ps.viewangles = pose.angles;
+            if let qa_world::movement::types::WeaponState::Q3 {
+                source_weapon,
+                state,
+                time_milliseconds,
+            } = arsenal.state
+            {
+                client.ps.weapon = source_weapon;
+                client.ps.weapon_state = state;
+                client.ps.weapon_time = time_milliseconds;
+            }
+        }
+        self.notify_client_event(ModClientEventKind::Admitted, owned.id())?;
+        Ok(())
     }
 
-    /// Donor `moveQ3Client` (donor runtime.ts 3476).
+    /// Spawn (or respawn) a Q3 character through the canonical actor.
     ///
-    /// Missing siblings: the q3 lane owns the source records
-    /// (`readQ3MovementState`, `readQ3MovementEnvironment`,
-    /// `selectedQ3Command`). Guards run; the step fails loudly.
+    /// Creates and retains the canonical actor on first spawn, then runs
+    /// the donor `character.spawn` + `player.animation` tail on every
+    /// spawn. Clones the shared live handle and releases the state guard
+    /// before spawning: spawn re-enters the state through services, so no
+    /// guard may be held.
+    fn spawn_q3_character(&self, owned: &OwnedActor, body: &qa_world::body::BodyState) -> Result<(), RuntimeError> {
+        use qa_content::q3::foundation::character::{Q3CharacterActor as CanonicalQ3CharacterActor, Q3CharacterSpawn};
+        let live = {
+            let locked = self.state.borrow();
+            locked
+                .characters
+                .get(owned)
+                .and_then(|character| character.live())
+                .cloned()
+        };
+        let live = match live {
+            Some(live) => live,
+            None => {
+                let (provider, death_animations) = {
+                    let locked = self.state.borrow();
+                    (
+                        locked.recipe.character.definition.provider.clone(),
+                        locked.q3_character_death_animations.clone(),
+                    )
+                };
+                let (definition_product, _) = q3_source_product_and_team(self)?;
+                let product = match definition_product {
+                    qa_content::q3::base::shared::definitions::Product::Missionpack => {
+                        qa_world::movement::q3::types::Q3Product::MissionPack
+                    }
+                    qa_content::q3::base::shared::definitions::Product::Baseq3 => {
+                        qa_world::movement::q3::types::Q3Product::BaseQ3
+                    }
+                };
+                let live = CanonicalQ3CharacterActor::new(
+                    owned.clone(),
+                    provider,
+                    product,
+                    Rc::new(RuntimeQ3CharacterServices::new(self)),
+                    death_animations,
+                );
+                let mut seam = Q3CharacterActor::new();
+                // Attach first so the live handle is retained even if spawn
+                // fails; the animation snapshot refreshes after spawn.
+                let mut locked = self.state.borrow_mut();
+                // Seed the snapshot from the fresh actor; spawn refreshes it.
+                let animation = live.animation();
+                seam.attach_live(live.clone());
+                locked.characters.insert(owned.clone(), seam);
+                if let Some(entry) = locked.player_states.get_mut(owned) {
+                    entry.animation = animation;
+                }
+                live
+            }
+        };
+        let (spawn_body, combat, ammo) = {
+            let locked = self.state.borrow();
+            let combat =
+                qa_content::q3::foundation::character::q3_initial_combat("100", None).map_err(source_failure)?;
+            let ammo: Vec<qa_content::contract::InventoryEntry> = locked
+                .player_states
+                .get(owned)
+                .map(|entry| q3_loadout_contract_entries(&entry.arsenal.ammo))
+                .unwrap_or_default();
+            (world_body_to_character(body), combat, ammo)
+        };
+        live.spawn(&Q3CharacterSpawn {
+            body: spawn_body,
+            combat,
+            inventory: ammo,
+        })
+        .map_err(source_failure)?;
+        let animation = live.animation();
+        let mut locked = self.state.borrow_mut();
+        if let Some(entry) = locked.player_states.get_mut(owned) {
+            entry.animation = animation.clone();
+        }
+        if let Some(character) = locked.characters.get_mut(owned) {
+            character.animation = Some(animation);
+        }
+        Ok(())
+    }
+
+    /// Donor `moveQ3Client` (donor runtime.ts 3476-3532).
+    ///
+    /// Runs the donor prefix through the source-movement latch: the
+    /// client record resolves through the retained records-layer ref
+    /// from admission, the command elapses against the record clock, and
+    /// the options latch into the player. The movement core itself (the
+    /// donor `player.move`/`moveCommand` pipeline over the host's
+    /// records store) has no Rust home yet: the host does not expose
+    /// its records, and the movement simulations live behind seams.
     pub fn move_q3_client(
         &self,
         entity: &qa_content::q3::base::game::state::GameEntity,
         command: &qa_content::q3::base::shared::player_state::UserCommand,
         options: &ClientMovementOptions,
     ) -> Result<qa_content::q3::team_arena::movement_host::ClientMovementResult, RuntimeError> {
-        let _ = self.require_player(&entity.actor)?;
-        if entity.client.is_none() {
-            return fail("Q3 movement has no client record");
-        }
+        let player = self.require_player(&entity.actor)?;
+        let owned = player.actor.clone();
+        let command_time = {
+            let locked = self.state.borrow();
+            let Some(entity_ref) = locked.q3_entity_refs.get(&owned).cloned() else {
+                return fail("Q3 movement has no client record");
+            };
+            drop(locked);
+            let borrowed = entity_ref.borrow();
+            let Some(client) = borrowed.client.clone() else {
+                return fail("Q3 movement has no client record");
+            };
+            drop(borrowed);
+            let command_time = client.borrow().ps.command_time;
+            command_time
+        };
         if self.peek().source.kind() != "q3" {
             return fail("Q3 source movement owner is missing");
         }
-        let _ = command;
-        let _ = options;
-        fail("Missing siblings: Q3 movement records (q3 lane owns the source host)")
+        let elapsed = (command.server_time - command_time).clamp(0, 200);
+        let _ = elapsed;
+        {
+            let mut locked = self.state.borrow_mut();
+            let Some(entry) = locked.player_states.get_mut(&owned) else {
+                return fail("Q3 movement lost its player");
+            };
+            entry.source_movement = Some(options.clone());
+        }
+        fail("Q3 movement core has no attached source records")
     }
 
-    /// Donor `syncQ3Player` (donor runtime.ts 3534).
+    /// Donor `syncQ3Player` (donor runtime.ts 3534-3554).
     ///
-    /// Missing siblings: the q3 lane owns the source records
-    /// (`records.byActor`, `readQ3MovementState`). The kind guard runs;
-    /// the sync fails loudly.
+    /// The entity resolves through the retained records-layer ref from
+    /// admission. Q3-kind movement states keep their local copy: the
+    /// donor's `readQ3MovementState` replace needs the host's records
+    /// store, which the host does not expose; view angles, teleport
+    /// timing, and the view-reset emit still sync.
     pub fn sync_q3_player(&self, player: &MovementPlayer) -> Result<(), RuntimeError> {
+        use qa_world::movement::q3::constants::move_flags;
         if self.peek().source.kind() != "q3" {
             return Ok(());
         }
-        let _ = player;
-        fail("Missing siblings: Q3 records byActor (q3 lane owns the source host)")
+        let owned = player.actor.clone();
+        let entity_ref = {
+            let locked = self.state.borrow();
+            let Some(entity_ref) = locked.q3_entity_refs.get(&owned).cloned() else {
+                return Ok(());
+            };
+            entity_ref
+        };
+        let (e_flags, viewangles, pm_flags, pm_time) = {
+            let borrowed = entity_ref.borrow();
+            let Some(client) = borrowed.client.clone() else {
+                return Ok(());
+            };
+            drop(borrowed);
+            let client = client.borrow();
+            (
+                client.ps.e_flags,
+                client.ps.viewangles,
+                client.ps.pm_flags,
+                client.ps.pm_time,
+            )
+        };
+        {
+            let locked = self.state.borrow();
+            if let Some(grapple) = locked.grapple.as_ref() {
+                grapple
+                    .observe_teleport(owned.id(), (e_flags & 4) as u8)
+                    .map_err(source_failure)?;
+            }
+        }
+        let live = {
+            let locked = self.state.borrow();
+            locked.player_states.get(&owned).cloned()
+        };
+        let Some(live) = live else {
+            return Ok(());
+        };
+        let previous = live.view_angles;
+        // A missing body skips the state refresh (view angles still
+        // sync); sync runs on the frame step, where donor `readState`
+        // never fails the step.
+        let read = if matches!(live.state, MovementState::Q3(_)) {
+            None
+        } else {
+            self.read_player_state(&live).ok()
+        };
+        let now = self.time_seconds();
+        let mut locked = self.state.borrow_mut();
+        let Some(entry) = locked.player_states.get_mut(&owned) else {
+            return Ok(());
+        };
+        entry.view_angles = viewangles;
+        if let Some(read) = read {
+            entry.state = match read {
+                MovementState::Q1Netquake(mut next) => {
+                    next.view_angles = viewangles;
+                    next.teleport_time_seconds = if pm_flags & move_flags::TIME_KNOCKBACK != 0 {
+                        now + f64::from(pm_time) / 1000.0
+                    } else {
+                        next.teleport_time_seconds
+                    };
+                    MovementState::Q1Netquake(next)
+                }
+                next => next,
+            };
+        }
+        let changed = previous.x != viewangles.x || previous.y != viewangles.y || previous.z != viewangles.z;
+        if changed {
+            let content = locked.recipe.map.entities.content.clone();
+            let time = locked.source_frame.time;
+            locked.events.emit_owned(
+                None,
+                &content,
+                super::types::SourcePresentationEvent::ViewReset {
+                    reason: super::types::ViewResetReason::Source,
+                    actor: owned.id().clone(),
+                    angles: viewangles,
+                },
+                time,
+                None,
+            );
+        }
+        Ok(())
     }
 }
 
-/// Fail a source inventory binding (donor `bindSourceInventory`, donor
-/// runtime.ts 2120, unowned pre-2168 range).
+/// Replaced supply items (donor `replacedSupplyItems`, donor
+/// `src/app/bootstrap/simulation/runtime.ts` 260-263).
 ///
-/// Missing siblings: `InventoryTable::bind` plus `InventoryStateBinding`
-/// adoption and `replacedSupplyItems` have no Rust home; the inventory
-/// lane owns the real binding. This panics instead of silently leaving
-/// actors without inventories, matching the adapter `assert!` precedent.
-pub fn missing_source_inventory_binding() -> ! {
-    panic!("source inventory binding needs InventoryTable::bind (missing sibling)")
+/// Sources whose item never appears as a mapping destination are
+/// replaced by the supply profile and filtered out of the native read.
+pub fn replaced_supply_items(profile: &qa_content::contract::PickupSupplyProfile) -> Vec<ItemId> {
+    let mappings: Vec<&qa_content::contract::PickupRoute> = profile.ammo.iter().chain(profile.weapons.iter()).collect();
+    let retained: HashSet<&ItemId> = mappings
+        .iter()
+        .flat_map(|mapping| mapping.destinations.iter())
+        .collect();
+    mappings
+        .into_iter()
+        .map(|mapping| mapping.source.clone())
+        .filter(|source| !retained.contains(source))
+        .collect()
+}
+
+/// Installed source-inventory plan (donor `bindSourceInventory`
+/// snapshot half, donor `src/app/bootstrap/simulation/runtime.ts`
+/// 2120-2135).
+#[derive(Debug, Clone)]
+pub struct SourceInventoryPlan {
+    /// Merged install list: capacity-overlaid native entries first,
+    /// then supplemental entries.
+    pub merged: Vec<qa_content::contract::InventoryEntry>,
+    /// Native items surviving the replaced filter.
+    pub native_items: HashSet<ItemId>,
+    /// Supplemental entries by item.
+    pub supplemental: HashMap<ItemId, qa_content::contract::InventoryEntry>,
+}
+
+/// Plan a source-inventory install (donor `bindSourceInventory`, donor
+/// `src/app/bootstrap/simulation/runtime.ts` 2120-2135).
+///
+/// `native` is the live source read; `capacity` overlays the
+/// selected-source capacity per item (`None` keeps the entry
+/// capacity). The live write-through half of the donor binding has no
+/// table-level home yet: install `merged` with `create` (donor
+/// `inventory.create` fallback, donor runtime.ts 2117).
+pub fn plan_source_inventory(
+    initial: &[qa_content::contract::InventoryEntry],
+    native: &[qa_content::contract::InventoryEntry],
+    replaced: &HashSet<ItemId>,
+    capacity: &dyn Fn(&ItemId) -> Option<f64>,
+) -> Result<SourceInventoryPlan, RuntimeError> {
+    let mut seen = HashSet::new();
+    for entry in initial {
+        if !seen.insert(entry.item.clone()) {
+            return fail("Saved source inventory has duplicate items");
+        }
+    }
+    let original: Vec<qa_content::contract::InventoryEntry> = native
+        .iter()
+        .filter(|entry| !replaced.contains(&entry.item))
+        .map(|entry| {
+            let mut entry = entry.clone();
+            if let Some(overlay) = capacity(&entry.item) {
+                entry.capacity = overlay;
+            }
+            entry
+        })
+        .collect();
+    let native_items: HashSet<ItemId> = original.iter().map(|entry| entry.item.clone()).collect();
+    let supplemental: HashMap<ItemId, qa_content::contract::InventoryEntry> = initial
+        .iter()
+        .filter(|entry| !native_items.contains(&entry.item))
+        .map(|entry| (entry.item.clone(), entry.clone()))
+        .collect();
+    let mut merged = original;
+    merged.extend(supplemental.values().cloned());
+    Ok(SourceInventoryPlan {
+        merged,
+        native_items,
+        supplemental,
+    })
+}
+
+#[cfg(test)]
+mod source_inventory_plan_tests {
+    use super::{plan_source_inventory, replaced_supply_items};
+    use qa_content::contract::{InventoryEntry, PickupRoute, PickupSupplyProfile};
+
+    fn entry(item: &str, capacity: f64) -> InventoryEntry {
+        InventoryEntry {
+            item: item.to_string(),
+            count: 1.0,
+            capacity,
+            count_policy: None,
+        }
+    }
+
+    #[test]
+    fn replaced_supply_keeps_destinations() {
+        let profile = PickupSupplyProfile {
+            id: "q2:supply".to_string(),
+            ammo: vec![PickupRoute {
+                source: "q2:ammo_shells".to_string(),
+                destinations: vec!["q2:ammo_cells".to_string()],
+            }],
+            weapon_owners: Vec::new(),
+            ammo_owners: Vec::new(),
+            weapons: vec![PickupRoute {
+                source: "q2:weapon_blaster".to_string(),
+                destinations: vec!["q2:weapon_blaster".to_string()],
+            }],
+        };
+        assert_eq!(replaced_supply_items(&profile), vec!["q2:ammo_shells".to_string()]);
+    }
+
+    #[test]
+    fn plan_partitions_and_overlays_capacity() {
+        let initial = vec![entry("q2:ammo_cells", 50.0), entry("q2:weapon_railgun", 1.0)];
+        let native = vec![entry("q2:ammo_cells", 50.0), entry("q2:ammo_shells", 100.0)];
+        let replaced: std::collections::HashSet<String> = ["q2:ammo_shells".to_string()].into_iter().collect();
+        let plan = plan_source_inventory(&initial, &native, &replaced, &|item| {
+            (item == "q2:ammo_cells").then_some(200.0)
+        })
+        .expect("plan");
+        assert_eq!(plan.native_items, ["q2:ammo_cells".to_string()].into_iter().collect());
+        assert_eq!(plan.supplemental.len(), 1);
+        assert!(plan.supplemental.contains_key("q2:weapon_railgun"));
+        let cells = plan
+            .merged
+            .iter()
+            .find(|entry| entry.item == "q2:ammo_cells")
+            .expect("cells");
+        assert_eq!(cells.capacity, 200.0);
+        assert_eq!(plan.merged.len(), 2);
+    }
+
+    #[test]
+    fn plan_rejects_duplicate_initial() {
+        let initial = vec![entry("q2:ammo_cells", 50.0), entry("q2:ammo_cells", 50.0)];
+        let replaced = std::collections::HashSet::new();
+        assert!(plan_source_inventory(&initial, &[], &replaced, &|_| None).is_err());
+    }
 }
 
 // C6 forward ports: unowned-scaffold and sibling-lane one-liners the C6 range
@@ -19317,23 +21947,109 @@ pub struct NativeDropProjection {
     pub pending: Option<ItemId>,
 }
 
-/// Rerelease primary protection around a debit/consume effect (donor
-/// `withRereleasePrimaryProtection`).
+/// Combat engine behind rerelease primary protection.
 ///
-/// Missing siblings: the rerelease/compat lane owns the guest-memory armor
-/// protection (`source.game.source.host` has no Rust home, and the guest
-/// worlds implement no `NativePrimaryWeaponWorld`). The ownership check and
-/// the effect run; only the armor-memory shielding is omitted.
+/// Implements
+/// [`ProtectionEngine`](qa_compat::q2::rerelease::pickup_protection::ProtectionEngine)
+/// over the gameplay authority: armor reads and publishes through the
+/// actor's combat binding. The simulation tracks no foreign protection
+/// owners and holds no foreign-actor table, so ownership reads as
+/// unheld and damage as unobserved (the donor `protectionOwner` /
+/// `foreignActors` equivalents).
+struct RereleaseDropProtectionEngine {
+    state: Weak<RefCell<SharedSimulationState>>,
+    actor: OwnedActor,
+}
+
+impl qa_compat::q2::rerelease::pickup_protection::ProtectionEngine for RereleaseDropProtectionEngine {
+    fn protection_owner(
+        &self,
+        _actor: u32,
+        _channel: qa_compat::q2::rerelease::pickup_protection::ProtectionChannel,
+    ) -> Option<String> {
+        None
+    }
+
+    fn read_armor(&self, actor: u32) -> Option<qa_world::combat::ArmorState> {
+        if actor != self.actor.id().slot() {
+            return None;
+        }
+        let state = self.state.upgrade()?;
+        let locked = state.borrow();
+        locked.combat.read(self.actor.id()).map(|binding| binding.armor)
+    }
+
+    fn set_regular_armor(&mut self, actor: u32, armor: qa_world::combat::RegularArmor) {
+        if actor != self.actor.id().slot() {
+            return;
+        }
+        if let Some(state) = self.state.upgrade() {
+            if let Some(mut binding) = state.borrow().combat.read(self.actor.id()) {
+                binding.armor.regular = armor;
+                let _ = state.borrow().combat.set_armor(&self.actor, binding.armor);
+            }
+        }
+    }
+
+    fn set_powered_protection(&mut self, actor: u32, powered: qa_world::combat::PoweredProtection) {
+        if actor != self.actor.id().slot() {
+            return;
+        }
+        if let Some(state) = self.state.upgrade() {
+            if let Some(mut binding) = state.borrow().combat.read(self.actor.id()) {
+                binding.armor.powered = powered;
+                let _ = state.borrow().combat.set_armor(&self.actor, binding.armor);
+            }
+        }
+    }
+
+    fn observing_damage(&self, _actor: u32) -> bool {
+        false
+    }
+}
+
+/// Rerelease primary protection around a debit/consume effect (donor
+/// `withRereleasePrimaryProtection`, donor
+/// `src/compat/q2/rerelease/pickup-protection.ts`, via
+/// [`ProtectionScope`](qa_compat::q2::rerelease::pickup_protection::ProtectionScope)).
+///
+/// The donor call site (`nativeDropProtection`, donor runtime.ts
+/// 4814-4831) always selects the powered channel and treats the drop
+/// as committed; debits run the effect directly inside the scope while
+/// consumes publish around it. The ownership re-check stays
+/// liveness-based: guest-record lookup needs a
+/// `NativePrimaryWeaponWorld` implementor and only the test-only
+/// implementor exists.
 fn with_rerelease_primary_protection_seam<R>(
     current_owner: bool,
+    mut engine: RereleaseDropProtectionEngine,
+    recipient: u32,
     kind: NativeDropKind,
     execute: impl FnOnce() -> Result<R, RuntimeError>,
 ) -> Result<R, RuntimeError> {
+    use qa_compat::q2::rerelease::pickup_protection::{ProtectionChannel, ProtectionScope};
     if !current_owner {
         return fail("Original inventory drop owner retired during its effect");
     }
-    let _ = kind;
-    execute()
+    let scope =
+        ProtectionScope::open(&mut engine, Some(recipient), ProtectionChannel::Powered).map_err(source_failure)?;
+    let committed = || true;
+    match kind {
+        NativeDropKind::Debit => scope.run(&committed, |_| Ok(execute())).map_err(source_failure)?,
+        NativeDropKind::Consume => scope
+            .run(&committed, |mut publisher| {
+                let mut captured: Option<Result<R, RuntimeError>> = None;
+                publisher.consume(|| {
+                    captured = Some(execute());
+                })?;
+                Ok(captured.unwrap_or_else(|| {
+                    Err(RuntimeError::Failure(
+                        "Original inventory drop lost its committed effect".to_string(),
+                    ))
+                }))
+            })
+            .map_err(source_failure)?,
+    }
 }
 
 /// Native configstrings (donor `source.game.configstrings`).
@@ -19363,8 +22079,18 @@ impl SharedSimulation {
         match &state.source {
             SourceRuntime::Q2Native(Q2NativeSource::Classic { .. }) => execute(),
             SourceRuntime::Q2Native(Q2NativeSource::Rerelease { .. }) => {
-                let current_owner = self.actors.borrow().is_live(actor);
-                with_rerelease_primary_protection_seam(current_owner, kind, execute)
+                let actors = self.actors.borrow();
+                let Some(owner) = actors.resolve_owned(actor) else {
+                    return fail("Original inventory drop lost its source actor");
+                };
+                let engine = RereleaseDropProtectionEngine {
+                    state: self.weak(),
+                    actor: owner.clone(),
+                };
+                let recipient = owner.id().slot();
+                let current_owner = actors.is_live(actor);
+                drop(actors);
+                with_rerelease_primary_protection_seam(current_owner, engine, recipient, kind, execute)
             }
             _ => fail("Original inventory drop lost its native source"),
         }
@@ -19426,7 +22152,7 @@ impl SharedSimulation {
             .ok_or_else(|| RuntimeError::Failure("Native drop has no declared original item prototypes".to_string()))?;
         let component = state
             .inventory
-            .item_definitions(actor)
+            .item_definitions(&self.actors.borrow(), actor)
             .into_iter()
             .find(|definition| &definition.item == item);
         let owner = self.actors.borrow().resolve_owned(actor);
@@ -19504,7 +22230,7 @@ impl SharedSimulation {
             return Ok(None);
         };
         let selected = state.selected_arsenal.as_ref().filter(|selected| selected.has(actor));
-        let definitions = state.inventory.item_definitions(actor);
+        let definitions = state.inventory.item_definitions(&self.actors.borrow(), actor);
         if selected.is_none() && definitions.is_empty() {
             return Ok(None);
         }
@@ -19737,7 +22463,7 @@ impl SharedSimulation {
         let state = self.peek();
         let definition = state
             .inventory
-            .item_definitions(actor)
+            .item_definitions(&self.actors.borrow(), actor)
             .into_iter()
             .find(|value| &value.item == item);
         let catalogued = state
@@ -19762,7 +22488,7 @@ impl SharedSimulation {
             )?;
             return Ok(());
         }
-        if let Some(action) = state.inventory.item_action(actor, item, "use") {
+        if let Some(action) = state.inventory.item_action(&self.actors.borrow(), actor, item, "use") {
             drop(state);
             action();
             return Ok(());
@@ -19889,13 +22615,18 @@ impl SharedSimulation {
 /// Donor `CombatPolicy` (C10 registration identity; C4 decide dispatch).
 ///
 /// The policy id keys the authority map; `kind` carries the per-family
-/// decide entry points `register_combat` installs.
+/// decide entry points `register_combat` installs. `revision` is the
+/// registration identity behind the donor dispose guard: `register`
+/// stamps it, and `unregister_policy` only removes the registration it
+/// still matches, so a stale disposer cannot remove a newer policy.
 #[derive(Clone)]
 pub struct CombatPolicy {
     /// Policy id (donor `policy.id`).
     pub id: ProviderId,
     /// Decide dispatch (donor policy `prepare`/`decide`).
     pub kind: RuntimeCombatPolicyKind,
+    /// Registration revision (donor disposer identity).
+    pub revision: u64,
 }
 
 impl std::fmt::Debug for CombatPolicy {
@@ -19914,10 +22645,14 @@ impl std::fmt::Debug for CombatPolicy {
 }
 
 impl GameplayAuthority {
-    /// Donor `GameplayAuthority.register` (C10 seam; C4 owns the canonical combat port).
+    /// Donor `GameplayAuthority.register` (donor
+    /// `src/world/gameplay/authority.ts` 162-166).
     ///
-    /// Missing siblings: C4's decide dispatch; delete this seam when it lands.
-    pub fn register(&mut self, policy: CombatPolicy) -> Result<ProviderId, RuntimeError> {
+    /// The decide dispatch the seam note awaited is C4's landed
+    /// `register_combat` builders plus the `apply` policy-kind match;
+    /// registration stamps the donor disposer identity so stale
+    /// disposers cannot remove a newer policy under the same id.
+    pub fn register(&mut self, mut policy: CombatPolicy) -> Result<ProviderId, RuntimeError> {
         if self.policies.contains_key(&policy.id) {
             return fail(format!(
                 "Combat policy already registered: {}",
@@ -19925,22 +22660,99 @@ impl GameplayAuthority {
             ));
         }
         let id = policy.id.clone();
+        let revision = self.next_policy_revision;
+        self.next_policy_revision += 1;
+        policy.revision = revision;
         self.policies.insert(id.clone(), policy);
         Ok(id)
     }
 
-    /// Remove a registered policy (dispose helper for [`GameplayAuthority::register`]).
-    pub fn unregister_policy(&mut self, id: &ProviderId) {
-        self.policies.remove(id);
+    /// Remove a registered policy (donor `register` disposer).
+    ///
+    /// Only removes the registration the revision still matches (donor
+    /// `policies.get(policy.id) === policy`).
+    pub fn unregister_policy(&mut self, id: &ProviderId, revision: u64) {
+        if self.policies.get(id).is_some_and(|policy| policy.revision == revision) {
+            self.policies.remove(id);
+        }
     }
 }
 
 impl SessionActorRegistry {
-    /// Donor `rebindRestoredSource` (C10 seam).
+    /// Stage pending checkpoint reconstructions for a source provider.
     ///
-    /// The live-slot resolution model needs no remap table yet.
-    /// Missing siblings: world-lane restored-source maps; delete this seam when they land.
-    pub fn rebind_restored_source(&mut self, _provider: &ProviderId) -> Result<(), RuntimeError> {
+    /// The save-restore tail stages the source's checkpoint rows before
+    /// native callbacks reconstruct its slots; [`Self::rebind_restored_source`]
+    /// then remaps the saved references onto the reconstructed actors.
+    pub fn stage_restored_sources(
+        &mut self,
+        provider: &ProviderId,
+        sources: &[qa_world::registry::SourceActorCheckpoint],
+    ) {
+        let entries = sources
+            .iter()
+            .filter(|source| source.provider == *provider)
+            .map(|source| RestoredSourceEntry {
+                source_slot: source.source_slot,
+                saved_slot: source.slot,
+                saved_generation: source.generation,
+            })
+            .collect();
+        self.restored_sources
+            .insert(qa_world::registry::provider_key(provider), entries);
+    }
+
+    /// Donor `rebindRestoredSource` (donor
+    /// `src/world/actors/registry.ts` 170-190).
+    ///
+    /// Original game save callbacks can reconstruct source slots in a
+    /// different host allocation order; the staged rows remap saved
+    /// slot references onto the reconstructed actors. With nothing
+    /// staged the live-slot resolution model already agrees, so the
+    /// rebind accepts and returns: the donor throws
+    /// `RangeError("Source has no pending checkpoint reconstruction")`
+    /// there, but no caller stages yet and the save tail requires
+    /// success for the agreeing case.
+    pub fn rebind_restored_source(&mut self, provider: &ProviderId) -> Result<(), RuntimeError> {
+        if self.closed {
+            return fail("Actor registry is closed");
+        }
+        let key = qa_world::registry::provider_key(provider);
+        let Some(staged) = self.restored_sources.get(&key).cloned() else {
+            return Ok(());
+        };
+        let mut replacements = Vec::with_capacity(staged.len());
+        for source in &staged {
+            if self.restored_actors.contains_key(&source.saved_slot) {
+                return range("Saved source actor has not been retired before reconstruction");
+            }
+            let Some(actor) = self.at_source(provider, source.source_slot) else {
+                return range(format!(
+                    "Reconstructed source is missing saved slot {}/{}",
+                    qa_world::registry::provider_key(provider),
+                    source.source_slot
+                ));
+            };
+            if self.restored_actor_slots.contains_key(&actor) {
+                return range("Reconstructed actor already has a saved identity");
+            }
+            replacements.push((source.clone(), actor));
+        }
+        for (source, actor) in replacements {
+            self.restored_actors.insert(
+                source.saved_slot,
+                RestoredActor {
+                    saved_generation: source.saved_generation,
+                    actor: actor.clone(),
+                },
+            );
+            self.restored_actor_slots.insert(actor.clone(), source.saved_slot);
+            self.saved_references.insert(
+                format!("{}/{}", source.saved_slot, source.saved_generation),
+                actor.id().clone(),
+            );
+        }
+        self.restored_sources.remove(&key);
         Ok(())
     }
 }
