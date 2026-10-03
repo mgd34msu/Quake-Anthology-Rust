@@ -1977,12 +1977,20 @@ impl From<SceneCollisionShape> for qa_world::spatial::CollisionShape {
 /// query bodies belong to the collision lane; this seam carries owned world
 /// identity plus the query signatures the simulation drives. Storage is
 /// owned (no world borrow) so the simulation state stays `'static`.
+/// Live actor-rows provider for [`SharedSceneQueries::query_actors`].
+///
+/// Installed by the navigation lane over the shared actor/body tables.
+/// The kind filter rides along for the donor signature; no caller
+/// filters on it yet.
+pub type SceneRowProvider = Rc<dyn Fn(Bounds, Option<&str>) -> Vec<SceneActorHit>>;
+
 pub struct SharedSceneQueries {
     world_kind: String,
     entities: String,
     collision_settings: RefCell<Option<CollisionMapSettings>>,
     model_bounds: RefCell<HashMap<i32, Bounds>>,
     area_portals: RefCell<HashMap<u32, bool>>,
+    actor_rows: RefCell<Option<SceneRowProvider>>,
 }
 
 impl SharedSceneQueries {
@@ -1994,6 +2002,7 @@ impl SharedSceneQueries {
             collision_settings: RefCell::new(None),
             model_bounds: RefCell::new(HashMap::new()),
             area_portals: RefCell::new(HashMap::new()),
+            actor_rows: RefCell::new(None),
         }
     }
 
@@ -2033,9 +2042,48 @@ impl SharedSceneQueries {
         self.model_bounds.borrow_mut().insert(model, bounds);
     }
 
+    /// Install the live actor-rows provider (navigation lane).
+    ///
+    /// Until installed, [`query_actors`](Self::query_actors) answers
+    /// empty by construction.
+    pub fn set_actor_rows(&self, provider: SceneRowProvider) {
+        *self.actor_rows.borrow_mut() = Some(provider);
+    }
+
     /// Donor `queryActors`.
-    pub fn query_actors(&self, _bounds: Bounds, _kind: Option<&str>) -> Vec<SceneActorHit> {
+    ///
+    /// Answers empty by construction until
+    /// [`set_actor_rows`](Self::set_actor_rows) installs the live
+    /// provider.
+    pub fn query_actors(&self, bounds: Bounds, kind: Option<&str>) -> Vec<SceneActorHit> {
+        if let Some(provider) = self.actor_rows.borrow().as_ref() {
+            return provider(bounds, kind);
+        }
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod scene_rows_tests {
+    use super::SharedSceneQueries;
+    use qa_core::math::{Bounds, Vec3};
+
+    #[test]
+    fn rows_flow_once_the_provider_is_installed() {
+        let scene = SharedSceneQueries::new("q1-bsp".to_string(), String::new());
+        let bounds = Bounds {
+            min: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+        };
+        assert!(scene.query_actors(bounds, None).is_empty());
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(0));
+        let seen_inner = std::rc::Rc::clone(&seen);
+        scene.set_actor_rows(std::rc::Rc::new(move |_, _| {
+            *seen_inner.borrow_mut() += 1;
+            Vec::new()
+        }));
+        scene.query_actors(bounds, None);
+        assert_eq!(*seen.borrow(), 1);
     }
 }
 
@@ -21128,8 +21176,10 @@ pub struct SourceInventoryPlan {
 /// table-level home yet: install `merged` with `create` (donor
 /// `inventory.create` fallback, donor runtime.ts 2117).
 ///
-/// Missing siblings: plan landed with test-only callers; production
-/// source-inventory installs still route elsewhere.
+/// Production installs route through here:
+/// [`SharedSimulation::c10_bind_equipment_inventory`] plans every
+/// equipment snapshot (live native reads land with the
+/// guest-services lane).
 pub fn plan_source_inventory(
     initial: &[qa_content::contract::InventoryEntry],
     native: &[qa_content::contract::InventoryEntry],
@@ -22710,10 +22760,8 @@ impl SessionActorRegistry {
     /// The save-restore tail stages the source's checkpoint rows before
     /// native callbacks reconstruct its slots; [`Self::rebind_restored_source`]
     /// then remaps the saved references onto the reconstructed actors.
-    ///
-    /// Missing siblings: staging landed with no callers, so the live
-    /// `rebind_restored_source` remaps an empty set; the restore tail
-    /// must call this first.
+    /// The native-clients restore tail stages the reconnected clients
+    /// from the saved players list before rebinding.
     pub fn stage_restored_sources(
         &mut self,
         provider: &ProviderId,
@@ -22741,8 +22789,8 @@ impl SessionActorRegistry {
     /// staged the live-slot resolution model already agrees, so the
     /// rebind accepts and returns: the donor throws
     /// `RangeError("Source has no pending checkpoint reconstruction")`
-    /// there, but no caller stages yet and the save tail requires
-    /// success for the agreeing case.
+    /// there, but the save tail requires success for the agreeing
+    /// (clientless) case.
     pub fn rebind_restored_source(&mut self, provider: &ProviderId) -> Result<(), RuntimeError> {
         if self.closed {
             return fail("Actor registry is closed");
@@ -22784,6 +22832,38 @@ impl SessionActorRegistry {
         }
         self.restored_sources.remove(&key);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod restored_source_tests {
+    use super::SessionActorRegistry;
+
+    #[test]
+    fn staged_sources_remap_saved_slots_onto_reconstructed_actors() {
+        let owner = qa_core::identity::IdentityOwner::create("restored-source-test").expect("owner");
+        let mut registry = SessionActorRegistry::new(owner, 8).expect("registry");
+        let module = qa_core::identity::ProviderId::new("q2", "game");
+        let saved = registry
+            .allocate(qa_core::identity::ProviderId::new("q2", "game"), "q2:player")
+            .expect("saved actor");
+        let saved_id = saved.id().clone();
+        let reconstructed = registry
+            .allocate_at_source(module.clone(), 3, "q2:player")
+            .expect("reconstructed actor");
+        assert_ne!(&saved_id, reconstructed.id());
+        let reference = qa_core::identity::SavedActorId::from(&saved_id);
+        registry.stage_restored_sources(
+            &module,
+            &[qa_world::registry::SourceActorCheckpoint {
+                provider: module.clone(),
+                source_slot: 3,
+                slot: reference.slot,
+                generation: reference.generation,
+            }],
+        );
+        registry.rebind_restored_source(&module).expect("rebind");
+        assert_eq!(registry.resolve_saved(reference), Some(reconstructed));
     }
 }
 
@@ -23747,10 +23827,12 @@ impl SharedSimulation {
     /// Donor `bindEquipmentInventory` (C10; pre-zone donor 2114, no owning child).
     ///
     /// The q2-native live source view (`sourceInventory` + inventory `bind`
-    /// with capacity/supplemental closures) has no substrate yet, so both
-    /// arms snapshot `initial` into a copied store. Restore data stays
-    /// correct per the save; later native-side changes diverge until the
-    /// guest-services and world lanes land the live binding.
+    /// with capacity/supplemental closures) has no substrate yet, so the
+    /// install plans over an empty native read
+    /// ([`plan_source_inventory`], donor `bindSourceInventory` snapshot
+    /// half) and snapshots `merged` into a copied store. Restore data
+    /// stays correct per the save; later native-side changes diverge
+    /// until the guest-services and world lanes land the live binding.
     /// Missing siblings: guest-services `sourceInventory`, world-lane
     /// inventory `bind`; delete the snapshot fallback when they land.
     /// Duplicate: C11 landed a same-named panicking version; the parent
@@ -23760,9 +23842,14 @@ impl SharedSimulation {
         actor: &OwnedActor,
         initial: &[qa_world::inventory::InventoryEntry],
     ) -> Result<(), RuntimeError> {
+        let initial_contract: Vec<qa_content::contract::InventoryEntry> =
+            initial.iter().map(world_entry_to_contract).collect();
+        let plan = plan_source_inventory(&initial_contract, &[], &HashSet::new(), &|_| None)?;
+        let merged: Vec<qa_world::inventory::InventoryEntry> =
+            plan.merged.iter().map(contract_entry_to_world).collect();
         let actors = self.actors.borrow();
         let mut state = self.state.borrow_mut();
-        state.inventory.inner_mut().create(actors.inner(), actor, initial)?;
+        state.inventory.inner_mut().create(actors.inner(), actor, &merged)?;
         Ok(())
     }
 
@@ -25643,6 +25730,47 @@ impl SharedSimulation {
                         .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?,
                 }
             };
+            // Stage the saved source-actor rows (donor `restoredSources`,
+            // donor `src/world/actors/registry.ts` 249-251) so the rebind
+            // below remaps saved slots onto the reconstructed native
+            // actors (donor runtime.ts 6463). Native source slots are
+            // 1-based client slots; saved identities come from the
+            // `world:simulation` players list, filtered to reconnected
+            // native clients so every staged row has a reconstructed
+            // slot. Clientless restores stage nothing and keep the
+            // agreeing-case success below.
+            {
+                let document = super::save::simulation_save_reader(save).map_err(source_failure)?;
+                let reader = document.reader();
+                let players = reader.field("players");
+                if players.value.is_some() {
+                    let native_slots: HashSet<i64> = saved_clients.iter().map(|client| client.client_slot).collect();
+                    let staged: Vec<qa_world::registry::SourceActorCheckpoint> = players
+                        .list(|value| {
+                            let actor = read_saved_actor(value.field("actor"))?;
+                            let slot = value.field("clientSlot").integer(0)?;
+                            Ok::<_, RuntimeError>((slot, actor))
+                        })?
+                        .into_iter()
+                        .filter(|(slot, _)| native_slots.contains(slot))
+                        .map(|(slot, actor)| {
+                            let source_slot = u32::try_from(slot)
+                                .ok()
+                                .and_then(|client| client.checked_add(1))
+                                .ok_or_else(|| {
+                                    RuntimeError::Range("Saved native client slot is out of range".to_string())
+                                })?;
+                            Ok::<_, RuntimeError>(qa_world::registry::SourceActorCheckpoint {
+                                provider: module.clone(),
+                                source_slot,
+                                slot: actor.slot,
+                                generation: actor.generation,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.actors.borrow_mut().stage_restored_sources(&module, &staged);
+                }
+            }
             self.actors.borrow_mut().rebind_restored_source(&module)?;
             let has_inventory = {
                 let state = self.peek();
