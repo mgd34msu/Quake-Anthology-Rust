@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use qa_client::audio::engine::{SdlDeviceFactory, UnifiedAudio, UnifiedAudioOptions};
 use qa_client::input::router::SeatInputEvent;
 use qa_client::render::gl::platform::PlatformGlContext;
 use qa_client::render::gl::renderer::GlRenderer;
@@ -682,6 +683,53 @@ impl StartupSelectionCollaborators for WindowedCollaborators {
     }
 }
 
+/// Open windowed audio over the SDL device factory (donor `SNDDMA_Init`
+/// path through [`UnifiedAudio`] + [`SdlDeviceFactory`]). Returns `None`
+/// when muted or when no usable device exists; the windowed run stays
+/// silent instead of failing.
+fn open_windowed_audio_on(device_name: Option<&str>, muted: bool) -> Option<UnifiedAudio> {
+    if muted {
+        return None;
+    }
+    let start = Instant::now();
+    let mut random_state = 0x1234_5678_i64;
+    let mut audio = UnifiedAudio::new(UnifiedAudioOptions {
+        sample_rate: None,
+        output_format: None,
+        milliseconds: Box::new(move || start.elapsed().as_millis() as i64),
+        random: Box::new(move || {
+            random_state = random_state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            (random_state >> 16) & 0x7fff
+        }),
+        max_actors: None,
+        on_sound: None,
+        device_factory: Some(Rc::new(SdlDeviceFactory)),
+    })
+    .ok()?;
+    audio.open_device(device_name, None).ok()?;
+    Some(audio)
+}
+
+/// Open windowed audio on the default device; `None` is the silent
+/// mute/no-device fallback, never an open failure.
+fn open_windowed_audio() -> Option<UnifiedAudio> {
+    open_windowed_audio_on(None, false)
+}
+
+/// Refresh windowed audio once per frame: advance music decoding and pump
+/// queued PCM. Never fails; a lost device stays silent.
+fn refresh_windowed_audio(audio: &mut Option<UnifiedAudio>, work_ms: f64) {
+    if let Some(engine) = audio.as_mut() {
+        engine.update_music();
+        let work = if work_ms.is_finite() && work_ms >= 0.0 {
+            work_ms
+        } else {
+            0.0
+        };
+        let _ignored = engine.pump(None, work);
+    }
+}
+
 /// Production [`StartupBackend`] presenting frames on a native GL window.
 pub struct WindowedStartupBackend {
     width: u32,
@@ -691,6 +739,7 @@ pub struct WindowedStartupBackend {
     owner: Option<RendererResourceOwner>,
     renderer: Option<WindowedRenderer>,
     backends: Option<NativeGlBackendFactory>,
+    audio: Option<UnifiedAudio>,
     share: Rc<RefCell<WindowedShare>>,
     quit: Rc<Cell<bool>>,
     start: Instant,
@@ -707,6 +756,7 @@ impl WindowedStartupBackend {
             owner: None,
             renderer: None,
             backends: None,
+            audio: None,
             share: Rc::new(RefCell::new(WindowedShare::default())),
             quit,
             start: Instant::now(),
@@ -807,6 +857,7 @@ impl StartupBackend for WindowedStartupBackend {
         self.owner = Some(owner);
         self.renderer = Some(renderer);
         self.backends = Some(backends);
+        self.audio = open_windowed_audio();
         Ok(())
     }
 
@@ -829,7 +880,7 @@ impl StartupBackend for WindowedStartupBackend {
         Ok(())
     }
 
-    fn frame(&mut self, _ctx: &mut StartupFrame<'_>) -> Result<(), String> {
+    fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
         let (renderer, backends, owner) = self.live_parts()?;
         let frame = RenderFrame {
             owner,
@@ -840,7 +891,9 @@ impl StartupBackend for WindowedStartupBackend {
                 RenderCommand::SwapBuffers,
             ],
         };
-        renderer.execute(&frame, backends).map_err(|error| error.to_string())
+        renderer.execute(&frame, backends).map_err(|error| error.to_string())?;
+        refresh_windowed_audio(&mut self.audio, ctx.elapsed_ms);
+        Ok(())
     }
 
     fn input(&mut self, _event: &SeatInputEvent) -> bool {
@@ -876,6 +929,9 @@ impl StartupBackend for WindowedStartupBackend {
             }
         }
         self.renderer = None;
+        if let Some(mut audio) = self.audio.take() {
+            let _ignored = audio.close();
+        }
         failures
     }
 }
@@ -1055,6 +1111,35 @@ mod tests {
         backend.request_quit();
         let _ = backend.now_ms();
         backend.sleep_ms(0.5);
+        assert!(backend.close().is_empty());
+    }
+
+    #[test]
+    fn windowed_audio_falls_back_to_muted() {
+        assert!(open_windowed_audio_on(None, true).is_none());
+        assert!(open_windowed_audio_on(Some("qa-muse-no-such-output-device"), false).is_none());
+    }
+
+    #[test]
+    fn windowed_audio_refresh_never_fails() {
+        let mut muted: Option<UnifiedAudio> = None;
+        refresh_windowed_audio(&mut muted, 4.0);
+        refresh_windowed_audio(&mut muted, f64::NAN);
+        assert!(muted.is_none());
+        if let Some(audio) = open_windowed_audio() {
+            let mut live = Some(audio);
+            for _ in 0..5 {
+                refresh_windowed_audio(&mut live, 4.0);
+            }
+            assert!(live.is_some());
+        }
+    }
+
+    #[test]
+    fn windowed_backend_audio_defaults_to_muted_and_closes_cleanly() {
+        let config = StartupConfig::from_options(&windowed_options()).unwrap();
+        let mut backend = WindowedStartupBackend::new(&config, false, 1.0, Rc::new(Cell::new(false)));
+        assert!(backend.audio.is_none());
         assert!(backend.close().is_empty());
     }
 
