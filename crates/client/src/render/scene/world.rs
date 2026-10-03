@@ -79,6 +79,7 @@ use super::visibility::{
     visible_world, world_point_leaf, BspChild, VisibleWorld, WorldKind, WorldLeaf, WorldMap, WorldNode,
     WorldVisibility, WorldVisibilityOptions,
 };
+use super::world_cache::{surface_is_static, WorldCacheStats, WorldOperationsCache, WorldOpsKey};
 
 /// Prepared world view: ordered view plus its image uploads.
 #[derive(Debug, Clone, PartialEq)]
@@ -1120,6 +1121,7 @@ pub struct WorldScene {
     pending_image_operations: Vec<ImageResourceOperation>,
     options: WorldSceneOptions,
     shaders: SceneShaderRegistry,
+    world_cache: WorldOperationsCache,
 }
 
 fn q3_lightmap_level(bytes: &[u8], shift: u32) -> Result<ImageLevel, RenderError> {
@@ -1292,6 +1294,7 @@ impl WorldScene {
             pending_image_operations: Vec::new(),
             options,
             shaders,
+            world_cache: WorldOperationsCache::default(),
         };
         // Build may fail partway; release anything registered so far.
         let result = scene.build_surfaces();
@@ -1886,11 +1889,28 @@ impl WorldScene {
     fn release_images(&mut self) {
         self.static_shadow_world = None;
         self.static_light_styles.clear();
+        self.world_cache.invalidate();
         self.shadow_scene.close();
         let owned = std::mem::take(&mut self.owned);
         for image in &owned {
             let _ = self.shaders.textures_mut().images_mut().release(image);
         }
+    }
+
+    /// Drop retained world operations (world edits, registry edits).
+    ///
+    /// Remap publications and close invalidate automatically; hosts that
+    /// mutate the shader registry between frames through
+    /// [`shaders_mut`](Self::shaders_mut) must call this, because registry
+    /// growth is invisible to the cache key.
+    pub fn invalidate_world_cache(&mut self) {
+        self.world_cache.invalidate();
+    }
+
+    /// Cache hit/miss counters for tests and profiling proof.
+    #[must_use]
+    pub fn world_cache_stats(&self) -> WorldCacheStats {
+        self.world_cache.stats()
     }
 
     /// Close the scene, releasing owned images.
@@ -2149,17 +2169,26 @@ impl WorldScene {
     /// Resolve the remap for one surface: raw remaps for unshaded legacy
     /// surfaces, global remaps (registered on demand) otherwise.
     fn remap(&mut self, index: usize) -> Result<Option<(RegisteredSceneMaterial, f32)>, RenderError> {
-        let surface = at(&self.surfaces, index, "surface")?.clone();
-        if surface.shader().is_none() {
+        // Gather the small lookup inputs under a short borrow: cloning the
+        // whole surface here (geometry plus resident texture pixels) showed
+        // up hot in every-frame profiles.
+        let (has_shader, shader_name) = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            (surface.shader().is_some(), surface.shader_name.clone())
+        };
+        if !has_shader {
             return Ok(self
                 .raw_remaps
                 .get(&index)
                 .map(|remap| (remap.material.clone(), remap.time_offset)));
         }
-        let Some(remap) = current_remap(&surface.shader_name) else {
+        let Some(remap) = current_remap(&shader_name) else {
             return Ok(None);
         };
-        let binding = self.remap_binding(&surface);
+        let binding = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            self.remap_binding(surface)
+        };
         let material = self.shaders.register(&remap.material, binding)?;
         Ok(Some((material, remap.time_offset)))
     }
@@ -2221,6 +2250,7 @@ impl WorldScene {
             self.raw_remaps
                 .insert(index, SceneMaterialRemap { material, time_offset });
         }
+        self.world_cache.invalidate();
         Ok(())
     }
 
@@ -2239,6 +2269,7 @@ impl WorldScene {
             for index in stale {
                 self.raw_remaps.remove(&index);
             }
+            self.world_cache.invalidate();
             return Ok(());
         }
         publish_remap(
@@ -2256,6 +2287,60 @@ impl WorldScene {
         self.publish_raw_remap(original, materials, time_offset)
     }
 
+    /// Prepare one model surface: Quake III cull plus admission, then the
+    /// surface batches. Shared by the cached and uncached model paths so
+    /// both assemble identical operations.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_model_surface(
+        &mut self,
+        index: usize,
+        input: &mut WorldViewInput,
+        data: &DrawContextData,
+        model: Option<&ModelTransform>,
+        kind: WorldKind,
+        frustum: &[Plane],
+        incoming: u32,
+        lights: &[DynamicLight],
+        entity: Option<SourceEntityOrder>,
+    ) -> Result<Vec<SceneOperation>, RenderError> {
+        let (order, lighting) = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            let mut mask = incoming;
+            if kind == WorldKind::Q3 {
+                if surface.shader().is_none() {
+                    return Ok(Vec::new());
+                }
+                let (culled, narrowed) = Self::surface_light_mask(surface, model, data, lights, incoming, frustum)?;
+                if culled {
+                    return Ok(Vec::new());
+                }
+                mask = narrowed;
+            }
+            let has_source = input.source.is_some() && entity.is_some();
+            let order = if has_source {
+                if !Self::admit_surface(input.source.as_mut().expect("checked source admission"), index) {
+                    return Ok(Vec::new());
+                }
+                Some(Self::source_surface_order(
+                    surface,
+                    input.source.as_ref().expect("checked source admission"),
+                    entity.expect("checked entity order"),
+                    mask,
+                ))
+            } else {
+                None
+            };
+            (order, (mask, lights.to_vec()))
+        };
+        self.surface_operations(index, input, data, model, lighting, order)
+    }
+
+    /// Whether one surface's prepared batches are retained across frames.
+    fn cached_surface(&self, index: usize) -> Result<bool, RenderError> {
+        let surface = at(&self.surfaces, index, "surface")?;
+        Ok(surface_is_static(surface, self.raw_remaps.contains_key(&index)))
+    }
+
     /// Prepare one model for a view.
     pub fn prepare_model(
         &mut self,
@@ -2266,7 +2351,6 @@ impl WorldScene {
     ) -> Result<Vec<SceneOperation>, RenderError> {
         let model = *at(&self.models, model_index, "model")?;
         let kind = self.map.kind;
-        let has_source = input.source.is_some() && entity.is_some();
         if kind == WorldKind::Q3 && local_box_culled(&model.bounds, &input.camera, Some(transform))? {
             return Ok(Vec::new());
         }
@@ -2288,44 +2372,145 @@ impl WorldScene {
         };
         let frustum = camera_frustum(&camera);
         let last = model.first + model.count;
-        let mut operations = Vec::new();
-        for index in model.first..last {
-            let surface = at(&self.surfaces, index, "surface")?.clone();
-            let mut mask = incoming;
-            if kind == WorldKind::Q3 {
-                if surface.shader().is_none() {
-                    continue;
+        // Source admissions bypass the scene cache: the admission tracks
+        // its own one-view surface set.
+        let use_cache = input.source.is_none() && entity.is_none();
+        if use_cache
+            && self.world_cache.match_model(
+                model_index,
+                model.first,
+                model.count,
+                transform,
+                input,
+                material_revision(),
+                &self.raw_remaps,
+            )
+        {
+            let mut operations = Vec::new();
+            for index in model.first..last {
+                let stored = self
+                    .world_cache
+                    .model_surface(model_index, transform, index)
+                    .map(<[SceneOperation]>::to_vec);
+                let is_static = self.cached_surface(index)?;
+                if is_static {
+                    if let Some(operations_) = stored {
+                        operations.extend(operations_);
+                        continue;
+                    }
                 }
-                let (culled, narrowed) =
-                    Self::surface_light_mask(&surface, model_param.as_ref(), &data, &lights, incoming, &frustum)?;
-                if culled {
-                    continue;
+                let fresh = self.prepare_model_surface(
+                    index,
+                    input,
+                    &data,
+                    model_param.as_ref(),
+                    kind,
+                    &frustum,
+                    incoming,
+                    &lights,
+                    entity,
+                )?;
+                if is_static {
+                    self.world_cache
+                        .store_model_surface(model_index, transform, model.first, index, fresh.clone());
                 }
-                mask = narrowed;
+                operations.extend(fresh);
             }
-            let order = if has_source {
-                if !Self::admit_surface(input.source.as_mut().expect("checked source admission"), index) {
-                    continue;
-                }
-                Some(Self::source_surface_order(
-                    &surface,
-                    input.source.as_ref().expect("checked source admission"),
-                    entity.expect("checked entity order"),
-                    mask,
-                ))
-            } else {
-                None
-            };
-            operations.extend(self.surface_operations(
+            return Ok(operations);
+        }
+        let mut operations = Vec::new();
+        let mut retained = if use_cache { vec![None; model.count] } else { Vec::new() };
+        for index in model.first..last {
+            let fresh = self.prepare_model_surface(
                 index,
                 input,
                 &data,
                 model_param.as_ref(),
-                (mask, lights.clone()),
-                order,
-            )?);
+                kind,
+                &frustum,
+                incoming,
+                &lights,
+                entity,
+            )?;
+            if use_cache && self.cached_surface(index)? {
+                retained[index - model.first] = Some(fresh.clone());
+            }
+            operations.extend(fresh);
+        }
+        if use_cache {
+            let key = WorldOpsKey::capture(input, material_revision(), &self.raw_remaps);
+            self.world_cache
+                .store_model(model_index, model.first, model.count, *transform, key, retained);
         }
         Ok(operations)
+    }
+
+    /// Prepare one world-model surface: visibility cull plus admission,
+    /// then the surface batches. Shared by the cached and uncached world
+    /// paths so both assemble identical operations. `dlight_mask` carries
+    /// the first-encounter light mask for Quake III surfaces (legacy
+    /// surfaces ignore it).
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_world_surface(
+        &mut self,
+        index: usize,
+        input: &mut WorldViewInput,
+        data: &DrawContextData,
+        kind: WorldKind,
+        frustum: &[Plane],
+        dlight_mask: Option<u32>,
+        lights: &[DynamicLight],
+    ) -> Result<Vec<SceneOperation>, RenderError> {
+        let (order, lighting) = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            if kind == WorldKind::Q3 {
+                if surface.shader().is_none() {
+                    return Ok(Vec::new());
+                }
+                let mask = dlight_mask.ok_or_else(|| {
+                    RenderError::Backend(format!("Surface {} is missing its initial light mask", surface.index))
+                })?;
+                let (culled, narrowed) = Self::surface_light_mask(surface, None, data, lights, mask, frustum)?;
+                if culled {
+                    return Ok(Vec::new());
+                }
+                let order = match input.source.as_mut() {
+                    None => None,
+                    Some(admission) => {
+                        if !Self::admit_surface(admission, index) {
+                            return Ok(Vec::new());
+                        }
+                        Some(Self::source_surface_order(
+                            surface,
+                            admission,
+                            SourceEntityOrder::World,
+                            narrowed,
+                        ))
+                    }
+                };
+                (order, (narrowed, lights.to_vec()))
+            } else {
+                if !bounds_in_frustum(&surface.bounds, frustum) {
+                    return Ok(Vec::new());
+                }
+                let order = match input.source.as_mut() {
+                    None => None,
+                    Some(admission) => {
+                        if !Self::admit_surface(admission, index) {
+                            return Ok(Vec::new());
+                        }
+                        Some(Self::source_surface_order(
+                            surface,
+                            admission,
+                            SourceEntityOrder::World,
+                            0,
+                        ))
+                    }
+                };
+                (order, (0, Vec::new()))
+            }
+        };
+        self.surface_operations(index, input, data, None, lighting, order)
     }
 
     /// Prepare world-model operations for a view.
@@ -2337,11 +2522,48 @@ impl WorldScene {
         if let Some(cached) = input.source.as_ref().and_then(|source| source.world_operations.clone()) {
             return Ok(cached);
         }
+        // Source admissions bypass the scene cache: the admission tracks
+        // its own one-view surface set.
+        let use_cache = input.source.is_none();
+        let kind = self.map.kind;
+        if use_cache
+            && self
+                .world_cache
+                .match_world(input, material_revision(), &self.raw_remaps)
+        {
+            let order = self.world_cache.world_order().unwrap_or(&[]).to_vec();
+            let white = self.shaders.textures().white().image.ordinal;
+            let camera = input.camera;
+            let data = material_context_data(&camera, None, input, white)?;
+            let lights = input.visibility.q3_lights.clone();
+            let frustum = camera_frustum(&camera);
+            let mut operations = Vec::new();
+            for index in order {
+                let stored = self.world_cache.world_surface(index).map(<[SceneOperation]>::to_vec);
+                let is_static = self.cached_surface(index)?;
+                if is_static {
+                    if let Some(operations_) = stored {
+                        operations.extend(operations_);
+                        continue;
+                    }
+                }
+                let mask = if kind == WorldKind::Q3 {
+                    self.world_cache.world_mask(index)
+                } else {
+                    None
+                };
+                let fresh = self.prepare_world_surface(index, input, &data, kind, &frustum, mask, &lights)?;
+                if is_static {
+                    self.world_cache.store_world_surface(index, fresh.clone());
+                }
+                operations.extend(fresh);
+            }
+            return Ok(operations);
+        }
         let visible = match visibility {
             Some(visible) => visible,
             None => visible_world(&self.map, &self.visibility, &input.camera, &input.visibility)?,
         };
-        let kind = self.map.kind;
         let mut indexes: Vec<usize> = if kind == WorldKind::Q3 {
             visible.surfaces.clone()
         } else {
@@ -2371,71 +2593,39 @@ impl WorldScene {
         let lights = input.visibility.q3_lights.clone();
         let frustum = camera_frustum(&camera);
         let mut operations = Vec::new();
-        for index in indexes {
-            let surface = at(&self.surfaces, index, "surface")?.clone();
-            if kind == WorldKind::Q3 {
-                if surface.shader().is_none() {
-                    continue;
-                }
-                let mask = *visible.surface_dlight_masks.get(&index).ok_or_else(|| {
-                    RenderError::Backend(format!("Surface {} is missing its initial light mask", surface.index))
-                })?;
-                let (culled, narrowed) = Self::surface_light_mask(&surface, None, &data, &lights, mask, &frustum)?;
-                if culled {
-                    continue;
-                }
-                let order = match input.source.as_mut() {
-                    None => None,
-                    Some(admission) => {
-                        if !Self::admit_surface(admission, index) {
-                            continue;
-                        }
-                        Some(Self::source_surface_order(
-                            &surface,
-                            admission,
-                            SourceEntityOrder::World,
-                            narrowed,
-                        ))
-                    }
-                };
-                operations.extend(self.surface_operations(
-                    index,
-                    input,
-                    &data,
-                    None,
-                    (narrowed, lights.clone()),
-                    order,
-                )?);
+        let mut retained = if use_cache {
+            vec![None; self.surfaces.len()]
+        } else {
+            Vec::new()
+        };
+        for index in &indexes {
+            let index = *index;
+            let mask = if kind == WorldKind::Q3 {
+                visible.surface_dlight_masks.get(&index).copied()
             } else {
-                if !bounds_in_frustum(&surface.bounds, &frustum) {
-                    continue;
-                }
-                let order = match input.source.as_mut() {
-                    None => None,
-                    Some(admission) => {
-                        if !Self::admit_surface(admission, index) {
-                            continue;
-                        }
-                        Some(Self::source_surface_order(
-                            &surface,
-                            admission,
-                            SourceEntityOrder::World,
-                            0,
-                        ))
-                    }
-                };
-                operations.extend(self.surface_operations(index, input, &data, None, (0, Vec::new()), order)?);
+                None
+            };
+            let fresh = self.prepare_world_surface(index, input, &data, kind, &frustum, mask, &lights)?;
+            if use_cache && self.cached_surface(index)? {
+                retained[index] = Some(fresh.clone());
             }
+            operations.extend(fresh);
         }
         if let Some(source) = input.source.as_mut() {
             source.world_operations = Some(operations.clone());
+        }
+        if use_cache {
+            let key = WorldOpsKey::capture(input, material_revision(), &self.raw_remaps);
+            self.world_cache.store_world(key, indexes, retained, visible);
         }
         Ok(operations)
     }
 
     fn surface_order(&mut self, index: usize) -> Result<i32, RenderError> {
-        let surface = at(&self.surfaces, index, "surface")?.clone();
-        if surface.shader().is_none() {
+        // Gather the small sort inputs under a short borrow instead of
+        // cloning the whole surface per sorted surface.
+        let (has_shader, sky, alpha, fallback_sort) = {
+            let surface = at(&self.surfaces, index, "surface")?;
             let sky = match &surface.data {
                 WorldSurfaceData::Legacy { q1_sky: Some(_), .. } => true,
                 WorldSurfaceData::Legacy {
@@ -2444,9 +2634,6 @@ impl WorldScene {
                 } => material.surface_flags & 4 != 0,
                 _ => false,
             };
-            if sky {
-                return Ok(2);
-            }
             let alpha = match &surface.data {
                 WorldSurfaceData::Legacy { material, .. } => match material {
                     LegacyMaterial::Q1(material) => material.alpha,
@@ -2454,12 +2641,58 @@ impl WorldScene {
                 },
                 _ => 1.0,
             };
+            let fallback_sort = surface.shader().map(|shader| shader.finished.sort).unwrap_or(3);
+            (surface.shader().is_some(), sky, alpha, fallback_sort)
+        };
+        if !has_shader {
+            if sky {
+                return Ok(2);
+            }
             return Ok(if alpha < 1.0 { 9 } else { 3 });
         }
         let resolved = self.remap(index)?;
         Ok(resolved
             .map(|(material, _)| material.finished.sort)
-            .unwrap_or_else(|| surface.shader().map(|shader| shader.finished.sort).unwrap_or(3)))
+            .unwrap_or(fallback_sort))
+    }
+
+    /// Scan for drawn skies (Quake III sky iterators, Quake II sky flags).
+    fn sky_drawn_scan(&mut self) -> Result<bool, RenderError> {
+        for index in 0..self.surfaces.len() {
+            let surface = self.surfaces[index].clone();
+            if let Some(shader) = surface.shader().cloned() {
+                let resolved = self.remap(index)?;
+                let selected = resolved.map(|(material, _)| material).unwrap_or(shader);
+                if selected.finished.iterator.kind == MaterialIteratorKind::Sky {
+                    return Ok(true);
+                }
+            } else if let WorldSurfaceData::Legacy {
+                material: LegacyMaterial::Q2 { material, .. },
+                ..
+            } = &surface.data
+            {
+                if material.surface_flags & 4 != 0 {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Sky-drawn scan retained while the remap generation is unchanged.
+    ///
+    /// The scan reads only build-fixed surfaces plus remap state, never the
+    /// view input, so it stays valid across frames until a remap
+    /// publication or cache invalidation.
+    fn cached_sky_drawn(&mut self) -> Result<bool, RenderError> {
+        let revision = material_revision();
+        if let Some(sky_drawn) = self.world_cache.sky_drawn(revision, &self.raw_remaps) {
+            return Ok(sky_drawn);
+        }
+        let sky_drawn = self.sky_drawn_scan()?;
+        let revision = material_revision();
+        self.world_cache.store_sky_drawn(revision, &self.raw_remaps, sky_drawn);
+        Ok(sky_drawn)
     }
 
     /// Prepare one ordered world view.
@@ -2470,35 +2703,26 @@ impl WorldScene {
             let visibility = visible_world(&self.map, &self.visibility, &input.camera, &input.visibility)?;
             self.prepare_world_operations(input, Some(visibility))?
         };
-        for inline in input.inline_models.clone() {
-            let mut child = input.clone();
-            child.animation_frame = inline.animation_frame.or(child.animation_frame);
-            child.alternate_animation = inline.alternate_animation.unwrap_or(child.alternate_animation);
-            child.entity_rgba = inline.entity_rgba.unwrap_or(child.entity_rgba);
-            operations.extend(self.prepare_model(inline.model, &inline.transform, &mut child, None)?);
-        }
-        operations.extend(input.operations.clone());
-        let mut sky_drawn = false;
-        for index in 0..self.surfaces.len() {
-            let surface = self.surfaces[index].clone();
-            if let Some(shader) = surface.shader().cloned() {
-                let resolved = self.remap(index)?;
-                let selected = resolved.map(|(material, _)| material).unwrap_or(shader);
-                if selected.finished.iterator.kind == MaterialIteratorKind::Sky {
-                    sky_drawn = true;
-                    break;
-                }
-            } else if let WorldSurfaceData::Legacy {
-                material: LegacyMaterial::Q2 { material, .. },
-                ..
-            } = &surface.data
+        // Inline models without overrides share the live input instead of
+        // cloning it (style tables included) once per model per frame. The
+        // model call takes no entity order, so no admission bookkeeping can
+        // observe the shared input.
+        let inline_count = input.inline_models.len();
+        for slot in 0..inline_count {
+            let inline = input.inline_models[slot].clone();
+            if inline.animation_frame.is_none() && inline.alternate_animation.is_none() && inline.entity_rgba.is_none()
             {
-                if material.surface_flags & 4 != 0 {
-                    sky_drawn = true;
-                    break;
-                }
+                operations.extend(self.prepare_model(inline.model, &inline.transform, input, None)?);
+            } else {
+                let mut child = input.clone();
+                child.animation_frame = inline.animation_frame.or(child.animation_frame);
+                child.alternate_animation = inline.alternate_animation.unwrap_or(child.alternate_animation);
+                child.entity_rgba = inline.entity_rgba.unwrap_or(child.entity_rgba);
+                operations.extend(self.prepare_model(inline.model, &inline.transform, &mut child, None)?);
             }
         }
+        operations.extend(input.operations.clone());
+        let sky_drawn = self.cached_sky_drawn()?;
         if let Some(fog) = input.q2_fog {
             if !input.no_world_model {
                 operations.push(SceneOperation::Operation(RenderOperation::Q2Fog(Q2FogOperation {
@@ -3958,6 +4182,160 @@ mod tests {
         assert_eq!(creates, 11);
         let second = scene.prepare_view(&mut view_input).expect("second view");
         assert!(second.image_operations.is_empty());
+    }
+
+    fn cached_scene(name: &str, visibility: &[u8], lighting: &[u8], levels: &Q1Levels) -> WorldScene {
+        let map = q1_map(visibility, lighting, levels);
+        WorldScene::load_q1(&map, registry(name, HashMap::new()), WorldSceneOptions::default()).expect("load")
+    }
+
+    fn identity_transform() -> ModelTransform {
+        ModelTransform {
+            origin: vec3(0.0, 0.0, 0.0),
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn world_cache_serves_repeated_views_identically() {
+        let levels = q1_levels();
+        let visibility = [0b11u8];
+        let lighting = [128u8; 4];
+        let mut cached = cached_scene("world-q1-cache", &visibility, &lighting, &levels);
+        let mut fresh = cached_scene("world-q1-cache-fresh", &visibility, &lighting, &levels);
+        // The fixture mixes a static rock surface with a time-scrolling sky
+        // surface, so the matrix below covers both retained and fresh paths.
+        assert!(surface_is_static(&cached.surfaces()[0], false));
+        assert!(!surface_is_static(&cached.surfaces()[1], false));
+
+        let base = input(camera_at(vec3(8.0, 8.0, 64.0)));
+        let mut moved_camera = base.clone();
+        moved_camera.camera.origin = vec3(4.0, 4.0, 32.0);
+        let mut restyled = base.clone();
+        restyled.q1_styles[0] = 512;
+        let mut tinted = base.clone();
+        tinted.entity_rgba = [255, 0, 0, 255];
+        let mut framed = base.clone();
+        framed.animation_frame = Some(2.0);
+        let mut alternate = base.clone();
+        alternate.alternate_animation = true;
+        let mut later = base.clone();
+        later.time = SourceTime::Seconds(2.5);
+        let mut inline = base.clone();
+        inline.inline_models.push(InlineModel {
+            model: 0,
+            transform: identity_transform(),
+            animation_frame: None,
+            alternate_animation: None,
+            casts_shadow: false,
+            entity_rgba: None,
+        });
+        let cases = [
+            base.clone(),
+            base.clone(),
+            later,
+            moved_camera.clone(),
+            base.clone(),
+            restyled,
+            tinted,
+            framed,
+            alternate,
+            inline.clone(),
+            inline,
+            moved_camera,
+        ];
+        // The two scenes own separate image registries, so rendered
+        // output compares with registry owners scrubbed; everything else
+        // (ordinals, vertices, pixels) must match exactly.
+        fn collapse_numbers(text: &str, needle: &str) -> String {
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text;
+            while let Some(pos) = rest.find(needle) {
+                out.push_str(&rest[..pos + needle.len()]);
+                rest = &rest[pos + needle.len()..];
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                if digits > 0 {
+                    out.push('0');
+                    rest = &rest[digits..];
+                }
+            }
+            out.push_str(rest);
+            out
+        }
+        fn scrub(debug: &str) -> String {
+            let scrubbed = debug
+                .replace("world-q1-cache-fresh", "scene")
+                .replace("world-q1-cache", "scene");
+            collapse_numbers(&collapse_numbers(&scrubbed, "token: "), "identity: ")
+        }
+        for mut case in cases {
+            // The reference scene rebuilds every prepare; the cached scene
+            // retains across them. Both must assemble identical views and
+            // image uploads.
+            fresh.invalidate_world_cache();
+            let expected = fresh.prepare_view(&mut case.clone()).expect("fresh view");
+            let actual = cached.prepare_view(&mut case).expect("cached view");
+            assert_eq!(
+                scrub(&format!("{:?}", actual.view)),
+                scrub(&format!("{:?}", expected.view))
+            );
+            assert_eq!(
+                scrub(&format!("{:?}", actual.image_operations)),
+                scrub(&format!("{:?}", expected.image_operations))
+            );
+        }
+        let stats = cached.world_cache_stats();
+        assert!(stats.hits > 0, "expected cache hits, got {stats:?}");
+        assert!(stats.misses > 0, "expected cache misses, got {stats:?}");
+    }
+
+    #[test]
+    fn world_cache_invalidates_on_world_change() {
+        let levels = q1_levels();
+        let visibility = [0b11u8];
+        let lighting = [128u8; 4];
+        let mut scene = cached_scene("world-q1-cache-invalidate", &visibility, &lighting, &levels);
+        let mut view_input = input(camera_at(vec3(8.0, 8.0, 64.0)));
+        let original = scene.prepare_view(&mut view_input).expect("view");
+        let stats = scene.world_cache_stats();
+        assert_eq!((stats.hits, stats.misses), (0, 1));
+
+        let repeated = scene.prepare_view(&mut view_input).expect("repeated view");
+        assert_eq!(repeated.view, original.view);
+        let stats = scene.world_cache_stats();
+        assert_eq!((stats.hits, stats.misses), (1, 1));
+
+        // A remap publication is a world change: the retained operations
+        // drop, the next prepare rebuilds, and the remapped surface leaves
+        // the static set until the remap clears. The raw publication stays
+        // scene-local (no process-wide remap), so parallel tests cannot
+        // observe it.
+        let name = scene.surfaces()[0].shader_name.clone();
+        let bindings = scene.raw_remap_bindings(&name);
+        assert!(!bindings.is_empty());
+        let mut materials = Vec::with_capacity(bindings.len());
+        for (_, binding) in &bindings {
+            materials.push(
+                scene
+                    .shaders
+                    .register("textures/cache_probe_other", binding.clone())
+                    .expect("register"),
+            );
+        }
+        scene.publish_raw_remap(&name, materials, 0.0).expect("remap");
+        assert!(scene.raw_remaps.contains_key(&0));
+        let remapped = scene.prepare_view(&mut view_input).expect("remapped view");
+        let stats = scene.world_cache_stats();
+        assert_eq!((stats.hits, stats.misses), (1, 2));
+        assert_ne!(remapped.view, original.view);
+
+        scene.remap_shader(&name, &name, 0.0).expect("clear");
+        assert!(scene.raw_remaps.is_empty());
+        let restored = scene.prepare_view(&mut view_input).expect("restored view");
+        let stats = scene.world_cache_stats();
+        assert_eq!((stats.hits, stats.misses), (1, 3));
+        assert_eq!(restored.view, original.view);
     }
 
     #[test]
