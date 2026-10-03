@@ -24748,6 +24748,11 @@ fn step_net_to_world_command(
 /// passed. Unadmitted actors keep the passthrough (donor `read` has no
 /// rows for them); ordered effects stay unconsumed until the q3 lane can
 /// publish them to the source client.
+///
+/// Missing siblings: donor `weaponStep` remainder (runtime.ts 3886-3920):
+/// impulse routing + `syncSelectedQ1HealthLimit`, LMCTF-paused read-only
+/// return, gauntlet-hit detection (caller passes `false`), the Q3
+/// holdable block, and `weaponSlots.reconcile()`.
 fn weapon_step_seam(
     selected: &mut SelectedArsenal,
     player: &MovementPlayer,
