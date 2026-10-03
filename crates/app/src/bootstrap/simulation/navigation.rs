@@ -400,6 +400,99 @@ impl std::fmt::Debug for ApplicationBotNavigation {
     }
 }
 
+#[cfg(test)]
+impl ApplicationBotNavigation {
+    /// Build a distinct harness identity bound to `simulation`.
+    ///
+    /// Each call mints a fresh installation, so two harnesses compare
+    /// unequal under the donor identity check while clones of one
+    /// harness compare equal. No navigation assets load; the graph is
+    /// empty.
+    pub(crate) fn test_harness(simulation: &SharedSimulation) -> Self {
+        use qa_bots::scene::WorldKind;
+        use qa_content::contract::GameFamily;
+        use qa_core::identity::ProviderId;
+        use qa_core::numeric::Q3_BINARY32_PROFILE;
+        use qa_core::time::ClockProfile;
+        use qa_world::movement::q3::types::{Q3MovementProfile, Q3Product};
+
+        let locomotion = LocomotionPlayer {
+            profile: MovementProfile::Q3(Q3MovementProfile {
+                id: ProviderId::new("q3", "test"),
+                clock: ClockProfile::Q3 {
+                    server_frame_milliseconds: 100.0,
+                    fixed_movement_milliseconds: None,
+                },
+                numeric: Q3_BINARY32_PROFILE,
+                product: Q3Product::BaseQ3,
+                fixed_milliseconds: None,
+                no_footsteps: false,
+            }),
+            standing_bounds: Bounds {
+                min: Vec3 {
+                    x: -15.0,
+                    y: -15.0,
+                    z: -24.0,
+                },
+                max: Vec3 {
+                    x: 15.0,
+                    y: 15.0,
+                    z: 32.0,
+                },
+            },
+            source_movement: None,
+            character: GameFamily::Q3,
+            world_gravity: 800.0,
+            q2_movement_config: None,
+            flight: false,
+        };
+        let recipe = simulation.recipe();
+        let profile = bot_navigation_profile(&locomotion);
+        let map = NavigationMapIdentity {
+            name: recipe.map.geometry.requested_path.clone(),
+            format: WorldKind::Q3Bsp,
+            digest: ContentDigest::new("sha256:test"),
+        };
+        let graph = NavigationGraph {
+            map: map.clone(),
+            profile: profile.clone(),
+            asset: None,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            clusters: Vec::new(),
+            rejected: Vec::new(),
+        };
+        let base_world = Rc::new(ApplicationNavigationWorld::new(
+            simulation.clone(),
+            recipe.clone(),
+            None,
+            locomotion.profile.clone(),
+        ));
+        let base_checkpoint = NavigationRuntimeCheckpoint {
+            version: 1,
+            map: map.clone(),
+            enabled: Vec::new(),
+            blocked: Vec::new(),
+            admission_seconds: Vec::new(),
+            world_revision: 0,
+            generation: 0,
+        };
+        Self {
+            inner: Rc::new(RefCell::new(ApplicationBotNavigationInner {
+                simulation: simulation.clone(),
+                recipe,
+                graph,
+                map,
+                base_profile: profile,
+                base_world,
+                base_checkpoint,
+                clients: HashMap::new(),
+                crouched_bounds: locomotion.standing_bounds,
+            })),
+        }
+    }
+}
+
 /// Shared installation state behind [`ApplicationBotNavigation`].
 struct ApplicationBotNavigationInner {
     /// Owning simulation.
