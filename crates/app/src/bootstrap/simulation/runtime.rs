@@ -28040,19 +28040,82 @@ struct StepMoveOutcome {
     on_ladder: bool,
 }
 
-/// Move through an applied mod-client command (donor `player.moveCommand`).
+/// Move through an applied mod-client command (donor `player.moveCommand`,
+/// donor players.ts 512-590).
 ///
-/// Sequence consumption is real; the stale skip (donor runtime.ts 4467,
-/// 4495) drops retried commands once the seam consumes them.
+/// Real: arsenal-intent accept (donor `acceptArsenalIntent`, players.ts
+/// 353-359 via 513), button tracking plus per-dialect view/command
+/// angles (players.ts 516-523), and sequence consumption (players.ts
+/// 588; the stale skip, donor runtime.ts 4467, 4495, drops retried
+/// commands once the seam consumes them). The net arsenal twin carries
+/// no impulse, so the incoming side never contributes one and a pending
+/// nonzero impulse survives across same-provider commands.
 ///
-/// Missing siblings: the movement lane owns state advance (movement
-/// state, commit, NetQuake input) until it lands.
+/// Missing siblings: the source-client hooks, the provider dispatch
+/// plus Q2 contact routing (movement state, commit, NetQuake input),
+/// and the jump/accept/commit tail need host services the seam cannot
+/// reach; the move result stays inactive until they land.
 #[allow(dead_code)]
 fn move_command_seam(
     player: &mut MovementPlayer,
     relative: &ActorCommand,
     frame: &FrameContext,
 ) -> Result<StepMoveOutcome, RuntimeError> {
+    let pending = player.arsenal_intent.clone();
+    let carries_impulse = pending.as_ref().is_some_and(|intent| intent.impulse.unwrap_or(0) != 0);
+    let same_provider = relative.arsenal.as_ref().is_none_or(|intent| {
+        pending
+            .as_ref()
+            .is_some_and(|pending| provider_text(&pending.provider) == intent.provider)
+    });
+    if carries_impulse && same_provider {
+        let pending = pending.expect("impulse checked above");
+        player.arsenal_intent = Some(match relative.arsenal.clone() {
+            None => PlayerArsenalIntent {
+                weapon: None,
+                use_holdable: false,
+                ..pending
+            },
+            Some(intent) => PlayerArsenalIntent {
+                provider: parse_provider(&intent.provider)?,
+                weapon: intent.weapon,
+                use_holdable: intent.use_holdable,
+                impulse: pending.impulse,
+            },
+        });
+    } else {
+        player.arsenal_intent = relative
+            .arsenal
+            .clone()
+            .map(|intent| {
+                Ok::<_, RuntimeError>(PlayerArsenalIntent {
+                    provider: parse_provider(&intent.provider)?,
+                    weapon: intent.weapon,
+                    use_holdable: intent.use_holdable,
+                    impulse: None,
+                })
+            })
+            .transpose()?;
+    }
+    player.previous_buttons = player.buttons;
+    player.buttons = relative.command.buttons();
+    let angles = match &relative.command {
+        qa_net::common::commands::UserCommand::Q1Netquake { view_angles, .. } => *view_angles,
+        qa_net::common::commands::UserCommand::Q1Quakeworld { angles, .. }
+        | qa_net::common::commands::UserCommand::Q2Rerelease { angles, .. } => *angles,
+        qa_net::common::commands::UserCommand::Q2Classic { angle_shorts, .. } => [
+            angle_shorts[0] * 360.0 / 65536.0,
+            angle_shorts[1] * 360.0 / 65536.0,
+            angle_shorts[2] * 360.0 / 65536.0,
+        ],
+        qa_net::common::commands::UserCommand::Q3 { angle_words, .. } => [
+            angle_words[0] * 360.0 / 65536.0,
+            angle_words[1] * 360.0 / 65536.0,
+            angle_words[2] * 360.0 / 65536.0,
+        ],
+    };
+    player.view_angles = qa_core::math::vec3(angles[0] as f32, angles[1] as f32, angles[2] as f32);
+    player.command_angles = player.view_angles;
     player.last_sequence = relative.sequence as i32;
     let _ = frame;
     Ok(StepMoveOutcome {
@@ -28062,26 +28125,24 @@ fn move_command_seam(
     })
 }
 
-/// Move through a raw command (donor `player.move`).
+/// Move through a raw command (donor `player.move`, donor players.ts
+/// 466-473).
 ///
-/// Sequence consumption is real; the stale skip (donor runtime.ts 4467,
-/// 4495) drops retried commands once the seam consumes them.
+/// Real: the input-applications wrapper lives in the caller (donor
+/// runtime.ts 4585-4589 runs `withInputCommand` around the applied path
+/// and only then reaches `moveCommand`), so this seam takes the donor
+/// 467 inactive path and delegates to [`move_command_seam`].
 ///
-/// Missing siblings: the movement lane owns state advance (movement
-/// state, commit, NetQuake input) until it lands.
+/// Missing siblings: shared with [`move_command_seam`] (source-client
+/// hooks, provider dispatch, jump/accept/commit tail); the move result
+/// stays inactive until they land.
 #[allow(dead_code)]
 fn move_seam(
     player: &mut MovementPlayer,
     relative: &ActorCommand,
     frame: &FrameContext,
 ) -> Result<StepMoveOutcome, RuntimeError> {
-    player.last_sequence = relative.sequence as i32;
-    let _ = frame;
-    Ok(StepMoveOutcome {
-        q2_rerelease_active: false,
-        impact_delta: 0.0,
-        on_ladder: false,
-    })
+    move_command_seam(player, relative, frame)
 }
 
 impl SharedSimulation {
@@ -43064,5 +43125,553 @@ mod tests {
             crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&bad_edition)
                 .is_err()
         );
+    }
+
+    fn seam_recipe() -> ExecutableRecipe {
+        use qa_content::contract::{
+            CampaignSelection, CharacterSelection, ContentDigest, ContentId, DopplerSelection, EnemySelection,
+            EnvironmentSelection, EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection,
+            LooseMount, MountId, MountIdentity, MountPlanId, PresentationSelection, ProviderReference, RecipeId,
+            ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceProvenance,
+            ResourceResolution,
+        };
+        let source = ProviderReference {
+            provider: ProviderId::new("q2", "official"),
+            content: ContentId("q2:baseq2:test:1".to_string()),
+        };
+        ExecutableRecipe {
+            weapon_behaviors: Vec::new(),
+            mods: Vec::new(),
+            schema_version: 3,
+            id: RecipeId("recipe:test:seam".to_string()),
+            preset: RecipeId("recipe:test:seam".to_string()),
+            map: ResolvedMap {
+                geometry_content: ContentId("q2:baseq2:test:1".to_string()),
+                geometry: ResolvedResourceReference {
+                    id: ResourceId("resource:test:map:1".to_string()),
+                    requested_path: "maps/test.bsp".to_string(),
+                    provenance: ResourceProvenance::Loose {
+                        mount: LooseMount {
+                            identity: MountIdentity {
+                                id: MountId("mount:test:1".to_string()),
+                                content: ContentId("q2:baseq2:test:1".to_string()),
+                                generation: 1,
+                            },
+                            root_path: "/tmp".to_string(),
+                        },
+                        member_path: "maps/test.bsp".to_string(),
+                    },
+                    digest: ContentDigest("sha256:00".to_string()),
+                    byte_length: 0,
+                    resolution: ResourceResolution::DefaultOrder {
+                        plan: MountPlanId("mountplan:test:1".to_string()),
+                        rank: 0,
+                    },
+                },
+                entities: source.clone(),
+            },
+            campaign: CampaignSelection::None,
+            movement: source.clone(),
+            character: CharacterSelection {
+                definition: source.clone(),
+                appearance: source.clone(),
+            },
+            weapons: Vec::new(),
+            equipment: EquipmentSelection {
+                grapple: GrappleSelection::Disabled,
+                hand_grenades: HandGrenadeSelection::Disabled,
+            },
+            enemies: EnemySelection::MapDefined,
+            presentation: PresentationSelection {
+                doppler: DopplerSelection::Source,
+                environment: EnvironmentSelection::AudioContent,
+                assets: ContentId("q2:baseq2:test:1".to_string()),
+                hud: source.clone(),
+                effects: source.clone(),
+                audio: source.clone(),
+            },
+            engine_behavior: source.clone(),
+            combat: source.clone(),
+            inventory: source.clone(),
+            r#match: source.clone(),
+            transition: source.clone(),
+            execution: Vec::new(),
+            mounts: ResolvedMountPlan {
+                id: MountPlanId("mountplan:test:1".to_string()),
+                mounts: Vec::new(),
+                default_order: Vec::new(),
+                prefix_orders: Vec::new(),
+            },
+            resources: Vec::new(),
+            timing: Vec::new(),
+            ordering: FrameOrdering::Native {
+                clock: qa_core::time::ClockProfile::Q2Classic,
+            },
+        }
+    }
+
+    fn seam_player() -> MovementPlayer {
+        use qa_world::movement::q2::types::{Q2MovementProfile, Q2MovementState};
+        use qa_world::movement::types::{AnimationState, ArsenalState, WeaponState};
+        let actors = SimActors::new("seam-test");
+        let owner = ProviderId::new("q2", "test");
+        let actor = actors.mint(&owner, "player");
+        let identities = IdentityOwner::create("seam-test").unwrap();
+        let standing = Bounds {
+            min: zero(),
+            max: zero(),
+        };
+        MovementPlayer {
+            actor,
+            client: identities.client(0, 0),
+            recipe: seam_recipe(),
+            character: GameFamily::Q2,
+            standing_bounds: standing,
+            profile: MovementProfile::Q2Classic(Q2MovementProfile {
+                id: ProviderId::new("q2", "movement"),
+                clock: qa_core::time::ClockProfile::Q2Classic,
+                numeric: qa_core::numeric::Q2_DONOR_PROFILE,
+                strafejump_hack: false,
+                air_accelerate: 0.0,
+                snap_initial: false,
+            }),
+            state: MovementState::Q2Classic(Q2MovementState {
+                move_type: 0,
+                origin_eighths: [0; 3],
+                velocity_eighths: [0; 3],
+                flags: 0,
+                time_eight_milliseconds: 0,
+                gravity: 800.0,
+                delta_angle_shorts: [0; 3],
+            }),
+            arsenal: ArsenalState {
+                provider: ProviderId::new("q2", "arsenal"),
+                active_weapon: None,
+                state: WeaponState::Q1 {
+                    frame: 0,
+                    attack_finished_seconds: 0.0,
+                    source_weapon: 0,
+                },
+                ammo: Vec::new(),
+            },
+            animation: ActorAnimationState {
+                provider: ProviderId::new("q2", "character"),
+                state: AnimationState::Q2 {
+                    frame: 0,
+                    end_frame: 0,
+                    priority: 0,
+                    duck: false,
+                    run: false,
+                },
+            },
+            view_angles: zero(),
+            command_angles: zero(),
+            view_height: 22.0,
+            bounds: standing,
+            ground: TraceHit::None,
+            water_level: 0.0,
+            water_type: 0.0,
+            intermission: false,
+            cutscene: None,
+            fixed_pose_active: false,
+            body_shape_base: None,
+            gravity_multiplier: 1.0,
+            flight: false,
+            world_gravity: 800.0,
+            buttons: 0.0,
+            previous_buttons: 0.0,
+            last_sequence: -1,
+            net_quake_command: None,
+            last_weapon_seconds: f64::NEG_INFINITY,
+            arsenal_intent: None,
+            source_movement: None,
+            source_environment: None,
+            q2_movement_config: None,
+            movement_speed_multiplier: 1.0,
+        }
+    }
+
+    fn seam_frame() -> FrameContext {
+        FrameContext {
+            frame: 0,
+            time: SourceTime::Milliseconds(0),
+            elapsed: SourceTime::Milliseconds(16),
+            phase: qa_core::time::FramePhase::ClientCommand,
+        }
+    }
+
+    fn seam_actor_command(
+        player: &MovementPlayer,
+        sequence: u64,
+        command: qa_net::common::commands::UserCommand,
+        arsenal: Option<qa_net::common::commands::ArsenalIntent>,
+    ) -> ActorCommand {
+        let identities = IdentityOwner::create("seam-test").unwrap();
+        ActorCommand {
+            actor: player.actor.id().clone(),
+            source: qa_net::common::commands::CommandSource::LocalSeat {
+                seat: identities.seat(0),
+            },
+            sequence,
+            command,
+            arsenal,
+        }
+    }
+
+    fn net_intent(provider: &str, weapon: Option<&str>, use_holdable: bool) -> qa_net::common::commands::ArsenalIntent {
+        qa_net::common::commands::ArsenalIntent {
+            provider: provider.to_string(),
+            weapon: weapon.map(str::to_string),
+            use_holdable,
+        }
+    }
+
+    #[test]
+    fn move_command_seam_tracks_buttons_angles_sequence_and_intent() {
+        use qa_core::math::vec3;
+        use qa_net::common::commands::UserCommand;
+        let mut player = seam_player();
+        player.buttons = 1.0;
+        player.last_sequence = 6;
+        let command = seam_actor_command(
+            &player,
+            7,
+            UserCommand::Q1Netquake {
+                acknowledged_server_time_seconds: 0.0,
+                view_angles: [10.0, 20.0, 30.0],
+                forward_move: 0.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 3.0,
+                impulse: 0.0,
+            },
+            Some(net_intent("q2:movement", Some("q2:blaster"), true)),
+        );
+        let moved = move_command_seam(&mut player, &command, &seam_frame()).unwrap();
+        assert_eq!(player.previous_buttons, 1.0);
+        assert_eq!(player.buttons, 3.0);
+        assert_eq!(player.view_angles, vec3(10.0, 20.0, 30.0));
+        assert_eq!(player.command_angles, vec3(10.0, 20.0, 30.0));
+        assert_eq!(player.last_sequence, 7);
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q2", "movement"),
+                weapon: Some("q2:blaster".to_string()),
+                use_holdable: true,
+                impulse: None,
+            })
+        );
+        assert!(!moved.q2_rerelease_active);
+        assert_eq!(moved.impact_delta, 0.0);
+        assert!(!moved.on_ladder);
+    }
+
+    #[test]
+    fn move_command_seam_maps_angles_per_dialect() {
+        use qa_core::math::vec3;
+        use qa_net::common::commands::UserCommand;
+        let mut player = seam_player();
+        let frame = seam_frame();
+        let classic = seam_actor_command(
+            &player,
+            1,
+            UserCommand::Q2Classic {
+                milliseconds: 16.0,
+                angle_shorts: [16384.0, 32768.0, 0.0],
+                forward_move: 0.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 0.0,
+                impulse: 0.0,
+                light_level: 0.0,
+            },
+            None,
+        );
+        move_command_seam(&mut player, &classic, &frame).unwrap();
+        assert_eq!(player.view_angles, vec3(90.0, 180.0, 0.0));
+        assert_eq!(player.command_angles, vec3(90.0, 180.0, 0.0));
+        assert_eq!(player.arsenal_intent, None);
+        let q3 = seam_actor_command(
+            &player,
+            2,
+            UserCommand::Q3 {
+                server_time_milliseconds: 16.0,
+                angle_words: [8192.0, 0.0, 0.0],
+                buttons: 0.0,
+                weapon: 1.0,
+                forward_move: 0.0,
+                right_move: 0.0,
+                up_move: 0.0,
+            },
+            None,
+        );
+        move_command_seam(&mut player, &q3, &frame).unwrap();
+        assert_eq!(player.view_angles, vec3(45.0, 0.0, 0.0));
+        let quakeworld = seam_actor_command(
+            &player,
+            3,
+            UserCommand::Q1Quakeworld {
+                milliseconds: 16.0,
+                angles: [5.0, 6.0, 7.0],
+                forward_move: 0.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 0.0,
+                impulse: 0.0,
+            },
+            None,
+        );
+        move_command_seam(&mut player, &quakeworld, &frame).unwrap();
+        assert_eq!(player.view_angles, vec3(5.0, 6.0, 7.0));
+        let rerelease = seam_actor_command(
+            &player,
+            4,
+            UserCommand::Q2Rerelease {
+                milliseconds: 16.0,
+                angles: [8.0, 9.0, 10.0],
+                forward_move: 0.0,
+                side_move: 0.0,
+                buttons: 0.0,
+                server_frame: 0.0,
+            },
+            None,
+        );
+        move_command_seam(&mut player, &rerelease, &frame).unwrap();
+        assert_eq!(player.view_angles, vec3(8.0, 9.0, 10.0));
+        assert_eq!(player.last_sequence, 4);
+    }
+
+    #[test]
+    fn move_command_seam_preserves_pending_impulse_per_provider() {
+        use qa_net::common::commands::UserCommand;
+        let mut player = seam_player();
+        player.arsenal_intent = Some(PlayerArsenalIntent {
+            provider: ProviderId::new("q1", "movement"),
+            weapon: Some("q1:shotgun".to_string()),
+            use_holdable: true,
+            impulse: Some(3),
+        });
+        let frame = seam_frame();
+        let bare = || UserCommand::Q1Netquake {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: [0.0, 0.0, 0.0],
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0.0,
+            impulse: 0.0,
+        };
+        let no_intent = seam_actor_command(&player, 1, bare(), None);
+        move_command_seam(&mut player, &no_intent, &frame).unwrap();
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q1", "movement"),
+                weapon: None,
+                use_holdable: false,
+                impulse: Some(3),
+            })
+        );
+        let same_provider = seam_actor_command(
+            &player,
+            2,
+            bare(),
+            Some(net_intent("q1:movement", Some("q1:nailgun"), false)),
+        );
+        move_command_seam(&mut player, &same_provider, &frame).unwrap();
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q1", "movement"),
+                weapon: Some("q1:nailgun".to_string()),
+                use_holdable: false,
+                impulse: Some(3),
+            })
+        );
+        let other_provider = seam_actor_command(
+            &player,
+            3,
+            bare(),
+            Some(net_intent("q2:movement", Some("q2:blaster"), true)),
+        );
+        move_command_seam(&mut player, &other_provider, &frame).unwrap();
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q2", "movement"),
+                weapon: Some("q2:blaster".to_string()),
+                use_holdable: true,
+                impulse: None,
+            })
+        );
+    }
+
+    #[test]
+    fn move_command_seam_replaces_intent_without_pending_impulse() {
+        use qa_net::common::commands::UserCommand;
+        let mut player = seam_player();
+        let frame = seam_frame();
+        let bare = || UserCommand::Q1Netquake {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: [0.0, 0.0, 0.0],
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0.0,
+            impulse: 0.0,
+        };
+        let incoming = seam_actor_command(&player, 1, bare(), Some(net_intent("q2:movement", None, false)));
+        move_command_seam(&mut player, &incoming, &frame).unwrap();
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q2", "movement"),
+                weapon: None,
+                use_holdable: false,
+                impulse: None,
+            })
+        );
+        player.arsenal_intent = Some(PlayerArsenalIntent {
+            provider: ProviderId::new("q2", "movement"),
+            weapon: Some("q2:blaster".to_string()),
+            use_holdable: true,
+            impulse: Some(0),
+        });
+        let cleared = seam_actor_command(&player, 2, bare(), None);
+        move_command_seam(&mut player, &cleared, &frame).unwrap();
+        assert_eq!(player.arsenal_intent, None);
+    }
+
+    #[test]
+    fn move_seam_matches_move_command_tracking() {
+        use qa_core::math::vec3;
+        use qa_net::common::commands::UserCommand;
+        let mut player = seam_player();
+        player.buttons = 2.0;
+        let command = seam_actor_command(
+            &player,
+            9,
+            UserCommand::Q1Quakeworld {
+                milliseconds: 16.0,
+                angles: [1.0, 2.0, 3.0],
+                forward_move: 0.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 5.0,
+                impulse: 0.0,
+            },
+            Some(net_intent("q1:movement", None, true)),
+        );
+        let moved = move_seam(&mut player, &command, &seam_frame()).unwrap();
+        assert_eq!(player.previous_buttons, 2.0);
+        assert_eq!(player.buttons, 5.0);
+        assert_eq!(player.view_angles, vec3(1.0, 2.0, 3.0));
+        assert_eq!(player.command_angles, vec3(1.0, 2.0, 3.0));
+        assert_eq!(player.last_sequence, 9);
+        assert_eq!(
+            player.arsenal_intent,
+            Some(PlayerArsenalIntent {
+                provider: ProviderId::new("q1", "movement"),
+                weapon: None,
+                use_holdable: true,
+                impulse: None,
+            })
+        );
+        assert!(!moved.q2_rerelease_active);
+    }
+
+    #[test]
+    fn relative_movement_command_seam_passes_net_commands_through() {
+        use qa_net::common::commands::UserCommand;
+        let player = seam_player();
+        let commands = [
+            UserCommand::Q1Netquake {
+                acknowledged_server_time_seconds: 1.0,
+                view_angles: [11.0, 22.0, 33.0],
+                forward_move: 4.0,
+                side_move: 5.0,
+                up_move: 6.0,
+                buttons: 7.0,
+                impulse: 8.0,
+            },
+            UserCommand::Q1Quakeworld {
+                milliseconds: 16.0,
+                angles: [11.0, 22.0, 33.0],
+                forward_move: 4.0,
+                side_move: 5.0,
+                up_move: 6.0,
+                buttons: 7.0,
+                impulse: 8.0,
+            },
+            UserCommand::Q2Classic {
+                milliseconds: 16.0,
+                angle_shorts: [1000.0, 2000.0, 3000.0],
+                forward_move: 4.0,
+                side_move: 5.0,
+                up_move: 6.0,
+                buttons: 7.0,
+                impulse: 8.0,
+                light_level: 9.0,
+            },
+            UserCommand::Q2Rerelease {
+                milliseconds: 16.0,
+                angles: [11.0, 22.0, 33.0],
+                forward_move: 4.0,
+                side_move: 5.0,
+                buttons: 7.0,
+                server_frame: 9.0,
+            },
+            UserCommand::Q3 {
+                server_time_milliseconds: 16.0,
+                angle_words: [1000.0, 2000.0, 3000.0],
+                buttons: 7.0,
+                weapon: 1.0,
+                forward_move: 4.0,
+                right_move: 5.0,
+                up_move: 6.0,
+            },
+        ];
+        for (index, command) in commands.into_iter().enumerate() {
+            let input = seam_actor_command(&player, index as u64, command, None);
+            assert_eq!(relative_movement_command_seam(&input), input);
+        }
+    }
+
+    #[test]
+    fn with_input_command_seam_forwards_effective_command() {
+        use qa_net::common::commands::UserCommand;
+        let effective = UserCommand::Q1Netquake {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: [0.0, 0.0, 0.0],
+            forward_move: 1.0,
+            side_move: 2.0,
+            up_move: 3.0,
+            buttons: 4.0,
+            impulse: 0.0,
+        };
+        let arsenal = Some(net_intent("q1:movement", Some("q1:shotgun"), true));
+        let mut seen: Vec<(UserCommand, Option<qa_net::common::commands::ArsenalIntent>)> = Vec::new();
+        let mut execute = |command: UserCommand, intent: Option<qa_net::common::commands::ArsenalIntent>| {
+            seen.push((command, intent));
+            Ok::<_, RuntimeError>(())
+        };
+        with_input_command_seam(&mut execute, &seam_frame(), effective.clone(), arsenal.clone()).unwrap();
+        assert_eq!(seen, vec![(effective, arsenal)]);
+        let mut failing =
+            |_: UserCommand, _: Option<qa_net::common::commands::ArsenalIntent>| fail::<()>("execute failed");
+        assert!(with_input_command_seam(&mut failing, &seam_frame(), bare_q1_netquake(), None).is_err());
+    }
+
+    fn bare_q1_netquake() -> qa_net::common::commands::UserCommand {
+        qa_net::common::commands::UserCommand::Q1Netquake {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: [0.0, 0.0, 0.0],
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0.0,
+            impulse: 0.0,
+        }
     }
 }
