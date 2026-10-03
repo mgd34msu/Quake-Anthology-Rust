@@ -239,6 +239,14 @@ pub fn create_rerelease_behavior(params: RereleaseBehaviorParams) -> Result<Box<
     Ok(Box::new(ApplicationRereleaseBehavior::new(params)?))
 }
 
+/// Production behavior factory (donor `new RereleaseBotBehavior`).
+///
+/// Options that omit the factory build the production driver; tests
+/// inject their own factories.
+pub fn default_behavior_factory() -> RereleaseBehaviorFactory {
+    Rc::new(create_rerelease_behavior)
+}
+
 impl ApplicationRereleaseBehavior {
     /// Build the driver (donor constructor).
     fn new(params: RereleaseBehaviorParams) -> Result<Self, String> {
@@ -1175,8 +1183,9 @@ pub struct ApplicationRereleaseBotsOptions<S, E, N> {
     pub clients: Vec<ApplicationBotClient>,
     /// Whether services frame this transport.
     pub automatic_frame: bool,
-    /// Behavior factory.
-    pub behavior_factory: RereleaseBehaviorFactory,
+    /// Behavior factory; `None` builds the production driver via
+    /// [`default_behavior_factory`].
+    pub behavior_factory: Option<RereleaseBehaviorFactory>,
     /// Print sink.
     pub print: Rc<dyn Fn(&str)>,
 }
@@ -1365,7 +1374,7 @@ where
             navigation: Rc::new(RefCell::new(options.navigation)),
             objectives,
             configuration,
-            behavior_factory: options.behavior_factory,
+            behavior_factory: options.behavior_factory.unwrap_or_else(default_behavior_factory),
             print: options.print,
             assets_source: source,
             asset_files: files,
@@ -2814,7 +2823,9 @@ mod tests {
                 restore: None,
                 clients: Vec::new(),
                 automatic_frame: true,
-                behavior_factory: Rc::new(|_params| Ok(Box::new(StubBehavior) as Box<dyn RereleaseBotBehavior>)),
+                behavior_factory: Some(Rc::new(|_params| {
+                    Ok(Box::new(StubBehavior) as Box<dyn RereleaseBotBehavior>)
+                })),
                 print: Rc::new(move |line| sink.borrow_mut().push(line.to_string())),
             },
             assets(),
@@ -2926,7 +2937,9 @@ mod tests {
                 }),
                 clients: Vec::new(),
                 automatic_frame: true,
-                behavior_factory: Rc::new(|_params| Ok(Box::new(StubBehavior) as Box<dyn RereleaseBotBehavior>)),
+                behavior_factory: Some(Rc::new(|_params| {
+                    Ok(Box::new(StubBehavior) as Box<dyn RereleaseBotBehavior>)
+                })),
                 print: Rc::new(|_| {}),
             },
             assets(),
@@ -3294,6 +3307,19 @@ mod tests {
         let mut params = probes.params(RereleaseBotSource::Q1);
         params.knowledge = Rc::new(BotKnowledge::default());
         let error = create_rerelease_behavior(params).expect_err("skill-less knowledge fails");
+        assert!(error.contains("no skill settings"), "unexpected error: {error}");
+    }
+
+    /// The default factory builds the production driver (it validates
+    /// like production instead of accepting unconditionally).
+    #[test]
+    fn default_factory_builds_production_behavior() {
+        let probes = BehaviorProbes::new();
+        let factory = default_behavior_factory();
+        factory(probes.params(RereleaseBotSource::Q1)).expect("production builds");
+        let mut params = probes.params(RereleaseBotSource::Q1);
+        params.knowledge = Rc::new(BotKnowledge::default());
+        let error = factory(params).expect_err("skill-less knowledge fails");
         assert!(error.contains("no skill settings"), "unexpected error: {error}");
     }
 

@@ -91,17 +91,18 @@
 //!   `expansion.entities.movers?.platformState`); the `SharedSimulation`
 //!   product seam stays identity-only.
 //!
+//! Scene actor rows flow from the shared tables: world construction
+//! installs a rows provider over the live actor/body handles, so
+//! `queryActors` answers linked bodies and the hazard loop below reads
+//! live `trigger_hurt` state. Rows carry box shapes (collision shapes
+//! live in the physics lane's spatial table, which has no accessor),
+//! so entity/train model matching stays gated on `Model` rows.
+//!
 //! Missing siblings (no Rust home in this worktree; unify post-merge):
 //!
-//! * Scene actor rows: `SharedSceneQueries::query_actors`
-//!   (`simulation/runtime.rs:2012`) answers empty by construction, so
-//!   entity/hazard/train reads are inert (same seam as the
-//!   player-movement empty-world traces); the loops below activate
-//!   unchanged once rows flow. The live spatial table
-//!   (`RuntimePhysicsScene`, `simulation/runtime.rs:4429`) is reachable
-//!   only through the private simulation state borrow (`peek`/`lock`,
-//!   `simulation/runtime.rs:7648-7653`), so wiring the facade needs
-//!   `runtime.rs` edits owned by another lane.
+//! * Scene collision shapes: entity/train matching needs `Model` rows
+//!   from the physics lane's spatial table; box rows keep those loops
+//!   inert while hazard reads are live.
 //! * Q3 native entity records (donor `records.nativeByActor`, mover
 //!   state, door triggers, `trigger_hurt`): the Q3 entity/hazard arms
 //!   land with the records home.
@@ -157,7 +158,10 @@ use super::player_movement::{
     LocomotionPlayer, MovementMedium, MovementPredictionPlayer,
 };
 use super::q3::guest_movement::guest_movement_projection;
-use super::runtime::{ClientMovementOptions, SceneBody, SceneCollisionShape, SharedSimulation};
+use super::runtime::{
+    ClientMovementOptions, SceneActorHit, SceneBody, SceneCollision, SceneCollisionShape, SceneRowProvider,
+    SharedSimulation,
+};
 use crate::bootstrap::simulation::q3::guest_runtime::Q3ApplicationPlayer;
 
 /// Zero vector for prediction input origins.
@@ -927,6 +931,44 @@ fn guest_snapshot(
     }
 }
 
+/// Install the live scene-rows provider over the shared tables.
+///
+/// Reads linked bodies for live actors through the crate handles and
+/// answers the facade's `queryActors` with box-shaped rows; model
+/// shapes still belong to the physics lane, so entity/train matching
+/// stays gated while hazard reads go live. Idempotent: reinstalling
+/// replaces an equivalent provider.
+fn install_scene_rows(simulation: &SharedSimulation) {
+    let actors = simulation.actors_handle();
+    let tables = simulation.bodies_handle();
+    let provider: SceneRowProvider = Rc::new(move |bounds, _kind| {
+        let registry = actors.borrow();
+        let bodies = tables.borrow();
+        registry
+            .observations()
+            .iter()
+            .filter_map(|observation| {
+                let owned = registry.resolve_owned(&observation.id)?;
+                let linked = bodies.linked(registry.inner(), &observation.id)?;
+                if !qa_world::spatial::bounds_intersect(&linked.absolute_bounds, &bounds) {
+                    return None;
+                }
+                Some(SceneActorHit {
+                    body: SceneBody {
+                        actor: owned,
+                        state: linked.state,
+                        absolute_bounds: linked.absolute_bounds,
+                    },
+                    collision: SceneCollision {
+                        shape: SceneCollisionShape::Box,
+                    },
+                })
+            })
+            .collect()
+    });
+    simulation.scene().set_actor_rows(provider);
+}
+
 /// Per-actor navigation world (donor `worldFor` result).
 struct ApplicationNavigationWorld {
     /// Shared collision queries.
@@ -957,6 +999,7 @@ impl ApplicationNavigationWorld {
             selected: selected.clone(),
             app_profile: app_profile.clone(),
         });
+        install_scene_rows(&simulation);
         Self {
             scene: ApplicationNavigationScene,
             simulation,
