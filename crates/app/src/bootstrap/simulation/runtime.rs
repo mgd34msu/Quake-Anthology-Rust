@@ -28843,17 +28843,16 @@ impl SharedSimulation {
     ///
     /// Runs the Q1 impulse routing + `syncSelectedQ1HealthLimit` (donor
     /// 3890-3901), the LMCTF-paused read-only return (donor 3902-3903),
-    /// gauntlet-hit detection (donor 3904-3907), the selected-frame
-    /// override (donor 3919-3920), the family step (donor 3921), and
+    /// gauntlet-hit detection (donor 3904-3907), the Q3 holdable block
+    /// (donor 3908-3917; native-client read, respawned-flag clear,
+    /// holdable step, and blocking early return), the holdable-miss
+    /// unblock (donor 3918), the selected-frame override (donor
+    /// 3919-3920), the family step (donor 3921), and
     /// `weaponSlots.reconcile()` (donor 3924). Weapon selection already
     /// happened upstream in `prepareArsenalCommand`, so no intent is
     /// passed. Unadmitted actors keep the passthrough (donor `read` has
     /// no rows for them); ordered effects stay unconsumed until the q3
     /// lane can publish them to the source client.
-    ///
-    /// Missing siblings: donor `weaponStep` remainder — the Q3 holdable
-    /// block (donor 3908-3917; the native-client read, holdable step,
-    /// and early return are unported).
     fn weapon_step_seam(
         &self,
         pstate: &mut MovementPlayer,
@@ -28891,7 +28890,47 @@ impl SharedSimulation {
         };
         // Donor 3905-3907.
         let gauntlet_hit = self.weapon_step_gauntlet_seam(&arsenal, input)?;
-        // Donor 3918 (the Q3 holdable block itself stays in the marker above).
+        // Donor 3908-3917: Q3 holdable block.
+        if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
+            use qa_net::common::commands::MovementDialect;
+            use qa_world::movement::q3::constants::{command_buttons, move_flags};
+            // Donor 3909: `records.nativeByActor` + client read.
+            let host = self.with_q3_source(|game| game.host()).flatten();
+            let client = host.as_ref().and_then(|host| {
+                host.native_by_actor(id).and_then(|entity| {
+                    let borrowed = entity.borrow();
+                    borrowed.client.clone()
+                })
+            });
+            // Donor 3910.
+            let Some(client) = client else {
+                return fail("Selected primary on Q3 map has no admitted source client");
+            };
+            // Donor 3911.
+            let buttons = step_button_bits(input.command.buttons());
+            let use_holdable = match pstate.arsenal_intent.as_ref() {
+                Some(intent) => intent.use_holdable,
+                None => {
+                    matches!(input.command.dialect(), MovementDialect::Q3)
+                        && buttons & command_buttons::USE_HOLDABLE != 0
+                }
+            };
+            // Donor 3912.
+            if buttons & command_buttons::ATTACK == 0 && !use_holdable && input.environment.health > 0.0 {
+                client.borrow_mut().ps.pm_flags &= !move_flags::RESPAWNED;
+            }
+            // Donor 3913-3916.
+            let owns_equipment = self
+                .peek()
+                .selected_q3_source
+                .as_ref()
+                .is_some_and(|selected| selected.owns_equipment());
+            if !owns_equipment && host.as_ref().is_some_and(|host| host.step_holdable(id, use_holdable)) {
+                self.lock().primary_command_blocks.insert(id.clone());
+                return Ok((arsenal, input.animation.clone()));
+            }
+        }
+        // Donor 3918.
         self.lock().primary_command_blocks.remove(id);
         // Donor 3919-3920.
         let frame = if family == "q1" {
@@ -45350,6 +45389,98 @@ mod tests {
         assert_eq!(selected.ui(actor.id(), &source), None);
         let _ = selected.admit(actor.clone(), 100.0, false);
         assert!(selected.has(actor.id()));
+    }
+
+    fn weapon_step_holdable_command(buttons: f64) -> qa_net::common::commands::UserCommand {
+        qa_net::common::commands::UserCommand::Q3 {
+            server_time_milliseconds: 0.0,
+            angle_words: [0.0; 3],
+            buttons,
+            weapon: 0.0,
+            forward_move: 0.0,
+            right_move: 0.0,
+            up_move: 0.0,
+        }
+    }
+
+    fn weapon_step_holdable_input<'a>(
+        actor: &'a OwnedActor,
+        command: &'a qa_net::common::commands::UserCommand,
+        arsenal: ArsenalState,
+        animation: ActorAnimationState,
+    ) -> StepWeaponInput<'a> {
+        StepWeaponInput {
+            actor,
+            command,
+            frame: seam_frame(),
+            arsenal,
+            animation,
+            environment: qa_world::movement::types::MovementEnvironment::default(),
+            gauntlet_hit: false,
+        }
+    }
+
+    #[test]
+    fn weapon_step_holdable_requires_admitted_q3_client() {
+        let rig = gu1_sim();
+        let (actor, _) = gu1_admit(&rig, 0);
+        let mut player = gu1_player(&rig.sim, &actor, &rig.clients[0]);
+        let mut selected = selected_q1();
+        selected.admit(actor.clone(), 100.0, false);
+        {
+            let mut state = rig.sim.lock();
+            state.selected_arsenal = Some(selected);
+            state.source = SourceRuntime::Q3 {
+                game: Q3SourceRuntime::new(),
+            };
+        }
+        let command = weapon_step_holdable_command(0.0);
+        let input = weapon_step_holdable_input(&actor, &command, player.arsenal.clone(), player.animation.clone());
+        let error = rig
+            .sim
+            .weapon_step_seam(&mut player, &input)
+            .expect_err("q3 holdable without a client fails");
+        assert!(matches!(
+            error,
+            RuntimeError::Failure(message)
+                if message == "Selected primary on Q3 map has no admitted source client"
+        ));
+    }
+
+    fn weapon_step_holdable_q1() -> (SelectedArsenal, OwnedActor) {
+        let (game, handles) = test_q1_game();
+        let actor = handles.actors.mint(&ProviderId::new("q1", "test"), "player");
+        let selected = SelectedArsenal::Q1(super::super::arsenal::q1::Q1SelectedArsenal::new(
+            super::super::arsenal::q1::Q1SelectedArsenalOptions {
+                game: Rc::new(RefCell::new(game)),
+                native_player: None,
+                replaced_items: Vec::new(),
+                fired: None,
+                impulse: None,
+                prepare_pickup: None,
+                observe: Box::new(|_| super::super::arsenal::q1::Q1Observation {
+                    view_angles: zero(),
+                    water_level: 0,
+                }),
+            },
+        ));
+        (selected, actor)
+    }
+
+    #[test]
+    fn weapon_step_holdable_skipped_off_q3_source() {
+        let rig = gu1_sim();
+        let (mut selected, actor) = weapon_step_holdable_q1();
+        let mut player = gu1_player(&rig.sim, &actor, &rig.clients[0]);
+        selected.admit(actor.clone(), 100.0, false);
+        rig.sim.lock().selected_arsenal = Some(selected);
+        let command = weapon_step_holdable_command(0.0);
+        let input = weapon_step_holdable_input(&actor, &command, player.arsenal.clone(), player.animation.clone());
+        let (_arsenal, _animation) = rig
+            .sim
+            .weapon_step_seam(&mut player, &input)
+            .expect("non-q3 step succeeds");
+        assert!(!rig.sim.peek().primary_command_blocks.contains(actor.id()));
     }
 
     fn test_registry() -> SessionActorRegistry {
