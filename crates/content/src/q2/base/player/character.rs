@@ -117,10 +117,9 @@ pub type Q2CharacterSpawnGib = Box<dyn FnMut(Q2CharacterGib)>;
 /// binds them over its own tables, clock, scene, and match without a
 /// content dependency on the simulation.
 ///
-/// Missing siblings: the runtime character lane owns construction; the
-/// pending caller chain is the `combat_before_reaction` character arm,
-/// the QuakeC client-spawn respawn arm, and the
-/// `q2_character_after_client_think` host upgrade. Uncalled until it lands.
+/// The runtime builds this over its live tables for attach, combat,
+/// client-spawn, post-client-think, and both frame seams (donor
+/// `attachQ2Character` host literal, donor runtime.ts 3789-3811).
 pub struct Q2CharacterHostServices {
     /// Shared body table.
     pub bodies: Box<dyn Q2BodyTable>,
