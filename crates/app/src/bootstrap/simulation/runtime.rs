@@ -27207,7 +27207,9 @@ impl SharedSimulation {
         {
             let mut state = self.lock();
             if let SourceRuntime::Q2Native(native) = &mut state.source {
-                native.close();
+                if let Err(error) = native.close() {
+                    errors.push(error);
+                }
             }
         }
         {
@@ -27283,9 +27285,20 @@ impl FrameScheduler {
 }
 
 impl Q2NativeSource {
-    /// Donor `q2Native().close` (C10 seam; the q2-native lane owns the type).
-    /// Missing siblings: q2-native lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `q2Native().close` (donor runtime.ts 6794).
+    ///
+    /// Shuts the guest world down; failures join the simulation close
+    /// aggregate like the donor's `errors.push`.
+    pub fn close(&mut self) -> Result<(), RuntimeError> {
+        match self {
+            Q2NativeSource::Classic { game, .. } => game
+                .close()
+                .map_err(|error| RuntimeError::Failure(format!("{error:?}"))),
+            Q2NativeSource::Rerelease { game, .. } => game
+                .close()
+                .map_err(|error| RuntimeError::Failure(format!("{error:?}"))),
+        }
+    }
 }
 
 impl NativePrimaryDrop {
@@ -32418,11 +32431,112 @@ impl super::weapon_slot::SourceWeaponHandoff for C11QuakeCHandoff {
     }
 }
 
-/// Neutral Q2 weapon input (donor `q2WeaponInput`, C5 range).
+impl SharedSimulation {
+    /// Native Q2 weapon input for a player (donor `q2WeaponInput`,
+    /// runtime.ts 3963-3976).
+    ///
+    /// The Q3 player-state terms read empty: the Q3 source host carries no
+    /// Rust records, and Q3 callers fail at the q3-records arms once this
+    /// returns.
+    fn q2_weapon_input(
+        &self,
+        player: &MovementPlayer,
+    ) -> Result<qa_content::q2::foundation::weapons::types::Q2WeaponInput, RuntimeError> {
+        use qa_content::q2::base::player::types::Q2PlayerHand;
+        use qa_content::q2::foundation::weapons::types::{Q2WeaponInput, WeaponHand};
+        let actor = player.actor.id();
+        let selected = self
+            .peek()
+            .selected_arsenal
+            .as_ref()
+            .is_some_and(|arsenal| arsenal.family() == "q2");
+        let pressed = (player.buttons as i32 & 1) != 0
+            && (!selected
+                || self
+                    .peek()
+                    .weapon_slots
+                    .get(actor)
+                    .is_none_or(|slot| slot.primary_selected()));
+        let (q2_spectator, hand) = match &self.peek().source {
+            SourceRuntime::Q2 { game, .. } => {
+                let services = game.borrow();
+                let record = services.players.states.get(actor);
+                (
+                    record.is_some_and(|record| record.spectator),
+                    match record.map(|record| &record.hand) {
+                        Some(Q2PlayerHand::Left) => WeaponHand::Left,
+                        Some(Q2PlayerHand::Center) => WeaponHand::Center,
+                        _ => WeaponHand::Right,
+                    },
+                )
+            }
+            _ => (false, WeaponHand::Right),
+        };
+        let spectator = q2_spectator || (selected && (player.intermission || player.cutscene.is_some()));
+        let notarget = selected
+            && self
+                .monster_target(actor)
+                .ok()
+                .flatten()
+                .is_some_and(|target| target.notarget);
+        let quad_until = match &self.peek().source {
+            SourceRuntime::Q2 { game, .. } => {
+                let services = game.borrow();
+                let product = qa_content::q2::composition::product_runtime(&services);
+                product.items.player_powerups(&services, actor).quad_until
+            }
+            SourceRuntime::Q1 { services, .. } => services
+                .borrow()
+                .player_ref(actor)
+                .and_then(|state| {
+                    state
+                        .powerups
+                        .get(&qa_content::q1::foundation::types::Q1Powerup::Quad)
+                        .copied()
+                })
+                .unwrap_or(0.0),
+            SourceRuntime::QuakeC { game, .. } => game
+                .client_powerup_expires(actor, super::quakec_source::QuakeCPowerup::Quad)
+                .map_err(|error| RuntimeError::Failure(error.to_string()))?,
+            _ => 0.0,
+        };
+        let rerelease_flag = |name: &str| {
+            self.peek().q2_server_registry.as_ref().is_some_and(|registry| {
+                let registry = registry.borrow();
+                registry.dialect() == qa_core::cmd::Dialect::Q2Rerelease && registry.variable_value(name) != 0.0
+            })
+        };
+        Ok(Q2WeaponInput {
+            attack: pressed,
+            latched_attack: pressed && (player.previous_buttons as i32 & 1) == 0,
+            holster: false,
+            angles: player.view_angles,
+            ducked: player.bounds.max.z < player.standing_bounds.max.z,
+            spectator,
+            notarget,
+            hand,
+            animate_player: player.character == GameFamily::Q2,
+            quad_until,
+            double_until: 0.0,
+            quad_fire_until: 0.0,
+            haste: false,
+            no_stack_double: rerelease_flag("g_dm_no_stack_double"),
+            instant_switch: rerelease_flag("g_instant_weapon_switch"),
+            quick_switch: false,
+            infinite_ammo: false,
+            players_collide: true,
+            gravity: self.peek().physics.gravity(),
+            weapon_thunk: false,
+            view_height: player.view_height,
+        })
+    }
+}
+
+/// Neutral Q2 weapon input for handoffs without an error channel.
 ///
-/// Missing siblings: C5 ports `q2WeaponInput` (donor 3963); the seam carries
-/// the player's view pose with neutral buttons until then.
-fn q2_weapon_input_seam(player: &MovementPlayer) -> qa_content::q2::foundation::weapons::types::Q2WeaponInput {
+/// Carries the player's view pose with neutral buttons; used when the full
+/// input read fails where the donor throw cannot surface.
+fn q2_weapon_input_neutral(player: &MovementPlayer) -> qa_content::q2::foundation::weapons::types::Q2WeaponInput {
     use qa_content::q2::foundation::weapons::types::{Q2WeaponInput, WeaponHand};
     Q2WeaponInput {
         attack: false,
@@ -32518,10 +32632,15 @@ impl super::weapon_slot::SourceWeaponHandoff for C11Q2Handoff {
         let name = item
             .and_then(|entry| self.definition(entry))
             .map(|definition| definition.name);
+        let native = self
+            .tables
+            .sim()
+            .q2_weapon_input(&self.player)
+            .unwrap_or_else(|_| q2_weapon_input_neutral(&self.player));
         qa_content::q2::foundation::weapons::player::resume_primary(
             &mut self.game.borrow_mut(),
             &self.player.actor,
-            &q2_weapon_input_seam(&self.player),
+            &native,
             name.as_deref(),
         );
         let active = arsenal_seam(&self.player).active_weapon;
@@ -33920,7 +34039,7 @@ impl SharedSimulation {
             });
         }
         let player = self.require_player(actor)?;
-        let native = q2_weapon_input_seam(&player);
+        let native = self.q2_weapon_input(&player)?;
         let input = match &self.peek().source {
             SourceRuntime::Q2 { game, .. } => {
                 let product = qa_content::q2::composition::product_runtime(&game.borrow()).clone();
