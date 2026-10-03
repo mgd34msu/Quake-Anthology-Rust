@@ -6945,11 +6945,14 @@ pub struct RuntimeOriginalPickupRule {
 /// Q2 model presentation event seam (donor `Q2PresentationEvent` model arm).
 ///
 /// Mirror of the model arm of `Q2PresentationEvent` from donor Q2 host
-/// (canonical home: `qa_content::q2`); unify post-merge.
+/// (canonical home: `qa_content::q2`); unify post-merge. Carries the full
+/// donor triple of attached-model slots.
 #[derive(Debug, Clone)]
 pub struct RuntimeQ2ModelEvent {
     /// Model path.
     pub path: String,
+    /// Attached-model slots (`attachedModels`, always three).
+    pub attached_models: [String; 3],
     /// Model index.
     pub model: i32,
     /// Presentation frame override.
@@ -21337,15 +21340,16 @@ impl super::source_hosts::Q2ActorHostBindings for Q2SeamBindings {
         let now = sim.time_seconds();
         let mut state = sim.lock();
         if let Q2PresentationEvent::Model(model) = &event {
-            let index = model
-                .path
-                .strip_prefix('*')
-                .and_then(|n| n.parse::<i32>().ok())
-                .unwrap_or(0);
+            let index = q2_model_index(&model.path);
+            let mut attached = [String::new(), String::new(), String::new()];
+            for (slot, path) in attached.iter_mut().zip(model.attached_models.iter()) {
+                *slot = path.clone();
+            }
             state.source_models.insert(
                 model.actor.clone(),
                 RuntimeQ2ModelEvent {
                     path: model.path.clone(),
+                    attached_models: attached,
                     model: index,
                     frame: model.frame,
                     old_frame: model.old_frame,
@@ -21377,13 +21381,31 @@ impl super::source_hosts::Q2ActorHostBindings for Q2SeamBindings {
     fn player_view_state(&mut self, player: &ActorId) -> Option<qa_content::q2::foundation::host::Q2PlayerViewState> {
         use qa_content::q2::foundation::host::Q2PlayerViewState;
         let sim = self.session();
-        sim.player_client(player)?; // Missing siblings: Q2 product player states (oldVelocity) and
-                                    // per-actor grapple previous velocity (C11 grapple); zero until
-                                    // those readers land.
+        sim.player_client(player)?;
+        // Donor `playerViewState` (donor runtime.ts 2072): Q2 sources read
+        // the product player state's `oldVelocity`; other sources read the
+        // grapple previous velocity; both default to zero when absent.
+        let old_velocity = {
+            let state = sim.peek();
+            match &state.source {
+                SourceRuntime::Q2 { game, .. } => game
+                    .borrow()
+                    .players
+                    .states
+                    .get(player)
+                    .map(|entry| entry.old_velocity)
+                    .unwrap_or(zero()),
+                _ => state
+                    .grapple
+                    .as_ref()
+                    .map(|grapple| grapple.previous_velocity(player))
+                    .unwrap_or(zero()),
+            }
+        };
         let view_angles = sim.player(player).map(|player| player.view_angles).unwrap_or(zero());
         Some(Q2PlayerViewState {
             view_angles,
-            old_velocity: zero(),
+            old_velocity,
         })
     }
 
@@ -21696,25 +21718,46 @@ fn step_map_clock(state: &SharedSimulationState) -> Result<qa_core::time::ClockP
     Ok(provider_timing(&state.recipe, &provider)?.clock)
 }
 
-/// Whether a Q2 rerelease intermission fade is pending (donor
-/// `product.rerelease?.players.intermissionFadeUntil != null`).
-///
-/// Missing siblings: the Q2 lane owns the product runtime
-/// (`Q2ProductRuntime` is opaque); nothing readable exists yet, so the
-/// fade never triggers until it lands.
-#[allow(dead_code)]
-fn q2_intermission_fade_pending() -> bool {
-    false
-}
+impl SharedSimulation {
+    /// Whether a Q2 rerelease intermission fade is pending (donor
+    /// `product.rerelease?.players.intermissionFadeUntil != null`, donor
+    /// runtime.ts 4455/4507).
+    ///
+    /// Reads the rerelease slice of the content product runtime plus the
+    /// arena `intermissionFadeUntil` field
+    /// ([`Q2RereleasePlayers`](qa_content::q2::rerelease::players) state).
+    fn q2_intermission_fade_pending(&self) -> bool {
+        let state = self.peek();
+        let Some(game) = (match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let rerelease = state
+            .q2_product
+            .as_ref()
+            .is_some_and(|product| product.borrow().rerelease.is_some());
+        drop(state);
+        let game = game.borrow();
+        rerelease && game.rerelease.intermission_fade_until.is_some()
+    }
 
-/// Run one Q2 rerelease intermission fade frame (donor
-/// `product.rerelease.players.fadeFrame`).
-///
-/// Missing siblings: the Q2 lane owns the fade frame; unreachable until
-/// `q2_intermission_fade_pending` can read the product runtime.
-#[allow(dead_code)]
-fn q2_intermission_fade_frame_seam() -> Result<(), RuntimeError> {
-    Ok(())
+    /// Run one Q2 rerelease intermission fade frame (donor
+    /// `product.rerelease.players.fadeFrame`, donor
+    /// `content/q2/rerelease/players.ts` 320).
+    fn q2_intermission_fade_frame(&self) -> Result<(), RuntimeError> {
+        let state = self.peek();
+        let Some(game) = (match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+            _ => None,
+        }) else {
+            return fail("Q2 source game is not bound");
+        };
+        drop(state);
+        qa_content::q2::rerelease::players::rerelease_fade_frame(&mut game.borrow_mut());
+        Ok(())
+    }
 }
 
 /// Store a received NetQuake command (donor `player.receiveNetQuake`).
@@ -21881,7 +21924,7 @@ impl SharedSimulation {
             }
         }
         // Donor 4491-4493.
-        if self.peek().source.kind() == "q2" && q2_intermission_fade_pending() {
+        if self.peek().source.kind() == "q2" && self.q2_intermission_fade_pending() {
             return Ok(StepTailFlow::ContinueLoop);
         }
         if ctx.run && !prepares_q1_clients && !ctx.settlement_active {
@@ -22043,12 +22086,12 @@ impl SharedSimulation {
             }
         }
         // Donor 4454-4460: Q2 rerelease intermission fade short-circuit.
-        if self.peek().source.kind() == "q2" && q2_intermission_fade_pending() {
+        if self.peek().source.kind() == "q2" && self.q2_intermission_fade_pending() {
             {
                 let mut state = self.lock();
                 state.checking_q2_rules = true;
             }
-            let result = q2_intermission_fade_frame_seam();
+            let result = self.q2_intermission_fade_frame();
             {
                 let mut state = self.lock();
                 state.checking_q2_rules = false;
@@ -22303,20 +22346,6 @@ impl SharedSimulation {
     }
 }
 
-impl Q1Foundation {
-    /// Donor `Q1Foundation.restore` (C10 seam; the q1 lane owns the type).
-    ///
-    /// Missing siblings: q1-foundation lane entity restore; q1-kind sources
-    /// fail closed until it lands. Delete this seam when it lands.
-    pub fn restore(
-        &mut self,
-        _checkpoint: &crate::persistence::q1::foundation::Q1FoundationCheckpoint,
-        _schedule_thinks: bool,
-    ) -> Result<(), RuntimeError> {
-        fail("Missing siblings: q1-foundation lane Q1Foundation::restore")
-    }
-}
-
 impl Q1ClientVisibility {
     /// Donor `q1ClientVisibility.restore` (C10 seam; the q1-client lane owns the type).
     ///
@@ -22385,6 +22414,73 @@ fn reference_saved_actor(
         .resolve_saved(&saved)
         .map(|owned| owned.id().clone())
         .ok_or_else(|| RuntimeError::Range("Invalid historical actor checkpoint reference".to_string()))
+}
+
+/// Model index for a Q2 model path (donor `*N` inline-model prefix).
+fn q2_model_index(path: &str) -> i32 {
+    path.strip_prefix('*').and_then(|n| n.parse::<i32>().ok()).unwrap_or(0)
+}
+
+/// Read a saved Q2 model event's numeric overrides (donor 6740-6741).
+#[allow(clippy::cast_possible_truncation)]
+fn read_q2_model_numbers(
+    value: &qa_world::save::value::SaveReader,
+) -> Result<(i32, i32, f64, i32, i64, i32), RuntimeError> {
+    Ok((
+        value.field("frame").number()? as i32,
+        value.field("oldFrame").number()? as i32,
+        value.field("scale").number()?,
+        value.field("skin").number()? as i32,
+        value.field("effects").number()? as i64,
+        value.field("renderFlags").number()? as i32,
+    ))
+}
+
+/// Ensure selected-Q1 character adjuncts (donor `q1CharacterSource`
+/// selected arm, donor runtime.ts 3753-3759).
+///
+/// Registers map/character callbacks on the selected Q1 game once per
+/// game, probed by registry content like
+/// [`SharedSimulation::with_q1_character_source`].
+fn ensure_q1_character_adjuncts(state: &Rc<RefCell<SharedSimulationState>>) -> Result<(), RuntimeError> {
+    let mut taken = state.borrow_mut().selected_weapon_source.take();
+    if let Some(SelectedWeaponSource::Q1 { game, .. }) = taken.as_mut() {
+        if game.named.action("base:train_next").is_err() {
+            qa_content::q1::base::map_entities::register_map_callbacks(game)
+                .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?;
+            qa_content::q1::base::player::register_character_callbacks(game)
+                .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?;
+        }
+    }
+    state.borrow_mut().selected_weapon_source = taken;
+    Ok(())
+}
+
+/// Sync donor per-player max health after selected-Q1 hydration (donor
+/// runtime.ts 6541-6543): QuakeC sources write through the client
+/// adapter, QVM sources through the primary weapons.
+#[allow(clippy::cast_possible_truncation)]
+fn sync_q1_hydrate_max_health(
+    state: &Rc<RefCell<SharedSimulationState>>,
+    maxima: &[(ActorId, f64)],
+) -> Result<(), RuntimeError> {
+    for (actor, max) in maxima {
+        let borrowed = state.borrow();
+        match &borrowed.source {
+            SourceRuntime::QuakeC { game } => {
+                let game = Rc::clone(game);
+                drop(borrowed);
+                game.set_client_max_health(actor, *max).map_err(source_failure)?;
+            }
+            SourceRuntime::Q3Qvm {
+                weapons: Some(weapons), ..
+            } => {
+                weapons.set_max_health(actor, *max as i32).map_err(source_failure)?;
+            }
+            _ => return fail("Selected Q1 hydration has no source max-health owner"),
+        }
+    }
+    Ok(())
 }
 
 impl SharedSimulation {
@@ -22810,16 +22906,33 @@ impl SharedSimulation {
                 let hydrate_error = Rc::clone(&hydrate_error);
                 move |host: &mut C10SharedWorldHost| {
                     let result = (|| -> Result<(), RuntimeError> {
+                        // Donor `hydrateSelectedQ1` (donor runtime.ts
+                        // 6536-6544): kind assertion, `q1CharacterSource`
+                        // ensure, selected-game restore, per-player
+                        // max-health sync.
                         selected_source.field("kind").literal_str("q1")?;
-                        // Donor `q1CharacterSource()` ensure: q1-kind sources already hold
-                        // their game; selected-q1 adjunct registration and standalone
-                        // foundation construction belong to the q1 lane.
-                        // The q1 entity restore needs the q1 persistence->content
-                        // checkpoint bridge (the two `Q1FoundationCheckpoint` types have
-                        // no converter yet); the donor's game restore plus per-player
-                        // max-health sync land with it.
-                        let _ = (character_is_q1, &host.state);
-                        fail("Missing siblings: q1 persistence->content checkpoint bridge (hydrate)")
+                        if character_is_q1 {
+                            ensure_q1_character_adjuncts(&host.state)?;
+                        }
+                        let saved = crate::persistence::q1::foundation::read_q1_foundation_checkpoint(
+                            selected_source.field("entities"),
+                        )
+                        .map_err(source_failure)?;
+                        let converted = super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&saved)
+                            .map_err(source_failure)?;
+                        let maxima = {
+                            let mut state = host.state.borrow_mut();
+                            let Some(SelectedWeaponSource::Q1 { game, .. }) = state.selected_weapon_source.as_mut()
+                            else {
+                                return fail("Selected Q1 source is not bound");
+                            };
+                            game.restore(&converted, false).map_err(source_failure)?;
+                            game.players
+                                .iter()
+                                .map(|(actor, player)| (actor.clone(), player.max_health))
+                                .collect::<Vec<_>>()
+                        };
+                        sync_q1_hydrate_max_health(&host.state, &maxima)
                     })();
                     if let Err(error) = result {
                         *hydrate_error.borrow_mut() = Some(error);
@@ -23053,12 +23166,25 @@ impl SharedSimulation {
                 }
                 if kind == "q1" {
                     if !hydrate_needed {
+                        // Donor selected-q1 restore without hydration
+                        // (donor runtime.ts 6591-6595): same game restore,
+                        // no max-health loop.
                         if provider_text(&self.peek().recipe.character.definition.provider).starts_with("q1:") {
                             self.with_q1_character_source(|_| ())?;
                         }
-                        return fail(
-                            "Missing siblings: q1 persistence->content checkpoint bridge (selectedWeaponSource q1)",
-                        );
+                        let saved = crate::persistence::q1::foundation::read_q1_foundation_checkpoint(
+                            selected_source.field("entities"),
+                        )
+                        .map_err(source_failure)?;
+                        let converted = super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&saved)
+                            .map_err(source_failure)?;
+                        let mut state = self.state.borrow_mut();
+                        match state.selected_weapon_source.as_mut() {
+                            Some(SelectedWeaponSource::Q1 { game, .. }) => {
+                                game.restore(&converted, false).map_err(source_failure)?;
+                            }
+                            _ => return fail("Selected Q1 source is not bound"),
+                        }
                     }
                 } else {
                     let saved_frame = selected_source.field("frame");
@@ -23202,15 +23328,29 @@ impl SharedSimulation {
                 })?;
             }
             if is_q1 {
+                // Donor Q1 source restore (donor runtime.ts 6624): decode
+                // the provider blob, bridge it into the content shape, and
+                // restore the live entity services.
                 let bytes =
                     super::save::simulation_provider_checkpoint(save, "q1:foundation").map_err(source_failure)?;
                 let checkpoint = crate::persistence::q1::foundation::decode_q1_foundation_checkpoint(&bytes.bytes)
                     .map_err(source_failure)?;
-                let mut state = self.state.borrow_mut();
-                match &mut state.source {
-                    SourceRuntime::Q1 { game, .. } => game.restore(&checkpoint, false)?,
-                    _ => return fail("Q1 source game is not bound"),
-                }
+                let converted = super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&checkpoint)
+                    .map_err(source_failure)?;
+                let services = {
+                    let state = self.peek();
+                    match &state.source {
+                        SourceRuntime::Q1 { services, .. } => Some(Rc::clone(services)),
+                        _ => None,
+                    }
+                };
+                let Some(services) = services else {
+                    return fail("Q1 source game is not bound");
+                };
+                services
+                    .borrow_mut()
+                    .restore(&converted, false)
+                    .map_err(source_failure)?;
             } else if is_q2 {
                 return fail(
                     "Missing siblings: q2 lane restoreQ2Product (opaque Q2ProductRuntime plus persistence->content checkpoint bridge)",
@@ -23583,7 +23723,11 @@ impl SharedSimulation {
         {
             let foundation = reader.field("q1CharacterFoundation");
             if matches!(foundation.value, Some(value) if !matches!(value, qa_world::save::value::SaveJson::Null)) {
-                return fail("Missing siblings: q1 persistence->content checkpoint bridge (q1CharacterFoundation)");
+                let saved = crate::persistence::q1::foundation::read_q1_foundation_checkpoint(foundation)
+                    .map_err(source_failure)?;
+                let converted =
+                    super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&saved).map_err(source_failure)?;
+                self.with_q1_character_source(|game| game.restore(&converted, false).map_err(source_failure))??;
             }
         }
         // Donor q1 characters (donor 6695-6699).
@@ -23610,24 +23754,45 @@ impl SharedSimulation {
             state.q1_characters.insert(owner, character);
             Ok::<_, RuntimeError>(())
         })?;
-        // Donor q2 characters (donor 6700-6704). The content character
-        // restore needs the q2 persistence->content checkpoint bridge; fail
-        // closed before attaching when the save carries any entries.
-        {
-            let entries = reader.field("q2Characters").list(|value| {
-                let saved = read_saved_actor(value.field("actor"))?;
-                let owner = self.actors.borrow().resolve_saved(saved);
-                let Some(owner) = owner else {
-                    return Err(value.fail("Missing restored actor").into());
+        // Donor q2 characters (donor 6700-6704).
+        reader.field("q2Characters").list(|value| {
+            let saved = read_saved_actor(value.field("actor"))?;
+            let owner = self.actors.borrow().resolve_saved(saved);
+            let Some(owner) = owner else {
+                return Err(value.fail("Missing restored actor").into());
+            };
+            let player = self.require_player(owner.id())?;
+            self.attach_q2_character(&player)?;
+            let saved_checkpoint = crate::persistence::q2::players::read_q2_character_checkpoint(value.field("state"))
+                .map_err(source_failure)?;
+            let converted = super::q2_character_bridge::convert_persistence_q2_character(&saved_checkpoint)
+                .map_err(source_failure)?;
+            let fallback = owner.id().clone();
+            let resolve_failed = Rc::new(RefCell::new(false));
+            let resolve_cell = Rc::clone(&resolve_failed);
+            {
+                let mut state = self.state.borrow_mut();
+                let Some(character) = state.q2_characters.get_mut(&owner) else {
+                    return Err(value.fail("Q2 character was not bound").into());
                 };
-                let _ = crate::persistence::q2::players::read_q2_character_checkpoint(value.field("state"))
-                    .map_err(source_failure)?;
-                Ok::<_, RuntimeError>(owner)
-            })?;
-            if !entries.is_empty() {
-                return fail("Missing siblings: q2 persistence->content character checkpoint bridge (q2Characters)");
+                character.restore(
+                    &converted,
+                    &mut |saved| match self.actors.borrow().resolve_saved(saved) {
+                        Some(resolved) => resolved.id().clone(),
+                        None => {
+                            *resolve_cell.borrow_mut() = true;
+                            fallback.clone()
+                        }
+                    },
+                );
             }
-        }
+            if *resolve_failed.borrow() {
+                return Err(RuntimeError::Range(
+                    "Invalid historical actor checkpoint reference".to_string(),
+                ));
+            }
+            Ok::<_, RuntimeError>(())
+        })?;
         // Donor character starts (donor 6705).
         reader.field("characterStarts").list(|value| {
             let saved = read_saved_actor(value.field("actor"))?;
@@ -23787,9 +23952,7 @@ impl SharedSimulation {
                     .source_of(actor)
                     .is_some_and(|(provider, _)| Some(&provider) == links_module.as_ref())
         };
-        // Donor source models (donor 6731-6739). The runtime
-        // `RuntimeQ2ModelEvent` holds path/model only, so non-reconstructed
-        // entries fail closed; the q2 lane owns full model-state storage.
+        // Donor source models (donor 6731-6741).
         reader.field("sourceModels").list(|value| {
             let attached = value.field("attachedModels").list(|entry| entry.string())?;
             let actor = reference_saved_actor(&self.actors.borrow(), read_saved_actor(value.field("actor"))?)?;
@@ -23802,7 +23965,29 @@ impl SharedSimulation {
             if attached.len() != 3 {
                 return Err(value.fail("Q2 attached models must retain three slots").into());
             }
-            fail("Missing siblings: q2 lane source-model state storage (RuntimeQ2ModelEvent holds path/model only)")
+            let path = value.field("path").string()?;
+            let (frame, old_frame, scale, skin, effects, render_flags) = read_q2_model_numbers(&value)?;
+            let alpha = if value.field("alpha").is_missing() {
+                1.0
+            } else {
+                value.field("alpha").finite()?
+            };
+            self.state.borrow_mut().source_models.insert(
+                actor,
+                RuntimeQ2ModelEvent {
+                    attached_models: [attached[0].clone(), attached[1].clone(), attached[2].clone()],
+                    model: q2_model_index(&path),
+                    path,
+                    frame,
+                    old_frame,
+                    scale,
+                    alpha,
+                    skin,
+                    effects,
+                    render_flags,
+                },
+            );
+            Ok::<_, RuntimeError>(())
         })?;
         // Donor level change (donor 6740-6742).
         {
@@ -24141,15 +24326,27 @@ fn move_seam(
     })
 }
 
-/// Q3 match gravity scale for an actor (donor
-/// `product.match.gravityScale`).
-///
-/// Missing siblings: the Q2 lane owns the match runtime (the product is
-/// opaque); unit gravity until it lands.
-#[allow(dead_code)]
-fn q2_match_gravity_scale_seam(actor: &ActorId) -> f64 {
-    let _ = actor;
-    1.0
+impl SharedSimulation {
+    /// Q2 match gravity scale for an actor (donor
+    /// `product.match.gravityScale`, donor runtime.ts 4556 and
+    /// `content/composition/q2/match.ts` 85).
+    ///
+    /// Reads through the content product runtime's match plus the game
+    /// arena; unit gravity when no Q2 product is bound.
+    fn q2_match_gravity_scale(&self, actor: &ActorId) -> f64 {
+        let state = self.peek();
+        let pair = match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some((Rc::clone(game), state.q2_product.clone())),
+            _ => None,
+        };
+        drop(state);
+        let Some((game, Some(product))) = pair else {
+            return 1.0;
+        };
+        let product = product.borrow();
+        let game = game.borrow();
+        product.product_match.gravity_scale(actor, &game)
+    }
 }
 
 /// Q2 movement impact for an active rerelease move (donor
@@ -24218,35 +24415,63 @@ fn q2_lmctf_can_move_seam(actor: &ActorId) -> Option<bool> {
     None
 }
 
-/// Whether a Q2 player state is gibbed (donor
-/// `source.players.states.get(actor)?.gibbed`).
-///
-/// Missing siblings: the Q2 lane owns the player states; gibbed is never
-/// observed until it lands.
-#[allow(dead_code)]
-fn q2_player_gibbed_seam(actor: &ActorId) -> bool {
-    let _ = actor;
-    false
+impl SharedSimulation {
+    /// Whether a Q2 player state is gibbed (donor
+    /// `source.players.states.get(actor)?.gibbed`, donor runtime.ts
+    /// 4580/4701).
+    fn q2_player_gibbed(&self, actor: &ActorId) -> bool {
+        let state = self.peek();
+        let Some(game) = (match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+            _ => None,
+        }) else {
+            return false;
+        };
+        drop(state);
+        let game = game.borrow();
+        game.players.states.get(actor).is_some_and(|entry| entry.gibbed)
+    }
+
+    /// Run Q2 post-client-think for an entity (donor
+    /// `source.players.afterClientThink`, donor runtime.ts 4581 and
+    /// `content/q2/base/player/index.ts` 404).
+    ///
+    /// The caller ends its entity borrow first: the players module
+    /// re-borrows the arena.
+    fn q2_after_client_think(&self, actor: &ActorId) {
+        let state = self.peek();
+        let pair = match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some((Rc::clone(game), state.q2_product.clone())),
+            _ => None,
+        };
+        drop(state);
+        if let Some((game, Some(product))) = pair {
+            product
+                .borrow()
+                .players
+                .after_client_think(actor.clone(), &mut game.borrow_mut());
+        }
+    }
 }
 
-/// Run Q2 post-client-think for an entity (donor
-/// `source.players.afterClientThink`).
-///
-/// Missing siblings: the Q2 lane owns the player runtime; the view-height
-/// write around this call is real.
-#[allow(dead_code)]
-fn q2_after_client_think_seam(actor: &ActorId) {
-    let _ = actor;
-}
-
-/// Run Q2 character post-client-think (donor
-/// `q2Characters.get(actor)?.afterClientThink()`).
-///
-/// Missing siblings: the character lane owns the `Q2CharacterHost`
-/// wiring; no host implementation exists yet.
-#[allow(dead_code)]
-fn q2_character_after_client_think_seam(actor: &ActorId) {
-    let _ = actor;
+impl SharedSimulation {
+    /// Run Q2 character post-client-think (donor
+    /// `q2Characters.get(actor)?.afterClientThink()`, donor runtime.ts
+    /// 4582 and `content/q2/base/player/character.ts` 161-165).
+    ///
+    /// Ports the button latch directly: the donor host's
+    /// `movement(actor).buttons` is the sim player's button bitmask
+    /// (donor runtime.ts 3791-3794), and the character state fields are
+    /// shared, so no host stands between the sim and the latch.
+    #[allow(clippy::cast_possible_truncation)]
+    fn q2_character_after_client_think(&self, owned: &OwnedActor, buttons: f64) {
+        let buttons = buttons as i32;
+        let mut state = self.state.borrow_mut();
+        if let Some(character) = state.q2_characters.get_mut(owned) {
+            character.state.latched_buttons |= buttons & !character.state.buttons;
+            character.state.buttons = buttons;
+        }
+    }
 }
 
 impl SharedSimulation {
@@ -24499,7 +24724,7 @@ impl SharedSimulation {
         } else {
             let source_is_q2 = self.peek().source.kind() == "q2";
             let match_gravity = if source_is_q2 {
-                q2_match_gravity_scale_seam(owned.id())
+                self.q2_match_gravity_scale(owned.id())
             } else {
                 1.0
             };
@@ -24623,37 +24848,52 @@ impl SharedSimulation {
                     .map_err(|error| RuntimeError::Failure(error.to_string()))?;
             }
         }
-        // Donor 4576-4580: Q2 post-client-think view height.
+        // Donor 4576-4581: Q2 post-client-think view height plus the
+        // players `afterClientThink` (donor runs both only when the entity
+        // is bound).
         if !paused && self.peek().source.kind() == "q2" && self.actors.borrow().is_live(owned.id()) {
-            let gibbed = q2_player_gibbed_seam(owned.id());
+            let gibbed = self.q2_player_gibbed(owned.id());
             let health = self
                 .peek()
                 .combat
                 .read(owned.id())
                 .map(|state| state.health)
                 .unwrap_or(0.0);
-            let state = self.peek();
-            if let SourceRuntime::Q2 { game, .. } = &state.source {
-                let mut borrowed = game.borrow_mut();
-                if let Some(entity) = borrowed.entity_mut(owned.id()) {
-                    if !pstate.intermission {
-                        entity.view_height = if pstate.character == GameFamily::Q2 && health <= 0.0 {
-                            if gibbed {
-                                8
+            let game = {
+                let state = self.peek();
+                match &state.source {
+                    SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+                    _ => None,
+                }
+            };
+            if let Some(game) = game {
+                let bound = {
+                    let mut borrowed = game.borrow_mut();
+                    if let Some(entity) = borrowed.entity_mut(owned.id()) {
+                        if !pstate.intermission {
+                            entity.view_height = if pstate.character == GameFamily::Q2 && health <= 0.0 {
+                                if gibbed {
+                                    8
+                                } else {
+                                    -2
+                                }
                             } else {
-                                -2
-                            }
-                        } else {
-                            pstate.view_height as i32
-                        };
+                                pstate.view_height as i32
+                            };
+                        }
+                        true
+                    } else {
+                        false
                     }
-                    q2_after_client_think_seam(owned.id());
+                };
+                if bound {
+                    self.q2_after_client_think(owned.id());
                 }
             }
         }
         // Donor 4581-4582: character post-move hooks.
         if self.peek().q2_characters.contains_key(owned) {
-            q2_character_after_client_think_seam(owned.id());
+            self.q2_character_after_client_think(owned, pstate.buttons);
         }
         self.step_tail_q1_character_post_move(owned)?;
         // Donor 4583.
@@ -25134,12 +25374,22 @@ impl SharedSimulation {
 #[allow(dead_code)]
 const Q3_PM_SPECTATOR: i32 = 2;
 
-/// Begin the Q2 source-monster frame (donor `source.monsters.beginFrame`).
-///
-/// Missing siblings: the Q2 lane owns the source monster runtime (the
-/// product is opaque).
-#[allow(dead_code)]
-fn q2_source_monsters_begin_frame_seam() {}
+impl SharedSimulation {
+    /// Begin the Q2 source-monster frame (donor
+    /// `source.monsters.beginFrame`, donor runtime.ts 4595 and
+    /// `content/q2/foundation/monsters/perception.ts` 139).
+    fn q2_source_monsters_begin_frame(&self) {
+        let state = self.peek();
+        let Some(game) = (match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some(Rc::clone(game)),
+            _ => None,
+        }) else {
+            return;
+        };
+        drop(state);
+        qa_content::q2::foundation::monsters::begin_monster_frame(&mut game.borrow_mut());
+    }
+}
 
 /// Begin the Q3 source frame (donor `source.game.beginFrame`).
 ///
@@ -25425,7 +25675,7 @@ impl SharedSimulation {
         }
         // Donor 4595-4596.
         if ctx.run && self.peek().source.kind() == "q2" {
-            q2_source_monsters_begin_frame_seam();
+            self.q2_source_monsters_begin_frame();
         }
         if ctx.run && self.peek().source.kind() == "q3" {
             let frame = self.peek().source_frame;
@@ -26615,7 +26865,7 @@ impl SharedSimulation {
                     .map(|state| state.health)
                     .unwrap_or(0.0);
                 if !intermission && character == GameFamily::Q2 && health <= 0.0 {
-                    let height = if q2_player_gibbed_seam(owned.id()) { 8 } else { -2 };
+                    let height = if self.q2_player_gibbed(owned.id()) { 8 } else { -2 };
                     {
                         let state = self.peek();
                         if let SourceRuntime::Q2 { game, .. } = &state.source {
