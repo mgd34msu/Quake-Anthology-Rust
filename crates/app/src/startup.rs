@@ -47,6 +47,8 @@ pub struct StartupConfig {
     pub seats: u32,
     /// Dedicated server (no window or seats).
     pub dedicated: bool,
+    /// Open a native window and run frames on it.
+    pub windowed: bool,
     /// Close after N host frames.
     pub frame_limit: Option<u64>,
     /// Gameplay random seed.
@@ -89,6 +91,7 @@ impl StartupConfig {
             capacity: SESSION_CAPACITY,
             seats: if options.dedicated { 0 } else { options.seats },
             dedicated: options.dedicated,
+            windowed: options.windowed,
             frame_limit: options.frame_limit,
             seed: options.seed,
             map: options.map.clone(),
@@ -277,6 +280,16 @@ mod tests {
         let config = StartupConfig::from_options(&options(&["--seats", "2"])).unwrap();
         assert!(!config.dedicated);
         assert_eq!(config.seats, 2);
+    }
+
+    #[test]
+    fn windowed_flows_from_options() {
+        let config = StartupConfig::from_options(&options(&["--windowed", "--frames", "3"])).unwrap();
+        assert!(config.windowed);
+        assert!(!config.dedicated);
+        assert_eq!(config.frame_limit, Some(3));
+        let config = StartupConfig::from_options(&options(&["--menu"])).unwrap();
+        assert!(!config.windowed);
     }
 
     #[test]

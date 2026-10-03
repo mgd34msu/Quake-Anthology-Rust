@@ -134,18 +134,52 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
             list_content(&corpus_root, stdout);
             Ok(())
         }
-        ApplicationCommand::Run { options } | ApplicationCommand::Menu { options } => {
-            let config = StartupConfig::from_options(&options)?;
-            let mut application = Application::open(&config, NullRenderer::new())?;
-            let stats = application.run()?;
-            let _ = writeln!(
-                stdout,
-                "Ran {} host frames, {} server ticks, {} entities ({} render frames)",
-                stats.frames, stats.ticks, stats.entities, stats.render_frames
-            );
+        ApplicationCommand::Run { options } => {
+            if options.windowed {
+                run_windowed(&options, crate::bootstrap::startup::StartupEntry::Run, stdout)?;
+                return Ok(());
+            }
+            run_headless(&options, stdout)?;
+            Ok(())
+        }
+        ApplicationCommand::Menu { options } => {
+            if options.windowed {
+                run_windowed(&options, crate::bootstrap::startup::StartupEntry::Menu, stdout)?;
+                return Ok(());
+            }
+            run_headless(&options, stdout)?;
             Ok(())
         }
     }
+}
+
+/// Run the headless application (default dedicated/local behavior).
+fn run_headless(options: &crate::options::ApplicationOptions, stdout: &mut dyn Write) -> Result<(), AppError> {
+    let config = StartupConfig::from_options(options)?;
+    let mut application = Application::open(&config, NullRenderer::new())?;
+    let stats = application.run()?;
+    let _ = writeln!(
+        stdout,
+        "Ran {} host frames, {} server ticks, {} entities ({} render frames)",
+        stats.frames, stats.ticks, stats.entities, stats.render_frames
+    );
+    Ok(())
+}
+
+/// Run the windowed composition: native window, GL renderer, and startup
+/// driver for `--windowed` runs.
+fn run_windowed(
+    options: &crate::options::ApplicationOptions,
+    entry: crate::bootstrap::startup::StartupEntry,
+    stdout: &mut dyn Write,
+) -> Result<(), AppError> {
+    let mut composed =
+        crate::bootstrap::windowed::open_windowed_application(options, entry).map_err(AppError::Startup)?;
+    let frames =
+        crate::bootstrap::windowed::drive_windowed_application(&mut composed.app, &composed.quit, options.frame_limit)
+            .map_err(|error| AppError::Startup(error.to_string()))?;
+    let _ = writeln!(stdout, "Ran {frames} windowed frames");
+    Ok(())
 }
 
 /// Run the weapon-behavior tool (donor `main.ts` weapon-behavior branch).
@@ -1664,6 +1698,19 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stdout.contains("4 host frames"), "{stdout}");
         assert!(stdout.contains("server ticks"), "{stdout}");
+    }
+
+    #[test]
+    fn windowed_unsupported_selections_fail_before_opening() {
+        let (code, _, stderr) = run_text(&["--windowed", "--renderer", "cpu", "--frames", "1"]);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("--renderer gl"), "{stderr}");
+        let (code, _, stderr) = run_text(&["--windowed", "--render-worker", "1", "--frames", "1"]);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("worker"), "{stderr}");
+        let (code, _, stderr) = run_text(&["--windowed", "--dedicated", "--frames", "1"]);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("--windowed"), "{stderr}");
     }
 
     #[test]
