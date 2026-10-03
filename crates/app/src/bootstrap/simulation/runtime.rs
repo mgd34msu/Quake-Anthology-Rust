@@ -6397,6 +6397,34 @@ impl Default for Q3CharacterActor {
     }
 }
 
+/// Attach one restored Q3 character (donor `q3Characters` restore, donor
+/// runtime.ts 6707-6715).
+///
+/// Constructs the canonical actor over the runtime character services and
+/// restores its checkpoint, mirroring admission construction without the
+/// spawn.
+fn attach_restored_q3_character(
+    sim: &SharedSimulation,
+    owner: &OwnedActor,
+    checkpoint: &qa_content::q3::foundation::character::Q3CharacterCheckpoint,
+) -> Result<(), RuntimeError> {
+    use qa_content::q3::foundation::character::Q3CharacterActor as CanonicalQ3CharacterActor;
+    let provider = sim.peek().recipe.character.definition.provider.clone();
+    let death_animations = sim.peek().q3_character_death_animations.clone();
+    let live = CanonicalQ3CharacterActor::new(
+        owner.clone(),
+        provider,
+        checkpoint.product,
+        Rc::new(RuntimeQ3CharacterServices::new(sim)),
+        death_animations,
+    );
+    live.restore(checkpoint).map_err(source_failure)?;
+    let mut seam = Q3CharacterActor::new();
+    seam.attach_live(live);
+    sim.lock().characters.insert(owner.clone(), seam);
+    Ok(())
+}
+
 /// Runtime services behind the canonical Q3 character actor.
 ///
 /// Ports the donor `admitPlayer`/`spawnQ3Player` inline services object
@@ -26496,19 +26524,28 @@ impl SourceItemsRestore {
 }
 
 impl Q3SourceRuntime {
-    /// Donor `finishNativeRestore` (C10 seam; the q3 lane owns the type).
+    /// Donor `finishNativeRestore` (C10 seam; donor q3/runtime.ts 260;
+    /// host `q3::runtime::Q3SourceRuntime::finish_native_restore`).
     ///
-    /// Missing siblings: q3 lane native restore finalization; q3-kind
-    /// sources fail closed until it lands. Delete this seam when it lands.
+    /// Delegates to the attached canonical host; fails closed when no
+    /// host is attached.
     pub fn finish_native_restore(&self) -> Result<(), RuntimeError> {
-        fail("Missing siblings: q3 lane finishNativeRestore")
+        let Some(host) = self.host.clone() else {
+            return fail("Q3 native restore has no attached source host");
+        };
+        host.finish_native_restore();
+        Ok(())
     }
 
-    /// Donor `q3Source.close` (C10 seam; the q3 lane owns the type).
+    /// Donor `q3Source.close` (C10 seam; donor q3/runtime.ts 534; host
+    /// `q3::runtime::Q3SourceRuntime::close`).
     ///
-    /// Nothing to release until the lane lands native state.
-    /// Missing siblings: q3 lane source close; delete this seam when it lands.
+    /// Retires the attached canonical host; without one there is nothing
+    /// to release.
     pub fn close(&mut self) -> Result<(), RuntimeError> {
+        if let Some(host) = self.host.clone() {
+            host.close();
+        }
         Ok(())
     }
 }
@@ -28039,9 +28076,7 @@ impl SharedSimulation {
             self.state.borrow_mut().character_starts.insert(owner, start);
             Ok::<_, RuntimeError>(())
         })?;
-        // Donor q3 characters (donor 6706-6715). Character construction plus
-        // restore belongs to the q3 lane; fail closed when the save carries
-        // any entries.
+        // Donor q3 characters (donor 6706-6715).
         {
             let entries = reader.field("q3Characters").list(|value| {
                 let saved = read_saved_actor(value.field("actor"))?;
@@ -28049,11 +28084,11 @@ impl SharedSimulation {
                 let Some(owner) = owner else {
                     return Err(value.fail("Missing restored actor").into());
                 };
-                let _ = super::player_checkpoint::read_q3_character(value.field("state"))?;
-                Ok::<_, RuntimeError>(owner)
+                let checkpoint = super::player_checkpoint::read_q3_character(value.field("state"))?;
+                Ok::<_, RuntimeError>((owner, checkpoint))
             })?;
-            if !entries.is_empty() {
-                return fail("Missing siblings: q3 lane Q3CharacterActor construction/restore (q3Characters)");
+            for (owner, checkpoint) in &entries {
+                attach_restored_q3_character(self, owner, checkpoint)?;
             }
         }
         // Donor selected-original-pickup binding (donor 6716).
@@ -28448,6 +28483,9 @@ impl SharedSimulation {
                 self.peek().selected_ammo_timers.is_some() && matches!(self.peek().source, SourceRuntime::Q3 { .. });
             if owned {
                 let actors = self.selected_ammo_actors();
+                // Hoisted before the state lock: the legacy closure runs
+                // under the lock, so it takes the cloned host handle.
+                let host = self.with_q3_source(|game| game.host()).flatten();
                 let mut state = self.lock();
                 let timers = state
                     .selected_ammo_timers
@@ -28463,12 +28501,7 @@ impl SharedSimulation {
                                 .resolve_saved(saved)
                                 .ok_or_else(|| qa_world::WorldError::BadSave("Missing restored actor".to_string()))
                         },
-                        &|_, _| {
-                            // Legacy lookups need the q3 source records, which
-                            // the opaque `Q3SourceRuntime` does not expose;
-                            // modern saves never invoke this closure.
-                            panic!("Missing siblings: q3 lane ammo-timer legacy records (Q3SourceRuntime.records)")
-                        },
+                        &|actor, weapon| q3_legacy_ammo_time(host.as_ref(), actor, weapon),
                     )
                     .map_err(source_failure)?;
             } else if matches!(ammo_timers.value, Some(value) if !matches!(value, qa_world::save::value::SaveJson::Null))
@@ -28484,6 +28517,25 @@ impl SharedSimulation {
         }
         Ok(())
     }
+}
+
+/// Legacy ammo-timer lookup through the Q3 source records (donor
+/// `selectedAmmoTimers` legacy closure, donor runtime.ts 6775-6778; host
+/// `native_by_actor`).
+///
+/// Reads `ammoTimes` off the native client; panics with the donor's
+/// failure when no host, record, client, or slot backs the lookup.
+fn q3_legacy_ammo_time(host: Option<&Rc<super::q3::runtime::Q3SourceRuntime>>, actor: &ActorId, weapon: i32) -> i64 {
+    let native = host.and_then(|host| host.native_by_actor(actor));
+    let client = native.as_ref().and_then(|native| native.borrow().client.clone());
+    let Some(client) = client else {
+        panic!("Saved ammo timer has no original source client");
+    };
+    let Ok(slot) = usize::try_from(weapon) else {
+        panic!("Saved ammo timer has no original source client");
+    };
+    let borrowed = client.borrow();
+    i64::from(borrowed.ammo_times.get(slot))
 }
 
 // ---------------------------------------------------------------------------
@@ -28684,21 +28736,30 @@ impl SharedSimulation {
     }
 }
 
-/// Run one Q3-source player think (donor `source.game.playerThink`).
+/// Run one Q3-source player think (donor `source.game.playerThink`,
+/// donor runtime.ts 4552; host `q3::runtime::Q3SourceRuntime::player_think`).
 ///
-/// Missing siblings: the Q3 lane owns the source runtime (`Q3SourceRuntime`
-/// is opaque); the `q3Commands` set/delete around this call is real.
-#[allow(dead_code)]
-fn q3_player_think_seam(command: &ActorCommand) {
-    let _ = command;
+/// Delegates to the attached canonical host; without one the think is
+/// skipped. The `q3Commands` set/delete around this call is real.
+fn q3_player_think_seam(sim: &SharedSimulation, command: &ActorCommand) {
+    let Some(host) = sim.with_q3_source(|game| game.host()).flatten() else {
+        return;
+    };
+    host.player_think(command);
 }
 
-/// Sync Q3 player state after its think (donor `syncQ3Player`).
+/// Sync Q3 player state after its think (donor `syncQ3Player`, donor
+/// runtime.ts 3534-3550).
 ///
-/// Missing siblings: the Q3 lane owns the sync.
-#[allow(dead_code)]
-fn sync_q3_player_seam(player: &MovementPlayer) {
-    let _ = player;
+/// Delegates to the landed `sync_q3_player` port, then refreshes the
+/// caller's clone from the map: the donor mutates the same player object
+/// the step continues with, while the port writes through the map.
+fn sync_q3_player_seam(sim: &SharedSimulation, player: &mut MovementPlayer) -> Result<(), RuntimeError> {
+    sim.sync_q3_player(player)?;
+    if let Some(live) = sim.peek().player_states.get(&player.actor).cloned() {
+        *player = live;
+    }
+    Ok(())
 }
 
 /// Selected-arsenal weapon-step input (donor `weaponStep` argument).
@@ -29397,12 +29458,12 @@ impl SharedSimulation {
                 let mut state = self.lock();
                 state.q3_commands.insert(owned.clone(), command.clone());
             }
-            q3_player_think_seam(command);
+            q3_player_think_seam(self, command);
             {
                 let mut state = self.lock();
                 state.q3_commands.remove(owned);
             }
-            sync_q3_player_seam(&pstate);
+            sync_q3_player_seam(self, &mut pstate)?;
         } else {
             let source_is_q2 = self.peek().source.kind() == "q2";
             let match_gravity = if source_is_q2 {
@@ -30073,13 +30134,16 @@ impl SharedSimulation {
     }
 }
 
-/// Begin the Q3 source frame (donor `source.game.beginFrame`).
+/// Begin the Q3 source frame (donor `source.game.beginFrame`, donor
+/// runtime.ts 4596; host `q3::runtime::Q3SourceRuntime::begin_frame`).
 ///
-/// Missing siblings: the Q3 lane owns the source runtime
-/// (`Q3SourceRuntime` is opaque).
-#[allow(dead_code)]
-fn q3_source_begin_frame_seam(frame: &FrameContext) {
-    let _ = frame;
+/// Delegates to the attached canonical host; without one the frame is
+/// skipped.
+fn q3_source_begin_frame_seam(sim: &SharedSimulation, frame: &FrameContext) {
+    let Some(host) = sim.with_q3_source(|game| game.host()).flatten() else {
+        return;
+    };
+    host.begin_frame(frame);
 }
 
 /// Snapshot of source ordering for actor turns (donor `sourcePosition`
@@ -30440,10 +30504,13 @@ fn step_q3_source_actor_seam(entry: &RuntimeExecutionEntry, previous: f64, next:
     let _ = (entry, previous, next);
 }
 
-/// Step one Q3 actor (donor `execution.step` on `q3`).
+/// Step one Q3 actor (donor `execution.step` on `q3`, donor
+/// runtime.ts 4634-4638).
 ///
-/// Missing siblings: the Q3 lane owns actor stepping; the boundary times
-/// around this call are real.
+/// The donor never registers a `q3` execution entry (every
+/// `registerActorExecution` call uses `q3-source`/`q1`/`q2`/`quakec`),
+/// so this call site is unreachable; the no-op is the faithful port.
+/// The boundary times around this call are real.
 #[allow(dead_code)]
 fn step_q3_actor_seam(entry: &RuntimeExecutionEntry, previous: f64, next: f64) {
     let _ = (entry, previous, next);
@@ -30474,12 +30541,16 @@ fn q2_player_spectator_seam(game: &qa_content::q2::foundation::host::Q2GameServi
     game.players.states.get(actor).is_some_and(|state| state.spectator)
 }
 
-/// Run one Q3-source actor (donor `source.game.runActor`).
+/// Run one Q3-source actor (donor `source.game.runActor`, donor
+/// runtime.ts 4686; host `q3::runtime::Q3SourceRuntime::run_actor`).
 ///
-/// Missing siblings: the Q3 lane owns the source runtime.
-#[allow(dead_code)]
-fn q3_run_actor_seam(actor: &OwnedActor) {
-    let _ = actor;
+/// Delegates to the attached canonical host; without one the turn is
+/// skipped.
+fn q3_run_actor_seam(sim: &SharedSimulation, actor: &OwnedActor) {
+    let Some(host) = sim.with_q3_source(|game| game.host()).flatten() else {
+        return;
+    };
+    host.run_actor(actor);
 }
 
 /// Resolve the execution frame for a non-player entry (donor 4673-4675
@@ -30577,7 +30648,7 @@ impl SharedSimulation {
         }
         if ctx.run && self.peek().source.kind() == "q3" {
             let frame = self.peek().source_frame;
-            q3_source_begin_frame_seam(&frame);
+            q3_source_begin_frame_seam(self, &frame);
         }
         // Donor 4597-4598: revision-sensitive actor turns.
         let snapshot = {
@@ -30997,10 +31068,10 @@ impl SharedSimulation {
         }
         // Donor 4681: Q3 source run + sync.
         if self.peek().source.kind() == "q3" {
-            q3_run_actor_seam(actor);
+            q3_run_actor_seam(self, actor);
             self.lock().physics.commit_attachments();
-            if let Some(player) = self.peek().player_states.get(actor).cloned() {
-                sync_q3_player_seam(&player);
+            if let Some(mut player) = self.peek().player_states.get(actor).cloned() {
+                sync_q3_player_seam(self, &mut player)?;
             }
             return Ok(());
         }
@@ -31205,9 +31276,42 @@ impl SharedSimulation {
                 .expect("qvm weapon delay failed");
             return f64::from(delayed) / 1000.0;
         }
-        // Missing siblings: the q3 lane owns the source records behind
-        // `nativeByActor`, so the q3 arm reads empty and every source takes
-        // the donor's identity fallback.
+        if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
+            use qa_content::q3::base::shared::definitions::{stat_schema, Powerup, StatSchema};
+            use qa_content::q3::base::shared::items::item_at;
+            use qa_world::movement::q3::weapon::q3_weapon_delay;
+            let client = self
+                .with_q3_source(|game| {
+                    game.host().and_then(|host| {
+                        host.native_by_actor(actor)
+                            .and_then(|native| native.borrow().client.clone())
+                    })
+                })
+                .flatten();
+            let Some(client) = client else {
+                return seconds;
+            };
+            let borrowed = client.borrow();
+            let ps = &borrowed.ps;
+            let product = ps.product();
+            let persistent = match stat_schema(product) {
+                StatSchema::Missionpack(layout) => item_at(product, ps.stats.get(layout.persistent_powerup as usize))
+                    .map(|definition| definition.tag())
+                    .unwrap_or(0),
+                StatSchema::Base(_) => 0,
+            };
+            let milliseconds = (seconds * 1000.0).trunc() as i32;
+            let delay = q3_weapon_delay(
+                milliseconds,
+                persistent,
+                ps.powerups.get(Powerup::PwHaste as usize) != 0,
+            );
+            return if delay == milliseconds {
+                seconds
+            } else {
+                f64::from(delay) / 1000.0
+            };
+        }
         seconds
     }
 
@@ -31221,8 +31325,7 @@ impl SharedSimulation {
                     || cvars.borrow().variable_value("teamplay") != 0.0
             }
             SourceRuntime::QuakeC { game } => game.cvars().borrow().variable_value("teamplay") != 0.0,
-            // Missing siblings: the q3 lane owns the source game type.
-            SourceRuntime::Q3 { .. } => false,
+            SourceRuntime::Q3 { game } => game.host().is_some_and(|host| host.game_type() >= 3),
             SourceRuntime::Q3Qvm { game, .. } => game.state.cvars.borrow().variable_value("g_gametype") >= 3.0,
             SourceRuntime::Q2Native(_) => state
                 .q2_server_registry
@@ -31274,8 +31377,11 @@ impl SharedSimulation {
                 .states
                 .get(actor)
                 .map(|entry| entry.userinfo.clone()),
-            // Missing siblings: the q3 lane owns the source host engine.
-            SourceRuntime::Q3 { .. } => None,
+            SourceRuntime::Q3 { .. } => {
+                let client = self.player_client(actor)?;
+                let host = self.with_q3_source(|game| game.host()).flatten()?;
+                Some(host.host.engine().get_userinfo(client.slot() as i32))
+            }
             SourceRuntime::Q3Qvm { .. } => {
                 let client = self.player_client(actor)?;
                 drop(state);
@@ -31706,20 +31812,36 @@ fn q2_check_rules_seam(
     product.check_rules(game);
 }
 
-/// Drop a dead Q3 player view (donor `entity.client.ps.viewheight = -16`).
+/// Drop a dead Q3 player view (donor `entity.client.ps.viewheight = -16`,
+/// donor runtime.ts 4719-4721; host `native_by_actor`).
 ///
-/// Missing siblings: the Q3 lane owns the source records
-/// (`Q3SourceRuntime` is opaque).
-#[allow(dead_code)]
-fn q3_dead_viewheight_seam(actor: &ActorId) {
-    let _ = actor;
+/// Writes through the attached canonical host; without a host, a record,
+/// or a client the write is skipped like the donor's null checks.
+fn q3_dead_viewheight_seam(sim: &SharedSimulation, actor: &ActorId) {
+    let Some(host) = sim.with_q3_source(|game| game.host()).flatten() else {
+        return;
+    };
+    let Some(native) = host.native_by_actor(actor) else {
+        return;
+    };
+    let client = native.borrow().client.clone();
+    let Some(client) = client else {
+        return;
+    };
+    client.borrow_mut().ps.viewheight = -16;
 }
 
-/// Run the Q3 source end frame (donor `source.game.endFrame`).
+/// Run the Q3 source end frame (donor `source.game.endFrame`, donor
+/// runtime.ts 4723; host `q3::runtime::Q3SourceRuntime::end_frame`).
 ///
-/// Missing siblings: the Q3 lane owns the source runtime.
-#[allow(dead_code)]
-fn q3_source_end_frame_seam() {}
+/// Delegates to the attached canonical host; without one the frame is
+/// skipped.
+fn q3_source_end_frame_seam(sim: &SharedSimulation) {
+    let Some(host) = sim.with_q3_source(|game| game.host()).flatten() else {
+        return;
+    };
+    host.end_frame();
+}
 
 /// Run Q2 character end frame (donor `character.endFrame()`, donor
 /// runtime.ts 4726-4729 and
@@ -32505,10 +32627,10 @@ impl SharedSimulation {
                     }
                 };
                 if dead_q3 {
-                    q3_dead_viewheight_seam(owned.id());
+                    q3_dead_viewheight_seam(self, owned.id());
                 }
             }
-            q3_source_end_frame_seam();
+            q3_source_end_frame_seam(self);
         }
         // Donor 4720: Q3 character animation sync.
         {
@@ -36851,9 +36973,26 @@ impl SharedSimulation {
             Some(MovementState::Q3(state)) => Some(state.delta_angle_words),
             _ => None,
         };
-        // The q3 lane has not landed native records yet, so the Q3 arm takes
-        // the stored-state fallback exactly like the default arm.
-        let delta = qvm_delta.or(stored_delta);
+        // Donor 5105-5107: the Q3 arm reads the native record's delta
+        // angles, falling back to the stored state exactly like the
+        // default arm when no record is bound.
+        let native_delta = match &peeked.source {
+            SourceRuntime::Q3 { game } => game.host().and_then(|host| {
+                host.native_by_actor(&input.actor).and_then(|entity| {
+                    let borrowed = entity.borrow();
+                    let client = borrowed.client.clone()?;
+                    drop(borrowed);
+                    let client = client.borrow();
+                    Some([
+                        client.ps.delta_angles.x as i32,
+                        client.ps.delta_angles.y as i32,
+                        client.ps.delta_angles.z as i32,
+                    ])
+                })
+            }),
+            _ => None,
+        };
+        let delta = qvm_delta.or(native_delta).or(stored_delta);
         drop(peeked);
         let Some(delta) = delta else {
             return Err(RuntimeError::Failure(
@@ -37079,7 +37218,24 @@ impl SharedSimulation {
                 })
             }
             SourceRuntime::Q3 { .. } => {
-                panic!("Missing siblings: q3 lane owns the source records behind the Q3 score read")
+                use qa_content::q3::base::shared::definitions::PersistentIndex;
+                let native = self
+                    .with_q3_source(|game| game.host().and_then(|host| host.native_by_actor(actor)))
+                    .flatten();
+                let Some(native) = native else {
+                    panic!("Original Q3 score has no player");
+                };
+                let record = native.borrow().client.clone();
+                let Some(record) = record else {
+                    panic!("Original Q3 score has no player");
+                };
+                let score = record.borrow().ps.persistant.get(PersistentIndex::PersScore as usize);
+                Some(SourceMatchPlayer {
+                    actor: actor.clone(),
+                    client,
+                    team: state.combat.read(actor).and_then(|combat| combat.team),
+                    score,
+                })
             }
         }
     }
@@ -37153,9 +37309,26 @@ impl SharedSimulation {
                 }
                 Ok(())
             }
-            SourceRuntime::Q3 { .. } => Err(RuntimeError::Failure(
-                "Missing siblings: q3 lane owns the source records behind the Q3 score write".to_string(),
-            )),
+            SourceRuntime::Q3 { .. } => {
+                use qa_content::q3::base::shared::definitions::PersistentIndex;
+                let score = source_score(value)?;
+                let native = self
+                    .with_q3_source(|game| game.host().and_then(|host| host.native_by_actor(actor)))
+                    .flatten();
+                let Some(native) = native else {
+                    return Err(RuntimeError::Failure("Original Q3 score has no player".to_string()));
+                };
+                let record = native.borrow().client.clone();
+                let Some(record) = record else {
+                    return Err(RuntimeError::Failure("Original Q3 score has no player".to_string()));
+                };
+                record
+                    .borrow_mut()
+                    .ps
+                    .persistant
+                    .set(PersistentIndex::PersScore as usize, score);
+                Ok(())
+            }
             SourceRuntime::Loading => Err(RuntimeError::Failure("Original match player was retired".to_string())),
         }
     }
@@ -37342,9 +37515,15 @@ impl SharedSimulation {
                 game.state.set_userinfo(client.slot() as i32, userinfo);
                 Ok(())
             }
-            SourceRuntime::Q3 { .. } => Err(RuntimeError::Failure(
-                "Missing siblings: q3 lane owns the host engine behind setUserinfo".to_string(),
-            )),
+            SourceRuntime::Q3 { .. } => {
+                let Some(host) = self.with_q3_source(|game| game.host()).flatten() else {
+                    return Err(RuntimeError::Failure(
+                        "Q3 userinfo has no attached source host".to_string(),
+                    ));
+                };
+                host.host.engine().set_userinfo(client.slot() as i32, userinfo);
+                Ok(())
+            }
             SourceRuntime::QuakeC { game, .. } => {
                 let values: std::collections::HashMap<String, String> = q2_userinfo_vec(userinfo).into_iter().collect();
                 game.set_client_info_storage(&client, &values)
@@ -37447,12 +37626,16 @@ impl SharedSimulation {
                 .get(actor)
                 .map(|state| state.userinfo.clone())),
             SourceRuntime::Q3 { .. } => {
-                if self.player_client(actor).is_none() {
+                let client = self.player_client(actor);
+                let Some(client) = client else {
                     return Ok(None);
-                }
-                Err(RuntimeError::Failure(
-                    "Missing siblings: q3 lane owns the host engine behind getUserinfo".to_string(),
-                ))
+                };
+                let Some(host) = self.with_q3_source(|game| game.host()).flatten() else {
+                    return Err(RuntimeError::Failure(
+                        "Q3 userinfo has no attached source host".to_string(),
+                    ));
+                };
+                Ok(Some(host.host.engine().get_userinfo(client.slot() as i32)))
             }
             SourceRuntime::Q3Qvm { game, .. } => {
                 let client = self.player_client(actor);
@@ -37544,12 +37727,16 @@ impl SharedSimulation {
                 }
             }
             SourceRuntime::Q3 { .. } => {
-                if self.player_client(actor).is_none() {
+                let Some(client) = self.player_client(actor) else {
                     return Err(RuntimeError::Failure("Q3 userinfo has no admitted client".to_string()));
-                }
-                return Err(RuntimeError::Failure(
-                    "Missing siblings: q3 lane owns the host engine/admission behind userinfoChanged".to_string(),
-                ));
+                };
+                let Some(host) = self.with_q3_source(|game| game.host()).flatten() else {
+                    return Err(RuntimeError::Failure(
+                        "Q3 userinfo has no attached source host".to_string(),
+                    ));
+                };
+                host.host.engine().set_userinfo(client.slot() as i32, userinfo);
+                host.userinfo_changed(client.slot() as i32);
             }
             SourceRuntime::Q1 {
                 services, composition, ..
@@ -37648,14 +37835,20 @@ enum NativeGuestMovement {
 }
 
 impl Q3SourceRuntime {
-    /// Run a player console command (donor `Q3SourceRuntime.playerCommand`).
+    /// Run a player console command (donor `Q3SourceRuntime.playerCommand`,
+    /// donor q3/runtime.ts 673; host
+    /// `q3::runtime::Q3SourceRuntime::player_command`).
     ///
-    /// Missing siblings: the q3 lane owns the client records/command table.
+    /// Delegates to the attached canonical host; fails closed when no
+    /// host is attached.
     pub fn player_command(&self, actor: &ActorId, name: &str, args: &[String]) -> Result<(), RuntimeError> {
-        let _ = (actor, name, args);
-        Err(RuntimeError::Failure(
-            "Missing siblings: q3 lane owns the client records/command table behind playerCommand".to_string(),
-        ))
+        let Some(host) = self.host.clone() else {
+            return Err(RuntimeError::Failure(
+                "Q3 player command has no attached source host".to_string(),
+            ));
+        };
+        host.player_command(actor, name, args);
+        Ok(())
     }
 }
 // ---------------------------------------------------------------------------
@@ -40738,15 +40931,19 @@ impl SharedSimulation {
         })
     }
 
-    /// Bound server settings for the active registry (donor `serverSettings`).
+    /// Bound server settings for the active registry (donor `serverSettings`,
+    /// donor runtime.ts 5362-5375; the Q3 registry is the attached host's
+    /// cvars).
     ///
-    /// Missing siblings: the q3 lane owns the host cvars/settings snapshot
-    /// behind the Q3 arm; that source reports no bindings until it lands.
+    /// Residual: the donor Q3 arm also routes `value`-kind effective reads
+    /// through `game.settings.snapshot` (donor 5367-5371); that needs a host
+    /// settings accessor plus a `ServerBinding` read hook, and neither
+    /// exists (BLOCKED, see lane report).
     pub fn server_settings(&self) -> Vec<crate::settings::server::ServerBinding> {
         use crate::settings::server::{server_definitions_for_selection, ProviderRef, ServerBinding};
         let state = self.peek();
         let registry = state.q2_server_registry.clone().or_else(|| match &state.source {
-            SourceRuntime::Q3 { .. } => None,
+            SourceRuntime::Q3 { game } => game.host().map(|host| host.host.cvars()),
             SourceRuntime::Q3Qvm { game, .. } => Some(Rc::clone(&game.state.cvars)),
             SourceRuntime::Q1 { cvars, .. } => Some(Rc::clone(cvars)),
             SourceRuntime::QuakeC { game, .. } => Some(Rc::clone(&game.cvars())),
@@ -40781,7 +40978,7 @@ impl SharedSimulation {
     pub fn server_profile(&self) -> Result<crate::settings::server::ServerProfile, RuntimeError> {
         let state = self.peek();
         let registry = state.q2_server_registry.clone().or_else(|| match &state.source {
-            SourceRuntime::Q3 { .. } => None,
+            SourceRuntime::Q3 { game } => game.host().map(|host| host.host.cvars()),
             SourceRuntime::Q3Qvm { game, .. } => Some(Rc::clone(&game.state.cvars)),
             SourceRuntime::Q1 { cvars, .. } => Some(Rc::clone(cvars)),
             SourceRuntime::QuakeC { game, .. } => Some(Rc::clone(&game.cvars())),
@@ -41450,8 +41647,13 @@ fn c11_weapon_character_animation_in(
         if let Some(character) = state.characters.get_mut(&owned) {
             character.animation = Some(result.animation.clone());
         }
-        if matches!(state.source, SourceRuntime::Q3 { .. }) {
-            panic!("Missing siblings: q3 lane owns the source records behind writeQ3CharacterAnimation");
+        if let SourceRuntime::Q3 { game } = &state.source {
+            if let Some(host) = game.host() {
+                let entity = host.native_by_actor(actor).or_else(|| host.host.foreign(actor));
+                if let Some(entity) = entity {
+                    super::q3::player_state::write_q3_character_animation(&entity, &result.animation);
+                }
+            }
         }
         return Ok(());
     }
@@ -41720,9 +41922,26 @@ impl SharedSimulation {
             }
             _ => native,
         };
-        if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
-            panic!("Missing siblings: q3 lane owns the source records behind equipmentWeaponInput");
-        }
+        let q3_powerups = if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
+            use qa_content::q3::base::shared::definitions::Powerup;
+            self.with_q3_source(|game| {
+                game.host().and_then(|host| {
+                    host.native_by_actor(actor)
+                        .or_else(|| host.host.foreign(actor))
+                        .and_then(|native| native.borrow().client.clone())
+                        .map(|client| {
+                            let borrowed = client.borrow();
+                            (
+                                borrowed.ps.powerups.get(Powerup::PwQuad as usize),
+                                borrowed.ps.powerups.get(Powerup::PwHaste as usize),
+                            )
+                        })
+                })
+            })
+            .flatten()
+        } else {
+            None
+        };
         let quad_until = if matches!(self.peek().source, SourceRuntime::Q1 { .. }) {
             if let SourceRuntime::Q1 { services, .. } = &self.peek().source {
                 services
@@ -41738,12 +41957,14 @@ impl SharedSimulation {
             } else {
                 input.quad_until
             }
+        } else if let Some((quad, _)) = q3_powerups {
+            f64::from(quad) / 1000.0
         } else {
             input.quad_until
         };
         Ok(Q2WeaponInput {
             quad_until,
-            haste: input.haste,
+            haste: input.haste || q3_powerups.is_some_and(|(_, haste)| f64::from(haste) > self.time_seconds() * 1000.0),
             ..input
         })
     }
@@ -48700,5 +48921,1046 @@ mod tests {
             ),
             None
         );
+    }
+
+    // --- Q3 live-host wiring rig (lane hv-0) --------------------------------
+    //
+    // Minimal `Q3SourceHost` over real cvar/configstring/userinfo tables with
+    // panic dummies for scene/actors/bodies/combat/inventory/movers. The
+    // runtime constructor stores those handles without calling them, and the
+    // hv-0 arms under test only touch records, settings, engine, and
+    // configstrings.
+
+    struct Hv0Actors {
+        owner: IdentityOwner,
+    }
+
+    impl qa_content::q3::base::records::Q3SessionActors for Hv0Actors {
+        fn assert_owned(&self, _actor: &OwnedActor) -> Result<(), qa_content::q3::base::records::Q3BaseError> {
+            Ok(())
+        }
+
+        fn allocate_at_source(&self, provider: &ProviderId, slot: usize, _definition: &str) -> OwnedActor {
+            self.owner
+                .owned_actor(&self.owner.actor(slot as u32, 0), provider.clone())
+                .unwrap()
+        }
+
+        fn is_live(&self, _actor: &ActorId) -> bool {
+            true
+        }
+
+        fn on_release(&self, _callback: Box<dyn Fn(&OwnedActor)>) -> Box<dyn Fn()> {
+            Box::new(|| {})
+        }
+
+        fn release(&self, _actor: &OwnedActor) {}
+
+        fn resolve_owned(&self, _actor: &ActorId) -> Option<OwnedActor> {
+            None
+        }
+    }
+
+    struct Hv0Bodies;
+
+    impl qa_content::q3::base::records::Q3SessionBodies for Hv0Bodies {
+        fn create(&self, _actor: &OwnedActor, _state: qa_world::body::BodyState) {}
+
+        fn read(&self, _actor: &ActorId) -> Option<qa_world::body::BodyState> {
+            None
+        }
+
+        fn write(&self, _actor: &OwnedActor, _state: qa_world::body::BodyState) {}
+
+        fn linked(&self, _actor: &ActorId) -> Option<qa_world::body::LinkedBody> {
+            None
+        }
+
+        fn link(&self, _actor: &OwnedActor, _origin: Option<Vec3>) {}
+
+        fn unlink(&self, _actor: &OwnedActor) {}
+    }
+
+    struct Hv0Callbacks;
+
+    impl qa_content::q3::base::records::Q3ActorCallbacks for Hv0Callbacks {
+        fn bind(&self, _actor: &OwnedActor, _callbacks: qa_content::q3::base::records::ActorCallbacks) {}
+    }
+
+    struct Hv0Combat;
+
+    impl qa_content::q3::base::records::Q3SessionCombat for Hv0Combat {
+        fn read(&self, _actor: &ActorId) -> Option<qa_content::q3::base::records::CombatState> {
+            None
+        }
+
+        fn create(
+            &self,
+            _actor: &OwnedActor,
+            _initial: qa_content::q3::base::records::CombatState,
+            _admit_damage: Option<qa_content::q3::base::records::DamageAdmissionFn>,
+        ) {
+        }
+
+        fn set_health(&self, _actor: &OwnedActor, _health: i32) {}
+
+        fn set_can_take_damage(&self, _actor: &OwnedActor, _can_take_damage: bool) {}
+
+        fn set_regular_points(
+            &self,
+            _actor: &OwnedActor,
+            _points: i32,
+            _initial: qa_content::q3::base::records::RegularArmorState,
+        ) {
+        }
+
+        fn bind_damage_admission(
+            &self,
+            _actor: &OwnedActor,
+            _admit_damage: qa_content::q3::base::records::DamageAdmissionFn,
+        ) {
+        }
+
+        fn apply(
+            &self,
+            _request: qa_content::q3::base::records::DamageRequest,
+        ) -> qa_content::q3::base::records::DamageOutcome {
+            panic!("hv0 combat unused");
+        }
+    }
+
+    struct Hv0Inventory;
+
+    impl qa_content::q3::base::records::Q3SessionInventory for Hv0Inventory {
+        fn has(&self, _actor: &ActorId) -> bool {
+            false
+        }
+
+        fn create(&self, _actor: &OwnedActor, _entries: Vec<qa_content::q3::base::records::InventoryEntry>) {}
+
+        fn count(&self, _actor: &ActorId, _item: &qa_content::contract::ItemId) -> i32 {
+            0
+        }
+
+        fn configure(&self, _actor: &OwnedActor, _item: &qa_content::contract::ItemId, _count: i32, _capacity: i32) {}
+    }
+
+    struct Hv0Movers;
+
+    impl super::super::q3::types::Q3SourceMoverActors for Hv0Movers {
+        fn observe(&self, _actor: &ActorId) -> Option<qa_content::q3::base::game::mover::SharedMoverBody> {
+            None
+        }
+
+        fn write(&self, _actor: &ActorId, _origin: Vec3, _ground: Option<ActorId>) {}
+
+        fn link_actor(&self, _actor: &ActorId) {}
+
+        fn release_actor(&self, _actor: &ActorId) {}
+    }
+
+    struct Hv0Scene;
+
+    impl qa_content::q3::base::world_adapter::Q3WorldAdapterHost for Hv0Scene {
+        fn trace_scene(
+            &self,
+            _query: &qa_content::q3::base::world_adapter::Q3TraceQuery,
+        ) -> qa_content::q3::base::world_adapter::Q3TraceResult {
+            panic!("hv0 scene unused");
+        }
+
+        fn point_contents_scene(
+            &self,
+            _query: &qa_content::q3::base::world_adapter::Q3TraceQuery,
+            _point: Vec3,
+        ) -> i32 {
+            panic!("hv0 scene unused");
+        }
+
+        fn query_actors(&self, _bounds: Bounds) -> Vec<ActorId> {
+            panic!("hv0 scene unused");
+        }
+
+        fn spatial_collision(&self, _actor: &ActorId) -> Option<qa_content::q3::base::world_adapter::ActorCollision> {
+            panic!("hv0 scene unused");
+        }
+
+        fn body_state(&self, _actor: &ActorId) -> Option<qa_world::body::BodyState> {
+            panic!("hv0 scene unused");
+        }
+
+        fn linked_body(&self, _actor: &ActorId) -> Option<qa_world::body::LinkedBody> {
+            panic!("hv0 scene unused");
+        }
+
+        fn set_collision(&self, _actor: &OwnedActor, _collision: qa_content::q3::base::world_adapter::ActorCollision) {
+            panic!("hv0 scene unused");
+        }
+
+        fn link_body(&self, _actor: &OwnedActor, _origin: Option<Vec3>) {
+            panic!("hv0 scene unused");
+        }
+
+        fn unlink_body(&self, _actor: &OwnedActor) {
+            panic!("hv0 scene unused");
+        }
+
+        fn curves(&self) -> bool {
+            panic!("hv0 scene unused");
+        }
+
+        fn player_curve_clip(&self) -> bool {
+            panic!("hv0 scene unused");
+        }
+
+        fn geometry_trace_start_solid(
+            &self,
+            _query: &qa_content::q3::base::world_adapter::Q3TraceQuery,
+            _model: i32,
+            _origin: Vec3,
+            _angles: Vec3,
+        ) -> bool {
+            panic!("hv0 scene unused");
+        }
+
+        fn body_trace_start_solid(
+            &self,
+            _query: &qa_content::q3::base::world_adapter::Q3TraceQuery,
+            _body: &qa_world::body::BodyState,
+            _collision: &qa_content::q3::base::world_adapter::ActorCollision,
+        ) -> bool {
+            panic!("hv0 scene unused");
+        }
+    }
+
+    impl crate::bootstrap::q3_client::visibility::ApplicationQ3SceneQueries for Hv0Scene {
+        fn point_leaf(&self, _point: Vec3) -> i32 {
+            panic!("hv0 scene unused");
+        }
+
+        fn leaf_cluster(&self, _leaf: i32) -> i32 {
+            panic!("hv0 scene unused");
+        }
+
+        fn leaf_area(&self, _leaf: i32) -> i32 {
+            panic!("hv0 scene unused");
+        }
+
+        fn area_bits(&self, _area: i32) -> Vec<u8> {
+            panic!("hv0 scene unused");
+        }
+
+        fn box_leaves(&self, _bounds: Bounds, _limit: i32) -> Vec<i32> {
+            panic!("hv0 scene unused");
+        }
+
+        fn cluster_visible(&self, _from: i32, _cluster: i32) -> bool {
+            panic!("hv0 scene unused");
+        }
+
+        fn areas_connected(&self, _first: i32, _second: i32) -> bool {
+            panic!("hv0 scene unused");
+        }
+    }
+
+    impl super::super::q3::types::Q3SourceScene for Hv0Scene {
+        fn model_bounds(&self, _index: i32) -> Bounds {
+            panic!("hv0 scene unused");
+        }
+
+        fn adjust_area_portal_state(&self, _first: i32, _second: i32, _open: bool) {}
+    }
+
+    struct Hv0Engine {
+        userinfo: RefCell<HashMap<i32, String>>,
+    }
+
+    impl super::super::q3::types::Q3SourceEngine for Hv0Engine {
+        fn print(&self, _text: &str) {}
+
+        fn log(&self, _text: &str) {}
+
+        fn send_server_command(&self, _client: i32, _text: &str) {}
+
+        fn drop_client(&self, _client: i32, _reason: &str) {}
+
+        fn get_userinfo(&self, client: i32) -> String {
+            self.userinfo.borrow().get(&client).cloned().unwrap_or_default()
+        }
+
+        fn set_userinfo(&self, client: i32, value: &str) {
+            self.userinfo.borrow_mut().insert(client, value.to_string());
+        }
+
+        fn get_user_command(&self, _client: i32) -> qa_content::q3::base::shared::player_state::UserCommand {
+            qa_content::q3::base::shared::player_state::UserCommand {
+                server_time: 0,
+                angles: zero(),
+                buttons: 0,
+                weapon: 0,
+                forwardmove: 0,
+                rightmove: 0,
+                upmove: 0,
+            }
+        }
+
+        fn append_console_command(&self, _text: &str) {}
+
+        fn execute_console_now(&self, _text: &str) {}
+    }
+
+    struct Hv0ConfigStrings {
+        values: RefCell<HashMap<usize, String>>,
+    }
+
+    impl qa_content::q3::base::game::utilities::ConfigStringStore for Hv0ConfigStrings {
+        fn get(&self, index: usize) -> String {
+            self.values.borrow().get(&index).cloned().unwrap_or_default()
+        }
+
+        fn set(&mut self, index: usize, value: &str) {
+            self.values.borrow_mut().insert(index, value.to_string());
+        }
+    }
+
+    struct Hv0Host {
+        actors: Rc<Hv0Actors>,
+        bodies: Rc<Hv0Bodies>,
+        callbacks: Rc<Hv0Callbacks>,
+        combat: Rc<Hv0Combat>,
+        inventory: Rc<Hv0Inventory>,
+        movers: Rc<Hv0Movers>,
+        scene: Rc<Hv0Scene>,
+        engine: Rc<Hv0Engine>,
+        cvars: Rc<RefCell<qa_core::cvar::CvarRegistry>>,
+        configstrings: Rc<RefCell<Hv0ConfigStrings>>,
+        server: Rc<super::super::q3::server_state::Q3ServerState>,
+    }
+
+    impl qa_content::q3::team_arena::movement_host::MovementHost for Hv0Host {
+        fn move_client(
+            &self,
+            _entity: &qa_content::q3::team_arena::support::EntityRef,
+            _command: &qa_content::q3::base::shared::player_state::UserCommand,
+            _options: &qa_content::q3::team_arena::movement_host::ClientMovementOptions,
+        ) -> qa_content::q3::team_arena::movement_host::ClientMovementResult {
+            panic!("hv0 movement unused");
+        }
+    }
+
+    impl super::super::q3::types::Q3SourceHost for Hv0Host {
+        fn server_state(&self) -> Rc<super::super::q3::server_state::Q3ServerState> {
+            self.server.clone()
+        }
+
+        fn mover_actors(&self) -> Rc<dyn super::super::q3::types::Q3SourceMoverActors> {
+            self.movers.clone()
+        }
+
+        fn actors(&self) -> Rc<dyn qa_content::q3::base::records::Q3SessionActors> {
+            self.actors.clone()
+        }
+
+        fn bodies(&self) -> Rc<dyn qa_content::q3::base::records::Q3SessionBodies> {
+            self.bodies.clone()
+        }
+
+        fn callbacks(&self) -> Rc<dyn qa_content::q3::base::records::Q3ActorCallbacks> {
+            self.callbacks.clone()
+        }
+
+        fn combat(&self) -> Rc<dyn qa_content::q3::base::records::Q3SessionCombat> {
+            self.combat.clone()
+        }
+
+        fn inventory(&self) -> Rc<dyn qa_content::q3::base::records::Q3SessionInventory> {
+            self.inventory.clone()
+        }
+
+        fn scene(&self) -> Rc<dyn super::super::q3::types::Q3SourceScene> {
+            self.scene.clone()
+        }
+
+        fn engine(&self) -> Rc<dyn super::super::q3::types::Q3SourceEngine> {
+            self.engine.clone()
+        }
+
+        fn cvars(&self) -> Rc<RefCell<qa_core::cvar::CvarRegistry>> {
+            self.cvars.clone()
+        }
+
+        fn configstrings(&self) -> Rc<RefCell<dyn qa_content::q3::base::game::utilities::ConfigStringStore>> {
+            self.configstrings.clone()
+        }
+
+        fn death_animations(&self) -> qa_content::q3::foundation::character::Q3DeathAnimationSequence {
+            qa_content::q3::foundation::character::Q3DeathAnimationSequence::new()
+        }
+
+        fn bots(&self) -> super::super::q3::types::Q3SourceBots<'static> {
+            super::super::q3::types::Q3SourceBots::Unavailable {
+                reason: "hv0".to_string(),
+            }
+        }
+
+        fn now(&self) -> i32 {
+            4242
+        }
+
+        fn schedule(&self, _actor: &OwnedActor, _due_milliseconds: Option<i32>) {}
+
+        fn run_think(&self, _actor: &OwnedActor, _time_milliseconds: i32) {}
+
+        fn collision(&self, _actor: &OwnedActor, _collision: qa_content::q3::base::world_adapter::ActorCollision) {}
+
+        fn armor_context(
+            &self,
+            _request: &qa_content::q3::base::records::DamageRequest,
+        ) -> qa_content::q3::base::combat_bridge::VictimArmorContext {
+            panic!("hv0 armor unused");
+        }
+
+        fn foreign(&self, _actor: &ActorId) -> Option<qa_content::q3::base::records::EntityRef> {
+            None
+        }
+
+        fn is_player(&self, _actor: &ActorId) -> bool {
+            true
+        }
+
+        fn source_command(&self, _input: &ActorCommand) -> qa_content::q3::base::shared::player_state::UserCommand {
+            qa_content::q3::base::shared::player_state::UserCommand {
+                server_time: 0,
+                angles: zero(),
+                buttons: 0,
+                weapon: 0,
+                forwardmove: 0,
+                rightmove: 0,
+                upmove: 0,
+            }
+        }
+
+        fn spawn_player(
+            &self,
+            _entity: &qa_content::q3::team_arena::support::EntityRef,
+            _pose: &qa_content::q3::team_arena::client_spawn::SpawnPose,
+        ) {
+        }
+
+        fn entity_event(&self, _event: super::super::q3::types::Q3SourceEntityEvent) {}
+    }
+
+    fn hv0_host() -> Rc<Hv0Host> {
+        use qa_content::q3::base::settings::q3_game_cvar_definitions;
+        use qa_content::q3::base::shared::definitions::Product;
+        let owner = IdentityOwner::create("hv0-test").unwrap();
+        let session = owner.session().clone();
+        let cvars = Rc::new(RefCell::new(qa_core::cvar::CvarRegistry::new(
+            qa_core::cmd::Dialect::Q3,
+        )));
+        for definition in q3_game_cvar_definitions(Product::Baseq3) {
+            cvars
+                .borrow_mut()
+                .register(&definition.name, &definition.value, definition.flags)
+                .unwrap();
+        }
+        let settings = super::super::q3::host::Q3HostSettings {
+            game_type: 0,
+            single_player: true,
+            max_clients: 8,
+            map_name: "q3dm1".to_string(),
+            source_registry: Some(cvars.clone()),
+            source_archive: Vec::new(),
+            cvars: Vec::new(),
+        };
+        let server = Rc::new(super::super::q3::server_state::Q3ServerState::new(
+            super::super::q3::server_state::Q3ServerStateOptions {
+                session,
+                settings,
+                now: Rc::new(|| 4242),
+                print: Rc::new(|_| {}),
+                register_server_cvars: Rc::new(|registry, max_clients, map| {
+                    registry.register("sv_maxclients", &max_clients.to_string(), 0).unwrap();
+                    registry.register("mapname", map, 0).unwrap();
+                }),
+            },
+        ));
+        Rc::new(Hv0Host {
+            actors: Rc::new(Hv0Actors { owner }),
+            bodies: Rc::new(Hv0Bodies),
+            callbacks: Rc::new(Hv0Callbacks),
+            combat: Rc::new(Hv0Combat),
+            inventory: Rc::new(Hv0Inventory),
+            movers: Rc::new(Hv0Movers),
+            scene: Rc::new(Hv0Scene),
+            engine: Rc::new(Hv0Engine {
+                userinfo: RefCell::new(HashMap::new()),
+            }),
+            cvars,
+            configstrings: Rc::new(RefCell::new(Hv0ConfigStrings {
+                values: RefCell::new(HashMap::new()),
+            })),
+            server,
+        })
+    }
+
+    fn hv0_runtime(host: &Rc<Hv0Host>) -> Rc<super::super::q3::runtime::Q3SourceRuntime> {
+        use qa_content::q3::base::shared::definitions::Product;
+        let options = super::super::q3::types::Q3SourceOptions {
+            weapon_behavior: None,
+            recipe: gu1_recipe(),
+            weapon_provider: gu1_provider("q2:base"),
+            product: Product::Baseq3,
+            entities: String::new(),
+            seed: 1234,
+            max_clients: 8,
+            build_date: "hv0-test".to_string(),
+            session_carry: None,
+        };
+        let host: Rc<dyn super::super::q3::types::Q3SourceHost> = host.clone();
+        Rc::new(super::super::q3::runtime::Q3SourceRuntime::new(
+            options,
+            host,
+            super::super::q3::runtime::Q3SourceConstruction::New,
+        ))
+    }
+
+    fn hv0_q3_sim() -> (Gu1Rig, Rc<Hv0Host>, Rc<super::super::q3::runtime::Q3SourceRuntime>) {
+        let rig = gu1_sim();
+        let host = hv0_host();
+        let runtime = hv0_runtime(&host);
+        let mut game = Q3SourceRuntime::new();
+        game.attach_host(runtime.clone());
+        rig.sim.lock().source = SourceRuntime::Q3 { game };
+        (rig, host, runtime)
+    }
+
+    fn hv0_admit(rig: &Gu1Rig, slot: usize) -> (OwnedActor, MovementPlayer) {
+        let sim = &rig.sim;
+        let actor = sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        let player = gu1_player(sim, &actor, &rig.clients[slot]);
+        sim.bodies()
+            .create(
+                &actor,
+                qa_world::body::BodyState {
+                    origin: zero(),
+                    velocity: zero(),
+                    angles: zero(),
+                    bounds: gu1_bounds(),
+                    ground: None,
+                },
+            )
+            .expect("body");
+        sim.lock()
+            .combat
+            .write(actor.id(), qa_world::combat::CombatState::default());
+        sim.lock().player_states.insert(actor.clone(), player.clone());
+        (actor, player)
+    }
+
+    fn hv0_command(actor: &ActorId, client: &ClientId) -> ActorCommand {
+        use qa_net::common::commands::{CommandSource, UserCommand};
+        ActorCommand {
+            actor: actor.clone(),
+            source: CommandSource::Remote { client: client.clone() },
+            sequence: 1,
+            command: UserCommand::Q3 {
+                server_time_milliseconds: 0.0,
+                angle_words: [0.0, 0.0, 0.0],
+                buttons: 0.0,
+                weapon: 0.0,
+                forward_move: 0.0,
+                right_move: 0.0,
+                up_move: 0.0,
+            },
+            arsenal: None,
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Q3 client command has no admitted actor")]
+    fn hv0_player_think_reaches_host() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, player) = hv0_admit(&rig, 0);
+        let command = hv0_command(actor.id(), &player.client);
+        q3_player_think_seam(&rig.sim, &command);
+    }
+
+    #[test]
+    fn hv0_player_think_skips_without_host() {
+        let rig = gu1_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        let command = hv0_command(actor.id(), &rig.clients[0]);
+        q3_player_think_seam(&rig.sim, &command);
+    }
+
+    #[test]
+    fn hv0_begin_frame_refreshes_host_settings() {
+        let (rig, host, runtime) = hv0_q3_sim();
+        assert!(!rig.sim.c11_team_game());
+        host.cvars
+            .borrow_mut()
+            .set("g_gametype", "4", true)
+            .expect("set gametype");
+        let frame = rig.sim.peek().source_frame;
+        q3_source_begin_frame_seam(&rig.sim, &frame);
+        assert_eq!(runtime.game_type(), 4);
+        assert!(rig.sim.c11_team_game());
+        host.cvars
+            .borrow_mut()
+            .set("g_gametype", "2", true)
+            .expect("set gametype");
+        q3_source_begin_frame_seam(&rig.sim, &frame);
+        assert_eq!(runtime.game_type(), 2);
+        assert!(!rig.sim.c11_team_game());
+    }
+
+    #[test]
+    fn hv0_end_frame_publishes_server_info() {
+        use qa_content::q3::base::game::utilities::ConfigStringStore;
+        let (rig, host, _runtime) = hv0_q3_sim();
+        assert_eq!(host.configstrings.borrow().get(0), "");
+        q3_source_end_frame_seam(&rig.sim);
+        assert_eq!(host.configstrings.borrow().get(0), host.server.server_info());
+    }
+
+    #[test]
+    fn hv0_run_actor_ignores_unknown() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        q3_run_actor_seam(&rig.sim, &actor);
+        let bare = gu1_sim();
+        q3_run_actor_seam(&bare.sim, &actor);
+    }
+
+    #[test]
+    fn hv0_dead_viewheight_skips_without_record() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        q3_dead_viewheight_seam(&rig.sim, actor.id());
+    }
+
+    #[test]
+    fn hv0_team_game_falls_back_without_host() {
+        let rig = gu1_sim();
+        rig.sim.lock().source = SourceRuntime::Q3 {
+            game: Q3SourceRuntime::new(),
+        };
+        assert!(!rig.sim.c11_team_game());
+    }
+
+    #[test]
+    fn hv0_userinfo_round_trips_through_host_engine() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        rig.sim.store_player_userinfo(actor.id(), "\\name\\hv0").expect("store");
+        assert_eq!(
+            rig.sim.source_player_userinfo(actor.id()).expect("read"),
+            Some("\\name\\hv0".to_string())
+        );
+        assert_eq!(
+            rig.sim.c11_source_player_userinfo(actor.id()),
+            Some("\\name\\hv0".to_string())
+        );
+    }
+
+    #[test]
+    fn hv0_userinfo_without_client_returns_none() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        assert_eq!(rig.sim.source_player_userinfo(actor.id()).expect("read"), None);
+        assert_eq!(rig.sim.c11_source_player_userinfo(actor.id()), None);
+    }
+
+    #[test]
+    fn hv0_userinfo_without_host_fails_closed() {
+        let rig = gu1_sim();
+        rig.sim.lock().source = SourceRuntime::Q3 {
+            game: Q3SourceRuntime::new(),
+        };
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let stored = rig.sim.store_player_userinfo(actor.id(), "\\name\\hv0");
+        assert!(matches!(stored, Err(RuntimeError::Failure(message)) if message.contains("no attached source host")));
+        let read = rig.sim.source_player_userinfo(actor.id());
+        assert!(matches!(read, Err(RuntimeError::Failure(message)) if message.contains("no attached source host")));
+    }
+
+    #[test]
+    fn hv0_finish_native_restore_without_host_fails() {
+        let game = Q3SourceRuntime::new();
+        let result = game.finish_native_restore();
+        assert!(matches!(result, Err(RuntimeError::Failure(message)) if message.contains("no attached source host")));
+    }
+
+    #[test]
+    #[should_panic(expected = "prepared restore source")]
+    fn hv0_finish_native_restore_delegates_to_host() {
+        let host = hv0_host();
+        let runtime = hv0_runtime(&host);
+        let mut game = Q3SourceRuntime::new();
+        game.attach_host(runtime);
+        let _ = game.finish_native_restore();
+    }
+
+    #[test]
+    fn hv0_close_without_host_releases_nothing() {
+        let mut game = Q3SourceRuntime::new();
+        assert!(game.close().is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "current construction mode")]
+    fn hv0_close_retires_attached_host() {
+        let host = hv0_host();
+        let runtime = hv0_runtime(&host);
+        let mut game = Q3SourceRuntime::new();
+        game.attach_host(runtime.clone());
+        game.close().expect("close");
+        game.close().expect("close idempotent");
+        let _ = runtime.load();
+    }
+
+    #[test]
+    fn hv0_player_command_without_host_fails() {
+        let rig = gu1_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        let game = Q3SourceRuntime::new();
+        let result = game.player_command(actor.id(), "team", &["red".to_string()]);
+        assert!(matches!(result, Err(RuntimeError::Failure(message)) if message.contains("no attached source host")));
+    }
+
+    #[test]
+    #[should_panic(expected = "Q3 client command has no admitted actor")]
+    fn hv0_player_command_reaches_host() {
+        let host = hv0_host();
+        let runtime = hv0_runtime(&host);
+        let mut game = Q3SourceRuntime::new();
+        game.attach_host(runtime);
+        let owner = IdentityOwner::create("hv0-command").unwrap();
+        let actor = owner.actor(3, 1);
+        let _ = game.player_command(&actor, "team", &["red".to_string()]);
+    }
+
+    #[test]
+    fn hv0_selected_weapon_delay_keeps_identity_without_record() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        assert_eq!(rig.sim.selected_weapon_delay(actor.id(), 2.5), 2.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "Original Q3 score has no player")]
+    fn hv0_score_read_missing_client_panics() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let _ = rig.sim.primary_match_player(actor.id());
+    }
+
+    #[test]
+    fn hv0_score_write_missing_client_fails() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let missing = rig.sim.set_primary_match_score(actor.id(), 7.0);
+        assert!(matches!(missing, Err(RuntimeError::Failure(message)) if message == "Original Q3 score has no player"));
+        let invalid = rig.sim.set_primary_match_score(actor.id(), 1.5);
+        assert!(matches!(invalid, Err(RuntimeError::Failure(message)) if message.contains("int32")));
+    }
+
+    #[test]
+    fn hv0_server_settings_reports_q3_bindings() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        assert!(!rig.sim.server_settings().is_empty());
+        match rig.sim.server_profile() {
+            Ok(_) => {}
+            Err(RuntimeError::Failure(message)) => assert!(
+                !message.contains("no source registry"),
+                "profile reached the Q3 registry: {message}"
+            ),
+            Err(other) => panic!("unexpected profile error: {other:?}"),
+        }
+        let bare = gu1_sim();
+        bare.sim.lock().source = SourceRuntime::Q3 {
+            game: Q3SourceRuntime::new(),
+        };
+        assert!(bare.sim.server_settings().is_empty());
+        let missing = bare.sim.server_profile();
+        assert!(matches!(missing, Err(RuntimeError::Failure(message)) if message.contains("no source registry")));
+    }
+
+    #[test]
+    fn hv0_weapon_animation_skips_without_record() {
+        use qa_world::movement::types::AnimationState;
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        {
+            let mut state = rig.sim.lock();
+            let player = state.player_states.get_mut(&actor).expect("player");
+            player.animation = ActorAnimationState {
+                provider: ProviderId::new("q3", "test"),
+                state: AnimationState::Q3 {
+                    legs: 1,
+                    torso: 2,
+                    legs_timer_milliseconds: 0,
+                    torso_timer_milliseconds: 0,
+                },
+            };
+        }
+        let actors = rig.sim.actors.borrow();
+        let mut state = rig.sim.lock();
+        c11_weapon_character_animation_in(
+            &mut state,
+            &actors,
+            actor.id(),
+            C11AnimPriority::Attack,
+            false,
+            &ContentId("q3:test".to_string()),
+            false,
+        )
+        .expect("animation");
+        let player = state.player_states.get(&actor).expect("player");
+        assert!(matches!(
+            player.animation.state,
+            qa_world::movement::types::AnimationState::Q3 { .. }
+        ));
+    }
+
+    #[test]
+    fn hv0_equipment_weapon_input_matches_non_q3_without_record() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let q3_input = rig.sim.equipment_weapon_input(actor.id()).expect("q3 input");
+        let bare = gu1_sim();
+        let (bare_actor, _bare_player) = hv0_admit(&bare, 0);
+        let base_input = bare.sim.equipment_weapon_input(bare_actor.id()).expect("base input");
+        assert_eq!(q3_input, base_input);
+    }
+
+    #[test]
+    #[should_panic(expected = "Saved ammo timer has no original source client")]
+    fn hv0_legacy_ammo_time_without_host_panics() {
+        let owner = IdentityOwner::create("hv0-ammo").unwrap();
+        let actor = owner.actor(3, 1);
+        let _ = q3_legacy_ammo_time(None, &actor, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Saved ammo timer has no original source client")]
+    fn hv0_legacy_ammo_time_without_record_panics() {
+        let host = hv0_host();
+        let runtime = hv0_runtime(&host);
+        let owner = IdentityOwner::create("hv0-ammo").unwrap();
+        let actor = owner.actor(3, 1);
+        let _ = q3_legacy_ammo_time(Some(&runtime), &actor, 0);
+    }
+
+    #[test]
+    fn hv0_restored_q3_character_round_trips() {
+        use qa_content::q3::foundation::character::Q3CharacterCheckpoint;
+        use qa_world::movement::q3::types::Q3Product;
+        use qa_world::movement::types::AnimationState;
+        let rig = gu1_sim();
+        let owner = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        rig.sim
+            .bodies()
+            .create(
+                &owner,
+                qa_world::body::BodyState {
+                    origin: zero(),
+                    velocity: zero(),
+                    angles: zero(),
+                    bounds: gu1_bounds(),
+                    ground: None,
+                },
+            )
+            .expect("body");
+        rig.sim
+            .lock()
+            .combat
+            .write(owner.id(), qa_world::combat::CombatState::default());
+        {
+            let actors = rig.sim.actors.borrow();
+            rig.sim
+                .lock()
+                .inventory
+                .inner_mut()
+                .create(actors.inner(), &owner, &[])
+                .expect("inventory");
+        }
+        let checkpoint = Q3CharacterCheckpoint {
+            version: 1,
+            product: Q3Product::BaseQ3,
+            animation: AnimationState::Q3 {
+                legs: 5,
+                torso: 6,
+                legs_timer_milliseconds: 10,
+                torso_timer_milliseconds: 20,
+            },
+            flags: 3,
+            event_sequence: 7,
+            respawn_time: 100,
+            spawn_count: 2,
+            dead: false,
+            gibbed: false,
+            initialized: true,
+        };
+        attach_restored_q3_character(&rig.sim, &owner, &checkpoint).expect("attach");
+        let state = rig.sim.peek();
+        let seam = state.characters.get(&owner).expect("character");
+        let live = seam.live().expect("live");
+        assert_eq!(live.source_flags(), 3);
+        assert_eq!(live.event_sequence(), 7);
+        assert_eq!(live.spawns(), 2);
+    }
+
+    #[test]
+    fn hv0_update_userinfo_q3_applies_and_notifies() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        rig.sim
+            .update_player_userinfo(actor.id(), "\\name\\hv0changed")
+            .expect("update");
+        assert_eq!(
+            rig.sim.source_player_userinfo(actor.id()).expect("read"),
+            Some("\\name\\hv0changed".to_string())
+        );
+        rig.sim
+            .update_player_userinfo(actor.id(), "\\name\\hv0changed")
+            .expect("idempotent");
+    }
+
+    #[test]
+    fn hv0_update_userinfo_q3_no_client_fails() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let actor = rig
+            .sim
+            .actors
+            .borrow_mut()
+            .allocate(ProviderId::new("q2", "test"), "player")
+            .expect("allocate");
+        let result = rig.sim.update_player_userinfo(actor.id(), "\\name\\hv0");
+        assert!(matches!(result, Err(RuntimeError::Failure(message)) if message.contains("no admitted client")));
+    }
+
+    #[test]
+    fn hv0_update_userinfo_q3_no_host_fails() {
+        let rig = gu1_sim();
+        rig.sim.lock().source = SourceRuntime::Q3 {
+            game: Q3SourceRuntime::new(),
+        };
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let result = rig.sim.update_player_userinfo(actor.id(), "\\name\\hv0");
+        assert!(matches!(result, Err(RuntimeError::Failure(message)) if message.contains("no attached source host")));
+    }
+
+    fn hv0_q3_movement_state() -> qa_world::movement::q3::types::Q3MovementState {
+        use qa_world::movement::types::TraceHit;
+        qa_world::movement::q3::types::Q3MovementState {
+            command_time_milliseconds: 0,
+            movement_type: 0,
+            bob_cycle: 0,
+            movement_flags: 0,
+            movement_time_milliseconds: 0,
+            origin: zero(),
+            velocity: zero(),
+            gravity: 800.0,
+            speed: 320.0,
+            delta_angle_words: [100, 200, 300],
+            movement_direction: 0,
+            grapple_point: zero(),
+            flags: 0,
+            view_angles: zero(),
+            view_height: 26.0,
+            ground: TraceHit::None,
+            predictable_event_sequence: 0,
+            jump_pad: None,
+            movement_frame: 0,
+            jump_pad_frame: 0,
+        }
+    }
+
+    #[test]
+    fn hv0_remember_q3_stored_delta_without_record() {
+        use qa_net::common::commands::UserCommand;
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, player) = hv0_admit(&rig, 0);
+        let input = hv0_command(actor.id(), &player.client);
+        let state = MovementState::Q3(hv0_q3_movement_state());
+        rig.sim
+            .remember_q3_command(&input, &player.client, Some(&state))
+            .expect("remember");
+        let stored = rig
+            .sim
+            .peek()
+            .mod_client_commands
+            .get(actor.id())
+            .cloned()
+            .expect("stored");
+        assert!(matches!(
+            stored.input.command,
+            UserCommand::Q3 { angle_words, .. } if angle_words == [100.0, 200.0, 300.0]
+        ));
+    }
+
+    #[test]
+    fn hv0_remember_q3_no_delta_fails() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, player) = hv0_admit(&rig, 0);
+        let input = hv0_command(actor.id(), &player.client);
+        let result = rig.sim.remember_q3_command(&input, &player.client, None);
+        assert!(
+            matches!(result, Err(RuntimeError::Failure(message)) if message.contains("no authoritative angle delta"))
+        );
+    }
+
+    #[test]
+    fn hv0_sync_seam_skips_without_record() {
+        let (rig, _host, _runtime) = hv0_q3_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let mut player = rig.sim.peek().player_states.get(&actor).cloned().expect("player");
+        let before = player.view_angles;
+        sync_q3_player_seam(&rig.sim, &mut player).expect("sync");
+        assert_eq!(player.view_angles, before);
+    }
+
+    #[test]
+    fn hv0_sync_seam_skips_non_q3() {
+        let rig = gu1_sim();
+        let (actor, _player) = hv0_admit(&rig, 0);
+        let mut player = rig.sim.peek().player_states.get(&actor).cloned().expect("player");
+        sync_q3_player_seam(&rig.sim, &mut player).expect("sync");
     }
 }
