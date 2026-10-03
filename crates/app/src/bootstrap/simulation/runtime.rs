@@ -6877,44 +6877,293 @@ impl Default for SourceItemsRestore {
     }
 }
 
-/// Native primary command/inventory/drop/weapon seams (donor
+/// Native primary command/inventory/drop/weapon services (donor
 /// `NativePrimaryCommands`, `NativePrimaryInventory`, `NativePrimaryDrop`,
 /// `NativePrimaryWeapons`).
 ///
-/// Mirrors of donor `src/compat/q2/native-primary-*.ts` (canonical home:
-/// `qa_compat::q2`); unify post-merge.
+/// Live wrappers over `qa_compat::q2` (donor `src/compat/q2/native-primary-*.ts`):
+/// each value holds its compat service plus the shared synthetic host the
+/// services execute against. `bind_native_input` binds all four from the
+/// declared [`qa_compat::q2::native_primary::NativePrimaryProfile`] (donor
+/// runtime.ts 5490-5535); an unbound value (`new()`) carries no service and
+/// closes as a no-op.
 pub struct NativePrimaryCommands {
-    #[allow(dead_code)]
-    opaque: bool,
-    /// Canonical inventory slots (donor `inventorySlots`; C6).
+    /// Canonical inventory slots snapshotted from the live item table at bind
+    /// (donor `inventorySlots`; C6).
     slots: Vec<qa_compat::q2::native_primary_commands::InventorySlot>,
+    /// Bound live service, if any.
+    live: Option<NativePrimaryCommandsLive>,
 }
 
-/// Native primary inventory seam.
+/// Bound native primary command service.
+struct NativePrimaryCommandsLive {
+    /// Shared synthetic host, actor map and row snapshots.
+    shared: NativePrimaryShared,
+    /// Compat command service.
+    service: qa_compat::q2::native_primary_commands::NativePrimaryCommands,
+}
+
+/// Native primary inventory service.
 pub struct NativePrimaryInventory {
-    #[allow(dead_code)]
-    opaque: bool,
+    /// Bound live service, if any.
+    live: Option<NativePrimaryInventoryLive>,
 }
 
-/// Native primary drop seam.
+/// Bound native primary inventory service.
+struct NativePrimaryInventoryLive {
+    /// Shared synthetic host, actor map and row snapshots.
+    shared: NativePrimaryShared,
+    /// Compat inventory service.
+    service: qa_compat::q2::native_primary_inventory::NativePrimaryInventory,
+}
+
+/// Native primary drop service.
 pub struct NativePrimaryDrop {
-    #[allow(dead_code)]
-    opaque: bool,
+    /// Bound live service, if any.
+    live: Option<NativePrimaryDropLive>,
 }
 
-/// Native primary weapons seam.
+/// Bound native primary drop service.
+struct NativePrimaryDropLive {
+    /// Shared synthetic host, actor map and row snapshots.
+    shared: NativePrimaryShared,
+    /// Compat drop service.
+    service: qa_compat::q2::native_primary_drop::NativePrimaryDrop,
+}
+
+/// Native primary weapons service.
 pub struct NativePrimaryWeapons {
-    #[allow(dead_code)]
-    opaque: bool,
+    /// Bound live service, if any.
+    live: Option<NativePrimaryWeaponsLive>,
+}
+
+/// Bound native primary weapon service.
+struct NativePrimaryWeaponsLive {
+    /// Shared synthetic host, actor map and row snapshots.
+    shared: NativePrimaryShared,
+    /// Compat weapon service.
+    service: qa_compat::q2::native_primary_weapons::NativePrimaryWeapons,
+    /// Compat player score service over the same weapon profile.
+    player: qa_compat::q2::native_primary_player::NativePrimaryPlayer,
+}
+
+/// Synthetic actor id behind one runtime actor.
+type NativePrimaryActorId = qa_compat::q2::native_primary_weapons::NativeActorId;
+
+/// Canonical inventory rows behind one synthetic actor.
+type NativePrimaryRows = qa_compat::q2::native_primary_inventory::NativeInventoryRow;
+
+/// Synthetic image length covering every builtin primary RVA.
+///
+/// The largest builtin RVA is an image test at 0x241c30 (rerelease weapon
+/// profile); 4 MiB covers every classic/rerelease table, entry and test
+/// address with margin for the spawned record allocators.
+const NATIVE_PRIMARY_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Shared synthetic core behind every bound native primary service.
+///
+/// The four compat services plus the player score service execute against
+/// one synthetic host so a single actor map covers every call.
+#[derive(Clone)]
+struct NativePrimaryShared {
+    /// Synthetic host executing every primary service.
+    host: Rc<RefCell<qa_compat::q2::native_primary_weapons::SyntheticHost>>,
+    /// Runtime actor to synthetic actor map (spawned on demand).
+    actors: Rc<RefCell<HashMap<ActorId, NativePrimaryActorId>>>,
+    /// Canonical inventory rows per synthetic actor, refreshed by the
+    /// runtime before each inventory call.
+    rows: Rc<RefCell<HashMap<NativePrimaryActorId, Vec<NativePrimaryRows>>>>,
+    /// Entity record length for spawned actors.
+    entity_bytes: usize,
+    /// Client record length for spawned actors.
+    client_bytes: usize,
+    /// Client-pointer offsets, one per service profile (written together).
+    pointer_offsets: Vec<u32>,
+    /// Inventory cursor offset within the client record.
+    cursor_offset: u32,
+    /// Empty-cursor sentinel written at spawn.
+    cursor_empty: i32,
+}
+
+/// End offset of one typed native field.
+fn native_primary_field_end(field: qa_compat::q2::native_primary_reader::NativeItemField) -> usize {
+    field.offset as usize + field.encoding.width()
+}
+
+/// Grow the entity/client record lengths to cover one typed field.
+fn native_primary_grow_for_field(
+    entity_bytes: &mut usize,
+    client_bytes: &mut usize,
+    field: qa_compat::q2::native_primary_reader::NativeItemField,
+) {
+    match field.record {
+        qa_compat::q2::native_primary_reader::RecordKind::Entity => {
+            *entity_bytes = (*entity_bytes).max(native_primary_field_end(field));
+        }
+        qa_compat::q2::native_primary_reader::RecordKind::Client => {
+            *client_bytes = (*client_bytes).max(native_primary_field_end(field));
+        }
+        qa_compat::q2::native_primary_reader::RecordKind::Image => {}
+    }
+}
+
+impl NativePrimaryShared {
+    /// Build the shared synthetic core from the declared primary profile.
+    fn new(profile: &qa_compat::q2::native_primary::NativePrimaryProfile) -> Result<Self, String> {
+        let weapons = profile.weapons();
+        let host = qa_compat::q2::native_primary_weapons::SyntheticHost::synthetic(
+            &weapons.digest,
+            weapons.abi.pointer_bytes(),
+            NATIVE_PRIMARY_IMAGE_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+        let pointer_bytes = weapons.abi.pointer_bytes();
+        let commands = profile.commands();
+        let inventory = profile.inventory();
+        let drop = profile.drop();
+        let player = profile.player();
+        let mut entity_bytes = 64usize
+            .max(weapons.entity.client as usize + pointer_bytes)
+            .max(commands.client.pointer as usize + pointer_bytes)
+            .max(inventory.client as usize + pointer_bytes)
+            .max(drop.client.pointer as usize + pointer_bytes)
+            .max(player.velocity as usize + 12);
+        let mut client_bytes = (weapons.client.byte_length as usize)
+            .max(1024)
+            .max(commands.client.weapon as usize + pointer_bytes)
+            .max(commands.client.inventory as usize + 4)
+            .max(inventory.inventory as usize + inventory.count as usize * 4)
+            .max(inventory.cursor as usize + 4)
+            .max(drop.client.inventory as usize + 4)
+            .max(drop.client.cursor as usize + 4)
+            .max(drop.client.weapon as usize + pointer_bytes)
+            .max(drop.client.pending as usize + pointer_bytes)
+            .max(player.command_angles as usize + 12)
+            .max(weapons.client.view_angles as usize + 12);
+        if let Some(offset) = commands.client.ammo_index {
+            client_bytes = client_bytes.max(offset as usize + 4);
+        }
+        if let Some(match_profile) = &player.match_profile {
+            client_bytes = client_bytes.max(match_profile.score as usize + 4);
+        }
+        if let Some(offset) = player.forward {
+            client_bytes = client_bytes.max(offset as usize + 12);
+        }
+        for write in &inventory.selection_writes {
+            client_bytes = client_bytes.max(write.offset as usize + write.bytes as usize);
+        }
+        for field in [
+            weapons.entity.water_level,
+            weapons.entity.view_height,
+            weapons.entity.max_health,
+            weapons.client.buttons,
+            weapons.client.latched_buttons,
+            weapons.delay.flag,
+        ] {
+            native_primary_grow_for_field(&mut entity_bytes, &mut client_bytes, field);
+        }
+        if let qa_compat::q2::native_primary_weapons::DelayEvaluate::SourceAnimation { projection, writes, .. } =
+            &weapons.delay.evaluate
+        {
+            for write in projection {
+                native_primary_grow_for_field(&mut entity_bytes, &mut client_bytes, write.field);
+            }
+            for field in writes {
+                native_primary_grow_for_field(&mut entity_bytes, &mut client_bytes, *field);
+            }
+        }
+        entity_bytes += 64;
+        client_bytes += 64;
+        let mut pointer_offsets = vec![
+            weapons.entity.client,
+            commands.client.pointer,
+            inventory.client,
+            drop.client.pointer,
+        ];
+        pointer_offsets.sort_unstable();
+        pointer_offsets.dedup();
+        Ok(Self {
+            host: Rc::new(RefCell::new(host)),
+            actors: Rc::new(RefCell::new(HashMap::new())),
+            rows: Rc::new(RefCell::new(HashMap::new())),
+            entity_bytes,
+            client_bytes,
+            pointer_offsets,
+            cursor_offset: inventory.cursor,
+            cursor_empty: inventory.empty,
+        })
+    }
+
+    /// Resolve a runtime actor to its synthetic actor, spawning and linking
+    /// the entity/client records on first use.
+    fn actor(&self, owner: &ActorId) -> Result<NativePrimaryActorId, String> {
+        if let Some(id) = self.actors.borrow().get(owner).copied() {
+            return Ok(id);
+        }
+        let mut host = self.host.borrow_mut();
+        let id = host
+            .core
+            .spawn_actor(self.entity_bytes, self.client_bytes)
+            .map_err(|error| error.to_string())?;
+        let entity = host.core.entity_of(id).map_err(|error| error.to_string())?;
+        let client = host
+            .core
+            .client_of(id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Native primary actor spawned without a client record".to_string())?;
+        for offset in &self.pointer_offsets {
+            host.core
+                .set_client(entity, *offset, Some(client))
+                .map_err(|error| error.to_string())?;
+        }
+        let cursor = host
+            .core
+            .memory
+            .offset(client, i64::from(self.cursor_offset))
+            .map_err(|error| error.to_string())?;
+        host.core
+            .memory
+            .write_i32(cursor, self.cursor_empty)
+            .map_err(|error| error.to_string())?;
+        drop(host);
+        self.actors.borrow_mut().insert(owner.clone(), id);
+        Ok(id)
+    }
 }
 
 impl NativePrimaryCommands {
-    /// Create an opaque seam value.
+    /// Create an unbound value (no live service).
     pub fn new() -> Self {
         Self {
-            opaque: true,
             slots: Vec::new(),
+            live: None,
         }
+    }
+
+    /// Bind the live command service over the shared synthetic host (donor
+    /// `new NativePrimaryCommands`, runtime.ts 5490-5535).
+    fn bind(
+        profile: &qa_compat::q2::native_primary::NativePrimaryProfile,
+        shared: NativePrimaryShared,
+    ) -> Result<Self, String> {
+        let mut host = shared.host.borrow_mut();
+        let service = qa_compat::q2::native_primary_commands::NativePrimaryCommands::new(
+            &mut host,
+            profile.commands().clone(),
+            qa_compat::q2::native_primary_commands::CommandHooks {
+                give: Box::new(|_, _| {}),
+                give_item: Box::new(|_, _| false),
+                give_ammo: Box::new(|_, _, _| {}),
+                drop: Box::new(|_| None),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let slots = service.inventory_slots();
+        drop(host);
+        Ok(Self {
+            slots,
+            live: Some(NativePrimaryCommandsLive { shared, service }),
+        })
     }
 
     /// Replace the canonical inventory slots (donor slot sync; C6).
@@ -6935,9 +7184,69 @@ impl Default for NativePrimaryCommands {
 }
 
 impl NativePrimaryInventory {
-    /// Create an opaque seam value.
+    /// Create an unbound value (no live service).
     pub fn new() -> Self {
-        Self { opaque: true }
+        Self { live: None }
+    }
+
+    /// Bind the live inventory service over the shared synthetic host (donor
+    /// `new NativePrimaryInventory`, runtime.ts 5490-5535).
+    fn bind(
+        profile: &qa_compat::q2::native_primary::NativePrimaryProfile,
+        shared: NativePrimaryShared,
+    ) -> Result<Self, String> {
+        let rows = Rc::clone(&shared.rows);
+        let image = shared.host.borrow().core.image;
+        let service = qa_compat::q2::native_primary_inventory::NativePrimaryInventory::new(
+            profile.inventory().clone(),
+            qa_compat::q2::native_primary_inventory::InventoryHooks {
+                rows: Box::new(move |actor| rows.borrow().get(&actor).cloned()),
+                use_item: Box::new(|_, _| {}),
+                descriptor: Box::new(move |_| image),
+                item_at: Box::new(|_| None),
+                print: Box::new(|_, _| {}),
+            },
+        );
+        Ok(Self {
+            live: Some(NativePrimaryInventoryLive { shared, service }),
+        })
+    }
+
+    /// Restore a saved cursor for one owner (donor
+    /// `restoreNativeInventoryCursors`, runtime.ts 5472-5480).
+    pub fn restore_selection(
+        &mut self,
+        owner: &ActorId,
+        rows: Vec<NativePrimaryRows>,
+        item: Option<&ItemId>,
+    ) -> Result<(), String> {
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| "Saved native inventory cursor has no qualified owner".to_string())?;
+        let actor = live.shared.actor(owner)?;
+        live.shared.rows.borrow_mut().insert(actor, rows);
+        let mut host = live.shared.host.borrow_mut();
+        live.service
+            .restore(&mut host, actor, item)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Read the canonical readout for one owner (donor `nativeInventory`,
+    /// runtime.ts 4926-4947).
+    pub fn read_selection(
+        &mut self,
+        owner: &ActorId,
+        rows: Vec<NativePrimaryRows>,
+    ) -> Result<Option<qa_compat::q2::native_primary_inventory::NativeInventoryReadout>, String> {
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| "Native inventory has no qualified owner".to_string())?;
+        let actor = live.shared.actor(owner)?;
+        live.shared.rows.borrow_mut().insert(actor, rows);
+        let mut host = live.shared.host.borrow_mut();
+        live.service.read(&mut host, actor).map_err(|error| error.to_string())
     }
 }
 
@@ -6948,9 +7257,41 @@ impl Default for NativePrimaryInventory {
 }
 
 impl NativePrimaryDrop {
-    /// Create an opaque seam value.
+    /// Create an unbound value (no live service).
     pub fn new() -> Self {
-        Self { opaque: true }
+        Self { live: None }
+    }
+
+    /// Bind the live drop service over the shared synthetic host (donor
+    /// `new NativePrimaryDrop`, runtime.ts 5490-5535).
+    ///
+    /// The command item snapshot is empty: the headless item table resolves
+    /// no rows, so the live command service holds no items either.
+    fn bind(
+        profile: &qa_compat::q2::native_primary::NativePrimaryProfile,
+        shared: NativePrimaryShared,
+    ) -> Result<Self, String> {
+        let rows = Rc::clone(&shared.rows);
+        let service = qa_compat::q2::native_primary_drop::NativePrimaryDrop::new(
+            profile.drop().clone(),
+            Vec::new(),
+            qa_compat::q2::native_primary_drop::DropHooks {
+                rows: Box::new(move |actor| rows.borrow().get(&actor).cloned()),
+                selected: Box::new(|_| None),
+                projection: Box::new(|_, item| qa_compat::q2::native_primary_drop::DropProjection {
+                    source: item,
+                    current: None,
+                    pending: None,
+                }),
+                dropped: Box::new(|_, _, _, _| true),
+                consume: Box::new(|_, gate| gate.execute()),
+                action: Box::new(|_, _| None),
+                print: Box::new(|_, _| {}),
+            },
+        );
+        Ok(Self {
+            live: Some(NativePrimaryDropLive { shared, service }),
+        })
     }
 }
 
@@ -6961,15 +7302,199 @@ impl Default for NativePrimaryDrop {
 }
 
 impl NativePrimaryWeapons {
-    /// Create an opaque seam value.
+    /// Create an unbound value (no live service).
     pub fn new() -> Self {
-        Self { opaque: true }
+        Self { live: None }
+    }
+
+    /// Bind the live weapon service over the shared synthetic host (donor
+    /// `bindNativePrimaryWeapons`, runtime.ts 5490-5535).
+    fn bind(
+        profile: &qa_compat::q2::native_primary::NativePrimaryProfile,
+        shared: NativePrimaryShared,
+    ) -> Result<Self, String> {
+        let service = qa_compat::q2::native_primary_weapons::NativePrimaryWeapons::new(
+            profile.weapons().clone(),
+            qa_compat::q2::native_primary_weapons::WeaponHooks {
+                selected: Box::new(|_| false),
+                completed: Box::new(|_, _| {}),
+                spawned: Box::new(|_| {}),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let player = qa_compat::q2::native_primary_player::NativePrimaryPlayer::new(
+            profile.weapons().clone(),
+            profile.player().clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        let mut live = NativePrimaryWeaponsLive {
+            shared,
+            service,
+            player,
+        };
+        live.service
+            .bind(&mut live.shared.host.borrow_mut())
+            .map(|_| ())
+            .map_err(|error| error.to_string())?;
+        Ok(Self { live: Some(live) })
+    }
+
+    /// Read the actor score (donor `selectedNativePlayer` score read).
+    pub fn match_score(&mut self, owner: &ActorId) -> Result<i32, String> {
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| "Original native score has no qualified owner".to_string())?;
+        let actor = live.shared.actor(owner)?;
+        let mut host = live.shared.host.borrow_mut();
+        live.player.score(&mut host, actor).map_err(|error| error.to_string())
+    }
+
+    /// Write the actor score (donor `selectedNativePlayer` score write).
+    pub fn set_match_score(&mut self, owner: &ActorId, score: i64) -> Result<(), String> {
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| "Original native score has no qualified owner".to_string())?;
+        let actor = live.shared.actor(owner)?;
+        let mut host = live.shared.host.borrow_mut();
+        live.player
+            .set_score(&mut host, actor, score)
+            .map_err(|error| error.to_string())
     }
 }
 
 impl Default for NativePrimaryWeapons {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Run the firing-delay projection for one owner (donor
+/// `selectedWeaponDelay` q2-native arm, runtime.ts 1833-1846).
+fn native_primary_weapon_delay(
+    commands: &NativePrimaryCommands,
+    weapons: &NativePrimaryWeapons,
+    owner: &ActorId,
+    milliseconds: f64,
+) -> Result<f64, String> {
+    let commands = commands
+        .live
+        .as_ref()
+        .ok_or_else(|| "Selected firing delay has no original weapon policy".to_string())?;
+    let weapons = weapons
+        .live
+        .as_ref()
+        .ok_or_else(|| "Selected firing delay has no original weapon policy".to_string())?;
+    let actor = commands.shared.actor(owner)?;
+    let mut host = commands.shared.host.borrow_mut();
+    commands
+        .service
+        .with_weapon(&mut host, actor, None, |host| {
+            weapons.service.weapon_delay(host, actor, milliseconds)
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod native_primary_seam_tests {
+    use qa_compat::q2::native_primary::{builtin_native_primary, PrimaryEdition};
+    use qa_compat::q2::native_primary_reader::CLASSIC_DIGEST;
+    use qa_core::identity::IdentityOwner;
+
+    use super::*;
+
+    fn profile() -> qa_compat::q2::native_primary::NativePrimaryProfile {
+        builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("builtin classic primary profile")
+    }
+
+    fn owner() -> ActorId {
+        IdentityOwner::create("native-primary-seam-test").unwrap().actor(1, 1)
+    }
+
+    fn bound() -> (
+        NativePrimaryCommands,
+        NativePrimaryInventory,
+        NativePrimaryDrop,
+        NativePrimaryWeapons,
+    ) {
+        let profile = profile();
+        let shared = NativePrimaryShared::new(&profile).expect("shared synthetic core");
+        let commands = NativePrimaryCommands::bind(&profile, shared.clone()).expect("bind commands");
+        let inventory = NativePrimaryInventory::bind(&profile, shared.clone()).expect("bind inventory");
+        let drop = NativePrimaryDrop::bind(&profile, shared.clone()).expect("bind drop");
+        let weapons = NativePrimaryWeapons::bind(&profile, shared).expect("bind weapons");
+        (commands, inventory, drop, weapons)
+    }
+
+    #[test]
+    fn bind_resolves_empty_headless_table() {
+        let (commands, _, _, _) = bound();
+        assert!(commands.inventory_slots().is_empty());
+    }
+
+    #[test]
+    fn slots_snapshot_overrides_table() {
+        let (mut commands, _, _, _) = bound();
+        let slot = qa_compat::q2::native_primary_commands::InventorySlot {
+            item: "q2:weapon_blaster".to_string(),
+            index: 1,
+            weapon: true,
+            ammunition: false,
+            icon: "w_blaster".to_string(),
+        };
+        commands.set_slots(vec![slot.clone()]);
+        assert_eq!(commands.inventory_slots(), vec![slot]);
+    }
+
+    #[test]
+    fn score_round_trips_through_linked_client() {
+        let (_, _, _, mut weapons) = bound();
+        let owner = owner();
+        assert_eq!(weapons.match_score(&owner).expect("initial score"), 0);
+        weapons.set_match_score(&owner, 7).expect("write score");
+        assert_eq!(weapons.match_score(&owner).expect("read score"), 7);
+    }
+
+    #[test]
+    fn inventory_restore_round_trips_selection() {
+        use qa_compat::q2::native_primary_inventory::NativeInventoryRow;
+        let (_, mut inventory, _, _) = bound();
+        let owner = owner();
+        let item: ItemId = "q2:ammo_shells".to_string();
+        let rows = vec![NativeInventoryRow {
+            presentation: None,
+            item: item.clone(),
+            label: "Shells".to_string(),
+            count: 5,
+            source_index: 3,
+            selected: false,
+            presence_only: false,
+        }];
+        inventory
+            .restore_selection(&owner, rows.clone(), Some(&item))
+            .expect("restore selection");
+        let readout = inventory
+            .read_selection(&owner, rows)
+            .expect("read selection")
+            .expect("readout");
+        assert_eq!(readout.selected.as_deref(), Some("q2:ammo_shells"));
+        assert_eq!(readout.items.len(), 1);
+    }
+
+    #[test]
+    fn inventory_close_faults_later_restores() {
+        let (_, mut inventory, _, _) = bound();
+        let owner = owner();
+        inventory.close();
+        assert!(inventory.restore_selection(&owner, Vec::new(), None).is_err());
+    }
+
+    #[test]
+    fn drop_close_is_idempotent() {
+        let (_, _, mut drop, _) = bound();
+        drop.close();
+        drop.close();
     }
 }
 
@@ -29612,13 +30137,29 @@ impl SharedSimulation {
     }
 
     /// Port `selectedWeaponDelay` (donor 1833-1846).
+    ///
+    /// The q2-native arm runs the live `withWeapon` firing-delay projection;
+    /// without a guest firing sample the headless service faults and the
+    /// donor's identity fallback applies.
+    /// Missing siblings: no production caller drives the native delay yet,
+    /// so the live projection below is uncalled.
     #[allow(dead_code)]
     fn selected_weapon_delay(&self, actor: &qa_core::identity::ActorId, seconds: f64) -> f64 {
         if matches!(self.peek().source, SourceRuntime::Q2Native(_)) {
             if self.peek().native_primary_commands.is_none() {
                 panic!("Selected firing delay has no original weapon policy");
             }
-            panic!("Missing siblings: native-primary lane owns withWeapon (donor `selectedWeaponDelay` q2-native arm)");
+            let milliseconds = (seconds * 1000.0).trunc();
+            let state = self.peek();
+            let (Some(commands), Some(weapons)) = (
+                state.native_primary_commands.as_ref(),
+                state.native_primary_weapons.as_ref(),
+            ) else {
+                panic!("Selected firing delay has no original weapon policy");
+            };
+            return native_primary_weapon_delay(commands, weapons, actor, milliseconds)
+                .map(|delayed| delayed / 1000.0)
+                .unwrap_or(seconds);
         }
         if matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) {
             self.require_qvm_weapons();
@@ -31055,27 +31596,52 @@ impl Q2NativeSource {
 }
 
 impl NativePrimaryDrop {
-    /// Donor `nativePrimaryDrop.close` (C10 seam).
-    /// Missing siblings: native-primary lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `nativePrimaryDrop.close` (C10; donor runtime.ts 5406-5409).
+    ///
+    /// Delegates to the live compat service, restoring every drop frame; an
+    /// unbound value closes as a no-op.
+    pub fn close(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            let mut host = live.shared.host.borrow_mut();
+            live.service.close(&mut host).ok();
+        }
+    }
 }
 
 impl NativePrimaryInventory {
-    /// Donor `nativePrimaryInventory.close` (C10 seam).
-    /// Missing siblings: native-primary lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `nativePrimaryInventory.close` (C10; donor runtime.ts 5406-5409).
+    ///
+    /// Delegates to the live compat service; an unbound value closes as a
+    /// no-op.
+    pub fn close(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.service.close();
+        }
+    }
 }
 
 impl NativePrimaryCommands {
-    /// Donor `nativePrimaryCommands.close` (C10 seam).
-    /// Missing siblings: native-primary lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `nativePrimaryCommands.close` (C10; donor runtime.ts 5406-5409).
+    ///
+    /// Delegates to the live compat service; an unbound value closes as a
+    /// no-op.
+    pub fn close(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.service.close();
+        }
+    }
 }
 
 impl NativePrimaryWeapons {
-    /// Donor `nativePrimaryWeapons.close` (C10 seam).
-    /// Missing siblings: native-primary lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `nativePrimaryWeapons.close` (C10; donor runtime.ts 5406-5409).
+    ///
+    /// Delegates to the live compat service; an unbound value closes as a
+    /// no-op.
+    pub fn close(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.service.close();
+        }
+    }
 }
 // ---------------------------------------------------------------------------
 // C3 §3b: native Q2 source construction (donor `createSource` q2Guest
@@ -35003,7 +35569,23 @@ impl SharedSimulation {
             SourceRuntime::Q2Native(_) => {
                 drop(state);
                 self.native_primary_match_profile()?;
-                panic!("Missing siblings: native-primary lane owns the selectedNativePlayer score host binding")
+                // Missing siblings: no production caller drives the native
+                // score host yet (`ModMatchState::player` never fires
+                // in-repo); the live read below serves the match lookup
+                // once a mod match query arrives.
+                let mut locked = self.lock();
+                let weapons = locked
+                    .native_primary_weapons
+                    .as_mut()
+                    .unwrap_or_else(|| panic!("Original native selected weapons have no qualified owner"));
+                let score = weapons.match_score(actor).unwrap_or_else(|error| panic!("{error}"));
+                drop(locked);
+                Some(SourceMatchPlayer {
+                    actor: actor.clone(),
+                    client,
+                    team: self.peek().combat.read(actor).and_then(|combat| combat.team),
+                    score,
+                })
             }
             SourceRuntime::Q3Qvm { game, weapons, .. } => {
                 let matched = weapons.as_ref().and_then(|weapons| weapons.match_profile()).is_some();
@@ -35098,12 +35680,20 @@ impl SharedSimulation {
                 .set_match_score(actor, value)
                 .map_err(|error| RuntimeError::Failure(error.to_string())),
             SourceRuntime::Q2Native(_) => {
-                let _ = source_score(value)?;
+                let score = source_score(value)?;
                 drop(state);
-                Err(RuntimeError::Failure(
-                    "Missing siblings: native-primary lane owns the selectedNativePlayer score host binding"
-                        .to_string(),
-                ))
+                // Missing siblings: no production caller drives the native
+                // score host yet; the live write below serves the match
+                // score update once one arrives.
+                let mut locked = self.lock();
+                let Some(weapons) = locked.native_primary_weapons.as_mut() else {
+                    return Err(RuntimeError::Failure(
+                        "Original native score has no qualified owner".to_string(),
+                    ));
+                };
+                weapons
+                    .set_match_score(actor, i64::from(score))
+                    .map_err(RuntimeError::Failure)
             }
             SourceRuntime::Q3Qvm { weapons, .. } => {
                 let Some(weapons) = weapons.as_ref() else {
@@ -35847,7 +36437,7 @@ impl SharedSimulation {
 
 impl SharedSimulation {
     /// Restore saved native inventory cursors (donor
-    /// `restoreNativeInventoryCursors`).
+    /// `restoreNativeInventoryCursors`, runtime.ts 5472-5480).
     fn restore_native_inventory_cursors(&self, actor: Option<&ActorId>) -> Result<(), RuntimeError> {
         let owners: Vec<(ActorId, Option<ItemId>)> = self
             .peek()
@@ -35856,17 +36446,32 @@ impl SharedSimulation {
             .filter(|(owner, _)| actor.is_none_or(|actor| *owner == actor))
             .map(|(owner, item)| (owner.clone(), item.clone()))
             .collect();
-        if let Some((owner, _item)) = owners.first() {
-            if self.peek().native_primary_inventory.is_none() {
-                return Err(RuntimeError::Failure(
-                    "Saved native inventory cursor has no qualified owner".to_string(),
-                ));
-            }
-            let _ = owner;
+        if owners.is_empty() {
+            return Ok(());
+        }
+        if self.peek().native_primary_inventory.is_none() {
             return Err(RuntimeError::Failure(
-                "Missing siblings: native-primary lane owns the NativePrimaryInventory restore host binding"
-                    .to_string(),
+                "Saved native inventory cursor has no qualified owner".to_string(),
             ));
+        }
+        for (owner, item) in &owners {
+            let rows = match self.native_inventory_rows(owner) {
+                Ok(rows) => rows.unwrap_or_default(),
+                Err(error) => {
+                    if item.is_some() {
+                        return Err(error);
+                    }
+                    Vec::new()
+                }
+            };
+            self.lock()
+                .native_primary_inventory
+                .as_mut()
+                .ok_or_else(|| {
+                    RuntimeError::Failure("Saved native inventory cursor has no qualified owner".to_string())
+                })?
+                .restore_selection(owner, rows, item.as_ref())
+                .map_err(RuntimeError::Failure)?;
         }
         Ok(())
     }
@@ -37870,9 +38475,8 @@ impl SharedSimulation {
 impl SharedSimulation {
     /// Native source HUD tail (donor `nativePlayerUi` q3-qvm/q2-native arms).
     ///
-    /// Missing siblings: the runtime `NativePrimaryInventory` seam has no
-    /// compat-host backing for `read()`, so the donor q2-native
-    /// `nativeInventory` overlay stays empty until the compat lane lands it.
+    /// The q2-native arm overlays the live `nativeInventory` readout from
+    /// the bound inventory service (donor runtime.ts 4926-4947).
     pub fn native_player_ui(&self, actor: &ActorId) -> Result<PlayerUi, RuntimeError> {
         let state = self.peek();
         match &state.source {
@@ -38026,6 +38630,7 @@ impl SharedSimulation {
         };
         drop(locked);
         if !has_arsenal {
+            original.native_inventory = self.read_native_inventory_overlay(actor);
             return Ok(original);
         }
         let state = self.peek();
@@ -38039,7 +38644,26 @@ impl SharedSimulation {
             original.weapon_status = overlay.weapon_status;
             original.arsenal_warning = overlay.arsenal_warning;
         }
+        original.native_inventory = self.read_native_inventory_overlay(actor);
         Ok(original)
+    }
+
+    /// Best-effort native inventory overlay (donor `nativeInventory`).
+    ///
+    /// Reads the live inventory service; without bound services or rows the
+    /// overlay stays empty like the guest UI default.
+    fn read_native_inventory_overlay(
+        &self,
+        actor: &ActorId,
+    ) -> Option<qa_compat::q2::native_primary_inventory::NativeInventoryReadout> {
+        self.peek().native_primary_inventory.as_ref()?;
+        let rows = self.native_inventory_rows(actor).ok().flatten().unwrap_or_default();
+        self.lock()
+            .native_primary_inventory
+            .as_mut()?
+            .read_selection(actor, rows)
+            .ok()
+            .flatten()
     }
 }
 // ---------------------------------------------------------------------------
@@ -38095,12 +38719,13 @@ fn hand_grenade_travel_to_mirror(
 // ---------------------------------------------------------------------------
 
 impl SharedSimulation {
-    /// Capture the native travel payload (donor `captureNativeQ2Travel`).
+    /// Capture the native travel payload (donor `captureNativeQ2Travel`,
+    /// runtime.ts 5388-5469).
     ///
-    /// Missing siblings: the runtime `NativePrimaryInventory` seam has no
-    /// compat-host backing for `read()`, so inventory selections travel as
-    /// `None` until the compat lane lands it; closing the resourceless
-    /// primary seams is their drop.
+    /// Inventory selections travel from the live inventory service; dropping
+    /// the bound primary services is their close.
+    /// Missing siblings: no production caller drives travel capture yet, so
+    /// the live selection read below is uncalled.
     pub fn capture_native_q2_travel(
         &self,
         new_unit: bool,
@@ -38177,12 +38802,26 @@ impl SharedSimulation {
                 super::classic_guest_world::ClassicGuestClientPhase::Connected => NativeQ2TravelClientPhase::Connected,
                 super::classic_guest_world::ClassicGuestClientPhase::Active => NativeQ2TravelClientPhase::Active,
             };
+            // Live selection from the bound inventory service; without rows
+            // the cursor cannot project and the selection travels as `None`.
+            let native_inventory_selection = match owner.as_ref() {
+                Some(owner) if self.peek().native_primary_inventory.is_some() => {
+                    let rows = self.native_inventory_rows(owner).ok().flatten().unwrap_or_default();
+                    self.lock()
+                        .native_primary_inventory
+                        .as_mut()
+                        .and_then(|inventory| inventory.read_selection(owner, rows).ok())
+                        .flatten()
+                        .and_then(|readout| readout.selected)
+                }
+                _ => None,
+            };
             travel_clients.push(NativeQ2TravelClient {
                 client,
                 phase,
                 hand_grenades,
                 weapon_slot,
-                native_inventory_selection: None,
+                native_inventory_selection,
                 selected_arsenal,
             });
         }
@@ -38911,6 +39550,10 @@ impl SharedSimulation {
     }
 
     /// Bind native Q2 input bridges (donor `bindNativeInput`).
+    ///
+    /// Binds the live native primary weapon/command/inventory/drop services
+    /// from the declared primary profile (donor `bindNativePrimaryWeapons`,
+    /// runtime.ts 5490-5535) over one shared synthetic host.
     fn bind_native_input(
         &self,
         retained_drops: Option<&super::dropped_pickups::DroppedPickupLevels>,
@@ -38931,9 +39574,19 @@ impl SharedSimulation {
             return fail("Native primary weapon source is unqualified");
         }
         if armed || qualified {
-            return fail(
-                "Missing siblings: native primary weapon/command/inventory/drop bridges (bindNativePrimaryWeapons)",
-            );
+            let profile = self
+                .native_primary()
+                .ok_or_else(|| RuntimeError::Failure("Native primary weapon source is unqualified".to_string()))?;
+            let shared = NativePrimaryShared::new(&profile).map_err(RuntimeError::Failure)?;
+            let commands = NativePrimaryCommands::bind(&profile, shared.clone()).map_err(RuntimeError::Failure)?;
+            let inventory = NativePrimaryInventory::bind(&profile, shared.clone()).map_err(RuntimeError::Failure)?;
+            let drop = NativePrimaryDrop::bind(&profile, shared.clone()).map_err(RuntimeError::Failure)?;
+            let weapons = NativePrimaryWeapons::bind(&profile, shared).map_err(RuntimeError::Failure)?;
+            let mut locked = self.lock();
+            locked.native_primary_commands = Some(commands);
+            locked.native_primary_inventory = Some(inventory);
+            locked.native_primary_drop = Some(drop);
+            locked.native_primary_weapons = Some(weapons);
         }
         Ok(())
     }
