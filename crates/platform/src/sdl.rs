@@ -1428,6 +1428,15 @@ fn display_mode_from_bytes(bytes: &[u8; 24]) -> SdlDisplayMode {
     }
 }
 
+/// Whether a captured presentation carries a display mode worth restoring.
+///
+/// Windowed captures record the zeroed sentinel when SDL reports no mode
+/// (see [`SdlWindow::capture_presentation`]); the mode set only affects
+/// later fullscreen entry, so restore skips it for those captures.
+fn presentation_has_display_mode(state: &SdlWindowPresentation) -> bool {
+    state.display_mode != (0, 0, 0, 0)
+}
+
 /// Query the display hosting `window`.
 unsafe fn query_display(sdl: &Sdl2, window: *mut c_void) -> Result<SdlDisplay> {
     // SAFETY: the window handle is live.
@@ -1669,34 +1678,48 @@ impl SdlWindow {
         let window = resources.window;
         let flags = self.flags()?;
         let display = self.display()?;
+        let fullscreen = if flags & 0x1001 == 0x1001 {
+            FullscreenMode::Desktop
+        } else if flags & 1 != 0 {
+            FullscreenMode::Exclusive
+        } else {
+            FullscreenMode::Windowed
+        };
         let mut x = 0i32;
         let mut y = 0i32;
         let mut bytes = [0u8; 24];
         // SAFETY: the window handle is live; out-pointers describe live data.
-        unsafe {
+        let mode_status = unsafe {
             (self.sdl.sdl_get_window_position)(window, &mut x, &mut y);
-            self.sdl.checked(
-                (self.sdl.sdl_get_window_display_mode)(window, bytes.as_mut_ptr()),
-                "SDL_GetWindowDisplayMode",
-            )?;
+            (self.sdl.sdl_get_window_display_mode)(window, bytes.as_mut_ptr())
+        };
+        if mode_status < 0 && fullscreen != FullscreenMode::Windowed {
+            // SAFETY: the status came from the live SDL handle above.
+            unsafe {
+                self.sdl.checked(mode_status, "SDL_GetWindowDisplayMode")?;
+            }
         }
-        Ok(SdlWindowPresentation {
-            size: self.logical_size()?,
-            position: (x - display.bounds.0, y - display.bounds.1),
-            display_index: display.index,
-            display_mode: (
+        let display_mode = if mode_status >= 0 {
+            (
                 read_u32(&bytes, 0),
                 read_i32(&bytes, 4),
                 read_i32(&bytes, 8),
                 read_i32(&bytes, 12),
-            ),
-            fullscreen: if flags & 0x1001 == 0x1001 {
-                FullscreenMode::Desktop
-            } else if flags & 1 != 0 {
-                FullscreenMode::Exclusive
-            } else {
-                FullscreenMode::Windowed
-            },
+            )
+        } else {
+            // Windowed windows carry no display mode: SDL reports no match
+            // when no listed mode fits (e.g. a window larger than a default
+            // Xvfb screen). Record the zeroed sentinel; restore skips the
+            // mode set for it.
+            debug_assert_eq!(fullscreen, FullscreenMode::Windowed);
+            (0, 0, 0, 0)
+        };
+        Ok(SdlWindowPresentation {
+            size: self.logical_size()?,
+            position: (x - display.bounds.0, y - display.bounds.1),
+            display_index: display.index,
+            display_mode,
+            fullscreen,
             visible: flags & 4 != 0 && flags & 8 == 0,
             maximized: flags & 0x80 != 0,
             minimized: flags & 0x40 != 0,
@@ -1724,15 +1747,17 @@ impl SdlWindow {
         self.set_size(state.size.0, state.size.1)?;
         // SAFETY: the window handle is live.
         unsafe {
-            let mut bytes = [0u8; 24];
-            bytes[0..4].copy_from_slice(&state.display_mode.0.to_ne_bytes());
-            bytes[4..8].copy_from_slice(&state.display_mode.1.to_ne_bytes());
-            bytes[8..12].copy_from_slice(&state.display_mode.2.to_ne_bytes());
-            bytes[12..16].copy_from_slice(&state.display_mode.3.to_ne_bytes());
-            self.sdl.checked(
-                (self.sdl.sdl_set_window_display_mode)(window, bytes.as_ptr()),
-                "SDL_SetWindowDisplayMode",
-            )?;
+            if presentation_has_display_mode(state) {
+                let mut bytes = [0u8; 24];
+                bytes[0..4].copy_from_slice(&state.display_mode.0.to_ne_bytes());
+                bytes[4..8].copy_from_slice(&state.display_mode.1.to_ne_bytes());
+                bytes[8..12].copy_from_slice(&state.display_mode.2.to_ne_bytes());
+                bytes[12..16].copy_from_slice(&state.display_mode.3.to_ne_bytes());
+                self.sdl.checked(
+                    (self.sdl.sdl_set_window_display_mode)(window, bytes.as_ptr()),
+                    "SDL_SetWindowDisplayMode",
+                )?;
+            }
             let mode = match state.fullscreen {
                 FullscreenMode::Exclusive => 1,
                 FullscreenMode::Desktop => 0x1001,
@@ -3131,6 +3156,32 @@ mod tests {
         assert_eq!(mode.height, 768);
         assert_eq!(mode.refresh_rate, 60);
         assert_eq!(mode.color_bits, ((RGBA32 >> 8) & 255) as i32);
+    }
+
+    fn test_presentation(display_mode: (u32, i32, i32, i32)) -> SdlWindowPresentation {
+        SdlWindowPresentation {
+            size: (960, 600),
+            position: (0, 0),
+            display_index: 0,
+            display_mode,
+            fullscreen: FullscreenMode::Windowed,
+            visible: true,
+            maximized: false,
+            minimized: false,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn zeroed_windowed_capture_skips_display_mode_restore() {
+        // Windowed captures record the zeroed sentinel when SDL reports no
+        // mode (e.g. a window larger than a default Xvfb screen); restore
+        // must skip the mode set for those captures only.
+        assert!(!presentation_has_display_mode(&test_presentation((0, 0, 0, 0))));
+        assert!(presentation_has_display_mode(&test_presentation((
+            RGBA32, 640, 480, 60
+        ))));
+        assert!(presentation_has_display_mode(&test_presentation((0, 640, 480, 0))));
     }
 
     fn event_bytes() -> [u8; 56] {
