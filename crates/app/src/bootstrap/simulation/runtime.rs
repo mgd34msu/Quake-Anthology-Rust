@@ -34427,14 +34427,13 @@ impl SharedSimulation {
 // C3 §3e: Q2 product source construction (donor `createSource` Q2
 // fallthrough, runtime.ts 2998-3112).
 //
-// Missing siblings: the q2 lane owns `createQ2ProductRuntime`
-// (`Q2ProductRuntime` is still the opaque seam). The donor hooks close over
-// the simulation, but the port hook types are `fn` pointers without
-// captures, so the composition common, match selection, spawn modules,
-// rerelease hooks, and server-cvar binding ride with the q2 lane's
-// host-trait routing design. This section ports the live effects:
-// program validation, the server console sequence, and game-services
-// construction.
+// Missing siblings: `create_q2_product_runtime` is live but the donor
+// hooks close over the simulation while the port hook types are `fn`
+// pointers without captures, so the composition common, match
+// selection, spawn modules, rerelease hooks, and server-cvar binding
+// ride with the q2 lane's host-trait routing design. This section
+// ports the live effects: program validation, the server console
+// sequence, and game-services construction.
 // ---------------------------------------------------------------------------
 
 /// Q2 product server console plus retained save state.
@@ -34993,14 +34992,13 @@ impl SharedSimulation {
 // C3 §3d: Q1 source construction (donor `createSource` q1-bsp branch,
 // runtime.ts 2924-2968).
 //
-// Missing siblings: the actor host needs C11's Q1 table adapters (C11 is
-// building them in the C11 2a region; only test mocks implement the
-// `Q1SessionActorRegistry` family today), and the composition needs a
-// `Send` `Q1CompositionServices` routing to the simulation (the q1 lane
-// owns that design; its only reference is the `pub(crate)` recording
-// fake). This section ports the live prefix verbatim — program
-// validation, the console sequence, foundation options, and source
-// selection — and reports the composition block as an error.
+// Missing siblings: the actor host is live (`q1_actor_host` over the
+// C11 Q1 table adapters) but the composition needs a `Send`
+// `Q1CompositionServices` routing to the simulation (the q1 lane owns
+// that design; its only reference is the `pub(crate)` recording fake).
+// This section ports the live prefix verbatim — program validation,
+// the console sequence, foundation options, and source selection —
+// and reports the composition block as an error.
 // ---------------------------------------------------------------------------
 
 impl SharedSimulation {
