@@ -13,10 +13,17 @@
 //!   stay separate; the rerelease-used surface (checkpoint, restore,
 //!   per-client graph) is seamed directly.
 //!
-//! Missing siblings (host seams, implemented post-merge by their partitions):
-//! - `bots/behavior/rerelease/profile.ts` (`RereleaseBotBehavior`):
-//!   [`RereleaseBotBehavior`]. Only the checkpoint and chat-text pieces are
-//!   ported (`qa_bots::behavior::rerelease`); the driver is seamed.
+//! Production behavior driver ([`ApplicationRereleaseBehavior`], built by
+//! [`create_rerelease_behavior`]): port of the donor
+//! `src/bots/behavior/rerelease/profile.ts` class over the live
+//! `qa_bots::behavior::rerelease` pieces (`brain`, `rng`, `nav` path
+//! vocabulary). Think runs the pre-think hook, `brain.think`, the
+//! post-think hook, then the due pending chats (donor `think`,
+//! profile.ts:69-78); the delegating methods, checkpoint, and restore
+//! follow the donor class (profile.ts:79-94). The checkpoint image stays
+//! seam-owned JSON in the donor `RereleaseBehaviorCheckpoint` shape
+//! (profile.ts:44-51). Hosts may still supply custom behaviors through
+//! [`RereleaseBehaviorFactory`].
 //!
 //! Like its donor, the factory returns the Q3 transport for non-rerelease
 //! assets, except the two transports take different Rust options types, so
@@ -32,11 +39,20 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_bots::behavior::assets::{BotAssetFiles, BotSourceFiles};
+use qa_bots::behavior::rerelease::aim::BotAimStateT;
+use qa_bots::behavior::rerelease::brain::{
+    BotBrain, BotBrainCheckpoint, BotBrainConfig, BotBrainMemory, BotBrainMovementGeom, BotChatEventT,
+    ExplicitGoalKind, ExplicitGoalOwner, ExplicitGoalT,
+};
 use qa_bots::behavior::rerelease::chat_text::q1_bot_chat_text;
 use qa_bots::behavior::rerelease::data::botdata::CharacterEntry;
 use qa_bots::behavior::rerelease::data::knowledge::{BotGameModeT, BotKnowledge};
-use qa_bots::behavior::rerelease::nav::RereleaseNavigation;
-use qa_bots::behavior::rerelease::rng::BotRandomT;
+use qa_bots::behavior::rerelease::nav::{
+    NavEntityBounds, NavGraphLinkT, NavLinkType, NavPathT, NavTraversalT, RereleaseNavigation,
+};
+use qa_bots::behavior::rerelease::path_follow::BotPathStateT;
+use qa_bots::behavior::rerelease::rng::{BotRandomT, Xorshift32};
+use qa_bots::behavior::rerelease::senses::BotAwarenessT;
 use qa_bots::behavior::rerelease::world::{BotSoundT, BotUsercmdT, BotWorldT};
 use qa_bots::movement_contract::MovementKind;
 use qa_bots::BotsError;
@@ -47,7 +63,7 @@ use qa_core::math::{Bounds, Vec3};
 use qa_net::common::commands::{ActorCommand, ArsenalIntent, CommandSource};
 use qa_net::q3_net::{ServerReliableCommands, MAX_RELIABLE_COMMANDS};
 use qa_world::save::records::write_saved_actor;
-use qa_world::save::value::{arr, int, num, obj, str, SaveJson};
+use qa_world::save::value::{arr, boolean, int, num, obj, str, SaveJson};
 use qa_world::session::SessionClient;
 use qa_world::WorldError;
 
@@ -147,10 +163,10 @@ pub struct RereleaseBehaviorParams {
 
 /// Rerelease behavior driver.
 ///
-/// Seam over `RereleaseBotBehavior` from donor
-/// `src/bots/behavior/rerelease/profile.ts` (canonical home:
-/// `qa_bots::behavior::rerelease`); the partition implements it post-merge.
-/// The checkpoint image format is owned by the seam: JSON in, JSON out.
+/// Port of `RereleaseBotBehavior` from donor
+/// `src/bots/behavior/rerelease/profile.ts`; the production driver is
+/// [`ApplicationRereleaseBehavior`]. The checkpoint image format is owned
+/// by the seam: JSON in, JSON out.
 pub trait RereleaseBotBehavior: std::fmt::Debug {
     /// Think one frame.
     fn think(&mut self, world: &mut dyn BotWorldT) -> BotUsercmdT;
@@ -175,6 +191,860 @@ pub trait RereleaseBotBehavior: std::fmt::Debug {
 /// propagates like the donor throw.
 pub type RereleaseBehaviorFactory =
     Rc<dyn Fn(RereleaseBehaviorParams) -> Result<Box<dyn RereleaseBotBehavior>, String>>;
+
+/// Pending behavior chat (donor `pendingChats` entry, profile.ts:57).
+#[derive(Debug, Clone)]
+struct PendingBehaviorChat {
+    /// Delivery time in seconds.
+    time: f64,
+    /// Brain chat event.
+    event: BotChatEventT,
+}
+
+/// Production rerelease behavior driver (donor `RereleaseBotBehavior`,
+/// profile.ts:53-95).
+///
+/// The brain owns the behavior's single random stream
+/// (`BotBrain::new` seeds it; `rng_state`/`restore_rng` checkpoint it),
+/// matching the donor constructor (profile.ts:58-68), which hands its
+/// `Xorshift32` to the brain config. The chat callback lends that stream
+/// by round-tripping the state word through a local generator, so chat
+/// line selection advances the same stream the donor reads reentrantly.
+pub struct ApplicationRereleaseBehavior {
+    /// Asset provenance definition.
+    definition: String,
+    /// Source family.
+    source: RereleaseBotSource,
+    /// Behavior brain.
+    brain: BotBrain,
+    /// Scheduled chats shared with the brain `on_chat` sink.
+    pending: Rc<RefCell<Vec<PendingBehaviorChat>>>,
+    /// Behavior callbacks.
+    callbacks: RereleaseBehaviorCallbacks,
+}
+
+impl std::fmt::Debug for ApplicationRereleaseBehavior {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApplicationRereleaseBehavior")
+            .field("definition", &self.definition)
+            .field("source", &self.source)
+            .field("pending", &self.pending.borrow().len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Build the production behavior driver (donor `new RereleaseBotBehavior`,
+/// profile.ts:58-68); the message propagates like the donor throw.
+pub fn create_rerelease_behavior(params: RereleaseBehaviorParams) -> Result<Box<dyn RereleaseBotBehavior>, String> {
+    Ok(Box::new(ApplicationRereleaseBehavior::new(params)?))
+}
+
+impl ApplicationRereleaseBehavior {
+    /// Build the driver (donor constructor).
+    fn new(params: RereleaseBehaviorParams) -> Result<Self, String> {
+        let RereleaseBehaviorParams {
+            definition,
+            source,
+            knowledge,
+            skill,
+            seed,
+            game_mode,
+            character,
+            max_health,
+            run_speed,
+            walk_speed,
+            movement,
+            callbacks,
+        } = params;
+        let pending: Rc<RefCell<Vec<PendingBehaviorChat>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&pending);
+        let clock = Rc::clone(&callbacks.time);
+        let teammate = Rc::clone(&callbacks.human_teammate_near);
+        let select = Rc::clone(&callbacks.select_weapon);
+        let impulse = Rc::clone(&callbacks.weapon_impulse);
+        let weapon_impulse: Option<Box<dyn Fn(i32) -> i32>> = match source {
+            RereleaseBotSource::Q1 => Some(Box::new(move |number: i32| impulse(number)) as Box<dyn Fn(i32) -> i32>),
+            RereleaseBotSource::Q2 => None,
+        };
+        let on_weapon_select: Option<Box<dyn FnMut(i32)>> = match source {
+            RereleaseBotSource::Q1 => None,
+            RereleaseBotSource::Q2 => Some(Box::new(move |number: i32| select(number)) as Box<dyn FnMut(i32)>),
+        };
+        let config = BotBrainConfig {
+            knowledge: (*knowledge).clone(),
+            skill,
+            game_mode,
+            character,
+            max_health: max_health as f32,
+            run_speed: run_speed as f32,
+            walk_speed: walk_speed as f32,
+            movement: BotBrainMovementGeom {
+                gravity: movement.gravity as f32,
+                jump_velocity: movement.jump_velocity as f32,
+                jump_air_seconds: movement.jump_air_seconds as f32,
+                maximum_landing_rise: movement.maximum_landing_rise as f32,
+                start_above: movement.start_above as f32,
+                body_mins: movement.body_mins,
+                body_maxs: movement.body_maxs,
+            },
+            on_chat: Some(Box::new(move |event: BotChatEventT| {
+                sink.borrow_mut().push(PendingBehaviorChat {
+                    time: clock() + f64::from(event.delay_ms) / 1000.0,
+                    event,
+                });
+            }) as Box<dyn FnMut(BotChatEventT)>),
+            weapon_impulse,
+            on_weapon_select,
+            human_teammate_near: Box::new(move || teammate()) as Box<dyn Fn() -> bool>,
+        };
+        let brain = BotBrain::new(config, seed).map_err(|error| error.to_string())?;
+        Ok(ApplicationRereleaseBehavior {
+            definition,
+            source,
+            brain,
+            pending,
+            callbacks,
+        })
+    }
+}
+
+impl RereleaseBotBehavior for ApplicationRereleaseBehavior {
+    fn think(&mut self, world: &mut dyn BotWorldT) -> BotUsercmdT {
+        (self.callbacks.pre_think)();
+        let command = self.brain.think(world);
+        (self.callbacks.post_think)();
+        let now = (self.callbacks.time)();
+        let ready: Vec<PendingBehaviorChat> = {
+            let mut pending = self.pending.borrow_mut();
+            let (ready, waiting): (Vec<_>, Vec<_>) = pending.drain(..).partition(|chat| chat.time <= now);
+            *pending = waiting;
+            ready
+        };
+        if !ready.is_empty() {
+            // Lend the behavior stream to the chat callback: the state word
+            // round-trips through a local generator (xorshift32 never holds
+            // the rejected zero word from a seeded stream).
+            let mut random = Xorshift32::new(0);
+            random
+                .restore(self.brain.rng_state())
+                .expect("rerelease behavior RNG state round-trips");
+            for chat in &ready {
+                (self.callbacks.chat)(
+                    RereleaseChatEvent {
+                        locstring: chat.event.locstring.clone(),
+                        team_only: chat.event.team_only,
+                    },
+                    &mut random,
+                );
+            }
+            self.brain
+                .restore_rng(random.peek())
+                .expect("rerelease behavior RNG state round-trips");
+        }
+        command
+    }
+
+    fn set_game_mode(&mut self, mode: BotGameModeT) {
+        self.brain.set_game_mode(mode);
+    }
+
+    fn set_objective_goal(&mut self, goal: Option<Vec3>) {
+        self.brain.set_objective_goal(goal);
+    }
+
+    fn goal_status(&self) -> i32 {
+        self.brain.goal_status()
+    }
+
+    fn request_move_to_point(&mut self, point: Vec3) {
+        self.brain.request_move_to_point(point);
+    }
+
+    fn request_follow_entity(&mut self, id: i32, origin: Vec3) {
+        self.brain.request_follow_entity(id, origin);
+    }
+
+    fn checkpoint_json(&self) -> SaveJson {
+        obj(vec![
+            ("version", int(1)),
+            ("source", str(self.source.as_str())),
+            ("definition", str(&self.definition)),
+            ("rng", int(i64::from(self.brain.rng_state()))),
+            ("brain", encode_brain_checkpoint(&self.brain.checkpoint())),
+            (
+                "pendingChats",
+                arr(self.pending.borrow().iter().map(encode_pending_chat).collect()),
+            ),
+        ])
+    }
+
+    fn restore_json(&mut self, image: &SaveJson) -> Result<(), String> {
+        let version = read_behavior_int(image, "version")?;
+        let source = read_behavior_str(image, "source")?;
+        let definition = read_behavior_str(image, "definition")?;
+        if version != 1 || source != self.source.as_str() || definition != self.definition {
+            return Err("Rerelease behavior checkpoint belongs to another mounted source definition".to_string());
+        }
+        let rng = read_behavior_i32(image, "rng")?;
+        let brain = image.get("brain").ok_or_else(|| behavior_missing("brain"))?;
+        let checkpoint = decode_brain_checkpoint(brain)?;
+        let chats = image
+            .get("pendingChats")
+            .ok_or_else(|| behavior_missing("pendingChats"))?;
+        let pending = decode_pending_chats(chats)?;
+        self.brain.restore(&checkpoint).map_err(|error| error.to_string())?;
+        self.brain.restore_rng(rng).map_err(|error| error.to_string())?;
+        *self.pending.borrow_mut() = pending;
+        Ok(())
+    }
+}
+
+/// Missing behavior checkpoint member.
+fn behavior_missing(key: &str) -> String {
+    format!("rerelease behavior checkpoint lacks {key}")
+}
+
+/// Malformed behavior checkpoint member.
+fn behavior_malformed(key: &str) -> String {
+    format!("rerelease behavior checkpoint has malformed {key}")
+}
+
+/// Read a required string member.
+fn read_behavior_str(value: &SaveJson, key: &str) -> Result<String, String> {
+    match value.get(key) {
+        Some(SaveJson::String(text)) => Ok(text.clone()),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required integer member.
+fn read_behavior_int(value: &SaveJson, key: &str) -> Result<i64, String> {
+    match value.get(key) {
+        Some(SaveJson::Number(number)) if number.fract() == 0.0 => Ok(*number as i64),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required 32-bit integer member.
+fn read_behavior_i32(value: &SaveJson, key: &str) -> Result<i32, String> {
+    let number = read_behavior_int(value, key)?;
+    i32::try_from(number).map_err(|_| behavior_malformed(key))
+}
+
+/// Read a required number member.
+fn read_behavior_num(value: &SaveJson, key: &str) -> Result<f64, String> {
+    match value.get(key) {
+        Some(SaveJson::Number(number)) => Ok(*number),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required single-precision member.
+fn read_behavior_f32(value: &SaveJson, key: &str) -> Result<f32, String> {
+    read_behavior_num(value, key).map(|number| number as f32)
+}
+
+/// Read a required boolean member.
+fn read_behavior_bool(value: &SaveJson, key: &str) -> Result<bool, String> {
+    match value.get(key) {
+        Some(SaveJson::Bool(flag)) => Ok(*flag),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required object member.
+fn read_behavior_obj<'v>(value: &'v SaveJson, key: &str) -> Result<&'v SaveJson, String> {
+    match value.get(key) {
+        Some(object @ SaveJson::Object(_)) => Ok(object),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required array member.
+fn read_behavior_arr<'v>(value: &'v SaveJson, key: &str) -> Result<&'v Vec<SaveJson>, String> {
+    match value.get(key) {
+        Some(SaveJson::Array(items)) => Ok(items),
+        _ => Err(behavior_missing(key)),
+    }
+}
+
+/// Read a required nullable member.
+fn read_behavior_opt<T>(
+    value: &SaveJson,
+    key: &str,
+    read: impl Fn(&SaveJson) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    match value.get(key) {
+        None => Err(behavior_missing(key)),
+        Some(SaveJson::Null) => Ok(None),
+        Some(item) => read(item).map(Some),
+    }
+}
+
+/// Encode a vector.
+fn vec3_json(vector: Vec3) -> SaveJson {
+    obj(vec![
+        ("x", num(f64::from(vector.x))),
+        ("y", num(f64::from(vector.y))),
+        ("z", num(f64::from(vector.z))),
+    ])
+}
+
+/// Decode a vector.
+fn vec3_from_json(value: &SaveJson) -> Result<Vec3, String> {
+    Ok(Vec3 {
+        x: read_behavior_f32(value, "x")?,
+        y: read_behavior_f32(value, "y")?,
+        z: read_behavior_f32(value, "z")?,
+    })
+}
+
+/// Encode an optional value.
+fn opt_json<T>(value: Option<&T>, encode: impl Fn(&T) -> SaveJson) -> SaveJson {
+    value.map(encode).unwrap_or(SaveJson::Null)
+}
+
+/// Encode the game mode.
+fn encode_game_mode(mode: &BotGameModeT) -> SaveJson {
+    obj(vec![
+        ("gameType", str(&mode.game_type)),
+        ("weaponStay", boolean(mode.weapon_stay)),
+        ("hasTeams", opt_json(mode.has_teams.as_ref(), |flag| boolean(*flag))),
+        ("teamDamage", opt_json(mode.team_damage.as_ref(), |flag| boolean(*flag))),
+    ])
+}
+
+/// Decode the game mode.
+fn decode_game_mode(value: &SaveJson) -> Result<BotGameModeT, String> {
+    Ok(BotGameModeT {
+        game_type: read_behavior_str(value, "gameType")?,
+        weapon_stay: read_behavior_bool(value, "weaponStay")?,
+        has_teams: read_behavior_opt(value, "hasTeams", |item| match item {
+            SaveJson::Bool(flag) => Ok(*flag),
+            _ => Err(behavior_malformed("gameMode.hasTeams")),
+        })?,
+        team_damage: read_behavior_opt(value, "teamDamage", |item| match item {
+            SaveJson::Bool(flag) => Ok(*flag),
+            _ => Err(behavior_malformed("gameMode.teamDamage")),
+        })?,
+    })
+}
+
+/// Encode the aim state.
+fn encode_aim(aim: &BotAimStateT) -> SaveJson {
+    obj(vec![
+        ("pitch", num(f64::from(aim.pitch))),
+        ("yaw", num(f64::from(aim.yaw))),
+        ("pitchVelocity", num(f64::from(aim.pitch_velocity))),
+        ("yawVelocity", num(f64::from(aim.yaw_velocity))),
+        ("modifierUntil", num(f64::from(aim.modifier_until))),
+    ])
+}
+
+/// Decode the aim state.
+fn decode_aim(value: &SaveJson) -> Result<BotAimStateT, String> {
+    Ok(BotAimStateT {
+        pitch: read_behavior_f32(value, "pitch")?,
+        yaw: read_behavior_f32(value, "yaw")?,
+        pitch_velocity: read_behavior_f32(value, "pitchVelocity")?,
+        yaw_velocity: read_behavior_f32(value, "yawVelocity")?,
+        modifier_until: read_behavior_f32(value, "modifierUntil")?,
+    })
+}
+
+/// Encode a user command.
+fn encode_usercmd(command: &BotUsercmdT) -> SaveJson {
+    obj(vec![
+        ("forwardmove", num(f64::from(command.forwardmove))),
+        ("sidemove", num(f64::from(command.sidemove))),
+        ("upmove", num(f64::from(command.upmove))),
+        ("buttons", int(i64::from(command.buttons))),
+        ("impulse", int(i64::from(command.impulse))),
+        ("viewAngles", vec3_json(command.view_angles)),
+    ])
+}
+
+/// Decode a user command.
+fn decode_usercmd(value: &SaveJson) -> Result<BotUsercmdT, String> {
+    Ok(BotUsercmdT {
+        forwardmove: read_behavior_f32(value, "forwardmove")?,
+        sidemove: read_behavior_f32(value, "sidemove")?,
+        upmove: read_behavior_f32(value, "upmove")?,
+        buttons: read_behavior_i32(value, "buttons")?,
+        impulse: read_behavior_i32(value, "impulse")?,
+        view_angles: vec3_from_json(read_behavior_obj(value, "viewAngles")?)?,
+    })
+}
+
+/// Encode one awareness record.
+fn encode_awareness(awareness: &BotAwarenessT) -> SaveJson {
+    obj(vec![
+        ("id", int(i64::from(awareness.id))),
+        ("sight", num(f64::from(awareness.sight))),
+        ("weapon", num(f64::from(awareness.weapon))),
+        ("lastContact", num(f64::from(awareness.last_contact))),
+        ("lastSeen", num(f64::from(awareness.last_seen))),
+        ("lastHeard", num(f64::from(awareness.last_heard))),
+        ("lastKnownOrigin", vec3_json(awareness.last_known_origin)),
+    ])
+}
+
+/// Decode one awareness record.
+fn decode_awareness(value: &SaveJson) -> Result<BotAwarenessT, String> {
+    Ok(BotAwarenessT {
+        id: read_behavior_i32(value, "id")?,
+        sight: read_behavior_f32(value, "sight")?,
+        weapon: read_behavior_f32(value, "weapon")?,
+        last_contact: read_behavior_f32(value, "lastContact")?,
+        last_seen: read_behavior_f32(value, "lastSeen")?,
+        last_heard: read_behavior_f32(value, "lastHeard")?,
+        last_known_origin: vec3_from_json(read_behavior_obj(value, "lastKnownOrigin")?)?,
+    })
+}
+
+/// Encode a pending chat.
+fn encode_pending_chat(chat: &PendingBehaviorChat) -> SaveJson {
+    obj(vec![
+        ("time", num(chat.time)),
+        (
+            "event",
+            obj(vec![
+                ("locstring", str(&chat.event.locstring)),
+                ("chatType", str(&chat.event.chat_type)),
+                ("delayMs", num(f64::from(chat.event.delay_ms))),
+                ("teamOnly", boolean(chat.event.team_only)),
+            ]),
+        ),
+    ])
+}
+
+/// Decode pending chats.
+fn decode_pending_chats(value: &SaveJson) -> Result<Vec<PendingBehaviorChat>, String> {
+    let SaveJson::Array(items) = value else {
+        return Err(behavior_malformed("pendingChats"));
+    };
+    items
+        .iter()
+        .map(|item| {
+            let event = read_behavior_obj(item, "event")?;
+            Ok(PendingBehaviorChat {
+                time: read_behavior_num(item, "time")?,
+                event: BotChatEventT {
+                    locstring: read_behavior_str(event, "locstring")?,
+                    chat_type: read_behavior_str(event, "chatType")?,
+                    delay_ms: read_behavior_f32(event, "delayMs")?,
+                    team_only: read_behavior_bool(event, "teamOnly")?,
+                },
+            })
+        })
+        .collect()
+}
+
+/// Encode a traversal funnel.
+fn encode_traversal(traversal: &NavTraversalT) -> SaveJson {
+    obj(vec![
+        ("funnel", vec3_json(traversal.funnel)),
+        ("start", vec3_json(traversal.start)),
+        ("end", vec3_json(traversal.end)),
+    ])
+}
+
+/// Decode a traversal funnel.
+fn decode_traversal(value: &SaveJson) -> Result<NavTraversalT, String> {
+    Ok(NavTraversalT {
+        funnel: vec3_from_json(read_behavior_obj(value, "funnel")?)?,
+        start: vec3_from_json(read_behavior_obj(value, "start")?)?,
+        end: vec3_from_json(read_behavior_obj(value, "end")?)?,
+    })
+}
+
+/// Encode entity bounds.
+fn encode_entity_bounds(bounds: &NavEntityBounds) -> SaveJson {
+    obj(vec![("mins", vec3_json(bounds.mins)), ("maxs", vec3_json(bounds.maxs))])
+}
+
+/// Decode entity bounds.
+fn decode_entity_bounds(value: &SaveJson) -> Result<NavEntityBounds, String> {
+    Ok(NavEntityBounds {
+        mins: vec3_from_json(read_behavior_obj(value, "mins")?)?,
+        maxs: vec3_from_json(read_behavior_obj(value, "maxs")?)?,
+    })
+}
+
+/// Encode one graph link.
+fn encode_link(link: &NavGraphLinkT) -> SaveJson {
+    obj(vec![
+        ("from", int(i64::from(link.from))),
+        ("to", int(i64::from(link.to))),
+        ("linkType", int(i64::from(link.link_type as i32))),
+        ("traversal", opt_json(link.traversal.as_ref(), encode_traversal)),
+        (
+            "entityBounds",
+            opt_json(link.entity_bounds.as_ref(), encode_entity_bounds),
+        ),
+    ])
+}
+
+/// Decode one graph link.
+fn decode_link(value: &SaveJson) -> Result<NavGraphLinkT, String> {
+    let link_type = read_behavior_i32(value, "linkType")?;
+    Ok(NavGraphLinkT {
+        from: read_behavior_i32(value, "from")?,
+        to: read_behavior_i32(value, "to")?,
+        link_type: NavLinkType::from_i32(link_type).ok_or_else(|| behavior_malformed("path.links.linkType"))?,
+        traversal: read_behavior_opt(value, "traversal", decode_traversal)?,
+        entity_bounds: read_behavior_opt(value, "entityBounds", decode_entity_bounds)?,
+    })
+}
+
+/// Encode a navigation path.
+fn encode_path(path: &NavPathT) -> SaveJson {
+    obj(vec![
+        (
+            "nodes",
+            arr(path.nodes.iter().map(|node| int(i64::from(*node))).collect()),
+        ),
+        (
+            "points",
+            arr(path.points.iter().map(|point| vec3_json(*point)).collect()),
+        ),
+        (
+            "links",
+            arr(path
+                .links
+                .iter()
+                .map(|link| opt_json(link.as_ref(), encode_link))
+                .collect()),
+        ),
+        ("cost", num(path.cost)),
+        ("generation", int(path.generation)),
+        ("mapDigest", str(&path.map_digest)),
+    ])
+}
+
+/// Decode a navigation path.
+fn decode_path(value: &SaveJson) -> Result<NavPathT, String> {
+    let nodes = read_behavior_arr(value, "nodes")?;
+    let points = read_behavior_arr(value, "points")?;
+    let links = read_behavior_arr(value, "links")?;
+    Ok(NavPathT {
+        nodes: nodes
+            .iter()
+            .map(|node| match node {
+                SaveJson::Number(number) if number.fract() == 0.0 => {
+                    i32::try_from(*number as i64).map_err(|_| behavior_malformed("path.nodes"))
+                }
+                _ => Err(behavior_malformed("path.nodes")),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        points: points.iter().map(vec3_from_json).collect::<Result<Vec<_>, _>>()?,
+        links: links
+            .iter()
+            .map(|link| match link {
+                SaveJson::Null => Ok(None),
+                item => decode_link(item).map(Some),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        cost: read_behavior_num(value, "cost")?,
+        generation: read_behavior_int(value, "generation")?,
+        map_digest: read_behavior_str(value, "mapDigest")?,
+    })
+}
+
+/// Encode the path state.
+fn encode_path_state(state: &BotPathStateT) -> SaveJson {
+    obj(vec![
+        ("path", opt_json(state.path.as_ref(), encode_path)),
+        ("index", int(state.index as i64)),
+        ("stuckOrigin", vec3_json(state.stuck_origin)),
+        ("stuckSince", num(f64::from(state.stuck_since))),
+        ("stuckCount", int(i64::from(state.stuck_count))),
+        ("liftWaitSince", num(f64::from(state.lift_wait_since))),
+        ("liftWaitZ", num(f64::from(state.lift_wait_z))),
+        ("jumpReadyAt", num(f64::from(state.jump_ready_at))),
+        ("plannedAt", num(f64::from(state.planned_at))),
+    ])
+}
+
+/// Decode the path state.
+fn decode_path_state(value: &SaveJson) -> Result<BotPathStateT, String> {
+    let index = read_behavior_int(value, "index")?;
+    Ok(BotPathStateT {
+        path: read_behavior_opt(value, "path", decode_path)?,
+        index: usize::try_from(index).map_err(|_| behavior_malformed("pathState.index"))?,
+        stuck_origin: vec3_from_json(read_behavior_obj(value, "stuckOrigin")?)?,
+        stuck_since: read_behavior_f32(value, "stuckSince")?,
+        stuck_count: read_behavior_i32(value, "stuckCount")?,
+        lift_wait_since: read_behavior_f32(value, "liftWaitSince")?,
+        lift_wait_z: read_behavior_f32(value, "liftWaitZ")?,
+        jump_ready_at: read_behavior_f32(value, "jumpReadyAt")?,
+        planned_at: read_behavior_f32(value, "plannedAt")?,
+    })
+}
+
+/// Encode an explicit goal.
+fn encode_explicit_goal(goal: &ExplicitGoalT) -> SaveJson {
+    obj(vec![
+        (
+            "owner",
+            str(match goal.owner {
+                ExplicitGoalOwner::External => "external",
+                ExplicitGoalOwner::Objective => "objective",
+            }),
+        ),
+        (
+            "kind",
+            str(match goal.kind {
+                ExplicitGoalKind::Point => "point",
+                ExplicitGoalKind::Entity => "entity",
+            }),
+        ),
+        ("point", vec3_json(goal.point)),
+        ("entityId", int(i64::from(goal.entity_id))),
+    ])
+}
+
+/// Decode an explicit goal.
+fn decode_explicit_goal(value: &SaveJson) -> Result<ExplicitGoalT, String> {
+    let owner = match read_behavior_str(value, "owner")?.as_str() {
+        "external" => ExplicitGoalOwner::External,
+        "objective" => ExplicitGoalOwner::Objective,
+        _ => return Err(behavior_malformed("explicitGoal.owner")),
+    };
+    let kind = match read_behavior_str(value, "kind")?.as_str() {
+        "point" => ExplicitGoalKind::Point,
+        "entity" => ExplicitGoalKind::Entity,
+        _ => return Err(behavior_malformed("explicitGoal.kind")),
+    };
+    Ok(ExplicitGoalT {
+        owner,
+        kind,
+        point: vec3_from_json(read_behavior_obj(value, "point")?)?,
+        entity_id: read_behavior_i32(value, "entityId")?,
+    })
+}
+
+/// Encode the brain memory. Keys mirror the `BotBrainMemory` field names;
+/// maps and sets encode sorted so images are deterministic.
+fn encode_brain_memory(memory: &BotBrainMemory) -> SaveJson {
+    let mut awareness: Vec<(&i32, &BotAwarenessT)> = memory.awareness.iter().collect();
+    awareness.sort_by_key(|(id, _)| *id);
+    let mut unreachable: Vec<(&i32, &f32)> = memory.unreachable_until.iter().collect();
+    unreachable.sort_by_key(|(id, _)| *id);
+    let mut homes: Vec<(&i32, &Vec3)> = memory.objective_home.iter().collect();
+    homes.sort_by_key(|(id, _)| *id);
+    let mut said: Vec<&String> = memory.said_this_level.iter().collect();
+    said.sort();
+    obj(vec![
+        ("triggerWeapon", int(i64::from(memory.trigger_weapon))),
+        ("triggerHeldSince", num(f64::from(memory.trigger_held_since))),
+        ("triggerReadyAt", num(f64::from(memory.trigger_ready_at))),
+        ("aim", encode_aim(&memory.aim)),
+        ("pathState", encode_path_state(&memory.path_state)),
+        (
+            "awareness",
+            arr(awareness
+                .iter()
+                .map(|(id, record)| obj(vec![("key", int(i64::from(**id))), ("value", encode_awareness(record))]))
+                .collect()),
+        ),
+        ("targetId", int(i64::from(memory.target_id))),
+        (
+            "goalPoint",
+            opt_json(memory.goal_point.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("goalEntityId", int(i64::from(memory.goal_entity_id))),
+        (
+            "unreachableUntil",
+            arr(unreachable
+                .iter()
+                .map(|(id, until)| obj(vec![("key", int(i64::from(**id))), ("value", num(f64::from(**until)))]))
+                .collect()),
+        ),
+        ("stuckTrips", int(i64::from(memory.stuck_trips))),
+        ("goalIsLive", boolean(memory.goal_is_live)),
+        ("unstickUntil", num(f64::from(memory.unstick_until))),
+        ("pressUntil", num(f64::from(memory.press_until))),
+        ("unstickSide", num(f64::from(memory.unstick_side))),
+        (
+            "explicitGoal",
+            opt_json(memory.explicit_goal.as_ref(), encode_explicit_goal),
+        ),
+        ("explicitGoalDone", boolean(memory.explicit_goal_done)),
+        ("explicitGoalFailed", boolean(memory.explicit_goal_failed)),
+        (
+            "wedgeOrigin",
+            opt_json(memory.wedge_origin.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("wedgeSince", num(f64::from(memory.wedge_since))),
+        (
+            "lastSafeOrigin",
+            opt_json(memory.last_safe_origin.as_ref(), |point| vec3_json(*point)),
+        ),
+        (
+            "restPoint",
+            opt_json(memory.rest_point.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("restUntil", num(f64::from(memory.rest_until))),
+        ("guardRefusals", int(i64::from(memory.guard_refusals))),
+        ("lastGuardRefused", boolean(memory.last_guard_refused)),
+        ("gapJumps", int(i64::from(memory.gap_jumps))),
+        ("hazardFrames", int(i64::from(memory.hazard_frames))),
+        (
+            "objectiveHome",
+            arr(homes
+                .iter()
+                .map(|(id, home)| obj(vec![("key", int(i64::from(**id))), ("value", vec3_json(**home))]))
+                .collect()),
+        ),
+        (
+            "ownObjectiveHome",
+            opt_json(memory.own_objective_home.as_ref(), |point| vec3_json(*point)),
+        ),
+        (
+            "enemyObjectiveHome",
+            opt_json(memory.enemy_objective_home.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("objectiveRole", str(&memory.objective_role)),
+        ("touchGoal", boolean(memory.touch_goal)),
+        ("holdPosition", boolean(memory.hold_position)),
+        (
+            "gateShootAt",
+            opt_json(memory.gate_shoot_at.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("gateFiredAt", num(f64::from(memory.gate_fired_at))),
+        ("coopRegrouping", boolean(memory.coop_regrouping)),
+        ("coopRegroupAt", num(f64::from(memory.coop_regroup_at))),
+        ("coopRegroupUntil", num(f64::from(memory.coop_regroup_until))),
+        ("saidThisLevel", arr(said.iter().map(|line| str(line)).collect())),
+        ("levelStarted", boolean(memory.level_started)),
+        ("checkSixUntil", num(f64::from(memory.check_six_until))),
+        ("checkSixNextAt", num(f64::from(memory.check_six_next_at))),
+        (
+            "roamPoint",
+            opt_json(memory.roam_point.as_ref(), |point| vec3_json(*point)),
+        ),
+        ("roamUntil", num(f64::from(memory.roam_until))),
+        ("lastCmd", encode_usercmd(&memory.last_cmd)),
+        ("spawnedOnce", boolean(memory.spawned_once)),
+        ("lastWeaponNumber", int(i64::from(memory.last_weapon_number))),
+        ("deadSince", num(f64::from(memory.dead_since))),
+        ("respawnWait", num(f64::from(memory.respawn_wait))),
+        ("respawnPress", boolean(memory.respawn_press)),
+    ])
+}
+
+/// Decode one keyed map entry.
+fn decode_map_entry<T>(
+    item: &SaveJson,
+    key: &str,
+    decode: impl Fn(&SaveJson) -> Result<T, String>,
+) -> Result<(i32, T), String> {
+    let id = read_behavior_i32(item, "key")?;
+    let value = item.get("value").ok_or_else(|| behavior_missing(key))?;
+    decode(value).map(|value| (id, value))
+}
+
+/// Decode the brain memory.
+fn decode_brain_memory(value: &SaveJson) -> Result<BotBrainMemory, String> {
+    let awareness = read_behavior_arr(value, "awareness")?;
+    let unreachable = read_behavior_arr(value, "unreachableUntil")?;
+    let homes = read_behavior_arr(value, "objectiveHome")?;
+    let said = read_behavior_arr(value, "saidThisLevel")?;
+    Ok(BotBrainMemory {
+        trigger_weapon: read_behavior_i32(value, "triggerWeapon")?,
+        trigger_held_since: read_behavior_f32(value, "triggerHeldSince")?,
+        trigger_ready_at: read_behavior_f32(value, "triggerReadyAt")?,
+        aim: decode_aim(read_behavior_obj(value, "aim")?)?,
+        path_state: decode_path_state(read_behavior_obj(value, "pathState")?)?,
+        awareness: awareness
+            .iter()
+            .map(|item| decode_map_entry(item, "awareness.value", decode_awareness))
+            .collect::<Result<HashMap<_, _>, _>>()?,
+        target_id: read_behavior_i32(value, "targetId")?,
+        goal_point: read_behavior_opt(value, "goalPoint", vec3_from_json)?,
+        goal_entity_id: read_behavior_i32(value, "goalEntityId")?,
+        unreachable_until: unreachable
+            .iter()
+            .map(|item| {
+                decode_map_entry(item, "unreachableUntil.value", |entry| match entry {
+                    SaveJson::Number(number) => Ok(*number as f32),
+                    _ => Err(behavior_malformed("unreachableUntil.value")),
+                })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?,
+        stuck_trips: read_behavior_i32(value, "stuckTrips")?,
+        goal_is_live: read_behavior_bool(value, "goalIsLive")?,
+        unstick_until: read_behavior_f32(value, "unstickUntil")?,
+        press_until: read_behavior_f32(value, "pressUntil")?,
+        unstick_side: read_behavior_f32(value, "unstickSide")?,
+        explicit_goal: read_behavior_opt(value, "explicitGoal", decode_explicit_goal)?,
+        explicit_goal_done: read_behavior_bool(value, "explicitGoalDone")?,
+        explicit_goal_failed: read_behavior_bool(value, "explicitGoalFailed")?,
+        wedge_origin: read_behavior_opt(value, "wedgeOrigin", vec3_from_json)?,
+        wedge_since: read_behavior_f32(value, "wedgeSince")?,
+        last_safe_origin: read_behavior_opt(value, "lastSafeOrigin", vec3_from_json)?,
+        rest_point: read_behavior_opt(value, "restPoint", vec3_from_json)?,
+        rest_until: read_behavior_f32(value, "restUntil")?,
+        guard_refusals: read_behavior_i32(value, "guardRefusals")?,
+        last_guard_refused: read_behavior_bool(value, "lastGuardRefused")?,
+        gap_jumps: read_behavior_i32(value, "gapJumps")?,
+        hazard_frames: read_behavior_i32(value, "hazardFrames")?,
+        objective_home: homes
+            .iter()
+            .map(|item| decode_map_entry(item, "objectiveHome.value", vec3_from_json))
+            .collect::<Result<HashMap<_, _>, _>>()?,
+        own_objective_home: read_behavior_opt(value, "ownObjectiveHome", vec3_from_json)?,
+        enemy_objective_home: read_behavior_opt(value, "enemyObjectiveHome", vec3_from_json)?,
+        objective_role: read_behavior_str(value, "objectiveRole")?,
+        touch_goal: read_behavior_bool(value, "touchGoal")?,
+        hold_position: read_behavior_bool(value, "holdPosition")?,
+        gate_shoot_at: read_behavior_opt(value, "gateShootAt", vec3_from_json)?,
+        gate_fired_at: read_behavior_f32(value, "gateFiredAt")?,
+        coop_regrouping: read_behavior_bool(value, "coopRegrouping")?,
+        coop_regroup_at: read_behavior_f32(value, "coopRegroupAt")?,
+        coop_regroup_until: read_behavior_f32(value, "coopRegroupUntil")?,
+        said_this_level: said
+            .iter()
+            .map(|line| match line {
+                SaveJson::String(text) => Ok(text.clone()),
+                _ => Err(behavior_malformed("saidThisLevel")),
+            })
+            .collect::<Result<HashSet<_>, _>>()?,
+        level_started: read_behavior_bool(value, "levelStarted")?,
+        check_six_until: read_behavior_f32(value, "checkSixUntil")?,
+        check_six_next_at: read_behavior_f32(value, "checkSixNextAt")?,
+        roam_point: read_behavior_opt(value, "roamPoint", vec3_from_json)?,
+        roam_until: read_behavior_f32(value, "roamUntil")?,
+        last_cmd: decode_usercmd(read_behavior_obj(value, "lastCmd")?)?,
+        spawned_once: read_behavior_bool(value, "spawnedOnce")?,
+        last_weapon_number: read_behavior_i32(value, "lastWeaponNumber")?,
+        dead_since: read_behavior_f32(value, "deadSince")?,
+        respawn_wait: read_behavior_f32(value, "respawnWait")?,
+        respawn_press: read_behavior_bool(value, "respawnPress")?,
+    })
+}
+
+/// Encode a brain checkpoint.
+fn encode_brain_checkpoint(checkpoint: &BotBrainCheckpoint) -> SaveJson {
+    obj(vec![
+        ("version", int(i64::from(checkpoint.version))),
+        ("skill", str(&checkpoint.skill)),
+        ("gameMode", encode_game_mode(&checkpoint.game_mode)),
+        ("memory", encode_brain_memory(&checkpoint.memory)),
+    ])
+}
+
+/// Decode a brain checkpoint.
+fn decode_brain_checkpoint(value: &SaveJson) -> Result<BotBrainCheckpoint, String> {
+    let version = read_behavior_int(value, "version")?;
+    Ok(BotBrainCheckpoint {
+        version: u32::try_from(version).map_err(|_| behavior_malformed("brain.version"))?,
+        skill: read_behavior_str(value, "skill")?,
+        game_mode: decode_game_mode(read_behavior_obj(value, "gameMode")?)?,
+        memory: decode_brain_memory(read_behavior_obj(value, "memory")?)?,
+    })
+}
 
 /// Movement player read (donor `movementPlayer` used surface).
 #[derive(Debug, Clone, PartialEq)]
@@ -1500,9 +2370,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qa_bots::behavior::rerelease::data::botdata::BotSkillSettings;
+    use qa_bots::behavior::rerelease::brain::BotGoalStatus;
+    use qa_bots::behavior::rerelease::data::botdata::{BotSkillSettings, BotSourceEntry, ChatEntry};
     use qa_bots::behavior::rerelease::nav::{BotTransportStep, NavGraphLinkT, NavGraphNodeT, NavPathT, NavPlanOptions};
-    use qa_bots::behavior::rerelease::world::empty_usercmd;
+    use qa_bots::behavior::rerelease::world::{empty_usercmd, BotEntityT, BotSelfT, BotSoundT, BotTraceT};
     use qa_client::text::localization::LocalizationProfile;
     use qa_core::cmd::Dialect;
     use qa_core::cvar::CvarRegistry;
@@ -2068,5 +2939,496 @@ mod tests {
             panic!("clients array");
         };
         assert_eq!(clients[0].get("sequence"), Some(&SaveJson::Number(1.0)));
+    }
+
+    /// Recorded chat delivery (locstring, team-only).
+    struct BehaviorProbes {
+        /// Behavior clock in seconds.
+        clock: Rc<RefCell<f64>>,
+        /// Pre-think calls.
+        pre: Rc<RefCell<u32>>,
+        /// Post-think calls.
+        post: Rc<RefCell<u32>>,
+        /// Delivered chats.
+        chats: Rc<RefCell<Vec<(String, bool)>>>,
+        /// Selected weapons.
+        selected: Rc<RefCell<Vec<i32>>>,
+        /// Weapon impulses.
+        impulses: Rc<RefCell<Vec<i32>>>,
+        /// Chat delay milliseconds.
+        delay_ms: f64,
+    }
+
+    impl BehaviorProbes {
+        /// Probes over a 100-second clock.
+        fn new() -> Self {
+            Self {
+                clock: Rc::new(RefCell::new(100.0)),
+                pre: Rc::new(RefCell::new(0)),
+                post: Rc::new(RefCell::new(0)),
+                chats: Rc::new(RefCell::new(Vec::new())),
+                selected: Rc::new(RefCell::new(Vec::new())),
+                impulses: Rc::new(RefCell::new(Vec::new())),
+                delay_ms: 0.0,
+            }
+        }
+
+        /// Behavior callbacks recording into the probes. The chat sink draws
+        /// from the lent RNG like the transport `chats.txt` lookup.
+        fn callbacks(&self) -> RereleaseBehaviorCallbacks {
+            let clock = Rc::clone(&self.clock);
+            let pre = Rc::clone(&self.pre);
+            let post = Rc::clone(&self.post);
+            let chats = Rc::clone(&self.chats);
+            let selected = Rc::clone(&self.selected);
+            let impulses = Rc::clone(&self.impulses);
+            RereleaseBehaviorCallbacks {
+                time: Rc::new(move || *clock.borrow()),
+                pre_think: Rc::new(move || *pre.borrow_mut() += 1),
+                post_think: Rc::new(move || *post.borrow_mut() += 1),
+                chat: Rc::new(move |event, random| {
+                    random.next();
+                    chats.borrow_mut().push((event.locstring, event.team_only));
+                }),
+                select_weapon: Rc::new(move |number| selected.borrow_mut().push(number)),
+                weapon_impulse: Rc::new(move |number| {
+                    impulses.borrow_mut().push(number);
+                    0
+                }),
+                human_teammate_near: Rc::new(|| false),
+            }
+        }
+
+        /// Driver parameters over the shared knowledge fixture plus two
+        /// certain chats (`connected`, `match_start`).
+        fn params(&self, source: RereleaseBotSource) -> RereleaseBehaviorParams {
+            let mut fixture = knowledge();
+            let delay_ms = self.delay_ms;
+            fixture.chats = vec![
+                ChatEntry {
+                    base: BotSourceEntry {
+                        source: None,
+                        unknown: Vec::new(),
+                    },
+                    locstring: "hi".to_string(),
+                    chat_type: "connected".to_string(),
+                    time: delay_ms,
+                    chance: 100.0,
+                    team: false,
+                },
+                ChatEntry {
+                    base: BotSourceEntry {
+                        source: None,
+                        unknown: Vec::new(),
+                    },
+                    locstring: "gl".to_string(),
+                    chat_type: "match_start".to_string(),
+                    time: delay_ms,
+                    chance: 100.0,
+                    team: true,
+                },
+            ];
+            RereleaseBehaviorParams {
+                definition: "test-definition".to_string(),
+                source,
+                knowledge: Rc::new(fixture),
+                skill: "novice".to_string(),
+                seed: 1234,
+                game_mode: BotGameModeT {
+                    game_type: "dm".to_string(),
+                    weapon_stay: false,
+                    has_teams: Some(true),
+                    team_damage: Some(false),
+                },
+                character: None,
+                max_health: 100.0,
+                run_speed: 320.0,
+                walk_speed: 160.0,
+                movement: RereleaseBehaviorMovement {
+                    gravity: 800.0,
+                    jump_velocity: 270.0,
+                    jump_air_seconds: 0.7,
+                    maximum_landing_rise: 18.0,
+                    start_above: 56.0,
+                    body_mins: Vec3 {
+                        x: -16.0,
+                        y: -16.0,
+                        z: -24.0,
+                    },
+                    body_maxs: Vec3 {
+                        x: 16.0,
+                        y: 16.0,
+                        z: 32.0,
+                    },
+                },
+                callbacks: self.callbacks(),
+            }
+        }
+    }
+
+    /// Empty behavior world: alive, grounded, clear traces, no entities.
+    struct FakeBehaviorWorld {
+        /// Server time seconds.
+        time: f32,
+    }
+
+    impl BotWorldT for FakeBehaviorWorld {
+        fn time(&self) -> f32 {
+            self.time
+        }
+
+        fn frame_time(&self) -> f32 {
+            0.05
+        }
+
+        fn bot_self(&self) -> BotSelfT {
+            BotSelfT {
+                id: 1,
+                origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                view_angles: Vec3 {
+                    x: 0.0,
+                    y: 90.0,
+                    z: 0.0,
+                },
+                eye: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 22.0,
+                },
+                health: 100.0,
+                armor: 0.0,
+                items: 0,
+                ammo: HashMap::new(),
+                current_weapon: 0,
+                on_ground: true,
+                water_level: 0,
+                air_seconds: None,
+                on_lift: None,
+                team: 0,
+                dead: false,
+                has_protection: false,
+                max_armor: None,
+                carrying_objective: false,
+            }
+        }
+
+        fn trace_line(&self, _start: Vec3, end: Vec3) -> BotTraceT {
+            BotTraceT {
+                fraction: 1.0,
+                endpos: end,
+                startsolid: false,
+                hit_id: -1,
+            }
+        }
+
+        fn trace_box(&self, _start: Vec3, _mins: Vec3, _maxs: Vec3, end: Vec3) -> BotTraceT {
+            BotTraceT {
+                fraction: 1.0,
+                endpos: end,
+                startsolid: false,
+                hit_id: -1,
+            }
+        }
+
+        fn point_contents(&self, _point: Vec3) -> i32 {
+            0
+        }
+
+        fn entities(&self) -> Vec<BotEntityT> {
+            Vec::new()
+        }
+
+        fn hearing(&self) -> Vec<BotSoundT> {
+            Vec::new()
+        }
+
+        fn nav(&mut self) -> Option<&mut dyn RereleaseNavigation> {
+            None
+        }
+    }
+
+    /// Q1 drivers resolve weapon impulses; Q2 drivers select directly.
+    #[test]
+    fn driver_sources_select_their_weapon_path() {
+        let probes = BehaviorProbes::new();
+        let q1 = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q1)).expect("q1 builds");
+        assert!(q1.brain.config.weapon_impulse.is_some());
+        assert!(q1.brain.config.on_weapon_select.is_none());
+        let q2 = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q2)).expect("q2 builds");
+        assert!(q2.brain.config.weapon_impulse.is_none());
+        assert!(q2.brain.config.on_weapon_select.is_some());
+    }
+
+    /// Think runs the hooks and delivers due chats through the lent RNG.
+    #[test]
+    fn think_runs_hooks_and_delivers_due_chats() {
+        let probes = BehaviorProbes::new();
+        let mut driver = create_rerelease_behavior(probes.params(RereleaseBotSource::Q1)).expect("builds");
+        let mut world = FakeBehaviorWorld { time: 100.0 };
+        let command = driver.think(&mut world);
+        assert_eq!(*probes.pre.borrow(), 1);
+        assert_eq!(*probes.post.borrow(), 1);
+        assert_eq!(
+            *probes.chats.borrow(),
+            vec![("hi".to_string(), false), ("gl".to_string(), true)]
+        );
+        assert_eq!(command.view_angles.x, 0.0);
+        assert_eq!(command.view_angles.y, 90.0);
+    }
+
+    /// Future chats wait until their delivery time.
+    #[test]
+    fn think_defers_future_chats_until_due() {
+        let probes = BehaviorProbes {
+            delay_ms: 5000.0,
+            ..BehaviorProbes::new()
+        };
+        let mut driver = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q2)).expect("builds");
+        let mut world = FakeBehaviorWorld { time: 100.0 };
+        driver.think(&mut world);
+        assert!(probes.chats.borrow().is_empty());
+        *probes.clock.borrow_mut() = 106.0;
+        driver.think(&mut world);
+        assert_eq!(probes.chats.borrow().len(), 2);
+    }
+
+    /// Delegating methods drive the brain goal state.
+    #[test]
+    fn delegating_methods_drive_the_brain() {
+        let probes = BehaviorProbes::new();
+        let mut driver = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q1)).expect("builds");
+        assert_eq!(driver.goal_status(), BotGoalStatus::ERROR);
+        driver.request_move_to_point(Vec3 {
+            x: 64.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        assert_eq!(driver.goal_status(), BotGoalStatus::IN_PROGRESS);
+        driver.request_follow_entity(
+            7,
+            Vec3 {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+        );
+        assert_eq!(driver.goal_status(), BotGoalStatus::IN_PROGRESS);
+        driver.set_game_mode(BotGameModeT {
+            game_type: "ctf".to_string(),
+            weapon_stay: true,
+            has_teams: Some(true),
+            team_damage: Some(true),
+        });
+        let image = driver.checkpoint_json();
+        let mode = image.get("brain").expect("brain").get("gameMode").expect("mode");
+        assert_eq!(mode.get("gameType"), Some(&str("ctf")));
+        driver.set_objective_goal(Some(Vec3 { x: 1.0, y: 2.0, z: 3.0 }));
+        assert_eq!(driver.goal_status(), BotGoalStatus::IN_PROGRESS);
+    }
+
+    /// Checkpoint restores memory, RNG, and pending chats exactly.
+    #[test]
+    fn checkpoint_restores_memory_rng_and_pending_chats() {
+        let probes = BehaviorProbes {
+            delay_ms: 5000.0,
+            ..BehaviorProbes::new()
+        };
+        let mut driver = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q1)).expect("builds");
+        driver.request_move_to_point(Vec3 {
+            x: 64.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        let mut world = FakeBehaviorWorld { time: 100.0 };
+        driver.think(&mut world);
+        let before = driver.checkpoint_json();
+        let SaveJson::Array(pending) = before.get("pendingChats").expect("pending") else {
+            panic!("pending chats array");
+        };
+        assert_eq!(pending.len(), 2);
+        driver.request_follow_entity(
+            7,
+            Vec3 {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+        );
+        driver.restore_json(&before).expect("restore");
+        let after = driver.checkpoint_json();
+        assert_eq!(before, after);
+        *probes.clock.borrow_mut() = 200.0;
+        driver.think(&mut world);
+        assert_eq!(probes.chats.borrow().len(), 2);
+    }
+
+    /// Restore rejects foreign checkpoints with the donor message.
+    #[test]
+    fn restore_rejects_foreign_checkpoints() {
+        let probes = BehaviorProbes::new();
+        let mut driver = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q1)).expect("builds");
+        let image = driver.checkpoint_json();
+        for (key, value) in [
+            ("version", int(2)),
+            ("source", str("q2-rerelease")),
+            ("definition", str("other-definition")),
+        ] {
+            let mut foreign = image.clone();
+            let SaveJson::Object(members) = &mut foreign else {
+                panic!("behavior object");
+            };
+            let slot = members.iter_mut().find(|(name, _)| name == key).expect("member");
+            slot.1 = value;
+            assert_eq!(
+                driver.restore_json(&foreign),
+                Err("Rerelease behavior checkpoint belongs to another mounted source definition".to_string())
+            );
+        }
+    }
+
+    /// The factory reports missing skill settings.
+    #[test]
+    fn factory_reports_missing_skill_settings() {
+        let probes = BehaviorProbes::new();
+        let mut params = probes.params(RereleaseBotSource::Q1);
+        params.knowledge = Rc::new(BotKnowledge::default());
+        let error = create_rerelease_behavior(params).expect_err("skill-less knowledge fails");
+        assert!(error.contains("no skill settings"), "unexpected error: {error}");
+    }
+
+    /// Replace a nested object member by path.
+    fn set_path(image: &mut SaveJson, path: &[&str], value: SaveJson) {
+        let (key, rest) = path.split_first().expect("path");
+        let SaveJson::Object(members) = image else {
+            panic!("behavior object");
+        };
+        let slot = members.iter_mut().find(|(name, _)| name == key).expect("member");
+        if rest.is_empty() {
+            slot.1 = value;
+        } else {
+            set_path(&mut slot.1, rest, value);
+        }
+    }
+
+    /// Populated maps, sets, paths, and goals survive the image.
+    #[test]
+    fn populated_memory_decodes_maps_paths_and_goals() {
+        let probes = BehaviorProbes::new();
+        let mut driver = ApplicationRereleaseBehavior::new(probes.params(RereleaseBotSource::Q1)).expect("builds");
+        driver.request_move_to_point(Vec3 {
+            x: 64.0,
+            y: 0.0,
+            z: 0.0,
+        });
+        let mut image = driver.checkpoint_json();
+        let awareness = |id: i32| {
+            obj(vec![
+                ("key", int(i64::from(id))),
+                (
+                    "value",
+                    encode_awareness(&BotAwarenessT {
+                        id,
+                        sight: 0.5,
+                        weapon: 0.25,
+                        last_contact: 91.0,
+                        last_seen: 92.0,
+                        last_heard: 93.0,
+                        last_known_origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+                    }),
+                ),
+            ])
+        };
+        set_path(
+            &mut image,
+            &["brain", "memory", "awareness"],
+            arr(vec![awareness(3), awareness(1)]),
+        );
+        set_path(
+            &mut image,
+            &["brain", "memory", "unreachableUntil"],
+            arr(vec![obj(vec![("key", int(5)), ("value", num(12.5))])]),
+        );
+        set_path(
+            &mut image,
+            &["brain", "memory", "objectiveHome"],
+            arr(vec![obj(vec![
+                ("key", int(2)),
+                ("value", vec3_json(Vec3 { x: 4.0, y: 5.0, z: 6.0 })),
+            ])]),
+        );
+        set_path(
+            &mut image,
+            &["brain", "memory", "saidThisLevel"],
+            arr(vec![str("b"), str("a")]),
+        );
+        let path = NavPathT {
+            nodes: vec![1, 2],
+            points: vec![Vec3 { x: 7.0, y: 8.0, z: 9.0 }],
+            links: vec![
+                Some(NavGraphLinkT {
+                    from: 1,
+                    to: 2,
+                    link_type: NavLinkType::Ladder,
+                    traversal: Some(NavTraversalT {
+                        funnel: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                        start: Vec3 { x: 2.0, y: 2.0, z: 2.0 },
+                        end: Vec3 { x: 3.0, y: 3.0, z: 3.0 },
+                    }),
+                    entity_bounds: Some(NavEntityBounds {
+                        mins: Vec3 {
+                            x: -1.0,
+                            y: -1.0,
+                            z: -1.0,
+                        },
+                        maxs: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+                    }),
+                }),
+                None,
+            ],
+            cost: 1.5,
+            generation: 9,
+            map_digest: "abc".to_string(),
+        };
+        set_path(
+            &mut image,
+            &["brain", "memory", "pathState", "path"],
+            encode_path(&path),
+        );
+        driver.restore_json(&image).expect("restore");
+        let again = driver.checkpoint_json();
+        let memory = again.get("brain").expect("brain").get("memory").expect("memory");
+        let SaveJson::Array(records) = memory.get("awareness").expect("awareness") else {
+            panic!("awareness array");
+        };
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].get("key"), Some(&int(1)));
+        assert_eq!(records[1].get("key"), Some(&int(3)));
+        let SaveJson::Array(said) = memory.get("saidThisLevel").expect("said") else {
+            panic!("said array");
+        };
+        assert_eq!(said, &vec![str("a"), str("b")]);
+        let stored = memory.get("pathState").expect("path state").get("path").expect("path");
+        assert_eq!(stored, &encode_path(&path));
+        let goal = memory.get("explicitGoal").expect("goal");
+        assert_eq!(goal.get("kind"), Some(&str("point")));
+        assert_eq!(goal.get("owner"), Some(&str("external")));
+        driver.request_follow_entity(
+            7,
+            Vec3 {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+        );
+        let followed = driver.checkpoint_json();
+        let goal = followed
+            .get("brain")
+            .expect("brain")
+            .get("memory")
+            .expect("memory")
+            .get("explicitGoal")
+            .expect("goal");
+        assert_eq!(goal.get("kind"), Some(&str("entity")));
     }
 }
