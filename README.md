@@ -17,8 +17,9 @@ cargo build --release
 ./target/release/qa-muse
 ```
 
-With no arguments it opens the startup menu. `--help` lists every
-option; `--version` prints the release (`Quake Anthology 0.1.0`).
+With no arguments it opens the startup menu in a window and runs
+until quit (it needs a display). `--help` lists every option;
+`--version` prints the release (`Quake Anthology 0.1.0`).
 
 ## Game data
 
@@ -49,8 +50,8 @@ QuakeC game logic.
 # Two-player local splitscreen deathmatch
 ./target/release/qa-muse --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
 
-# Software rendering instead of GL, custom window size
-./target/release/qa-muse --renderer cpu --width 1280 --height 720 --gamma 1.2
+# Software rendering instead of GL (headless only, so with --frames)
+./target/release/qa-muse --renderer cpu --width 1280 --height 720 --gamma 1.2 --frames 20
 
 # Mixed-game recipe
 ./target/release/qa-muse --preset q2-q1-q3
@@ -59,8 +60,23 @@ QuakeC game logic.
 Movement, characters, and models follow the game you pick
 (`--movement q1|q2|q3|qw`, `--character`, `--model`); `+command`
 arguments run startup console commands (`'+bind x "+attack"'` as one
-shell argument). `--frames N` runs N simulation steps and quits —
-useful for smoke-testing a setup without a window.
+shell argument). `--frames N` runs N headless simulation steps and
+quits — useful for smoke-testing a setup without a window:
+
+```sh
+# Headless smoke test: prints `Ran 20 host frames, 20 server ticks,
+# 5 entities (20 render frames)` and exits 0
+./target/release/qa-muse --frames 20
+
+# Windowed smoke test: opens a window, runs 600 frames, prints
+# `Ran 600 windowed frames` and exits 0 (needs a display; use
+# xvfb-run on a headless machine)
+xvfb-run -a ./target/release/qa-muse --windowed --frames 600
+```
+
+Without `--frames` (and without `--dedicated`), `qa-muse` opens a
+window and runs until quit; `--dedicated` without `--frames` runs
+the headless server until stopped.
 
 ## Hosting and joining
 
@@ -88,10 +104,12 @@ standard|ctf|lmctf|tag|deathball|horde`, `--seed N`,
 ## Status
 
 Pre-release (`0.1.0`), under active development. Verified working:
-startup menu, game launch with installed content, local seats,
-dedicated servers, native-protocol clients, and the headless
-simulation (`--dedicated … --frames N` prints a per-run summary such
-as `Ran 20 host frames, 20 server ticks, 5 entities`).
+startup menu (opens in a window, runs until quit), game launch with
+installed content, local seats, dedicated servers, native-protocol
+clients, the headless simulation (`--dedicated … --frames N` prints
+a per-run summary such as `Ran 20 host frames, 20 server ticks, 5
+entities`), and the windowed smoke run (`--windowed --frames 600`
+prints `Ran 600 windowed frames` and exits 0).
 
 ## Development
 

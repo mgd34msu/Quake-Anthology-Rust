@@ -135,7 +135,7 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
             Ok(())
         }
         ApplicationCommand::Run { options } => {
-            if options.windowed {
+            if use_windowed_composition(&options) {
                 run_windowed(&options, crate::bootstrap::startup::StartupEntry::Run, stdout)?;
                 return Ok(());
             }
@@ -143,7 +143,7 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
             Ok(())
         }
         ApplicationCommand::Menu { options } => {
-            if options.windowed {
+            if use_windowed_composition(&options) {
                 run_windowed(&options, crate::bootstrap::startup::StartupEntry::Menu, stdout)?;
                 return Ok(());
             }
@@ -151,6 +151,16 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
             Ok(())
         }
     }
+}
+
+/// Whether Run/Menu dispatches to the windowed composition.
+///
+/// Non-dedicated runs without `--frames` open the existing `--windowed`
+/// composition, which runs until quit (donor parity). Every `--frames`
+/// path and every `--dedicated` path keeps the previous headless
+/// behavior and output byte for byte.
+fn use_windowed_composition(options: &crate::options::ApplicationOptions) -> bool {
+    options.windowed || (!options.dedicated && options.frame_limit.is_none())
 }
 
 /// Run the headless application (default dedicated/local behavior).
@@ -1605,7 +1615,31 @@ fn list_content(corpus_root: &str, stdout: &mut dyn Write) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::ApplicationOptions;
     use qa_guest::qc::program::load_qc_program;
+
+    #[test]
+    fn windowed_routing_covers_dedicated_and_frame_limits() {
+        let base = ApplicationOptions::default();
+        assert!(use_windowed_composition(&base));
+        let mut windowed = base.clone();
+        windowed.windowed = true;
+        assert!(use_windowed_composition(&windowed));
+        let mut windowed_frames = base.clone();
+        windowed_frames.windowed = true;
+        windowed_frames.frame_limit = Some(600);
+        assert!(use_windowed_composition(&windowed_frames));
+        let mut headless_frames = base.clone();
+        headless_frames.frame_limit = Some(20);
+        assert!(!use_windowed_composition(&headless_frames));
+        let mut dedicated = base.clone();
+        dedicated.dedicated = true;
+        assert!(!use_windowed_composition(&dedicated));
+        let mut dedicated_frames = base.clone();
+        dedicated_frames.dedicated = true;
+        dedicated_frames.frame_limit = Some(20);
+        assert!(!use_windowed_composition(&dedicated_frames));
+    }
 
     /// Minimal version-6 `progs.dat`: two statements, one function global,
     /// one `think` field, a null function plus `fire_rocket`, and 28
