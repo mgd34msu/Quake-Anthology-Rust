@@ -623,6 +623,11 @@ where
         &self.backend
     }
 
+    /// Mutable current backend (image uploads ahead of frame execution).
+    pub fn backend_mut(&mut self) -> &mut Backend {
+        &mut self.backend
+    }
+
     /// Resource owner.
     #[must_use]
     pub fn owner(&self) -> &RendererResourceOwner {
