@@ -32678,9 +32678,13 @@ impl super::weapon_slot::SourceWeaponHandoff for C11QuakeCHandoff {
     }
 
     fn holster(&mut self) {
-        // Missing siblings: the QuakeC source settles client weapons
-        // without an explicit holster request; nothing to send until a
-        // holster call lands on the source.
+        // Donor `primaryHandoff` quakec arm (donor runtime.ts 2228): the
+        // QuakeC source settles client weapons without an explicit
+        // holster request, so holster only guards owner liveness.
+        assert!(
+            self.tables.sim().actors.borrow().is_live(&self.actor),
+            "QC weapon owner retired"
+        );
     }
 
     fn is_holstered(&self) -> bool {
@@ -35799,20 +35803,666 @@ impl SharedSimulation {
             },
             Vec::new(),
         );
-        match mechanic {
-            GrappleMechanicDetail::Q2Ctf { .. } => {
-                let _equipment = qa_content::q2::equipment::ctf_grapple::Q2CtfGrappleEquipment::new(
+        let source = match mechanic {
+            GrappleMechanicDetail::Q2Ctf { .. } => super::grapple_runtime::GrappleSource::Q2Ctf {
+                game,
+                core: qa_content::q2::equipment::ctf_grapple::Q2CtfGrappleEquipment::new(
                     super::grapple_runtime::equipment_grapple_hooks(),
-                );
-            }
-            _ => {
-                let _equipment = qa_content::q2::equipment::lmctf_grapple::LmctfGrappleEquipment::new(
+                ),
+            },
+            _ => super::grapple_runtime::GrappleSource::Q2Lmctf {
+                game,
+                core: qa_content::q2::equipment::lmctf_grapple::LmctfGrappleEquipment::new(
                     super::grapple_runtime::equipment_grapple_hooks(),
-                );
-            }
-        }
-        let _ = (game, random);
-        panic!("Missing siblings: grapple checkpoint bridge lane owns GrappleFoundationBridge::Q2");
+                ),
+            },
+        };
+        let slot_host = matches!(binding, qa_content::contract::GrappleBinding::Slot).then(|| self.grapple_slot_host());
+        let grapple = super::grapple_runtime::GrappleRuntime::new(
+            selection.clone(),
+            source,
+            random,
+            slot_host,
+            super::grapple_runtime::GrappleFoundationBridge::Q2(Box::new(C11Q2FoundationBridge)),
+        )
+        .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+        Ok(Some(grapple))
+    }
+}
+
+// --- C11 part 2f-extra: Q2 grapple foundation checkpoint bridge (donor
+// `captureFoundation`/`restoreFoundation` in
+// `src/content/q2/foundation/entity-services.ts` over the
+// `src/persistence/q2-foundation.ts` record) ---
+
+/// Production Q2 foundation checkpoint bridge for grapple arenas.
+///
+/// Capture runs [`Q2GameServices::capture_foundation`] and converts the
+/// content checkpoint into the persistence shape; restore converts back
+/// and runs [`Q2GameServices::restore_foundation`]. The field mapping
+/// mirrors the donor `readQ2FoundationCheckpoint` record (donor
+/// `src/persistence/q2-foundation.ts` 21-47).
+struct C11Q2FoundationBridge;
+
+/// Q2 solidity word (donor `solid` choice, q2-foundation.ts 40).
+fn c11_q2_solid_name(solid: qa_content::q2::foundation::host::Q2Solid) -> &'static str {
+    use qa_content::q2::foundation::host::Q2Solid;
+    match solid {
+        Q2Solid::None => "none",
+        Q2Solid::Trigger => "trigger",
+        Q2Solid::Box => "box",
+        Q2Solid::Brush => "brush",
+    }
+}
+
+/// Parse a Q2 solidity word (donor `solid` choice, q2-foundation.ts 40).
+fn c11_parse_q2_solid(text: &str) -> Result<qa_content::q2::foundation::host::Q2Solid, qa_world::WorldError> {
+    use qa_content::q2::foundation::host::Q2Solid;
+    match text {
+        "none" => Ok(Q2Solid::None),
+        "trigger" => Ok(Q2Solid::Trigger),
+        "box" => Ok(Q2Solid::Box),
+        "brush" => Ok(Q2Solid::Brush),
+        _ => Err(qa_world::WorldError::BadSave(format!("Unknown Q2 solidity: {text:?}"))),
+    }
+}
+
+/// Q2 motion word (donor `motion` choice, q2-foundation.ts 40).
+fn c11_q2_motion_name(motion: qa_content::q2::foundation::host::Q2MotionKind) -> &'static str {
+    use qa_content::q2::foundation::host::Q2MotionKind;
+    match motion {
+        Q2MotionKind::Stationary => "stationary",
+        Q2MotionKind::Push => "push",
+        Q2MotionKind::Stop => "stop",
+        Q2MotionKind::Toss => "toss",
+        Q2MotionKind::NewToss => "new-toss",
+        Q2MotionKind::Bounce => "bounce",
+        Q2MotionKind::WallBounce => "wall-bounce",
+        Q2MotionKind::FlyMissile => "fly-missile",
+        Q2MotionKind::Fly => "fly",
+        Q2MotionKind::Step => "step",
+    }
+}
+
+/// Parse a Q2 motion word (donor `motion` choice, q2-foundation.ts 40).
+fn c11_parse_q2_motion(text: &str) -> Result<qa_content::q2::foundation::host::Q2MotionKind, qa_world::WorldError> {
+    use qa_content::q2::foundation::host::Q2MotionKind;
+    match text {
+        "stationary" => Ok(Q2MotionKind::Stationary),
+        "push" => Ok(Q2MotionKind::Push),
+        "stop" => Ok(Q2MotionKind::Stop),
+        "toss" => Ok(Q2MotionKind::Toss),
+        "new-toss" => Ok(Q2MotionKind::NewToss),
+        "bounce" => Ok(Q2MotionKind::Bounce),
+        "wall-bounce" => Ok(Q2MotionKind::WallBounce),
+        "fly-missile" => Ok(Q2MotionKind::FlyMissile),
+        "fly" => Ok(Q2MotionKind::Fly),
+        "step" => Ok(Q2MotionKind::Step),
+        _ => Err(qa_world::WorldError::BadSave(format!("Unknown Q2 motion: {text:?}"))),
+    }
+}
+
+/// Provider reference text (`namespace:name`, donor `namespaced`).
+fn c11_q2_provider_name(provider: &qa_core::identity::ProviderId) -> String {
+    format!("{}:{}", provider.namespace, provider.name)
+}
+
+/// Parse a provider reference (donor `namespaced`).
+fn c11_parse_q2_provider(text: &str) -> Result<qa_core::identity::ProviderId, qa_world::WorldError> {
+    text.split_once(':')
+        .map(|(namespace, name)| qa_core::identity::ProviderId::new(namespace, name))
+        .ok_or_else(|| qa_world::WorldError::BadSave(format!("expected namespace:name, found {text:?}")))
+}
+
+/// Attack cause into the persistence shape.
+fn c11_q2_cause_to_save(
+    cause: &qa_content::q2::support::contracts::AttackCause,
+) -> crate::persistence::q2::foundation::Q2AttackCause {
+    use crate::persistence::q2::foundation::{Q2AttackCause, Q2NativeCause};
+    use qa_content::q2::support::contracts::{AttackCause, EnvironmentHazard, Q1ArmorEffect, Q2NativeGame};
+    match cause {
+        AttackCause::Q1 {
+            death_type,
+            armor_effect,
+        } => Q2AttackCause::Q1 {
+            death_type: death_type.clone(),
+            armor_effect: armor_effect.map(|effect| match effect {
+                Q1ArmorEffect::Bypass => "bypass".to_string(),
+                Q1ArmorEffect::HalfEffectiveness => "half-effectiveness".to_string(),
+            }),
+        },
+        AttackCause::Q2 {
+            means_of_death,
+            damage_flags,
+            native,
+        } => Q2AttackCause::Q2 {
+            means_of_death: i64::from(*means_of_death),
+            damage_flags: i64::from(*damage_flags),
+            native: native.as_ref().map(|native| match native {
+                qa_content::q2::support::contracts::Q2NativeCause::Classic { game, value } => Q2NativeCause::Classic {
+                    game: match game {
+                        Q2NativeGame::Base => "base".to_string(),
+                        Q2NativeGame::Xatrix => "xatrix".to_string(),
+                        Q2NativeGame::Rogue => "rogue".to_string(),
+                        Q2NativeGame::Ctf => "ctf".to_string(),
+                    },
+                    value: i64::from(*value),
+                },
+                qa_content::q2::support::contracts::Q2NativeCause::Rerelease {
+                    id,
+                    friendly_fire,
+                    no_point_loss,
+                } => Q2NativeCause::Rerelease {
+                    id: *id as u64,
+                    friendly_fire: *friendly_fire,
+                    no_point_loss: *no_point_loss,
+                },
+            }),
+        },
+        AttackCause::Q3 {
+            means_of_death,
+            damage_flags,
+        } => Q2AttackCause::Q3 {
+            means_of_death: i64::from(*means_of_death),
+            damage_flags: i64::from(*damage_flags),
+        },
+        AttackCause::Environment { hazard } => Q2AttackCause::Environment {
+            hazard: match hazard {
+                EnvironmentHazard::Fall => "fall".to_string(),
+                EnvironmentHazard::Drown => "drown".to_string(),
+                EnvironmentHazard::Lava => "lava".to_string(),
+                EnvironmentHazard::Slime => "slime".to_string(),
+                EnvironmentHazard::Crush => "crush".to_string(),
+                EnvironmentHazard::Trigger => "trigger".to_string(),
+            },
+        },
+    }
+}
+
+/// Attack cause out of the persistence shape.
+fn c11_q2_cause_from_save(
+    cause: &crate::persistence::q2::foundation::Q2AttackCause,
+) -> Result<qa_content::q2::support::contracts::AttackCause, qa_world::WorldError> {
+    use crate::persistence::q2::foundation::{Q2AttackCause, Q2NativeCause};
+    use qa_content::q2::support::contracts::{AttackCause, EnvironmentHazard, Q1ArmorEffect, Q2NativeGame};
+    let bad = |what: String| qa_world::WorldError::BadSave(what);
+    match cause {
+        Q2AttackCause::Q1 {
+            death_type,
+            armor_effect,
+        } => Ok(AttackCause::Q1 {
+            death_type: death_type.clone(),
+            armor_effect: armor_effect
+                .as_deref()
+                .map(|effect| match effect {
+                    "bypass" => Ok(Q1ArmorEffect::Bypass),
+                    "half-effectiveness" => Ok(Q1ArmorEffect::HalfEffectiveness),
+                    _ => Err(bad(format!("Unknown attack armor effect: {effect:?}"))),
+                })
+                .transpose()?,
+        }),
+        Q2AttackCause::Q2 {
+            means_of_death,
+            damage_flags,
+            native,
+        } => Ok(AttackCause::Q2 {
+            means_of_death: i32::try_from(*means_of_death)
+                .map_err(|_| bad("Attack means of death is out of range".to_string()))?,
+            damage_flags: i32::try_from(*damage_flags)
+                .map_err(|_| bad("Attack damage flags are out of range".to_string()))?,
+            native: native
+                .as_ref()
+                .map(|native| match native {
+                    Q2NativeCause::Classic { game, value } => {
+                        let game = match game.as_str() {
+                            "base" => Q2NativeGame::Base,
+                            "xatrix" => Q2NativeGame::Xatrix,
+                            "rogue" => Q2NativeGame::Rogue,
+                            "ctf" => Q2NativeGame::Ctf,
+                            _ => return Err(bad(format!("Unknown native attack game: {game:?}"))),
+                        };
+                        Ok(qa_content::q2::support::contracts::Q2NativeCause::Classic {
+                            game,
+                            value: i32::try_from(*value)
+                                .map_err(|_| bad("Native attack value is out of range".to_string()))?,
+                        })
+                    }
+                    Q2NativeCause::Rerelease {
+                        id,
+                        friendly_fire,
+                        no_point_loss,
+                    } => Ok(qa_content::q2::support::contracts::Q2NativeCause::Rerelease {
+                        id: i32::try_from(*id)
+                            .map_err(|_| bad("Native attack cause id is out of range".to_string()))?,
+                        friendly_fire: *friendly_fire,
+                        no_point_loss: *no_point_loss,
+                    }),
+                })
+                .transpose()?,
+        }),
+        Q2AttackCause::Q3 {
+            means_of_death,
+            damage_flags,
+        } => Ok(AttackCause::Q3 {
+            means_of_death: i32::try_from(*means_of_death)
+                .map_err(|_| bad("Attack means of death is out of range".to_string()))?,
+            damage_flags: i32::try_from(*damage_flags)
+                .map_err(|_| bad("Attack damage flags are out of range".to_string()))?,
+        }),
+        Q2AttackCause::Environment { hazard } => Ok(AttackCause::Environment {
+            hazard: match hazard.as_str() {
+                "fall" => EnvironmentHazard::Fall,
+                "drown" => EnvironmentHazard::Drown,
+                "lava" => EnvironmentHazard::Lava,
+                "slime" => EnvironmentHazard::Slime,
+                "crush" => EnvironmentHazard::Crush,
+                "trigger" => EnvironmentHazard::Trigger,
+                _ => return Err(bad(format!("Unknown attack hazard: {hazard:?}"))),
+            },
+        }),
+    }
+}
+
+/// Attack checkpoint into the persistence shape.
+fn c11_q2_attack_to_save(
+    attack: &qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint,
+) -> crate::persistence::q2::foundation::Q2AttackCheckpoint {
+    use crate::persistence::q2::foundation::Q2AttackCheckpoint;
+    Q2AttackCheckpoint {
+        sequence: attack.attack.sequence,
+        time: attack.attack.time,
+        attacker: attack.attacker,
+        inflictor: attack.inflictor,
+        originating_projectile: attack.originating_projectile,
+        damage_powerup_owner: attack.attack.damage_powerup_owner.as_ref().map(c11_q2_provider_name),
+        weapon: attack.attack.weapon.clone(),
+        weapon_provider: c11_q2_provider_name(&attack.attack.weapon_provider),
+        combat_provider: c11_q2_provider_name(&attack.attack.combat_provider),
+        inventory_provider: c11_q2_provider_name(&attack.attack.inventory_provider),
+        movement_provider: c11_q2_provider_name(&attack.attack.movement_provider),
+        cause: c11_q2_cause_to_save(&attack.attack.cause),
+    }
+}
+
+/// Attack checkpoint out of the persistence shape.
+fn c11_q2_attack_from_save(
+    attack: &crate::persistence::q2::foundation::Q2AttackCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint, qa_world::WorldError> {
+    use qa_content::q2::foundation::checkpoint::Q2AttackCheckpoint;
+    use qa_content::q2::support::contracts::AttackProvenance;
+    Ok(Q2AttackCheckpoint {
+        attacker: attack.attacker,
+        inflictor: attack.inflictor,
+        originating_projectile: attack.originating_projectile,
+        attack: AttackProvenance {
+            sequence: attack.sequence,
+            time: attack.time,
+            attacker: None,
+            inflictor: None,
+            originating_projectile: None,
+            weapon: attack.weapon.clone(),
+            weapon_provider: c11_parse_q2_provider(&attack.weapon_provider)?,
+            damage_powerup_owner: attack
+                .damage_powerup_owner
+                .as_deref()
+                .map(c11_parse_q2_provider)
+                .transpose()?,
+            combat_provider: c11_parse_q2_provider(&attack.combat_provider)?,
+            inventory_provider: c11_parse_q2_provider(&attack.inventory_provider)?,
+            movement_provider: c11_parse_q2_provider(&attack.movement_provider)?,
+            cause: c11_q2_cause_from_save(&attack.cause)?,
+        },
+    })
+}
+
+/// Entity values into the persistence shape (donor `values`, q2-foundation.ts 30-40).
+#[allow(clippy::cast_precision_loss)]
+fn c11_q2_values_to_save(
+    values: &qa_content::q2::foundation::checkpoint::Q2EntityValues,
+) -> crate::persistence::q2::foundation::Q2EntityValues {
+    use crate::persistence::q2::foundation::Q2EntityValues;
+    Q2EntityValues {
+        classname: values.classname.clone(),
+        target: values.target.clone(),
+        targetname: values.targetname.clone(),
+        killtarget: values.killtarget.clone(),
+        combat_target: values.combat_target.clone(),
+        death_target: values.death_target.clone(),
+        health_target: values.health_target.clone(),
+        item_target: values.item_target.clone(),
+        message: values.message.clone(),
+        model: values.model.clone(),
+        model2: values.model2.clone(),
+        model3: values.model3.clone(),
+        model4: values.model4.clone(),
+        spawnflags: f64::from(values.spawnflags),
+        delay: values.delay,
+        wait: values.wait,
+        speed: values.speed,
+        accel: values.accel,
+        decel: values.decel,
+        damage: values.damage,
+        damage_radius: values.damage_radius,
+        radius_damage: values.radius_damage,
+        count: f64::from(values.count),
+        max_health: values.max_health,
+        view_height: f64::from(values.view_height),
+        frame: f64::from(values.frame),
+        old_frame: f64::from(values.old_frame),
+        scale: values.scale,
+        alpha: values.alpha,
+        skin: f64::from(values.skin),
+        effects: values.effects as f64,
+        render_flags: f64::from(values.render_flags),
+        flags: values.flags as f64,
+        server_flags: f64::from(values.server_flags),
+        light_level: f64::from(values.light_level),
+        power_cubes: f64::from(values.power_cubes),
+        timestamp: values.timestamp,
+        noise: values.noise.clone(),
+        sound: values.sound.clone(),
+        volume: values.volume,
+        attenuation: values.attenuation,
+        random: values.random,
+        map: values.map.clone(),
+        style: f64::from(values.style),
+        transition_started: values.transition_started,
+        clip_mask: f64::from(values.clip_mask),
+        projectile: values.projectile,
+        dodgeable: values.dodgeable,
+        laser_immune: values.laser_immune,
+        damageable_target: values.damageable_target,
+        visible: values.visible,
+        solid: c11_q2_solid_name(values.solid).to_string(),
+        motion: c11_q2_motion_name(values.motion).to_string(),
+        gravity: values.gravity,
+        gravity_vector: values.gravity_vector,
+        angular_velocity: values.angular_velocity,
+        movedir: values.movedir,
+        pos1: values.pos1,
+        pos2: values.pos2,
+        next_think: values.next_think,
+    }
+}
+
+/// Entity values out of the persistence shape (donor `values`, q2-foundation.ts 30-40).
+#[allow(clippy::cast_possible_truncation)]
+fn c11_q2_values_from_save(
+    values: &crate::persistence::q2::foundation::Q2EntityValues,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2EntityValues, qa_world::WorldError> {
+    use qa_content::q2::foundation::checkpoint::Q2EntityValues;
+    Ok(Q2EntityValues {
+        classname: values.classname.clone(),
+        target: values.target.clone(),
+        targetname: values.targetname.clone(),
+        killtarget: values.killtarget.clone(),
+        combat_target: values.combat_target.clone(),
+        death_target: values.death_target.clone(),
+        health_target: values.health_target.clone(),
+        item_target: values.item_target.clone(),
+        message: values.message.clone(),
+        model: values.model.clone(),
+        model2: values.model2.clone(),
+        model3: values.model3.clone(),
+        model4: values.model4.clone(),
+        spawnflags: values.spawnflags as i32,
+        delay: values.delay,
+        wait: values.wait,
+        speed: values.speed,
+        accel: values.accel,
+        decel: values.decel,
+        damage: values.damage,
+        damage_radius: values.damage_radius,
+        radius_damage: values.radius_damage,
+        count: values.count as i32,
+        max_health: values.max_health,
+        view_height: values.view_height as i32,
+        frame: values.frame as i32,
+        old_frame: values.old_frame as i32,
+        scale: values.scale,
+        alpha: values.alpha,
+        skin: values.skin as i32,
+        effects: values.effects as i64,
+        render_flags: values.render_flags as i32,
+        flags: values.flags as i64,
+        server_flags: values.server_flags as i32,
+        light_level: values.light_level as i32,
+        power_cubes: values.power_cubes as i32,
+        timestamp: values.timestamp,
+        noise: values.noise.clone(),
+        sound: values.sound.clone(),
+        volume: values.volume,
+        attenuation: values.attenuation,
+        random: values.random,
+        map: values.map.clone(),
+        style: values.style as i32,
+        transition_started: values.transition_started,
+        clip_mask: values.clip_mask as i32,
+        projectile: values.projectile,
+        dodgeable: values.dodgeable,
+        laser_immune: values.laser_immune,
+        damageable_target: values.damageable_target,
+        visible: values.visible,
+        solid: c11_parse_q2_solid(&values.solid)?,
+        motion: c11_parse_q2_motion(&values.motion)?,
+        gravity: values.gravity,
+        gravity_vector: values.gravity_vector,
+        angular_velocity: values.angular_velocity,
+        movedir: values.movedir,
+        pos1: values.pos1,
+        pos2: values.pos2,
+        next_think: values.next_think,
+    })
+}
+
+/// Entity links into the persistence shape.
+fn c11_q2_links_to_save(
+    links: &qa_content::q2::foundation::checkpoint::Q2EntityLinks,
+) -> crate::persistence::q2::foundation::Q2EntityLinks {
+    use crate::persistence::q2::foundation::Q2EntityLinks;
+    Q2EntityLinks {
+        activator: links.activator,
+        enemy: links.enemy,
+        owner: links.owner,
+        goal: links.goal,
+        team_master: links.team_master,
+        team_chain: links.team_chain,
+        chain: links.chain,
+        beam: links.beam,
+        beam2: links.beam2,
+        proboscus: links.proboscus,
+    }
+}
+
+/// Entity links out of the persistence shape.
+fn c11_q2_links_from_save(
+    links: &crate::persistence::q2::foundation::Q2EntityLinks,
+) -> qa_content::q2::foundation::checkpoint::Q2EntityLinks {
+    use qa_content::q2::foundation::checkpoint::Q2EntityLinks;
+    Q2EntityLinks {
+        activator: links.activator,
+        enemy: links.enemy,
+        owner: links.owner,
+        goal: links.goal,
+        team_master: links.team_master,
+        team_chain: links.team_chain,
+        chain: links.chain,
+        beam: links.beam,
+        beam2: links.beam2,
+        proboscus: links.proboscus,
+    }
+}
+
+/// Entity callbacks into the persistence shape.
+fn c11_q2_callbacks_to_save(
+    callbacks: &qa_content::q2::foundation::checkpoint::Q2EntityCallbackNames,
+) -> crate::persistence::q2::foundation::Q2EntityCallbacks {
+    use crate::persistence::q2::foundation::Q2EntityCallbacks;
+    Q2EntityCallbacks {
+        think: callbacks.think.clone(),
+        prethink: callbacks.prethink.clone(),
+        postthink: callbacks.postthink.clone(),
+        use_callback: callbacks.use_.clone(),
+        touch: callbacks.touch.clone(),
+        pain: callbacks.pain.clone(),
+        die: callbacks.die.clone(),
+        blocked: callbacks.blocked.clone(),
+    }
+}
+
+/// Entity callbacks out of the persistence shape.
+fn c11_q2_callbacks_from_save(
+    callbacks: &crate::persistence::q2::foundation::Q2EntityCallbacks,
+) -> qa_content::q2::foundation::checkpoint::Q2EntityCallbackNames {
+    use qa_content::q2::foundation::checkpoint::Q2EntityCallbackNames;
+    Q2EntityCallbackNames {
+        think: callbacks.think.clone(),
+        prethink: callbacks.prethink.clone(),
+        postthink: callbacks.postthink.clone(),
+        use_: callbacks.use_callback.clone(),
+        touch: callbacks.touch.clone(),
+        pain: callbacks.pain.clone(),
+        die: callbacks.die.clone(),
+        blocked: callbacks.blocked.clone(),
+    }
+}
+
+/// Entity checkpoint into the persistence shape.
+fn c11_q2_entity_to_save(
+    entity: &qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint,
+) -> crate::persistence::q2::foundation::Q2EntityCheckpoint {
+    use crate::persistence::q2::foundation::Q2EntityCheckpoint;
+    Q2EntityCheckpoint {
+        actor: entity.actor,
+        source_slot: entity.source_slot.map(u64::from),
+        spawn_classname: entity.classname.clone(),
+        spawn_ordinal: i64::from(entity.ordinal),
+        spawn_values: entity.spawn_values.clone(),
+        values: c11_q2_values_to_save(&entity.values),
+        links: c11_q2_links_to_save(&entity.links),
+        last_attack: entity.last_attack.as_ref().map(c11_q2_attack_to_save),
+        callbacks: c11_q2_callbacks_to_save(&entity.callbacks),
+    }
+}
+
+/// Entity checkpoint out of the persistence shape.
+fn c11_q2_entity_from_save(
+    entity: &crate::persistence::q2::foundation::Q2EntityCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint, qa_world::WorldError> {
+    use qa_content::q2::foundation::checkpoint::Q2EntityCheckpoint;
+    Ok(Q2EntityCheckpoint {
+        actor: entity.actor,
+        source_slot: entity
+            .source_slot
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| qa_world::WorldError::BadSave("Q2 source slot is out of range".to_string()))?,
+        classname: entity.spawn_classname.clone(),
+        ordinal: i32::try_from(entity.spawn_ordinal)
+            .map_err(|_| qa_world::WorldError::BadSave("Q2 spawn ordinal is out of range".to_string()))?,
+        spawn_values: entity.spawn_values.clone(),
+        values: c11_q2_values_from_save(&entity.values)?,
+        links: c11_q2_links_from_save(&entity.links),
+        last_attack: entity.last_attack.as_ref().map(c11_q2_attack_from_save).transpose()?,
+        callbacks: c11_q2_callbacks_from_save(&entity.callbacks),
+    })
+}
+
+/// Foundation counters into the persistence shape.
+fn c11_q2_counters_to_save(
+    counters: &qa_content::q2::foundation::host::Q2Counters,
+) -> crate::persistence::q2::foundation::Q2FoundationCounters {
+    use crate::persistence::q2::foundation::Q2FoundationCounters;
+    Q2FoundationCounters {
+        total_secrets: f64::from(counters.total_secrets),
+        found_secrets: f64::from(counters.found_secrets),
+        total_goals: f64::from(counters.total_goals),
+        found_goals: f64::from(counters.found_goals),
+        total_monsters: f64::from(counters.total_monsters),
+        killed_monsters: f64::from(counters.killed_monsters),
+        server_flags: f64::from(counters.server_flags),
+    }
+}
+
+/// Foundation counters out of the persistence shape.
+#[allow(clippy::cast_possible_truncation)]
+fn c11_q2_counters_from_save(
+    counters: &crate::persistence::q2::foundation::Q2FoundationCounters,
+) -> qa_content::q2::foundation::host::Q2Counters {
+    use qa_content::q2::foundation::host::Q2Counters;
+    Q2Counters {
+        total_secrets: counters.total_secrets as i32,
+        found_secrets: counters.found_secrets as i32,
+        total_goals: counters.total_goals as i32,
+        found_goals: counters.found_goals as i32,
+        total_monsters: counters.total_monsters as i32,
+        killed_monsters: counters.killed_monsters as i32,
+        server_flags: counters.server_flags as i32,
+    }
+}
+
+/// Foundation checkpoint into the persistence shape.
+fn c11_q2_foundation_to_save(
+    checkpoint: &qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint,
+) -> crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+    use crate::persistence::q2::foundation::Q2FoundationCheckpoint;
+    Q2FoundationCheckpoint {
+        next_source_slot: u64::from(checkpoint.next_source_slot),
+        sequence: checkpoint.sequence,
+        freed_slots: checkpoint
+            .freed_slots
+            .iter()
+            .map(|(slot, time)| (u64::from(*slot), *time))
+            .collect(),
+        counters: c11_q2_counters_to_save(&checkpoint.counters),
+        entities: checkpoint.entities.iter().map(c11_q2_entity_to_save).collect(),
+    }
+}
+
+/// Foundation checkpoint out of the persistence shape.
+fn c11_q2_foundation_from_save(
+    checkpoint: &crate::persistence::q2::foundation::Q2FoundationCheckpoint,
+) -> Result<qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint, qa_world::WorldError> {
+    use qa_content::q2::foundation::checkpoint::Q2FoundationCheckpoint;
+    Ok(Q2FoundationCheckpoint {
+        version: 1,
+        next_source_slot: u32::try_from(checkpoint.next_source_slot)
+            .map_err(|_| qa_world::WorldError::BadSave("Q2 next source slot is out of range".to_string()))?,
+        sequence: checkpoint.sequence,
+        freed_slots: checkpoint
+            .freed_slots
+            .iter()
+            .map(|(slot, time)| {
+                u32::try_from(*slot)
+                    .map(|slot| (slot, *time))
+                    .map_err(|_| qa_world::WorldError::BadSave("Q2 freed slot is out of range".to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        counters: c11_q2_counters_from_save(&checkpoint.counters),
+        entities: checkpoint
+            .entities
+            .iter()
+            .map(c11_q2_entity_from_save)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+impl super::equipment_runtime::Q2FoundationCheckpointBridge for C11Q2FoundationBridge {
+    fn capture_entities(
+        &self,
+        game: &qa_content::q2::foundation::host::Q2GameServices,
+    ) -> crate::persistence::q2::foundation::Q2FoundationCheckpoint {
+        c11_q2_foundation_to_save(&game.capture_foundation())
+    }
+
+    fn restore_entities(
+        &self,
+        game: &mut qa_content::q2::foundation::host::Q2GameServices,
+        checkpoint: &crate::persistence::q2::foundation::Q2FoundationCheckpoint,
+    ) -> Result<(), qa_world::WorldError> {
+        let content = c11_q2_foundation_from_save(checkpoint)?;
+        game.restore_foundation(&content);
+        Ok(())
     }
 }
 
@@ -37243,5 +37893,196 @@ mod tests {
             assert_eq!(game.time, 100.0);
             assert_eq!(game.frame_seconds, 0.5);
         });
+    }
+
+    #[test]
+    fn q2_foundation_bridge_roundtrips_grapple_checkpoint() {
+        use qa_content::q2::foundation::checkpoint::{
+            Q2AttackCheckpoint as ContentAttack, Q2EntityCallbackNames as ContentCallbacks,
+            Q2EntityCheckpoint as ContentEntity, Q2EntityLinks as ContentLinks, Q2EntityValues as ContentValues,
+            Q2FoundationCheckpoint as ContentCheckpoint,
+        };
+        use qa_content::q2::foundation::host::{Q2Counters, Q2MotionKind, Q2Solid};
+        use qa_content::q2::support::contracts::{
+            AttackCause as ContentCause, AttackProvenance, EnvironmentHazard, Q1ArmorEffect,
+            Q2NativeCause as ContentNativeCause, Q2NativeGame,
+        };
+        let actor = |slot| qa_core::identity::SavedActorId { slot, generation: 3 };
+        let provider = |name: &str| qa_core::identity::ProviderId::new("q2", name);
+        let content = ContentCheckpoint {
+            version: 1,
+            next_source_slot: 12,
+            sequence: 13,
+            freed_slots: vec![(14, 1.5)],
+            counters: Q2Counters {
+                total_secrets: 1,
+                found_secrets: 2,
+                total_goals: 3,
+                found_goals: 4,
+                total_monsters: 5,
+                killed_monsters: 6,
+                server_flags: 7,
+            },
+            entities: vec![ContentEntity {
+                actor: actor(4),
+                source_slot: Some(9),
+                classname: "monster_soldier".to_string(),
+                ordinal: 11,
+                spawn_values: vec![("targetname".to_string(), "soldier1".to_string())],
+                values: ContentValues {
+                    classname: "monster_soldier".to_string(),
+                    target: "t".to_string(),
+                    targetname: "tn".to_string(),
+                    killtarget: "kt".to_string(),
+                    combat_target: "ct".to_string(),
+                    death_target: "dt".to_string(),
+                    health_target: "ht".to_string(),
+                    item_target: "it".to_string(),
+                    message: "m".to_string(),
+                    model: "models/soldier.md2".to_string(),
+                    model2: "m2".to_string(),
+                    model3: "m3".to_string(),
+                    model4: "m4".to_string(),
+                    spawnflags: 21,
+                    delay: 0.5,
+                    wait: 1.5,
+                    speed: 2.5,
+                    accel: 3.5,
+                    decel: 4.5,
+                    damage: 5.5,
+                    damage_radius: 6.5,
+                    radius_damage: 7.5,
+                    count: 22,
+                    max_health: 100.0,
+                    view_height: 23,
+                    frame: 24,
+                    old_frame: 25,
+                    scale: 1.25,
+                    alpha: 0.75,
+                    skin: 26,
+                    effects: 27,
+                    render_flags: 28,
+                    flags: 29,
+                    server_flags: 30,
+                    light_level: 31,
+                    power_cubes: 32,
+                    timestamp: 8.5,
+                    noise: "n".to_string(),
+                    sound: "s".to_string(),
+                    volume: 0.9,
+                    attenuation: 1.1,
+                    random: 0.3,
+                    map: "base1".to_string(),
+                    style: 33,
+                    transition_started: true,
+                    clip_mask: 34,
+                    projectile: true,
+                    dodgeable: false,
+                    laser_immune: true,
+                    damageable_target: false,
+                    visible: true,
+                    solid: Q2Solid::Brush,
+                    motion: Q2MotionKind::FlyMissile,
+                    gravity: 800.0,
+                    gravity_vector: qa_core::math::vec3(0.0, 0.0, -1.0),
+                    angular_velocity: qa_core::math::vec3(1.0, 2.0, 3.0),
+                    movedir: qa_core::math::vec3(0.0, 1.0, 0.0),
+                    pos1: qa_core::math::vec3(4.0, 5.0, 6.0),
+                    pos2: qa_core::math::vec3(7.0, 8.0, 9.0),
+                    next_think: Some(3.5),
+                },
+                links: ContentLinks {
+                    activator: Some(actor(5)),
+                    enemy: Some(actor(6)),
+                    owner: None,
+                    goal: Some(actor(7)),
+                    team_master: None,
+                    team_chain: Some(actor(8)),
+                    chain: None,
+                    beam: None,
+                    beam2: Some(actor(9)),
+                    proboscus: None,
+                },
+                last_attack: Some(ContentAttack {
+                    attacker: Some(actor(10)),
+                    inflictor: None,
+                    originating_projectile: Some(actor(11)),
+                    attack: AttackProvenance {
+                        sequence: 40,
+                        time: qa_core::time::SourceTime::Seconds(12.5),
+                        attacker: None,
+                        inflictor: None,
+                        originating_projectile: None,
+                        weapon: Some("q2:weapon_railgun".to_string()),
+                        weapon_provider: provider("weapons"),
+                        damage_powerup_owner: Some(provider("combat")),
+                        combat_provider: provider("combat"),
+                        inventory_provider: provider("inventory"),
+                        movement_provider: provider("movement"),
+                        cause: ContentCause::Q2 {
+                            means_of_death: 7,
+                            damage_flags: 9,
+                            native: Some(ContentNativeCause::Classic {
+                                game: Q2NativeGame::Ctf,
+                                value: 34,
+                            }),
+                        },
+                    },
+                }),
+                callbacks: ContentCallbacks {
+                    think: Some("think".to_string()),
+                    prethink: None,
+                    postthink: Some("post".to_string()),
+                    use_: Some("use".to_string()),
+                    touch: None,
+                    pain: Some("pain".to_string()),
+                    die: Some("die".to_string()),
+                    blocked: None,
+                },
+            }],
+        };
+        let saved = c11_q2_foundation_to_save(&content);
+        assert_eq!(saved.next_source_slot, 12);
+        assert_eq!(saved.entities.len(), 1);
+        let entity = &saved.entities[0];
+        assert_eq!(entity.spawn_classname, "monster_soldier");
+        assert_eq!(entity.spawn_ordinal, 11);
+        assert_eq!(entity.values.solid, "brush");
+        assert_eq!(entity.values.motion, "fly-missile");
+        assert_eq!(entity.values.skin, 26.0);
+        assert_eq!(entity.callbacks.use_callback.as_deref(), Some("use"));
+        let restored = c11_q2_foundation_from_save(&saved).expect("roundtrip");
+        assert_eq!(restored, content);
+        for cause in [
+            ContentCause::Q1 {
+                death_type: "shotgun".to_string(),
+                armor_effect: Some(Q1ArmorEffect::HalfEffectiveness),
+            },
+            ContentCause::Q2 {
+                means_of_death: 1,
+                damage_flags: 2,
+                native: Some(ContentNativeCause::Rerelease {
+                    id: 3,
+                    friendly_fire: true,
+                    no_point_loss: false,
+                }),
+            },
+            ContentCause::Q3 {
+                means_of_death: 4,
+                damage_flags: 5,
+            },
+            ContentCause::Environment {
+                hazard: EnvironmentHazard::Lava,
+            },
+        ] {
+            let roundtripped = c11_q2_cause_from_save(&c11_q2_cause_to_save(&cause)).expect("cause roundtrip");
+            assert_eq!(roundtripped, cause);
+        }
+        let mut bad_solid = entity.values.clone();
+        bad_solid.solid = "bogus".to_string();
+        assert!(c11_q2_values_from_save(&bad_solid).is_err());
+        let mut bad_motion = entity.values.clone();
+        bad_motion.motion = "bogus".to_string();
+        assert!(c11_q2_values_from_save(&bad_motion).is_err());
     }
 }
