@@ -469,6 +469,7 @@ pub struct BindingToken(u64);
 
 /// Name alias projecting a canonical variable, optionally through a value
 /// conversion (donor `CvarAlias`).
+#[derive(Clone)]
 pub struct CvarAlias {
     /// Alias name.
     pub name: String,
@@ -483,16 +484,18 @@ pub struct CvarAlias {
 type AliasWriteFn = dyn Fn(&str) -> Result<String, String>;
 
 /// Alias value conversion.
+#[derive(Clone)]
 pub enum CvarAliasConversion {
     /// Alias reads and writes canonical text unchanged.
     Identity,
     /// Converted alias: `read` projects canonical text, `write` maps alias
-    /// text back (or rejects with a message).
+    /// text back (or rejects with a message). Conversions are shared (`Rc`)
+    /// so alias tables clone with the registry.
     Converted {
         /// Project canonical text to alias text.
-        read: Box<dyn Fn(&str) -> String>,
+        read: Rc<dyn Fn(&str) -> String>,
         /// Map alias text to canonical text.
-        write: Box<AliasWriteFn>,
+        write: Rc<AliasWriteFn>,
     },
 }
 
@@ -696,7 +699,7 @@ pub struct CvarRegistry {
     userinfo_dirty: bool,
     console_variables: HashSet<String>,
     info_targets: Vec<InfoTarget>,
-    command_exists: Option<Box<CommandExistsCallback>>,
+    command_exists: Option<Rc<CommandExistsCallback>>,
     notifications: Vec<String>,
     effects: Vec<CvarEffect>,
     documents: HashMap<String, CvarDocumentation>,
@@ -707,6 +710,40 @@ pub struct CvarRegistry {
 }
 
 static NEXT_REGISTRY_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Snapshot clone: variables, aliases, documents, and effects copy across;
+/// live value bindings stay with the original (re-bind after cloning).
+impl Clone for CvarRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            registry_id: self.registry_id,
+            dialect: self.dialect,
+            session: self.session.clone(),
+            variables: self.variables.clone(),
+            indexes: self.indexes.clone(),
+            order: self.order.clone(),
+            changed_flags: self.changed_flags,
+            cheats_enabled: self.cheats_enabled,
+            cheats_override: self.cheats_override,
+            server_active: self.server_active,
+            client_connected: self.client_connected,
+            high_characters: self.high_characters,
+            client_info: self.client_info.clone(),
+            server_info: self.server_info.clone(),
+            userinfo_dirty: self.userinfo_dirty,
+            console_variables: self.console_variables.clone(),
+            info_targets: self.info_targets.clone(),
+            command_exists: self.command_exists.clone(),
+            notifications: self.notifications.clone(),
+            effects: self.effects.clone(),
+            documents: self.documents.clone(),
+            value_bindings: HashMap::new(),
+            next_binding_token: self.next_binding_token,
+            aliases: self.aliases.clone(),
+            alias_handles: self.alias_handles.clone(),
+        }
+    }
+}
 
 impl CvarRegistry {
     /// Create an empty registry for a dialect.
@@ -769,8 +806,16 @@ impl CvarRegistry {
     }
 
     /// Install the `commandExists` callback used by Q1 registration.
-    pub fn set_command_exists(&mut self, callback: Box<CommandExistsCallback>) {
+    pub fn set_command_exists(&mut self, callback: Rc<CommandExistsCallback>) {
         self.command_exists = Some(callback);
+    }
+
+    /// Apply archived values as `seta` commands (donor `applyArchive`).
+    pub fn apply_archive(&mut self, entries: &[CvarArchiveEntry]) -> Result<(), CvarError> {
+        for entry in entries {
+            self.set_command_flags(&entry.name, &entry.value, SetCommandKind::Archive)?;
+        }
+        Ok(())
     }
 
     /// Override cheat permission (a local game consults its live authority).
@@ -1958,14 +2003,6 @@ impl CvarRegistry {
             .or_else(|| self.aliases.get(&key).map(|alias| alias.documentation.clone()))
     }
 
-    /// Apply archived entries as `seta` writes.
-    pub fn apply_archive(&mut self, entries: &[CvarArchiveEntry]) -> Result<(), CvarError> {
-        for entry in entries {
-            self.set_command_flags(&entry.name.clone(), &entry.value.clone(), SetCommandKind::Archive)?;
-        }
-        Ok(())
-    }
-
     /// Registry-index length backing VM handles.
     #[must_use]
     pub fn index_count(&self) -> usize {
@@ -2704,8 +2741,8 @@ mod tests {
                 target: "r_mode".to_string(),
                 documentation: documented("video"),
                 conversion: CvarAliasConversion::Converted {
-                    read: Box::new(|value| format!("mode-{value}")),
-                    write: Box::new(|value| {
+                    read: Rc::new(|value| format!("mode-{value}")),
+                    write: Rc::new(|value| {
                         value
                             .strip_prefix("mode-")
                             .map(str::to_string)
@@ -2890,8 +2927,8 @@ mod tests {
                 target: "r_mode".to_string(),
                 documentation: documented("video"),
                 conversion: CvarAliasConversion::Converted {
-                    read: Box::new(|value| format!("mode-{value}")),
-                    write: Box::new(|value| Ok(value.to_string())),
+                    read: Rc::new(|value| format!("mode-{value}")),
+                    write: Rc::new(|value| Ok(value.to_string())),
                 },
             })
             .unwrap();

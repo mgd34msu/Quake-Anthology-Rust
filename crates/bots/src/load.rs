@@ -42,6 +42,7 @@ pub struct PreloadOptions<'a> {
 }
 
 /// Prepared navigation: the selected asset with its resource reference.
+#[derive(Debug, Clone)]
 pub struct PreparedNavigation {
     /// Map identity.
     pub map: NavigationMapIdentity,

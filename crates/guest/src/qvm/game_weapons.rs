@@ -40,11 +40,24 @@ use super::mod_weapon_stage::{
 };
 use crate::error::GuestError;
 
-/// Primary match declaration (score binding only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Declared team-change command (donor `SourceTeamCommand`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QvmTeamCommand {
+    /// Original source team name.
+    pub source: String,
+    /// Shared team name.
+    pub team: String,
+    /// Command arguments.
+    pub arguments: Vec<String>,
+}
+
+/// Primary match declaration (score binding plus declared team commands).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QvmPrimaryMatch {
     /// Score offset in the client record.
     pub score: usize,
+    /// Declared team-change commands (empty until the match profile lands).
+    pub teams: Vec<QvmTeamCommand>,
 }
 
 /// Equipment cadence context.
@@ -1011,7 +1024,7 @@ impl QvmPrimaryWeapons {
     /// Match declaration, if any.
     #[must_use]
     pub fn match_profile(&self) -> Option<QvmPrimaryMatch> {
-        self.state.borrow().profile.match_declaration
+        self.state.borrow().profile.match_declaration.clone()
     }
 
     /// Read an actor score.
@@ -1021,6 +1034,7 @@ impl QvmPrimaryWeapons {
             .borrow()
             .profile
             .match_declaration
+            .clone()
             .ok_or_else(|| GuestError::invalid("Original QVM score storage has no declaration"))?
             .score;
         let base = pointer(&self.state, actor)?;
@@ -1034,6 +1048,7 @@ impl QvmPrimaryWeapons {
             .borrow()
             .profile
             .match_declaration
+            .clone()
             .ok_or_else(|| GuestError::invalid("Original QVM score storage has no declaration"))?
             .score;
         let base = pointer(&self.state, actor)?;

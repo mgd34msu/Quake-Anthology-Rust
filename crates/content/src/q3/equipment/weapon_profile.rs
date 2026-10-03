@@ -67,7 +67,10 @@ pub fn q3_primary_weapon_profile(artifact: &QvmArtifact, weapons: &[Q3GuestWeapo
     }
     Some(QvmPrimaryWeaponProfile {
         module: artifact.module.clone(),
-        match_declaration: Some(QvmPrimaryMatch { score: 248 }),
+        match_declaration: Some(QvmPrimaryMatch {
+            score: 248,
+            teams: Vec::new(),
+        }),
         abi_profile: AbiProfile::Modern,
         equipment_movement: QvmEquipmentMovementProfile {
             move_entry: 35535,

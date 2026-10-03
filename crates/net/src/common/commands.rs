@@ -181,6 +181,164 @@ impl UserCommand {
         }
     }
 
+    /// Button bits (all dialects carry `buttons`; C6 step tail).
+    #[must_use]
+    pub fn buttons(&self) -> f64 {
+        match self {
+            Self::Q1Netquake { buttons, .. }
+            | Self::Q1Quakeworld { buttons, .. }
+            | Self::Q2Classic { buttons, .. }
+            | Self::Q2Rerelease { buttons, .. }
+            | Self::Q3 { buttons, .. } => *buttons,
+        }
+    }
+
+    /// Up move, when the dialect carries one (Q2-rerelease does not; C6).
+    #[must_use]
+    pub fn up_move(&self) -> Option<f64> {
+        match self {
+            Self::Q1Netquake { up_move, .. }
+            | Self::Q1Quakeworld { up_move, .. }
+            | Self::Q2Classic { up_move, .. }
+            | Self::Q3 { up_move, .. } => Some(*up_move),
+            Self::Q2Rerelease { .. } => None,
+        }
+    }
+
+    /// Impulse byte, when the dialect carries one (C6 step tail).
+    #[must_use]
+    pub fn impulse(&self) -> Option<f64> {
+        match self {
+            Self::Q1Netquake { impulse, .. } | Self::Q1Quakeworld { impulse, .. } | Self::Q2Classic { impulse, .. } => {
+                Some(*impulse)
+            }
+            Self::Q2Rerelease { .. } | Self::Q3 { .. } => None,
+        }
+    }
+
+    /// Command milliseconds, when the dialect carries them (C6 step tail).
+    #[must_use]
+    pub fn milliseconds(&self) -> Option<f64> {
+        match self {
+            Self::Q1Quakeworld { milliseconds, .. }
+            | Self::Q2Classic { milliseconds, .. }
+            | Self::Q2Rerelease { milliseconds, .. } => Some(*milliseconds),
+            Self::Q1Netquake { .. } | Self::Q3 { .. } => None,
+        }
+    }
+
+    /// NetQuake move fields for the world-command twin (C6 receive seam).
+    #[must_use]
+    pub fn q1_netquake_move(&self) -> Option<(f64, [f64; 3], f64, f64)> {
+        match self {
+            Self::Q1Netquake {
+                acknowledged_server_time_seconds,
+                view_angles,
+                forward_move,
+                side_move,
+                ..
+            } => Some((
+                *acknowledged_server_time_seconds,
+                *view_angles,
+                *forward_move,
+                *side_move,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Copy with replaced button bits (donor paused attack-mask; C6).
+    #[must_use]
+    pub fn with_buttons(&self, buttons: f64) -> Self {
+        match self {
+            Self::Q1Netquake {
+                acknowledged_server_time_seconds,
+                view_angles,
+                forward_move,
+                side_move,
+                up_move,
+                impulse,
+                ..
+            } => Self::Q1Netquake {
+                acknowledged_server_time_seconds: *acknowledged_server_time_seconds,
+                view_angles: *view_angles,
+                forward_move: *forward_move,
+                side_move: *side_move,
+                up_move: *up_move,
+                buttons,
+                impulse: *impulse,
+            },
+            Self::Q1Quakeworld {
+                milliseconds,
+                angles,
+                forward_move,
+                side_move,
+                up_move,
+                impulse,
+                ..
+            } => Self::Q1Quakeworld {
+                milliseconds: *milliseconds,
+                angles: *angles,
+                forward_move: *forward_move,
+                side_move: *side_move,
+                up_move: *up_move,
+                buttons,
+                impulse: *impulse,
+            },
+            Self::Q2Classic {
+                milliseconds,
+                angle_shorts,
+                forward_move,
+                side_move,
+                up_move,
+                impulse,
+                light_level,
+                ..
+            } => Self::Q2Classic {
+                milliseconds: *milliseconds,
+                angle_shorts: *angle_shorts,
+                forward_move: *forward_move,
+                side_move: *side_move,
+                up_move: *up_move,
+                buttons,
+                impulse: *impulse,
+                light_level: *light_level,
+            },
+            Self::Q2Rerelease {
+                milliseconds,
+                angles,
+                forward_move,
+                side_move,
+                server_frame,
+                ..
+            } => Self::Q2Rerelease {
+                milliseconds: *milliseconds,
+                angles: *angles,
+                forward_move: *forward_move,
+                side_move: *side_move,
+                buttons,
+                server_frame: *server_frame,
+            },
+            Self::Q3 {
+                server_time_milliseconds,
+                angle_words,
+                weapon,
+                forward_move,
+                right_move,
+                up_move,
+                ..
+            } => Self::Q3 {
+                server_time_milliseconds: *server_time_milliseconds,
+                angle_words: *angle_words,
+                buttons,
+                weapon: *weapon,
+                forward_move: *forward_move,
+                right_move: *right_move,
+                up_move: *up_move,
+            },
+        }
+    }
+
     fn fields(&self) -> Vec<f64> {
         match self {
             Self::Q1Netquake {

@@ -566,6 +566,26 @@ pub enum CampaignSelection {
     },
 }
 
+impl CampaignSelection {
+    /// Mission provider, when this recipe selects a campaign.
+    #[must_use]
+    pub fn mission(&self) -> Option<&ProviderReference> {
+        match self {
+            CampaignSelection::Campaign { mission, .. } => Some(mission),
+            CampaignSelection::None => None,
+        }
+    }
+
+    /// Gamecode provider, when this recipe selects a campaign.
+    #[must_use]
+    pub fn gamecode(&self) -> Option<&ProviderReference> {
+        match self {
+            CampaignSelection::Campaign { gamecode, .. } => Some(gamecode),
+            CampaignSelection::None => None,
+        }
+    }
+}
+
 /// Character definition plus appearance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CharacterSelection {

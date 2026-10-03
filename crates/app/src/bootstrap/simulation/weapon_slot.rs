@@ -7,6 +7,8 @@ use std::rc::Rc;
 
 use qa_content::contract::ItemId;
 use qa_core::identity::ProviderId;
+
+pub use qa_content::contract::SourceWeaponPresentation;
 use thiserror::Error;
 
 /// Weapon owned by one source provider.
@@ -83,23 +85,12 @@ pub trait EquipmentWeaponHandoff {
     fn resume(&mut self);
 }
 
-/// Absorbed minimal source presentation (donor `SourceWeaponPresentation` projection).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceWeaponPresentation {
-    /// Presenting provider; must equal the binding owner.
-    pub source_provider: ProviderId,
-    /// Active weapon, must be declared in `items`.
-    pub active: Option<ItemId>,
-    /// Declared weapon items.
-    pub items: Vec<WeaponItemDeclaration>,
-}
-
-/// Absorbed minimal weapon item declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WeaponItemDeclaration {
-    /// Weapon item.
-    pub item: ItemId,
-}
+/// Weapon item declaration rows (donor `SourceItemDefinition`).
+///
+/// C6 unification: the reduced twin is replaced by the contract home so the
+/// shared-simulation slot projection can read labels, kinds, ammo, and held
+/// declarations.
+pub type WeaponItemDeclaration = qa_content::contract::SourceItemDefinition;
 
 /// Live slot state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,7 +378,7 @@ impl WeaponSlot {
                 .active
                 .as_ref()
                 .is_none_or(|active| presentation.items.iter().any(|item| item.item == *active));
-            if presentation.source_provider != outgoing
+            if presentation.source.provider != outgoing
                 || !declared
                 || self.binding_generation(&outgoing) != Some(outgoing_generation)
             {
@@ -542,7 +533,7 @@ impl WeaponSlot {
                 continue;
             }
             let state = read();
-            if state.source_provider != *provider {
+            if state.source.provider != *provider {
                 return Err(WeaponSlotError::ForeignPresentation);
             }
             if self.binding_generation(provider) == Some(entry.generation) {

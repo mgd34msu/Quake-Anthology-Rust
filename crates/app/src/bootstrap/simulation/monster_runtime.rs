@@ -94,6 +94,45 @@ pub enum SelectedMonsterSource {
     },
 }
 
+impl SelectedMonsterSource {
+    /// Q1 frame parts for the simulation step tail (C6).
+    pub fn q1_frame_parts(
+        &mut self,
+    ) -> Option<(
+        &ProviderReference,
+        &mut SourceClock,
+        &mut Q1EntityServices,
+        &Option<Q1AddonContext>,
+    )> {
+        match self {
+            SelectedMonsterSource::Q1 {
+                reference,
+                clock,
+                game,
+                addon,
+                ..
+            } => Some((reference, clock, game, addon)),
+            _ => None,
+        }
+    }
+
+    /// Q2 frame parts for the simulation step tail (C6).
+    pub fn q2_frame_parts(&mut self) -> Option<(&mut SourceClock, &mut Q2GameServices)> {
+        match self {
+            SelectedMonsterSource::Q2 { clock, game, .. } => Some((clock, game)),
+            _ => None,
+        }
+    }
+
+    /// Monster clock for execution-frame reads (C6).
+    pub fn clock(&self) -> &SourceClock {
+        match self {
+            SelectedMonsterSource::Q1 { clock, .. } => clock,
+            SelectedMonsterSource::Q2 { clock, .. } => clock,
+        }
+    }
+}
+
 /// Session bridge for monster AI behavior (donor `SelectedMonsterBehavior`).
 ///
 /// The donor passes a retained mission object to `attach`; this seam drops

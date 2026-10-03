@@ -118,6 +118,12 @@ impl ActorRegistry {
         self.owner.session()
     }
 
+    /// Registry identity owner (for session-membership checks).
+    #[must_use]
+    pub fn owner(&self) -> &IdentityOwner {
+        &self.owner
+    }
+
     /// Ordering revision, bumped by every allocation and release.
     #[must_use]
     pub fn revision(&self) -> u64 {

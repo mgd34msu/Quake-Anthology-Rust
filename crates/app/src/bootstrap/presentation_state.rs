@@ -4,8 +4,8 @@
 //! (`LocalPresentationMedia`, `PresentationState`). Ownership, resource references,
 //! save readers, vectors, shader names, and the Q1 fog shapes are the ported contract,
 //! content, persistence, material, and time helpers; the Q1 fog simulation
-//! ([`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog)) arrives
-//! through the [`PresentationFog`]
+//! (canonical port [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog),
+//! used directly by the simulation runtime) arrives through the [`PresentationFog`]
 //! seam. The event unions (`SimulationPresentationEvent`, `SourcePresentationEvent`
 //! from `./simulation/types.ts`, out of scope) are mirrored locally as
 //! [`SimulationPresentationEvent`] with a generic foreign payload `F` for variants this
@@ -791,8 +791,8 @@ fn persistent_slot<F>(source: &RetainedPresentation<F>) -> Option<String> {
     Some(format!("{domain}:{recipient}"))
 }
 
-/// Quake fog simulation seam backed by
-/// [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog).
+/// Quake fog simulation seam (donor `SimulationQ1Fog`, canonically ported at
+/// [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog)).
 pub trait PresentationFog<F> {
     /// Resolve a fog transition into presentation events (donor `update`).
     fn update(

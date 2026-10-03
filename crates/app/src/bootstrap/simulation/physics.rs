@@ -1095,6 +1095,42 @@ impl SharedPhysics {
             .is_some_and(|owned| self.solid(&owned).is_some_and(|solid| solid.solid == SolidKind::Brush))
     }
 
+    /// Live collision record for an actor (donor `scene.spatial.get`).
+    ///
+    /// C4 sibling edit: the simulation combat range reads linked collision
+    /// roles/shapes for weapon targeting.
+    #[must_use]
+    pub fn collision_of(&self, actor: &ActorId) -> Option<ActorCollision> {
+        self.collisions.get(actor).cloned()
+    }
+
+    /// Rerelease movement context for Q2-rerelease player movement.
+    ///
+    /// C4 sibling edit: the simulation movement range drives rerelease
+    /// physics through this context.
+    #[must_use]
+    pub fn rerelease_movement(&self) -> &Q2RereleaseMovementContext {
+        &self.rerelease_movement
+    }
+
+    /// Write back a rerelease movement context after a step.
+    ///
+    /// C5 sibling edit: movement sessions clone the shared context per step
+    /// (the physics table cannot stay borrowed across movement callbacks)
+    /// and store the stepped context here.
+    pub fn set_rerelease_movement(&mut self, context: Q2RereleaseMovementContext) {
+        self.rerelease_movement = context;
+    }
+
+    /// Sample point contents through the scene (donor `scene.pointContents`).
+    ///
+    /// C4 sibling edit: the simulation queries world contents for hazard
+    /// checks; the scene backend stays with the collision lane.
+    #[must_use]
+    pub fn sample_contents(&self, query: &PointContentsQuery) -> PointContents {
+        self.scene.point_contents(query)
+    }
+
     /// Drain queued physics events.
     pub fn drain_events(&mut self) -> Vec<PhysicsEvent> {
         std::mem::take(&mut self.events)

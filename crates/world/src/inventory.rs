@@ -149,8 +149,22 @@ impl InventoryTable {
         Ok(())
     }
 
+    /// Whether a live actor has a bound inventory (donor `has`).
+    #[must_use]
+    pub fn has(&self, registry: &ActorRegistry, actor: &ActorId) -> bool {
+        registry.is_live(actor) && self.stores.contains_key(actor)
+    }
+
     /// Entries of a live actor.
     #[must_use]
+    /// Whether the actor has an inventory store (C11).
+    pub fn contains(&self, registry: &ActorRegistry, actor: &ActorId) -> bool {
+        registry
+            .resolve_owned(actor)
+            .map(|owned| self.stores.contains_key(owned.id()))
+            .unwrap_or(false)
+    }
+
     pub fn entries(&self, registry: &ActorRegistry, actor: &ActorId) -> Vec<InventoryEntry> {
         if !registry.is_live(actor) {
             return Vec::new();

@@ -823,6 +823,12 @@ pub struct Q2Entity {
 }
 
 impl Q2Entity {
+    /// Current model frame (C6: addendum bans direct entity `.frame` reads).
+    #[must_use]
+    pub fn frame(&self) -> i32 {
+        self.frame
+    }
+
     /// Build an entity continuation over an owned actor.
     pub fn new(actor: OwnedActor, spawn: Q2SpawnFields) -> Self {
         let field = |key: &str| spawn.values.get(key).cloned().unwrap_or_default();

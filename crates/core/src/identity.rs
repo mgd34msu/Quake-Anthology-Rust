@@ -116,7 +116,7 @@ impl ClientId {
 }
 
 /// Actor handle bound to its owning provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OwnedActor {
     id: ActorId,
     owner: ProviderId,

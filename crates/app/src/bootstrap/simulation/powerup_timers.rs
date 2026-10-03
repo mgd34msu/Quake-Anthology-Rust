@@ -150,6 +150,24 @@ impl Q3PowerupTimerView for GameClient {
     }
 }
 
+impl Q3PowerupTimerView for qa_content::q3::base::game::entities::GameClient {
+    fn timer_pm_flags(&self) -> i32 {
+        self.ps.pm_flags
+    }
+
+    fn timer_client_num(&self) -> i32 {
+        self.ps.client_num
+    }
+
+    fn timer_powerup_expiry(&self, powerup: i32) -> i32 {
+        self.ps.powerups.get(powerup)
+    }
+
+    fn timer_invulnerability_time(&self) -> i32 {
+        self.invulnerability_time
+    }
+}
+
 /// Quake III powerup timers, following the spectated client when set.
 pub fn q3_powerup_timers<'a, C: Q3PowerupTimerView>(
     client: &'a C,

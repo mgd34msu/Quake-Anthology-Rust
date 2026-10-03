@@ -14,6 +14,7 @@ use qa_content::q3::team_arena::movement_host::ClientMovementOptions;
 use qa_core::identity::{ProviderId, SavedActorId};
 use qa_guest::checkpoint::{read_module, ModuleIdentity as GuestModuleIdentity};
 use qa_world::movement::q3::weapon::Q3ExternalWeaponSlot;
+use qa_world::registry::ActorSlotCheckpoint;
 use qa_world::save::ownership::{save_provider_contract, validate_save_provider_owner, ProviderCheckpoint};
 use qa_world::save::records::read_saved_actor;
 use qa_world::save::value::{decode_checkpoint_value, SaveJson, SaveReader};
@@ -67,17 +68,29 @@ pub struct SimulationSaveImage {
     /// Saved random streams.
     pub random: Vec<SimSaveRandom>,
     /// Saved bodies.
-    pub bodies: Vec<SimActorEntry>,
+    pub bodies: Vec<qa_world::save::records::UnifiedBody>,
     /// Saved combat states.
-    pub combat: Vec<SimActorEntry>,
+    pub combat: Vec<SimSavedCombat>,
     /// Saved inventories.
-    pub inventories: Vec<SimActorEntry>,
+    pub inventories: Vec<SimSavedInventory>,
     /// Saved configurations.
     pub configurations: Vec<SimActorEntry>,
     /// Saved thinks.
-    pub thinks: Vec<SimActorEntry>,
+    pub thinks: Vec<qa_world::save::records::UnifiedThink>,
     /// Frame time.
     pub frame_time: SaveJson,
+    /// Saved mod session, if the image carries gameplay mods.
+    pub mods: Option<crate::persistence::mods::ModSessionCheckpoint>,
+    /// Save schema version (donor `schemaVersion`).
+    pub schema_version: u32,
+    /// Legacy armor layout flag (donor `legacyArmorLayout`).
+    pub legacy_armor_layout: bool,
+    /// Saved frame context (donor `frame`).
+    pub frame: qa_core::time::FrameContext,
+    /// Next event sequence (donor `nextEventSequence`).
+    pub next_event_sequence: u64,
+    /// Saved actor slots (donor `actors`).
+    pub actors: Vec<ActorSlotCheckpoint>,
 }
 
 /// Mirror of the saved recipe subset `save.ts` consumes.
@@ -197,6 +210,8 @@ pub struct SimSaveClock {
 pub struct SimSaveRandom {
     /// Stream provider.
     pub provider: String,
+    /// Stream state (donor `RandomState`).
+    pub state: qa_world::save::shared::SaveRandomState,
 }
 
 /// Mirror of one saved per-actor record.
@@ -204,6 +219,24 @@ pub struct SimSaveRandom {
 pub struct SimActorEntry {
     /// Saved actor.
     pub actor: SavedActorId,
+}
+
+/// Mirror of one saved inventory record (donor `InventoryCheckpoint`).
+#[derive(Debug, Clone)]
+pub struct SimSavedInventory {
+    /// Saved actor.
+    pub actor: SavedActorId,
+    /// Saved entries.
+    pub entries: Vec<qa_world::inventory::InventoryEntry>,
+}
+
+/// Mirror of one saved combat record (donor `CombatCheckpoint`).
+#[derive(Debug, Clone)]
+pub struct SimSavedCombat {
+    /// Saved actor.
+    pub actor: SavedActorId,
+    /// Saved combat state.
+    pub state: qa_world::combat::CombatState,
 }
 
 /// Mirror of `DecodedApplicationBotsCheckpoint` from donor
@@ -392,7 +425,7 @@ pub fn saved_bot_checkpoint(
     Ok(Some(bots))
 }
 
-fn provider_id(text: &str) -> ProviderId {
+pub(crate) fn provider_id(text: &str) -> ProviderId {
     match text.split_once(':') {
         Some((namespace, name)) => ProviderId {
             namespace: namespace.to_string(),
@@ -847,16 +880,36 @@ pub fn validate_simulation_save(
             "Save requires one matching source random stream",
         ));
     }
-    for entries in [
-        &image.bodies,
-        &image.combat,
-        &image.inventories,
-        &image.configurations,
-        &image.thinks,
+    for keys in [
+        image
+            .bodies
+            .iter()
+            .map(|entry| (entry.actor.slot, entry.actor.generation))
+            .collect::<Vec<_>>(),
+        image
+            .combat
+            .iter()
+            .map(|entry| (entry.actor.slot, entry.actor.generation))
+            .collect::<Vec<_>>(),
+        image
+            .inventories
+            .iter()
+            .map(|entry| (entry.actor.slot, entry.actor.generation))
+            .collect::<Vec<_>>(),
+        image
+            .configurations
+            .iter()
+            .map(|entry| (entry.actor.slot, entry.actor.generation))
+            .collect::<Vec<_>>(),
+        image
+            .thinks
+            .iter()
+            .map(|entry| (entry.actor.slot, entry.actor.generation))
+            .collect::<Vec<_>>(),
     ] {
         let mut actors = std::collections::HashSet::new();
-        for entry in entries {
-            if !actors.insert((entry.actor.slot, entry.actor.generation)) {
+        for key in &keys {
+            if !actors.insert(*key) {
                 return Err(SimulationSaveError::invalid("Duplicate saved actor state"));
             }
         }
@@ -1150,6 +1203,12 @@ mod tests {
             }],
             random: vec![SimSaveRandom {
                 provider: ENTITIES.to_string(),
+                state: qa_world::save::shared::SaveRandomState::GlibcRandom {
+                    words: Vec::new(),
+                    front: 0,
+                    rear: 0,
+                    draws: 0,
+                },
             }],
             bodies: Vec::new(),
             combat: Vec::new(),
@@ -1157,6 +1216,17 @@ mod tests {
             configurations: Vec::new(),
             thinks: Vec::new(),
             frame_time,
+            mods: None,
+            schema_version: 3,
+            legacy_armor_layout: false,
+            frame: qa_core::time::FrameContext {
+                frame: 0,
+                time: qa_core::time::SourceTime::Seconds(0.0),
+                elapsed: qa_core::time::SourceTime::Seconds(0.0),
+                phase: qa_core::time::FramePhase::FrameEntry,
+            },
+            next_event_sequence: 0,
+            actors: Vec::new(),
         }
     }
 

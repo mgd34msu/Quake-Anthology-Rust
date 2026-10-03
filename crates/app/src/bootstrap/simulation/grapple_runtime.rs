@@ -355,6 +355,8 @@ pub trait QvmGrappleGame {
     fn host_resolve_saved(&self, saved: SavedActorId) -> Option<OwnedActor>;
     /// Reference a saved actor in the current session.
     fn host_reference_saved(&mut self, saved: SavedActorId) -> ActorId;
+    /// Release QVM resources (donor `game.close`).
+    fn close(&mut self);
 }
 
 /// Value seam: QVM grapple core behavior (donor `QvmGrappleProvider` in
@@ -1197,6 +1199,14 @@ impl GrappleRuntime {
     #[must_use]
     pub fn selection(&self) -> &GrappleSelection {
         &self.selection
+    }
+
+    /// Close the QVM source game when the source is QVM-backed (donor
+    /// `close` grapple arm; other sources hold no game to release).
+    pub fn close_qvm_game(&self) {
+        if let GrappleSource::Q3Qvm { game, .. } = &mut self.inner.borrow_mut().source {
+            game.close();
+        }
     }
 
     /// Run a closure over the owned source arena (frame setup, think dispatch).
@@ -2415,6 +2425,8 @@ pub mod fakes {
             shared.pulling.remove(actor);
             shared.released.push(actor.clone());
         }
+
+        fn close(&mut self) {}
 
         fn fire(&mut self, actor: &ActorId) {
             let hook = self.mint();

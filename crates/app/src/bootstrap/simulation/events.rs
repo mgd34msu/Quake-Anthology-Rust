@@ -510,6 +510,12 @@ pub enum PresentationStateError {
     /// Save requires consumed source output.
     #[error("Save requires consumed source output")]
     OutputPending,
+    /// Registered resource path does not match its source request.
+    #[error("Registered resource path does not match its source request")]
+    ResourcePathMismatch,
+    /// Presentation owner lifecycle violation.
+    #[error("{0}")]
+    Owner(String),
 }
 
 /// Presentation history surface used by simulation events.
@@ -535,6 +541,15 @@ pub trait PresentationStateSeam {
     ) -> SimulationPresentationEvent;
     /// Resolve a resource by content and requested path.
     fn resource_by_path(&self, content: &ContentId, path: &str) -> Option<ResolvedResourceReference>;
+    /// Register a resolved resource (donor `registerResource`).
+    fn register_resource(
+        &mut self,
+        content: &ContentId,
+        path: &str,
+        resource: ResolvedResourceReference,
+    ) -> Result<(), PresentationStateError>;
+    /// Animated light styles (donor `lightStyles`).
+    fn light_styles(&self, seconds: f64) -> Vec<super::types::SceneLightStyle>;
     /// Take pending presentation output.
     fn take_presentation(&mut self) -> Vec<SimulationPresentationEvent>;
     /// Assert all output was consumed before a save.
@@ -547,6 +562,10 @@ pub trait PresentationStateSeam {
         reader: &SaveReader,
         reference: &dyn Fn(SavedActorId) -> ActorId,
     ) -> Result<(), WorldError>;
+    /// Retire recipient-scoped history for a released actor (donor `retire`).
+    fn retire(&mut self, actor: &ActorId);
+    /// Reject unrestored saved owners after a load (donor `finishOwnerRestore`).
+    fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError>;
 }
 
 /// Simulation event failures.
@@ -729,6 +748,21 @@ impl SimulationEvents {
         std::mem::take(&mut self.emitted)
     }
 
+    /// Register a resolved resource (donor `registerResource`).
+    pub fn register_resource(
+        &mut self,
+        content: &ContentId,
+        path: &str,
+        resource: ResolvedResourceReference,
+    ) -> Result<(), PresentationStateError> {
+        self.presentation.register_resource(content, path, resource)
+    }
+
+    /// Animated light styles (donor `lightStyles`).
+    pub fn light_styles(&self, seconds: f64) -> Vec<super::types::SceneLightStyle> {
+        self.presentation.light_styles(seconds)
+    }
+
     /// Take pending presentation output.
     pub fn take_presentation(&mut self) -> Vec<SimulationPresentationEvent> {
         self.presentation.take_presentation()
@@ -761,6 +795,16 @@ impl SimulationEvents {
         self.sequence = reader.field("sequence").integer(0)? as u64;
         self.emitted.clear();
         self.presentation.restore_state(reader, reference)
+    }
+
+    /// Retire recipient-scoped history for a released actor (donor `retire`).
+    pub fn retire(&mut self, actor: &ActorId) {
+        self.presentation.retire(actor);
+    }
+
+    /// Reject unrestored saved owners after a load (donor `finishOwnerRestore`).
+    pub fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError> {
+        self.presentation.finish_owner_restore()
     }
 
     fn sound(&mut self, emission: SoundEmission<'_>) {
@@ -1001,6 +1045,24 @@ mod tests {
             self.resources.get(&format!("{}/{}", content.as_str(), path)).cloned()
         }
 
+        fn register_resource(
+            &mut self,
+            content: &ContentId,
+            path: &str,
+            resource: ResolvedResourceReference,
+        ) -> Result<(), PresentationStateError> {
+            if resource.requested_path != path {
+                return Err(PresentationStateError::ResourcePathMismatch);
+            }
+            self.resources
+                .insert(format!("{}/{}", content.as_str(), path), resource);
+            Ok(())
+        }
+
+        fn light_styles(&self, _seconds: f64) -> Vec<super::super::types::SceneLightStyle> {
+            Vec::new()
+        }
+
         fn take_presentation(&mut self) -> Vec<SimulationPresentationEvent> {
             std::mem::take(&mut self.emitted)
         }
@@ -1022,6 +1084,12 @@ mod tests {
             _reference: &dyn Fn(SavedActorId) -> ActorId,
         ) -> Result<(), WorldError> {
             self.emitted.clear();
+            Ok(())
+        }
+
+        fn retire(&mut self, _actor: &ActorId) {}
+
+        fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError> {
             Ok(())
         }
     }

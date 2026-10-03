@@ -15,7 +15,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use qa_content::contract::{ItemId, NativeWeaponBehaviorDeclaration, ProjectileRole, WeaponBehaviorDefinition};
+use qa_compat::q2::rerelease::native_weapon_declaration::NativeWeaponBehaviorDeclaration;
+use qa_content::contract::{ItemId, ProjectileRole, WeaponBehaviorDefinition};
 use qa_core::identity::{ActorId, OwnedActor, ProviderId, SavedActorId};
 use qa_core::math::{Bounds, Vec3};
 use qa_guest::qc::program::QcProgram;
@@ -23,7 +24,6 @@ use qa_world::body::BodyState;
 use qa_world::save::value::{SaveJson, SaveReader};
 use thiserror::Error;
 
-use super::native_q2_rerelease_save::RereleaseSourceSave;
 use super::random::{RandomCheckpoint, RandomError, SourceRandom};
 use super::types::{PreparedWeaponBehavior, SimulationMode};
 
@@ -214,96 +214,14 @@ pub struct WeaponModelRef {
     pub bounds: Bounds,
 }
 
-/// Mirror of `ClassicGuestMap` from donor
-/// `src/app/bootstrap/simulation/classic-guest-world.ts` (canonical home:
-/// `crate::bootstrap::simulation::classic_guest_world`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassicGuestMap {
-    /// Map path.
-    pub map: String,
-    /// Entity text.
-    pub entities: String,
-    /// Spawn point.
-    pub spawn_point: String,
-}
-
-/// Mirror of `BindingKind` from donor
-/// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
-/// home: `crate::bootstrap::simulation::rerelease_weapon_behavior`); unify
-/// post-merge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RereleaseWeaponBindingKind {
-    /// Client record binding.
-    Client,
-    /// Target binding.
-    Target,
-    /// Projectile binding.
-    Projectile,
-}
-
-/// One saved configstring, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["configstrings"][number]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RereleaseWeaponConfigString {
-    /// Configstring index.
-    pub index: u32,
-    /// Configstring value.
-    pub value: String,
-}
-
-/// One retired trajectory, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["retired"][number]`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RereleaseWeaponRetired {
-    /// Retired projectile.
-    pub actor: SavedActorId,
-    /// Final trajectory.
-    pub trajectory: WeaponTrajectoryUpdate,
-}
-
-/// One actor binding, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["bindings"][number]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RereleaseWeaponBinding {
-    /// Entity slot.
-    pub slot: u32,
-    /// Bound actor.
-    pub actor: SavedActorId,
-    /// Binding kind.
-    pub kind: RereleaseWeaponBindingKind,
-    /// Profile generation.
-    pub generation: u32,
-}
-
-/// Mirror of `RereleaseWeaponBehaviorCheckpoint` from donor
-/// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
-/// home: `crate::bootstrap::simulation::rerelease_weapon_behavior`); unify
-/// post-merge.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RereleaseWeaponBehaviorCheckpoint {
-    /// Schema version (donor `version: 1`).
-    pub version: u32,
-    /// Behavior declaration.
-    pub declaration: NativeWeaponBehaviorDeclaration,
-    /// Behavior definition.
-    pub definition: WeaponBehaviorDefinition,
-    /// Guest map.
-    pub map: ClassicGuestMap,
-    /// Source time in seconds.
-    pub time: f64,
-    /// Saved game state.
-    pub game: RereleaseSourceSave,
-    /// Saved level state.
-    pub level: RereleaseSourceSave,
-    /// Saved cvar state.
-    pub cvars: Vec<u8>,
-    /// Saved configstrings.
-    pub configstrings: Vec<RereleaseWeaponConfigString>,
-    /// Retired trajectories.
-    pub retired: Vec<RereleaseWeaponRetired>,
-    /// Actor bindings.
-    pub bindings: Vec<RereleaseWeaponBinding>,
-}
+/// Rerelease checkpoint and declaration shared with the guest partition.
+///
+/// The runtime used to mirror these shapes locally, but the mirror drops
+/// declaration tags and signatures that `same_native_weapon_declaration`
+/// (serialization equality) requires, so a mirrored round trip cannot
+/// restore. The donor has one checkpoint type; the runtime uses the guest
+/// partition's directly.
+pub use super::rerelease_weapon_behavior::RereleaseWeaponBehaviorCheckpoint;
 
 /// Mirror of `RereleaseWeaponBehaviorSource` from donor
 /// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
@@ -511,8 +429,8 @@ pub struct QuakeCWeaponContext<S> {
 /// Donor `WeaponBehaviorRuntimeHost` plus the QuakeC constructor and the save
 /// readers, which the donor imports directly from the qc, guest, and world
 /// partitions. Every hook takes the same [`super::types`] entries the donor
-/// passes; hooks must clone retained entry data during the call because
-/// entries are borrowed. `S` is the opaque scene queries object forwarded to
+/// passes; hooks receive shared (`Rc`) entries and must clone retained entry
+/// data during the call. `S` is the opaque scene queries object forwarded to
 /// QuakeC construction (donor `Pick<SceneQueries, "trace" |
 /// "pointContents">`); the `Rc` shares one scene object exactly like the
 /// donor.
@@ -612,8 +530,10 @@ impl<Q, V, N> WeaponBehaviorEntry<Q, V, N> {
 }
 
 /// Simulation weapon behaviors over injected sources and driver.
+///
+/// Deferred entries are `Rc`-shared (not borrowed) so owners like the shared
+/// simulation can hold the runtime without self-referential borrows.
 pub struct SimulationWeaponBehaviors<
-    'p,
     Q: QuakeCWeaponBehaviorSource + 'static,
     V: QvmWeaponBehaviorSource + 'static,
     N: RereleaseWeaponBehaviorSource + 'static,
@@ -629,7 +549,7 @@ pub struct SimulationWeaponBehaviors<
     /// Selection order for deterministic checkpoints (donor `Map`
     /// insertion order; `HashMap` alone would serialize randomly).
     order: Vec<String>,
-    deferred: Vec<&'p PreparedWeaponBehavior>,
+    deferred: Vec<Rc<PreparedWeaponBehavior>>,
     /// Queued restore as an owned snapshot: cloning frees callers from
     /// lending save data across the loading boundary.
     pending_restore: Option<(Option<SaveJson>, String)>,
@@ -637,19 +557,18 @@ pub struct SimulationWeaponBehaviors<
 }
 
 impl<
-        'p,
         Q: QuakeCWeaponBehaviorSource + 'static,
         V: QvmWeaponBehaviorSource + 'static,
         N: RereleaseWeaponBehaviorSource + 'static,
         D: WeaponBehaviorAttachmentDriver,
         A: WeaponBehaviorActors,
         S,
-    > SimulationWeaponBehaviors<'p, Q, V, N, D, A, S>
+    > SimulationWeaponBehaviors<Q, V, N, D, A, S>
 {
     /// Build the runtime, constructing QuakeC sources and deferring QVM and
     /// native sources to [`initialize_loading`](Self::initialize_loading).
     pub fn new(
-        prepared: &'p [PreparedWeaponBehavior],
+        prepared: Vec<PreparedWeaponBehavior>,
         mut host: WeaponBehaviorRuntimeHost<Q, V, N, S>,
         actors: A,
         mut attachments: D,
@@ -659,10 +578,10 @@ impl<
         let mut order = Vec::new();
         let mut deferred = Vec::new();
         for entry in prepared {
-            let definition = match entry {
+            let definition = match &entry {
                 PreparedWeaponBehavior::QuakeC { selection, .. }
                 | PreparedWeaponBehavior::Qvm { selection, .. }
-                | PreparedWeaponBehavior::RereleaseNative { selection, .. } => &selection.definition,
+                | PreparedWeaponBehavior::RereleaseNative { selection, .. } => selection.definition.clone(),
             };
             if definitions.contains_key(&definition.role) {
                 return Err(WeaponBehaviorRuntimeError::DuplicateRole(
@@ -703,7 +622,7 @@ impl<
                     sources.insert(definition.id.clone(), WeaponBehaviorEntry::QuakeC(shared));
                 }
                 PreparedWeaponBehavior::Qvm { .. } | PreparedWeaponBehavior::RereleaseNative { .. } => {
-                    deferred.push(entry)
+                    deferred.push(Rc::new(entry))
                 }
             }
         }
@@ -733,10 +652,10 @@ impl<
             return Ok(());
         }
         for index in 0..self.deferred.len() {
-            let entry = self.deferred[index];
-            match entry {
+            let entry = Rc::clone(&self.deferred[index]);
+            match entry.as_ref() {
                 PreparedWeaponBehavior::Qvm { .. } => {
-                    let source = (self.host.qvm)(entry)?;
+                    let source = (self.host.qvm)(&entry)?;
                     let id = source.definition().id.clone();
                     let shared = Rc::new(RefCell::new(source));
                     self.attachments
@@ -745,7 +664,7 @@ impl<
                     self.sources.insert(id, WeaponBehaviorEntry::Qvm(shared));
                 }
                 PreparedWeaponBehavior::RereleaseNative { .. } => {
-                    let source = (self.host.native)(entry, next_frame)?;
+                    let source = (self.host.native)(&entry, next_frame)?;
                     let id = source.definition().id.clone();
                     let shared = Rc::new(RefCell::new(source));
                     self.attachments
@@ -812,7 +731,7 @@ impl<
         if self
             .deferred
             .iter()
-            .any(|entry| matches!(entry, PreparedWeaponBehavior::RereleaseNative { .. }))
+            .any(|entry| matches!(entry.as_ref(), PreparedWeaponBehavior::RereleaseNative { .. }))
         {
             return Err(WeaponBehaviorRuntimeError::NativeCheckpointRequiresLoading);
         }
@@ -1069,14 +988,13 @@ impl<
 }
 
 impl<
-        'p,
         Q: QuakeCWeaponBehaviorSource + 'static,
         V: QvmWeaponBehaviorSource + 'static,
         N: RereleaseWeaponBehaviorSource + 'static,
         D: WeaponBehaviorAttachmentDriver,
         A: WeaponBehaviorActors,
         S,
-    > WeaponBehaviorProjectilePort for SimulationWeaponBehaviors<'p, Q, V, N, D, A, S>
+    > WeaponBehaviorProjectilePort for SimulationWeaponBehaviors<Q, V, N, D, A, S>
 {
     fn controls_trajectory(&self, projectile: &ActorId) -> bool {
         self.controls_trajectory(projectile)
@@ -1103,15 +1021,18 @@ impl<
 mod tests {
     use std::cell::Cell;
 
+    use qa_compat::q2::rerelease::host::SourceSave;
+    use qa_compat::q2::rerelease::native_weapon_declaration::{
+        DeclCalls, DeclClientFields, DeclCommand, DeclEntityFields, DeclEntry, DeclEquippedWeapon,
+        DeclRegistrationLayout,
+    };
     use qa_content::catalog::{
         resolve_qc_weapon_behavior, QcWeaponFunction, QcWeaponProgramSnapshot, SourceWeaponBehaviorMetadata,
         WeaponBehaviorCompatibility,
     };
     use qa_content::contract::{
         create_content_digest, ContentId, ContentMount, LooseMount, MountId, MountIdentity, MountPlanId,
-        NativeWeaponAllocate, NativeWeaponCalls, NativeWeaponClient, NativeWeaponCommand, NativeWeaponEntity,
-        NativeWeaponEntry, NativeWeaponEquipped, NativeWeaponFree, NativeWeaponRegistrationLayout, NativeWeaponThink,
-        NativeWeaponTime, ProviderReference, ResolvedMountPlan, ResolvedWeaponBehaviorSelection,
+        ProviderReference, ResolvedMountPlan, ResolvedWeaponBehaviorSelection,
     };
     use qa_content::mounts::{open_mount_plan, OpenMountOptions};
     use qa_core::identity::IdentityOwner;
@@ -1122,12 +1043,14 @@ mod tests {
     use qa_guest::qvm::syscalls::{QvmAbiProfile, QvmRole};
     use qa_world::save::value::{arr, int, obj, str, SaveJson};
 
+    use super::super::q2_native_world::fixtures::rerelease_execution;
     use super::super::types::{
         NativeWeaponBehaviorDeclaration as OpaqueDeclaration, PreparedRereleaseGuest, QuakeCWeaponResource,
         QvmWeaponProfile,
     };
     use super::*;
     use crate::bootstrap::simulation::random::RandomProfile;
+    use qa_compat::q2::native_primary::PrimaryEdition;
 
     // ---- stub sources ----
 
@@ -1597,18 +1520,30 @@ mod tests {
     }
 
     fn declaration(id: &str, role: ProjectileRole) -> NativeWeaponBehaviorDeclaration {
-        let entry = NativeWeaponEntry {
+        let entry = DeclEntry {
             rva: 0x100,
             registration: None,
         };
+        let role_name = match role {
+            ProjectileRole::Rocket => "rocket",
+            ProjectileRole::Grenade => "grenade",
+            ProjectileRole::Nail => "nail",
+            ProjectileRole::Bolt => "bolt",
+            ProjectileRole::Plasma => "plasma",
+            ProjectileRole::Energy => "energy",
+            ProjectileRole::Grapple => "grapple",
+        };
         NativeWeaponBehaviorDeclaration {
             version: 1,
+            kind: "rerelease".to_string(),
+            abi: "windows-x86-64".to_string(),
+            artifact_path: "game.dll".to_string(),
+            artifact_digest: "ab".repeat(32),
             id: id.to_string(),
             title: format!("{id} title"),
-            role,
-            artifact_path: "game.dll".to_string(),
-            artifact_digest: test_digest(),
-            entity: NativeWeaponEntity {
+            role: role_name.to_string(),
+            aspect: "trajectory".to_string(),
+            entity: DeclEntityFields {
                 byte_length: 256,
                 origin: 0,
                 angles: 12,
@@ -1622,37 +1557,45 @@ mod tests {
                 think_registration: 60,
                 touch_callback: 64,
             },
-            client: NativeWeaponClient {
+            client: DeclClientFields {
                 byte_length: 128,
                 weapon: 0,
                 view_angles: 8,
                 forward: 20,
             },
-            equipped_weapon: NativeWeaponEquipped {
+            equipped_weapon: DeclEquippedWeapon {
                 byte_length: 32,
                 callback: 0,
                 expected: entry.clone(),
             },
-            time: NativeWeaponTime { rva: 0x300 },
-            think: NativeWeaponThink {
-                tag: 7,
-                registration: NativeWeaponRegistrationLayout {
-                    byte_length: 32,
-                    name: 0,
-                    tag: 8,
-                    callback: 16,
-                },
+            time_storage: "static".to_string(),
+            time_rva: 0x300,
+            think_signature: "think".to_string(),
+            think_tag: 7,
+            think_registration: DeclRegistrationLayout {
+                byte_length: 32,
+                name: 0,
+                tag: 8,
+                callback: 16,
             },
-            allocate: NativeWeaponAllocate { entry: entry.clone() },
-            free: NativeWeaponFree { entry: entry.clone() },
+            allocate_signature: "allocate".to_string(),
+            allocate: entry.clone(),
+            free_signature: "free".to_string(),
+            free: entry.clone(),
             projectile_touch: entry.clone(),
-            equip: NativeWeaponCalls { calls: Vec::new() },
-            launch: NativeWeaponCalls { calls: Vec::new() },
+            equip: DeclCalls {
+                signature: "equip".to_string(),
+                calls: Vec::new(),
+            },
+            launch: DeclCalls {
+                signature: "launch".to_string(),
+                calls: Vec::new(),
+            },
             activate_rva: None,
             fire_rva: 0x500,
             initialization_classes: Vec::new(),
             equipment: Vec::new(),
-            ammunition: NativeWeaponCommand {
+            ammunition: DeclCommand {
                 arguments: Vec::new(),
                 tail: String::new(),
             },
@@ -1666,7 +1609,12 @@ mod tests {
         let (mounts, _) = artifact_mounts();
         PreparedWeaponBehavior::RereleaseNative {
             selection: selection(definition),
-            prepared: PreparedRereleaseGuest,
+            prepared: PreparedRereleaseGuest {
+                edition: PrimaryEdition::Rerelease,
+                primary: None,
+                execution: rerelease_execution(),
+                bytes: Vec::new(),
+            },
             declaration: OpaqueDeclaration,
             mounts,
         }
@@ -1726,20 +1674,20 @@ mod tests {
                                 version: 1,
                                 declaration: resolved,
                                 definition: selection.definition.clone(),
-                                map: ClassicGuestMap {
+                                map: super::super::classic_guest_world::ClassicGuestMap {
                                     map: "maps/base1.bsp".to_string(),
                                     entities: String::new(),
                                     spawn_point: "start".to_string(),
                                 },
                                 time: 0.0,
-                                game: RereleaseSourceSave {
+                                game: SourceSave {
                                     native: Vec::new(),
-                                    deferred_damage: Vec::new(),
+                                    deferred: Vec::new(),
                                     projections: Vec::new(),
                                 },
-                                level: RereleaseSourceSave {
+                                level: SourceSave {
                                     native: Vec::new(),
-                                    deferred_damage: Vec::new(),
+                                    deferred: Vec::new(),
                                     projections: Vec::new(),
                                 },
                                 cvars: Vec::new(),
@@ -1766,20 +1714,20 @@ mod tests {
                     version: 1,
                     declaration: declaration.clone(),
                     definition: definition.clone(),
-                    map: ClassicGuestMap {
+                    map: super::super::classic_guest_world::ClassicGuestMap {
                         map: "maps/base1.bsp".to_string(),
                         entities: String::new(),
                         spawn_point: "start".to_string(),
                     },
                     time: 1.0,
-                    game: RereleaseSourceSave {
+                    game: SourceSave {
                         native: Vec::new(),
-                        deferred_damage: Vec::new(),
+                        deferred: Vec::new(),
                         projections: Vec::new(),
                     },
-                    level: RereleaseSourceSave {
+                    level: SourceSave {
                         native: Vec::new(),
-                        deferred_damage: Vec::new(),
+                        deferred: Vec::new(),
                         projections: Vec::new(),
                     },
                     cvars: Vec::new(),
@@ -1806,9 +1754,9 @@ mod tests {
         }))
     }
 
-    type StubRuntime<'p> = SimulationWeaponBehaviors<'p, StubQc, StubQvm, StubNative, StubDriver, StubActors, u32>;
+    type StubRuntime = SimulationWeaponBehaviors<StubQc, StubQvm, StubNative, StubDriver, StubActors, u32>;
 
-    fn runtime<'p>(prepared: &'p [PreparedWeaponBehavior], probes: Rc<RefCell<HostProbes>>) -> StubRuntime<'p> {
+    fn runtime(prepared: Vec<PreparedWeaponBehavior>, probes: Rc<RefCell<HostProbes>>) -> StubRuntime {
         StubRuntime::new(prepared, host(probes), StubActors::default(), StubDriver::default()).unwrap()
     }
 
@@ -1840,7 +1788,7 @@ mod tests {
             quakec_entry("test:rocket-a", ProjectileRole::Rocket),
             qvm_entry("test:rocket-b", ProjectileRole::Rocket),
         ];
-        let Err(error) = StubRuntime::new(&prepared, host(probes()), StubActors::default(), StubDriver::default())
+        let Err(error) = StubRuntime::new(prepared, host(probes()), StubActors::default(), StubDriver::default())
         else {
             panic!("expected duplicate roles");
         };
@@ -1855,7 +1803,7 @@ mod tests {
             native_entry("test:nail", ProjectileRole::Nail),
         ];
         let seen = probes();
-        let behaviors = runtime(&prepared, Rc::clone(&seen));
+        let behaviors = runtime(prepared, Rc::clone(&seen));
         assert!(!behaviors.ready());
         let seen = seen.borrow();
         assert_eq!(seen.quakec_contexts, 1);
@@ -1871,7 +1819,7 @@ mod tests {
             native_entry("test:nail", ProjectileRole::Nail),
         ];
         let seen = probes();
-        let mut behaviors = runtime(&prepared, Rc::clone(&seen));
+        let mut behaviors = runtime(prepared, Rc::clone(&seen));
         let mut pumps = 0;
         behaviors.initialize_loading(&mut || pumps += 1).unwrap();
         assert!(behaviors.ready());
@@ -1894,7 +1842,7 @@ mod tests {
     #[test]
     fn launch_requires_ready_and_dispatches_by_role() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         let owner = IdentityOwner::create("launch-test").unwrap();
         let projectile = owner
             .owned_actor(&owner.actor(3, 1), ProviderId::new("test", "game"))
@@ -1935,7 +1883,7 @@ mod tests {
     #[test]
     fn checkpoint_rejects_native_without_loading() {
         let prepared = vec![native_entry("test:nail", ProjectileRole::Nail)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         assert!(matches!(
             behaviors.checkpoint().unwrap_err(),
             WeaponBehaviorRuntimeError::ComponentsNotLoaded
@@ -1959,7 +1907,7 @@ mod tests {
             quakec_entry("test:rocket", ProjectileRole::Rocket),
             qvm_entry("test:grenade", ProjectileRole::Grenade),
         ];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         assert!(!behaviors.ready());
         let save = checkpoint_save(&["test:rocket", "test:grenade"]);
         behaviors.restore(SaveReader::at(&save, "weapons")).unwrap();
@@ -1985,7 +1933,7 @@ mod tests {
                 random: SourceRandom::with_profile(11, RandomProfile::Q2Rerelease).checkpoint(),
             })
         });
-        let mut behaviors = StubRuntime::new(&prepared, host, StubActors::default(), StubDriver::default()).unwrap();
+        let mut behaviors = StubRuntime::new(prepared, host, StubActors::default(), StubDriver::default()).unwrap();
         let save = checkpoint_save(&["test:rocket"]);
         let error = behaviors.restore(SaveReader::at(&save, "weapons")).unwrap_err();
         assert!(error.to_string().contains("source stream"), "{error}");
@@ -1994,7 +1942,7 @@ mod tests {
     #[test]
     fn restore_queues_before_ready_and_rejects_double_queue() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         let save = checkpoint_save(&["test:grenade"]);
         behaviors.restore(SaveReader::at(&save, "weapons")).unwrap();
         let queued = checkpoint_save(&["test:grenade"]);
@@ -2015,7 +1963,7 @@ mod tests {
             quakec_entry("test:rocket", ProjectileRole::Rocket),
             qvm_entry("test:grenade", ProjectileRole::Grenade),
         ];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         for ids in [
             vec!["test:rocket", "test:unknown"],
@@ -2030,7 +1978,7 @@ mod tests {
     #[test]
     fn restore_rejects_native_without_loading() {
         let prepared = vec![native_entry("test:nail", ProjectileRole::Nail)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         let save = checkpoint_save(&["test:nail"]);
         assert!(matches!(
@@ -2070,7 +2018,7 @@ mod tests {
             fail_close: true,
             ..StubDriver::default()
         };
-        let mut behaviors = StubRuntime::new(&prepared, host, StubActors::default(), driver).unwrap();
+        let mut behaviors = StubRuntime::new(prepared, host, StubActors::default(), driver).unwrap();
         behaviors.initialize_loading(&mut || {}).unwrap();
         let error = behaviors.close().unwrap_err();
         match error {
@@ -2084,7 +2032,7 @@ mod tests {
     #[test]
     fn projectile_port_delegates() {
         let prepared = vec![qvm_entry("test:grenade", ProjectileRole::Grenade)];
-        let mut behaviors = runtime(&prepared, probes());
+        let mut behaviors = runtime(prepared, probes());
         behaviors.initialize_loading(&mut || {}).unwrap();
         let owner = IdentityOwner::create("port-test").unwrap();
         let projectile = owner

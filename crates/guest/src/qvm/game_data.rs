@@ -1292,7 +1292,7 @@ pub struct QvmHostStateFns {
 }
 
 /// Module checkpoint (mirror of `QvmCheckpoint`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmCheckpoint {
     /// Module identity.
     pub module: ModuleIdentity,
@@ -1315,7 +1315,7 @@ pub struct QvmCheckpoint {
 }
 
 /// Host-state checkpoint (mirror of `GuestPrivateState`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmHostState {
     /// Owning module.
     pub module: ModuleIdentity,

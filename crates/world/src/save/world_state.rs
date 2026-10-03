@@ -539,6 +539,62 @@ pub fn restore_shared_world_state<'h, H: SharedWorldHost>(
     }))
 }
 
+/// Owned staged shared-restore completion (C10: defer/finish across the load boundary).
+///
+/// [`restore_shared_world_state`] borrows its host, but the simulation stores
+/// the pending completion in its state while the load flow attaches component
+/// state with a fresh host. Staging keeps the owned payload; finishing
+/// re-attaches a host.
+#[derive(Debug, Clone)]
+pub struct StagedSharedRestore {
+    save: SharedSaveView,
+    hidden: HashMap<(u32, u32), HiddenArmorEntry>,
+    hidden_recorded: bool,
+    state: CompletionState,
+}
+
+impl<H: SharedWorldHost> SharedRestoreCompletion<'_, H> {
+    /// Detach the owned staged payload, dropping the host borrow.
+    pub fn into_staged(self) -> StagedSharedRestore {
+        StagedSharedRestore {
+            save: self.save,
+            hidden: self.hidden,
+            hidden_recorded: self.hidden_recorded,
+            state: self.state,
+        }
+    }
+}
+
+/// Finish a staged restore with a fresh host (C10).
+pub fn finish_staged_restore<H: SharedWorldHost>(
+    host: &mut H,
+    staged: &mut StagedSharedRestore,
+) -> Result<(), WorldError> {
+    let mut completion = SharedRestoreCompletion {
+        host,
+        save: staged.save.clone(),
+        hidden: staged.hidden.clone(),
+        hidden_recorded: staged.hidden_recorded,
+        state: staged.state,
+    };
+    let result = completion.finish();
+    staged.state = completion.state;
+    result
+}
+
+/// Assert a staged restore completed (C10).
+pub fn assert_staged_complete(staged: &StagedSharedRestore) -> Result<(), WorldError> {
+    if staged.state != CompletionState::Complete {
+        let state = match staged.state {
+            CompletionState::Complete => "complete",
+            CompletionState::Failed => "failed",
+            CompletionState::Pending => "pending",
+        };
+        return Err(save_error("world.combat", &format!("shared restoration is {state}")));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
