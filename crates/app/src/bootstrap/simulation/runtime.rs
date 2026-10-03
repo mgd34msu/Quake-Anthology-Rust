@@ -12006,9 +12006,6 @@ fn finish_construction_inner(
         // providers fail closed before the map loads.
         let host = simulation.with_q3_source(|game| game.host()).flatten();
         let Some(host) = host else {
-            // Missing siblings: Q3 source construction (`create_q3_source`
-            // fails) plus `attach_host`; the map-load delegation below is
-            // unreachable until they land.
             return fail("Q3 map load has no attached source host");
         };
         host.host
@@ -21152,8 +21149,6 @@ impl SharedSimulation {
             return fail("Bot client is not an available session slot");
         }
         if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
-            // Missing siblings: Q3 source construction plus `attach_host`;
-            // bot prepareClient delegation is unreachable until they land.
             return fail("Q3 bot admission has no attached source host");
         }
         let actor = self.prepare_q3_client(client)?;
@@ -21176,9 +21171,6 @@ impl SharedSimulation {
     /// instead of taking the donor's source alias, per the module's
     /// ownership rules. Fails before allocating so no half-admitted actor
     /// leaks.
-    ///
-    /// Missing siblings: reachable only from host-gated admitters; Q3
-    /// source construction plus `attach_host` land first.
     pub fn prepare_q3_client(&self, client: &ClientId) -> Result<OwnedActor, RuntimeError> {
         let recipe = self.peek().recipe.clone();
         let (product, team) = q3_source_product_and_team(self)?;
@@ -21224,8 +21216,6 @@ impl SharedSimulation {
     /// leaks.
     fn admit_q3_player(&self, client: &ClientId) -> Result<super::types::PlayerAdmission, RuntimeError> {
         if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
-            // Missing siblings: Q3 source construction plus `attach_host`;
-            // admitPlayer delegation is unreachable until they land.
             return fail("Q3 admission has no attached source host");
         }
         let actor = self.prepare_q3_client(client)?;
@@ -21258,8 +21248,6 @@ impl SharedSimulation {
     /// absent on Q3 sources, so the donor `respawned`/`respawn` calls are
     /// reached as a fresh attach, which lands the same spawn-time state.
     ///
-    /// Missing siblings: no callers; Q3 source construction plus
-    /// `attach_host` (which populates the records-layer refs) land first.
     pub fn spawn_q3_player(
         &self,
         entity: &qa_content::q3::base::game::state::GameEntity,
@@ -21543,9 +21531,6 @@ impl SharedSimulation {
         if self.peek().source.kind() != "q3" {
             return fail("Q3 source movement owner is missing");
         }
-        // Missing siblings: records-layer refs populate only via the
-        // host-gated admission; Q3 source construction plus `attach_host`
-        // land first.
         let elapsed = (command.server_time - command_time).clamp(0, 200);
         let _ = elapsed;
         {
@@ -21565,10 +21550,6 @@ impl SharedSimulation {
     /// donor's `readQ3MovementState` replace needs the host's records
     /// store, which the host does not expose; view angles, teleport
     /// timing, and the view-reset emit still sync.
-    ///
-    /// Missing siblings: records-layer refs populate only via the
-    /// host-gated admission; Q3 source construction plus `attach_host`
-    /// land first.
     pub fn sync_q3_player(&self, player: &MovementPlayer) -> Result<(), RuntimeError> {
         use qa_world::movement::q3::constants::move_flags;
         if self.peek().source.kind() != "q3" {
@@ -34291,10 +34272,8 @@ impl SharedSimulation {
     fn primary_presentations(&self) -> Vec<super::types::SimulationPresentation> {
         let mut result = Vec::new();
         self.push_native_presentations(&mut result);
-        if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
-            // `create_q3_source` always fails, so no live Q3 game exists to
-            // present; the arm contributes nothing until the q3 lane lands
-            // the source host.
+        if let Some(host) = self.with_q3_source(|game| game.host()).flatten() {
+            result.extend(host.presentations());
         }
         if let Some(presentations) = self
             .peek()
