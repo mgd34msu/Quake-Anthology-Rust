@@ -12,6 +12,8 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 use qa_core::numeric::{Arithmetic, NumericOps};
 
+use crate::contract::ModSourceCall;
+
 use super::super::foundation::gameplay::AttackCause;
 use super::id1_damage::Id1DamageCall;
 use super::id1_program::{id1_damage_multiplier, id1_program_snapshot, EnvContext, Id1ProgramBinding, NativeEnv};
@@ -66,8 +68,12 @@ pub struct Id1Environment<'a> {
 impl<'a> Id1Environment<'a> {
     /// Bind environmental damage sites (donor `Id1Environment`
     /// constructor).
-    pub fn new(source: QcHostSource<'a>, machine: MachineFn<'a>) -> Result<Self, QcError> {
-        let binding = id1_program_snapshot(source.program)?;
+    pub fn new(
+        source: QcHostSource<'a>,
+        machine: MachineFn<'a>,
+        declared_damage: Option<&ModSourceCall>,
+    ) -> Result<Self, QcError> {
+        let binding = id1_program_snapshot(source.program, declared_damage)?;
         for site in &binding.environment {
             let caller = source.program.function_at(site.caller)?;
             let statement = source.program.statements.get(site.statement);

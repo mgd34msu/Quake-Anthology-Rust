@@ -134,10 +134,11 @@ impl<'a> Id1DamageBinding<'a> {
         resolve_request: Box<dyn Fn(&Id1DamageCall) -> DamageRequest + 'a>,
         projection: Option<&'a dyn Id1DamageProjection>,
         declared_armor: Option<&ModQcArmorStage>,
+        declared_damage: Option<&ModSourceCall>,
         declared_scale: Option<(&ModSourceCall, &ModQcDamageScale)>,
         cache: &mut Id1ProgramCache,
     ) -> Result<Self, QcError> {
-        let binding = id1_program_binding(cache, source.program, None)?;
+        let binding = id1_program_binding(cache, source.program, declared_damage)?;
         let armor_stage = qc_armor_stage(source.program, declared_armor)?;
         let damage_scale = declared_scale
             .map(|(call, scale)| qc_damage_scale(source.program, call, Some(scale)))

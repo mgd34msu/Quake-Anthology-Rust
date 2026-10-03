@@ -589,11 +589,15 @@ pub fn id1_program_binding(
     Ok(cache.entries.get(program.digest).cloned().unwrap_or(binding))
 }
 
-/// Fresh binding without cache consultation, for read-only consumers
-/// that never observe the qualified damage declaration.
-pub(crate) fn id1_program_snapshot(program: &QcProgramView) -> Result<Id1ProgramBinding, QcError> {
+/// Fresh binding without cache consultation, for read-only consumers.
+/// QuakeWorld programs still require their artifact-qualified damage
+/// declaration (donor `deriveNativeBinding`).
+pub(crate) fn id1_program_snapshot(
+    program: &QcProgramView,
+    declared_damage: Option<&ModSourceCall>,
+) -> Result<Id1ProgramBinding, QcError> {
     let mut cache = Id1ProgramCache::default();
-    id1_program_binding(&mut cache, program, None)
+    id1_program_binding(&mut cache, program, declared_damage)
 }
 
 /// Source damage multiplier for the pinned programs (donor
@@ -605,7 +609,9 @@ pub fn id1_damage_multiplier(
     attacker: i32,
     inflictor: i32,
 ) -> Result<f64, QcError> {
-    let binding = id1_program_snapshot(program)?;
+    // Pinned-only consumer: pinned programs skip derivation, native ones
+    // reject below; QuakeWorld natives fail derivation first either way.
+    let binding = id1_program_snapshot(program, None)?;
     if binding.attribution == Id1Attribution::Native {
         return Err(QcError::program(
             "Native mod damage multiplier belongs to its bytecode",
