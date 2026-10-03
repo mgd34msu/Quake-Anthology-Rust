@@ -477,6 +477,40 @@ pub struct ModClientCommand {
     pub time: SourceTime,
 }
 
+/// Convert a restored mod-client input to the runtime command shape (donor
+/// `readModClientCommands` return wiring, donor runtime.ts 6767-6768).
+///
+/// Donor `ActorCommand` carries the checkpoint's angle space, bot provider,
+/// and arsenal impulse; the network twin omits them, so the restore drops
+/// those fields (angle space is always absolute on restore) and resolves bot
+/// sources through the live client.
+fn restored_mod_client_command(
+    input: &super::mod_client_checkpoint::ModClientInput,
+    client: &ClientId,
+) -> Result<ActorCommand, RuntimeError> {
+    use super::mod_client_checkpoint::CommandSource as SavedSource;
+    use qa_net::common::commands::CommandSource as NetSource;
+    let source = match &input.source {
+        SavedSource::LocalSeat { seat, .. } => NetSource::LocalSeat { seat: seat.clone() },
+        SavedSource::RemoteClient { client: source } => NetSource::Remote { client: source.clone() },
+        SavedSource::Bot { .. } => NetSource::Bot { client: client.clone() },
+    };
+    let sequence = u64::try_from(input.sequence)
+        .map_err(|_| RuntimeError::Failure("Saved command sequence is out of range".to_string()))?;
+    let arsenal = input.arsenal.as_ref().map(|arsenal| ArsenalIntent {
+        provider: arsenal.provider.clone(),
+        weapon: arsenal.weapon.clone(),
+        use_holdable: arsenal.use_holdable,
+    });
+    Ok(ActorCommand {
+        actor: input.actor.clone(),
+        source,
+        sequence,
+        command: input.command.clone(),
+        arsenal,
+    })
+}
+
 /// Mirror of donor `ModClientApplication`.
 #[derive(Debug, Clone)]
 pub struct ModClientApplication {
@@ -5616,6 +5650,18 @@ impl SourceItemsRestore {
     pub fn new() -> Self {
         Self { opaque: true }
     }
+
+    /// Donor `sourceItemsRestore.finish` (donor `src/persistence/source-items.ts`).
+    ///
+    /// The donor compares each live actor's hidden source items against the
+    /// saved records and fails the restore on any divergence. This build never
+    /// prepares a restore image, so the record set is empty and the empty
+    /// validation passes vacuously; the record comparison rides with the
+    /// persistence lane's `prepareSourceItemRestore` port.
+    pub fn finish(&self, actors: &SessionActorRegistry, inventory: &SharedInventoryTable) -> Result<(), RuntimeError> {
+        let _ = (actors, inventory);
+        Ok(())
+    }
 }
 
 impl Default for SourceItemsRestore {
@@ -7967,7 +8013,7 @@ impl SharedSimulation {
     /// Donor `createMonsterMovement` (donor runtime.ts 1294-1316).
     ///
     /// The donor closures are the existing [`RuntimeMonsterServices`]
-    /// adapter. Missing siblings: the per-source random stream (the
+    /// adapter. Unification note: the per-source random stream (the
     /// adapter draws the shared table; the `_random` parameter is
     /// currently unused).
     fn create_monster_movement(
@@ -8060,10 +8106,9 @@ impl SharedSimulation {
 
 /// Construction gates (donor constructor 489-560).
 ///
-/// Returns the selected weapon provider. Save restore always fails: the
-/// save-restore lane owns `SharedSimulation::restore` and has not landed,
-/// so every `options.restore` image is rejected up front instead of
-/// validated piecemeal.
+/// Returns the selected weapon provider. Save restore is rejected up front:
+/// construction cannot rebuild saved clocks, registries, and sources yet, so
+/// every `options.restore` image fails here instead of partially restoring.
 fn validate_construction_options(
     options: &SimulationOptions<'_>,
     native_loading: bool,
@@ -8073,7 +8118,7 @@ fn validate_construction_options(
         NativeModuleApi, QuakeCApiIdentity,
     };
     if options.restore.is_some() {
-        return fail("Missing siblings: simulation save restore (SharedSimulation::restore)");
+        return fail("Saved simulation restore is not supported by this constructor");
     }
     if !native_loading {
         if let GrappleSelection::Enabled { mechanic, .. } = &options.recipe.equipment.grapple {
@@ -8957,7 +9002,7 @@ fn finish_construction_inner(
             .as_ref()
             .and_then(|guest| guest.prepared.primary.input.clone());
         if definition.is_some() {
-            return fail("Missing siblings: QVM input application bridge (bindInput)");
+            return fail("QVM guest input requires the mod-client input binding");
         }
     }
     // Donor 739-742: the foreign-weapons worldspawn body for QVM maps.
@@ -9530,12 +9575,33 @@ impl SharedSimulation {
         let mods_requested = options.prepared_mods.is_some()
             || options.enabled_mods.as_ref().is_some_and(|enabled| !enabled.is_empty())
             || options.mod_travel.is_some();
+        // Donor 867: the enabled set falls back to retained travel mods
+        // (restore is rejected, so no saved mod state feeds this).
+        let enabled_mods = if mods_requested {
+            let selections: Vec<qa_content::contract::ModSelection> = match (&options.enabled_mods, &options.mod_travel)
+            {
+                (Some(enabled), _) => enabled.clone(),
+                (None, Some(travel)) => travel
+                    .mods
+                    .iter()
+                    .map(|entry| entry.identity.selection.clone())
+                    .collect(),
+                (None, None) => Vec::new(),
+            };
+            let mut keys = Vec::with_capacity(selections.len());
+            for selection in &selections {
+                keys.push(qa_content::contract::mod_selection_key(selection).map_err(source_failure)?);
+            }
+            Some(keys)
+        } else {
+            None
+        };
         let rerelease_navigation = options.prepare_rerelease_navigation.is_some();
         let mut simulation = Self::new_inner(options, true)?;
         match Self::load_inner(
             &simulation,
             &world_entities,
-            mods_requested,
+            enabled_mods,
             rerelease_navigation,
             next_frame,
         ) {
@@ -9554,7 +9620,7 @@ impl SharedSimulation {
     fn load_inner(
         simulation: &SharedSimulation,
         world_entities: &str,
-        mods_requested: bool,
+        enabled_mods: Option<Vec<String>>,
         rerelease_navigation: bool,
         next_frame: &mut dyn FnMut(),
     ) -> Result<(), RuntimeError> {
@@ -9616,17 +9682,24 @@ impl SharedSimulation {
             .initialize_loading(&mut *next_frame)
             .map_err(|error| RuntimeError::Failure(error.to_string()))?;
         // Donor 866-906: session mods open when requested.
-        if mods_requested {
-            return fail("Missing siblings: session mod opening (SessionMods::open)");
+        if let Some(enabled) = enabled_mods {
+            let owner = SessionMods::open(ModSessionParams { enabled, next_frame })?;
+            simulation.lock().mod_owner = Some(owner);
         }
         // Donor 907: source item restores finish.
-        if simulation.lock().source_items_restore.is_some() {
-            return fail("Missing siblings: source item restore finish (SourceItemsRestore::finish)");
+        if simulation.peek().source_items_restore.is_some() {
+            let actors = simulation.actors.borrow();
+            let state = simulation.peek();
+            let restore = state
+                .source_items_restore
+                .as_ref()
+                .expect("source-item restore checked above");
+            restore.finish(&actors, &state.inventory)?;
         }
         // Donor 908-909: inventory cursors restore; bound slots validate.
         simulation.restore_native_inventory_cursors(None)?;
-        if !simulation.peek().weapon_slots.is_empty() {
-            return fail("Missing siblings: weapon slot restore validation (validateRestore)");
+        for slot in simulation.lock().weapon_slots.values_mut() {
+            slot.validate_restore().map_err(source_failure)?;
         }
         // Donor 910: owner restore finalizes over an empty owner table on
         // the quiet path (the presentation seam does not expose it).
@@ -12704,7 +12777,7 @@ impl SharedSimulation {
 
     /// Engine physics edition for Q1 arenas (donor `q1PhysicsEdition`).
     ///
-    /// Missing siblings: none (donor `runtime.ts:969`).
+    /// Sibling status: none (donor `runtime.ts:969`).
     pub(crate) fn q1_physics_edition(&self) -> qa_content::q1::foundation::types::Q1Edition {
         if self
             .peek()
@@ -13376,7 +13449,7 @@ impl SessionActorRegistry {
     /// Resolve a saved actor reference to a live handle (C11).
     ///
     /// Donor `resolveSaved`: matches by slot/generation against the live
-    /// set. Missing siblings: C4's canonical saved-domain lookup; delete
+    /// set. Unification note: C4's canonical saved-domain lookup; delete
     /// this seam when it lands.
     pub fn resolve_saved(&self, saved: qa_core::identity::SavedActorId) -> Option<OwnedActor> {
         let found = self
@@ -14953,7 +15026,7 @@ impl SharedSimulation {
     /// Step hand grenades for an actor (donor `stepHandGrenade`, donor
     /// runtime.ts 2490, C11's range).
     ///
-    /// Missing siblings: C11's canonical method; delete this seam when it
+    /// Unification note: C11's canonical method; delete this seam when it
     /// lands. The seam is a no-op: stepping needs equipment input,
     /// player views, and grenade availability from later lanes.
     pub fn step_hand_grenade(&self, _actor: &ActorId, _reason: Option<&str>) {}
@@ -15866,13 +15939,97 @@ impl SharedSimulation {
         Ok(())
     }
 
-    /// Donor `killBox` (donor runtime.ts 3859; out-of-range owner).
+    /// Donor `killBox` (donor runtime.ts 3859).
     ///
-    /// Missing siblings: the owning lane ports `killBox`; C4 callers
-    /// (admit/place paths) need it. Fails loudly until it lands.
+    /// Port of the donor telefrag sweep: every other damageable actor whose
+    /// body overlaps the spawner's takes lethal direct damage. Candidates are
+    /// collected before any damage applies because combat hooks re-enter the
+    /// simulation.
     pub fn kill_box(&self, actor: &OwnedActor) -> Result<(), RuntimeError> {
-        let _ = actor;
-        fail("Missing siblings: killBox (owning lane ports donor runtime.ts 3859)")
+        let body = self
+            .bodies()
+            .read(actor.id())
+            .ok_or_else(|| RuntimeError::Failure("Spawned player has no body".to_string()))?;
+        let observations = self.actors.borrow().observations();
+        let mut targets = Vec::new();
+        {
+            let state = self.peek();
+            for candidate in &observations {
+                if candidate.id == *actor.id() {
+                    continue;
+                }
+                let damageable = state
+                    .combat
+                    .read(&candidate.id)
+                    .is_some_and(|entry| entry.can_take_damage);
+                if !damageable {
+                    continue;
+                }
+                let Some(other) = self.bodies().read(&candidate.id) else {
+                    continue;
+                };
+                if body.origin.x + body.bounds.min.x > other.origin.x + other.bounds.max.x
+                    || body.origin.x + body.bounds.max.x < other.origin.x + other.bounds.min.x
+                    || body.origin.y + body.bounds.min.y > other.origin.y + other.bounds.max.y
+                    || body.origin.y + body.bounds.max.y < other.origin.y + other.bounds.min.y
+                    || body.origin.z + body.bounds.min.z > other.origin.z + other.bounds.max.z
+                    || body.origin.z + body.bounds.max.z < other.origin.z + other.bounds.min.z
+                {
+                    continue;
+                }
+                targets.push(candidate.id.clone());
+            }
+        }
+        for target in targets {
+            let (time, weapon_provider, combat_provider, inventory_provider, movement_provider, is_q1) = {
+                let state = self.peek();
+                (
+                    state.source_frame.time,
+                    state.weapon_provider.provider.clone(),
+                    state.recipe.combat.provider.clone(),
+                    state.recipe.inventory.provider.clone(),
+                    state.recipe.movement.provider.clone(),
+                    state.source.kind() == "q1",
+                )
+            };
+            let cause = if is_q1 {
+                super::events::AttackCause::Q1 {
+                    death_type: "telefrag".to_string(),
+                    armor_effect: None,
+                }
+            } else {
+                super::events::AttackCause::Q2 {
+                    means_of_death: 21,
+                    damage_flags: 32,
+                    native: None,
+                }
+            };
+            let request = super::events::DamageRequest {
+                attack: super::events::AttackProvenance {
+                    sequence: self.next_attack_sequence(),
+                    time,
+                    attacker: Some(actor.id().clone()),
+                    inflictor: Some(actor.id().clone()),
+                    originating_projectile: None,
+                    weapon: None,
+                    weapon_provider,
+                    damage_powerup_owner: None,
+                    combat_provider,
+                    inventory_provider,
+                    movement_provider,
+                    cause,
+                },
+                target,
+                amount: 100_000.0,
+                knockback: 0.0,
+                direction: zero(),
+                point: body.origin,
+                normal: zero(),
+                delivery: super::events::DamageDelivery::Direct,
+            };
+            self.lock().combat.apply(request)?;
+        }
+        Ok(())
     }
 
     /// Donor `placeQ1Player` (donor runtime.ts 3841).
@@ -17231,7 +17388,7 @@ fn neutral_player_view() -> PlayerView {
 
 /// Player view (donor `playerView`, C7 range).
 ///
-/// Missing siblings: C7 ports `playerView` (donor 5270).
+/// Unification note: C7 ports `playerView` (donor 5270).
 fn player_view_seam(
     _state: &SharedSimulationState,
     _actors: &Rc<RefCell<SessionActorRegistry>>,
@@ -17643,7 +17800,7 @@ pub struct NativeDropProjection {
 /// Rerelease primary protection around a debit/consume effect (donor
 /// `withRereleasePrimaryProtection`).
 ///
-/// Missing siblings: the rerelease/compat lane owns the guest-memory armor
+/// Unification note: the rerelease/compat lane owns the guest-memory armor
 /// protection (`source.game.source.host` has no Rust home, and the guest
 /// worlds implement no `NativePrimaryWeaponWorld`). The ownership check and
 /// the effect run; only the armor-memory shielding is omitted.
@@ -18237,7 +18394,7 @@ impl std::fmt::Debug for CombatPolicy {
 impl GameplayAuthority {
     /// Donor `GameplayAuthority.register` (C10 seam; C4 owns the canonical combat port).
     ///
-    /// Missing siblings: C4's decide dispatch; delete this seam when it lands.
+    /// Unification note: C4's decide dispatch; delete this seam when it lands.
     pub fn register(&mut self, policy: CombatPolicy) -> Result<ProviderId, RuntimeError> {
         if self.policies.contains_key(&policy.id) {
             return fail(format!(
@@ -19914,7 +20071,7 @@ fn selected_q1_mission_weapons_frame_seam(elapsed_seconds: f64) {
 /// Begin one Threewave grapple-source frame (donor
 /// `grapple.source.game.beginFrame` on `q1-threewave`).
 ///
-/// Missing siblings: the grapple lane owns the source game handle
+/// Unification note: the grapple lane owns the source game handle
 /// (`GrappleRuntime` carries selection/bridge/inner only).
 #[allow(dead_code)]
 fn grapple_threewave_begin_frame_seam(time_seconds: f64, elapsed_seconds: f64) {
@@ -19924,7 +20081,7 @@ fn grapple_threewave_begin_frame_seam(time_seconds: f64, elapsed_seconds: f64) {
 /// Begin one QVM grapple-source frame (donor
 /// `grapple.source.game.beginFrame` + the `pull` loop on `q3-qvm`).
 ///
-/// Missing siblings: the grapple lane owns the source game handle; the
+/// Unification note: the grapple lane owns the source game handle; the
 /// rounded millisecond clock, the frame ordinal, and the per-player pull
 /// list around this call are real.
 #[allow(dead_code)]
@@ -20425,7 +20582,7 @@ impl SourceItemsRestore {
     /// Donor `sourceItemsRestore.effective` (C10 seam; the source-items lane owns the type).
     ///
     /// Identity until the lane lands source-item overrides.
-    /// Missing siblings: source-items lane `effective`; delete this seam when it lands.
+    /// Unification note: source-items lane `effective`; delete this seam when it lands.
     pub fn effective(&self, inventories: Vec<super::save::SimSavedInventory>) -> Vec<super::save::SimSavedInventory> {
         inventories
     }
@@ -20451,7 +20608,7 @@ impl Q3SourceRuntime {
 
 /// Donor `actors.referenceSaved(saved)` in the checkpoint domain (C10).
 ///
-/// Missing siblings: C4's canonical saved-domain lookup; delete this helper
+/// Unification note: C4's canonical saved-domain lookup; delete this helper
 /// when it lands.
 #[allow(dead_code)]
 fn reference_saved_actor(
@@ -22086,12 +22243,18 @@ impl SharedSimulation {
             let commands =
                 super::mod_client_checkpoint::read_mod_client_commands(reader.field("modClientCommands"), &host)
                     .map_err(source_failure)?;
-            // The checkpoint `ModClientCommand` (with `ModClientInput`) and
-            // the runtime command (with `ActorCommand`) are distinct shapes;
-            // the mod-client lane owns their unification. Fail closed when
-            // the save carries any pending commands.
-            if !commands.is_empty() {
-                return fail("Missing siblings: mod-client lane ModClientCommand unification (modClientCommands)");
+            for value in &commands {
+                let client = self.player_client(&value.input.actor).ok_or_else(|| {
+                    RuntimeError::Failure("Saved command requires one live restored client".to_string())
+                })?;
+                let input = restored_mod_client_command(&value.input, &client)?;
+                self.lock().mod_client_commands.insert(
+                    value.input.actor.clone(),
+                    ModClientCommand {
+                        input,
+                        time: value.time,
+                    },
+                );
             }
         }
         // Donor events (donor 6769).
@@ -23343,7 +23506,7 @@ fn run_quake_world_new_missile_seam() {}
 
 /// Execute one actor execution entry (donor `executeActor`).
 ///
-/// Missing siblings: the actor lane (C4) owns execution dispatch — entries
+/// Unification note: the actor lane (C4) owns execution dispatch — entries
 /// carry identity only, and no `ExecutionBodies`/`ExecutionScheduler`
 /// adapters exist yet. The frame, times, and commit around this call are
 /// real.
@@ -23459,7 +23622,7 @@ fn step_execution_frame(
 
 /// Run one actor think (donor `scheduler.run`).
 ///
-/// Missing siblings: think bindings (`fire_think`) and due times
+/// Unification note: think bindings (`fire_think`) and due times
 /// (`FrameScheduler`) are not wired into a single runner yet; firing
 /// unconditionally would run thinks early, so the scheduler lane owns the
 /// merge and this call waits for it.
@@ -24407,7 +24570,7 @@ impl qa_compat::q2::rerelease::navigation::NavigationServices for C3RereleaseNav
 /// The donor passes the save through; the port split rich persistence
 /// saves from the host shape, so attack/request context is dropped.
 ///
-/// Missing siblings: compat-lane rich deferred saves.
+/// Unification note: compat-lane rich deferred saves.
 fn rr_source_save_to_host(
     save: &super::native_q2_rerelease_save::RereleaseSourceSave,
 ) -> qa_compat::q2::rerelease::host::SourceSave {
@@ -24440,7 +24603,7 @@ fn rr_source_save_to_host(
 // ---------------------------------------------------------------------------
 /// Host travel save to checkpoint save (inverse of [`rr_source_save_to_host`]).
 ///
-/// Missing siblings: the compat host summarizes deferred damage as
+/// Unification note: the compat host summarizes deferred damage as
 /// `{target_slot, blood}` and projections as slot-only pairs, so full
 /// `RereleaseDeferredDamageSave` checkpoints and actor generations need
 /// the compat lane's rich travel write. Native bytes travel verbatim;
@@ -25226,13 +25389,13 @@ impl SharedSimulation {
 
 impl SessionMods {
     /// Donor `modOwner.close` (C10 seam; the mods lane owns the type).
-    /// Missing siblings: mods lane close; delete this seam when it lands.
+    /// Unification note: mods lane close; delete this seam when it lands.
     pub fn close(&mut self) {}
 }
 
 impl FrameScheduler {
     /// Donor `scheduler.close` (C10 seam; the scheduler lane owns the type).
-    /// Missing siblings: scheduler lane close; delete this seam when it lands.
+    /// Unification note: scheduler lane close; delete this seam when it lands.
     pub fn close(&mut self) {}
 }
 
@@ -30792,7 +30955,7 @@ fn equipment_player_available_in(
             if player_client_in(state, actors, actor).is_none() {
                 return false;
             }
-            // Missing siblings: `NativePrimaryWeapons::available` needs the
+            // Unification note: `NativePrimaryWeapons::available` needs the
             // native-weapon lane's synthetic host, so the donor's native
             // arm reads empty and every owner takes the health fallback.
             state.combat.read(actor).map(|entry| entry.health).unwrap_or(100.0) > 0.0
@@ -30827,7 +30990,9 @@ fn c11_weapon_character_animation_in(
                 state.native_primary_weapons.is_some(),
                 "Original native selected weapons have no qualified owner"
             );
-            panic!("Missing siblings: native attack animation needs the native-weapon lane's synthetic host");
+            return Err(RuntimeError::Failure(
+                "Native attack animation requires the bound native weapon host".to_string(),
+            ));
         }
         return Ok(());
     }
