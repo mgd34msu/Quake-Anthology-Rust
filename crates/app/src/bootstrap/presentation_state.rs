@@ -1,12 +1,14 @@
 //! Retained presentation events with owner lifecycle and media queues.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/presentation-state.ts`
+//! Port of donor `src/app/bootstrap/presentation-state.ts`
 //! (`LocalPresentationMedia`, `PresentationState`). Ownership, resource references,
 //! save readers, vectors, shader names, and the Q1 fog shapes are the ported contract,
-//! content, persistence, material, and time helpers; the Q1 fog simulation
-//! (canonical port [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog),
-//! used directly by the simulation runtime) arrives through the [`PresentationFog`]
-//! seam. The event unions (`SimulationPresentationEvent`, `SourcePresentationEvent`
+//! content, persistence, material, and time helpers; the Q1 fog simulation runs
+//! directly on the canonical
+//! [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog), with boundary
+//! converters between the local generic events and the canonical
+//! [`Q1FogContext`](super::simulation::q1_fog::Q1FogContext) plus canonical addon
+//! events. The event unions (`SimulationPresentationEvent`, `SourcePresentationEvent`
 //! from `./simulation/types.ts`, out of scope) are mirrored locally as
 //! [`SimulationPresentationEvent`] with a generic foreign payload `F` for variants this
 //! module carries but never inspects; the media request mirrors the contract request
@@ -19,6 +21,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
+use super::simulation::q1_fog::{Q1FogContext, SimulationQ1Fog, SimulationQ1FogOptions};
+use qa_client::materials::fog::Q1FogTransition;
 use qa_client::materials::material::{normalize_shader_name, strip_shader_extension};
 use qa_content::contract::{
     presentation_owner_key, same_presentation_owner, ContentId, PresentationOwner, ResolvedResourceReference,
@@ -88,6 +92,9 @@ pub enum PresentationStateError {
     /// Save value failure.
     #[error(transparent)]
     Value(#[from] ValueError),
+    /// Q1 fog construction or restore failed.
+    #[error("Q1 fog failed: {0}")]
+    Fog(String),
 }
 
 /// Owner lifecycle (donor `presentation-owner` event).
@@ -458,14 +465,14 @@ pub enum SourcePresentationEvent<F> {
     Q1Level(Q1LevelEvent<F>),
     /// Quake composition.
     Q1Composition(Q1CompositionEvent<F>),
-    /// Quake fog transition (fog seam output).
+    /// Quake fog transition (canonical fog output).
     Q1Fog {
         /// Fog player.
         player: Option<ActorId>,
         /// Sky factor.
         sky_factor: f64,
-        /// Opaque fog transition capture.
-        transition: F,
+        /// Fog transition capture.
+        transition: Q1FogTransition,
     },
     /// Quake II.
     Q2(Q2PresentationEvent<F>),
@@ -791,33 +798,125 @@ fn persistent_slot<F>(source: &RetainedPresentation<F>) -> Option<String> {
     Some(format!("{domain}:{recipient}"))
 }
 
-/// Quake fog simulation seam (donor `SimulationQ1Fog`, canonically ported at
-/// [`SimulationQ1Fog`](super::simulation::q1_fog::SimulationQ1Fog)).
-pub trait PresentationFog<F> {
-    /// Resolve a fog transition into presentation events (donor `update`).
-    fn update(
-        &mut self,
-        presentation: &SimulationPresentationEvent<F>,
-        fog: &Q1FogFields,
-    ) -> Vec<SimulationPresentationEvent<F>>;
-    /// Current fog presentation (donor `presentation`).
-    fn presentation(&self) -> Vec<SimulationPresentationEvent<F>>;
-    /// Retire an actor (donor `retire`).
-    fn retire(&mut self, actor: &ActorId);
-    /// Capture fog state (donor `capture`).
-    fn capture(&self) -> SaveJson;
-    /// Restore fog state (donor `restore`).
-    fn restore(
-        &mut self,
-        reader: SaveReader,
-        reference: &dyn Fn(&SavedActorId) -> ActorId,
-    ) -> Result<Vec<SimulationPresentationEvent<F>>, ValueError>;
-    /// Reset fog state (donor `reset`).
-    fn reset(&mut self);
+/// Stored Q1 fog options (donor `fogOptions`).
+///
+/// The donor rebuilds a [`SimulationQ1Fog`] per owner from the stored
+/// options object; the liveness closure is shared by reference so every
+/// rebuild accepts the same players.
+struct FogSeed {
+    /// Map content owning the global transition.
+    content: ContentId,
+    /// Extra accepted source contents for component owners.
+    accepted_contents: HashSet<ContentId>,
+    /// Entity lump text seeding worldspawn fog.
+    entities: String,
+    /// Liveness probe for fogged players.
+    alive: Rc<dyn Fn(&ActorId) -> bool>,
 }
 
-/// Fog factory (donor fog options with per-owner content acceptance).
-pub type FogFactory<F> = Box<dyn Fn(Option<&ContentId>) -> Option<Box<dyn PresentationFog<F>>>>;
+impl FogSeed {
+    /// Rebuild canonical fog options, accepting one more content.
+    fn options(&self, extra: Option<&ContentId>) -> SimulationQ1FogOptions {
+        let mut accepted_contents = self.accepted_contents.clone();
+        if let Some(extra) = extra {
+            accepted_contents.insert(extra.clone());
+        }
+        let alive = Rc::clone(&self.alive);
+        SimulationQ1FogOptions {
+            content: self.content.clone(),
+            accepted_contents: Some(accepted_contents),
+            entities: self.entities.clone(),
+            alive: Box::new(move |actor| alive(actor)),
+        }
+    }
+}
+
+/// Fog context for a local presentation event (donor `update` context).
+fn fog_context<F>(presentation: &SimulationPresentationEvent<F>) -> Q1FogContext {
+    Q1FogContext {
+        content: presentation.content.clone(),
+        sequence: presentation.sequence.max(0) as u64,
+        seconds: presentation.seconds,
+        source_entity: presentation.source_entity,
+    }
+}
+
+/// Canonical addon event for local fog fields.
+fn fog_addon_event(fog: &Q1FogFields) -> qa_content::q1::addons::context::Q1AddonEvent {
+    qa_content::q1::addons::context::Q1AddonEvent::Fog {
+        player: fog.player.clone(),
+        density: fog.density,
+        color: fog.color,
+        sky_factor: fog.sky_factor,
+        duration: fog.duration,
+    }
+}
+
+/// Local presentation event for a canonical fog output event.
+fn local_fog_event<F>(event: super::simulation::types::SimulationPresentationEvent) -> SimulationPresentationEvent<F> {
+    let source = match event.event {
+        super::simulation::types::SourcePresentationEvent::Q1Fog {
+            player,
+            transition,
+            sky_factor,
+        } => SourcePresentationEvent::Q1Fog {
+            player,
+            sky_factor,
+            transition,
+        },
+        other => panic!("Q1 fog emitted a non-fog event: {other:?}"),
+    };
+    SimulationPresentationEvent {
+        source,
+        owner: event.owner,
+        recipient: event.recipient,
+        sequence: event.sequence as i64,
+        content: event.content,
+        seconds: event.seconds,
+        source_entity: event.source_entity,
+    }
+}
+
+/// Local save value to canonical fog save value.
+fn fog_save_value(value: &SaveJson) -> qa_world::save::value::SaveJson {
+    use qa_world::save::value::SaveJson as FogJson;
+    match value {
+        SaveJson::Null => FogJson::Null,
+        SaveJson::Bool(value) => FogJson::Bool(*value),
+        SaveJson::Number(value) => FogJson::Number(*value),
+        SaveJson::BigInt(value) => FogJson::BigInt(*value),
+        SaveJson::Bytes(value) => FogJson::Bytes(value.clone()),
+        SaveJson::String(value) => FogJson::String(value.clone()),
+        SaveJson::Array(values) => FogJson::Array(values.iter().map(fog_save_value).collect()),
+        SaveJson::Object(members) => FogJson::Object(
+            members
+                .iter()
+                .map(|(key, value)| (key.clone(), fog_save_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Canonical fog save value to local save value.
+fn local_save_value(value: &qa_world::save::value::SaveJson) -> SaveJson {
+    match value {
+        qa_world::save::value::SaveJson::Null => SaveJson::Null,
+        qa_world::save::value::SaveJson::Bool(value) => SaveJson::Bool(*value),
+        qa_world::save::value::SaveJson::Number(value) => SaveJson::Number(*value),
+        qa_world::save::value::SaveJson::BigInt(value) => SaveJson::BigInt(*value),
+        qa_world::save::value::SaveJson::Bytes(value) => SaveJson::Bytes(value.clone()),
+        qa_world::save::value::SaveJson::String(value) => SaveJson::String(value.clone()),
+        qa_world::save::value::SaveJson::Array(values) => {
+            SaveJson::Array(values.iter().map(local_save_value).collect())
+        }
+        qa_world::save::value::SaveJson::Object(members) => SaveJson::Object(
+            members
+                .iter()
+                .map(|(key, value)| (key.clone(), local_save_value(value)))
+                .collect(),
+        ),
+    }
+}
 
 /// Source slot resolution (donor `sourceSlot`).
 pub type SourceSlotFn = Box<dyn Fn(&ActorId) -> Option<i32>>;
@@ -832,10 +931,10 @@ enum OwnerStatus {
 }
 
 /// Presentation owner entry.
-struct OwnerEntry<F> {
+struct OwnerEntry {
     token: PresentationOwner,
     content: ContentId,
-    fog: Option<Box<dyn PresentationFog<F>>>,
+    fog: Option<SimulationQ1Fog>,
     status: OwnerStatus,
 }
 
@@ -864,7 +963,7 @@ pub struct PresentationState<F> {
     presentation_sequence: i64,
     next_owner_generation: u64,
     legacy_persistence: bool,
-    owners: HashMap<ProviderId, OwnerEntry<F>>,
+    owners: HashMap<ProviderId, OwnerEntry>,
     source: Vec<SimulationPresentationEvent<F>>,
     resources: HashMap<String, ResolvedResourceReference>,
     resources_by_id: HashMap<ResourceId, ResolvedResourceReference>,
@@ -880,19 +979,45 @@ pub struct PresentationState<F> {
     epoch: u64,
     now: Box<dyn Fn() -> SourceTime>,
     source_slot: SourceSlotFn,
-    fog_factory: Option<FogFactory<F>>,
-    fog: Option<Box<dyn PresentationFog<F>>>,
+    fog_seed: Option<FogSeed>,
+    fog: Option<SimulationQ1Fog>,
 }
 
 impl<F: Clone + 'static> PresentationState<F> {
-    /// Build the state over clock, source slot, and fog factory closures.
+    /// Build the state over clock, source slot, and fog options closures.
     pub fn new(
         now: impl Fn() -> SourceTime + 'static,
         source_slot: impl Fn(&ActorId) -> Option<i32> + 'static,
-        fog_factory: Option<FogFactory<F>>,
-    ) -> Self {
-        let fog = fog_factory.as_ref().and_then(|factory| factory(None));
-        Self {
+        fog_options: Option<SimulationQ1FogOptions>,
+    ) -> Result<Self, PresentationStateError> {
+        let (fog_seed, fog) = match fog_options {
+            None => (None, None),
+            Some(options) => {
+                let SimulationQ1FogOptions {
+                    content,
+                    accepted_contents,
+                    entities,
+                    alive,
+                } = options;
+                let shared: Rc<dyn Fn(&ActorId) -> bool> = Rc::from(alive);
+                let rebuild = Rc::clone(&shared);
+                let fog = SimulationQ1Fog::new(SimulationQ1FogOptions {
+                    content: content.clone(),
+                    accepted_contents: accepted_contents.clone(),
+                    entities: entities.clone(),
+                    alive: Box::new(move |actor| rebuild(actor)),
+                })
+                .map_err(|error| PresentationStateError::Fog(error.to_string()))?;
+                let seed = FogSeed {
+                    content,
+                    accepted_contents: accepted_contents.unwrap_or_default(),
+                    entities,
+                    alive: shared,
+                };
+                (Some(seed), Some(fog))
+            }
+        };
+        Ok(Self {
             presentation_sequence: 0,
             next_owner_generation: 1,
             legacy_persistence: false,
@@ -912,14 +1037,19 @@ impl<F: Clone + 'static> PresentationState<F> {
             epoch: 0,
             now: Box::new(now),
             source_slot: Box::new(source_slot),
-            fog_factory,
+            fog_seed,
             fog,
-        }
+        })
     }
 
     /// Open an owner fog accepting content (donor `ownerFog`).
-    fn owner_fog(&self, content: &ContentId) -> Option<Box<dyn PresentationFog<F>>> {
-        self.fog_factory.as_ref().and_then(|factory| factory(Some(content)))
+    fn owner_fog(&self, content: &ContentId) -> Result<Option<SimulationQ1Fog>, PresentationStateError> {
+        let Some(seed) = self.fog_seed.as_ref() else {
+            return Ok(None);
+        };
+        SimulationQ1Fog::new(seed.options(Some(content)))
+            .map(Some)
+            .map_err(|error| PresentationStateError::Fog(error.to_string()))
     }
 
     /// Current clock in seconds.
@@ -967,7 +1097,7 @@ impl<F: Clone + 'static> PresentationState<F> {
                 provider: provider.clone(),
                 generation: self.next_owner_generation,
             };
-            let fog = self.owner_fog(&content);
+            let fog = self.owner_fog(&content)?;
             self.owners.insert(
                 provider.clone(),
                 OwnerEntry {
@@ -1203,10 +1333,15 @@ impl<F: Clone + 'static> PresentationState<F> {
                 }
             }
         }
-        let mut fog = self.fog.as_ref().map(|fog| fog.presentation()).unwrap_or_default();
+        let mut fog: Vec<SimulationPresentationEvent<F>> = self
+            .fog
+            .as_ref()
+            .map(|fog| fog.presentation().into_iter().map(local_fog_event).collect())
+            .unwrap_or_default();
         for entry in self.owners.values() {
             if let Some(entry_fog) = entry.fog.as_ref() {
-                fog.extend(entry_fog.presentation().into_iter().map(|mut event| {
+                fog.extend(entry_fog.presentation().into_iter().map(|event| {
+                    let mut event = local_fog_event(event);
                     event.owner = Some(entry.token.clone());
                     event
                 }));
@@ -1733,7 +1868,7 @@ impl<F: Clone + 'static> PresentationState<F> {
         if self.next_owner_generation > MAX_OWNER_GENERATION {
             return Err(PresentationStateError::GenerationExhausted);
         }
-        let fog = self.owner_fog(&content);
+        let fog = self.owner_fog(&content)?;
         self.owners.insert(
             token.provider.clone(),
             OwnerEntry {
@@ -1794,13 +1929,27 @@ impl<F: Clone + 'static> PresentationState<F> {
         if let SourcePresentationEvent::Q1Composition(Q1CompositionEvent::Addon(Q1AddonEvent::Fog(fog))) =
             &presentation.source
         {
+            let context = fog_context(&presentation);
+            let event = fog_addon_event(fog);
             let update = match &owner {
-                None => self.fog.as_mut().map(|fog_state| fog_state.update(&presentation, fog)),
+                None => self.fog.as_mut().map(|fog_state| {
+                    fog_state
+                        .update(&context, &event)
+                        .into_iter()
+                        .map(local_fog_event)
+                        .collect::<Vec<_>>()
+                }),
                 Some(owner) => self
                     .owners
                     .get_mut(&owner.provider)
                     .and_then(|entry| entry.fog.as_mut())
-                    .map(|fog_state| fog_state.update(&presentation, fog)),
+                    .map(|fog_state| {
+                        fog_state
+                            .update(&context, &event)
+                            .into_iter()
+                            .map(local_fog_event)
+                            .collect::<Vec<_>>()
+                    }),
             };
             if let Some(mut events) = update {
                 for event in events.drain(..) {
@@ -1900,7 +2049,7 @@ impl<F: Clone + 'static> PresentationState<F> {
 impl<F: Clone + 'static> PresentationState<F> {
     /// Capture the state (donor `capture`).
     pub fn capture(&self) -> Result<SaveJson, PresentationStateError> {
-        let mut owners: Vec<(&ProviderId, &OwnerEntry<F>)> = self.owners.iter().collect();
+        let mut owners: Vec<(&ProviderId, &OwnerEntry)> = self.owners.iter().collect();
         owners.sort_by(|left, right| {
             left.1
                 .token
@@ -1921,7 +2070,11 @@ impl<F: Clone + 'static> PresentationState<F> {
                             ("content", str(entry.content.as_str())),
                             (
                                 "fog",
-                                entry.fog.as_ref().map(|fog| fog.capture()).unwrap_or(SaveJson::Null),
+                                entry
+                                    .fog
+                                    .as_ref()
+                                    .map(|fog| local_save_value(&fog.capture()))
+                                    .unwrap_or(SaveJson::Null),
                             ),
                         ])
                     })
@@ -1961,7 +2114,10 @@ impl<F: Clone + 'static> PresentationState<F> {
             ("baseStyles", base_styles),
             (
                 "q1Fog",
-                self.fog.as_ref().map(|fog| fog.capture()).unwrap_or(SaveJson::Null),
+                self.fog
+                    .as_ref()
+                    .map(|fog| local_save_value(&fog.capture()))
+                    .unwrap_or(SaveJson::Null),
             ),
             ("presentationSequence", int(self.presentation_sequence)),
             ("styles", styles),
@@ -2136,12 +2292,19 @@ impl<F: Clone + 'static> PresentationState<F> {
                     if token.generation >= self.next_owner_generation || self.owners.contains_key(&token.provider) {
                         return Err(value.fail("Invalid saved presentation owner").into());
                     }
-                    let mut fog = self.owner_fog(&content);
-                    if !matches!(value.field("fog").value, Some(SaveJson::Null)) {
+                    let mut fog = self.owner_fog(&content)?;
+                    let field = value.field("fog");
+                    if !matches!(field.value, Some(SaveJson::Null)) {
                         let Some(fog_state) = fog.as_mut() else {
                             return Err(value.fail("Owned fog requires a Q1 map").into());
                         };
-                        for mut event in fog_state.restore(value.field("fog"), reference)? {
+                        let owned = fog_save_value(field.value.expect("fog value checked"));
+                        let reader = qa_world::save::value::SaveReader::new(&owned);
+                        let restored = fog_state
+                            .restore(&reader, &|saved| reference(&saved))
+                            .map_err(|error| PresentationStateError::Fog(error.to_string()))?;
+                        for event in restored {
+                            let mut event = local_fog_event(event);
                             event.owner = Some(token.clone());
                             self.source.push(event);
                         }
@@ -2164,7 +2327,12 @@ impl<F: Clone + 'static> PresentationState<F> {
                 let Some(fog_state) = self.fog.as_mut() else {
                     return Err(fog.fail("Q1 fog state requires a Q1 map").into());
                 };
-                self.source.extend(fog_state.restore(fog, reference)?);
+                let owned = fog_save_value(value);
+                let reader = qa_world::save::value::SaveReader::new(&owned);
+                let restored = fog_state
+                    .restore(&reader, &|saved| reference(&saved))
+                    .map_err(|error| PresentationStateError::Fog(error.to_string()))?;
+                self.source.extend(restored.into_iter().map(local_fog_event));
             }
             _ => {
                 if let Some(fog_state) = self.fog.as_mut() {
@@ -2559,7 +2727,8 @@ mod tests {
             || SourceTime::Seconds(2.0),
             move |actor: &ActorId| source_slot.then(|| actor.slot() as i32),
             None,
-        );
+        )
+        .unwrap();
         (state, owner)
     }
 
@@ -2894,71 +3063,22 @@ mod tests {
         assert!(state.persistent_presentation().is_empty());
     }
 
-    struct StubFog {
-        update_events: Vec<SimulationPresentationEvent<()>>,
-        presented: Vec<SimulationPresentationEvent<()>>,
-        retired: Vec<ActorId>,
+    fn fog_options() -> SimulationQ1FogOptions {
+        SimulationQ1FogOptions {
+            content: content(),
+            accepted_contents: None,
+            entities: "{\n\"_fog\" \"4 0.1 0.2 0.3\"\n}\n".to_string(),
+            alive: Box::new(|_| true),
+        }
     }
 
-    impl PresentationFog<()> for StubFog {
-        fn update(
-            &mut self,
-            _presentation: &SimulationPresentationEvent<()>,
-            _fog: &Q1FogFields,
-        ) -> Vec<SimulationPresentationEvent<()>> {
-            self.update_events.clone()
-        }
-        fn presentation(&self) -> Vec<SimulationPresentationEvent<()>> {
-            self.presented.clone()
-        }
-        fn retire(&mut self, actor: &ActorId) {
-            self.retired.push(actor.clone());
-        }
-        fn capture(&self) -> SaveJson {
-            str("stub-fog")
-        }
-        fn restore(
-            &mut self,
-            reader: SaveReader,
-            _reference: &dyn Fn(&SavedActorId) -> ActorId,
-        ) -> Result<Vec<SimulationPresentationEvent<()>>, ValueError> {
-            reader.literal_str("stub-fog")?;
-            Ok(self.presented.clone())
-        }
-        fn reset(&mut self) {}
-    }
-
-    fn fog_event() -> SimulationPresentationEvent<()> {
-        SimulationPresentationEvent {
-            source: SourcePresentationEvent::Q1Fog {
-                player: None,
-                sky_factor: 0.5,
-                transition: (),
-            },
-            owner: None,
-            recipient: None,
-            sequence: 41,
-            content: ContentId("q1:classic:id1:1".to_string()),
-            seconds: 0.0,
-            source_entity: None,
-        }
+    fn fogged() -> PresentationState<()> {
+        PresentationState::new(|| SourceTime::Seconds(0.0), |_: &ActorId| None, Some(fog_options())).unwrap()
     }
 
     #[test]
     fn fog_update_output_flows_through_record() {
-        let owner = IdentityOwner::create("presentation-fog").unwrap();
-        let _ = owner;
-        let mut state = PresentationState::new(
-            || SourceTime::Seconds(0.0),
-            |_: &ActorId| None,
-            Some(Box::new(|_: Option<&ContentId>| {
-                Some(Box::new(StubFog {
-                    update_events: vec![fog_event()],
-                    presented: Vec::new(),
-                    retired: Vec::new(),
-                }) as Box<dyn PresentationFog<()>>)
-            }) as FogFactory<()>),
-        );
+        let mut state = fogged();
         let mut handle = state.bind_owner(provider(), content(), false).unwrap();
         handle
             .emit(
@@ -2985,23 +3105,56 @@ mod tests {
         assert!(fogless
             .restore(SaveReader::new(&save), &|_: &SavedActorId| actor.clone())
             .is_err());
-        let mut restored = PresentationState::new(
-            || SourceTime::Seconds(0.0),
-            |_: &ActorId| None,
-            Some(Box::new(|_: Option<&ContentId>| {
-                Some(Box::new(StubFog {
-                    update_events: Vec::new(),
-                    presented: vec![fog_event()],
-                    retired: Vec::new(),
-                }) as Box<dyn PresentationFog<()>>)
-            }) as FogFactory<()>),
-        );
+        let mut restored = fogged();
         restored
             .restore(SaveReader::new(&save), &|_: &SavedActorId| actor.clone())
             .unwrap();
         let taken = restored.take_presentation();
-        assert_eq!(taken.len(), 2);
+        assert_eq!(taken.len(), 1);
+        assert!(matches!(taken[0].source, SourcePresentationEvent::Q1Fog { .. }));
         assert!(taken[0].owner.is_some());
-        assert!(taken[1].owner.is_none());
+    }
+
+    #[test]
+    fn fog_retire_drops_actor_transitions() {
+        let owner = IdentityOwner::create("presentation-fog-retire").unwrap();
+        let actor = owner.actor(0, 1);
+        let mut state = fogged();
+        let mut handle = state.bind_owner(provider(), content(), false).unwrap();
+        handle
+            .emit(
+                &content(),
+                SourcePresentationEvent::Q1Composition(Q1CompositionEvent::Addon(Q1AddonEvent::Fog(Q1FogFields {
+                    player: Some(actor.clone()),
+                    density: 0.5,
+                    color: vec3(0.1, 0.2, 0.3),
+                    sky_factor: 0.7,
+                    duration: 2.0,
+                }))),
+                None,
+                None,
+            )
+            .unwrap();
+        drop(handle);
+        let taken = state.take_presentation();
+        assert_eq!(taken.len(), 2);
+        assert!(matches!(
+            taken[1].source,
+            SourcePresentationEvent::Q1Fog { player: Some(_), .. }
+        ));
+        state.retire(&actor);
+        state.take_presentation();
+        let save = state.capture().unwrap();
+        let mut restored = fogged();
+        let reference = IdentityOwner::create("presentation-fog-retire-restore")
+            .unwrap()
+            .actor(0, 1);
+        restored
+            .restore(SaveReader::new(&save), &|_: &SavedActorId| reference.clone())
+            .unwrap();
+        let taken = restored.take_presentation();
+        assert!(taken
+            .iter()
+            .all(|event| !matches!(event.source, SourcePresentationEvent::Q1Fog { player: Some(_), .. })));
     }
 }

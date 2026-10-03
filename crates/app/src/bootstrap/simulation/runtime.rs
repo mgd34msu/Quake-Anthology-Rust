@@ -95,6 +95,15 @@ fn zero() -> Vec3 {
     Vec3 { x: 0.0, y: 0.0, z: 0.0 }
 }
 
+/// Contract three-vector to render vector (donor precision narrows to f32).
+fn q2_vec3(value: &qa_net::q2_adapters::Q2Vec3) -> Vec3 {
+    Vec3 {
+        x: value.x as f32,
+        y: value.y as f32,
+        z: value.z as f32,
+    }
+}
+
 /// Donor module-level `add` (f32-rounded sums).
 fn add(a: Vec3, b: Vec3) -> Vec3 {
     Vec3 {
@@ -1206,16 +1215,40 @@ pub struct SceneCollision {
     pub shape: SceneCollisionShape,
 }
 
-/// Mirror of donor collision shapes.
+/// Mirror of donor collision shapes (`ActorCollision["shape"]` from donor
+/// `src/world/spatial/index.ts`: `{ kind: 'box' | 'capsule' } | { kind:
+/// 'model', model }`).
 #[derive(Debug, Clone)]
 pub enum SceneCollisionShape {
+    /// Axis-aligned box (bounds ride on the linked body).
+    Box,
+    /// Capsule (bounds ride on the linked body).
+    Capsule,
     /// BSP model shape.
     Model {
         /// Model index.
         model: i32,
     },
-    /// Other shapes (opaque until the collision lane lands).
-    Other,
+}
+
+impl From<qa_world::spatial::CollisionShape> for SceneCollisionShape {
+    fn from(shape: qa_world::spatial::CollisionShape) -> Self {
+        match shape {
+            qa_world::spatial::CollisionShape::Box => SceneCollisionShape::Box,
+            qa_world::spatial::CollisionShape::Capsule => SceneCollisionShape::Capsule,
+            qa_world::spatial::CollisionShape::Model(model) => SceneCollisionShape::Model { model: model as i32 },
+        }
+    }
+}
+
+impl From<SceneCollisionShape> for qa_world::spatial::CollisionShape {
+    fn from(shape: SceneCollisionShape) -> Self {
+        match shape {
+            SceneCollisionShape::Box => qa_world::spatial::CollisionShape::Box,
+            SceneCollisionShape::Capsule => qa_world::spatial::CollisionShape::Capsule,
+            SceneCollisionShape::Model { model } => qa_world::spatial::CollisionShape::Model(model as u32),
+        }
+    }
 }
 
 /// Shared collision queries.
@@ -6081,6 +6114,58 @@ impl PendingSharedRestore {
     }
 }
 
+impl SharedSimulation {
+    /// Complete a staged shared restore (donor `pendingSharedRestore?.finish()`,
+    /// `assertComplete()`, clear).
+    ///
+    /// Donor `runtime.ts` 823-825 and 911-913. A fresh
+    /// [`C10SharedWorldHost`] runs the completion over the live tables; the
+    /// staged restore is restored when completion fails (the donor only
+    /// clears after `assertComplete`).
+    fn finish_pending_shared_restore(&self) -> Result<(), RuntimeError> {
+        let pending = self.state.borrow_mut().pending_shared_restore.take();
+        let Some(mut pending) = pending else {
+            return Ok(());
+        };
+        let result = (|| -> Result<(), RuntimeError> {
+            let map_provider = self.peek().recipe.map.entities.provider.clone();
+            let module_id = match &self.peek().source {
+                SourceRuntime::Q2Native(native) => Some(match native {
+                    Q2NativeSource::Classic { game, .. } => game
+                        .module()
+                        .map(|module| module.id.clone())
+                        .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?,
+                    Q2NativeSource::Rerelease { game, .. } => game
+                        .module()
+                        .map(|module| module.id.clone())
+                        .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?,
+                }),
+                _ => None,
+            };
+            let mut host = C10SharedWorldHost {
+                actors: Rc::clone(&self.actors),
+                bodies: Rc::clone(&self.bodies_table),
+                state: Rc::clone(&self.state),
+                map_provider,
+                module_id,
+                copied_combat: HashSet::new(),
+                combat_error: None,
+                body_links_only: false,
+            };
+            pending.finish(&mut host)?;
+            if let Some(error) = host.combat_error.take() {
+                return Err(error);
+            }
+            pending.assert_complete()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.state.borrow_mut().pending_shared_restore = Some(pending);
+        }
+        result
+    }
+}
+
 /// Qc pickup policy seam (donor `QcPickupPolicy`).
 ///
 /// Mirror of donor `src/content/q1/quakec/id1-pickups.ts` (canonical home:
@@ -6123,6 +6208,20 @@ pub struct RuntimeQ2ModelEvent {
     pub path: String,
     /// Model index.
     pub model: i32,
+    /// Presentation frame override.
+    pub frame: i32,
+    /// Previous frame override.
+    pub old_frame: i32,
+    /// Scale override.
+    pub scale: f64,
+    /// Alpha override.
+    pub alpha: f64,
+    /// Skin override.
+    pub skin: i32,
+    /// Effects override.
+    pub effects: i64,
+    /// Render flags override.
+    pub render_flags: i32,
 }
 
 /// Cross-representation native execution match (donor `isDeepStrictEqual`).
@@ -9370,9 +9469,7 @@ fn finish_construction_inner(
     }
     // Donor 823-829: staged restores complete, then native input binds.
     if !native_loading {
-        if simulation.lock().pending_shared_restore.is_some() {
-            return fail("Missing siblings: staged shared-restore host completion (C10SharedWorldHost)");
-        }
+        simulation.finish_pending_shared_restore()?;
         simulation.bind_native_input(tail.retained_drops.as_ref())?;
         simulation.restore_native_inventory_cursors(None)?;
     }
@@ -9631,9 +9728,7 @@ impl SharedSimulation {
         // Donor 910: owner restore finalizes over an empty owner table on
         // the quiet path (the presentation seam does not expose it).
         // Donor 911-913: staged shared restores complete.
-        if simulation.lock().pending_shared_restore.is_some() {
-            return fail("Missing siblings: staged shared-restore host completion (C10SharedWorldHost)");
-        }
+        simulation.finish_pending_shared_restore()?;
         Ok(())
     }
 }
@@ -14446,42 +14541,91 @@ pub struct SelectedWeaponEntry {
 
 impl SelectedArsenal {
     /// Whether the arsenal admits an actor (donor `has`).
-    ///
-    /// Missing siblings: the selected-arsenal admission sets
-    /// (`super::arsenal::q1/q2/q3`) expose no `has` query yet.
     pub fn has(&self, actor: &ActorId) -> bool {
-        let _ = actor;
-        false
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.has(actor),
+        }
     }
 
     /// Weapon catalog (donor `catalog`).
     ///
-    /// Missing siblings: the selected-arsenal catalogs
-    /// (`super::arsenal::q1/q2/q3`) expose no `catalog` query yet.
+    /// The canonical catalog rows carry no ammo linkage, so the Q1 arm
+    /// rebuilds the donor rows from the shared game (the exact donor
+    /// `[...WEAPONS, ...registeredWeapons]` order); the Q2/Q3 arms project
+    /// the canonical item rows with no ammo linkage.
     pub fn catalog(&self) -> Vec<SelectedWeaponEntry> {
-        Vec::new()
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => {
+                use qa_content::q1::foundation::types::{Q1Weapon, WEAPONS};
+                let game = arsenal.game();
+                let game = game.borrow();
+                let mut seen = std::collections::HashSet::new();
+                WEAPONS
+                    .iter()
+                    .map(|base| Q1Weapon::from(*base))
+                    .chain(game.registered_weapons.keys().copied().collect::<Vec<_>>())
+                    .filter(|weapon| seen.insert(*weapon))
+                    .map(|weapon| SelectedWeaponEntry {
+                        item: game.weapon_item(weapon),
+                        ammo: game.weapon_ammo(weapon),
+                    })
+                    .collect()
+            }
+            SelectedArsenal::Q2(arsenal) => arsenal
+                .catalog()
+                .into_iter()
+                .map(|row| SelectedWeaponEntry {
+                    item: row.item,
+                    ammo: None,
+                })
+                .collect(),
+            SelectedArsenal::Q3(arsenal) => arsenal
+                .catalog()
+                .into_iter()
+                .map(|row| SelectedWeaponEntry {
+                    item: row.item,
+                    ammo: None,
+                })
+                .collect(),
+        }
     }
 
     /// Arsenal HUD slice (donor `ui`).
     ///
-    /// Missing siblings: the selected-arsenal HUD projections
-    /// (`super::arsenal::q1/q2/q3`) expose no `ui` query yet.
+    /// The donor requires admission; unadmitted actors read as [`None`].
     pub fn ui(
         &self,
         actor: &ActorId,
         provider: &ProviderReference,
     ) -> Option<super::arsenal::selected::SelectedArsenalUi> {
-        let _ = (actor, provider);
-        None
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        if !self.has(actor) {
+            return None;
+        }
+        Some(match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.ui(actor, provider),
+            SelectedArsenal::Q2(arsenal) => arsenal.ui(actor, provider),
+            SelectedArsenal::Q3(arsenal) => arsenal.ui(actor, provider),
+        })
     }
 
     /// Pending weapon (donor `pendingWeapon`).
     ///
-    /// Missing siblings: the selected-arsenal pending slots
-    /// (`super::arsenal::q1/q2/q3`) expose no `pendingWeapon` query yet.
+    /// The donor requires admission; unadmitted actors read as [`None`].
     pub fn pending_weapon(&self, actor: &ActorId) -> Option<ItemId> {
-        let _ = actor;
-        None
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        if !self.has(actor) {
+            return None;
+        }
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.pending_weapon(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.pending_weapon(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.pending_weapon(actor),
+        }
     }
 
     /// Use an item (donor `useItem`).
@@ -14677,8 +14821,6 @@ impl SharedSimulation {
 
     /// Submit debug lines (donor `submitDebugShapes`, donor runtime.ts 5775,
     /// C8's range).
-    ///
-    /// Missing siblings: C8's canonical method; delete this seam when it lands.
     pub fn submit_debug_shapes(
         &self,
         lines: &[crate::debug::DebugLine],
@@ -14958,22 +15100,406 @@ impl SharedSimulation {
     /// player views, and grenade availability from later lanes.
     pub fn step_hand_grenade(&self, _actor: &ActorId, _reason: Option<&str>) {}
 
-    /// Grant a selected arsenal (donor `grantSelectedArsenal`, donor
-    /// runtime.ts 5916, C8's range).
-    ///
-    /// Missing siblings: C8's canonical method; delete this seam when it
-    /// lands. The seam denies: selected arsenals need the arsenal lane.
-    pub fn grant_selected_arsenal(&self, _actor: &ActorId, _provider: &ProviderId, _trusted: bool) -> bool {
-        false
+    /// Grant a selected arsenal category (donor `grantSelectedArsenal`,
+    /// donor runtime.ts 5916, C8's range).
+    pub fn grant_selected_arsenal(&self, actor: &ActorId, category: super::q3::types::Q3ArsenalCategory) -> bool {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        use super::q3::types::Q3ArsenalCategory;
+        if self.peek().selected_arsenal.is_none() {
+            return false;
+        }
+        let owned = match self.actors.borrow().resolve_owned(actor) {
+            Some(owned) => owned,
+            None => panic!("Selected grant actor is retired"),
+        };
+        let weapons_category = matches!(category, Q3ArsenalCategory::Weapons);
+        let native: Option<std::collections::HashSet<ItemId>> = {
+            let mut state = self.state.borrow_mut();
+            match &mut state.source {
+                SourceRuntime::Q3Qvm { catalog, .. } => Some(
+                    catalog
+                        .weapons()
+                        .expect("selected grant reads its source catalog")
+                        .into_iter()
+                        .flat_map(|weapon| {
+                            weapon
+                                .ammo
+                                .map_or_else(|| vec![weapon.item.clone()], |ammo| vec![weapon.item.clone(), ammo])
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            }
+        };
+        let (weapon_ids, ammo) = {
+            let state = self.peek();
+            let selected = state.selected_arsenal.as_ref().expect("selected arsenal checked");
+            let entities = state.recipe.map.entities.clone();
+            let ui = match selected {
+                SelectedArsenal::Q1(arsenal) => arsenal.ui(actor, &entities),
+                SelectedArsenal::Q2(arsenal) => arsenal.ui(actor, &entities),
+                SelectedArsenal::Q3(arsenal) => arsenal.ui(actor, &entities),
+            };
+            let read = match selected {
+                SelectedArsenal::Q1(arsenal) => arsenal.read(actor),
+                SelectedArsenal::Q2(arsenal) => arsenal.read(actor),
+                SelectedArsenal::Q3(arsenal) => arsenal.read(actor),
+            };
+            let weapon_ids: std::collections::HashSet<ItemId> = ui
+                .items
+                .into_iter()
+                .filter(|item| item.kind == super::types::PlayerUiItemKind::Weapon)
+                .map(|item| item.id)
+                .collect();
+            (weapon_ids, read.ammo)
+        };
+        {
+            let actors = self.actors.borrow();
+            let mut state = self.state.borrow_mut();
+            let live = state.inventory.inner().entries(actors.inner(), actor);
+            for entry in &ammo {
+                if native.as_ref().is_some_and(|native| native.contains(&entry.item)) {
+                    continue;
+                }
+                if weapons_category != weapon_ids.contains(&entry.item) {
+                    continue;
+                }
+                let mut target = live.iter().find(|live| live.item == entry.item).cloned().unwrap_or(
+                    qa_world::inventory::InventoryEntry {
+                        item: entry.item.clone(),
+                        count: entry.count,
+                        capacity: entry.count,
+                        count_policy: None,
+                    },
+                );
+                target.count = if weapons_category { 1.0 } else { target.capacity };
+                state
+                    .inventory
+                    .inner_mut()
+                    .configure(actors.inner(), &owned, target)
+                    .expect("selected grant configure failed");
+            }
+        }
+        self.refresh_arsenal_cache(actor)
+            .expect("selected grant arsenal refresh failed");
+        true
     }
 
     /// Give a selected item (donor `giveSelectedItem`, donor runtime.ts
     /// 5940, C8's range).
-    ///
-    /// Missing siblings: C8's canonical method; delete this seam when it
-    /// lands. The seam denies: selected arsenals need the arsenal lane.
-    pub fn give_selected_item(&self, _actor: &ActorId, _item: &str, _count: f64) -> bool {
-        false
+    pub fn give_selected_item(&self, actor: &ActorId, args: &[String]) -> bool {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        if self.peek().selected_arsenal.is_none() {
+            return false;
+        }
+        let owned = match self.actors.borrow().resolve_owned(actor) {
+            Some(owned) => owned,
+            None => panic!("Selected grant actor is retired"),
+        };
+        fn is_quantity(text: &str) -> bool {
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        let quantity: Option<f64> = match args.last() {
+            Some(last) if is_quantity(last) => Some(last.parse::<f64>().unwrap_or(0.0)),
+            _ => None,
+        };
+        let words = if quantity.is_some() {
+            &args[..args.len() - 1]
+        } else {
+            args
+        };
+        let requested = words.join(" ").to_lowercase();
+        let holdable = {
+            let state = self.peek();
+            state
+                .selected_q3_source
+                .as_ref()
+                .map(|source| {
+                    source
+                        .give_holdable(&owned, &requested)
+                        .expect("selected holdable grant failed")
+                })
+                .unwrap_or(false)
+        };
+        if holdable {
+            return true;
+        }
+        fn normalize(value: &str) -> String {
+            value.to_lowercase().replace([' ', '_'], "")
+        }
+        let (entries, ui) = {
+            let state = self.peek();
+            let selected = state.selected_arsenal.as_ref().expect("selected arsenal checked");
+            let entities = state.recipe.map.entities.clone();
+            let read = match selected {
+                SelectedArsenal::Q1(arsenal) => arsenal.read(actor),
+                SelectedArsenal::Q2(arsenal) => arsenal.read(actor),
+                SelectedArsenal::Q3(arsenal) => arsenal.read(actor),
+            };
+            let ui = match selected {
+                SelectedArsenal::Q1(arsenal) => arsenal.ui(actor, &entities),
+                SelectedArsenal::Q2(arsenal) => arsenal.ui(actor, &entities),
+                SelectedArsenal::Q3(arsenal) => arsenal.ui(actor, &entities),
+            };
+            (read.ammo, ui)
+        };
+        let wanted = normalize(&requested);
+        let named = ui
+            .items
+            .iter()
+            .find(|item| normalize(&item.id) == wanted || normalize(&item.label) == wanted);
+        let entry = entries.iter().find(|entry| {
+            named.is_some_and(|named| named.id == entry.item)
+                || normalize(&entry.item) == wanted
+                || normalize(entry.item.rsplit('/').next().unwrap_or("")) == wanted
+        });
+        let Some(entry) = entry else {
+            return self.give_selected_item_supply(actor, &owned, &requested, quantity);
+        };
+        let weapon = ui
+            .items
+            .iter()
+            .any(|item| item.id == entry.item && item.kind == super::types::PlayerUiItemKind::Weapon);
+        {
+            let actors = self.actors.borrow();
+            let mut state = self.state.borrow_mut();
+            let live = state.inventory.inner().entries(actors.inner(), actor);
+            let mut target = live.iter().find(|live| live.item == entry.item).cloned().unwrap_or(
+                qa_world::inventory::InventoryEntry {
+                    item: entry.item.clone(),
+                    count: entry.count,
+                    capacity: entry.count,
+                    count_policy: None,
+                },
+            );
+            let count = if weapon {
+                1.0
+            } else {
+                quantity.unwrap_or(target.capacity)
+            };
+            target.count = count.max(0.0);
+            target.capacity = target.capacity.max(count);
+            state
+                .inventory
+                .inner_mut()
+                .configure(actors.inner(), &owned, target)
+                .expect("selected grant configure failed");
+        }
+        self.refresh_arsenal_cache(actor)
+            .expect("selected grant arsenal refresh failed");
+        true
+    }
+
+    /// Give a selected item through supply routes (donor `giveSelectedItem`
+    /// unmapped arm).
+    fn give_selected_item_supply(
+        &self,
+        actor: &ActorId,
+        owned: &OwnedActor,
+        requested: &str,
+        quantity: Option<f64>,
+    ) -> bool {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        use qa_content::composition::{
+            q1_q2_supply_profile, q1_q3_supply_profile, q2_q1_supply_profile, q2_q3_supply_profile,
+            q3_q1_supply_profile, q3_q2_supply_profile,
+        };
+        let (source_kind, family, hipnotic) = {
+            let state = self.peek();
+            let family = state
+                .selected_arsenal
+                .as_ref()
+                .expect("selected arsenal checked")
+                .family();
+            let hipnotic = matches!(
+                state.selected_arsenal.as_ref(),
+                Some(SelectedArsenal::Q1(arsenal))
+                    if arsenal
+                        .game()
+                        .borrow()
+                        .registered_weapons
+                        .contains_key(&qa_content::q1::foundation::types::Q1Weapon::HipnoticLaser)
+            );
+            (state.source.kind().to_string(), family, hipnotic)
+        };
+        let profile = match source_kind.as_str() {
+            "q2-native" => self.peek().selected_original_supply.clone(),
+            "q1" => Some(match family {
+                "q3" => q1_q3_supply_profile(),
+                "q2" => q1_q2_supply_profile(),
+                _ => qa_content::composition::q1_hipnotic_supply_profile(),
+            }),
+            "q2" => Some(match family {
+                "q3" => q2_q3_supply_profile(),
+                _ if family == "q1" && hipnotic => qa_content::composition::q2_hipnotic_supply_profile(),
+                _ => q2_q1_supply_profile(),
+            }),
+            "q3" => Some(match family {
+                "q2" => q3_q2_supply_profile(),
+                _ if family == "q1" && hipnotic => qa_content::composition::q3_hipnotic_supply_profile(),
+                _ => q3_q1_supply_profile(),
+            }),
+            _ => None,
+        };
+        let weapon_route = profile
+            .as_ref()
+            .and_then(|profile| profile.weapons.iter().find(|route| route.source == requested));
+        let ammo_route = profile
+            .as_ref()
+            .and_then(|profile| profile.ammo.iter().find(|route| route.source == requested));
+        let source_item = {
+            let state = self.peek();
+            match &state.source {
+                SourceRuntime::Q2 { game, .. } => {
+                    let services = game.borrow();
+                    services.items.catalog.get(requested).cloned().or_else(|| {
+                        services
+                            .items
+                            .catalog
+                            .values()
+                            .find(|item| item.name == *requested)
+                            .cloned()
+                    })
+                }
+                _ => None,
+            }
+        };
+        let Some(destinations) = weapon_route
+            .map(|route| &route.destinations)
+            .or_else(|| ammo_route.map(|route| &route.destinations))
+        else {
+            use qa_content::q2::foundation::items::Q2ItemKind;
+            let mappable = source_item
+                .as_ref()
+                .is_some_and(|item| item.kind() == Q2ItemKind::Weapon)
+                || source_item.as_ref().is_some_and(|item| item.kind() == Q2ItemKind::Ammo)
+                || requested.starts_with("q1:weapon/")
+                || requested.starts_with("q1:ammo/")
+                || requested.starts_with("rogue:ammo/");
+            if !mappable {
+                return false;
+            }
+            let name = source_item
+                .map(|item| item.name.clone())
+                .unwrap_or_else(|| requested.to_string());
+            self.lock().events.message(
+                super::events::NetworkEvent::Print {
+                    level: 2,
+                    text: format!("No selected-arsenal grant mapping for {name}\n"),
+                },
+                Some(actor),
+                None,
+            );
+            return true;
+        };
+        {
+            let actors = self.actors.borrow();
+            let mut state = self.state.borrow_mut();
+            for item in destinations {
+                let Some(mut target) = state
+                    .inventory
+                    .inner()
+                    .entries(actors.inner(), actor)
+                    .into_iter()
+                    .find(|entry| entry.item == *item)
+                else {
+                    panic!("Selected grant destination is unavailable: {item}");
+                };
+                let count = match weapon_route {
+                    None => quantity.unwrap_or_else(|| match source_item.as_ref().map(|source| &source.kind) {
+                        Some(qa_content::q2::foundation::items::Q2ItemKindData::Ammo { quantity, .. }) => {
+                            target.count + quantity
+                        }
+                        _ => target.capacity,
+                    }),
+                    Some(_) => 1.0,
+                };
+                target.count = count.max(0.0);
+                target.capacity = target.capacity.max(count);
+                state
+                    .inventory
+                    .inner_mut()
+                    .configure(actors.inner(), owned, target)
+                    .expect("selected grant configure failed");
+            }
+        }
+        if weapon_route.is_some() && source_kind == "q2" {
+            let (deathmatch_flags, definition_ammo) = {
+                let state = self.peek();
+                let SourceRuntime::Q2 { game, .. } = &state.source else {
+                    panic!("Selected grant lost its source owner");
+                };
+                let services = game.borrow();
+                let ammo = qa_content::q2::foundation::weapons::player::registered_weapon_definitions(&services)
+                    .into_iter()
+                    .find(|definition| definition.item == requested)
+                    .and_then(|definition| definition.ammo.clone());
+                (services.options.deathmatch_flags, ammo)
+            };
+            if let Some(ammo) = definition_ammo {
+                let mapped = {
+                    let state = self.peek();
+                    let SourceRuntime::Q2 { game, .. } = &state.source else {
+                        panic!("Selected grant lost its source owner");
+                    };
+                    let services = game.borrow();
+                    let source_ammo = services
+                        .items
+                        .catalog
+                        .get(&ammo)
+                        .cloned()
+                        .or_else(|| services.items.catalog.values().find(|item| item.name == ammo).cloned());
+                    source_ammo.and_then(|source_ammo| {
+                        let quantity = match source_ammo.kind {
+                            qa_content::q2::foundation::items::Q2ItemKindData::Ammo { quantity, .. } => quantity,
+                            _ => return None,
+                        };
+                        profile.as_ref().and_then(|profile| {
+                            profile
+                                .ammo
+                                .iter()
+                                .find(|route| route.source == source_ammo.classname)
+                                .map(|route| (quantity, route.destinations.clone()))
+                        })
+                    })
+                };
+                if let Some((amount, destinations)) = mapped {
+                    let actors = self.actors.borrow();
+                    let mut state = self.state.borrow_mut();
+                    for item in &destinations {
+                        state
+                            .inventory
+                            .inner_mut()
+                            .give(
+                                actors.inner(),
+                                owned,
+                                item,
+                                if deathmatch_flags & 8192 != 0 { 1000.0 } else { amount },
+                            )
+                            .expect("selected grant give failed");
+                    }
+                }
+            }
+            {
+                let mut state = self.state.borrow_mut();
+                let selected = state.selected_arsenal.as_mut().expect("selected arsenal checked");
+                match selected {
+                    SelectedArsenal::Q1(arsenal) => {
+                        arsenal.pickup_weapons(owned, destinations, qa_content::contract::PickupSelection::Better);
+                    }
+                    SelectedArsenal::Q2(arsenal) => {
+                        arsenal.pickup_weapons(owned, destinations, qa_content::contract::PickupSelection::Better);
+                    }
+                    SelectedArsenal::Q3(arsenal) => {
+                        arsenal.pickup_weapons(owned, destinations, qa_content::contract::PickupSelection::Better);
+                    }
+                }
+            }
+        }
+        self.refresh_arsenal_cache(actor)
+            .expect("selected grant arsenal refresh failed");
+        true
     }
 
     /// Set player movement (donor `setPlayerMovement`, donor runtime.ts
@@ -16062,10 +16588,9 @@ impl SharedSimulation {
     /// Donor `restoreSelectedArsenalTravel` (donor runtime.ts 3553).
     ///
     /// Returns the refreshed arsenal for the Q1 arm (`admit_travel`
-    /// reports it); the Q3 arm has no `read` surface yet (the arsenal lane
-    /// owns admit/remove/read), so it reports no refresh and the caller
-    /// fails loudly. The Q2 arm needs `admit` plus the weapon registry,
-    /// which have no Rust surface yet.
+    /// reports it); the Q3 arm reports no refresh and the caller reads the
+    /// admitted arsenal. The Q2 arm reports a family mismatch: its weapon
+    /// registry lives on the opaque selected-weapon source.
     pub fn restore_selected_arsenal_travel(
         &self,
         actor: &OwnedActor,
@@ -16104,6 +16629,54 @@ impl SharedSimulation {
         }
     }
 
+    /// Admit an actor to the selected arsenal (donor `selectedArsenal.admit`).
+    fn admit_selected_arsenal(
+        &self,
+        actor: &OwnedActor,
+        max_health: f64,
+        team_deathmatch: bool,
+    ) -> Result<(), RuntimeError> {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let mut state = self.state.borrow_mut();
+        let Some(selected) = state.selected_arsenal.as_mut() else {
+            return fail("Campaign travel selected arsenal differs from the destination recipe");
+        };
+        match selected {
+            SelectedArsenal::Q1(arsenal) => {
+                arsenal.admit(actor.clone(), max_health, team_deathmatch);
+            }
+            SelectedArsenal::Q2(arsenal) => {
+                arsenal.admit(actor.clone(), max_health, team_deathmatch);
+            }
+            SelectedArsenal::Q3(arsenal) => {
+                arsenal.admit(actor.clone(), max_health, team_deathmatch);
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh a player arsenal record from the selected arsenal (donor
+    /// `player.arsenal = selectedArsenal.read(actor.id)` tail).
+    fn refresh_selected_arsenal_state(&self, actor: &OwnedActor) -> Result<(), RuntimeError> {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let arsenal = {
+            let state = self.peek();
+            let Some(selected) = state.selected_arsenal.as_ref() else {
+                return fail("Campaign travel selected arsenal differs from the destination recipe");
+            };
+            match selected {
+                SelectedArsenal::Q1(arsenal) => arsenal.read(actor.id()),
+                SelectedArsenal::Q2(arsenal) => arsenal.read(actor.id()),
+                SelectedArsenal::Q3(arsenal) => arsenal.read(actor.id()),
+            }
+        };
+        let mut state = self.state.borrow_mut();
+        if let Some(record) = state.player_states.get_mut(actor) {
+            record.arsenal = arsenal;
+        }
+        Ok(())
+    }
+
     /// Donor `captureSelectedArsenalTravel` (donor runtime.ts 3573).
     pub fn capture_selected_arsenal_travel(
         &self,
@@ -16119,8 +16692,29 @@ impl SharedSimulation {
                 let travel = arsenal.capture_travel(actor).map_err(source_failure)?;
                 Ok(Some(SelectedArsenalTravel::Q1(q1_travel_to_mirror(&travel))))
             }
-            SelectedArsenal::Q2(_) => {
-                fail("Missing siblings: Q2 selected arsenal read (arsenal lane owns admit/remove/read)")
+            SelectedArsenal::Q2(arsenal) => {
+                use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+                let read = arsenal.read(actor);
+                let live = state.inventory.inner().entries(self.actors.borrow().inner(), actor);
+                let inventory = read
+                    .ammo
+                    .into_iter()
+                    .map(|entry| {
+                        live.iter()
+                            .find(|live| live.item == entry.item)
+                            .map(world_entry_to_contract)
+                            .unwrap_or(qa_content::contract::InventoryEntry {
+                                item: entry.item.clone(),
+                                count: entry.count,
+                                capacity: entry.count,
+                                count_policy: None,
+                            })
+                    })
+                    .collect();
+                Ok(Some(SelectedArsenalTravel::Q2 {
+                    weapon: read.active_weapon,
+                    inventory,
+                }))
             }
             SelectedArsenal::Q3(arsenal) => {
                 let checkpoint = arsenal.capture(actor).map_err(source_failure)?;
@@ -16134,9 +16728,8 @@ impl SharedSimulation {
 
     /// Donor `restoreSelectedTravel` (donor runtime.ts 3580).
     ///
-    /// Fresh selected-arsenal admission and the post-restore arsenal
-    /// refresh have no Rust surface yet (the arsenal lane owns
-    /// admit/remove/read), so those arms fail loudly until they land.
+    /// Fresh Q1 admission, carried restores, and fresh admission all end in
+    /// the donor `read` tail that refreshes the player arsenal record.
     pub fn restore_selected_travel(
         &self,
         player: &MovementPlayer,
@@ -16163,9 +16756,9 @@ impl SharedSimulation {
                 }
             };
             if selected_is_fresh_q1 {
-                return fail("Missing siblings: Q1 selected arsenal admit (arsenal lane owns admit/remove/read)");
-            }
-            if let Some(carry) = carry {
+                self.admit_selected_arsenal(&actor, 100.0, false)?;
+                self.refresh_selected_arsenal_state(&actor)?;
+            } else if let Some(carry) = carry {
                 let refreshed = self.restore_selected_arsenal_travel(&actor, 100.0, carry)?;
                 match refreshed {
                     Some(arsenal) => {
@@ -16175,11 +16768,12 @@ impl SharedSimulation {
                         }
                     }
                     None => {
-                        return fail("Missing siblings: selected arsenal read (arsenal lane owns admit/remove/read)");
+                        self.refresh_selected_arsenal_state(&actor)?;
                     }
                 }
             } else {
-                return fail("Missing siblings: selected arsenal admit (arsenal lane owns admit/remove/read)");
+                self.admit_selected_arsenal(&actor, 100.0, false)?;
+                self.refresh_selected_arsenal_state(&actor)?;
             }
         } else if carried_player
             .and_then(|carried| carried.selected_arsenal.as_ref())
@@ -18276,12 +18870,113 @@ pub enum Q2NativeClientMode {
 }
 
 impl SharedSimulation {
-    /// Donor `requirePlayer` (C10 seam; C8 owns the canonical port).
-    ///
-    /// Missing siblings: C8's player table lookup; delete this seam when it lands.
+    /// Donor `requirePlayer` (donor runtime.ts 5772).
     pub fn require_player(&self, actor: &ActorId) -> Result<MovementPlayer, RuntimeError> {
         self.player(actor)
             .ok_or_else(|| RuntimeError::Failure("Actor is not an admitted player".to_string()))
+    }
+
+    /// Drive a player from a cinematic control (donor `controlPlayer`,
+    /// donor 5729, C8's range).
+    pub fn control_player(
+        &self,
+        actor: &ActorId,
+        control: &qa_content::q1::foundation::host::Q1CutsceneControl,
+    ) -> Result<(), RuntimeError> {
+        let player = self.require_player(actor)?;
+        let body = self
+            .bodies()
+            .read(actor)
+            .ok_or_else(|| RuntimeError::Failure("Controlled player has no body".to_string()))?;
+        self.update_player(actor, |entry| {
+            entry.cutscene = Some(PlayerCutscene {
+                origin: control.origin,
+                angles: control.angles,
+                view_offset: control.view_offset,
+            });
+            entry.view_angles = control.angles;
+            entry.view_height = f64::from(control.view_offset.z);
+            entry.ground = TraceHit::None;
+            match &mut entry.state {
+                MovementState::Q1Netquake(state) => {
+                    state.origin = control.origin;
+                    state.velocity = zero();
+                    state.angles = control.angles;
+                    state.view_angles = control.angles;
+                    state.move_type = 0;
+                    state.ground = TraceHit::None;
+                }
+                MovementState::Q2Classic(state) => {
+                    state.move_type = 4;
+                    state.origin_eighths = [
+                        (f64::from(control.origin.x) * 8.0).trunc() as i32,
+                        (f64::from(control.origin.y) * 8.0).trunc() as i32,
+                        (f64::from(control.origin.z) * 8.0).trunc() as i32,
+                    ];
+                    state.velocity_eighths = [0, 0, 0];
+                }
+                MovementState::Q2Rerelease(state) => {
+                    state.move_type = 5;
+                    state.origin = control.origin;
+                    state.velocity = zero();
+                }
+                MovementState::Q3(state) => {
+                    state.movement_type = 4;
+                    state.origin = control.origin;
+                    state.velocity = zero();
+                    state.view_angles = control.angles;
+                    state.ground = TraceHit::None;
+                }
+                MovementState::Q1Quakeworld(state) => {
+                    state.origin = control.origin;
+                    state.velocity = zero();
+                    state.angles = control.angles;
+                }
+            }
+        })?;
+        self.bodies().write(
+            &player.actor,
+            qa_world::body::BodyState {
+                origin: control.origin,
+                angles: control.angles,
+                velocity: zero(),
+                ground: None,
+                ..body
+            },
+        )?;
+        self.peek().combat.set_traits(
+            &player.actor,
+            qa_content::q2::support::contracts::CombatTraitChanges {
+                can_take_damage: Some(false),
+                ..Default::default()
+            },
+        )?;
+        self.bodies().link(&player.actor)?;
+        let services = match &self.peek().source {
+            SourceRuntime::Q1 { services, .. } => Some(Rc::clone(services)),
+            _ => None,
+        };
+        if let Some(services) = services {
+            services.borrow_mut().player_input(
+                &player.actor,
+                &qa_content::q1::foundation::entity_services::Q1PlayerInput {
+                    attack: false,
+                    jump: false,
+                    teleport_until: None,
+                },
+            );
+            services
+                .borrow_mut()
+                .weapon_input(
+                    &player.actor,
+                    None,
+                    control.angles,
+                    self.time_seconds(),
+                    player.water_level as i32,
+                )
+                .map_err(source_failure)?;
+        }
+        Ok(())
     }
 
     /// Client owning an actor (donor `playerClient`; C7 canonical).
@@ -19478,6 +20173,13 @@ impl super::source_hosts::Q2ActorHostBindings for Q2SeamBindings {
                 RuntimeQ2ModelEvent {
                     path: model.path.clone(),
                     model: index,
+                    frame: model.frame,
+                    old_frame: model.old_frame,
+                    scale: model.scale,
+                    alpha: model.alpha,
+                    skin: model.skin,
+                    effects: model.effects,
+                    render_flags: model.render_flags,
                 },
             );
         }
@@ -19780,6 +20482,30 @@ pub enum StepTailFlow {
 #[allow(dead_code)]
 fn step_button_bits(buttons: f64) -> i32 {
     buttons as i32
+}
+
+/// Button bits of a movement command (all dialects carry `buttons`).
+fn qvm_command_buttons(command: &qa_world::movement::types::UserCommand) -> f64 {
+    use qa_world::movement::types::UserCommand;
+    match command {
+        UserCommand::Q1Netquake(command) => f64::from(command.buttons),
+        UserCommand::Q1Quakeworld(command) => f64::from(command.buttons),
+        UserCommand::Q2Classic(command) => f64::from(command.buttons),
+        UserCommand::Q2Rerelease(command) => f64::from(command.buttons),
+        UserCommand::Q3(command) => f64::from(command.buttons),
+    }
+}
+
+/// Replace the button bits of a movement command.
+fn set_qvm_command_buttons(command: &mut qa_world::movement::types::UserCommand, buttons: i32) {
+    use qa_world::movement::types::UserCommand;
+    match command {
+        UserCommand::Q1Netquake(command) => command.buttons = buttons,
+        UserCommand::Q1Quakeworld(command) => command.buttons = buttons,
+        UserCommand::Q2Classic(command) => command.buttons = buttons,
+        UserCommand::Q2Rerelease(command) => command.buttons = buttons,
+        UserCommand::Q3(command) => command.buttons = buttons,
+    }
 }
 
 /// Whether a command sequence is stale (donor
@@ -21583,16 +22309,10 @@ impl SharedSimulation {
         {
             let grapple_field = reader.field("grapple");
             if self.peek().grapple.is_some() {
-                let checkpoint = super::grapple_checkpoint::read_grapple_runtime_checkpoint(grapple_field, &|_| {
-                    // The QVM grapple component reader is fail-closed:
-                    // `grapple_runtime` and `qvm_grapple_source` define
-                    // divergent `QvmGrappleSourceCheckpoint` types and the
-                    // grapple lane owns their unification. Non-QVM grapple
-                    // sources never invoke this closure.
-                    Err(qa_world::WorldError::BadSave(
-                        "Missing siblings: qvm-grapple checkpoint unification".to_string(),
-                    ))
-                })?;
+                let checkpoint = super::grapple_checkpoint::read_grapple_runtime_checkpoint(
+                    grapple_field,
+                    &read_qvm_grapple_component_checkpoint,
+                )?;
                 let state = self.peek();
                 let grapple = state
                     .grapple
@@ -21606,16 +22326,10 @@ impl SharedSimulation {
                     ..
                 }
             ) {
-                let checkpoint = super::grapple_checkpoint::read_grapple_runtime_checkpoint(grapple_field, &|_| {
-                    // The QVM grapple component reader is fail-closed:
-                    // `grapple_runtime` and `qvm_grapple_source` define
-                    // divergent `QvmGrappleSourceCheckpoint` types and the
-                    // grapple lane owns their unification. Non-QVM grapple
-                    // sources never invoke this closure.
-                    Err(qa_world::WorldError::BadSave(
-                        "Missing siblings: qvm-grapple checkpoint unification".to_string(),
-                    ))
-                })?;
+                let checkpoint = super::grapple_checkpoint::read_grapple_runtime_checkpoint(
+                    grapple_field,
+                    &read_qvm_grapple_component_checkpoint,
+                )?;
                 let slots = super::weapon_slot_checkpoint::read_weapon_slots(reader.field("weaponSlots"))?;
                 self.state.borrow_mut().pending_qvm_grapple_restore = Some(PendingQvmGrappleRestore {
                     grapple: checkpoint,
@@ -24062,11 +24776,25 @@ impl SharedSimulation {
     #[allow(dead_code)]
     fn selected_weapon_delay(&self, actor: &qa_core::identity::ActorId, seconds: f64) -> f64 {
         if matches!(self.peek().source, SourceRuntime::Q2Native(_)) {
-            // Missing siblings: the selected-arsenal lane owns `has`/`read`,
-            // so the selection reads empty until it lands.
+            let active = self
+                .selected_arsenal_read(actor)
+                .and_then(|state| state.active_weapon.clone());
+            let item = match active {
+                None => None,
+                Some(weapon) => match self
+                    .peek()
+                    .selected_original_weapons
+                    .as_ref()
+                    .and_then(|sources| sources.get(&weapon).cloned())
+                {
+                    None => panic!("Selected firing delay has no original weapon policy"),
+                    Some(mapped) => mapped,
+                },
+            };
             if self.peek().native_primary_commands.is_none() {
                 panic!("Selected firing delay has no original weapon policy");
             }
+            let _ = item;
             panic!("Missing siblings: native-primary lane owns withWeapon (donor `selectedWeaponDelay` q2-native arm)");
         }
         if matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) {
@@ -26264,8 +26992,8 @@ impl SharedSimulation {
     /// tables are the C11 adapters; the hook closures rejoin the session
     /// through the weak handle with narrow borrow scopes. Hook bodies that
     /// belong to other lanes are seams: `check_client` (C4
-    /// `q1VisibilityEye`, donor 3261) and `control_player` (C8
-    /// `controlPlayer`, donor 5729). `step_pusher` reports no
+    /// `q1VisibilityEye`, donor 3261). `control_player` rejoins
+    /// [`SharedSimulation::control_player`]. `step_pusher` reports no
     /// displacement: driving the
     /// native pusher needs physics-lane ports (`candidates`, `numeric`,
     /// `test_position`, `push_entity`, `unlink` on `SharedPhysics`) that do
@@ -26514,9 +27242,15 @@ impl SharedSimulation {
                     .expect("q1 monster target failed")
             },
         );
-        // Missing siblings: C8 ports `controlPlayer` (donor 5729); the seam
-        // holds no cinematic control until then.
-        let control_player = Box::new(|_: &ActorId, _: &qa_content::q1::foundation::host::Q1CutsceneControl| {});
+        let control_tables = tables.clone();
+        let control_player = Box::new(
+            move |actor: &ActorId, control: &qa_content::q1::foundation::host::Q1CutsceneControl| {
+                control_tables
+                    .sim()
+                    .control_player(actor, control)
+                    .expect("q1 control player failed");
+            },
+        );
 
         let gravity_tables = tables.clone();
         let set_gravity = Box::new(move |actor: &ActorId, scale: f64| {
@@ -27580,13 +28314,739 @@ impl SharedSimulation {
     }
 
     /// Primary presentation models (donor `primaryPresentations`, donor 5812).
-    ///
-    /// Missing siblings: C8 ports the full model builder; no presentation
-    /// source exists yet, so the find always misses and callers take the
-    /// `None`-model path.
     fn primary_presentations(&self) -> Vec<super::types::SimulationPresentation> {
-        let _ = self;
-        Vec::new()
+        let mut result = Vec::new();
+        self.push_native_presentations(&mut result);
+        if matches!(self.peek().source, SourceRuntime::Q3 { .. }) {
+            // `create_q3_source` always fails, so no live Q3 game exists to
+            // present; the arm contributes nothing until the q3 lane lands
+            // the source host.
+        }
+        if let Some(presentations) = self
+            .peek()
+            .selected_q3_source
+            .as_ref()
+            .map(|selected| selected.presentations())
+        {
+            result.extend(presentations);
+        }
+        self.push_execution_presentations(&mut result);
+        self.push_player_presentations(&mut result);
+        self.push_detached_presentations(&mut result);
+        self.push_view_model_presentations(&mut result);
+        result
+    }
+
+    /// Q1 alpha/scale presentation fields (donor `q1VisualFields`).
+    fn q1_visual_fields(alpha: f64, scale: f64) -> (f64, f64) {
+        (
+            if alpha == 0.0 {
+                1.0
+            } else {
+                (alpha as f32).clamp(0.0, 1.0) as f64
+            },
+            if scale == 0.0 { 1.0 } else { scale as f32 as f64 },
+        )
+    }
+
+    /// Blank presentation row filled by each arm below.
+    fn blank_presentation(
+        actor: ActorId,
+        content: ContentId,
+        family: GameFamily,
+        path: String,
+    ) -> super::types::SimulationPresentation {
+        super::types::SimulationPresentation {
+            actor,
+            content,
+            held_weapon: None,
+            family,
+            path,
+            frame: 0,
+            old_frame: 0,
+            origin: zero(),
+            angles: zero(),
+            scale: 1.0,
+            visible: true,
+            view_weapon: false,
+            native_held_weapon: false,
+            weapon_item: None,
+            replaces_body: false,
+            render_source_client: false,
+            flare: None,
+            back_lerp: None,
+            skin: 0,
+            skin_path: None,
+            indexed_skin: None,
+            player_colors: None,
+            effects: 0,
+            render_flags: 0,
+            previous_origin: None,
+            model_beam: None,
+            shader_beam: None,
+            model_attachments: None,
+            model_anchor: None,
+            q3_grapple_cable: None,
+            alpha: None,
+            q3_weapon: None,
+        }
+    }
+
+    /// Read a selected arsenal for an actor (donor
+    /// `selectedArsenal?.read(...)`, `None` when no arsenal is admitted).
+    fn selected_arsenal_read(&self, actor: &ActorId) -> Option<ArsenalState> {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let state = self.peek();
+        let selected = state.selected_arsenal.as_ref()?;
+        if !match selected {
+            SelectedArsenal::Q1(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.has(actor),
+        } {
+            return None;
+        }
+        Some(match selected {
+            SelectedArsenal::Q1(arsenal) => arsenal.read(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.read(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.read(actor),
+        })
+    }
+
+    /// Whether a selected arsenal covers an actor (donor
+    /// `selectedArsenal?.has(...) === true`).
+    fn selected_arsenal_has(&self, actor: &ActorId) -> bool {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let state = self.peek();
+        let Some(selected) = state.selected_arsenal.as_ref() else {
+            return false;
+        };
+        match selected {
+            SelectedArsenal::Q1(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.has(actor),
+        }
+    }
+
+    /// Native Q2 entity and gun presentations (donor `primaryPresentations`
+    /// q2-native arm).
+    fn push_native_presentations(&self, result: &mut Vec<super::types::SimulationPresentation>) {
+        let content = self.peek().recipe.map.entities.content.clone();
+        let clients: Vec<(ClientId, OwnedActor)> = {
+            let state = self.peek();
+            let SourceRuntime::Q2Native(native) = &state.source else {
+                return;
+            };
+            match native {
+                Q2NativeSource::Classic { clients, .. } | Q2NativeSource::Rerelease { clients, .. } => clients
+                    .iter()
+                    .map(|(client, actor)| (client.clone(), actor.clone()))
+                    .collect(),
+            }
+        };
+        let classic = matches!(
+            self.peek().source,
+            SourceRuntime::Q2Native(Q2NativeSource::Classic { .. })
+        );
+        if classic {
+            let rows = {
+                let mut state = self.lock();
+                let SourceRuntime::Q2Native(Q2NativeSource::Classic { game, .. }) = &mut state.source else {
+                    panic!("Native presentations lost their source owner");
+                };
+                let states = game.entity_states().expect("native entity states failed");
+                let mut rows = Vec::with_capacity(states.len());
+                for state in states {
+                    let info = game
+                        .entity_info(u32::from(state.number))
+                        .expect("native entity info failed");
+                    let appearance = game
+                        .model_appearance(u32::from(state.number))
+                        .expect("native model appearance failed");
+                    rows.push((state, info, appearance));
+                }
+                rows
+            };
+            for (state, info, appearance) in rows {
+                let Some(actor) = info.actor.clone() else { continue };
+                if state.number == 0 || !info.active || info.server_flags & 1 != 0 {
+                    continue;
+                }
+                let mut model =
+                    Self::blank_presentation(actor.clone(), content.clone(), GameFamily::Q2, appearance.path.clone());
+                model.frame = state.frame;
+                model.old_frame = state.frame;
+                model.skin = appearance.skin;
+                model.skin_path = appearance.skin_path.clone();
+                model.effects = state.effects as i32;
+                model.render_flags = state.render_effects as i32;
+                model.origin = q2_vec3(&state.origin);
+                model.previous_origin = Some(q2_vec3(&state.old_origin));
+                model.angles = q2_vec3(&state.angles);
+                model.alpha = Some(1.0);
+                if !appearance.path.is_empty() {
+                    result.push(model.clone());
+                }
+                for (index, path) in appearance.attached_models.iter().enumerate() {
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let mut attached = model.clone();
+                    attached.path = path.clone();
+                    attached.skin = 0;
+                    attached.skin_path = None;
+                    attached.native_held_weapon = index == 0 && self.selected_arsenal_has(&actor);
+                    result.push(attached);
+                }
+            }
+        } else {
+            let rows = {
+                let mut state = self.lock();
+                let SourceRuntime::Q2Native(Q2NativeSource::Rerelease { game, .. }) = &mut state.source else {
+                    panic!("Native presentations lost their source owner");
+                };
+                let states = game.entity_states().expect("native entity states failed");
+                let mut rows = Vec::with_capacity(states.len());
+                for state in states {
+                    let info = game
+                        .entity_info(u32::from(state.base.number))
+                        .expect("native entity info failed");
+                    let appearance = game
+                        .model_appearance(u32::from(state.base.number))
+                        .expect("native model appearance failed");
+                    rows.push((state, info, appearance));
+                }
+                rows
+            };
+            for (state, info, appearance) in rows {
+                let Some(actor) = info.actor.clone() else { continue };
+                if state.base.number == 0 || !info.active || info.server_flags & 1 != 0 {
+                    continue;
+                }
+                let mut model =
+                    Self::blank_presentation(actor.clone(), content.clone(), GameFamily::Q2, appearance.path.clone());
+                model.frame = state.base.frame;
+                model.old_frame = i32::from(state.old_frame);
+                model.skin = appearance.skin;
+                model.skin_path = appearance.skin_path.clone();
+                model.effects = i32::try_from(state.effects).expect("native effects exceed shared presentation");
+                model.render_flags = state.base.render_effects as i32;
+                model.origin = q2_vec3(&state.base.origin);
+                model.previous_origin = Some(q2_vec3(&state.base.old_origin));
+                model.angles = q2_vec3(&state.base.angles);
+                model.scale = if state.scale != 0.0 { state.scale } else { 1.0 };
+                model.alpha = Some(if state.alpha != 0.0 {
+                    state.alpha
+                } else if state.base.render_effects & 32 != 0 {
+                    0.3
+                } else {
+                    1.0
+                });
+                if !appearance.path.is_empty() {
+                    result.push(model.clone());
+                }
+                for (index, path) in appearance.attached_models.iter().enumerate() {
+                    if path.is_empty() {
+                        continue;
+                    }
+                    let mut attached = model.clone();
+                    attached.path = path.clone();
+                    attached.skin = 0;
+                    attached.skin_path = None;
+                    attached.native_held_weapon = index == 0 && self.selected_arsenal_has(&actor);
+                    result.push(attached);
+                }
+            }
+        }
+        for (client, actor) in &clients {
+            if self.selected_arsenal_has(actor.id()) {
+                continue;
+            }
+            let (gun_index, gun_frame, gun_skin, gun_offset, gun_angles, path) = {
+                let mut state = self.lock();
+                match &mut state.source {
+                    SourceRuntime::Q2Native(Q2NativeSource::Classic { game, .. }) => {
+                        let player = game
+                            .player_state(client.slot() + 1)
+                            .expect("native player state failed");
+                        let strings = game.configstrings().expect("native configstrings failed");
+                        let path = strings.get(&(32 + player.view.gun_index)).cloned().unwrap_or_default();
+                        (
+                            player.view.gun_index,
+                            player.view.gun_frame,
+                            0,
+                            q2_vec3(&player.view.gun_offset),
+                            q2_vec3(&player.view.gun_angles),
+                            path,
+                        )
+                    }
+                    SourceRuntime::Q2Native(Q2NativeSource::Rerelease { game, .. }) => {
+                        let player = game
+                            .player_state(client.slot() + 1)
+                            .expect("native player state failed");
+                        let strings = game.configstrings().expect("native configstrings failed");
+                        let path = strings.get(&(62 + player.view.gun_index)).cloned().unwrap_or_default();
+                        (
+                            player.view.gun_index,
+                            player.view.gun_frame,
+                            player.gun_skin,
+                            q2_vec3(&player.view.gun_offset),
+                            q2_vec3(&player.view.gun_angles),
+                            path,
+                        )
+                    }
+                    _ => panic!("Native presentations lost their source owner"),
+                }
+            };
+            if gun_index == 0 || path.is_empty() {
+                continue;
+            }
+            let view = self.player_view(actor.id()).expect("native gun view failed");
+            let mut model = Self::blank_presentation(actor.id().clone(), content.clone(), GameFamily::Q2, path);
+            model.frame = gun_frame;
+            model.old_frame = gun_frame;
+            model.skin = gun_skin;
+            model.origin = add(
+                add(
+                    view.origin,
+                    Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: view.view_height as f32,
+                    },
+                ),
+                gun_offset,
+            );
+            model.angles = add(view.angles, gun_angles);
+            model.view_weapon = true;
+            result.push(model);
+        }
+    }
+
+    /// Actor-execution entity presentations (donor `primaryPresentations`
+    /// execution arm).
+    fn push_execution_presentations(&self, result: &mut Vec<super::types::SimulationPresentation>) {
+        let entries: Vec<(ActorId, RuntimeExecutionEntry)> = self
+            .peek()
+            .actor_executions
+            .iter()
+            .map(|(actor, entry)| (actor.clone(), entry.clone()))
+            .collect();
+        let geometry = self.peek().recipe.map.geometry.requested_path.clone();
+        for (actor, entry) in &entries {
+            match entry {
+                RuntimeExecutionEntry::QuakeC { .. }
+                | RuntimeExecutionEntry::Q3 { .. }
+                | RuntimeExecutionEntry::Q3Source { .. } => continue,
+                RuntimeExecutionEntry::Q1 { .. } | RuntimeExecutionEntry::Q2 { .. } => {}
+            }
+            let Some(body) = self.bodies().read(actor) else {
+                continue;
+            };
+            if self
+                .peek()
+                .selected_monsters
+                .as_ref()
+                .is_some_and(|monsters| !monsters.active(actor))
+            {
+                continue;
+            }
+            if self.player(actor).is_some() {
+                continue;
+            }
+            if matches!(entry, RuntimeExecutionEntry::Q1 { .. }) {
+                let Some((entity, _)) = self.q1_motion_entity(actor) else {
+                    continue;
+                };
+                if entity.model.is_empty() || entity.model == geometry {
+                    continue;
+                }
+                let (alpha, scale) = Self::q1_visual_fields(entity.number("alpha"), entity.number("scale"));
+                let mut model = Self::blank_presentation(
+                    actor.clone(),
+                    entry.content().clone(),
+                    GameFamily::Q1,
+                    entity.model.clone(),
+                );
+                model.frame = entity.frame;
+                model.old_frame = entity.frame;
+                model.skin = entity.skin;
+                model.effects = entity.effects;
+                model.origin = body.origin;
+                model.angles = body.angles;
+                model.scale = scale;
+                model.alpha = Some(alpha);
+                result.push(model);
+            } else {
+                let resolved = self.q2_presentation_entity(actor);
+                let Some((entity, edition)) = resolved else { continue };
+                if entity.classname == "worldspawn" {
+                    continue;
+                }
+                let flare = entity.flare();
+                if entity.model.is_empty() && flare.is_none() {
+                    continue;
+                }
+                let over = self.peek().source_models.get(actor).cloned();
+                let frame = over.as_ref().map(|over| over.frame).unwrap_or(entity.frame);
+                let old_frame = over.as_ref().map(|over| over.old_frame).unwrap_or(entity.old_frame);
+                let beam =
+                    edition == qa_content::q2::foundation::host::Q2Edition::Rerelease && entity.render_flags & 128 != 0;
+                let mut model = Self::blank_presentation(
+                    actor.clone(),
+                    entry.content().clone(),
+                    GameFamily::Q2,
+                    entity.model.clone(),
+                );
+                model.flare = flare;
+                model.frame = frame;
+                model.old_frame = if old_frame == -1 { frame } else { old_frame };
+                model.skin = over.as_ref().map(|over| over.skin).unwrap_or(entity.skin);
+                model.effects = over.as_ref().map(|over| over.effects).unwrap_or(entity.effects) as i32;
+                model.render_flags = over
+                    .as_ref()
+                    .map(|over| over.render_flags)
+                    .unwrap_or(entity.render_flags);
+                model.alpha = Some(over.as_ref().map(|over| over.alpha).unwrap_or(entity.alpha));
+                model.origin = body.origin;
+                model.angles = body.angles;
+                model.previous_origin = Some(if beam { entity.pos2 } else { body.origin });
+                if beam {
+                    model.model_beam = Some(super::types::ModelBeam {
+                        segment_length: f64::from(entity.frame),
+                    });
+                }
+                model.scale = over.as_ref().map(|over| over.scale).unwrap_or(1.0);
+                model.visible = entity.server_flags & 1 == 0;
+                result.push(model);
+            }
+        }
+    }
+
+    /// Resolve a live Q2 entity plus edition for presentations.
+    fn q2_presentation_entity(
+        &self,
+        actor: &ActorId,
+    ) -> Option<(
+        qa_content::q2::foundation::host::Q2Entity,
+        qa_content::q2::foundation::host::Q2Edition,
+    )> {
+        if let Some(game) = self.q2_game_services() {
+            let game = game.borrow();
+            if let Some(entity) = game.entity(actor) {
+                return Some((entity.clone(), game.options.edition));
+            }
+        }
+        let state = self.peek();
+        for source in state.monster_sources.values() {
+            if let SelectedMonsterSource::Q2 { game, .. } = source {
+                if let Some(entity) = game.entity(actor) {
+                    return Some((entity.clone(), game.options.edition));
+                }
+            }
+        }
+        None
+    }
+
+    /// Player body presentations (donor `primaryPresentations` player arm).
+    fn push_player_presentations(&self, result: &mut Vec<super::types::SimulationPresentation>) {
+        let players: Vec<MovementPlayer> = self.peek().player_states.values().cloned().collect();
+        let appearance = self.peek().recipe.character.appearance.clone();
+        let model_name = provider_text(&appearance.provider)
+            .rsplit('/')
+            .next()
+            .unwrap_or("male")
+            .to_string();
+        let q1_services = self.q1_services();
+        let q2_game = self.q2_game_services();
+        for player in &players {
+            if player.character == GameFamily::Q3 || player.intermission || player.cutscene.is_some() {
+                continue;
+            }
+            let actor = player.actor.id();
+            let Some(body) = self.bodies().read(actor) else {
+                continue;
+            };
+            let owned = player.actor.clone();
+            let q2_entity = self
+                .peek()
+                .q2_characters
+                .get(&owned)
+                .map(|character| character.entity.clone())
+                .or_else(|| {
+                    if player.character == GameFamily::Q2 {
+                        q2_game.as_ref().and_then(|game| game.borrow().entity(actor).cloned())
+                    } else {
+                        None
+                    }
+                });
+            let gibbed = self.player_gibbed(actor);
+            let q1_player = q1_services
+                .as_ref()
+                .and_then(|services| services.borrow().player_ref(actor).cloned());
+            let colors = if player.character == GameFamily::Q1 {
+                match &self.peek().source {
+                    SourceRuntime::Q1 { composition, .. } => {
+                        composition.client(actor).map(|client| (client.shirt(), client.pants()))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let (alpha, scale) = q1_player
+                .map(|player| Self::q1_visual_fields(player.alpha, player.scale))
+                .unwrap_or((1.0, 1.0));
+            let q1_model = self
+                .peek()
+                .q1_characters
+                .get(&owned)
+                .map(|character| character.presentation().model);
+            let path = q2_entity
+                .as_ref()
+                .map(|entity| entity.model.clone())
+                .filter(|model| !model.is_empty())
+                .or_else(|| q1_model.filter(|model| !model.is_empty()))
+                .unwrap_or_else(|| {
+                    if player.character == GameFamily::Q1 {
+                        "progs/player.mdl".to_string()
+                    } else {
+                        format!("players/{model_name}/tris.md2")
+                    }
+                });
+            let mut model = Self::blank_presentation(actor.clone(), appearance.content.clone(), player.character, path);
+            if player.character == GameFamily::Q2 && !gibbed {
+                model.skin_path = Some(format!("players/{model_name}/grunt.pcx"));
+            }
+            model.frame =
+                q2_entity
+                    .as_ref()
+                    .map(|entity| entity.frame)
+                    .unwrap_or_else(|| match player.animation.state {
+                        qa_world::movement::types::AnimationState::Q1 { frame, .. }
+                        | qa_world::movement::types::AnimationState::Q2 { frame, .. } => frame,
+                        _ => 0,
+                    });
+            model.old_frame = q2_entity.as_ref().map(|entity| entity.old_frame).unwrap_or(0);
+            model.skin = q2_entity.as_ref().map(|entity| entity.skin).unwrap_or(0);
+            model.effects = q2_entity.as_ref().map(|entity| entity.effects as i32).unwrap_or(0);
+            model.render_flags = q2_entity.as_ref().map(|entity| entity.render_flags).unwrap_or(0);
+            model.origin = body.origin;
+            model.angles = body.angles;
+            model.scale = scale;
+            model.alpha = Some(alpha);
+            if let Some((top, bottom)) = colors {
+                model.player_colors = Some(super::types::PlayerColors { top, bottom });
+            }
+            result.push(model);
+        }
+    }
+
+    /// Detached-model presentations (donor `primaryPresentations` detached arm).
+    fn push_detached_presentations(&self, result: &mut Vec<super::types::SimulationPresentation>) {
+        let detached: Vec<(OwnedActor, DetachedModel)> = self
+            .peek()
+            .detached_models
+            .iter()
+            .map(|(actor, model)| (actor.clone(), model.clone()))
+            .collect();
+        for (actor, model) in &detached {
+            let Some(body) = self.bodies().read(actor.id()) else {
+                continue;
+            };
+            let mut row = Self::blank_presentation(
+                actor.id().clone(),
+                model.content.clone(),
+                GameFamily::Q2,
+                model.path.clone(),
+            );
+            row.effects = 2;
+            row.origin = body.origin;
+            row.angles = body.angles;
+            result.push(row);
+        }
+    }
+
+    /// View-weapon presentations (donor `primaryPresentations` weapon arm).
+    fn push_view_model_presentations(&self, result: &mut Vec<super::types::SimulationPresentation>) {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let weapon_provider = self.peek().weapon_provider.clone();
+        let family = provider_family(&provider_text(&weapon_provider.provider)).expect("weapon provider family");
+        let weapon_models: Vec<(ActorId, String, i32)> = if self.peek().selected_arsenal.is_none() {
+            self.peek()
+                .view_models
+                .iter()
+                .map(|(actor, model)| (actor.clone(), model.path.clone(), model.frame))
+                .collect()
+        } else {
+            self.players()
+                .into_iter()
+                .filter_map(|actor| {
+                    let state = self.peek();
+                    let selected = state.selected_arsenal.as_ref().expect("selected arsenal checked");
+                    let model = match selected {
+                        SelectedArsenal::Q1(arsenal) => arsenal.view(&actor),
+                        SelectedArsenal::Q2(arsenal) => arsenal.view(&actor),
+                        SelectedArsenal::Q3(arsenal) => arsenal.view(&actor),
+                    };
+                    model.map(|model| (actor, model.path, model.frame as i32))
+                })
+                .collect()
+        };
+        for (actor, path, frame) in &weapon_models {
+            let player = self.player(actor);
+            let skip = match player.as_ref() {
+                None => {
+                    !matches!(
+                        self.peek().source,
+                        SourceRuntime::Q3Qvm { .. } | SourceRuntime::Q2Native(_)
+                    ) || self.player_client(actor).is_none()
+                }
+                Some(player) => player.intermission || player.cutscene.is_some(),
+            };
+            if skip {
+                continue;
+            }
+            let q2 = if family == GameFamily::Q2 {
+                self.peek().view_models.get(actor).and_then(|model| model.q2)
+            } else {
+                None
+            };
+            let native_view = match (&self.peek().source, player.as_ref()) {
+                (SourceRuntime::Q2 { .. }, Some(player)) if player.character == GameFamily::Q2 => {
+                    self.peek().q2_views.get(actor).cloned()
+                }
+                _ => None,
+            };
+            let body = self.bodies().read(actor);
+            let (origin, angles, view_height) = if native_view.is_none() {
+                if let Some(player) = player.as_ref() {
+                    let body = body.clone().expect("view-model player has no body");
+                    (body.origin, player.view_angles, player.view_height)
+                } else {
+                    let view = self.player_view(actor).expect("view-model view failed");
+                    (view.origin, view.angles, view.view_height)
+                }
+            } else {
+                let view = self.player_view(actor).expect("view-model view failed");
+                (view.origin, view.angles, view.view_height)
+            };
+            let source_view = if q2.is_some() { native_view.as_ref() } else { None };
+            let arsenal = {
+                let state = self.peek();
+                state.selected_arsenal.as_ref().map(|selected| match selected {
+                    SelectedArsenal::Q1(arsenal) => arsenal.read(actor),
+                    SelectedArsenal::Q2(arsenal) => arsenal.read(actor),
+                    SelectedArsenal::Q3(arsenal) => arsenal.read(actor),
+                })
+            };
+            let health = self
+                .peek()
+                .combat
+                .read(actor)
+                .map(|combat| combat.health)
+                .unwrap_or(0.0);
+            let q3_weapon = match (&self.peek().selected_arsenal, arsenal.as_ref(), body.as_ref()) {
+                (Some(SelectedArsenal::Q3(selected)), Some(arsenal), Some(body)) => match arsenal.state {
+                    qa_world::movement::types::WeaponState::Q3 { source_weapon, .. } => {
+                        let buttons = player
+                            .as_ref()
+                            .map(|player| step_button_bits(player.buttons))
+                            .unwrap_or_else(|| {
+                                self.peek()
+                                    .mod_client_commands
+                                    .get(actor)
+                                    .map(|command| step_button_bits(command.input.command.buttons()))
+                                    .unwrap_or(0)
+                            });
+                        let view_state = selected.view_state(actor).expect("selected q3 view state failed");
+                        let bob_cycle = match player.as_ref().map(|player| &player.state) {
+                            Some(MovementState::Q3(state)) => f64::from(state.bob_cycle),
+                            _ => match &self.peek().source {
+                                SourceRuntime::Q3Qvm { game, .. } => {
+                                    f64::from(game.records.player(game.records.require_slot(actor)).bob_cycle)
+                                }
+                                _ => 0.0,
+                            },
+                        };
+                        Some(super::types::Q3WeaponPresentation {
+                            time_milliseconds: self.peek().selected_milliseconds as i32,
+                            torso_animation: view_state.torso_animation,
+                            last_fire_milliseconds: view_state
+                                .last_fire_milliseconds
+                                .map(|milliseconds| milliseconds as i32),
+                            firing: buttons & 1 != 0 && health > 0.0,
+                            horizontal_speed: f64::hypot(f64::from(body.velocity.x), f64::from(body.velocity.y)),
+                            bob_cycle,
+                            weapon: source_weapon,
+                        })
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            let visible = match &self.peek().source {
+                SourceRuntime::Q3Qvm { .. } => true,
+                SourceRuntime::Q2Native(_) => {
+                    let client = self.native_q2_client(actor).expect("native view-model client failed");
+                    let gun_index = {
+                        let mut state = self.lock();
+                        match &mut state.source {
+                            SourceRuntime::Q2Native(Q2NativeSource::Classic { game, .. }) => {
+                                game.player_state(client.slot() + 1)
+                                    .expect("native player state failed")
+                                    .view
+                                    .gun_index
+                            }
+                            SourceRuntime::Q2Native(Q2NativeSource::Rerelease { game, .. }) => {
+                                game.player_state(client.slot() + 1)
+                                    .expect("native player state failed")
+                                    .view
+                                    .gun_index
+                            }
+                            _ => panic!("Native presentations lost their source owner"),
+                        }
+                    };
+                    // The `NativePrimaryWeapons::available` synthetic host
+                    // belongs to the native-weapon lane (see the
+                    // `equipment_player_available_in` native arm), so the
+                    // native arm reads the health fallback here as well.
+                    gun_index != 0 && health > 0.0
+                }
+                _ => health > 0.0,
+            };
+            let mut model =
+                Self::blank_presentation(actor.clone(), weapon_provider.content.clone(), family, path.clone());
+            model.q3_weapon = q3_weapon;
+            model.weapon_item = arsenal.and_then(|arsenal| arsenal.active_weapon.clone());
+            model.frame = *frame;
+            model.old_frame = *frame;
+            model.skin = q2.map(|q2| q2.skin).unwrap_or(0);
+            model.render_flags = if family == GameFamily::Q2 { 1 | 4 | 16 } else { 0 };
+            model.origin = add(
+                add(
+                    origin,
+                    Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: view_height as f32,
+                    },
+                ),
+                source_view
+                    .map(|view| view.gun_offset)
+                    .or_else(|| q2.map(|q2| q2.kick_origin))
+                    .unwrap_or_else(zero),
+            );
+            model.angles = add(
+                angles,
+                source_view
+                    .map(|view| view.gun_angles)
+                    .or_else(|| q2.map(|q2| q2.kick_angles))
+                    .unwrap_or_else(zero),
+            );
+            model.visible = visible;
+            model.view_weapon = true;
+            result.push(model);
+        }
     }
 
     /// Primary HUD snapshot (donor `primaryUi`).
@@ -32294,11 +33754,150 @@ impl SharedSimulation {
 
     /// Step the QVM client-command arsenal decision (donor `qvmWeaponStep`).
     fn qvm_weapon_step(&self, application: &ModClientApplication, reached_attack_decision: bool) {
+        use super::arsenal::selected::{SelectedArsenal as FamilyArsenal, WeaponStepInput};
         if !matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) || self.peek().selected_arsenal.is_none() {
             return;
         }
-        let _ = (application, reached_attack_decision);
-        panic!("Missing siblings: QVM arsenal application bridge (selectedQ3Source/weapon step)");
+        let Some(actor) = self.actors.borrow().resolve_owned(&application.identity.actor) else {
+            return;
+        };
+        if !self.selected_arsenal_has(actor.id()) {
+            self.qvm_client_spawned(actor.id()).expect("qvm client spawn failed");
+        }
+        let available = {
+            let state = self.peek();
+            let SourceRuntime::Q3Qvm {
+                weapons: Some(services),
+                ..
+            } = &state.source
+            else {
+                panic!("Original QVM weapon services have no qualified owner");
+            };
+            services
+                .available(actor.id(), true)
+                .expect("qvm weapon availability failed")
+        };
+        if !available {
+            return;
+        }
+        let record = {
+            let state = self.peek();
+            let SourceRuntime::Q3Qvm { game, .. } = &state.source else {
+                panic!("Original QVM weapon services have no qualified owner");
+            };
+            game.records.player(game.records.require_slot(actor.id()))
+        };
+        let health = f64::from(record.stats[0]);
+        let previous = self.lock().current_qvm_arsenal_application.replace(application.clone());
+        let primary = self
+            .peek()
+            .weapon_slots
+            .get(actor.id())
+            .is_none_or(|slot| slot.primary_selected());
+        let active = primary && reached_attack_decision;
+        let mut command = application.command;
+        if !active {
+            let masked = step_button_bits(qvm_command_buttons(&command)) & !1;
+            set_qvm_command_buttons(&mut command, masked);
+        }
+        let attack = step_button_bits(qvm_command_buttons(&command)) & 1 != 0;
+        if let Some(selected_source) = self.peek().selected_q3_source.as_ref() {
+            selected_source
+                .command(&actor, attack, active, health > 0.0)
+                .expect("selected q3 command failed");
+        }
+        let animation = qa_world::movement::types::ActorAnimationState {
+            provider: self.peek().recipe.character.definition.provider.clone(),
+            state: qa_world::movement::types::AnimationState::Q3 {
+                legs: record.legs_animation,
+                torso: record.torso_animation,
+                legs_timer_milliseconds: record.legs_timer_ms,
+                torso_timer_milliseconds: record.torso_timer_ms,
+            },
+        };
+        let frame = if self
+            .peek()
+            .selected_arsenal
+            .as_ref()
+            .is_some_and(|selected| selected.family() == "q1")
+        {
+            let mut frame = selected_q1_frame(&self.peek()).expect("selected q1 frame failed");
+            frame.elapsed = application.frame.elapsed;
+            frame
+        } else if let Some(SelectedWeaponSource::Q2 { frame, .. }) = self.peek().selected_weapon_source.as_ref() {
+            let mut frame = *frame;
+            frame.elapsed = application.frame.elapsed;
+            frame
+        } else {
+            let mut frame = application.frame;
+            frame.time = qa_core::time::SourceTime::Milliseconds(self.peek().selected_milliseconds as i32);
+            frame
+        };
+        let arsenal = self
+            .selected_arsenal_read(actor.id())
+            .expect("selected arsenal checked");
+        let gauntlet_hit = active
+            && matches!(
+                arsenal.state,
+                qa_world::movement::types::WeaponState::Q3 { source_weapon: 1, .. }
+            )
+            && attack
+            && health > 0.0
+            && self
+                .peek()
+                .selected_q3_source
+                .as_ref()
+                .map(|selected_source| {
+                    selected_source
+                        .gauntlet_hit(&actor)
+                        .expect("selected q3 gauntlet failed")
+                })
+                .unwrap_or(false);
+        let intent = application
+            .arsenal
+            .as_ref()
+            .map(|intent| qa_net::common::commands::ArsenalIntent {
+                provider: provider_text(&intent.provider),
+                weapon: intent.weapon.clone(),
+                use_holdable: intent.use_holdable,
+            });
+        {
+            let mut state = self.lock();
+            let selected = state.selected_arsenal.as_mut().expect("selected arsenal checked");
+            let input = WeaponStepInput {
+                actor: actor.clone(),
+                command,
+                frame,
+                arsenal,
+                animation,
+                environment: qa_world::movement::types::MovementEnvironment {
+                    client_outputs: None,
+                    speed_multiplier: None,
+                    pose: None,
+                    health,
+                    flight: false,
+                    haste: false,
+                    invulnerable: false,
+                    gravity_multiplier: 1.0,
+                },
+                gauntlet_hit,
+            };
+            match selected {
+                SelectedArsenal::Q1(arsenal) => {
+                    arsenal.step(&input, intent.as_ref());
+                }
+                SelectedArsenal::Q2(arsenal) => {
+                    arsenal.step(&input, intent.as_ref());
+                }
+                SelectedArsenal::Q3(arsenal) => {
+                    arsenal.step(&input, intent.as_ref());
+                }
+            }
+            if let Some(slot) = state.weapon_slots.get_mut(actor.id()) {
+                slot.reconcile().expect("weapon slot reconcile failed");
+            }
+            state.current_qvm_arsenal_application = previous;
+        }
     }
 
     fn create_grapple(&self) -> Result<Option<GrappleRuntime>, RuntimeError> {
@@ -32842,6 +34441,17 @@ fn c11_source_checkpoint_to_runtime(
             })
             .collect(),
     }
+}
+
+/// Read a QVM grapple component checkpoint in donor save shape, unified to
+/// the grapple-runtime checkpoint the restore path consumes.
+///
+/// Non-QVM grapple sources never invoke this reader.
+fn read_qvm_grapple_component_checkpoint(
+    reader: qa_world::save::value::SaveReader,
+) -> Result<super::grapple_runtime::QvmGrappleSourceCheckpoint, qa_world::WorldError> {
+    let source = super::qvm_grapple_source::read_qvm_grapple_source_checkpoint(&reader)?;
+    Ok(c11_source_checkpoint_to_runtime(source))
 }
 
 #[allow(dead_code)]
