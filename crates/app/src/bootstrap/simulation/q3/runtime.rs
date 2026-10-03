@@ -7926,15 +7926,6 @@ impl Q3SourceRuntime {
             links.session_world = Some(session_world.clone());
         }
         let arena_match: Rc<RefCell<Option<Rc<MatchRuntime>>>> = Rc::new(RefCell::new(None));
-        let arenas = Rc::new(ArenaRuntime::new(Rc::new(RuntimeArenaHost {
-            match_runtime: arena_match.clone(),
-            world: world.clone(),
-            cvars: Rc::new(RuntimeArenaCvars { cvars: host.cvars() }),
-            config: Rc::new(RuntimeArenaConfig {
-                store: host.configstrings(),
-            }),
-        })));
-        match_links.borrow_mut().arenas = Some(arenas.clone());
         let game_match = Rc::new(MatchRuntime::new(
             Rc::new(RuntimeMatchHost {
                 links: match_links.clone(),
@@ -7944,6 +7935,15 @@ impl Q3SourceRuntime {
             MatchModuleState::new(),
         ));
         arena_match.borrow_mut().replace(game_match.clone());
+        let arenas = Rc::new(ArenaRuntime::new(Rc::new(RuntimeArenaHost {
+            match_runtime: arena_match.clone(),
+            world: world.clone(),
+            cvars: Rc::new(RuntimeArenaCvars { cvars: host.cvars() }),
+            config: Rc::new(RuntimeArenaConfig {
+                store: host.configstrings(),
+            }),
+        })));
+        match_links.borrow_mut().arenas = Some(arenas.clone());
         match_cell.borrow_mut().replace(game_match.clone());
         team_links.borrow_mut().match_runtime = Some(game_match.clone());
         spawn_links.borrow_mut().match_runtime = Some(game_match.clone());
@@ -9141,6 +9141,11 @@ impl Q3SourceRuntime {
                 .admission
                 .disconnect(entity.expect("player").borrow().slot as i32);
         }
+    }
+
+    /// Apply a client userinfo change (donor `admission.userinfoChanged`).
+    pub fn userinfo_changed(&self, slot: i32) {
+        self.core.admission.userinfo_changed(slot);
     }
 
     /// Run a client movement command.
