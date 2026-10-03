@@ -51,13 +51,13 @@ use qa_world::movement::types::{ActorAnimationState, ArsenalState, TraceHit, Wea
 use qa_world::session::{SimulationOutput, WorldSnapshot};
 
 use super::events::SimulationEvents;
-use super::grapple_runtime::GrappleRuntime;
 use super::monster_runtime::{SelectedMonsterSource, SelectedMonsters};
 use super::physics::SharedPhysics;
 use super::player_input_application::{MovementProfile, MovementState};
 use super::random::SourceRandom;
 use super::types::{PlayerUi, PlayerView, SimulationOptions, SimulationTravel};
 use super::weapon_slot::WeaponSlot;
+use crate::bootstrap::simulation::grapple_runtime::{GrappleRuntime, GrappleSource};
 
 /// Simulation failure.
 #[derive(Debug, thiserror::Error)]
@@ -812,6 +812,661 @@ pub enum ModClientOutputChannel {
     BodyShape,
 }
 
+// ---------------------------------------------------------------------------
+// QVM input-application bridge (donor `game.bindInput`, donor runtime.ts
+// 722-739).
+// ---------------------------------------------------------------------------
+
+/// Mod-client identity as a QVM client identity (field-identical twins).
+fn qvm_client_identity(identity: &ModClientIdentity) -> qa_guest::qvm::game_input::QvmClientIdentity {
+    use qa_guest::qvm::game_input::QvmClientIdentity;
+    QvmClientIdentity {
+        client: identity.client.clone(),
+        actor: identity.actor.clone(),
+    }
+}
+
+/// QVM client identity as a mod-client identity.
+fn mod_client_identity(identity: &qa_guest::qvm::game_input::QvmClientIdentity) -> ModClientIdentity {
+    ModClientIdentity {
+        client: identity.client.clone(),
+        actor: identity.actor.clone(),
+    }
+}
+
+/// Application scope into the QVM twin.
+fn qvm_application_scope(scope: ModClientApplicationScope) -> qa_guest::qvm::game_input::QvmApplicationScope {
+    use qa_guest::qvm::game_input::QvmApplicationScope;
+    match scope {
+        ModClientApplicationScope::ClientCommand => QvmApplicationScope::ClientCommand,
+        ModClientApplicationScope::MovementSlice => QvmApplicationScope::MovementSlice,
+    }
+}
+
+/// Application scope out of the QVM twin.
+fn mod_application_scope(scope: qa_guest::qvm::game_input::QvmApplicationScope) -> ModClientApplicationScope {
+    match scope {
+        qa_guest::qvm::game_input::QvmApplicationScope::ClientCommand => ModClientApplicationScope::ClientCommand,
+        qa_guest::qvm::game_input::QvmApplicationScope::MovementSlice => ModClientApplicationScope::MovementSlice,
+    }
+}
+
+/// Angle space into the QVM twin.
+fn qvm_angle_space(space: ModClientAngleSpace) -> qa_guest::qvm::game_input::QvmAngleSpace {
+    use qa_guest::qvm::game_input::QvmAngleSpace;
+    match space {
+        ModClientAngleSpace::Absolute => QvmAngleSpace::Absolute,
+        ModClientAngleSpace::SourceRelative => QvmAngleSpace::SourceRelative,
+    }
+}
+
+/// Angle space out of the QVM twin.
+fn mod_angle_space(space: qa_guest::qvm::game_input::QvmAngleSpace) -> ModClientAngleSpace {
+    match space {
+        qa_guest::qvm::game_input::QvmAngleSpace::Absolute => ModClientAngleSpace::Absolute,
+        qa_guest::qvm::game_input::QvmAngleSpace::SourceRelative => ModClientAngleSpace::SourceRelative,
+    }
+}
+
+/// World Q3 command into the QVM twin (field-identical layouts).
+fn qvm_user_command(command: &qa_world::movement::types::Q3UserCommand) -> qa_guest::qvm::game_input::Q3UserCommand {
+    qa_guest::qvm::game_input::Q3UserCommand {
+        server_time_ms: command.server_time_milliseconds,
+        angle_words: command.angle_words,
+        buttons: command.buttons,
+        weapon: command.weapon,
+        forward_move: command.forward_move,
+        right_move: command.right_move,
+        up_move: command.up_move,
+    }
+}
+
+/// QVM command into the world twin.
+fn world_user_command(command: &qa_guest::qvm::game_input::Q3UserCommand) -> qa_world::movement::types::Q3UserCommand {
+    qa_world::movement::types::Q3UserCommand {
+        server_time_milliseconds: command.server_time_ms,
+        angle_words: command.angle_words,
+        buttons: command.buttons,
+        weapon: command.weapon,
+        forward_move: command.forward_move,
+        right_move: command.right_move,
+        up_move: command.up_move,
+    }
+}
+
+/// Arsenal intent into the QVM twin.
+fn qvm_arsenal_intent(intent: &PlayerArsenalIntent) -> qa_guest::qvm::game_input::QvmArsenalIntent {
+    qa_guest::qvm::game_input::QvmArsenalIntent {
+        provider: intent.provider.clone(),
+        weapon: intent.weapon.clone(),
+        use_holdable: intent.use_holdable,
+        impulse: intent.impulse.map(i32::from),
+    }
+}
+
+/// Arsenal intent out of the QVM twin (overflowing impulse bytes read as
+/// absent; the donor impulse is a byte).
+fn mod_arsenal_intent(intent: &qa_guest::qvm::game_input::QvmArsenalIntent) -> PlayerArsenalIntent {
+    PlayerArsenalIntent {
+        provider: intent.provider.clone(),
+        weapon: intent.weapon.clone(),
+        use_holdable: intent.use_holdable,
+        impulse: intent.impulse.and_then(|impulse| u8::try_from(impulse).ok()),
+    }
+}
+
+/// Source time into the QVM twin.
+fn qvm_source_time(time: SourceTime) -> qa_guest::qvm::game_input::QvmSourceTime {
+    use qa_guest::qvm::game_input::{QvmSourceTime, QvmTimeKind};
+    match time {
+        SourceTime::Seconds(value) => QvmSourceTime {
+            kind: QvmTimeKind::Seconds,
+            value: f64::from(value),
+        },
+        SourceTime::Milliseconds(value) => QvmSourceTime {
+            kind: QvmTimeKind::Milliseconds,
+            value: f64::from(value),
+        },
+    }
+}
+
+/// Source time out of the QVM twin.
+fn mod_source_time(time: qa_guest::qvm::game_input::QvmSourceTime) -> SourceTime {
+    match time.kind {
+        qa_guest::qvm::game_input::QvmTimeKind::Seconds => SourceTime::Seconds(time.value as f32),
+        qa_guest::qvm::game_input::QvmTimeKind::Milliseconds => SourceTime::Milliseconds(time.value as i32),
+    }
+}
+
+/// Frame phase into the QVM twin.
+fn qvm_frame_phase(phase: qa_core::time::FramePhase) -> qa_guest::qvm::game_input::QvmFramePhase {
+    use qa_guest::qvm::game_input::QvmFramePhase;
+    match phase {
+        qa_core::time::FramePhase::FrameEntry => QvmFramePhase::FrameEntry,
+        qa_core::time::FramePhase::ClientCommand => QvmFramePhase::ClientCommand,
+        qa_core::time::FramePhase::EntityPrethink => QvmFramePhase::EntityPrethink,
+        qa_core::time::FramePhase::EntityPhysics => QvmFramePhase::EntityPhysics,
+        qa_core::time::FramePhase::EntityThink => QvmFramePhase::EntityThink,
+        qa_core::time::FramePhase::ClientEndFrame => QvmFramePhase::ClientEndFrame,
+        qa_core::time::FramePhase::FrameExit => QvmFramePhase::FrameExit,
+    }
+}
+
+/// Frame phase out of the QVM twin.
+fn mod_frame_phase(phase: qa_guest::qvm::game_input::QvmFramePhase) -> qa_core::time::FramePhase {
+    use qa_core::time::FramePhase;
+    match phase {
+        qa_guest::qvm::game_input::QvmFramePhase::FrameEntry => FramePhase::FrameEntry,
+        qa_guest::qvm::game_input::QvmFramePhase::ClientCommand => FramePhase::ClientCommand,
+        qa_guest::qvm::game_input::QvmFramePhase::EntityPrethink => FramePhase::EntityPrethink,
+        qa_guest::qvm::game_input::QvmFramePhase::EntityPhysics => FramePhase::EntityPhysics,
+        qa_guest::qvm::game_input::QvmFramePhase::EntityThink => FramePhase::EntityThink,
+        qa_guest::qvm::game_input::QvmFramePhase::ClientEndFrame => FramePhase::ClientEndFrame,
+        qa_guest::qvm::game_input::QvmFramePhase::FrameExit => FramePhase::FrameExit,
+    }
+}
+
+/// Frame context into the QVM twin.
+fn qvm_frame_context(frame: &FrameContext) -> qa_guest::qvm::game_input::QvmFrameContext {
+    qa_guest::qvm::game_input::QvmFrameContext {
+        frame: i64::from(frame.frame),
+        time: qvm_source_time(frame.time),
+        elapsed: qvm_source_time(frame.elapsed),
+        phase: qvm_frame_phase(frame.phase),
+    }
+}
+
+/// Frame context out of the QVM twin (overflowing ordinals saturate;
+/// the donor ordinals are small integers).
+fn mod_frame_context(frame: &qa_guest::qvm::game_input::QvmFrameContext) -> FrameContext {
+    FrameContext {
+        frame: i32::try_from(frame.frame).unwrap_or(i32::MAX),
+        time: mod_source_time(frame.time),
+        elapsed: mod_source_time(frame.elapsed),
+        phase: mod_frame_phase(frame.phase),
+    }
+}
+
+/// Network command source into the QVM twin.
+///
+/// The network twin omits the local-seat client (filled from the owning
+/// client) and the bot provider (the bots lane documents every twin bot
+/// command as implicitly `q3:bot`).
+fn qvm_command_source(
+    source: &qa_net::common::commands::CommandSource,
+    client: &ClientId,
+) -> qa_guest::qvm::game_input::QvmCommandSource {
+    use qa_guest::qvm::game_input::QvmCommandSource;
+    match source {
+        qa_net::common::commands::CommandSource::LocalSeat { seat } => QvmCommandSource::LocalSeat {
+            seat: seat.clone(),
+            client: client.clone(),
+        },
+        qa_net::common::commands::CommandSource::Remote { client } => {
+            QvmCommandSource::RemoteClient { client: client.clone() }
+        }
+        qa_net::common::commands::CommandSource::Bot { .. } => QvmCommandSource::Bot {
+            provider: ProviderId::new("q3", "bot"),
+        },
+    }
+}
+
+/// Command source out of the QVM twin (the twin drops seat clients and
+/// bot providers, so bots resolve to the owning client).
+fn mod_command_source(
+    source: &qa_guest::qvm::game_input::QvmCommandSource,
+    client: &ClientId,
+) -> qa_net::common::commands::CommandSource {
+    use qa_net::common::commands::CommandSource;
+    match source {
+        qa_guest::qvm::game_input::QvmCommandSource::LocalSeat { seat, .. } => {
+            CommandSource::LocalSeat { seat: seat.clone() }
+        }
+        qa_guest::qvm::game_input::QvmCommandSource::RemoteClient { client } => {
+            CommandSource::Remote { client: client.clone() }
+        }
+        qa_guest::qvm::game_input::QvmCommandSource::Bot { .. } => CommandSource::Bot { client: client.clone() },
+    }
+}
+
+/// Accepted actor command into the QVM twin (`None` for non-Q3 dialects
+/// and unparsable twin providers: the binding consumes Q3 only. The
+/// twin omits angle space and the arsenal impulse, so both read absent
+/// per the donor's retain-native convention).
+fn qvm_actor_command(command: &ActorCommand, client: &ClientId) -> Option<qa_guest::qvm::game_input::QvmActorCommand> {
+    let qa_net::common::commands::UserCommand::Q3 {
+        server_time_milliseconds,
+        angle_words,
+        buttons,
+        weapon,
+        forward_move,
+        right_move,
+        up_move,
+    } = &command.command
+    else {
+        return None;
+    };
+    let mut arsenal = None;
+    if let Some(intent) = command.arsenal.as_ref() {
+        let provider = parse_provider(&intent.provider).ok()?;
+        arsenal = Some(qa_guest::qvm::game_input::QvmArsenalIntent {
+            provider,
+            weapon: intent.weapon.clone(),
+            use_holdable: intent.use_holdable,
+            impulse: None,
+        });
+    }
+    Some(qa_guest::qvm::game_input::QvmActorCommand {
+        actor: command.actor.clone(),
+        source: qvm_command_source(&command.source, client),
+        sequence: i64::try_from(command.sequence).unwrap_or(i64::MAX),
+        command: qa_guest::qvm::game_input::Q3UserCommand {
+            server_time_ms: *server_time_milliseconds as i32,
+            angle_words: [angle_words[0] as i32, angle_words[1] as i32, angle_words[2] as i32],
+            buttons: *buttons as i32,
+            weapon: *weapon as i32,
+            forward_move: *forward_move as i32,
+            right_move: *right_move as i32,
+            up_move: *up_move as i32,
+        },
+        angle_space: None,
+        arsenal,
+    })
+}
+
+/// Actor command out of the QVM twin (provider identities render in
+/// `namespace:name` spelling for the string twin).
+fn mod_actor_command(command: &qa_guest::qvm::game_input::QvmActorCommand, client: &ClientId) -> ActorCommand {
+    ActorCommand {
+        actor: command.actor.clone(),
+        source: mod_command_source(&command.source, client),
+        sequence: u64::try_from(command.sequence).unwrap_or(0),
+        command: qa_net::common::commands::UserCommand::Q3 {
+            server_time_milliseconds: f64::from(command.command.server_time_ms),
+            angle_words: [
+                f64::from(command.command.angle_words[0]),
+                f64::from(command.command.angle_words[1]),
+                f64::from(command.command.angle_words[2]),
+            ],
+            buttons: f64::from(command.command.buttons),
+            weapon: f64::from(command.command.weapon),
+            forward_move: f64::from(command.command.forward_move),
+            right_move: f64::from(command.command.right_move),
+            up_move: f64::from(command.command.up_move),
+        },
+        arsenal: command.arsenal.as_ref().map(|arsenal| ArsenalIntent {
+            provider: qa_world::registry::provider_key(&arsenal.provider),
+            weapon: arsenal.weapon.clone(),
+            use_holdable: arsenal.use_holdable,
+        }),
+    }
+}
+
+/// Accepted receipt into the QVM twin.
+fn qvm_accepted_command(
+    receipt: &ModClientCommand,
+    client: &ClientId,
+) -> Option<qa_guest::qvm::game_input::QvmClientCommand> {
+    Some(qa_guest::qvm::game_input::QvmClientCommand {
+        input: qvm_actor_command(&receipt.input, client)?,
+        time: qvm_source_time(receipt.time),
+    })
+}
+
+/// Accepted receipt out of the QVM twin.
+fn mod_accepted_command(receipt: &qa_guest::qvm::game_input::QvmClientCommand, client: &ClientId) -> ModClientCommand {
+    ModClientCommand {
+        input: mod_actor_command(&receipt.input, client),
+        time: mod_source_time(receipt.time),
+    }
+}
+
+/// Movement outputs into the QVM twin.
+///
+/// Stance passes through; mirror movement-mode words resolve back to
+/// modes through the bound definition's words (unknown words read as
+/// no request).
+fn qvm_movement_outputs(
+    outputs: &ModClientMovementOutputs,
+    modes: Option<&qa_guest::qvm::game_input::QvmMovementModes>,
+) -> qa_guest::qvm::game_input::QvmMovementOutputs {
+    use qa_guest::qvm::game_input::QvmMovementMode;
+    qa_guest::qvm::game_input::QvmMovementOutputs {
+        mode: outputs.movement_mode.and_then(|word| {
+            let modes = modes?;
+            if word == modes.normal {
+                Some(QvmMovementMode::Normal)
+            } else if word == modes.noclip {
+                Some(QvmMovementMode::Noclip)
+            } else if word == modes.freeze {
+                Some(QvmMovementMode::Freeze)
+            } else {
+                None
+            }
+        }),
+        stance: outputs.stance,
+    }
+}
+
+/// Prepared input definition into the binding twin (donor `definition`).
+///
+/// The prepared profile stores declaration widths (`i64` words); the
+/// binding consumes validated `i32` words, so overflowing declarations
+/// fail instead of binding corrupt entries.
+fn qvm_binding_definition(
+    definition: &qa_guest::qvm::primary_player_profile::QvmInputDefinition,
+) -> Result<qa_guest::qvm::game_input::QvmInputDefinition, RuntimeError> {
+    use qa_guest::qvm::game_data::ModuleIdentity;
+    use qa_guest::qvm::game_input::{QvmInputDefinition, QvmInputEntries, QvmMovementModes};
+    let word = |value: i64| {
+        i32::try_from(value)
+            .map_err(|_| RuntimeError::Failure("QVM input definition exceeds its declared words".to_string()))
+    };
+    let intermission = definition
+        .intermission
+        .iter()
+        .map(|value| word(*value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let movement_modes = definition
+        .movement_modes
+        .map(|modes| {
+            Ok::<_, RuntimeError>(QvmMovementModes {
+                normal: word(modes.normal)?,
+                noclip: word(modes.noclip)?,
+                freeze: word(modes.freeze)?,
+            })
+        })
+        .transpose()?;
+    Ok(QvmInputDefinition {
+        module: ModuleIdentity {
+            id: definition.module.id.clone(),
+            artifact_path: definition.module.artifact_path.clone(),
+            digest: definition.module.digest.clone(),
+            revision: definition.module.revision.clone(),
+        },
+        entity_stride: definition.entity_stride,
+        client_stride: definition.client_stride,
+        client_pointer: definition.client_pointer,
+        intermission,
+        movement_modes,
+        entries: QvmInputEntries {
+            client_think: definition.entries.client_think,
+            run_client: definition.entries.run_client,
+            client_spawn: definition.entries.client_spawn,
+            move_entry: definition.entries.move_,
+            slice: definition.entries.slice,
+        },
+    })
+}
+
+/// Begun mod-client application into the QVM twin.
+///
+/// `fallback` echoes the input command when the journaled command is
+/// not Q3 (listeners observe shared references and cannot change the
+/// dialect, so the echo is unreachable in practice).
+fn qvm_client_application(
+    application: &ModClientApplication,
+    fallback: &qa_guest::qvm::game_input::Q3UserCommand,
+) -> qa_guest::qvm::game_input::QvmClientApplication {
+    let command = match &application.command {
+        qa_world::movement::types::UserCommand::Q3(command) => qvm_user_command(command),
+        _ => *fallback,
+    };
+    qa_guest::qvm::game_input::QvmClientApplication {
+        identity: qvm_client_identity(&application.identity),
+        invocation: application.invocation,
+        parent_invocation: application.parent_invocation,
+        scope: qvm_application_scope(application.scope),
+        command,
+        angle_space: qvm_angle_space(application.angle_space),
+        absolute_aim: application.absolute_aim,
+        frame: qvm_frame_context(&application.frame),
+        accepted: application
+            .accepted
+            .as_ref()
+            .and_then(|receipt| qvm_accepted_command(receipt, &application.identity.client)),
+        arsenal: application.arsenal.as_ref().map(qvm_arsenal_intent),
+        impulse: application.controls.map(|controls| controls.impulse).unwrap_or(0),
+    }
+}
+
+/// Application journal behind the QVM input binding.
+///
+/// Adapts [`ModClientApplications`] to
+/// [`QvmClientApplications`](qa_guest::qvm::game_input::QvmClientApplications):
+/// inputs convert 1:1 into the journal (the QVM input always carries an
+/// impulse, so controls are always present), begun applications convert
+/// back, and the pending table keys journal entries by invocation for
+/// `finish`. The mirror publishes no output callbacks, so `encode_aim`
+/// has no consumer and is dropped.
+pub struct QvmApplicationJournal {
+    weak: Weak<RefCell<SharedSimulationState>>,
+    actors: Rc<RefCell<SessionActorRegistry>>,
+    bodies: Rc<RefCell<qa_world::body::BodyTable>>,
+    pending: RefCell<HashMap<u64, ModClientApplication>>,
+}
+
+impl QvmApplicationJournal {
+    /// Rebuild the simulation handle.
+    fn sim(&self) -> Option<SharedSimulation> {
+        self.weak
+            .upgrade()
+            .map(|state| join_handle(state, &self.actors, &self.bodies))
+    }
+}
+
+impl qa_guest::qvm::game_input::QvmClientApplications for QvmApplicationJournal {
+    fn active(&self) -> bool {
+        self.sim()
+            .map(|sim| sim.peek().mod_client_applications.active)
+            .unwrap_or(false)
+    }
+
+    fn begin(
+        &self,
+        input: &qa_guest::qvm::game_input::QvmApplicationInput,
+        encode_aim: &mut dyn FnMut(
+            &Vec3,
+            &qa_guest::qvm::game_input::Q3UserCommand,
+        )
+            -> Result<qa_guest::qvm::game_input::Q3UserCommand, qa_guest::error::GuestError>,
+    ) -> Result<Option<qa_guest::qvm::game_input::QvmClientApplication>, qa_guest::error::GuestError> {
+        let _ = encode_aim;
+        let Some(sim) = self.sim() else {
+            return Ok(None);
+        };
+        let application = ModClientApplication {
+            identity: mod_client_identity(&input.identity),
+            invocation: 0,
+            parent_invocation: input.parent_invocation,
+            scope: mod_application_scope(input.scope),
+            command: qa_world::movement::types::UserCommand::Q3(world_user_command(&input.command)),
+            angle_space: mod_angle_space(input.angle_space),
+            absolute_aim: input.absolute_aim,
+            frame: mod_frame_context(&input.frame),
+            accepted: input
+                .accepted
+                .as_ref()
+                .map(|receipt| mod_accepted_command(receipt, &input.identity.client)),
+            arsenal: input.arsenal.as_ref().map(mod_arsenal_intent),
+            controls: Some(ModClientControls { impulse: input.impulse }),
+        };
+        let begun = sim.lock().mod_client_applications.begin(application);
+        match begun {
+            None => Ok(None),
+            Some(begun) => {
+                let invocation = begun.invocation;
+                let twin = qvm_client_application(&begun, &input.command);
+                self.pending.borrow_mut().insert(invocation, begun);
+                Ok(Some(twin))
+            }
+        }
+    }
+
+    fn finish(
+        &self,
+        application: Option<&qa_guest::qvm::game_input::QvmClientApplication>,
+        failed: bool,
+    ) -> Result<(), qa_guest::error::GuestError> {
+        let Some(application) = application else {
+            return Ok(());
+        };
+        let stored = self.pending.borrow_mut().remove(&application.invocation);
+        let Some(sim) = self.sim() else {
+            return Ok(());
+        };
+        sim.lock().mod_client_applications.finish(stored.as_ref(), failed);
+        Ok(())
+    }
+}
+
+/// QVM input services over the simulation tables (donor `bindInput`
+/// services object, donor runtime.ts 722-739).
+///
+/// One bridge is bound per Q3-QVM construction. It reaches the live
+/// tables through a weak state handle plus the registry/body handles,
+/// so the binding the game retains never pins the simulation. Every
+/// donor callback maps 1:1: `applications` journals through
+/// [`ModClientApplications`], `clientOutputs` reads
+/// [`SharedSimulation::active_client_outputs`], `identity` resolves the
+/// guest slot, `live`/`accepted`/`frame` read the live tables and
+/// clock, `spawned` runs
+/// [`SharedSimulation::qvm_client_spawned`], `movement` runs the QVM
+/// weapons equipment movement when bound, and `onRelease` subscribes
+/// the registry with a working unsubscribe.
+pub struct QvmInputBridge {
+    weak: Weak<RefCell<SharedSimulationState>>,
+    actors: Rc<RefCell<SessionActorRegistry>>,
+    bodies: Rc<RefCell<qa_world::body::BodyTable>>,
+    applications: QvmApplicationJournal,
+    modes: Option<qa_guest::qvm::game_input::QvmMovementModes>,
+}
+
+impl QvmInputBridge {
+    /// Bind a bridge to a simulation (movement-mode words from the bound
+    /// input definition resolve mirror mode overrides).
+    pub fn new(sim: &SharedSimulation, modes: Option<qa_guest::qvm::game_input::QvmMovementModes>) -> Self {
+        Self {
+            weak: sim.weak(),
+            actors: sim.actors_handle(),
+            bodies: sim.bodies_handle(),
+            applications: QvmApplicationJournal {
+                weak: sim.weak(),
+                actors: sim.actors_handle(),
+                bodies: sim.bodies_handle(),
+                pending: RefCell::new(HashMap::new()),
+            },
+            modes,
+        }
+    }
+
+    /// Rebuild the simulation handle.
+    fn sim(&self) -> Option<SharedSimulation> {
+        self.weak
+            .upgrade()
+            .map(|state| join_handle(state, &self.actors, &self.bodies))
+    }
+}
+
+impl qa_guest::qvm::game_input::QvmInputServices for QvmInputBridge {
+    fn applications(&self) -> &dyn qa_guest::qvm::game_input::QvmClientApplications {
+        &self.applications
+    }
+
+    fn client_outputs(&self, actor: &ActorId) -> Option<qa_guest::qvm::game_input::QvmMovementOutputs> {
+        let sim = self.sim()?;
+        sim.active_client_outputs(actor)
+            .map(|outputs| qvm_movement_outputs(&outputs, self.modes.as_ref()))
+    }
+
+    fn identity(&self, slot: usize) -> Option<qa_guest::qvm::game_input::QvmClientIdentity> {
+        let sim = self.sim()?;
+        let slot = i32::try_from(slot).ok()?;
+        let state = sim.peek();
+        let SourceRuntime::Q3Qvm { game, .. } = &state.source else {
+            return None;
+        };
+        game.players()
+            .into_iter()
+            .find(|player| player.source_entity == slot)
+            .map(|player| qa_guest::qvm::game_input::QvmClientIdentity {
+                client: player.client,
+                actor: player.actor,
+            })
+    }
+
+    fn live(&self, identity: &qa_guest::qvm::game_input::QvmClientIdentity) -> bool {
+        let Some(sim) = self.sim() else {
+            return false;
+        };
+        sim.actors.borrow().is_live(&identity.actor)
+            && sim.player_client(&identity.actor) == Some(identity.client.clone())
+    }
+
+    fn accepted(&self, actor: &ActorId) -> Option<qa_guest::qvm::game_input::QvmClientCommand> {
+        let sim = self.sim()?;
+        let receipt = sim.peek().mod_client_commands.get(actor).cloned()?;
+        match &receipt.input.source {
+            qa_net::common::commands::CommandSource::LocalSeat { .. } => {
+                let client = sim
+                    .player_client(actor)
+                    .expect("accepted local-seat input requires an admitted player");
+                qvm_accepted_command(&receipt, &client)
+            }
+            qa_net::common::commands::CommandSource::Remote { client } => {
+                qvm_accepted_command(&receipt, &client.clone())
+            }
+            qa_net::common::commands::CommandSource::Bot { client } => qvm_accepted_command(&receipt, &client.clone()),
+        }
+    }
+
+    fn frame(&self) -> qa_guest::qvm::game_input::QvmFrameContext {
+        self.sim()
+            .map(|sim| qvm_frame_context(&sim.peek().source_frame))
+            .expect("QVM input frame needs a live simulation")
+    }
+
+    fn spawned(&self, identity: &qa_guest::qvm::game_input::QvmClientIdentity) {
+        if let Some(sim) = self.sim() {
+            sim.qvm_client_spawned(&identity.actor)
+                .expect("QVM client spawn acceptance failed");
+        }
+    }
+
+    fn observes_spawns(&self) -> bool {
+        true
+    }
+
+    fn movement(
+        &self,
+        call: &mut qa_guest::qvm::game_data::QvmFunctionCall,
+        kind: qa_guest::qvm::game_input::QvmApplicationScope,
+        run: &mut dyn FnMut(&mut qa_guest::qvm::game_data::QvmFunctionCall) -> Result<i32, qa_guest::error::GuestError>,
+    ) -> Result<i32, qa_guest::error::GuestError> {
+        let Some(sim) = self.sim() else {
+            return run(call);
+        };
+        let state = sim.peek();
+        match &state.source {
+            SourceRuntime::Q3Qvm {
+                weapons: Some(weapons), ..
+            } => weapons.equipment_movement(call, kind, run),
+            _ => run(call),
+        }
+    }
+
+    fn on_release(
+        &self,
+        listener: qa_guest::qvm::game_input::QvmReleaseListener,
+    ) -> qa_guest::qvm::game_input::QvmReleaseHandle {
+        let actors = Rc::clone(&self.actors);
+        let token = actors
+            .borrow_mut()
+            .on_release(move |owned, _| listener(owned.id().clone()));
+        Box::new(move || actors.borrow_mut().unsubscribe(token))
+    }
+}
+
 /// Mod-client services handle.
 ///
 /// Donor `ModClientServices` is an object literal of closures over the
@@ -1125,6 +1780,11 @@ impl SessionActorRegistry {
         self.next_listener += 1;
         self.release_listeners.push((token, Rc::new(listener)));
         token
+    }
+
+    /// Drop a release subscription (donor `onRelease` unsubscribe).
+    pub fn unsubscribe(&mut self, token: u64) {
+        self.release_listeners.retain(|(id, _)| *id != token);
     }
 
     /// Release an actor, notifying listeners.
@@ -4109,21 +4769,27 @@ pub struct RuntimeMonsterServices {
     actors: Rc<RefCell<SessionActorRegistry>>,
     bodies: Rc<RefCell<qa_world::body::BodyTable>>,
     numeric: qa_core::numeric::NumericOps,
+    random: Option<Rc<RefCell<SourceRandom>>>,
 }
 
 impl RuntimeMonsterServices {
     /// Create services bound to a simulation.
+    ///
+    /// `random` carries the donor's per-source stream (`None` draws the
+    /// shared table, exactly the donor's `this.random` by-reference arm).
     pub fn new(
         simulation: Weak<RefCell<SharedSimulationState>>,
         actors: Rc<RefCell<SessionActorRegistry>>,
         bodies: Rc<RefCell<qa_world::body::BodyTable>>,
         numeric: qa_core::numeric::NumericOps,
+        random: Option<Rc<RefCell<SourceRandom>>>,
     ) -> Self {
         Self {
             simulation,
             actors,
             bodies,
             numeric,
+            random,
         }
     }
 
@@ -5641,14 +6307,40 @@ impl Default for SharedPickupAdmission {
 /// Mirror of donor `src/persistence/source-items.ts` (canonical home: the
 /// persistence lane); unify post-merge.
 pub struct SourceItemsRestore {
-    #[allow(dead_code)]
-    opaque: bool,
+    records: Vec<qa_world::save::source_items::SourceItemsRecord>,
+    saved: qa_world::save::source_items::EffectiveInventories,
 }
 
 impl SourceItemsRestore {
-    /// Create an opaque seam value.
+    /// Create an empty restore (no source-item records; `effective` is
+    /// identity, matching the donor's `records.length === 0` arm).
     pub fn new() -> Self {
-        Self { opaque: true }
+        Self {
+            records: Vec::new(),
+            saved: Vec::new(),
+        }
+    }
+
+    /// Donor `prepareSourceItemRestore` (donor
+    /// `src/persistence/source-items.ts` 72-90).
+    ///
+    /// Reads the saved source-item records and returns the hidden-primary
+    /// provider image (donor `primary`) plus the restore value carrying
+    /// the records and the saved effective rows for [`effective`](Self::effective).
+    #[allow(dead_code)]
+    pub fn prepare(
+        providers: &[qa_world::save::ownership::ProviderCheckpoint],
+        inventories: &qa_world::save::source_items::EffectiveInventories,
+    ) -> Result<(qa_world::save::source_items::EffectiveInventories, Self), RuntimeError> {
+        let records = qa_world::save::source_items::read_source_items(providers, inventories)?;
+        let primary = qa_world::save::source_items::primary_inventories(&records, inventories);
+        Ok((
+            primary,
+            Self {
+                records,
+                saved: inventories.clone(),
+            },
+        ))
     }
 
     /// Donor `sourceItemsRestore.finish` (donor `src/persistence/source-items.ts`).
@@ -5855,6 +6547,11 @@ pub struct SharedSimulationState {
     pub character_starts: HashMap<OwnedActor, Option<ActorId>>,
     /// Donor `grapple`.
     pub grapple: Option<GrappleRuntime>,
+    /// Live QVM grapple source behind `grapple` (same `Rc` the boxed
+    /// game/core adapters share; frame setup calls `begin_frame`/`pull`
+    /// on the concrete source because the object-safe game trait
+    /// exposes neither).
+    pub qvm_grapple_source: Option<Rc<super::qvm_grapple_source::QvmGrappleSource>>,
     /// Donor `pendingQvmGrappleRestore`.
     pub pending_qvm_grapple_restore: Option<PendingQvmGrappleRestore>,
     /// Donor `sourceItemsRestore`.
@@ -7851,7 +8548,7 @@ impl SharedSimulation {
             if let Some(grapple) = self.peek().grapple.as_ref() {
                 let _ = grapple.release(actor.id());
             }
-            self.step_hand_grenade(actor.id(), Some("dead"));
+            let _ = self.step_hand_grenade(actor.id(), Some("dead"));
         }
         let source_kind = match &self.peek().source {
             SourceRuntime::Q1 { .. } => "q1",
@@ -8014,13 +8711,13 @@ impl SharedSimulation {
     /// Donor `createMonsterMovement` (donor runtime.ts 1294-1316).
     ///
     /// The donor closures are the existing [`RuntimeMonsterServices`]
-    /// adapter. Missing siblings: the per-source random stream (the
-    /// adapter draws the shared table; the `_random` parameter is
-    /// currently unused).
+    /// adapter. `random` is the donor's per-source stream: `None` draws
+    /// the shared table (donor 692 `this.random` by reference), `Some`
+    /// draws the owned stream (donor 2020 `runtime.random`).
     fn create_monster_movement(
         &self,
         numeric: qa_core::numeric::NumericProfile,
-        _random: SourceRandom,
+        random: Option<Rc<RefCell<SourceRandom>>>,
     ) -> qa_world::movement::q1::monsters::Q1MonsterMovement<RuntimeMonsterServices> {
         let ops = qa_core::numeric::NumericOps::select(numeric).expect("provider numeric profile selects");
         qa_world::movement::q1::monsters::Q1MonsterMovement::new(RuntimeMonsterServices::new(
@@ -8028,16 +8725,16 @@ impl SharedSimulation {
             self.actors_handle(),
             self.bodies_handle(),
             ops,
+            random,
         ))
     }
 
     /// Donor `qvmClientSpawned` (donor runtime.ts 1454-1463).
     ///
     /// `Result` (donor `void`) so the fallible admits/binds report
-    /// instead of throwing; early-outs preserved exactly. Donor triggers
-    /// are the QVM input-application bridge and the QVM weapon step, both
-    /// still missing their sibling bridges, so nothing calls this yet.
-    #[allow(dead_code)]
+    /// instead of throwing; early-outs preserved exactly. Triggered by
+    /// the QVM input-application bridge after spawn; the donor's other
+    /// trigger is the QVM weapon step.
     fn qvm_client_spawned(&self, actor: &ActorId) -> Result<(), RuntimeError> {
         if !matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) {
             return Ok(());
@@ -8551,7 +9248,13 @@ fn construct_simulation(
     // weak link is dead until the post-wrap replace below fills it.
     let monster_ops = qa_core::numeric::NumericOps::select(numeric_profile).expect("provider numeric profile selects");
     let q1_movement = Rc::new(RefCell::new(qa_world::movement::q1::monsters::Q1MonsterMovement::new(
-        RuntimeMonsterServices::new(Weak::new(), Rc::clone(&actors), Rc::clone(&bodies_table), monster_ops),
+        RuntimeMonsterServices::new(
+            Weak::new(),
+            Rc::clone(&actors),
+            Rc::clone(&bodies_table),
+            monster_ops,
+            None,
+        ),
     )));
     // State assembly: every donor field plus the gameplay-time option
     // carry. Options borrowed by source creation below (guests,
@@ -8592,6 +9295,7 @@ fn construct_simulation(
         characters: HashMap::new(),
         character_starts: HashMap::new(),
         grapple: None,
+        qvm_grapple_source: None,
         pending_qvm_grapple_restore: None,
         source_items_restore: None,
         weapon_slots: HashMap::new(),
@@ -8735,8 +9439,7 @@ fn construct_simulation(
         )),
     );
     simulation.lock().events = live_events;
-    let movement_random = simulation.peek().random.clone();
-    let live_movement = simulation.create_monster_movement(numeric_profile, movement_random);
+    let live_movement = simulation.create_monster_movement(numeric_profile, None);
     simulation.lock().q1_movement = Rc::new(RefCell::new(live_movement));
     // Post-wrap inputs: guests and registries move out of options (the
     // guest mirrors are filled after source creation); everything else
@@ -8992,8 +9695,16 @@ fn finish_construction_inner(
             .options_q3_guest
             .as_ref()
             .and_then(|guest| guest.prepared.primary.input.clone());
-        if definition.is_some() {
-            return fail("Missing siblings: QVM input application bridge (bindInput)");
+        // Donor 722-739: bind the guest input definition with the live
+        // mod-client tables (this block only runs for Q3-QVM sources,
+        // matching the donor's `else if` gate).
+        if let Some(definition) = definition {
+            let binding = qvm_binding_definition(&definition)?;
+            let bridge = QvmInputBridge::new(simulation, binding.movement_modes);
+            let state = simulation.peek();
+            if let SourceRuntime::Q3Qvm { game, .. } = &state.source {
+                game.bind_input(binding, Rc::new(bridge));
+            }
         }
     }
     // Donor 739-742: the foreign-weapons worldspawn body for QVM maps.
@@ -13460,14 +14171,9 @@ impl SessionActorRegistry {
     /// Resolve a saved actor reference to a live handle (C11).
     ///
     /// Donor `resolveSaved`: matches by slot/generation against the live
-    /// set. Missing siblings: C4's canonical saved-domain lookup; delete
-    /// this seam when it lands.
+    /// set, via [`qa_world::registry::ActorRegistry::resolve_saved`].
     pub fn resolve_saved(&self, saved: qa_core::identity::SavedActorId) -> Option<OwnedActor> {
-        let found = self
-            .observations()
-            .into_iter()
-            .find(|obs| obs.id.slot() == saved.slot && obs.id.generation() == saved.generation)?;
-        self.resolve_owned(&found.id)
+        self.inner.resolve_saved(&saved)
     }
 }
 
@@ -15103,13 +15809,116 @@ impl SharedSimulation {
         Ok(())
     }
 
-    /// Step hand grenades for an actor (donor `stepHandGrenade`, donor
-    /// runtime.ts 2490, C11's range).
+    /// Map a step reason to the donor `stepHandGrenade` lifecycle union
+    /// (`"alive" | "dead" | "removing"`, default `"alive"`).
     ///
-    /// Missing siblings: C11's canonical method; delete this seam when it
-    /// lands. The seam is a no-op: stepping needs equipment input,
-    /// player views, and grenade availability from later lanes.
-    pub fn step_hand_grenade(&self, _actor: &ActorId, _reason: Option<&str>) {}
+    /// `None` is the donor default; unknown strings fail since the
+    /// donor's union type cannot express them.
+    fn hand_grenade_lifecycle(
+        reason: Option<&str>,
+    ) -> Result<qa_content::q2::foundation::weapons::hand_action::HandLifecycle, RuntimeError> {
+        use qa_content::q2::foundation::weapons::hand_action::HandLifecycle;
+        match reason {
+            None | Some("alive") => Ok(HandLifecycle::Alive),
+            Some("dead") => Ok(HandLifecycle::Dead),
+            Some("removing") => Ok(HandLifecycle::Removing),
+            Some(reason) => fail(format!("Unknown hand-grenade lifecycle: {reason}")),
+        }
+    }
+
+    /// Apply the donor `stepHandGrenade` source-kind powerup gates
+    /// (donor runtime.ts 2490): native equipment (`q2-native`, `q3-qvm`)
+    /// zeroes quad and quad-fire and drops haste, QuakeC zeroes quad,
+    /// and `q3` drops haste.
+    fn hand_grenade_gated_input(
+        quad_until: f64,
+        quad_fire_until: f64,
+        haste: bool,
+        native_equipment: bool,
+        quakec: bool,
+        q3: bool,
+    ) -> (f64, f64, bool) {
+        (
+            if native_equipment || quakec { 0.0 } else { quad_until },
+            if native_equipment { 0.0 } else { quad_fire_until },
+            if native_equipment || q3 { false } else { haste },
+        )
+    }
+
+    /// Step hand grenades for an actor (donor `stepHandGrenade`, donor
+    /// runtime.ts 2490).
+    ///
+    /// Ports the donor exactly: early return without equipment, then the
+    /// equipment input, player view, source-kind powerup gates, and
+    /// availability gate feed
+    /// [`HandGrenadeRuntime::step`](super::equipment_runtime::HandGrenadeRuntime::step)
+    /// with a [`project_q2_actor`](qa_content::q2::foundation::weapons::projection::project_q2_actor)
+    /// projector. `Ok` (donor `undefined`) throughout; unknown lifecycle
+    /// reasons fail since the donor's union type cannot express them.
+    pub fn step_hand_grenade(&self, actor: &ActorId, reason: Option<&str>) -> Result<(), RuntimeError> {
+        use qa_content::q2::foundation::weapons::projection::{project_q2_actor, Q2ActorView};
+        if self.peek().hand_grenades.is_none() {
+            return Ok(());
+        }
+        let lifecycle = Self::hand_grenade_lifecycle(reason)?;
+        let input = self.equipment_weapon_input(actor)?;
+        let view = self.player_view(actor)?;
+        let (native_equipment, quakec, q3) = {
+            let state = self.peek();
+            (
+                matches!(state.source, SourceRuntime::Q2Native(_) | SourceRuntime::Q3Qvm { .. }),
+                matches!(state.source, SourceRuntime::QuakeC { .. }),
+                matches!(state.source, SourceRuntime::Q3 { .. }),
+            )
+        };
+        let gravity = self.peek().physics.gravity()
+            * self
+                .player(actor)
+                .map(|player| player.gravity_multiplier)
+                .unwrap_or(1.0);
+        let (quad_until, quad_fire_until, haste) = Self::hand_grenade_gated_input(
+            input.quad_until,
+            input.quad_fire_until,
+            input.haste,
+            native_equipment,
+            quakec,
+            q3,
+        );
+        let frame = super::equipment_runtime::HandGrenadeRuntimeInput {
+            lifecycle,
+            angles: view.angles,
+            gravity,
+            quad_until,
+            double_until: input.double_until,
+            quad_fire_until,
+            haste,
+            no_stack_double: input.no_stack_double,
+            players_collide: input.players_collide,
+        };
+        let enabled = self.equipment_player_available(actor) && !input.spectator;
+        let projection = Q2ActorView {
+            hand: input.hand,
+            view_height: view.view_height,
+            players_collide: input.players_collide,
+        };
+        self.with_hand_grenades(|runtime, game| {
+            // The projector needs the same arena `step` holds: the donor
+            // closes over `equipment.controller.game`, and Rust threads
+            // both through one call, so the closure reaches the arena
+            // through a raw pointer. Sound while `step` never touches the
+            // arena during a projection call (the projector runs
+            // synchronously inside `step`, which suspends its own borrow
+            // for the call); matches the `native_mod` host-pointer
+            // precedent.
+            let arena = game as *mut qa_content::q2::foundation::host::Q2GameServices;
+            let mut project = move |angles: Vec3, offset: Vec3| {
+                let game = unsafe { &mut *arena };
+                project_q2_actor(actor, game, &projection, angles, offset)
+            };
+            runtime.step(actor, game, &frame, &mut project, enabled);
+        })?;
+        Ok(())
+    }
 
     /// Grant a selected arsenal (donor `grantSelectedArsenal`, donor
     /// runtime.ts 5916, C8's range).
@@ -15792,8 +16601,7 @@ impl SharedSimulation {
             }
         }
         if self.player_client(actor).is_some() {
-            let state = self.peek();
-            let view = player_view_seam(&state, &self.actors, actor);
+            let view = player_view_seam(self, actor)?;
             return Ok(Some(Q1ClientEye {
                 origin: body.origin,
                 view_offset: Vec3 {
@@ -17578,31 +18386,13 @@ fn neutral_player_ui() -> PlayerUi {
     }
 }
 
-/// Neutral player view (shared neutral for the C6 presentation seams).
-fn neutral_player_view() -> PlayerView {
-    PlayerView {
-        client_view_offset_delta: None,
-        blend: None,
-        damage_blend: None,
-        origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-        angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-        view_height: 0.0,
-        kick_angles: None,
-        field_of_view: None,
-        foreign_character_death: false,
-        pitch_drift: None,
-    }
-}
-
-/// Player view (donor `playerView`, C7 range).
+/// Player view (donor `playerView`, donor runtime.ts 5270).
 ///
-/// Missing siblings: C7 ports `playerView` (donor 5270).
-fn player_view_seam(
-    _state: &SharedSimulationState,
-    _actors: &Rc<RefCell<SessionActorRegistry>>,
-    _actor: &ActorId,
-) -> PlayerView {
-    neutral_player_view()
+/// Delegates to the canonical [`SharedSimulation::player_view`]; callers
+/// must drop their state guard first (the view reads players, bodies,
+/// outputs, and punch state through the handle).
+fn player_view_seam(sim: &SharedSimulation, actor: &ActorId) -> Result<PlayerView, RuntimeError> {
+    sim.player_view(actor)
 }
 
 /// Q3 guest client record (donor `nativePlayerUi` head, C6 range 4922-4925).
@@ -17648,7 +18438,7 @@ impl SharedSimulation {
         } else {
             self.primary_ui(actor)?
         };
-        let mut state = self.lock();
+        let state = self.lock();
         let player = if native {
             None
         } else {
@@ -17691,14 +18481,17 @@ impl SharedSimulation {
             ui,
             model,
         };
-        let Some(slot) = state.weapon_slots.get(actor) else {
-            return Ok(primary);
+        let (presentations, snapshot) = match state.weapon_slots.get(actor) {
+            None => return Ok(primary),
+            Some(slot) => (
+                slot.presentations()
+                    .map_err(|error| RuntimeError::Failure(error.to_string()))?,
+                slot.snapshot(),
+            ),
         };
-        let presentations = slot
-            .presentations()
-            .map_err(|error| RuntimeError::Failure(error.to_string()))?;
-        let snapshot = slot.snapshot();
-        let view = player_view_seam(&state, &self.actors, actor);
+        drop(state);
+        let view = player_view_seam(self, actor)?;
+        let mut state = self.lock();
         let registry = self.actors.borrow();
         let inner = registry.inner();
         let mut sources = Vec::with_capacity(presentations.len());
@@ -20384,24 +21177,48 @@ fn selected_q1_mission_weapons_frame_seam(elapsed_seconds: f64) {
 }
 
 /// Begin one Threewave grapple-source frame (donor
-/// `grapple.source.game.beginFrame` on `q1-threewave`).
+/// `grapple.source.game.beginFrame` on `q1-threewave`, donor runtime.ts
+/// 2157).
 ///
-/// Missing siblings: the grapple lane owns the source game handle
-/// (`GrappleRuntime` carries selection/bridge/inner only).
-#[allow(dead_code)]
-fn grapple_threewave_begin_frame_seam(time_seconds: f64, elapsed_seconds: f64) {
-    let _ = (time_seconds, elapsed_seconds);
+/// Runs through [`GrappleRuntime::with_source`] into
+/// [`qa_content::q1::foundation::entity_services::Q1EntityServices::begin_frame`];
+/// the arena clock write invokes no host hooks, so holding the state
+/// guard across the call is safe.
+fn grapple_threewave_begin_frame_seam(grapple: &GrappleRuntime, time_seconds: f64, elapsed_seconds: f64) {
+    grapple.with_source(|source| {
+        if let GrappleSource::Q1Threewave { game } = source {
+            game.begin_frame(time_seconds, elapsed_seconds);
+        }
+    });
 }
 
 /// Begin one QVM grapple-source frame (donor
-/// `grapple.source.game.beginFrame` + the `pull` loop on `q3-qvm`).
+/// `grapple.source.game.beginFrame` + the `pull` loop on `q3-qvm`, donor
+/// runtime.ts 2158 + 2164).
 ///
-/// Missing siblings: the grapple lane owns the source game handle; the
-/// rounded millisecond clock, the frame ordinal, and the per-player pull
-/// list around this call are real.
-#[allow(dead_code)]
-fn grapple_qvm_begin_frame_seam(time_milliseconds: f64, frame: i32, player_actors: &[ActorId]) {
-    let _ = (time_milliseconds, frame, player_actors);
+/// Runs on the stashed concrete
+/// [`QvmGrappleSource`](super::qvm_grapple_source::QvmGrappleSource): the
+/// rounded millisecond clock feeds
+/// [`begin_frame`](super::qvm_grapple_source::QvmGrappleSource::begin_frame),
+/// then every passed player runs the donor 2164
+/// [`pull`](super::qvm_grapple_source::QvmGrappleSource::pull) loop. Callers
+/// hold no state guard: frame setup re-enters the simulation through the
+/// source closures.
+fn grapple_qvm_begin_frame_seam(
+    source: &super::qvm_grapple_source::QvmGrappleSource,
+    time_milliseconds: f64,
+    frame: i32,
+    player_actors: &[ActorId],
+) -> Result<(), RuntimeError> {
+    source
+        .begin_frame(time_milliseconds as i32, frame)
+        .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+    for actor in player_actors {
+        source
+            .pull(actor)
+            .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Set world gravity from a cvar value (donor `setWorldGravity`).
@@ -20594,14 +21411,21 @@ impl SharedSimulation {
                 let player_actors: Vec<ActorId> = state.player_states.keys().map(|owned| owned.id().clone()).collect();
                 match mechanic {
                     Some(qa_content::contract::GrappleMechanicDetail::Q1Threewave { .. }) => {
-                        grapple_threewave_begin_frame_seam(seconds(grapple_frame.time), seconds(grapple_frame.elapsed));
+                        let grapple = state.grapple.as_ref().expect("grapple frame needs the grapple");
+                        grapple_threewave_begin_frame_seam(
+                            grapple,
+                            seconds(grapple_frame.time),
+                            seconds(grapple_frame.elapsed),
+                        );
                     }
                     Some(qa_content::contract::GrappleMechanicDetail::Q3Qvm { .. }) => {
-                        grapple_qvm_begin_frame_seam(
-                            (seconds(grapple_frame.time) * 1000.0).round(),
-                            grapple_frame.frame,
-                            &player_actors,
-                        );
+                        let source = state.qvm_grapple_source.clone();
+                        let milliseconds = (seconds(grapple_frame.time) * 1000.0).round();
+                        let frame = grapple_frame.frame;
+                        drop(state);
+                        if let Some(source) = source {
+                            grapple_qvm_begin_frame_seam(&source, milliseconds, frame, &player_actors)?;
+                        }
                     }
                     _ => {}
                 }
@@ -20894,12 +21718,28 @@ impl Q1ClientVisibility {
 }
 
 impl SourceItemsRestore {
-    /// Donor `sourceItemsRestore.effective` (C10 seam; the source-items lane owns the type).
+    /// Donor `sourceItemsRestore.effective` (donor
+    /// `src/persistence/source-items.ts` 80-85).
     ///
-    /// Identity until the lane lands source-item overrides.
-    /// Missing siblings: source-items lane `effective`; delete this seam when it lands.
-    pub fn effective(&self, inventories: Vec<super::save::SimSavedInventory>) -> Vec<super::save::SimSavedInventory> {
-        inventories
+    /// Maps restored primary rows back to their committed effective rows
+    /// via
+    /// [`effective_inventories`](qa_world::save::source_items::effective_inventories);
+    /// actors without source-item records pass through, and a recorded
+    /// actor with no saved effective row fails exactly as the donor's
+    /// `absent saved effective inventory` throw.
+    pub fn effective(
+        &self,
+        inventories: Vec<super::save::SimSavedInventory>,
+    ) -> Result<Vec<super::save::SimSavedInventory>, RuntimeError> {
+        let restored: qa_world::save::source_items::EffectiveInventories = inventories
+            .iter()
+            .map(|entry| (entry.actor, entry.entries.clone()))
+            .collect();
+        let mapped = qa_world::save::source_items::effective_inventories(&self.records, &self.saved, &restored)?;
+        Ok(mapped
+            .into_iter()
+            .map(|(actor, entries)| super::save::SimSavedInventory { actor, entries })
+            .collect())
     }
 }
 
@@ -20923,15 +21763,15 @@ impl Q3SourceRuntime {
 
 /// Donor `actors.referenceSaved(saved)` in the checkpoint domain (C10).
 ///
-/// Missing siblings: C4's canonical saved-domain lookup; delete this helper
-/// when it lands.
-#[allow(dead_code)]
+/// Resolves through [`qa_world::registry::ActorRegistry::resolve_saved`];
+/// unresolvable references fail with the donor's range error.
 fn reference_saved_actor(
     actors: &SessionActorRegistry,
     saved: qa_core::identity::SavedActorId,
 ) -> Result<ActorId, RuntimeError> {
     actors
-        .resolve_saved(saved)
+        .inner()
+        .resolve_saved(&saved)
         .map(|owned| owned.id().clone())
         .ok_or_else(|| RuntimeError::Range("Invalid historical actor checkpoint reference".to_string()))
 }
@@ -21274,7 +22114,7 @@ impl SharedSimulation {
         let effective = {
             let state = self.peek();
             match state.source_items_restore.as_ref() {
-                Some(restore) => restore.effective(inventories),
+                Some(restore) => restore.effective(inventories)?,
                 None => inventories,
             }
         };
@@ -23935,15 +24775,46 @@ fn step_execution_frame(
     Ok(state.source_frame)
 }
 
-/// Run one actor think (donor `scheduler.run`).
+/// Run one actor think (donor `scheduler.run`, donor runtime.ts 4689).
 ///
-/// Missing siblings: think bindings (`fire_think`) and due times
-/// (`FrameScheduler`) are not wired into a single runner yet; firing
-/// unconditionally would run thinks early, so the scheduler lane owns the
-/// merge and this call waits for it.
-#[allow(dead_code)]
-fn run_actor_think_seam(actor: &OwnedActor, frame: &FrameContext) {
-    let _ = (actor, frame);
+/// Merges due times ([`qa_world::scheduler::Scheduler::run`] at the
+/// donor's `during-physics` boundary) with think bindings
+/// ([`ActorCallbackTable::fire_think`]): the resolver answers the donor's
+/// `"world:think"` callback (donor runtime.ts 679) with the pending
+/// actor's bound think closure, and unknown callbacks propagate exactly
+/// as the donor's `Unknown think callback` throw. Holds the state guard
+/// across the run so the scheduler borrow stays live; think closures
+/// re-enter through the callback and registry handles, matching the
+/// `C11Scheduler` equipment runner.
+fn run_actor_think_seam(sim: &SharedSimulation, actor: &OwnedActor, frame: &FrameContext) -> Result<(), RuntimeError> {
+    let callbacks = sim.peek().callbacks.clone();
+    let actors = Rc::clone(&sim.actors);
+    let callback: qa_world::scheduler::ThinkCallback = Rc::new(move |owned, invoked, _| {
+        let table = callbacks.borrow();
+        let registry = actors.borrow();
+        let _ = table.fire_think(&registry, owned, invoked);
+    });
+    let resolver = |_execution: &ProviderId, name: &str| {
+        if name == "world:think" {
+            Some(callback.clone())
+        } else {
+            None
+        }
+    };
+    let registry = sim.actors.borrow();
+    let state = sim.peek();
+    state
+        .scheduler
+        .inner()
+        .run(
+            registry.inner(),
+            &resolver,
+            actor.id(),
+            *frame,
+            qa_world::scheduler::ThinkBoundary::DuringPhysics,
+        )
+        .map(|_| ())
+        .map_err(RuntimeError::from)
 }
 
 impl SharedSimulation {
@@ -24103,7 +24974,7 @@ impl SharedSimulation {
                 .map(|state| state.health)
                 .unwrap_or(0.0);
             let alive = health > 0.0;
-            self.step_hand_grenade(actor.id(), Some(if alive { "alive" } else { "dead" }));
+            self.step_hand_grenade(actor.id(), Some(if alive { "alive" } else { "dead" }))?;
             let (intermission, cutscene) = {
                 let state = self.peek();
                 match state.player_states.get(actor) {
@@ -24308,7 +25179,7 @@ impl SharedSimulation {
         // Donor 4660-4666: equipment + grapple for players.
         let equipment_player = self.peek().player_states.get(actor).cloned();
         if let Some(player) = equipment_player.as_ref() {
-            self.step_hand_grenade(actor.id(), None);
+            self.step_hand_grenade(actor.id(), None)?;
             let health = self
                 .peek()
                 .combat
@@ -24397,7 +25268,7 @@ impl SharedSimulation {
                     ..state.source_frame
                 }
             };
-            run_actor_think_seam(actor, &frame);
+            run_actor_think_seam(self, actor, &frame)?;
         }
         if self.actors.borrow().is_live(actor.id()) {
             self.lock()
@@ -25621,6 +26492,7 @@ impl SharedSimulation {
         if let Some(grapple) = self.peek().grapple.as_ref() {
             grapple.close_qvm_game();
         }
+        self.lock().qvm_grapple_source = None;
         if let Err(error) = self.lock().weapon_behavior.close() {
             errors.push(RuntimeError::Failure(format!("{error:?}")));
         }
@@ -25701,15 +26573,26 @@ impl SharedSimulation {
 }
 
 impl SessionMods {
-    /// Donor `modOwner.close` (C10 seam; the mods lane owns the type).
-    /// Missing siblings: mods lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `modOwner.close` (donor `src/world/session/mods.ts` 303-310).
+    ///
+    /// Idempotent: a closed session returns at once, otherwise it marks
+    /// itself closed and drops the enabled set (donor `active = []` plus
+    /// `pending.clear()`; the seam carries no runtime scopes to close).
+    pub fn close(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        self.enabled.clear();
+    }
 }
 
 impl FrameScheduler {
-    /// Donor `scheduler.close` (C10 seam; the scheduler lane owns the type).
-    /// Missing siblings: scheduler lane close; delete this seam when it lands.
-    pub fn close(&mut self) {}
+    /// Donor `scheduler.close`: drop every pending think and refuse further
+    /// scheduling, via [`qa_world::scheduler::Scheduler::close`].
+    pub fn close(&mut self) {
+        self.inner.close();
+    }
 }
 
 impl Q2NativeSource {
@@ -26771,6 +27654,9 @@ impl SharedSimulation {
             frame_seconds: _,
             schedule,
         } = runtime;
+        // Donor 2020 + 2029: the host runtime's stream is one object shared
+        // between the fresh movement and the random hook.
+        let random = Rc::new(RefCell::new(random));
         let numeric_ops = qa_core::numeric::NumericOps::select(numeric).expect("provider numeric profile selects");
         let fresh_movement: Option<
             Rc<RefCell<qa_world::movement::q1::monsters::Q1MonsterMovement<RuntimeMonsterServices>>>,
@@ -26783,6 +27669,7 @@ impl SharedSimulation {
                     self.actors_handle(),
                     self.bodies_handle(),
                     numeric_ops,
+                    Some(Rc::clone(&random)),
                 )),
             )))
         };
@@ -26841,8 +27728,8 @@ impl SharedSimulation {
             bottom_tables.sim().lock().q1_movement.borrow_mut().check_bottom(actor)
         });
 
-        let mut random = random;
-        let random_hook = Box::new(move || f64::from(random.next_unit()));
+        let hook_random = Rc::clone(&random);
+        let random_hook = Box::new(move || f64::from(hook_random.borrow_mut().next_unit()));
 
         let think_schedule = schedule.clone();
         let schedule_think = Box::new(move |actor: &OwnedActor, due: f64| {
@@ -27521,6 +28408,10 @@ impl qa_world::movement::q1::monsters::Q1MonsterMoveServices for RuntimeMonsterS
     }
 
     fn next_random(&mut self) -> i32 {
+        if let Some(random) = self.random.as_ref() {
+            let drawn = random.borrow_mut().next_integer() as i32;
+            return drawn;
+        }
         let sim = self
             .simulation()
             .expect("equipment arena used after the simulation dropped");
@@ -33489,7 +34380,7 @@ fn c11_source_checkpoint_to_runtime(
 fn c11_runtime_checkpoint_to_source(
     checkpoint: &super::grapple_runtime::QvmGrappleSourceCheckpoint,
 ) -> Result<super::qvm_grapple_source::QvmGrappleSourceCheckpoint, super::grapple_runtime::GrappleError> {
-    use super::grapple_runtime::GrappleError;
+    use crate::bootstrap::simulation::grapple_runtime::GrappleError;
     use qa_guest::checkpoint::GameApi;
     let module = match &checkpoint.grapple.module {
         qa_guest::checkpoint::GuestCheckpoint::Qvm {
@@ -34139,6 +35030,7 @@ impl SharedSimulation {
             })
             .map_err(|error| RuntimeError::Failure(error.to_string()))?;
         let game = Rc::new(game);
+        self.lock().qvm_grapple_source = Some(Rc::clone(&game));
         let runtime = GrappleRuntime::new(
             selection.clone(),
             super::grapple_runtime::GrappleSource::Q3Qvm {
@@ -34203,8 +35095,10 @@ impl SharedSimulation {
 
 #[cfg(test)]
 mod tests {
+    use super::super::save::SimSavedInventory;
     use super::super::test_hosts::{test_q1_game, SimActors};
     use super::*;
+    use qa_core::identity::IdentityOwner;
 
     fn selected_q1() -> SelectedArsenal {
         let (game, _handles) = test_q1_game();
@@ -34253,5 +35147,299 @@ mod tests {
         assert_eq!(selected.ui(actor.id(), &source), None);
         let _ = selected.admit(actor.clone(), 100.0, false);
         assert!(selected.has(actor.id()));
+    }
+
+    fn test_registry() -> SessionActorRegistry {
+        SessionActorRegistry::new(IdentityOwner::create("test").unwrap(), 8).unwrap()
+    }
+
+    fn test_provider() -> ProviderId {
+        ProviderId::new("q1", "game")
+    }
+
+    #[test]
+    fn resolve_saved_wires_canonical_lookup() {
+        let mut registry = test_registry();
+        let owned = registry.allocate(test_provider(), "q1:ogre").unwrap();
+        let saved = qa_core::identity::SavedActorId::from(owned.id());
+        assert_eq!(registry.resolve_saved(saved), Some(owned.clone()));
+        registry.release(&owned).unwrap();
+        assert_eq!(registry.resolve_saved(saved), None);
+        let unknown = qa_core::identity::SavedActorId { slot: 7, generation: 9 };
+        assert_eq!(registry.resolve_saved(unknown), None);
+    }
+
+    #[test]
+    fn reference_saved_actor_resolves_and_ranges() {
+        let mut registry = test_registry();
+        let owned = registry.allocate(test_provider(), "q1:ogre").unwrap();
+        let saved = qa_core::identity::SavedActorId::from(owned.id());
+        assert_eq!(reference_saved_actor(&registry, saved).unwrap(), *owned.id());
+        let unknown = qa_core::identity::SavedActorId { slot: 7, generation: 9 };
+        assert!(matches!(
+            reference_saved_actor(&registry, unknown),
+            Err(RuntimeError::Range(_))
+        ));
+    }
+
+    #[test]
+    fn registry_unsubscribe_drops_listener() {
+        use std::cell::Cell;
+        let mut registry = test_registry();
+        let owned = registry.allocate(test_provider(), "q1:ogre").unwrap();
+        let fired = Rc::new(Cell::new(0u32));
+        let first = Rc::clone(&fired);
+        registry.on_release(move |_, _| first.set(first.get() + 1));
+        let second = Rc::clone(&fired);
+        let token = registry.on_release(move |_, _| second.set(second.get() + 10));
+        registry.unsubscribe(token);
+        registry.release(&owned).unwrap();
+        assert_eq!(fired.get(), 1);
+    }
+
+    #[test]
+    fn frame_scheduler_close_drops_thinks() {
+        use qa_core::time::ClockProfile;
+        use qa_world::scheduler::{FrameOrdering, InvocationOrder, ScheduleOptions, ThinkBoundary, ThinkTiming};
+        let owner = IdentityOwner::create("test").unwrap();
+        let mut registry = qa_world::registry::ActorRegistry::new(owner, 8).unwrap();
+        let provider = test_provider();
+        let actor = registry.allocate(provider.clone(), "q1:ogre").unwrap();
+        let clock = ClockProfile::Q2Classic;
+        let mut scheduler =
+            FrameScheduler::new(FrameOrdering::Native { clock }, vec![(provider.clone(), clock)]).unwrap();
+        scheduler
+            .inner()
+            .schedule(
+                &registry,
+                &actor,
+                "world:think",
+                ThinkTiming {
+                    execution_provider: None,
+                    due: SourceTime::Seconds(10.0),
+                    boundary: ThinkBoundary::DuringPhysics,
+                    order: InvocationOrder {
+                        provider: provider.clone(),
+                        actor: actor.id().clone(),
+                        sequence: 0,
+                    },
+                },
+                ScheduleOptions::default(),
+            )
+            .unwrap();
+        assert!(scheduler.inner().pending(&registry, actor.id()).unwrap().is_some());
+        scheduler.close();
+        assert!(matches!(
+            scheduler.inner().pending(&registry, actor.id()),
+            Err(qa_world::WorldError::SchedulerClosed)
+        ));
+    }
+
+    #[test]
+    fn session_mods_close_is_idempotent() {
+        let mut pump = || {};
+        let mut owner = SessionMods::open(ModSessionParams {
+            enabled: vec!["q1:mod".to_string()],
+            next_frame: &mut pump,
+        })
+        .unwrap();
+        assert!(!owner.closed);
+        owner.close();
+        assert!(owner.closed);
+        assert!(owner.enabled.is_empty());
+        owner.close();
+        assert!(owner.closed);
+    }
+
+    #[test]
+    fn think_bindings_fire_through_table() {
+        use std::cell::Cell;
+        let mut registry = test_registry();
+        let owned = registry.allocate(test_provider(), "q1:ogre").unwrap();
+        let table = ActorCallbackTable::new();
+        let fired = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&fired);
+        table
+            .bind(
+                &registry,
+                &owned,
+                ActorCallbacks {
+                    think: Some(Rc::new(move |_, _| flag.set(true))),
+                    touch: None,
+                    use_action: None,
+                    pain: None,
+                    die: None,
+                },
+            )
+            .unwrap();
+        let frame = FrameContext {
+            frame: 1,
+            time: SourceTime::Seconds(1.0),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: qa_core::time::FramePhase::EntityThink,
+        };
+        assert!(table.fire_think(&registry, &owned, frame).unwrap());
+        assert!(fired.get());
+        let other = registry.allocate(test_provider(), "q1:ogre").unwrap();
+        assert!(!table.fire_think(&registry, &other, frame).unwrap());
+    }
+
+    #[test]
+    fn source_items_effective_maps_records() {
+        use qa_world::inventory::InventoryEntry;
+        use qa_world::save::source_items::SourceItemsRecord;
+        let actor = qa_core::identity::SavedActorId { slot: 3, generation: 1 };
+        let other = qa_core::identity::SavedActorId { slot: 4, generation: 1 };
+        let entry = |item: &str| InventoryEntry {
+            item: item.to_string(),
+            count: 1.0,
+            capacity: 10.0,
+            count_policy: None,
+        };
+        let restore = SourceItemsRestore {
+            records: vec![SourceItemsRecord {
+                actor,
+                owner: "q1:game".to_string(),
+                primary: vec![entry("q1:shells")],
+                groups: Vec::new(),
+            }],
+            saved: vec![(actor, vec![entry("q1:nails")])],
+        };
+        let mapped = restore
+            .effective(vec![
+                SimSavedInventory {
+                    actor,
+                    entries: vec![entry("q1:shells")],
+                },
+                SimSavedInventory {
+                    actor: other,
+                    entries: vec![entry("q1:rockets")],
+                },
+            ])
+            .unwrap();
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0].entries, vec![entry("q1:nails")]);
+        assert_eq!(mapped[1].entries, vec![entry("q1:rockets")]);
+    }
+
+    #[test]
+    fn source_items_effective_empty_is_identity() {
+        let restore = SourceItemsRestore::new();
+        let actor = qa_core::identity::SavedActorId { slot: 3, generation: 1 };
+        let inventories = vec![SimSavedInventory {
+            actor,
+            entries: Vec::new(),
+        }];
+        let mapped = restore.effective(inventories.clone()).unwrap();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].actor, actor);
+    }
+
+    #[test]
+    fn source_items_effective_absent_saved_fails() {
+        use qa_world::save::source_items::SourceItemsRecord;
+        let actor = qa_core::identity::SavedActorId { slot: 3, generation: 1 };
+        let restore = SourceItemsRestore {
+            records: vec![SourceItemsRecord {
+                actor,
+                owner: "q1:game".to_string(),
+                primary: Vec::new(),
+                groups: Vec::new(),
+            }],
+            saved: Vec::new(),
+        };
+        let result = restore.effective(vec![SimSavedInventory {
+            actor,
+            entries: Vec::new(),
+        }]);
+        assert!(matches!(result, Err(RuntimeError::World(_))));
+    }
+
+    #[test]
+    fn source_items_prepare_empty_is_primary() {
+        use qa_world::save::source_items::EffectiveInventories;
+        let actor = qa_core::identity::SavedActorId { slot: 3, generation: 1 };
+        let inventories: EffectiveInventories = vec![(actor, Vec::new())];
+        let (primary, restore) = SourceItemsRestore::prepare(&[], &inventories).unwrap();
+        assert_eq!(primary, inventories);
+        assert!(restore.records.is_empty());
+    }
+
+    #[test]
+    fn monster_services_owned_random_draws() {
+        use qa_world::movement::q1::monsters::Q1MonsterMoveServices;
+        let actors = Rc::new(RefCell::new(test_registry()));
+        let bodies = Rc::new(RefCell::new(qa_world::body::BodyTable::new()));
+        let ops = qa_core::numeric::NumericOps::select(qa_core::numeric::Q1_DONOR_PROFILE).unwrap();
+        let stream = Rc::new(RefCell::new(SourceRandom::new(1234)));
+        let mut services = RuntimeMonsterServices::new(Weak::new(), actors, bodies, ops, Some(Rc::clone(&stream)));
+        let mut direct = SourceRandom::new(1234);
+        assert_eq!(services.next_random(), direct.next_integer() as i32);
+        assert_eq!(services.next_random(), direct.next_integer() as i32);
+        assert_eq!(stream.borrow_mut().next_integer(), direct.next_integer());
+    }
+
+    #[test]
+    fn hand_grenade_lifecycle_maps_reasons() {
+        use qa_content::q2::foundation::weapons::hand_action::HandLifecycle;
+        assert!(matches!(
+            SharedSimulation::hand_grenade_lifecycle(None),
+            Ok(HandLifecycle::Alive)
+        ));
+        assert!(matches!(
+            SharedSimulation::hand_grenade_lifecycle(Some("alive")),
+            Ok(HandLifecycle::Alive)
+        ));
+        assert!(matches!(
+            SharedSimulation::hand_grenade_lifecycle(Some("dead")),
+            Ok(HandLifecycle::Dead)
+        ));
+        assert!(matches!(
+            SharedSimulation::hand_grenade_lifecycle(Some("removing")),
+            Ok(HandLifecycle::Removing)
+        ));
+        assert!(SharedSimulation::hand_grenade_lifecycle(Some("melted")).is_err());
+    }
+
+    #[test]
+    fn hand_grenade_gates_zero_native_powerups() {
+        let gated = SharedSimulation::hand_grenade_gated_input;
+        assert_eq!(gated(9.0, 8.0, true, false, false, false), (9.0, 8.0, true));
+        assert_eq!(gated(9.0, 8.0, true, true, false, false), (0.0, 0.0, false));
+        assert_eq!(gated(9.0, 8.0, true, false, true, false), (0.0, 8.0, true));
+        assert_eq!(gated(9.0, 8.0, true, false, false, true), (9.0, 8.0, false));
+    }
+
+    #[test]
+    fn threewave_begin_frame_advances_arena_clock() {
+        use crate::bootstrap::simulation::grapple_runtime::fakes::{test_q1_game, FakeQ1Bridge};
+        use crate::bootstrap::simulation::grapple_runtime::GrappleFoundationBridge;
+        use qa_content::contract::{GrappleBinding, GrappleMechanicDetail, GrappleSelection, SourceEdition};
+        let selection = GrappleSelection::Enabled {
+            source: ProviderReference {
+                provider: ProviderId::new("q1", "threewave"),
+                content: ContentId("q1:id1:threewave:1".to_string()),
+            },
+            binding: GrappleBinding::Offhand,
+            mechanic: GrappleMechanicDetail::Q1Threewave {
+                edition: SourceEdition::Classic,
+            },
+        };
+        let grapple = GrappleRuntime::new(
+            selection,
+            GrappleSource::Q1Threewave { game: test_q1_game() },
+            SourceRandom::new(7),
+            None,
+            GrappleFoundationBridge::Q1(Box::new(FakeQ1Bridge::new())),
+        )
+        .unwrap();
+        grapple_threewave_begin_frame_seam(&grapple, 100.0, 0.5);
+        grapple.with_source(|source| {
+            let GrappleSource::Q1Threewave { game } = source else {
+                panic!("threewave source kept its arena");
+            };
+            assert_eq!(game.time, 100.0);
+            assert_eq!(game.frame_seconds, 0.5);
+        });
     }
 }
