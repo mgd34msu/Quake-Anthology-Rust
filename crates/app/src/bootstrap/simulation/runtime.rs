@@ -25220,19 +25220,54 @@ fn finish_net_quake_input_seam(player: &MovementPlayer) {
 }
 
 /// Sync the QuakeC client view for a player (donor `syncQuakeCClientView`).
-///
-/// Missing siblings: the QuakeC lane owns the client-view sync.
 #[allow(dead_code)]
-fn sync_quake_c_client_view_seam(player: &MovementPlayer) {
-    let _ = player;
+fn sync_quake_c_client_view_seam(
+    game: &super::quakec_source::QuakeCSource<RuntimePickupAdmission>,
+    pstate: &mut MovementPlayer,
+) -> Result<(), RuntimeError> {
+    let angles = game
+        .consume_client_view_reset(pstate.actor.id())
+        .map_err(source_failure)?;
+    if let Some(angles) = angles {
+        pstate.view_angles = angles;
+    }
+    Ok(())
 }
 
 /// Frame the selected Q2 weapon for an actor (donor `frameSelectedQ2Weapon`).
-///
-/// Missing siblings: the arsenal/Q2 lane owns the selected-weapon frame.
 #[allow(dead_code)]
-fn frame_selected_q2_weapon_seam(actor: &OwnedActor) {
-    let _ = actor;
+fn frame_selected_q2_weapon_seam(sim: &SharedSimulation, actor: &OwnedActor) -> Result<(), RuntimeError> {
+    let player_exists = sim.peek().player_states.contains_key(actor);
+    let family_is_q2 = matches!(sim.peek().selected_arsenal.as_ref(), Some(arsenal) if arsenal.family() == "q2");
+    if !family_is_q2 || !player_exists || sim.peek().primary_command_blocks.contains(actor.id()) {
+        return Ok(());
+    }
+    {
+        let mut state = sim.lock();
+        let Some(SelectedArsenal::Q2(q2)) = state.selected_arsenal.as_mut() else {
+            return Ok(());
+        };
+        q2.frame(actor.id())
+            .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+    }
+    let arsenal = {
+        let state = sim.peek();
+        let Some(selected) = state.selected_arsenal.as_ref() else {
+            return Ok(());
+        };
+        selected.read(actor.id())
+    };
+    {
+        let mut state = sim.lock();
+        if let Some(player) = state.player_states.get_mut(actor) {
+            player.arsenal = arsenal;
+        }
+        if let Some(slot) = state.weapon_slots.get_mut(actor.id()) {
+            slot.reconcile()
+                .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Begin the Q2 character frame (donor `q2Characters.get(actor)?.beginFrame()`).
@@ -25306,24 +25341,16 @@ fn selected_monsters_before_turn_seam(actor: &ActorId) -> bool {
 }
 
 /// Whether a selected monster is active (donor `selectedMonsters.active`).
-///
-/// Missing siblings: the monster lane owns activity; monsters read active
-/// until it lands.
 #[allow(dead_code)]
-fn selected_monsters_active_seam(actor: &ActorId) -> bool {
-    let _ = actor;
-    true
+fn selected_monsters_active_seam(monsters: Option<&SelectedMonsters>, actor: &ActorId) -> bool {
+    monsters.is_none_or(|monsters| monsters.active(actor))
 }
 
 /// Whether a Q2 player state is a spectator (donor
 /// `source.players.states.get(actor)?.spectator`).
-///
-/// Missing siblings: the Q2 lane owns the player states; spectators are
-/// never observed until it lands.
 #[allow(dead_code)]
-fn q2_player_spectator_seam(actor: &ActorId) -> bool {
-    let _ = actor;
-    false
+fn q2_player_spectator_seam(game: &qa_content::q2::foundation::host::Q2GameServices, actor: &ActorId) -> bool {
+    game.players.states.get(actor).is_some_and(|state| state.spectator)
 }
 
 /// Run one Q3-source actor (donor `source.game.runActor`).
@@ -25552,14 +25579,17 @@ impl SharedSimulation {
                     inner.punch_angles = punch;
                 }
             }
-            sync_quake_c_client_view_seam(&pstate);
+            if let SourceRuntime::QuakeC { game } = &self.peek().source {
+                let game = Rc::clone(game);
+                sync_quake_c_client_view_seam(&game, &mut pstate)?;
+            }
             self.step_writeback_player(actor, &pstate);
         } else {
             finish_net_quake_input_seam(player);
         }
         // Donor 4614.
         if ctx.boundary.q2 {
-            frame_selected_q2_weapon_seam(actor);
+            frame_selected_q2_weapon_seam(self, actor)?;
         }
         // Donor 4615-4619.
         if self.actors.borrow().is_live(actor.id()) {
@@ -25723,7 +25753,7 @@ impl SharedSimulation {
         }
         // Donor 4643.
         if ctx.boundary.q2 {
-            frame_selected_q2_weapon_seam(actor);
+            frame_selected_q2_weapon_seam(self, actor)?;
         }
         // Donor 4644-4658: Q2 monster source.
         let monster_is_q2 = execution_kind == Some("q2")
@@ -25735,7 +25765,8 @@ impl SharedSimulation {
             let active = if ctx.run {
                 selected_monsters_before_turn_seam(actor.id())
             } else {
-                selected_monsters_active_seam(actor.id())
+                let state = self.peek();
+                selected_monsters_active_seam(state.selected_monsters.as_ref(), actor.id())
             };
             if ctx.run && active && self.peek().source.kind() == "q1" {
                 let retouch = {
@@ -25787,7 +25818,13 @@ impl SharedSimulation {
                 .unwrap_or(0.0);
             let spectator_q3 =
                 matches!(&player.state, MovementState::Q3(inner) if inner.movement_type == Q3_PM_SPECTATOR);
-            let spectator_q2 = self.peek().source.kind() == "q2" && q2_player_spectator_seam(actor.id());
+            let spectator_q2 = {
+                let state = self.peek();
+                match &state.source {
+                    SourceRuntime::Q2 { game, .. } => q2_player_spectator_seam(&game.borrow(), actor.id()),
+                    _ => false,
+                }
+            };
             {
                 let state = self.peek();
                 if let Some(grapple) = state.grapple.as_ref() {
@@ -26045,8 +26082,7 @@ impl SharedSimulation {
                 composition.program() == qa_content::q1::composition::types::Q1SourceProgram::Ctf
                     || cvars.borrow().variable_value("teamplay") != 0.0
             }
-            // Missing siblings: the quakec lane owns the game cvar registry.
-            SourceRuntime::QuakeC { .. } => false,
+            SourceRuntime::QuakeC { game } => game.cvars().borrow().variable_value("teamplay") != 0.0,
             // Missing siblings: the q3 lane owns the source game type.
             SourceRuntime::Q3 { .. } => false,
             SourceRuntime::Q3Qvm { game, .. } => game.state.cvars.borrow().variable_value("g_gametype") >= 3.0,
@@ -26438,20 +26474,28 @@ struct StepQ2Anim {
 
 /// Read Q2 player animation state (donor
 /// `source.players.states.get(actor)`).
-///
-/// Missing siblings: the Q2 lane owns the player states; `None` reads as
-/// absent (donor skips the animation write) until it lands.
 #[allow(dead_code)]
-fn q2_player_anim_state_seam(actor: &ActorId) -> Option<StepQ2Anim> {
-    let _ = actor;
-    None
+fn q2_player_anim_state_seam(
+    game: &qa_content::q2::foundation::host::Q2GameServices,
+    actor: &ActorId,
+) -> Option<StepQ2Anim> {
+    game.players.states.get(actor).map(|state| StepQ2Anim {
+        end_frame: state.animation_end,
+        priority: state.animation_priority,
+        duck: state.animation_duck,
+        run: state.animation_run,
+    })
 }
 
 /// Run Q2 player end frame (donor `source.players.endFrame`).
-///
-/// Missing siblings: the Q2 lane owns the player runtime.
 #[allow(dead_code)]
-fn q2_players_end_frame_seam() {}
+fn q2_players_end_frame_seam(
+    product: &qa_content::q2::composition::product::Q2ProductRuntime,
+    actor: ActorId,
+    game: &mut qa_content::q2::foundation::host::Q2GameServices,
+) {
+    product.players.end_frame(actor, game);
+}
 
 /// Whether an LMCTF countdown elapsed for the timelimit latch (donor
 /// `match instanceof Q2Lmctf && phase/countdown/paused/remaining/nextThink`
@@ -26465,10 +26509,13 @@ fn q2_lmctf_countdown_elapsed_seam() -> bool {
 }
 
 /// Run Q2 post-player frames (donor `source.product.afterPlayerFrames`).
-///
-/// Missing siblings: the Q2 lane owns the product runtime.
 #[allow(dead_code)]
-fn q2_after_player_frames_seam() {}
+fn q2_after_player_frames_seam(
+    product: &qa_content::q2::composition::product::Q2ProductRuntime,
+    game: &mut qa_content::q2::foundation::host::Q2GameServices,
+) {
+    product.after_player_frames(game);
+}
 
 /// Run the Q2 source-monster end frame (donor
 /// `source.monsters.endFrame(source.game)`).
@@ -26479,11 +26526,13 @@ fn q2_after_player_frames_seam() {}
 fn q2_source_monsters_end_frame_seam() {}
 
 /// Run Q2 rules (donor `source.product.checkRules`).
-///
-/// Missing siblings: the Q2 lane owns the rules; the caller still guards
-/// with `checkingQ2Rules` around this call.
 #[allow(dead_code)]
-fn q2_check_rules_seam() {}
+fn q2_check_rules_seam(
+    product: &qa_content::q2::composition::product::Q2ProductRuntime,
+    game: &mut qa_content::q2::foundation::host::Q2GameServices,
+) {
+    product.check_rules(game);
+}
 
 /// Drop a dead Q3 player view (donor `entity.client.ps.viewheight = -16`).
 ///
@@ -26512,13 +26561,14 @@ fn q2_character_end_frame_seam(actor: &ActorId) {
 /// Whether a Q1 character takes the axe pose (donor
 /// `q1CharacterPose(actor).axePose ?? playerUi(actor).activeWeapon ===
 /// "q1:weapon/axe"`).
-///
-/// Missing siblings: the Q1 pose lane owns `q1CharacterPose` and C7 owns
-/// `playerUi`; both read negative until they land.
 #[allow(dead_code)]
-fn q1_character_axe_pose_seam(actor: &ActorId) -> bool {
-    let _ = actor;
-    false
+fn q1_character_axe_pose_seam(sim: &SharedSimulation, actor: &ActorId) -> Result<bool, RuntimeError> {
+    let pose = sim.q1_character_pose(actor)?;
+    if let Some(axe_pose) = pose.axe_pose {
+        return Ok(axe_pose);
+    }
+    let ui = sim.player_ui(actor)?;
+    Ok(ui.active_weapon.as_ref().is_some_and(|id| id == "q1:weapon/axe"))
 }
 
 /// Run QuakeWorld commands (donor `runQuakeWorldCommands`).
@@ -26553,10 +26603,10 @@ fn quake_c_character_step_seam(
 }
 
 /// Emit Q2 shadow lights (donor `emitQ2ShadowLights(source.game)`).
-///
-/// Missing siblings: the Q2 lane owns shadow lights.
 #[allow(dead_code)]
-fn emit_q2_shadow_lights_seam() {}
+fn emit_q2_shadow_lights_seam(game: &mut qa_content::q2::foundation::host::Q2GameServices) {
+    qa_content::q2::foundation::shadow_lights::emit_q2_shadow_lights(game);
+}
 
 impl SharedSimulation {
     /// Post-frame reconciliation (donor 4694-4730).
@@ -26631,9 +26681,29 @@ impl SharedSimulation {
                         }
                     }
                 }
-                q2_players_end_frame_seam();
+                {
+                    let (game, product) = {
+                        let state = self.peek();
+                        let SourceRuntime::Q2 { game, .. } = &state.source else {
+                            continue;
+                        };
+                        (game.clone(), state.q2_product.clone())
+                    };
+                    if let Some(product) = product {
+                        let product = product.borrow();
+                        let mut game = game.borrow_mut();
+                        q2_players_end_frame_seam(&product, owned.id().clone(), &mut game);
+                    }
+                }
                 if character == GameFamily::Q2 {
-                    if let Some(anim) = q2_player_anim_state_seam(owned.id()) {
+                    let anim = {
+                        let state = self.peek();
+                        match &state.source {
+                            SourceRuntime::Q2 { game, .. } => q2_player_anim_state_seam(&game.borrow(), owned.id()),
+                            _ => None,
+                        }
+                    };
+                    if let Some(anim) = anim {
                         let frame = {
                             let state = self.peek();
                             match &state.source {
@@ -26675,13 +26745,29 @@ impl SharedSimulation {
                         .map_err(|error| RuntimeError::Failure(error.to_string()))?;
                 }
             }
-            q2_after_player_frames_seam();
+            if let SourceRuntime::Q2 { game, .. } = &self.peek().source {
+                let game = game.clone();
+                let product = self.peek().q2_product.clone();
+                if let Some(product) = product {
+                    let product = product.borrow();
+                    let mut game = game.borrow_mut();
+                    q2_after_player_frames_seam(&product, &mut game);
+                }
+            }
             q2_source_monsters_end_frame_seam();
             {
                 let mut state = self.lock();
                 state.checking_q2_rules = true;
             }
-            q2_check_rules_seam();
+            if let SourceRuntime::Q2 { game, .. } = &self.peek().source {
+                let game = game.clone();
+                let product = self.peek().q2_product.clone();
+                if let Some(product) = product {
+                    let product = product.borrow();
+                    let mut game = game.borrow_mut();
+                    q2_check_rules_seam(&product, &mut game);
+                }
+            }
             {
                 let mut state = self.lock();
                 state.checking_q2_rules = false;
@@ -26854,6 +26940,7 @@ impl SharedSimulation {
                 .read(owned.id())
                 .map(|state| state.invulnerable)
                 .unwrap_or(false);
+            let axe_pose = q1_character_axe_pose_seam(self, owned.id())?;
             let presentation = {
                 let mut locked = self.lock();
                 let Some(character) = locked.q1_characters.get_mut(&owned) else {
@@ -26864,7 +26951,7 @@ impl SharedSimulation {
                         &mut game.borrow_mut(),
                         time_seconds,
                         &Q1CharacterInput {
-                            axe_pose: q1_character_axe_pose_seam(owned.id()),
+                            axe_pose,
                             attack: step_button_bits(player.buttons) & 1 != 0,
                             jump: step_button_bits(player.buttons) & 2 != 0,
                             use_input: step_button_bits(player.buttons) & 4 != 0,
@@ -27047,8 +27134,9 @@ impl SharedSimulation {
     /// step, not once per boundary.
     #[allow(dead_code)]
     pub(super) fn step_tail_emit_shadows(&self) {
-        if self.peek().source.kind() == "q2" {
-            emit_q2_shadow_lights_seam();
+        if let SourceRuntime::Q2 { game, .. } = &self.peek().source {
+            let game = game.clone();
+            emit_q2_shadow_lights_seam(&mut game.borrow_mut());
         }
     }
 }
