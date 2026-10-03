@@ -9072,6 +9072,13 @@ impl Q3SourceRuntime {
         }
     }
 
+    /// Native entity record for an actor (donor `records.nativeByActor`
+    /// through the runtime's public `records`).
+    #[must_use]
+    pub fn native_by_actor(&self, actor: &ActorId) -> Option<RecordsEntityRef> {
+        self.core.records.native_by_actor(Some(actor))
+    }
+
     /// Attach an actor to a client slot.
     pub fn prepare_client(&self, actor: &OwnedActor, client: i32) -> RecordsEntityRef {
         if !self.loaded.get() {
