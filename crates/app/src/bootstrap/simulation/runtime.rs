@@ -27389,8 +27389,8 @@ struct StepMoveOutcome {
 
 /// Move through an applied mod-client command (donor `player.moveCommand`).
 ///
-/// Sequence consumption is real; the stale skip (donor 4511-4516) drops
-/// retried commands once the seam consumes them.
+/// Sequence consumption is real; the stale skip (donor runtime.ts 4467,
+/// 4495) drops retried commands once the seam consumes them.
 ///
 /// Missing siblings: the movement lane owns state advance (movement
 /// state, commit, NetQuake input) until it lands.
@@ -27411,8 +27411,8 @@ fn move_command_seam(
 
 /// Move through a raw command (donor `player.move`).
 ///
-/// Sequence consumption is real; the stale skip (donor 4511-4516) drops
-/// retried commands once the seam consumes them.
+/// Sequence consumption is real; the stale skip (donor runtime.ts 4467,
+/// 4495) drops retried commands once the seam consumes them.
 ///
 /// Missing siblings: the movement lane owns state advance (movement
 /// state, commit, NetQuake input) until it lands.
@@ -28776,8 +28776,11 @@ fn frame_selected_q2_weapon_seam(sim: &SharedSimulation, actor: &OwnedActor) -> 
 
 /// Begin the Q2 character frame (donor `q2Characters.get(actor)?.beginFrame()`).
 ///
-/// Missing siblings: the character lane owns the `Q2CharacterHost` wiring;
-/// no host implementation exists yet.
+/// Missing siblings: the character lane owns the `Q2CharacterHost`
+/// construction; the adapter
+/// (`qa_content::q2::base::player::character::Q2CharacterHostServices`)
+/// exists with test-only callers, and no production site builds it with
+/// live tables yet.
 #[allow(dead_code)]
 fn q2_character_begin_frame_seam(actor: &OwnedActor) {
     let _ = actor;
