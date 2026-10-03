@@ -4,8 +4,8 @@
 //! (donor `prepareQuakeCSource`, `prepareQuakeCResources`,
 //! `preparedQuakeCDamageScaling`, `preparedQuakeCWeaponStage`, `QuakeCSource`).
 //!
-//! This file owns the canonical [`PreparedQuakeCSource`] (the
-//! `super::types` placeholder unifies into it post-merge). The donor takes a
+//! This file owns the canonical [`PreparedQuakeCSource`] (re-exported
+//! through `super::types`, which holds no separate placeholder). The donor takes a
 //! contracts execution plus a contracts callback declaration; the worktree
 //! splits declarations into persisted and runtime shapes, so the combat
 //! declaration here is the runtime guest shape and contract conversions
@@ -159,7 +159,8 @@ pub struct QuakeCSourceResource {
 }
 
 /// Prepared QuakeC source: the canonical home of donor
-/// `PreparedQuakeCSource` (the `super::types` placeholder unifies into this).
+/// `PreparedQuakeCSource` (re-exported through `super::types`; no separate
+/// placeholder remains).
 #[derive(Debug, Clone)]
 pub struct PreparedQuakeCSource {
     /// Team aliases, if declared.
