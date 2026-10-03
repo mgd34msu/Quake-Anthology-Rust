@@ -24,7 +24,7 @@ use qa_bots::movement_contract::{
 use qa_bots::scene::{LeafContents, Q1MoveRule, TracePolicy};
 use qa_bots::types::{TravelMode, TraversalRequest};
 use qa_content::contract::{ExecutableRecipe, GameFamily};
-use qa_content::q3::base::records::EntityRef as RecordsEntityRef;
+use qa_content::q3::base::records::{EntityRef as RecordsEntityRef, Q3EntityRecords};
 use qa_content::q3::base::shared::definitions::Product;
 use qa_content::q3::foundation::arsenal::Q3ArsenalRuntimeState;
 use qa_content::q3::foundation::movement_hooks::{
@@ -75,7 +75,7 @@ use qa_world::movement::types::{
 use qa_world::movement::Q1MovementParameters;
 
 use super::player_input_application::{MovementProfile, MovementState};
-use super::q3::player_state::read_q3_arsenal_runtime;
+use super::q3::player_state::{read_q3_arsenal_runtime, read_q3_movement_state};
 use super::runtime::{
     movement_origin, movement_profile, provider_family, provider_text, ClientMovementOptions, MovementPlayer,
     Q2MovementConfig, SharedSimulation,
@@ -1497,21 +1497,16 @@ struct Q3PredictionBaseline {
 /// with no bound Q3 entity, prediction falls back to the player snapshot
 /// state, the player arsenal (or a fresh `Baseq3` runtime), and the arsenal
 /// source weapon (donor player-movement.ts:163). With a bound entity, the
-/// arsenal runtime and the selected weapon read live (donor
-/// player-movement.ts:126+163): the entity resolves by actor through the
+/// movement state, arsenal runtime, and selected weapon read live (donor
+/// player-movement.ts:119+126+163): the entity resolves by actor through the
 /// attached native source host (`native_by_actor`; the donor indexes the
-/// entity pool by client slot, which the host does not expose) and the
-/// previous runtime spawns from the host product. The movement read stays
-/// on the fallback: `readQ3MovementState` needs the entity records and the
-/// host exposes no records or pool handle.
-///
-/// Missing siblings: q3 native source records for the live movement read
-/// (`readQ3MovementState`; `Q3SourceRuntime` at `q3/runtime.rs` exposes
-/// `native_by_actor` but no records or pool handle).
+/// entity pool by client slot, which the host does not expose), the movement
+/// read runs over the host records, and the previous runtime spawns from the
+/// host product.
 fn q3_prediction_baseline(
     simulation: &SharedSimulation,
     player: &MovementPredictionPlayer,
-    _profile: &MovementProfile,
+    profile: &MovementProfile,
 ) -> Q3PredictionBaseline {
     let host = simulation.with_q3_source(|game| game.host()).flatten();
     let Some(host) = host else {
@@ -1522,7 +1517,8 @@ fn q3_prediction_baseline(
         };
     };
     let entity = host.native_by_actor(player.actor.id());
-    q3_prediction_live_baseline(entity.as_ref(), host.options.product)
+    let records = host.records();
+    q3_prediction_live_baseline(entity.as_ref(), &records, host.options.product, profile)
 }
 
 /// Baseline over a bound Q3 entity, if any.
@@ -1531,9 +1527,15 @@ fn q3_prediction_baseline(
 /// stays empty and the caller falls back; otherwise the arsenal runtime
 /// reads over a fresh previous spawned from the source product (donor
 /// player-movement.ts:126) and the weapon reads from the client player
-/// state (donor player-movement.ts:163). The movement read stays empty
-/// until the host exposes its records.
-fn q3_prediction_live_baseline(entity: Option<&RecordsEntityRef>, product: Product) -> Q3PredictionBaseline {
+/// state (donor player-movement.ts:163). The movement state reads live over
+/// the host records when the selected profile is Q3 (donor
+/// player-movement.ts:119); other profiles keep the player snapshot.
+fn q3_prediction_live_baseline(
+    entity: Option<&RecordsEntityRef>,
+    records: &Q3EntityRecords,
+    product: Product,
+    profile: &MovementProfile,
+) -> Q3PredictionBaseline {
     let none = || Q3PredictionBaseline {
         movement: None,
         arsenal: None,
@@ -1547,8 +1549,9 @@ fn q3_prediction_live_baseline(entity: Option<&RecordsEntityRef>, product: Produ
         return none();
     };
     let previous = spawn_arsenal_runtime(product, 100.0);
+    let movement = matches!(profile, MovementProfile::Q3(_)).then(|| read_q3_movement_state(entity, records));
     Q3PredictionBaseline {
-        movement: None,
+        movement,
         arsenal: Some(read_q3_arsenal_runtime(entity, &previous)),
         weapon: Some(weapon),
     }
@@ -1980,9 +1983,15 @@ mod tests {
             client.ps.pm_flags = move_flags::RESPAWNED | move_flags::USE_ITEM_HELD;
             client.ps.event_sequence = 41;
         }
-        let baseline = q3_prediction_live_baseline(Some(&entity), Product::Baseq3);
-        assert!(baseline.movement.is_none());
+        let baseline = q3_prediction_live_baseline(Some(&entity), &records, Product::Baseq3, &q3_profile());
         assert_eq!(baseline.weapon, Some(7));
+        let movement = baseline.movement.expect("live movement");
+        assert_eq!(movement.movement_type, MoveType::PmSpectator as i32);
+        assert_eq!(
+            movement.movement_flags,
+            move_flags::RESPAWNED | move_flags::USE_ITEM_HELD
+        );
+        assert_eq!(movement.predictable_event_sequence, 41);
         let arsenal = baseline.arsenal.expect("live arsenal");
         assert_eq!(arsenal.product, Product::Baseq3);
         assert!(arsenal.spectator);
@@ -1993,7 +2002,8 @@ mod tests {
 
     #[test]
     fn live_baseline_without_entity_stays_empty() {
-        let baseline = q3_prediction_live_baseline(None, Product::Baseq3);
+        let (_host, records) = records();
+        let baseline = q3_prediction_live_baseline(None, &records, Product::Baseq3, &q3_profile());
         assert!(baseline.movement.is_none());
         assert!(baseline.arsenal.is_none());
         assert!(baseline.weapon.is_none());
@@ -2003,9 +2013,66 @@ mod tests {
     fn live_baseline_without_client_stays_empty() {
         let (host, records) = records();
         let entity = player(&host, &records, 1, false);
-        let baseline = q3_prediction_live_baseline(Some(&entity), Product::Baseq3);
+        let baseline = q3_prediction_live_baseline(Some(&entity), &records, Product::Baseq3, &q3_profile());
         assert!(baseline.movement.is_none());
         assert!(baseline.arsenal.is_none());
         assert!(baseline.weapon.is_none());
+    }
+
+    #[test]
+    fn live_baseline_off_q3_profile_keeps_snapshot_movement() {
+        let (host, records) = records();
+        let entity = player(&host, &records, 0, true);
+        let baseline = q3_prediction_live_baseline(Some(&entity), &records, Product::Baseq3, &q1_profile());
+        assert!(baseline.movement.is_none());
+        assert!(baseline.arsenal.is_some());
+        assert!(baseline.weapon.is_some());
+    }
+
+    fn q3_profile() -> MovementProfile {
+        use qa_core::numeric::Q3_BINARY32_PROFILE;
+        use qa_core::time::ClockProfile;
+        use qa_world::movement::q3::types::{Q3MovementProfile, Q3Product};
+        MovementProfile::Q3(Q3MovementProfile {
+            id: ProviderId::new("q3", "hv8-baseline-test"),
+            clock: ClockProfile::Q3 {
+                server_frame_milliseconds: 100.0,
+                fixed_movement_milliseconds: None,
+            },
+            numeric: Q3_BINARY32_PROFILE,
+            product: Q3Product::BaseQ3,
+            fixed_milliseconds: None,
+            no_footsteps: false,
+        })
+    }
+
+    fn q1_profile() -> MovementProfile {
+        use qa_core::numeric::Q2_DONOR_PROFILE;
+        use qa_core::time::ClockProfile;
+        use qa_world::movement::q1::types::{Q1Edition, Q1MovementProfile};
+        MovementProfile::Q1Netquake(Q1MovementProfile {
+            id: ProviderId::new("q1", "hv8-baseline-test"),
+            clock: ClockProfile::Q1Netquake {
+                minimum_frame_seconds: 0.0,
+                maximum_frame_seconds: 1.0,
+                fixed_frame_seconds: None,
+            },
+            numeric: Q2_DONOR_PROFILE,
+            edition: Q1Edition::Classic,
+            parameters: Q1MovementParameters {
+                gravity: 800.0,
+                stop_speed: 100.0,
+                max_speed: 320.0,
+                spectator_max_speed: 500.0,
+                accelerate: 10.0,
+                air_accelerate: 1.0,
+                water_accelerate: 10.0,
+                friction: 4.0,
+                water_friction: 1.0,
+                entity_gravity: 1.0,
+            },
+            edge_friction: 2.0,
+            no_clip_angle_hack: false,
+        })
     }
 }
