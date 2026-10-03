@@ -1,6 +1,6 @@
 //! `qa-dedicated`: dedicated-server entry point.
 //!
-//! Forwards to the same [`qa_app::cli`] dispatch as `qa-muse`, injecting
+//! Forwards to the same [`qa_app::cli`] dispatch as `quake-anthology`, injecting
 //! `--dedicated` when the caller did not pass it. Refuses `--menu`, which
 //! requires a local non-dedicated application.
 

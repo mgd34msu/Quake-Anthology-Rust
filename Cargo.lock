@@ -140,13 +140,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qa-muse"
-version = "0.1.0"
-dependencies = [
- "qa-app",
-]
-
-[[package]]
 name = "qa-net"
 version = "0.1.0"
 dependencies = [
@@ -182,6 +175,13 @@ version = "0.1.0"
 dependencies = [
  "qa-core",
  "thiserror",
+]
+
+[[package]]
+name = "quake-anthology"
+version = "0.1.0"
+dependencies = [
+ "qa-app",
 ]
 
 [[package]]

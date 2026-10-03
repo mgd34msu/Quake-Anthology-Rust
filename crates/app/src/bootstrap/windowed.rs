@@ -1824,7 +1824,7 @@ mod tests {
     #[test]
     fn windowed_audio_falls_back_to_muted() {
         assert!(open_windowed_audio_on(None, true).is_none());
-        assert!(open_windowed_audio_on(Some("qa-muse-no-such-output-device"), false).is_none());
+        assert!(open_windowed_audio_on(Some("quake-anthology-no-such-output-device"), false).is_none());
     }
 
     #[test]
@@ -2036,7 +2036,7 @@ mod tests {
     /// smoke application closes so the SDL input lease is free.
     fn windowed_sdl_router_attach_pumps_keys() {
         let options = SdlWindowOptions {
-            title: "qa-muse-input-check".to_string(),
+            title: "quake-anthology-input-check".to_string(),
             width: 32,
             height: 32,
             hidden: true,

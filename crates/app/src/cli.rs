@@ -1,4 +1,4 @@
-//! Binary entry dispatch shared by `qa-muse` and `qa-dedicated`.
+//! Binary entry dispatch shared by `quake-anthology` and `qa-dedicated`.
 //!
 //! Donor provenance: `src/main.ts` (command branches, dedicated vs
 //! windowed assembly, quit propagation). Signal handling stays with the
@@ -106,7 +106,7 @@ pub fn run(argv: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write, vers
     match run_inner(argv, stdout, version) {
         Ok(()) => 0,
         Err(error) => {
-            let _ = writeln!(stderr, "qa-muse: {error}");
+            let _ = writeln!(stderr, "quake-anthology: {error}");
             1
         }
     }
@@ -1720,7 +1720,7 @@ mod tests {
     fn help_and_version_branches() {
         let (code, stdout, _) = run_text(&["--help"]);
         assert_eq!(code, 0);
-        assert!(stdout.starts_with("Quake\n\nUsage: qa-muse"));
+        assert!(stdout.starts_with("Quake\n\nUsage: quake-anthology"));
         let (code, stdout, _) = run_text(&["--version"]);
         assert_eq!(code, 0);
         assert_eq!(stdout, "Quake Anthology 0.1.0\n");
@@ -1892,7 +1892,7 @@ mod tests {
 
     #[test]
     fn list_content_reports_catalog_products() {
-        let root = std::env::temp_dir().join("qa-muse-list-content");
+        let root = std::env::temp_dir().join("quake-anthology-list-content");
         let _ = std::fs::create_dir_all(&root);
         let root = root.to_string_lossy().into_owned();
         let (code, stdout, _) = run_text(&["--list-content", "--content-root", root.as_str()]);
@@ -2064,7 +2064,7 @@ mod tests {
 
     #[test]
     fn content_mounts_reports_real_catalog_state() {
-        let (corpus, user) = temp_roots("qa-muse-cli-mounts");
+        let (corpus, user) = temp_roots("quake-anthology-cli-mounts");
         let mut host = CliWeaponBehaviorHost::with_roots(corpus, user);
         let error = host
             .content_mounts(&ContentId("no-such-content".to_owned()))
@@ -2159,7 +2159,7 @@ mod tests {
 
     #[test]
     fn apply_requests_empty_keeps_recipe() {
-        let (corpus, user) = temp_roots("qa-muse-cli-apply");
+        let (corpus, user) = temp_roots("quake-anthology-cli-apply");
         let catalog = discover_installed_content(&DiscoverContentOptions {
             corpus_root: PathBuf::from(&corpus),
             user_content_root: Some(PathBuf::from(&user)),

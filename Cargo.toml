@@ -34,13 +34,13 @@ qa-platform = { path = "crates/platform" }
 qa-bots = { path = "crates/bots" }
 
 [package]
-name = "qa-muse"
+name = "quake-anthology"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "qa-muse"
+name = "quake-anthology"
 path = "src/main.rs"
 
 [dependencies]

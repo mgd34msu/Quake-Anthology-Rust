@@ -234,7 +234,7 @@ mod tests {
                 for data in data_dirs {
                     let install_dir = format!("{root}/{install}");
                     let fs = FakeFs::default()
-                        .with(root, &[dir(install), file("qa-muse")])
+                        .with(root, &[dir(install), file("quake-anthology")])
                         .with(&install_dir, &[dir(data)]);
                     assert_eq!(
                         discover_corpus_root(Path::new(root), &fs),
@@ -249,12 +249,12 @@ mod tests {
     /// The subfolder holding the executable is equally arbitrary.
     #[test]
     fn exe_subfolder_names_are_not_assumed() {
-        for sub in ["launcher", "bin", "qa-muse-2.0", "x"] {
+        for sub in ["launcher", "bin", "quake-anthology-2.0", "x"] {
             let root = "/home/operator/retro";
             let exe_dir = format!("{root}/{sub}");
             let install_dir = format!("{root}/Quake III Arena");
             let fs = FakeFs::default()
-                .with(&exe_dir, &[file("qa-muse")])
+                .with(&exe_dir, &[file("quake-anthology")])
                 .with(root, &[dir("Quake III Arena"), dir(sub)])
                 .with(&install_dir, &[dir("baseq3")]);
             assert_eq!(
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn loose_archive_next_to_exe_resolves() {
-        let fs = FakeFs::default().with("/home/operator/retro/id1", &[file("pak0.pak"), file("qa-muse")]);
+        let fs = FakeFs::default().with("/home/operator/retro/id1", &[file("pak0.pak"), file("quake-anthology")]);
         assert!(looks_like_content_dir(Path::new("/home/operator/retro/id1"), &fs));
         let fs = FakeFs::default().with("/home/operator/retro/baseq3", &[file("pak0.pk3")]);
         assert!(looks_like_content_dir(Path::new("/home/operator/retro/baseq3"), &fs));
@@ -324,9 +324,9 @@ mod tests {
     #[test]
     fn unknown_layout_resolves_nothing() {
         let fs = FakeFs::default()
-            .with("/opt/qa-muse", &[file("qa-muse")])
-            .with("/opt", &[dir("qa-muse"), dir("documents")]);
-        assert_eq!(discover_corpus_root(Path::new("/opt/qa-muse"), &fs), None);
+            .with("/opt/quake-anthology", &[file("quake-anthology")])
+            .with("/opt", &[dir("quake-anthology"), dir("documents")]);
+        assert_eq!(discover_corpus_root(Path::new("/opt/quake-anthology"), &fs), None);
         assert_eq!(discover_corpus_root(Path::new("/missing"), &fs), None);
     }
 
@@ -355,11 +355,11 @@ mod tests {
     #[test]
     fn exe_dir_is_the_fallback_without_markers() {
         let fs = FakeFs::default()
-            .with("/opt/qa-muse", &[file("qa-muse")])
-            .with("/opt", &[dir("qa-muse")]);
+            .with("/opt/quake-anthology", &[file("quake-anthology")])
+            .with("/opt", &[dir("quake-anthology")]);
         assert_eq!(
-            resolve_corpus_root(None, Some(Path::new("/opt/qa-muse")), &fs),
-            "/opt/qa-muse"
+            resolve_corpus_root(None, Some(Path::new("/opt/quake-anthology")), &fs),
+            "/opt/quake-anthology"
         );
     }
 
@@ -391,13 +391,19 @@ mod tests {
             dirs.user_content_root("/home/operator/.local/share/content".to_string()),
             "/home/operator/.local/share/content"
         );
-        assert_eq!(dirs.corpus_root(Some(Path::new("/opt/qa-muse")), &fs), "/opt/qa-muse");
+        assert_eq!(
+            dirs.corpus_root(Some(Path::new("/opt/quake-anthology")), &fs),
+            "/opt/quake-anthology"
+        );
     }
 
     #[test]
     fn fs_probe_reports_missing_dirs_as_empty() {
         let probe = FsProbe;
-        assert!(probe.children(Path::new("/missing-qa-muse-dir")).is_empty());
-        assert!(!looks_like_content_dir(Path::new("/missing-qa-muse-dir"), &probe));
+        assert!(probe.children(Path::new("/missing-quake-anthology-dir")).is_empty());
+        assert!(!looks_like_content_dir(
+            Path::new("/missing-quake-anthology-dir"),
+            &probe
+        ));
     }
 }

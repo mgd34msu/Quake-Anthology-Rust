@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn content_lookup_resolves_case_and_missing() {
-        let root = std::env::temp_dir().join(format!("qa-muse-paths-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("quake-anthology-paths-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("Maps")).unwrap();
         std::fs::write(root.join("Maps").join("Base1.bsp"), b"bsp").unwrap();

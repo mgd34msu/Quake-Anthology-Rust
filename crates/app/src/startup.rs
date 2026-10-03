@@ -84,7 +84,7 @@ impl StartupConfig {
         };
         let client_family = client_family_for(options);
         Ok(Self {
-            session_name: format!("qa-muse:{}:{}", options.product, options.map),
+            session_name: format!("quake-anthology:{}:{}", options.product, options.map),
             profile,
             plan,
             step,

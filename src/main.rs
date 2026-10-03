@@ -1,4 +1,4 @@
-//! `qa-muse` command line, ported from `src/main.ts`.
+//! `quake-anthology` command line, ported from `src/main.ts`.
 //!
 //! All parsing and dispatch lives in [`qa_app::cli`]; this binary only
 //! forwards process arguments and stdio.

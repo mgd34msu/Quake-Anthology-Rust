@@ -19,7 +19,7 @@ use crate::persistence::mods;
 /// Application help, adapted from the donor's `applicationHelp`.
 pub const HELP: &str = "Quake
 
-Usage: qa-muse [options]
+Usage: quake-anthology [options]
 
   +command [arguments]       Run source startup command (use '+bind x \"+attack\"' as one shell argument)
   --menu                     Open the startup menu (default without launch selections)
@@ -72,10 +72,10 @@ Usage: qa-muse [options]
 
 /// Weapon-behavior tool help, ported from `weaponBehaviorToolHelp`.
 pub const WEAPON_BEHAVIOR_HELP: &str = "Usage:
-  qa-muse weapon-behavior inspect PRODUCT [options]
-  qa-muse weapon-behavior declare-qvm PRODUCT --profile MOUNTED_PROFILE_JSON [options]
-  qa-muse weapon-behavior declare-native PRODUCT --profile MOUNTED_PROFILE_JSON [options]
-  qa-muse weapon-behavior declare PRODUCT --id NAMESPACE:ID --role ROLE --fire CALLBACK [options]
+  quake-anthology weapon-behavior inspect PRODUCT [options]
+  quake-anthology weapon-behavior declare-qvm PRODUCT --profile MOUNTED_PROFILE_JSON [options]
+  quake-anthology weapon-behavior declare-native PRODUCT --profile MOUNTED_PROFILE_JSON [options]
+  quake-anthology weapon-behavior declare PRODUCT --id NAMESPACE:ID --role ROLE --fire CALLBACK [options]
 
   --content PATH        Installed content root (default: beside the executable)
   --user-content PATH   Writable user content root

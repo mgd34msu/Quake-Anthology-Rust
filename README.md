@@ -14,7 +14,7 @@ Requires Rust 1.98 or newer.
 
 ```sh
 cargo build --release
-./target/release/qa-muse
+./target/release/quake-anthology
 ```
 
 With no arguments it opens the startup menu in a window and runs
@@ -29,7 +29,7 @@ Copy the `.pak`/game files from your Quake installs there, then check
 what the engine sees:
 
 ```sh
-./target/release/qa-muse --list-content
+./target/release/quake-anthology --list-content
 ```
 
 It lists every known product (`q1-classic-id1`, `q2-classic-baseq2`,
@@ -42,19 +42,19 @@ QuakeC game logic.
 
 ```sh
 # Quake II campaign, hard difficulty
-./target/release/qa-muse --game q2-classic-baseq2 --skill 2
+./target/release/quake-anthology --game q2-classic-baseq2 --skill 2
 
 # Quake III with bots, nightmare bot skill
-./target/release/qa-muse --game q3-base --bot-skill 5
+./target/release/quake-anthology --game q3-base --bot-skill 5
 
 # Two-player local splitscreen deathmatch
-./target/release/qa-muse --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
+./target/release/quake-anthology --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
 
 # Software rendering instead of GL (headless only, so with --frames)
-./target/release/qa-muse --renderer cpu --width 1280 --height 720 --gamma 1.2 --frames 20
+./target/release/quake-anthology --renderer cpu --width 1280 --height 720 --gamma 1.2 --frames 20
 
 # Mixed-game recipe
-./target/release/qa-muse --preset q2-q1-q3
+./target/release/quake-anthology --preset q2-q1-q3
 ```
 
 Movement, characters, and models follow the game you pick
@@ -66,15 +66,15 @@ quits — useful for smoke-testing a setup without a window:
 ```sh
 # Headless smoke test: prints `Ran 20 host frames, 20 server ticks,
 # 5 entities (20 render frames)` and exits 0
-./target/release/qa-muse --frames 20
+./target/release/quake-anthology --frames 20
 
 # Windowed smoke test: opens a window, runs 600 frames, prints
 # `Ran 600 windowed frames` and exits 0 (needs a display; use
 # xvfb-run on a headless machine)
-xvfb-run -a ./target/release/qa-muse --windowed --frames 600
+xvfb-run -a ./target/release/quake-anthology --windowed --frames 600
 ```
 
-Without `--frames` (and without `--dedicated`), `qa-muse` opens a
+Without `--frames` (and without `--dedicated`), `quake-anthology` opens a
 window and runs until quit; `--dedicated` without `--frames` runs
 the headless server until stopped.
 
@@ -85,15 +85,15 @@ the headless server until stopped.
 ./target/release/qa-dedicated --game q1-classic-id1 --listen 26000
 
 # Host the selected game's native protocol / join servers
-./target/release/qa-muse --game q2-classic-baseq2 --listen-q2 27910
-./target/release/qa-muse --connect-q1 play.example.com
-./target/release/qa-muse --connect-q2 play.example.com
-./target/release/qa-muse --connect-q3 play.example.com:27960
-./target/release/qa-muse --connect-qw play.example.com:27500
+./target/release/quake-anthology --game q2-classic-baseq2 --listen-q2 27910
+./target/release/quake-anthology --connect-q1 play.example.com
+./target/release/quake-anthology --connect-q2 play.example.com
+./target/release/quake-anthology --connect-q3 play.example.com:27960
+./target/release/quake-anthology --connect-qw play.example.com:27500
 
 # Mixed-game hosting
-./target/release/qa-muse --listen-unified 27960
-./target/release/qa-muse --connect-unified play.example.com:27960
+./target/release/quake-anthology --listen-unified 27960
+./target/release/quake-anthology --connect-unified play.example.com:27960
 ```
 
 Server knobs: `--bind ADDRESS`, `--mode`, `--rules
