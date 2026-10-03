@@ -1,10 +1,20 @@
 //! Per-seat sound captions following mixer voices.
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/sound-captions.ts`
-//! (`SeatSoundCaptions`). The audio voice observer, seat identity, caption catalog, media
-//! captions, and content-mount siblings are unported, so they are absorbed as local traits and
-//! snapshot types. Sync port: the donor's async catalog reads become a caller-supplied sync
-//! loader, and voice events arrive through explicit `note_*` calls instead of an observer
+//! (`SeatSoundCaptions`). The voice observer, seat, caption, media-caption, and
+//! content-mount siblings are ported canonically
+//! ([`UnifiedAudio`](qa_client::audio::engine::UnifiedAudio),
+//! [`AudioVoiceEvent`](qa_client::audio::types::AudioVoiceEvent),
+//! [`SeatId`](qa_core::identity::SeatId),
+//! [`CaptionPreferences`](qa_client::text::captions::CaptionPreferences),
+//! [`SeatMediaCaptions`](qa_client::text::media_captions::SeatMediaCaptions),
+//! [`LoadedApplicationContent`](super::content::LoadedApplicationContent)),
+//! but this module keeps local traits and snapshot types until the lanes unify:
+//! preferences collapse to one `enabled` flag (donor carries three), captions collapse
+//! to source-plus-text (donor localizes cue, speaker, and text), seat filtering is the
+//! caller's scope (donor filters observer events by seat), and catalog loading arrives
+//! through a caller-supplied sync loader. Sync port: the donor's async catalog reads become
+//! the loader, and voice events arrive through explicit `note_*` calls instead of an observer
 //! subscription. Source-authored sound sidecars follow the actual per-seat mixer voice,
 //! including replacement.
 

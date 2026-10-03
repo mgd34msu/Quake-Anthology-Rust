@@ -9,7 +9,8 @@
 //! converters between the local generic events and the canonical
 //! [`Q1FogContext`](super::simulation::q1_fog::Q1FogContext) plus canonical addon
 //! events. The event unions (`SimulationPresentationEvent`, `SourcePresentationEvent`
-//! from `./simulation/types.ts`, out of scope) are mirrored locally as
+//! from `./simulation/types.ts`) are ported canonically at
+//! [`super::simulation::types`](super::simulation::types) and mirrored locally as
 //! [`SimulationPresentationEvent`] with a generic foreign payload `F` for variants this
 //! module carries but never inspects; the media request mirrors the contract request
 //! whose fields are private. Reference-identity checks on queued media use shared
