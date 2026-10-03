@@ -47,6 +47,7 @@ Usage: qa-muse [options]
   --skill 0|1|2|3            Quake I/II gameplay difficulty
   --bot-skill 1|2|3|4|5      Quake III bot difficulty (default 2)
   --dedicated                Run without a window or local seats
+  --windowed                 Open a native window and run frames on it
   --listen-unified PORT      Host the selected mixed-game recipe
   --connect-unified ADDRESS  Join a mixed-game server
   --listen PORT              Host the selected game's native source protocol
@@ -291,6 +292,8 @@ pub struct ApplicationOptions {
     pub display_overrides: DisplayOverrides,
     /// Dedicated server (no window or seats).
     pub dedicated: bool,
+    /// Open a native window and run frames on it.
+    pub windowed: bool,
     /// Window width.
     pub width: u32,
     /// Window height.
@@ -345,6 +348,7 @@ impl Default for ApplicationOptions {
             gamma: 1.0,
             display_overrides: DisplayOverrides::default(),
             dedicated: false,
+            windowed: false,
             width: 960,
             height: 600,
             seats: 1,
@@ -852,6 +856,7 @@ const NON_LAUNCH_FLAGS: &[&str] = &[
     "--height",
     "--hidden",
     "--list-content",
+    "--windowed",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -913,6 +918,11 @@ pub fn parse_application_command(argv: &[String]) -> Result<ApplicationCommand, 
         }
         if flag == "--dedicated" {
             options.dedicated = true;
+            index += 1;
+            continue;
+        }
+        if flag == "--windowed" {
+            options.windowed = true;
             index += 1;
             continue;
         }
@@ -1276,6 +1286,11 @@ pub fn parse_application_command(argv: &[String]) -> Result<ApplicationCommand, 
             "--menu requires a local, non-dedicated application".to_string(),
         ));
     }
+    if options.windowed && options.dedicated {
+        return Err(AppError::ConflictingOptions(
+            "--windowed requires a window; it conflicts with --dedicated".to_string(),
+        ));
+    }
     if menu || !explicit_launch {
         Ok(ApplicationCommand::Menu { options })
     } else {
@@ -1361,6 +1376,25 @@ mod tests {
         let options = run_options(&["--dedicated", "--map", "e1m1"]);
         assert!(options.dedicated);
         assert_eq!(options.map, "maps/e1m1.bsp");
+    }
+
+    #[test]
+    fn windowed_flag_parses_and_conflicts_with_dedicated() {
+        let options = run_options(&["--menu"]);
+        assert!(!options.windowed);
+        let options = run_options(&["--windowed", "--frames", "600"]);
+        assert!(options.windowed);
+        assert_eq!(options.frame_limit, Some(600));
+        assert!(matches!(
+            parse_application_command(&argv(&["--windowed"])).unwrap(),
+            ApplicationCommand::Menu { .. }
+        ));
+        assert!(matches!(
+            parse_application_command(&argv(&["--windowed", "--frames", "1"])).unwrap(),
+            ApplicationCommand::Run { .. }
+        ));
+        let error = parse_application_command(&argv(&["--windowed", "--dedicated"])).unwrap_err();
+        assert!(error.to_string().contains("--windowed"), "{error}");
     }
 
     #[test]
