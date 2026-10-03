@@ -81,6 +81,153 @@ pub trait Q2CharacterHost {
     fn spawn_gib(&mut self, gib: Q2CharacterGib);
 }
 
+/// Character host clock (`now`).
+pub type Q2CharacterClock = Box<dyn Fn() -> f64>;
+/// Character host random draw (`random`).
+pub type Q2CharacterRandom = Box<dyn FnMut() -> f64>;
+/// Character host movement observation (`movement`).
+pub type Q2CharacterMovementFn = Box<dyn FnMut(&ActorId) -> Q2PlayerMovement>;
+/// Character host point-contents query (`point_contents`).
+pub type Q2CharacterPointContents = Box<dyn FnMut(Vec3) -> i32>;
+/// Character host powerup observation (`powerups`).
+pub type Q2CharacterPowerupsFn = Box<dyn FnMut(&ActorId) -> Q2PlayerPowerups>;
+/// Character host weapon observation (`weapon`).
+pub type Q2CharacterWeaponFn = Box<dyn FnMut(&ActorId) -> Option<Q2CharacterWeapon>>;
+/// Character host presentation sink (`emit`).
+pub type Q2CharacterEmit = Box<dyn FnMut(Q2PresentationEvent)>;
+/// Character host view sink (`view`).
+pub type Q2CharacterViewFn = Box<dyn FnMut(&ActorId, Q2PlayerView)>;
+/// Character host noise sink (`noise`).
+pub type Q2CharacterNoise = Box<dyn FnMut(&ActorId, Vec3)>;
+/// Character host environment damage (`environment_damage`).
+pub type Q2CharacterEnvironmentDamage = Box<dyn FnMut(&OwnedActor, f64, i32, i32)>;
+/// Character host death reaction (`died`).
+pub type Q2CharacterDied = Box<dyn FnMut(&OwnedActor, &DeathReaction)>;
+/// Character host respawn request (`request_respawn`).
+pub type Q2CharacterRespawn = Box<dyn FnMut(&OwnedActor)>;
+/// Character host motion update (`motion`).
+pub type Q2CharacterMotion = Box<dyn FnMut(&OwnedActor, Q2MotionKind, Q2Solid)>;
+/// Character host gib spawn (`spawn_gib`).
+pub type Q2CharacterSpawnGib = Box<dyn FnMut(Q2CharacterGib)>;
+
+/// Production character host over engine services (`Q2CharacterHost`).
+///
+/// Each field is one donor host member: shared tables cross as trait
+/// objects, scalar and observation services cross as hooks so the engine
+/// binds them over its own tables, clock, scene, and match without a
+/// content dependency on the simulation.
+///
+/// Missing siblings: the runtime character lane owns construction; the
+/// pending caller chain is the `combat_before_reaction` character arm,
+/// the QuakeC client-spawn respawn arm, and the
+/// `q2_character_after_client_think` host upgrade. Uncalled until it lands.
+pub struct Q2CharacterHostServices {
+    /// Shared body table.
+    pub bodies: Box<dyn Q2BodyTable>,
+    /// Gameplay combat authority.
+    pub combat: Box<dyn Q2CombatAuthority>,
+    /// Shared inventory table.
+    pub inventory: Box<dyn Q2InventoryTable>,
+    /// Current source time in seconds.
+    pub clock: Q2CharacterClock,
+    /// Unit random draw.
+    pub random: Q2CharacterRandom,
+    /// Movement observation.
+    pub movement: Q2CharacterMovementFn,
+    /// Point-contents query.
+    pub point_contents: Q2CharacterPointContents,
+    /// Powerup observation.
+    pub powerups: Q2CharacterPowerupsFn,
+    /// Weapon observation.
+    pub weapon: Q2CharacterWeaponFn,
+    /// Presentation sink.
+    pub emit: Q2CharacterEmit,
+    /// View sink.
+    pub view: Q2CharacterViewFn,
+    /// Noise sink.
+    pub noise: Q2CharacterNoise,
+    /// Environment damage.
+    pub environment_damage: Q2CharacterEnvironmentDamage,
+    /// Death reaction.
+    pub died: Q2CharacterDied,
+    /// Respawn request.
+    pub request_respawn: Q2CharacterRespawn,
+    /// Motion update.
+    pub motion: Q2CharacterMotion,
+    /// Gib spawn.
+    pub spawn_gib: Q2CharacterSpawnGib,
+}
+
+impl Q2CharacterHost for Q2CharacterHostServices {
+    fn bodies(&mut self) -> &mut dyn Q2BodyTable {
+        &mut *self.bodies
+    }
+
+    fn combat(&mut self) -> &mut dyn Q2CombatAuthority {
+        &mut *self.combat
+    }
+
+    fn inventory(&mut self) -> &mut dyn Q2InventoryTable {
+        &mut *self.inventory
+    }
+
+    fn now(&self) -> f64 {
+        (self.clock)()
+    }
+
+    fn random(&mut self) -> f64 {
+        (self.random)()
+    }
+
+    fn movement(&mut self, actor: &ActorId) -> Q2PlayerMovement {
+        (self.movement)(actor)
+    }
+
+    fn point_contents(&mut self, point: Vec3) -> i32 {
+        (self.point_contents)(point)
+    }
+
+    fn powerups(&mut self, actor: &ActorId) -> Q2PlayerPowerups {
+        (self.powerups)(actor)
+    }
+
+    fn weapon(&mut self, actor: &ActorId) -> Option<Q2CharacterWeapon> {
+        (self.weapon)(actor)
+    }
+
+    fn emit(&mut self, event: Q2PresentationEvent) {
+        (self.emit)(event);
+    }
+
+    fn view(&mut self, actor: &ActorId, view: Q2PlayerView) {
+        (self.view)(actor, view);
+    }
+
+    fn noise(&mut self, actor: &ActorId, origin: Vec3) {
+        (self.noise)(actor, origin);
+    }
+
+    fn environment_damage(&mut self, actor: &OwnedActor, amount: f64, means: i32, flags: i32) {
+        (self.environment_damage)(actor, amount, means, flags);
+    }
+
+    fn died(&mut self, actor: &OwnedActor, reaction: &DeathReaction) {
+        (self.died)(actor, reaction);
+    }
+
+    fn request_respawn(&mut self, actor: &OwnedActor) {
+        (self.request_respawn)(actor);
+    }
+
+    fn motion(&mut self, actor: &OwnedActor, kind: Q2MotionKind, solid: Q2Solid) {
+        (self.motion)(actor, kind, solid);
+    }
+
+    fn spawn_gib(&mut self, gib: Q2CharacterGib) {
+        (self.spawn_gib)(gib);
+    }
+}
+
 /// Character options (`Q2CharacterOptions`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q2CharacterOptions {
@@ -776,5 +923,621 @@ impl Q2CharacterActor {
             state.old_view_angles = view.angles;
         });
         self.show(host);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+
+    use qa_core::identity::{IdentityOwner, ProviderId};
+    use qa_core::math::{Bounds, Vec4};
+    use qa_core::time::SourceTime;
+
+    use crate::contract::{ArmorState, InventoryEntry, PoweredProtectionState, RegularArmorState};
+    use crate::q2::support::contracts::{
+        AttackCause, BodyAttachment, DamageDelivery, DamageOutcome, DamageRequest, LinkedBody, PainReaction,
+        PowerArmorCells,
+    };
+
+    #[derive(Default)]
+    struct FakeBodies {
+        records: HashMap<ActorId, BodyState>,
+        attachments: HashMap<ActorId, BodyAttachment>,
+        linked: HashSet<ActorId>,
+    }
+
+    impl Q2BodyTable for FakeBodies {
+        fn create(&mut self, actor: &OwnedActor, initial: &BodyState) {
+            self.records.insert(actor.id().clone(), initial.clone());
+        }
+
+        fn read(&self, actor: &ActorId) -> Option<BodyState> {
+            self.records.get(actor).cloned()
+        }
+
+        fn write(&mut self, actor: &OwnedActor, state: &BodyState) {
+            self.records.insert(actor.id().clone(), state.clone());
+        }
+
+        fn attach(&mut self, actor: &OwnedActor, attachment: &BodyAttachment) {
+            self.attachments.insert(actor.id().clone(), attachment.clone());
+        }
+
+        fn detach(&mut self, actor: &OwnedActor) {
+            self.attachments.remove(actor.id());
+        }
+
+        fn attachment(&self, actor: &ActorId) -> Option<BodyAttachment> {
+            self.attachments.get(actor).cloned()
+        }
+
+        fn linked(&self, actor: &ActorId) -> Option<LinkedBody> {
+            let state = self.records.get(actor)?.clone();
+            if !self.linked.contains(actor) {
+                return None;
+            }
+            Some(LinkedBody {
+                actor: actor.clone(),
+                absolute_bounds: state.bounds,
+                state,
+                link_count: 1,
+            })
+        }
+
+        fn link(&mut self, actor: &OwnedActor, _origin: Option<Vec3>) {
+            self.linked.insert(actor.id().clone());
+        }
+
+        fn unlink(&mut self, actor: &OwnedActor) {
+            self.linked.remove(actor.id());
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCombat {
+        records: HashMap<ActorId, CombatState>,
+    }
+
+    impl FakeCombat {
+        fn seed(&mut self, actor: &ActorId, health: f64) {
+            self.records.insert(
+                actor.clone(),
+                CombatState {
+                    health,
+                    armor: ArmorState {
+                        regular: RegularArmorState::None,
+                        powered: PoweredProtectionState::None,
+                    },
+                    mass: 200.0,
+                    can_take_damage: true,
+                    invulnerable: false,
+                    no_knockback: false,
+                    team: None,
+                },
+            );
+        }
+    }
+
+    impl Q2CombatAuthority for FakeCombat {
+        fn create(&mut self, actor: &OwnedActor, initial: &CombatState) {
+            self.records.insert(actor.id().clone(), initial.clone());
+        }
+
+        fn read(&self, actor: &ActorId) -> Option<CombatState> {
+            self.records.get(actor).cloned()
+        }
+
+        fn set_health(&mut self, actor: &OwnedActor, health: f64) {
+            if let Some(record) = self.records.get_mut(actor.id()) {
+                record.health = health;
+            }
+        }
+
+        fn set_armor(&mut self, actor: &OwnedActor, armor: &ArmorState) {
+            if let Some(record) = self.records.get_mut(actor.id()) {
+                record.armor = armor.clone();
+            }
+        }
+
+        fn set_regular_points(&mut self, _actor: &OwnedActor, _points: f64, _initial: Option<&RegularArmorState>) {}
+
+        fn set_regular_armor(&mut self, actor: &OwnedActor, regular: &RegularArmorState) {
+            if let Some(record) = self.records.get_mut(actor.id()) {
+                record.armor.regular = regular.clone();
+            }
+        }
+
+        fn set_powered_protection(&mut self, actor: &OwnedActor, powered: &PoweredProtectionState) {
+            if let Some(record) = self.records.get_mut(actor.id()) {
+                record.armor.powered = powered.clone();
+            }
+        }
+
+        fn set_traits(&mut self, actor: &OwnedActor, changes: &CombatTraitChanges) {
+            if let Some(record) = self.records.get_mut(actor.id()) {
+                if let Some(can_take_damage) = changes.can_take_damage {
+                    record.can_take_damage = can_take_damage;
+                }
+                if let Some(mass) = changes.mass {
+                    record.mass = mass;
+                }
+                if let Some(invulnerable) = changes.invulnerable {
+                    record.invulnerable = invulnerable;
+                }
+                if let Some(team) = changes.team.clone() {
+                    record.team = team;
+                }
+                if let Some(no_knockback) = changes.no_knockback {
+                    record.no_knockback = no_knockback;
+                }
+            }
+        }
+
+        fn bind_power_armor_cells(&mut self, _actor: &OwnedActor, _cells: Box<dyn PowerArmorCells>) {}
+
+        fn apply(&mut self, input: &DamageRequest) -> DamageOutcome {
+            DamageOutcome::StaleTarget { request: input.clone() }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeInventory {
+        counts: HashMap<(ActorId, ItemId), f64>,
+    }
+
+    impl Q2InventoryTable for FakeInventory {
+        fn create(&mut self, _actor: &OwnedActor, _entries: &[InventoryEntry]) {}
+
+        fn entries(&self, _actor: &ActorId) -> Vec<InventoryEntry> {
+            Vec::new()
+        }
+
+        fn has(&self, actor: &ActorId) -> bool {
+            self.counts.keys().any(|(id, _)| id == actor)
+        }
+
+        fn count(&self, actor: &ActorId, item: &ItemId) -> f64 {
+            self.counts.get(&(actor.clone(), item.clone())).copied().unwrap_or(0.0)
+        }
+
+        fn consume(&mut self, actor: &OwnedActor, item: &ItemId, count: f64) -> bool {
+            let entry = self.counts.entry((actor.id().clone(), item.clone())).or_insert(0.0);
+            if *entry < count {
+                return false;
+            }
+            *entry -= count;
+            true
+        }
+
+        fn give(&mut self, actor: &OwnedActor, item: &ItemId, count: f64) -> f64 {
+            let entry = self.counts.entry((actor.id().clone(), item.clone())).or_insert(0.0);
+            *entry += count;
+            count
+        }
+
+        fn configure(&mut self, _actor: &OwnedActor, _entry: &InventoryEntry) {}
+
+        fn adjust_source_counter(&mut self, actor: &OwnedActor, item: &ItemId, delta: f64) -> f64 {
+            let entry = self.counts.entry((actor.id().clone(), item.clone())).or_insert(0.0);
+            *entry += delta;
+            *entry
+        }
+    }
+
+    #[derive(Default)]
+    struct HostRecorder {
+        events: Vec<Q2PresentationEvent>,
+        views: Vec<(ActorId, Q2PlayerView)>,
+        noises: Vec<(ActorId, Vec3)>,
+        damage: Vec<(OwnedActor, f64, i32, i32)>,
+        deaths: Vec<OwnedActor>,
+        respawns: Vec<OwnedActor>,
+        motions: Vec<(OwnedActor, Q2MotionKind, Q2Solid)>,
+        gibs: Vec<Q2CharacterGib>,
+    }
+
+    fn test_owned(slot: u32) -> OwnedActor {
+        let owner = IdentityOwner::create("q2-character-test").expect("owner");
+        let id = owner.actor(slot, 1);
+        owner.owned_actor(&id, ProviderId::new("q2", "test")).expect("owned")
+    }
+
+    fn test_movement(buttons: i32) -> Q2PlayerMovement {
+        Q2PlayerMovement {
+            view_angles: vec3(0.0, 90.0, 0.0),
+            command_angles: vec3(0.0, 90.0, 0.0),
+            water_level: 0,
+            water_type: 0,
+            grounded: true,
+            ducked: false,
+            buttons,
+            standing_bounds: Bounds {
+                min: vec3(-16.0, -16.0, -24.0),
+                max: vec3(16.0, 16.0, 32.0),
+            },
+            animate_q2: true,
+        }
+    }
+
+    fn test_view() -> Q2PlayerView {
+        Q2PlayerView {
+            angles: vec3(1.0, 2.0, 3.0),
+            offset: vec3(4.0, 5.0, 6.0),
+            kick_angles: vec3(0.0, 0.0, 0.0),
+            gun_angles: vec3(0.0, 0.0, 0.0),
+            gun_offset: vec3(0.0, 0.0, 0.0),
+            blend: Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            },
+            fov: 90,
+            underwater: false,
+            flashes: 0,
+            health: 100.0,
+            armor: 0.0,
+            ammo: 0.0,
+            score: 0,
+            selected_item: None,
+            timer: None,
+            spectator: false,
+            layouts: 0,
+        }
+    }
+
+    fn test_host(recorder: Rc<RefCell<HostRecorder>>, buttons: Rc<RefCell<i32>>, now: f64) -> Q2CharacterHostServices {
+        let emit = Rc::clone(&recorder);
+        let view_sink = Rc::clone(&recorder);
+        let noise = Rc::clone(&recorder);
+        let damage = Rc::clone(&recorder);
+        let died = Rc::clone(&recorder);
+        let respawn = Rc::clone(&recorder);
+        let motion = Rc::clone(&recorder);
+        let gib = Rc::clone(&recorder);
+        Q2CharacterHostServices {
+            bodies: Box::new(FakeBodies::default()),
+            combat: Box::new(FakeCombat::default()),
+            inventory: Box::new(FakeInventory::default()),
+            clock: Box::new(move || now),
+            random: Box::new(|| 0.5),
+            movement: Box::new(move |_| test_movement(*buttons.borrow())),
+            point_contents: Box::new(|_| 0),
+            powerups: Box::new(|_| Q2PlayerPowerups::default()),
+            weapon: Box::new(|_| None),
+            emit: Box::new(move |event| emit.borrow_mut().events.push(event)),
+            view: Box::new(move |actor, view| view_sink.borrow_mut().views.push((actor.clone(), view))),
+            noise: Box::new(move |actor, origin| noise.borrow_mut().noises.push((actor.clone(), origin))),
+            environment_damage: Box::new(move |actor, amount, means, flags| {
+                damage.borrow_mut().damage.push((actor.clone(), amount, means, flags));
+            }),
+            died: Box::new(move |actor, _| died.borrow_mut().deaths.push(actor.clone())),
+            request_respawn: Box::new(move |actor| respawn.borrow_mut().respawns.push(actor.clone())),
+            motion: Box::new(move |actor, kind, solid| motion.borrow_mut().motions.push((actor.clone(), kind, solid))),
+            spawn_gib: Box::new(move |gibbed| gib.borrow_mut().gibs.push(gibbed)),
+        }
+    }
+
+    fn test_character(actor: OwnedActor) -> Q2CharacterActor {
+        Q2CharacterActor::new(
+            actor,
+            Q2CharacterOptions {
+                edition: Some(Q2Edition::Classic),
+                model: "models/player.md2".to_string(),
+                skin: 0,
+                slot: 0,
+                mode: Q2Mode::Deathmatch,
+                deathmatch_flags: 0,
+                environment: false,
+                view_rules: None,
+            },
+            100.0,
+        )
+    }
+
+    fn seed_body(host: &mut Q2CharacterHostServices, actor: &OwnedActor) {
+        host.bodies().create(
+            actor,
+            &BodyState {
+                origin: vec3(0.0, 0.0, 0.0),
+                angles: vec3(0.0, 90.0, 0.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                bounds: Bounds {
+                    min: vec3(-16.0, -16.0, -24.0),
+                    max: vec3(16.0, 16.0, 32.0),
+                },
+                ground: None,
+            },
+        );
+    }
+
+    fn seed_combat(host: &mut Q2CharacterHostServices, actor: &ActorId, health: f64) {
+        let mut combat = FakeCombat::default();
+        combat.seed(actor, health);
+        host.combat = Box::new(combat);
+    }
+
+    fn test_attack(target: &ActorId) -> DamageRequest {
+        let provider = ProviderId::new("q2", "test");
+        DamageRequest {
+            attack: crate::q2::support::contracts::AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Seconds(100.0),
+                attacker: None,
+                inflictor: None,
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider,
+                cause: AttackCause::Q2 {
+                    means_of_death: 1,
+                    damage_flags: 0,
+                    native: None,
+                },
+            },
+            target: target.clone(),
+            amount: 25.0,
+            knockback: 100.0,
+            direction: vec3(0.0, 0.0, 1.0),
+            point: vec3(1.0, 2.0, 3.0),
+            normal: vec3(0.0, 0.0, 1.0),
+            delivery: DamageDelivery::Direct,
+        }
+    }
+
+    #[test]
+    fn host_delegates_every_service() {
+        let actor = test_owned(1);
+        let id = actor.id().clone();
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(7));
+        let mut host = test_host(Rc::clone(&recorder), Rc::clone(&buttons), 100.0);
+
+        seed_body(&mut host, &actor);
+        assert_eq!(host.bodies().read(&id).expect("body").angles.y, 90.0);
+        host.combat().create(
+            &actor,
+            &CombatState {
+                health: 80.0,
+                armor: ArmorState {
+                    regular: RegularArmorState::None,
+                    powered: PoweredProtectionState::None,
+                },
+                mass: 200.0,
+                can_take_damage: true,
+                invulnerable: false,
+                no_knockback: false,
+                team: None,
+            },
+        );
+        assert_eq!(host.combat().read(&id).expect("combat").health, 80.0);
+        assert_eq!(host.inventory().give(&actor, &"shells".to_string(), 10.0), 10.0);
+        assert_eq!(host.inventory().count(&id, &"shells".to_string()), 10.0);
+        assert_eq!(host.now(), 100.0);
+        assert_eq!(host.random(), 0.5);
+        assert_eq!(host.movement(&id).buttons, 7);
+        assert_eq!(host.point_contents(vec3(0.0, 0.0, 0.0)), 0);
+        assert_eq!(host.powerups(&id), Q2PlayerPowerups::default());
+        assert_eq!(host.weapon(&id), None);
+        host.emit(Q2PresentationEvent::EntityEvent {
+            actor: id.clone(),
+            event: 7,
+        });
+        let view = test_view();
+        host.view(&id, view.clone());
+        host.noise(&id, vec3(1.0, 2.0, 3.0));
+        host.environment_damage(&actor, 5.0, 3, 1);
+        let reaction = DeathReaction {
+            pain: PainReaction {
+                attack: None,
+                this: actor.clone(),
+                attacker: None,
+                kick: 0.0,
+                damage: 10.0,
+            },
+            inflictor: None,
+            point: vec3(0.0, 0.0, 0.0),
+        };
+        host.died(&actor, &reaction);
+        host.request_respawn(&actor);
+        host.motion(&actor, Q2MotionKind::Toss, Q2Solid::Box);
+        host.spawn_gib(Q2CharacterGib {
+            model: "gib.md2".to_string(),
+            origin: vec3(0.0, 0.0, 0.0),
+            velocity: vec3(0.0, 0.0, 0.0),
+            angular_velocity: vec3(0.0, 0.0, 0.0),
+            expires_at: 110.0,
+        });
+
+        let recorder = recorder.borrow();
+        assert!(matches!(
+            recorder.events.as_slice(),
+            [Q2PresentationEvent::EntityEvent { event: 7, .. }]
+        ));
+        assert_eq!(recorder.views.as_slice(), [(id.clone(), view)]);
+        assert_eq!(recorder.noises.as_slice(), [(id, vec3(1.0, 2.0, 3.0))]);
+        assert_eq!(recorder.damage.len(), 1);
+        assert_eq!(recorder.damage[0].1, 5.0);
+        assert_eq!(recorder.deaths.len(), 1);
+        assert_eq!(recorder.deaths[0], actor);
+        assert_eq!(recorder.respawns.len(), 1);
+        assert_eq!(recorder.respawns[0], actor);
+        assert_eq!(
+            recorder.motions.as_slice(),
+            [(actor.clone(), Q2MotionKind::Toss, Q2Solid::Box)]
+        );
+        assert_eq!(recorder.gibs.len(), 1);
+        assert_eq!(recorder.gibs[0].model, "gib.md2");
+    }
+
+    #[test]
+    fn character_latch_runs_through_host() {
+        let actor = test_owned(2);
+        let mut character = test_character(actor);
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(5));
+        let mut host = test_host(recorder, Rc::clone(&buttons), 100.0);
+
+        character.after_client_think(&mut host);
+        assert_eq!(character.state.buttons, 5);
+        assert_eq!(character.state.latched_buttons, 5);
+        *buttons.borrow_mut() = 4;
+        character.after_client_think(&mut host);
+        assert_eq!(character.state.buttons, 4);
+        assert_eq!(character.state.latched_buttons, 5);
+    }
+
+    #[test]
+    fn character_begin_frame_respawn_gate() {
+        let actor = test_owned(3);
+        let mut character = test_character(actor.clone());
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(0));
+        let mut host = test_host(Rc::clone(&recorder), buttons, 200.0);
+
+        character.state.dead = true;
+        character.state.latched_buttons = 1;
+        character.begin_frame(&mut host);
+        assert_eq!(character.state.latched_buttons, 0);
+        assert_eq!(recorder.borrow().respawns.len(), 1);
+        assert_eq!(recorder.borrow().respawns[0], actor);
+
+        character.state.dead = false;
+        character.state.latched_buttons = 7;
+        character.begin_frame(&mut host);
+        assert_eq!(character.state.latched_buttons, 0);
+        assert_eq!(recorder.borrow().respawns.len(), 1);
+    }
+
+    #[test]
+    fn character_records_damage_through_host() {
+        let actor = test_owned(4);
+        let id = actor.id().clone();
+        let mut character = test_character(actor);
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(0));
+        let mut host = test_host(recorder, buttons, 100.0);
+
+        let request = test_attack(&id);
+        character.record_damage(
+            &mut host,
+            &DamageDecision {
+                request: request.clone(),
+                mutations: Vec::new(),
+                applied_damage: 25.0,
+                reaction: DamageReactionKind::Pain,
+                feedback: None,
+            },
+        );
+        assert_eq!(character.state.damage_blood, 25.0);
+        assert_eq!(character.state.damage_from, vec3(1.0, 2.0, 3.0));
+        assert_eq!(character.entity.last_attack.as_ref().expect("attack").sequence, 1);
+        assert_eq!(character.state.power_armor_time, 0.0);
+
+        character.record_damage(
+            &mut host,
+            &DamageDecision {
+                request,
+                mutations: Vec::new(),
+                applied_damage: 25.0,
+                reaction: DamageReactionKind::Pain,
+                feedback: Some(DamageFeedback::Q2 {
+                    power_armor: 5.0,
+                    armor: 10.0,
+                    blood: 20.0,
+                    knockback: 50.0,
+                }),
+            },
+        );
+        assert_eq!(character.state.damage_blood, 45.0);
+        assert_eq!(character.state.damage_armor, 10.0);
+        assert_eq!(character.state.power_armor_time, 100.2);
+    }
+
+    #[test]
+    fn character_gib_flow_spawns_gibs() {
+        let actor = test_owned(5);
+        let id = actor.id().clone();
+        let mut character = test_character(actor.clone());
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(0));
+        let mut host = test_host(Rc::clone(&recorder), buttons, 100.0);
+        seed_body(&mut host, &actor);
+        seed_combat(&mut host, &id, -50.0);
+
+        character.die(
+            &mut host,
+            &DeathReaction {
+                pain: PainReaction {
+                    attack: None,
+                    this: actor.clone(),
+                    attacker: None,
+                    kick: 0.0,
+                    damage: 120.0,
+                },
+                inflictor: None,
+                point: vec3(0.0, 0.0, 0.0),
+            },
+        );
+
+        assert!(character.state.gibbed);
+        assert!(character.entity.model.contains("gibs"));
+        assert_eq!(character.state.killer_yaw, 90.0);
+        assert!(!host.combat().read(&id).expect("combat").can_take_damage);
+        let recorder = recorder.borrow();
+        assert_eq!(recorder.gibs.len(), 4);
+        assert_eq!(recorder.deaths.len(), 1);
+        assert_eq!(recorder.deaths[0], actor);
+        assert!(recorder
+            .motions
+            .contains(&(actor.clone(), Q2MotionKind::Toss, Q2Solid::Box)));
+        assert!(recorder.motions.contains(&(actor, Q2MotionKind::Bounce, Q2Solid::None)));
+        assert!(!recorder.events.is_empty());
+    }
+
+    #[test]
+    fn character_end_frame_intermission_publishes_view() {
+        let actor = test_owned(6);
+        let id = actor.id().clone();
+        let mut character = test_character(actor);
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(0));
+        let mut host = test_host(Rc::clone(&recorder), buttons, 100.0);
+        seed_body(&mut host, &character.actor.clone());
+
+        character.end_frame(&mut host, true);
+
+        let recorder = recorder.borrow();
+        assert_eq!(recorder.views.len(), 1);
+        assert_eq!(recorder.views[0].0, id);
+    }
+
+    #[test]
+    fn character_respawned_resets() {
+        let actor = test_owned(7);
+        let mut character = test_character(actor);
+        let recorder = Rc::new(RefCell::new(HostRecorder::default()));
+        let buttons = Rc::new(RefCell::new(0));
+        let mut host = test_host(Rc::clone(&recorder), buttons, 100.0);
+
+        character.state.dead = true;
+        character.state.gibbed = true;
+        character.state.damage_blood = 99.0;
+        character.respawned(&mut host);
+
+        assert!(!character.state.dead);
+        assert!(!character.state.gibbed);
+        assert_eq!(character.state.damage_blood, 0.0);
+        assert_eq!(character.state.air_finished, 112.0);
+        assert_eq!(character.entity.model, "models/player.md2");
+        assert_eq!(character.state.event, "q2:player-teleport");
+        assert!(!recorder.borrow().events.is_empty());
     }
 }
