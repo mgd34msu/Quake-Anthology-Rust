@@ -1,3 +1,5 @@
+//! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/runtime.ts`
+//!
 //! Q2 persistence-to-content character checkpoint bridge.
 //!
 //! Converts the save-side
