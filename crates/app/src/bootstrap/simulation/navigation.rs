@@ -94,15 +94,13 @@
 //! Scene actor rows flow from the shared tables: world construction
 //! installs a rows provider over the live actor/body handles, so
 //! `queryActors` answers linked bodies and the hazard loop below reads
-//! live `trigger_hurt` state. Rows carry box shapes (collision shapes
-//! live in the physics lane's spatial table, which has no accessor),
-//! so entity/train model matching stays gated on `Model` rows.
+//! live `trigger_hurt` state. Row shapes follow the live physics
+//! solidity (`SharedSimulation::collision`, the same source the physics
+//! lane links into its spatial table), so brush solids with inline
+//! models surface `Model` rows for entity/train matching.
 //!
 //! Missing siblings (no Rust home in this worktree; unify post-merge):
 //!
-//! * Scene collision shapes: entity/train matching needs `Model` rows
-//!   from the physics lane's spatial table; box rows keep those loops
-//!   inert while hazard reads are live.
 //! * Q3 native entity records (donor `records.nativeByActor`, mover
 //!   state, door triggers, `trigger_hurt`): the Q3 entity/hazard arms
 //!   land with the records home.
@@ -151,6 +149,7 @@ use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::NumericProfile;
 use thiserror::Error;
 
+use super::physics::{SharedSolid, SolidKind};
 use super::player_input_application::{MovementProfile, MovementState};
 use super::player_movement::{
     capture_player_locomotion, create_player_movement_prediction, locomotion_template, movement_observation,
@@ -931,16 +930,35 @@ fn guest_snapshot(
     }
 }
 
+/// Scene row shape for a live physics solid (donor
+/// `src/app/bootstrap/simulation/physics.ts:282`: brush solids with an
+/// inline model link `{ kind: 'model' }`, everything else links
+/// `{ kind: 'box' }`; donor `queryActors` rows carry those shapes per
+/// `src/world/collision/index.ts:96-106`).
+fn scene_shape_for_solid(solid: Option<&SharedSolid>) -> SceneCollisionShape {
+    let shape = match solid {
+        Some(SharedSolid {
+            solid: SolidKind::Brush,
+            model: Some(model),
+            ..
+        }) => qa_world::spatial::CollisionShape::Model(*model),
+        _ => qa_world::spatial::CollisionShape::Box,
+    };
+    SceneCollisionShape::from(shape)
+}
+
 /// Install the live scene-rows provider over the shared tables.
 ///
 /// Reads linked bodies for live actors through the crate handles and
-/// answers the facade's `queryActors` with box-shaped rows; model
-/// shapes still belong to the physics lane, so entity/train matching
-/// stays gated while hazard reads go live. Idempotent: reinstalling
-/// replaces an equivalent provider.
+/// answers the facade's `queryActors` with live physics shapes:
+/// brush solids with inline models surface `Model` rows for
+/// entity/train matching, while unknown or unresolvable solidity
+/// keeps the previous box shape. Idempotent: reinstalling replaces an
+/// equivalent provider.
 fn install_scene_rows(simulation: &SharedSimulation) {
     let actors = simulation.actors_handle();
     let tables = simulation.bodies_handle();
+    let scene_simulation = simulation.clone();
     let provider: SceneRowProvider = Rc::new(move |bounds, _kind| {
         let registry = actors.borrow();
         let bodies = tables.borrow();
@@ -953,15 +971,14 @@ fn install_scene_rows(simulation: &SharedSimulation) {
                 if !qa_world::spatial::bounds_intersect(&linked.absolute_bounds, &bounds) {
                     return None;
                 }
+                let shape = scene_shape_for_solid(scene_simulation.collision(&owned).unwrap_or(None).as_ref());
                 Some(SceneActorHit {
                     body: SceneBody {
                         actor: owned,
                         state: linked.state,
                         absolute_bounds: linked.absolute_bounds,
                     },
-                    collision: SceneCollision {
-                        shape: SceneCollisionShape::Box,
-                    },
+                    collision: SceneCollision { shape },
                 })
             })
             .collect()
@@ -1933,5 +1950,45 @@ mod tests {
     #[test]
     fn family_matches_template() {
         assert_eq!(locomotion_fixture().character, GameFamily::Q3);
+    }
+
+    /// Scene row shapes follow the donor link rule: only brush solids
+    /// with an inline model surface `Model` rows (donor
+    /// `src/app/bootstrap/simulation/physics.ts:282`).
+    #[test]
+    fn scene_shapes_follow_brush_models() {
+        use super::super::physics::PhysicsFamily;
+
+        let solid = |solid: SolidKind, model: Option<u32>| SharedSolid {
+            solid,
+            model,
+            family: PhysicsFamily::Q2,
+            owner: None,
+            monster: None,
+            dead_monster: None,
+            q1_corpse: false,
+            item: None,
+        };
+        assert!(matches!(
+            scene_shape_for_solid(Some(&solid(SolidKind::Brush, Some(3)))),
+            SceneCollisionShape::Model { model: 3 }
+        ));
+        assert!(matches!(
+            scene_shape_for_solid(Some(&solid(SolidKind::Brush, None))),
+            SceneCollisionShape::Box
+        ));
+        assert!(matches!(
+            scene_shape_for_solid(Some(&solid(SolidKind::Box, Some(3)))),
+            SceneCollisionShape::Box
+        ));
+        assert!(matches!(
+            scene_shape_for_solid(Some(&solid(SolidKind::Trigger, None))),
+            SceneCollisionShape::Box
+        ));
+        assert!(matches!(
+            scene_shape_for_solid(Some(&solid(SolidKind::None, None))),
+            SceneCollisionShape::Box
+        ));
+        assert!(matches!(scene_shape_for_solid(None), SceneCollisionShape::Box));
     }
 }
