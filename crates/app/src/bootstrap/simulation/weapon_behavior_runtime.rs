@@ -15,7 +15,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use qa_content::contract::{ItemId, NativeWeaponBehaviorDeclaration, ProjectileRole, WeaponBehaviorDefinition};
+use qa_compat::q2::rerelease::native_weapon_declaration::NativeWeaponBehaviorDeclaration;
+use qa_content::contract::{ItemId, ProjectileRole, WeaponBehaviorDefinition};
 use qa_core::identity::{ActorId, OwnedActor, ProviderId, SavedActorId};
 use qa_core::math::{Bounds, Vec3};
 use qa_guest::qc::program::QcProgram;
@@ -23,7 +24,6 @@ use qa_world::body::BodyState;
 use qa_world::save::value::{SaveJson, SaveReader};
 use thiserror::Error;
 
-use super::native_q2_rerelease_save::RereleaseSourceSave;
 use super::random::{RandomCheckpoint, RandomError, SourceRandom};
 use super::types::{PreparedWeaponBehavior, SimulationMode};
 
@@ -214,96 +214,14 @@ pub struct WeaponModelRef {
     pub bounds: Bounds,
 }
 
-/// Mirror of `ClassicGuestMap` from donor
-/// `src/app/bootstrap/simulation/classic-guest-world.ts` (canonical home:
-/// `crate::bootstrap::simulation::classic_guest_world`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassicGuestMap {
-    /// Map path.
-    pub map: String,
-    /// Entity text.
-    pub entities: String,
-    /// Spawn point.
-    pub spawn_point: String,
-}
-
-/// Mirror of `BindingKind` from donor
-/// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
-/// home: `crate::bootstrap::simulation::rerelease_weapon_behavior`); unify
-/// post-merge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RereleaseWeaponBindingKind {
-    /// Client record binding.
-    Client,
-    /// Target binding.
-    Target,
-    /// Projectile binding.
-    Projectile,
-}
-
-/// One saved configstring, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["configstrings"][number]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RereleaseWeaponConfigString {
-    /// Configstring index.
-    pub index: u32,
-    /// Configstring value.
-    pub value: String,
-}
-
-/// One retired trajectory, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["retired"][number]`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RereleaseWeaponRetired {
-    /// Retired projectile.
-    pub actor: SavedActorId,
-    /// Final trajectory.
-    pub trajectory: WeaponTrajectoryUpdate,
-}
-
-/// One actor binding, mirroring donor
-/// `RereleaseWeaponBehaviorCheckpoint["bindings"][number]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RereleaseWeaponBinding {
-    /// Entity slot.
-    pub slot: u32,
-    /// Bound actor.
-    pub actor: SavedActorId,
-    /// Binding kind.
-    pub kind: RereleaseWeaponBindingKind,
-    /// Profile generation.
-    pub generation: u32,
-}
-
-/// Mirror of `RereleaseWeaponBehaviorCheckpoint` from donor
-/// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
-/// home: `crate::bootstrap::simulation::rerelease_weapon_behavior`); unify
-/// post-merge.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RereleaseWeaponBehaviorCheckpoint {
-    /// Schema version (donor `version: 1`).
-    pub version: u32,
-    /// Behavior declaration.
-    pub declaration: NativeWeaponBehaviorDeclaration,
-    /// Behavior definition.
-    pub definition: WeaponBehaviorDefinition,
-    /// Guest map.
-    pub map: ClassicGuestMap,
-    /// Source time in seconds.
-    pub time: f64,
-    /// Saved game state.
-    pub game: RereleaseSourceSave,
-    /// Saved level state.
-    pub level: RereleaseSourceSave,
-    /// Saved cvar state.
-    pub cvars: Vec<u8>,
-    /// Saved configstrings.
-    pub configstrings: Vec<RereleaseWeaponConfigString>,
-    /// Retired trajectories.
-    pub retired: Vec<RereleaseWeaponRetired>,
-    /// Actor bindings.
-    pub bindings: Vec<RereleaseWeaponBinding>,
-}
+/// Rerelease checkpoint and declaration shared with the guest partition.
+///
+/// The runtime used to mirror these shapes locally, but the mirror drops
+/// declaration tags and signatures that `same_native_weapon_declaration`
+/// (serialization equality) requires, so a mirrored round trip cannot
+/// restore. The donor has one checkpoint type; the runtime uses the guest
+/// partition's directly.
+pub use super::rerelease_weapon_behavior::RereleaseWeaponBehaviorCheckpoint;
 
 /// Mirror of `RereleaseWeaponBehaviorSource` from donor
 /// `src/app/bootstrap/simulation/rerelease-weapon-behavior.ts` (canonical
@@ -1103,15 +1021,18 @@ impl<
 mod tests {
     use std::cell::Cell;
 
+    use qa_compat::q2::rerelease::host::SourceSave;
+    use qa_compat::q2::rerelease::native_weapon_declaration::{
+        DeclCalls, DeclClientFields, DeclCommand, DeclEntityFields, DeclEntry, DeclEquippedWeapon,
+        DeclRegistrationLayout,
+    };
     use qa_content::catalog::{
         resolve_qc_weapon_behavior, QcWeaponFunction, QcWeaponProgramSnapshot, SourceWeaponBehaviorMetadata,
         WeaponBehaviorCompatibility,
     };
     use qa_content::contract::{
         create_content_digest, ContentId, ContentMount, LooseMount, MountId, MountIdentity, MountPlanId,
-        NativeWeaponAllocate, NativeWeaponCalls, NativeWeaponClient, NativeWeaponCommand, NativeWeaponEntity,
-        NativeWeaponEntry, NativeWeaponEquipped, NativeWeaponFree, NativeWeaponRegistrationLayout, NativeWeaponThink,
-        NativeWeaponTime, ProviderReference, ResolvedMountPlan, ResolvedWeaponBehaviorSelection,
+        ProviderReference, ResolvedMountPlan, ResolvedWeaponBehaviorSelection,
     };
     use qa_content::mounts::{open_mount_plan, OpenMountOptions};
     use qa_core::identity::IdentityOwner;
@@ -1599,18 +1520,30 @@ mod tests {
     }
 
     fn declaration(id: &str, role: ProjectileRole) -> NativeWeaponBehaviorDeclaration {
-        let entry = NativeWeaponEntry {
+        let entry = DeclEntry {
             rva: 0x100,
             registration: None,
         };
+        let role_name = match role {
+            ProjectileRole::Rocket => "rocket",
+            ProjectileRole::Grenade => "grenade",
+            ProjectileRole::Nail => "nail",
+            ProjectileRole::Bolt => "bolt",
+            ProjectileRole::Plasma => "plasma",
+            ProjectileRole::Energy => "energy",
+            ProjectileRole::Grapple => "grapple",
+        };
         NativeWeaponBehaviorDeclaration {
             version: 1,
+            kind: "rerelease".to_string(),
+            abi: "windows-x86-64".to_string(),
+            artifact_path: "game.dll".to_string(),
+            artifact_digest: "ab".repeat(32),
             id: id.to_string(),
             title: format!("{id} title"),
-            role,
-            artifact_path: "game.dll".to_string(),
-            artifact_digest: test_digest(),
-            entity: NativeWeaponEntity {
+            role: role_name.to_string(),
+            aspect: "trajectory".to_string(),
+            entity: DeclEntityFields {
                 byte_length: 256,
                 origin: 0,
                 angles: 12,
@@ -1624,37 +1557,45 @@ mod tests {
                 think_registration: 60,
                 touch_callback: 64,
             },
-            client: NativeWeaponClient {
+            client: DeclClientFields {
                 byte_length: 128,
                 weapon: 0,
                 view_angles: 8,
                 forward: 20,
             },
-            equipped_weapon: NativeWeaponEquipped {
+            equipped_weapon: DeclEquippedWeapon {
                 byte_length: 32,
                 callback: 0,
                 expected: entry.clone(),
             },
-            time: NativeWeaponTime { rva: 0x300 },
-            think: NativeWeaponThink {
-                tag: 7,
-                registration: NativeWeaponRegistrationLayout {
-                    byte_length: 32,
-                    name: 0,
-                    tag: 8,
-                    callback: 16,
-                },
+            time_storage: "static".to_string(),
+            time_rva: 0x300,
+            think_signature: "think".to_string(),
+            think_tag: 7,
+            think_registration: DeclRegistrationLayout {
+                byte_length: 32,
+                name: 0,
+                tag: 8,
+                callback: 16,
             },
-            allocate: NativeWeaponAllocate { entry: entry.clone() },
-            free: NativeWeaponFree { entry: entry.clone() },
+            allocate_signature: "allocate".to_string(),
+            allocate: entry.clone(),
+            free_signature: "free".to_string(),
+            free: entry.clone(),
             projectile_touch: entry.clone(),
-            equip: NativeWeaponCalls { calls: Vec::new() },
-            launch: NativeWeaponCalls { calls: Vec::new() },
+            equip: DeclCalls {
+                signature: "equip".to_string(),
+                calls: Vec::new(),
+            },
+            launch: DeclCalls {
+                signature: "launch".to_string(),
+                calls: Vec::new(),
+            },
             activate_rva: None,
             fire_rva: 0x500,
             initialization_classes: Vec::new(),
             equipment: Vec::new(),
-            ammunition: NativeWeaponCommand {
+            ammunition: DeclCommand {
                 arguments: Vec::new(),
                 tail: String::new(),
             },
@@ -1733,20 +1674,20 @@ mod tests {
                                 version: 1,
                                 declaration: resolved,
                                 definition: selection.definition.clone(),
-                                map: ClassicGuestMap {
+                                map: super::super::classic_guest_world::ClassicGuestMap {
                                     map: "maps/base1.bsp".to_string(),
                                     entities: String::new(),
                                     spawn_point: "start".to_string(),
                                 },
                                 time: 0.0,
-                                game: RereleaseSourceSave {
+                                game: SourceSave {
                                     native: Vec::new(),
-                                    deferred_damage: Vec::new(),
+                                    deferred: Vec::new(),
                                     projections: Vec::new(),
                                 },
-                                level: RereleaseSourceSave {
+                                level: SourceSave {
                                     native: Vec::new(),
-                                    deferred_damage: Vec::new(),
+                                    deferred: Vec::new(),
                                     projections: Vec::new(),
                                 },
                                 cvars: Vec::new(),
@@ -1773,20 +1714,20 @@ mod tests {
                     version: 1,
                     declaration: declaration.clone(),
                     definition: definition.clone(),
-                    map: ClassicGuestMap {
+                    map: super::super::classic_guest_world::ClassicGuestMap {
                         map: "maps/base1.bsp".to_string(),
                         entities: String::new(),
                         spawn_point: "start".to_string(),
                     },
                     time: 1.0,
-                    game: RereleaseSourceSave {
+                    game: SourceSave {
                         native: Vec::new(),
-                        deferred_damage: Vec::new(),
+                        deferred: Vec::new(),
                         projections: Vec::new(),
                     },
-                    level: RereleaseSourceSave {
+                    level: SourceSave {
                         native: Vec::new(),
-                        deferred_damage: Vec::new(),
+                        deferred: Vec::new(),
                         projections: Vec::new(),
                     },
                     cvars: Vec::new(),

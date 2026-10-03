@@ -34,7 +34,7 @@ use qa_guest::core::contracts::ModuleIdentity;
 use qa_guest::runtime::windows::contracts::WindowsCapabilities;
 use qa_net::q2_adapters::{Q2RereleaseEntityState, Q2RereleasePlayerState, Q2RereleaseUserCommand};
 
-use super::classic_guest_services::{GuestCommandLine, NativeInputViewState};
+use super::classic_guest_services::{GuestCommandLine, NativeInputViewState, PlayerVelocityRead, PlayerVelocityWrite};
 use super::classic_guest_world::{ClassicGuestClient, ClassicGuestClientPhase, ClassicGuestMap};
 use super::rerelease_guest_services::RereleaseGuestServices;
 use super::rerelease_guest_services_contract::{
@@ -145,6 +145,14 @@ impl RereleaseGuestWorld {
     #[must_use]
     pub fn services(&self) -> Option<&RereleaseGuestServices> {
         self.services.as_ref()
+    }
+
+    /// Install the player-velocity writer/reader pair (donor ctor 712-715).
+    pub fn set_player_velocity_writer(&mut self, write: PlayerVelocityWrite, read: PlayerVelocityRead) {
+        self.services
+            .as_mut()
+            .expect("Rerelease guest services are installed")
+            .set_player_velocity_writer(write, read);
     }
 
     /// Connected clients.

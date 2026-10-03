@@ -679,7 +679,7 @@ pub struct QvmWeaponRetired {
 /// Mirror of `QvmWeaponBehaviorCheckpoint` from the donor module, with the
 /// host state alongside the module checkpoint (see
 /// [`QvmWeaponHostCheckpoint`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmWeaponBehaviorCheckpoint {
     /// Checkpoint version.
     pub version: i64,

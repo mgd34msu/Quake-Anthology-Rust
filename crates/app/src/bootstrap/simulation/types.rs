@@ -840,6 +840,35 @@ pub enum SimulationTravelSource {
     },
 }
 
+impl SimulationTravelSource {
+    /// Quake campaign carry (donor `source.kind === "q1"` flags/skill).
+    #[must_use]
+    pub fn q1_campaign(&self) -> Option<(i32, u8)> {
+        match self {
+            SimulationTravelSource::Q1 { flags, skill } => Some((*flags, *skill)),
+            _ => None,
+        }
+    }
+
+    /// Quake II server flags (donor `source.kind === "q2"` carry).
+    #[must_use]
+    pub fn q2_server_flags(&self) -> Option<i32> {
+        match self {
+            SimulationTravelSource::Q2 { server_flags, .. } => Some(*server_flags),
+            _ => None,
+        }
+    }
+
+    /// QuakeC source travel (donor `source.kind` netquake/quakeworld carry).
+    #[must_use]
+    pub fn quakec(&self) -> Option<&QuakeCSourceTravel> {
+        match self {
+            SimulationTravelSource::QuakeC(travel) => Some(travel),
+            _ => None,
+        }
+    }
+}
+
 /// Selected-arsenal travel by family.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]

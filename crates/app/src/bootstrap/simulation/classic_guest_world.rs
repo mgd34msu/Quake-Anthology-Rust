@@ -175,6 +175,18 @@ impl ClassicGuestWorld {
         self.services.as_ref()
     }
 
+    /// Install the player-velocity writer/reader pair (donor ctor 712-715).
+    pub fn set_player_velocity_writer(
+        &mut self,
+        write: super::classic_guest_services::PlayerVelocityWrite,
+        read: super::classic_guest_services::PlayerVelocityRead,
+    ) {
+        self.services
+            .as_mut()
+            .expect("Classic guest services are installed")
+            .set_player_velocity_writer(write, read);
+    }
+
     /// Connected clients.
     pub fn clients(&self) -> ClassicResult<Vec<ClassicGuestClient>> {
         self.require_ownership()?;

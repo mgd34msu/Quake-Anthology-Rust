@@ -23,9 +23,6 @@ pub mod monster_checkpoint;
 pub mod monster_navigation;
 pub mod monster_placement;
 pub mod monster_runtime;
-// TEMP-C6-HARNESS
-pub mod navigation;
-// TEMP-C6-HARNESS
 pub mod monster_sources;
 pub mod native_mod;
 pub mod native_mod_camera;
@@ -36,6 +33,7 @@ pub mod native_q1_pusher;
 pub mod native_q2_map;
 pub mod native_q2_rerelease_save;
 pub mod native_q2_travel;
+pub mod navigation;
 pub mod network_q1_quakec;
 pub mod network_q2_guest;
 pub mod network_q2_rerelease_native;
@@ -77,7 +75,6 @@ pub mod rerelease_guest_world;
 pub mod rerelease_weapon_behavior;
 pub mod rerelease_weapon_checkpoint;
 pub mod runtime;
-// TEMP-C6-HARNESS
 pub mod save;
 pub mod shared_quakeworld_movement;
 pub mod source_hosts;

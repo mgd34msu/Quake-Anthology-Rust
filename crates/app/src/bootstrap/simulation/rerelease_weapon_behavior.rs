@@ -273,7 +273,7 @@ pub struct WeaponBindingEntry {
 }
 
 /// Saved weapon component checkpoint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RereleaseWeaponBehaviorCheckpoint {
     /// Checkpoint version (always 1).
     pub version: u32,

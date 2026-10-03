@@ -513,6 +513,9 @@ pub enum PresentationStateError {
     /// Registered resource path does not match its source request.
     #[error("Registered resource path does not match its source request")]
     ResourcePathMismatch,
+    /// Presentation owner lifecycle violation.
+    #[error("{0}")]
+    Owner(String),
 }
 
 /// Presentation history surface used by simulation events.
@@ -559,6 +562,10 @@ pub trait PresentationStateSeam {
         reader: &SaveReader,
         reference: &dyn Fn(SavedActorId) -> ActorId,
     ) -> Result<(), WorldError>;
+    /// Retire recipient-scoped history for a released actor (donor `retire`).
+    fn retire(&mut self, actor: &ActorId);
+    /// Reject unrestored saved owners after a load (donor `finishOwnerRestore`).
+    fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError>;
 }
 
 /// Simulation event failures.
@@ -788,6 +795,16 @@ impl SimulationEvents {
         self.sequence = reader.field("sequence").integer(0)? as u64;
         self.emitted.clear();
         self.presentation.restore_state(reader, reference)
+    }
+
+    /// Retire recipient-scoped history for a released actor (donor `retire`).
+    pub fn retire(&mut self, actor: &ActorId) {
+        self.presentation.retire(actor);
+    }
+
+    /// Reject unrestored saved owners after a load (donor `finishOwnerRestore`).
+    pub fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError> {
+        self.presentation.finish_owner_restore()
     }
 
     fn sound(&mut self, emission: SoundEmission<'_>) {
@@ -1067,6 +1084,12 @@ mod tests {
             _reference: &dyn Fn(SavedActorId) -> ActorId,
         ) -> Result<(), WorldError> {
             self.emitted.clear();
+            Ok(())
+        }
+
+        fn retire(&mut self, _actor: &ActorId) {}
+
+        fn finish_owner_restore(&mut self) -> Result<(), PresentationStateError> {
             Ok(())
         }
     }
