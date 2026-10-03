@@ -3,7 +3,7 @@
 //! Port of Quake-Anthology-TS `src/app/bootstrap/presentation-scene.ts`
 //! (`seatModelVisible`, `ApplicationWorldScene`). Characters, weapons, entities,
 //! options, operations, and admission are the ported foundation, client, and math
-//! helpers; the model assets (`./assets.ts`, out of scope), held weapons
+//! helpers; the model assets ([`ModelAsset`](super::assets::ModelAsset)), held weapons
 //! ([`held_weapon`](super::held_weapon), [`native_held_weapon`](super::native_held_weapon)),
 //! and body queries ([`component_bodies`](super::component_bodies)) arrive through the
 //! [`SceneModelAssets`], [`SceneHeldWeapons`], and [`SceneBodies`] seams, and the
