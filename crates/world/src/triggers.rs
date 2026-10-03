@@ -71,10 +71,7 @@ impl TriggerTable {
         self.triggers.clear();
         for (slot, generation) in saved {
             let found = registry
-                .observations()
-                .into_iter()
-                .find(|observed| observed.id.slot() == *slot && observed.id.generation() == *generation)
-                .map(|observed| observed.id)
+                .live_id(*slot, *generation)
                 .ok_or_else(|| WorldError::BadSave("Trigger names a missing actor".to_string()))?;
             self.triggers.push(found);
         }

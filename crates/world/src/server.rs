@@ -211,7 +211,8 @@ pub struct Server<L: ServerLogic> {
     bots: Option<Box<dyn BotCommandSource>>,
     game_provider: ProviderId,
     default_bounds: Bounds,
-    spatial_bounds: Bounds,
+    body_scratch: Vec<ActorId>,
+    spatial_scratch: SpatialIndex,
     closed: bool,
 }
 
@@ -239,7 +240,8 @@ impl<L: ServerLogic> Server<L> {
             bots: None,
             game_provider,
             default_bounds,
-            spatial_bounds,
+            body_scratch: Vec::new(),
+            spatial_scratch: SpatialIndex::new(&spatial_bounds),
             closed: false,
         }
     }
@@ -416,18 +418,26 @@ impl<L: ServerLogic> Server<L> {
     }
 
     fn step_movers(&mut self, events: &mut Vec<ServerEvent>) -> Result<(), WorldError> {
-        let actors: Vec<ActorId> = self
-            .simulation
-            .body_actors()
-            .into_iter()
-            .filter(|actor| self.movers.get(actor).is_some())
-            .collect();
+        let mut actors = std::mem::take(&mut self.body_scratch);
+        self.simulation.body_actors_into(&mut actors);
+        actors.retain(|actor| self.movers.get(actor).is_some());
         let elapsed = self.simulation.frame().elapsed.as_seconds_f64();
+        let outcome = self.step_movers_inner(events, &actors, elapsed);
+        self.body_scratch = actors;
+        outcome
+    }
+
+    fn step_movers_inner(
+        &mut self,
+        events: &mut Vec<ServerEvent>,
+        actors: &[ActorId],
+        elapsed: f64,
+    ) -> Result<(), WorldError> {
         for actor in actors {
-            let Some(origin) = self.simulation.body_state(&actor).map(|state| state.origin) else {
+            let Some(origin) = self.simulation.body_state(actor).map(|state| state.origin) else {
                 continue;
             };
-            let Some(mover) = self.movers.get_mut(&actor) else {
+            let Some(mover) = self.movers.get_mut(actor) else {
                 continue;
             };
             let step = step_mover(mover, origin, elapsed);
@@ -437,11 +447,11 @@ impl<L: ServerLogic> Server<L> {
                 y: origin.y + step.displacement.y,
                 z: origin.z + step.displacement.z,
             };
-            self.simulation.set_body_origin(&actor, next)?;
-            let saved = SavedActorId::from(&actor);
+            self.simulation.set_body_origin(actor, next)?;
+            let saved = SavedActorId::from(actor);
             if step.think_due {
                 self.logic
-                    .mover_think(&mut self.simulation, &mut self.movers, &actor, phase, step.arrived);
+                    .mover_think(&mut self.simulation, &mut self.movers, actor, phase, step.arrived);
                 events.push(ServerEvent::MoverThink { actor: saved });
             }
             if step.arrived {
@@ -452,49 +462,59 @@ impl<L: ServerLogic> Server<L> {
     }
 
     fn sweep_triggers(&mut self, events: &mut Vec<ServerEvent>) -> Result<(), WorldError> {
-        for actor in self.simulation.body_actors() {
-            self.simulation.link_body(&actor)?;
+        let mut actors = std::mem::take(&mut self.body_scratch);
+        self.simulation.body_actors_into(&mut actors);
+        let outcome = self.sweep_triggers_inner(events, &actors);
+        self.body_scratch = actors;
+        outcome
+    }
+
+    fn sweep_triggers_inner(&mut self, events: &mut Vec<ServerEvent>, actors: &[ActorId]) -> Result<(), WorldError> {
+        for actor in actors {
+            self.simulation.link_body(actor)?;
         }
-        let mut spatial = SpatialIndex::new(&self.spatial_bounds);
-        for actor in self.simulation.body_actors() {
-            let Some(linked) = self.simulation.bodies().linked(self.simulation.registry(), &actor) else {
-                continue;
-            };
-            let role = if self.triggers.is_trigger(&actor) {
-                CollisionRole::Trigger
-            } else {
-                CollisionRole::Solid
-            };
-            spatial.link(
-                &LinkedBody {
-                    actor: linked.actor.clone(),
-                    state: linked.state.clone(),
-                    absolute_bounds: linked.absolute_bounds,
-                    link_count: linked.link_count,
-                },
-                &ActorCollision {
-                    family: CollisionFamily::Q1,
-                    shape: CollisionShape::Box,
-                    contents: 0,
-                    owner: None,
-                    role,
-                    monster: false,
-                    dead_monster: false,
-                    q1_corpse: false,
-                    q3_owner: None,
-                },
-            );
+        self.spatial_scratch.clear();
+        {
+            let (simulation, spatial) = (&self.simulation, &mut self.spatial_scratch);
+            for actor in actors {
+                let Some(linked) = simulation.bodies().linked(simulation.registry(), actor) else {
+                    continue;
+                };
+                let role = if self.triggers.is_trigger(actor) {
+                    CollisionRole::Trigger
+                } else {
+                    CollisionRole::Solid
+                };
+                spatial.link(
+                    &LinkedBody {
+                        actor: linked.actor.clone(),
+                        state: linked.state.clone(),
+                        absolute_bounds: linked.absolute_bounds,
+                        link_count: linked.link_count,
+                    },
+                    &ActorCollision {
+                        family: CollisionFamily::Q1,
+                        shape: CollisionShape::Box,
+                        contents: 0,
+                        owner: None,
+                        role,
+                        monster: false,
+                        dead_monster: false,
+                        q1_corpse: false,
+                        q3_owner: None,
+                    },
+                );
+            }
         }
-        let movers = self.simulation.body_actors();
         let mut contacts = Vec::new();
-        for mover in &movers {
+        for mover in actors {
             if self.triggers.is_trigger(mover) {
                 continue;
             }
             touch_q1_triggers(
                 self.simulation.registry(),
                 self.simulation.bodies(),
-                &spatial,
+                &self.spatial_scratch,
                 &self.triggers,
                 mover,
                 &mut |contact| contacts.push(contact),
@@ -573,10 +593,7 @@ impl<L: ServerLogic> Server<L> {
 
 fn find_actor(registry: &ActorRegistry, slot: u32, generation: u32) -> Result<ActorId, WorldError> {
     registry
-        .observations()
-        .into_iter()
-        .find(|observed| observed.id.slot() == slot && observed.id.generation() == generation)
-        .map(|observed| observed.id)
+        .live_id(slot, generation)
         .ok_or_else(|| WorldError::BadSave("Mover names a missing actor".to_string()))
 }
 

@@ -303,6 +303,48 @@ impl ActorRegistry {
             .collect()
     }
 
+    /// Number of live actors, without allocating an observation vector.
+    #[must_use]
+    pub fn live_count(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.live.is_some()).count()
+    }
+
+    /// Visit every live actor in slot order without allocating.
+    ///
+    /// The visitor receives the live handle, owning provider, and definition.
+    /// This is the allocation-free counterpart of [`observations`](Self::observations)
+    /// for per-frame passes.
+    pub fn for_each_live(&self, mut visit: impl FnMut(ActorId, &ProviderId, &str)) {
+        for (index, slot) in self.slots.iter().enumerate() {
+            let Some(live) = slot.live.as_ref() else {
+                continue;
+            };
+            visit(
+                self.owner.actor(index as u32, slot.generation),
+                &live.owner,
+                live.definition.as_str(),
+            );
+        }
+    }
+
+    /// Live handle for an exact slot/generation pair, without scanning.
+    #[must_use]
+    pub fn live_id(&self, slot: u32, generation: u32) -> Option<ActorId> {
+        let found = self.slots.get(slot as usize)?;
+        if found.live.is_none() || found.generation != generation {
+            return None;
+        }
+        Some(self.owner.actor(slot, generation))
+    }
+
+    /// Live handle for a slot's current occupant, without scanning.
+    #[must_use]
+    pub fn live_id_in_slot(&self, slot: u32) -> Option<ActorId> {
+        let found = self.slots.get(slot as usize)?;
+        found.live.as_ref()?;
+        Some(self.owner.actor(slot, found.generation))
+    }
+
     /// All live observations, in slot order.
     #[must_use]
     pub fn observations(&self) -> Vec<ActorObservation> {
@@ -500,5 +542,41 @@ mod tests {
         let id = restored.observations().into_iter().next().expect("restored actor").id;
         assert_eq!(id.slot(), actor.id().slot());
         assert_eq!(id.generation(), actor.id().generation());
+    }
+
+    #[test]
+    fn live_helpers_match_observations() {
+        let mut registry = ActorRegistry::new(owner("test"), 8).unwrap();
+        let first = registry.allocate(provider(), "q3:soldier").unwrap();
+        let second = registry.allocate(provider(), "q3:scout").unwrap();
+        let third = registry.allocate(provider(), "q3:medic").unwrap();
+        registry.release(&second).unwrap();
+        let fresh = registry.allocate(provider(), "q3:engineer").unwrap();
+
+        let observed = registry.observations();
+        assert_eq!(registry.live_count(), observed.len());
+
+        let mut visited = Vec::new();
+        registry.for_each_live(|id, owner, definition| {
+            visited.push(ActorObservation {
+                id,
+                owner: owner.clone(),
+                definition: definition.to_owned(),
+            });
+        });
+        assert_eq!(visited, observed);
+
+        assert_eq!(
+            registry.live_id(first.id().slot(), first.id().generation()).as_ref(),
+            Some(first.id())
+        );
+        assert_eq!(registry.live_id(second.id().slot(), second.id().generation()), None);
+        assert_eq!(
+            registry.live_id(third.id().slot(), third.id().generation()).as_ref(),
+            Some(third.id())
+        );
+        assert_eq!(registry.live_id(7, 0), None);
+        assert_eq!(registry.live_id_in_slot(second.id().slot()).as_ref(), Some(fresh.id()));
+        assert_eq!(registry.live_id_in_slot(7), None);
     }
 }
