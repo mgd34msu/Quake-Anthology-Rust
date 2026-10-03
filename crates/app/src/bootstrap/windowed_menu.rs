@@ -125,9 +125,6 @@ const MENU_WHITE_ORDINAL: u32 = 0x7FFF_FF01;
 /// Ordinal for the menu font atlas, uploaded beside the white image.
 const MENU_FONT_ORDINAL: u32 = 0x7FFF_FF02;
 
-/// Notice shown when a launch action cannot start a game in this build.
-const MENU_LAUNCH_NOTICE: &str = "Launching from the menu is unavailable in this build";
-
 /// Menu overlay over the ported startup menu (donor frontend menu).
 pub(crate) struct WindowedMenu {
     menu: StartupMenu,
@@ -138,19 +135,21 @@ pub(crate) struct WindowedMenu {
     font_image: RendererImage,
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
-    launch_notice: Rc<Cell<bool>>,
+    model: Rc<RefCell<StartupSelectionModel>>,
 }
 
 impl WindowedMenu {
     /// Open the menu overlay over a selection model. `quit` is set when the
     /// menu's Quit button activates; launch actions (play, presets, saves)
-    /// latch a status notice because this build has no game client to start.
+    /// queue [`StartupAction`](super::startup::StartupAction) values on
+    /// `launch` for the backend to drain (donor `pending`).
     pub(crate) fn open(
         model: StartupSelectionModel,
         seat: SeatId,
         client: ClientId,
         owner: ResourceOwner,
         quit: Rc<Cell<bool>>,
+        launch: super::windowed_menu_launch::MenuLaunchQueue,
     ) -> Result<Self, String> {
         let font = menu_font_selection().map_err(|error| error.to_string())?;
         let art = {
@@ -168,26 +167,33 @@ impl WindowedMenu {
         };
         let clock_ms = Rc::new(Cell::new(0));
         let now = Rc::clone(&clock_ms);
-        let launch_notice = Rc::new(Cell::new(false));
-        let notice_play = Rc::clone(&launch_notice);
-        let notice_preset = Rc::clone(&launch_notice);
-        let notice_load = Rc::clone(&launch_notice);
+        let shared = Rc::new(RefCell::new(model));
+        let launch_play = launch.clone();
+        let launch_preset = launch.clone();
+        let launch_load = launch.clone();
         let menu = StartupMenu::new(StartupMenuOptions {
             lobby: None,
             sound: None,
             llm: None,
             clipboard: None,
             seat: seat.clone(),
-            model: Rc::new(RefCell::new(model)),
+            model: Rc::clone(&shared),
             art,
             font: font.clone(),
             title_font: font.clone(),
             now: Rc::new(move || now.get()),
-            play: Rc::new(move || notice_play.set(true)),
-            play_preset: Some(Rc::new(move |_, _, _| notice_preset.set(true))),
+            play: Rc::new(move || launch_play.push(super::startup::StartupAction::Play)),
+            play_preset: Some(Rc::new(move |id, skill, arena_map| {
+                launch_preset.push(super::startup::StartupAction::Preset { id, skill, arena_map });
+            })),
             browser: None,
             connect: None,
-            load: Rc::new(move |_| notice_load.set(true)),
+            load: Rc::new(move |path| {
+                launch_load.push(super::startup::StartupAction::Load {
+                    path,
+                    source_product: None,
+                });
+            }),
             saves: Rc::new(StartupSaveList::default),
             refresh_saves: Rc::new(|| {}),
             quit: Rc::new(move || quit.set(true)),
@@ -223,7 +229,7 @@ impl WindowedMenu {
             font_image,
             uploaded: false,
             clock_ms,
-            launch_notice,
+            model: shared,
         })
     }
 
@@ -231,6 +237,29 @@ impl WindowedMenu {
     #[cfg(test)]
     pub(crate) fn menu(&self) -> &StartupMenu {
         &self.menu
+    }
+
+    /// Shared selection model behind the menu.
+    pub(crate) fn model(&self) -> &Rc<RefCell<StartupSelectionModel>> {
+        &self.model
+    }
+
+    /// Active menu id, if any.
+    pub(crate) fn active_menu(&self) -> Option<qa_client::ui::types::UiMenuId> {
+        self.menu.active_menu()
+    }
+
+    /// Focused control id on the active menu, if any.
+    pub(crate) fn focus_control(&self) -> Option<qa_client::ui::types::UiControlId> {
+        match self.menu.state().focus {
+            qa_client::ui::types::SeatInputFocus::Menu { control, .. } => control,
+            _ => None,
+        }
+    }
+
+    /// Latch a status message on the menu.
+    pub(crate) fn set_status(&self, text: &str) {
+        self.menu.set_status(text, false);
     }
 
     /// Handle one UI input event; returns whether it was consumed.
@@ -252,9 +281,6 @@ impl WindowedMenu {
     ) -> Option<(ClientRenderView, Vec<ImageResourceOperation>)> {
         if width <= 0 || height <= 0 {
             return None;
-        }
-        if self.launch_notice.take() {
-            self.menu.set_status(MENU_LAUNCH_NOTICE, false);
         }
         self.clock_ms.set(time_ms as i64);
         let viewport = Rect {
@@ -721,6 +747,7 @@ mod tests {
             authority.client(0, 0),
             ResourceOwner::new(7, authority.session().clone(), 0),
             Rc::new(Cell::new(false)),
+            super::super::windowed_menu_launch::MenuLaunchQueue::new(),
         )
         .unwrap()
     }

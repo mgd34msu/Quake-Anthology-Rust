@@ -45,7 +45,9 @@ use qa_content::mounts::MountPreparationScope;
 use qa_core::cmd::Dialect;
 use qa_core::identity::{IdentityOwner, ProviderId, SeatId};
 use qa_core::math::{angles_to_axis, vec3, vec4, Vec4};
+use qa_platform::controller::ControllerEvent;
 use qa_platform::controller::ControllerSelection;
+use qa_platform::controller::SdlControllers;
 use qa_platform::native_libraries::NativeLibraryOptions;
 use qa_platform::sdl::{
     SdlBackend, SdlDisplayMode, SdlEvent, SdlGlOptions, SdlInputLease, SdlWindow, SdlWindowOptions,
@@ -59,12 +61,13 @@ use super::renderer::{
     NativeRendererOptions, NativeWindowFactory, RenderBackendKind, RenderCommand, RenderDriverInfo, RenderFrame,
     RenderGlConfig, RenderImageRegistry, RenderWindowOptions, RenderWindowPresentation, RendererResourceOwner,
 };
-use super::startup::{StartupApplication, StartupBackend, StartupEntry, StartupError, StartupFrame};
+use super::startup::{StartupAction, StartupApplication, StartupBackend, StartupEntry, StartupError, StartupFrame};
 use super::startup_selection::{
     PreparedQ3Catalog, PreparedTeamArena, QvmGrappleStyle, StartupArenaSelection, StartupPlayerProducts,
     StartupSelectionCollaborators, StartupSelectionModel,
 };
 use super::windowed_menu::WindowedMenu;
+use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, MenuLaunchQueue};
 use super::windowed_scene::WindowedPresentation;
 use super::windowed_world::{load_windowed_world, WindowedWorld};
 use crate::options::{ApplicationOptions, Network, Renderer};
@@ -691,7 +694,9 @@ impl Drop for WindowedRouterWindow {
 /// Build the windowed seat router: one keyboard seat whose UI tap forwards
 /// every [`SeatInputEvent`] into `queue` for
 /// [`WindowedStartupBackend::poll`] to deliver through
-/// [`StartupBackend::input`](super::startup::StartupBackend::input).
+/// [`StartupBackend::input`](super::startup::StartupBackend::input). The
+/// seat claims the first gamepad (donor controller slot zero); the backend
+/// pumps [`SdlControllers`] into the router alongside window events.
 fn open_windowed_input(seat: SeatId, queue: WindowedInputQueue, start: Instant) -> Result<InputRouter, String> {
     let tap = Rc::clone(&queue);
     let ui_event: UiCallback = Box::new(move |event, _focus| {
@@ -700,7 +705,7 @@ fn open_windowed_input(seat: SeatId, queue: WindowedInputQueue, start: Instant) 
     });
     let routes = vec![SeatRoute {
         seat: Seat::new(seat.clone(), Dialect::Q2Classic, ui_event),
-        controller: ControllerSelection::None,
+        controller: ControllerSelection::Automatic,
     }];
     InputRouter::new(
         routes,
@@ -715,6 +720,26 @@ fn open_windowed_input(seat: SeatId, queue: WindowedInputQueue, start: Instant) 
         None,
     )
     .map_err(|error| error.to_string())
+}
+
+/// Open the windowed controller pump, claiming the first gamepad for slot
+/// zero (donor controller slot). Returns `None` when the controller
+/// subsystem is unavailable — keyboard input still works — so a second
+/// owner or a pad-less SDL never fails the window.
+fn open_windowed_controllers() -> Option<SdlControllers> {
+    let mut controllers = match SdlControllers::open() {
+        Ok(controllers) => controllers,
+        Err(error) => {
+            eprintln!("windowed: no gamepad input ({error})");
+            return None;
+        }
+    };
+    if let Err(error) = controllers.set_assignments(&[ControllerSelection::Automatic]) {
+        eprintln!("windowed: no gamepad input ({error})");
+        controllers.close();
+        return None;
+    }
+    Some(controllers)
 }
 
 /// Seat id carried by a seat input event.
@@ -1161,6 +1186,8 @@ pub struct WindowedStartupBackend {
     input_seat: Option<SeatId>,
     input_queue: WindowedInputQueue,
     input_log: VecDeque<SeatInputEvent>,
+    controllers: Option<SdlControllers>,
+    launch: MenuLaunchQueue,
     scene: Option<WindowedScene>,
     world: Option<WindowedWorld>,
     menu: Option<WindowedMenu>,
@@ -1189,10 +1216,53 @@ impl WindowedStartupBackend {
             input_seat: None,
             input_queue: Rc::new(RefCell::new(Vec::new())),
             input_log: VecDeque::new(),
+            controllers: None,
+            launch: MenuLaunchQueue::new(),
             scene: None,
             world: None,
             menu: None,
         }
+    }
+
+    /// Shared menu launch queue (donor `pending`): the menu entry pushes
+    /// [`StartupAction`] values from its launch buttons.
+    fn launch_queue(&self) -> MenuLaunchQueue {
+        self.launch.clone()
+    }
+
+    /// Active menu id behind the overlay, if the menu entry is showing.
+    #[must_use]
+    pub fn menu_active_menu(&self) -> Option<String> {
+        self.menu.as_ref()?.active_menu().map(|id| id.as_str().to_string())
+    }
+
+    /// Focused control id on the active menu, if any.
+    #[must_use]
+    pub fn menu_focus_control(&self) -> Option<String> {
+        self.menu.as_ref()?.focus_control().map(|id| id.as_str().to_string())
+    }
+
+    /// Whether the menu overlay is still showing (false after a launch).
+    #[must_use]
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// Test-only pump: feed one platform event through the router exactly
+    /// as [`StartupBackend::poll`](super::startup::StartupBackend::poll)
+    /// would after pumping it from the window.
+    pub fn inject_platform_event(&mut self, event: SdlEvent) -> Result<(), String> {
+        self.handle_window_events(vec![event])
+    }
+
+    /// Test-only pump: feed one controller event through the router exactly
+    /// as the controller half of `poll` would after pumping `SdlControllers`.
+    pub fn inject_controller_event(&mut self, event: ControllerEvent) -> Result<(), String> {
+        if let Some(router) = self.input_router.as_mut() {
+            router.handle_controller(event).map_err(|error| error.to_string())?;
+        }
+        self.forward_queued_input();
+        Ok(())
     }
 
     /// Adopt the menu overlay for the menu entry (donor frontend menu).
@@ -1273,10 +1343,79 @@ impl WindowedStartupBackend {
                 router.handle_platform(event).map_err(|error| error.to_string())?;
             }
         }
+        self.forward_queued_input();
+        Ok(())
+    }
+
+    /// Deliver seat events forwarded from the router UI tap through backend
+    /// input (donor `input`).
+    fn forward_queued_input(&mut self) {
         let forwarded = std::mem::take(&mut *self.input_queue.borrow_mut());
         for event in forwarded {
             self.input(&event);
         }
+    }
+
+    /// Drain queued menu launches (donor `step` pending consumption):
+    /// resolve each action through the menu model and swap the menu overlay
+    /// for the scene path. Failures latch a status line on the menu and
+    /// keep it usable, like the donor's failed-launch status.
+    fn drain_menu_launch(&mut self) {
+        if self.menu.is_none() {
+            self.launch.drain();
+            return;
+        }
+        for action in self.launch.drain() {
+            if self.menu.is_none() {
+                break;
+            }
+            if let Err(error) = self.launch_menu_game(&action) {
+                if let Some(menu) = self.menu.as_ref() {
+                    menu.set_status(&error);
+                }
+            }
+        }
+    }
+
+    /// Launch one menu action into the game view: resolve options, load the
+    /// map world, release the menu images, and drop the overlay so frames
+    /// render the scene path and [`StartupBackend::has_active_game`] turns
+    /// true (donor `Application.openBorrowed` tail, inlined: this build has
+    /// no separate game client).
+    fn launch_menu_game(&mut self, action: &StartupAction) -> Result<(), String> {
+        let Some(menu) = self.menu.as_ref() else {
+            return Ok(());
+        };
+        if let StartupAction::Load { path, .. } = action {
+            eprintln!("windowed: menu load {path} launches the draft world (saves are not loaded in this build)");
+        }
+        let (options, catalog) = {
+            let mut model = menu.model().borrow_mut();
+            let options = launch_options(&mut model, action)?;
+            (options, model.catalog().clone())
+        };
+        let config = StartupConfig::from_options(&options).map_err(|error| error.to_string())?;
+        let owner = ResourceOwner::new(7, self.identity.session().clone(), 0);
+        let world = load_windowed_world(&config, &catalog, &options, owner).map_err(|error| error.to_string())?;
+        eprintln!(
+            "windowed: menu launched {} of {} map entities ({} {})",
+            world.spawned(),
+            world.entity_records(),
+            world.content(),
+            world.map()
+        );
+        if let Some(menu) = self.menu.as_ref() {
+            let releases = menu.release_images();
+            if !releases.is_empty() {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    for operation in &releases {
+                        renderer.backend_mut().apply_image_resource(operation);
+                    }
+                }
+            }
+        }
+        self.set_world(world);
+        self.menu = None;
         Ok(())
     }
 
@@ -1403,6 +1542,7 @@ impl StartupBackend for WindowedStartupBackend {
             .map_err(|error| error.to_string())?;
         self.input_router = Some(router);
         self.input_seat = Some(seat);
+        self.controllers = open_windowed_controllers();
         self.audio = open_windowed_audio();
         Ok(())
     }
@@ -1414,10 +1554,16 @@ impl StartupBackend for WindowedStartupBackend {
             };
             renderer.window().poll_events()?
         };
-        self.handle_window_events(events)
+        self.handle_window_events(events)?;
+        if let (Some(controllers), Some(router)) = (self.controllers.as_mut(), self.input_router.as_mut()) {
+            pump_windowed_controllers(controllers, router)?;
+            self.forward_queued_input();
+        }
+        Ok(())
     }
 
     fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
+        self.drain_menu_launch();
         let (commands, image_operations) = self.frame_commands();
         let (renderer, backends, owner) = self.live_parts()?;
         Self::apply_frame_images(renderer, &image_operations);
@@ -1473,6 +1619,9 @@ impl StartupBackend for WindowedStartupBackend {
             }
         }
         self.input_router = None;
+        if let Some(mut controllers) = self.controllers.take() {
+            controllers.close();
+        }
         if let Some(menu) = self.menu.as_ref() {
             let releases = menu.release_images();
             if !releases.is_empty() {
@@ -1538,7 +1687,14 @@ pub fn open_windowed_application(
             Box::new(WindowedCollaborators),
         )
         .map_err(|error| error.to_string())?;
-        let menu = WindowedMenu::open(menu_model, menu_seat, menu_client, resource_owner, Rc::clone(&quit))?;
+        let menu = WindowedMenu::open(
+            menu_model,
+            menu_seat,
+            menu_client,
+            resource_owner,
+            Rc::clone(&quit),
+            backend.launch_queue(),
+        )?;
         backend.set_menu(menu);
     } else {
         match load_windowed_world(&config, model.catalog(), options, resource_owner) {
@@ -2005,6 +2161,171 @@ mod tests {
         };
         assert!(!backend.input(&rejected));
         assert_eq!(backend.input_log.len(), 1);
+    }
+
+    /// wu-16: SDL menu keys map to the Quake codes the menu controller
+    /// navigates on (Up/Down/Enter/Escape).
+    #[test]
+    fn windowed_menu_keys_map_to_quake_codes() {
+        use qa_client::input::KeyCode;
+
+        let (_seat, queue, mut router) = test_input();
+        for (scancode, keycode, expected) in [
+            (81, 0x4000_0000 | 81, KeyCode::Down as i32),
+            (82, 0x4000_0000 | 82, KeyCode::Up as i32),
+            (40, 13, KeyCode::Enter as i32),
+            (41, 27, KeyCode::Escape as i32),
+        ] {
+            router
+                .handle_platform(SdlEvent::Key {
+                    timestamp: 700,
+                    down: true,
+                    repeat: false,
+                    scancode,
+                    keycode,
+                    modifiers: 0,
+                })
+                .unwrap();
+            let events = drain_queue(&queue);
+            assert_eq!(events.len(), 1, "scancode {scancode} maps");
+            assert!(
+                matches!(events[0], SeatInputEvent::Key { code, down: true, .. } if code == expected),
+                "scancode {scancode} maps to {expected}, got {:?}",
+                events[0]
+            );
+        }
+    }
+
+    /// wu-16: assigned gamepad buttons and sticks reach the seat queue as
+    /// controller seat events (the menu controller maps them to
+    /// navigation and activation).
+    #[test]
+    fn windowed_controller_buttons_map_through_router() {
+        use qa_client::input::ControllerAxis;
+
+        let (seat, queue, mut router) = test_input();
+        router
+            .handle_controller(ControllerEvent::Assignment {
+                timestamp: 800,
+                slot: 0,
+                previous: None,
+                instance: Some(7),
+            })
+            .unwrap();
+        assert!(drain_queue(&queue).is_empty());
+        router
+            .handle_controller(ControllerEvent::Button {
+                timestamp: 801,
+                instance: 7,
+                slot: Some(0),
+                button: 12,
+                down: true,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(
+                events[0],
+                SeatInputEvent::ControllerButton {
+                    device: 7,
+                    button: 12,
+                    down: true,
+                    ..
+                }
+            ),
+            "got {:?}",
+            events[0]
+        );
+        assert_eq!(seat_event_seat(&events[0]), &seat);
+        router
+            .handle_controller(ControllerEvent::Axis {
+                timestamp: 802,
+                instance: 7,
+                slot: Some(0),
+                axis: 1,
+                value: i16::MAX,
+            })
+            .unwrap();
+        let events = drain_queue(&queue);
+        assert_eq!(events.len(), 1);
+        let SeatInputEvent::ControllerAxis {
+            axis, value, device, ..
+        } = &events[0]
+        else {
+            panic!("expected axis, got {:?}", events[0]);
+        };
+        assert_eq!(*device, 7);
+        assert_eq!(*axis, ControllerAxis::LeftY);
+        assert!(*value > 0.9, "stick fully deflected, got {value}");
+    }
+
+    /// wu-16: the test-only pumps deliver through backend input exactly
+    /// like `poll` would, without a window.
+    #[test]
+    fn windowed_test_pumps_deliver_to_input() {
+        use qa_client::input::KeyCode;
+
+        let config = StartupConfig::from_options(&windowed_options()).unwrap();
+        let mut backend = WindowedStartupBackend::new(
+            &config,
+            false,
+            1.0,
+            Rc::new(Cell::new(false)),
+            IdentityOwner::create("windowed-test").unwrap(),
+        );
+        assert!(!backend.menu_open());
+        assert_eq!(backend.menu_active_menu(), None);
+        assert_eq!(backend.menu_focus_control(), None);
+        let owner = IdentityOwner::create("windowed-pump-test").unwrap();
+        let seat = owner.seat(0);
+        let queue: WindowedInputQueue = Rc::new(RefCell::new(Vec::new()));
+        let router = open_windowed_input(seat.clone(), Rc::clone(&queue), Instant::now()).unwrap();
+        backend.input_queue = Rc::clone(&queue);
+        backend.input_router = Some(router);
+        backend.input_seat = Some(seat);
+        backend
+            .inject_platform_event(SdlEvent::Key {
+                timestamp: 900,
+                down: true,
+                repeat: false,
+                scancode: 81,
+                keycode: 0x4000_0000 | 81,
+                modifiers: 0,
+            })
+            .unwrap();
+        assert_eq!(backend.input_log.len(), 1);
+        assert!(matches!(
+            backend.input_log[0],
+            SeatInputEvent::Key { code, down: true, .. } if code == KeyCode::Down as i32
+        ));
+        backend
+            .inject_controller_event(ControllerEvent::Assignment {
+                timestamp: 901,
+                slot: 0,
+                previous: None,
+                instance: Some(7),
+            })
+            .unwrap();
+        backend
+            .inject_controller_event(ControllerEvent::Button {
+                timestamp: 902,
+                instance: 7,
+                slot: Some(0),
+                button: 0,
+                down: true,
+            })
+            .unwrap();
+        assert_eq!(backend.input_log.len(), 2);
+        assert!(matches!(
+            backend.input_log[1],
+            SeatInputEvent::ControllerButton {
+                device: 7,
+                button: 0,
+                down: true,
+                ..
+            }
+        ));
     }
 
     #[test]
