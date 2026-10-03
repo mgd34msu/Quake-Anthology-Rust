@@ -11433,6 +11433,9 @@ fn finish_construction_inner(
         // providers fail closed before the map loads.
         let host = simulation.with_q3_source(|game| game.host()).flatten();
         let Some(host) = host else {
+            // Missing siblings: Q3 source construction (`create_q3_source`
+            // fails) plus `attach_host`; the map-load delegation below is
+            // unreachable until they land.
             return fail("Q3 map load has no attached source host");
         };
         host.host
@@ -16794,6 +16797,9 @@ impl SharedInventoryTable {
     /// (`bindPickup`) belong to the world lane and no delegate map
     /// exists here yet. Storage validation is adapted to the shared
     /// store (subset, not exact: the store also holds primary entries).
+    ///
+    /// Missing siblings: port landed with no callers; source-item
+    /// bind sites (donor `bindItems` callers) still route elsewhere.
     pub fn bind_source_items(
         &mut self,
         registry: &SessionActorRegistry,
@@ -20573,6 +20579,8 @@ impl SharedSimulation {
             return fail("Bot client is not an available session slot");
         }
         if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
+            // Missing siblings: Q3 source construction plus `attach_host`;
+            // bot prepareClient delegation is unreachable until they land.
             return fail("Q3 bot admission has no attached source host");
         }
         let actor = self.prepare_q3_client(client)?;
@@ -20595,6 +20603,9 @@ impl SharedSimulation {
     /// instead of taking the donor's source alias, per the module's
     /// ownership rules. Fails before allocating so no half-admitted actor
     /// leaks.
+    ///
+    /// Missing siblings: reachable only from host-gated admitters; Q3
+    /// source construction plus `attach_host` land first.
     pub fn prepare_q3_client(&self, client: &ClientId) -> Result<OwnedActor, RuntimeError> {
         let recipe = self.peek().recipe.clone();
         let (product, team) = q3_source_product_and_team(self)?;
@@ -20640,6 +20651,8 @@ impl SharedSimulation {
     /// leaks.
     fn admit_q3_player(&self, client: &ClientId) -> Result<super::types::PlayerAdmission, RuntimeError> {
         if !self.with_q3_source(|game| game.host().is_some()).unwrap_or(false) {
+            // Missing siblings: Q3 source construction plus `attach_host`;
+            // admitPlayer delegation is unreachable until they land.
             return fail("Q3 admission has no attached source host");
         }
         let actor = self.prepare_q3_client(client)?;
@@ -20671,6 +20684,9 @@ impl SharedSimulation {
     /// character host has no Rust home and the Q1 foundation game is
     /// absent on Q3 sources, so the donor `respawned`/`respawn` calls are
     /// reached as a fresh attach, which lands the same spawn-time state.
+    ///
+    /// Missing siblings: no callers; Q3 source construction plus
+    /// `attach_host` (which populates the records-layer refs) land first.
     pub fn spawn_q3_player(
         &self,
         entity: &qa_content::q3::base::game::state::GameEntity,
@@ -20954,6 +20970,9 @@ impl SharedSimulation {
         if self.peek().source.kind() != "q3" {
             return fail("Q3 source movement owner is missing");
         }
+        // Missing siblings: records-layer refs populate only via the
+        // host-gated admission; Q3 source construction plus `attach_host`
+        // land first.
         let elapsed = (command.server_time - command_time).clamp(0, 200);
         let _ = elapsed;
         {
@@ -20973,6 +20992,10 @@ impl SharedSimulation {
     /// donor's `readQ3MovementState` replace needs the host's records
     /// store, which the host does not expose; view angles, teleport
     /// timing, and the view-reset emit still sync.
+    ///
+    /// Missing siblings: records-layer refs populate only via the
+    /// host-gated admission; Q3 source construction plus `attach_host`
+    /// land first.
     pub fn sync_q3_player(&self, player: &MovementPlayer) -> Result<(), RuntimeError> {
         use qa_world::movement::q3::constants::move_flags;
         if self.peek().source.kind() != "q3" {
@@ -21104,6 +21127,9 @@ pub struct SourceInventoryPlan {
 /// capacity). The live write-through half of the donor binding has no
 /// table-level home yet: install `merged` with `create` (donor
 /// `inventory.create` fallback, donor runtime.ts 2117).
+///
+/// Missing siblings: plan landed with test-only callers; production
+/// source-inventory installs still route elsewhere.
 pub fn plan_source_inventory(
     initial: &[qa_content::contract::InventoryEntry],
     native: &[qa_content::contract::InventoryEntry],
@@ -22684,6 +22710,10 @@ impl SessionActorRegistry {
     /// The save-restore tail stages the source's checkpoint rows before
     /// native callbacks reconstruct its slots; [`Self::rebind_restored_source`]
     /// then remaps the saved references onto the reconstructed actors.
+    ///
+    /// Missing siblings: staging landed with no callers, so the live
+    /// `rebind_restored_source` remaps an empty set; the restore tail
+    /// must call this first.
     pub fn stage_restored_sources(
         &mut self,
         provider: &ProviderId,
