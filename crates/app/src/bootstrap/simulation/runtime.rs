@@ -28164,7 +28164,9 @@ struct StepWeaponInput<'a> {
     animation: ActorAnimationState,
     /// Movement environment.
     environment: qa_world::movement::types::MovementEnvironment,
-    /// Gauntlet hit (donor `gauntletHit: false`).
+    /// Gauntlet hit (donor `gauntletHit`); the seam recomputes it per
+    /// donor 3905-3907, so the caller value feeds only the unported
+    /// non-selected Q3 branch.
     gauntlet_hit: bool,
 }
 
@@ -28267,48 +28269,235 @@ fn step_net_to_world_command(
     }
 }
 
-/// Selected-arsenal weapon step (donor `weaponStep`).
-///
-/// Runs the family [`SelectedArsenal`](super::arsenal::selected::SelectedArsenal)
-/// `step` (donor `selectedArsenal` weapon tick + read); weapon selection
-/// already happened upstream in `prepareArsenalCommand`, so no intent is
-/// passed. Unadmitted actors keep the passthrough (donor `read` has no
-/// rows for them); ordered effects stay unconsumed until the q3 lane can
-/// publish them to the source client.
-///
-/// Missing siblings: donor `weaponStep` remainder (runtime.ts 3886-3920):
-/// impulse routing + `syncSelectedQ1HealthLimit`, LMCTF-paused read-only
-/// return, gauntlet-hit detection (caller passes `false`), the Q3
-/// holdable block, and `weaponSlots.reconcile()`.
-fn weapon_step_seam(
-    selected: &mut SelectedArsenal,
-    player: &MovementPlayer,
-    input: &StepWeaponInput<'_>,
-) -> (ArsenalState, ActorAnimationState) {
-    use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
-    let admitted = match selected {
-        SelectedArsenal::Q1(arsenal) => arsenal.has(input.actor.id()),
-        SelectedArsenal::Q2(arsenal) => arsenal.has(input.actor.id()),
-        SelectedArsenal::Q3(arsenal) => arsenal.has(input.actor.id()),
-    };
-    if !admitted {
-        return (player.arsenal.clone(), player.animation.clone());
+impl SharedSimulation {
+    /// Selected-arsenal weapon step (donor `weaponStep`, donor runtime.ts
+    /// 3886-3925).
+    ///
+    /// Runs the Q1 impulse routing + `syncSelectedQ1HealthLimit` (donor
+    /// 3890-3901), the LMCTF-paused read-only return (donor 3902-3903),
+    /// gauntlet-hit detection (donor 3904-3907), the family step (donor
+    /// 3921), and `weaponSlots.reconcile()` (donor 3924). Weapon
+    /// selection already happened upstream in `prepareArsenalCommand`,
+    /// so no intent is passed. Unadmitted actors keep the passthrough
+    /// (donor `read` has no rows for them); ordered effects stay
+    /// unconsumed until the q3 lane can publish them to the source
+    /// client.
+    ///
+    /// Missing siblings: donor `weaponStep` remainder — the Q1 client
+    /// impulse clear (donor 3896; the composition exposes the client
+    /// snapshot but no impulse setter), the Q3 holdable block (donor
+    /// 3908-3917; Q3 source construction is unlanded so
+    /// `source.kind() == "q3"` is unreachable), and the selected-frame
+    /// override (donor 3919-3920; the caller frame is used as-is).
+    fn weapon_step_seam(
+        &self,
+        pstate: &mut MovementPlayer,
+        input: &StepWeaponInput<'_>,
+    ) -> Result<(ArsenalState, ActorAnimationState), RuntimeError> {
+        let id = input.actor.id();
+        let family = {
+            let state = self.peek();
+            match state.selected_arsenal.as_ref() {
+                Some(selected) if selected.has(id) => selected.family(),
+                _ => return Ok((pstate.arsenal.clone(), pstate.animation.clone())),
+            }
+        };
+        if family == "q1" {
+            self.weapon_step_q1_impulse_seam(pstate, input)?;
+        } else if self.peek().source.kind() == "q1" {
+            // Donor 3901.
+            self.weapon_step_composition_impulse_seam(id)?;
+        }
+        if self.weapon_step_lmctf_paused_seam() {
+            // Donor 3902-3903.
+            let state = self.peek();
+            let Some(selected) = state.selected_arsenal.as_ref() else {
+                return fail("Selected arsenal went missing mid-step");
+            };
+            return Ok((selected.read(id), input.animation.clone()));
+        }
+        // Donor 3904.
+        let arsenal = {
+            let state = self.peek();
+            let Some(selected) = state.selected_arsenal.as_ref() else {
+                return fail("Selected arsenal went missing mid-step");
+            };
+            selected.read(id)
+        };
+        // Donor 3905-3907.
+        let gauntlet_hit = self.weapon_step_gauntlet_seam(&arsenal, input)?;
+        // Donor 3918 (the Q3 holdable block itself stays in the marker above).
+        self.lock().primary_command_blocks.remove(id);
+        // Donor 3921.
+        let stepped = super::arsenal::selected::WeaponStepInput {
+            actor: (*input.actor).clone(),
+            command: step_net_to_world_command(input.command),
+            frame: input.frame,
+            arsenal: input.arsenal.clone(),
+            animation: input.animation.clone(),
+            environment: input.environment,
+            gauntlet_hit,
+        };
+        let result = {
+            let mut state = self.lock();
+            let Some(selected) = state.selected_arsenal.as_mut() else {
+                return fail("Selected arsenal went missing mid-step");
+            };
+            selected.step(&stepped, None)
+        };
+        // Donor 3924.
+        if let Some(slot) = self.lock().weapon_slots.get_mut(id) {
+            slot.reconcile().map_err(source_failure)?;
+        }
+        Ok((result.arsenal, result.animation))
     }
-    let stepped = super::arsenal::selected::WeaponStepInput {
-        actor: (*input.actor).clone(),
-        command: step_net_to_world_command(input.command),
-        frame: input.frame,
-        arsenal: input.arsenal.clone(),
-        animation: input.animation.clone(),
-        environment: input.environment,
-        gauntlet_hit: input.gauntlet_hit,
-    };
-    let result = match selected {
-        SelectedArsenal::Q1(arsenal) => arsenal.step(&stepped, None),
-        SelectedArsenal::Q2(arsenal) => arsenal.step(&stepped, None),
-        SelectedArsenal::Q3(arsenal) => arsenal.step(&stepped, None),
-    };
-    (result.arsenal, result.animation)
+
+    /// Run the composition impulse fallback (donor 3897/3901).
+    fn weapon_step_composition_impulse_seam(&self, actor: &ActorId) -> Result<(), RuntimeError> {
+        let state = self.peek();
+        let SourceRuntime::Q1 {
+            services, composition, ..
+        } = &state.source
+        else {
+            return fail("Q1 impulse has no source composition");
+        };
+        composition
+            .impulse(&mut services.borrow_mut(), actor)
+            .map_err(source_failure)?;
+        Ok(())
+    }
+
+    /// Route a Q1-family impulse (donor 3890-3900).
+    fn weapon_step_q1_impulse_seam(
+        &self,
+        pstate: &mut MovementPlayer,
+        input: &StepWeaponInput<'_>,
+    ) -> Result<(), RuntimeError> {
+        let id = input.actor.id();
+        // Donor 3891: `require` throws when the source is Q1 and the client is missing.
+        let source_is_q1 = self.peek().source.kind() == "q1";
+        let client_impulse = if source_is_q1 {
+            let state = self.peek();
+            let SourceRuntime::Q1 { composition, .. } = &state.source else {
+                return fail("Q1 source client is not admitted");
+            };
+            Some(
+                composition
+                    .client(id)
+                    .map(|client| client.impulse)
+                    .ok_or_else(|| source_failure("Q1 source client is not admitted"))?,
+            )
+        } else {
+            None
+        };
+        // Donor 3892-3893: first nonzero of client, intent, command.
+        let intent_impulse = pstate.arsenal_intent.as_ref().and_then(|intent| intent.impulse);
+        let command_impulse = input.command.impulse().unwrap_or(0.0) as i32;
+        let impulse = [
+            client_impulse.unwrap_or(0),
+            i32::from(intent_impulse.unwrap_or(0)),
+            command_impulse,
+        ]
+        .into_iter()
+        .find(|value| *value != 0)
+        .unwrap_or(0);
+        // Donor 3894.
+        let handled = {
+            let mut state = self.lock();
+            let Some(SelectedArsenal::Q1(arsenal)) = state.selected_arsenal.as_mut() else {
+                return fail("Selected arsenal lost its Q1 family");
+            };
+            arsenal.impulse(id, impulse).map_err(source_failure)?
+        };
+        // Donor 3895.
+        self.sync_selected_q1_health_limit(id)?;
+        // Donor 3896-3897 (the client clear stays in the seam marker).
+        if !handled && source_is_q1 {
+            self.weapon_step_composition_impulse_seam(id)?;
+        }
+        // Donor 3898-3900; the working copy writes back wholesale downstream.
+        if intent_impulse.is_some()
+            && (handled || client_impulse.is_some() || self.weapon_step_q1_attack_ready_seam(id))
+        {
+            if let Some(intent) = pstate.arsenal_intent.as_mut() {
+                intent.impulse = Some(0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the selected-Q1 player is out of its attack cooldown
+    /// (donor 3899 `weaponPlayer !== null && game.time >= attackFinished`).
+    fn weapon_step_q1_attack_ready_seam(&self, actor: &ActorId) -> bool {
+        let state = self.peek();
+        let Some(SelectedArsenal::Q1(arsenal)) = state.selected_arsenal.as_ref() else {
+            return false;
+        };
+        let game = arsenal.game();
+        let game = game.borrow();
+        game.player_ref(actor)
+            .is_some_and(|player| game.time >= player.attack_finished)
+    }
+
+    /// Whether an LMCTF match pauses weapon steps (donor 3902).
+    fn weapon_step_lmctf_paused_seam(&self) -> bool {
+        use qa_content::q2::composition::types::Q2MatchSelection;
+        let (game, product) = {
+            let state = self.peek();
+            let SourceRuntime::Q2 { game, .. } = &state.source else {
+                return false;
+            };
+            (Rc::clone(game), state.q2_product.clone())
+        };
+        let Some(product) = product else {
+            return false;
+        };
+        if !matches!(product.borrow().product_match.selection, Q2MatchSelection::Lmctf { .. }) {
+            return false;
+        }
+        let paused = game.borrow().lmctf.match_state.paused;
+        paused
+    }
+
+    /// Detect a Q3 gauntlet hit (donor 3905-3907).
+    fn weapon_step_gauntlet_seam(
+        &self,
+        arsenal: &ArsenalState,
+        input: &StepWeaponInput<'_>,
+    ) -> Result<bool, RuntimeError> {
+        use qa_net::common::commands::MovementDialect;
+        use qa_world::movement::q3::constants::command_buttons;
+        let state = self.peek();
+        let primary = state
+            .weapon_slots
+            .get(input.actor.id())
+            .is_none_or(|slot| slot.primary_selected());
+        let gauntlet = matches!(
+            arsenal.state,
+            qa_world::movement::types::WeaponState::Q3 {
+                source_weapon: 1,
+                time_milliseconds: time,
+                ..
+            } if time <= 0
+        );
+        let buttons = step_button_bits(input.command.buttons());
+        let is_q3 = matches!(input.command.dialect(), MovementDialect::Q3);
+        let armed = primary
+            && gauntlet
+            && buttons & command_buttons::ATTACK != 0
+            && (!is_q3 || buttons & command_buttons::TALK == 0)
+            && input.environment.health > 0.0;
+        if !armed {
+            return Ok(false);
+        }
+        Ok(state
+            .selected_q3_source
+            .as_ref()
+            .map(|selected| selected.gauntlet_hit(input.actor))
+            .transpose()
+            .map_err(source_failure)?
+            .unwrap_or(false))
+    }
 }
 
 /// Whether the LMCTF match pins an actor (donor `lmctf.canMove`).
@@ -28731,10 +28920,7 @@ impl SharedSimulation {
                 environment,
                 gauntlet_hit: false,
             };
-            let (arsenal, animation) = match self.lock().selected_arsenal.as_mut() {
-                Some(selected) => weapon_step_seam(selected, &pstate, &input),
-                None => (pstate.arsenal.clone(), pstate.animation.clone()),
-            };
+            let (arsenal, animation) = self.weapon_step_seam(&mut pstate, &input)?;
             pstate.arsenal = arsenal;
             pstate.animation = animation;
         }
@@ -40031,8 +40217,18 @@ impl SharedSimulation {
             });
             qa_content::q1::equipment::grapple::register_threewave_grapple(&mut game, host)
                 .map_err(|error| RuntimeError::Failure(error.to_string()))?;
-            let _ = (game, random);
-            panic!("Missing siblings: grapple checkpoint bridge lane owns GrappleFoundationBridge::Q1");
+            let source = super::grapple_runtime::GrappleSource::Q1Threewave { game };
+            let slot_host =
+                matches!(binding, qa_content::contract::GrappleBinding::Slot).then(|| self.grapple_slot_host());
+            let grapple = super::grapple_runtime::GrappleRuntime::new(
+                selection.clone(),
+                source,
+                random,
+                slot_host,
+                super::grapple_runtime::GrappleFoundationBridge::Q1(Box::new(C11Q1FoundationBridge)),
+            )
+            .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+            return Ok(Some(grapple));
         }
         let host = self.q2_actor_host(
             source,
@@ -40728,6 +40924,299 @@ impl super::equipment_runtime::Q2FoundationCheckpointBridge for C11Q2FoundationB
     ) -> Result<(), qa_world::WorldError> {
         let content = c11_q2_foundation_from_save(checkpoint)?;
         game.restore_foundation(&content);
+        Ok(())
+    }
+}
+
+// --- C11 part 2f-extra-ii: Q1 grapple foundation checkpoint bridge (donor
+// `Q1EntityServices.capture`/`restore` in
+// `src/content/q1/foundation/entity-services.ts` over the
+// `src/persistence/q1-foundation.ts` record) ---
+
+/// Production Q1 foundation checkpoint bridge for grapple arenas.
+///
+/// Restore converts the persistence shape with
+/// [`convert_persistence_q1_checkpoint`](super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint)
+/// and runs [`Q1EntityServices::restore`](qa_content::q1::foundation::entity_services::Q1EntityServices::restore).
+/// Capture keeps a narrow marker: the capture home takes `&mut` (and
+/// the attack sequence stays private) while the bridge hands it a
+/// shared arena, and no production caller captures grapple
+/// checkpoints yet. The field mapping mirrors the donor
+/// `readQ1FoundationCheckpoint` record (donor
+/// `src/persistence/q1-foundation.ts` 9-42).
+struct C11Q1FoundationBridge;
+
+/// Q1 provider reference text (`namespace:name`, donor `namespaced`).
+#[allow(dead_code)]
+fn c11_q1_provider_name(provider: &qa_core::identity::ProviderId) -> String {
+    format!("{}:{}", provider.namespace, provider.name)
+}
+
+/// Q1 precache phase word (donor `phase` choice, q1-foundation.ts 39).
+#[allow(dead_code)]
+fn c11_q1_precache_phase_name(phase: qa_content::q1::foundation::types::Q1PrecachePhase) -> &'static str {
+    use qa_content::q1::foundation::types::Q1PrecachePhase;
+    match phase {
+        Q1PrecachePhase::Loading => "loading",
+        Q1PrecachePhase::Frozen => "frozen",
+    }
+}
+
+/// Q1 edition word (donor `edition` choice, q1-foundation.ts 39).
+#[allow(dead_code)]
+fn c11_q1_edition_name(edition: qa_content::q1::foundation::types::Q1Edition) -> &'static str {
+    use qa_content::q1::foundation::types::Q1Edition;
+    match edition {
+        Q1Edition::Classic => "classic",
+        Q1Edition::Rerelease => "rerelease",
+    }
+}
+
+/// Q1 auto-switch word (donor `autoSwitch` choice, q1-foundation.ts 34).
+#[allow(dead_code)]
+fn c11_q1_auto_switch_name(switch: qa_content::q1::foundation::types::Q1AutoSwitch) -> &'static str {
+    use qa_content::q1::foundation::types::Q1AutoSwitch;
+    match switch {
+        Q1AutoSwitch::Always => "always",
+        Q1AutoSwitch::New => "new",
+        Q1AutoSwitch::Never => "never",
+    }
+}
+
+/// Saved entity source state into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_source_state_to_save(
+    state: &qa_content::q1::foundation::checkpoint::Q1EntitySourceState,
+) -> crate::persistence::q1::foundation::Q1EntitySourceState {
+    use crate::persistence::q1::foundation::Q1EntitySourceState;
+    Q1EntitySourceState {
+        model: state.model.clone(),
+        frame: f64::from(state.frame),
+        skin: f64::from(state.skin),
+        effects: f64::from(state.effects),
+        solid: state.solid.as_str().to_string(),
+        movement: state.movement.as_str().to_string(),
+        target: state.target.clone(),
+        targetname: state.targetname.clone(),
+        killtarget: state.killtarget.clone(),
+        message: state.message.clone(),
+        delay: state.delay,
+        spawnflags: f64::from(state.spawnflags),
+        sounds: f64::from(state.sounds),
+        wait: state.wait,
+        speed: state.speed,
+        damage: state.damage,
+        max_health: state.max_health,
+        aimed_damage: state.aimed_damage,
+        next_think: state.next_think,
+        original_model: state.original_model.clone(),
+        pos1: state.pos1,
+        pos2: state.pos2,
+        dest1: state.dest1,
+        dest2: state.dest2,
+        movedir: state.movedir,
+        mangle: state.mangle,
+        state: state.state.as_str().to_string(),
+        trigger_bounds: state.trigger_bounds,
+        attack_finished: state.attack_finished,
+        count: state.count,
+        activated: state.activated,
+        projectile: state.projectile.map(|kind| kind.as_str().to_string()),
+        projectile_weapon: state.projectile_weapon.map(|weapon| weapon.as_str().to_string()),
+        angular_velocity: state.angular_velocity,
+        water_level: f64::from(state.water_level),
+        water_type: i64::from(state.water_type),
+        movement_flags: f64::from(state.movement_flags),
+        ideal_yaw: state.ideal_yaw,
+        yaw_speed: state.yaw_speed,
+        attack_state: state.attack_state.as_str().to_string(),
+    }
+}
+
+/// Saved monster state into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_monster_to_save(
+    monster: &qa_content::q1::foundation::checkpoint::Q1SavedMonster,
+) -> crate::persistence::q1::foundation::Q1MonsterState {
+    use crate::persistence::q1::foundation::Q1MonsterState;
+    Q1MonsterState {
+        species: monster.species.as_str().to_string(),
+        mode: monster.mode.as_str().to_string(),
+        frame_index: monster.frame_index as f64,
+        sequence: monster.sequence.clone(),
+        first_frame: f64::from(monster.first_frame),
+        enemy: monster.enemy,
+        old_enemy: monster.old_enemy,
+        path: monster.path.clone(),
+        pause_until: monster.pause_until,
+        attack_finished: monster.attack_finished,
+        pain_finished: monster.pain_finished,
+        search_until: monster.search_until,
+        death_drop: monster.death_drop,
+        refired: monster.refired,
+    }
+}
+
+/// Saved callback names into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_callbacks_to_save(
+    callbacks: &qa_content::q1::foundation::checkpoint::Q1SavedCallbacks,
+) -> crate::persistence::q1::foundation::Q1EntityCallbacks {
+    use crate::persistence::q1::foundation::Q1EntityCallbacks;
+    Q1EntityCallbacks {
+        think: callbacks.think.clone(),
+        use_callback: callbacks.use_callback.clone(),
+        touch: callbacks.touch.clone(),
+        pain: callbacks.pain.clone(),
+        die: callbacks.die.clone(),
+        blocked: callbacks.blocked.clone(),
+        path_end: callbacks.path_end.clone(),
+    }
+}
+
+/// Saved entity into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_entity_to_save(
+    entity: &qa_content::q1::foundation::checkpoint::Q1SavedEntity,
+) -> crate::persistence::q1::foundation::Q1SavedEntity {
+    use crate::persistence::q1::foundation::Q1SavedEntity;
+    Q1SavedEntity {
+        actor: entity.actor,
+        actor_provider: c11_q1_provider_name(&entity.actor_provider),
+        source_slot: entity.source_slot.map(i64::from),
+        classname: entity.classname.clone(),
+        source_ordinal: entity.source_ordinal.map(i64::from),
+        state: c11_q1_source_state_to_save(&entity.state),
+        fields: entity
+            .fields
+            .iter()
+            .map(|field| (field.key.clone(), field.value.clone()))
+            .collect(),
+        references: entity
+            .references
+            .iter()
+            .map(|reference| (reference.key.clone(), reference.actor))
+            .collect(),
+        owner: entity.owner,
+        activator: entity.activator,
+        door_group: entity.door_group.clone(),
+        monster: entity.monster.as_ref().map(c11_q1_monster_to_save),
+        move_target: entity
+            .move_completion
+            .as_ref()
+            .map(|completion| (completion.destination, completion.done.clone())),
+        callbacks: c11_q1_callbacks_to_save(&entity.callbacks),
+    }
+}
+
+/// Saved player into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_player_to_save(
+    player: &qa_content::q1::foundation::checkpoint::Q1SavedPlayer,
+) -> crate::persistence::q1::foundation::Q1SavedPlayer {
+    use crate::persistence::q1::foundation::{Q1PlayerState, Q1SavedPlayer};
+    Q1SavedPlayer {
+        actor: player.actor,
+        actor_provider: c11_q1_provider_name(&player.actor_provider),
+        state: Q1PlayerState {
+            alpha: player.state.alpha.unwrap_or(0.0),
+            scale: player.state.scale.unwrap_or(0.0),
+            weapon: player.state.weapon.as_str().to_string(),
+            primary_holstered: player.state.primary_holstered,
+            attack_held: player.state.attack_held,
+            jump_held: player.state.jump_held,
+            teleport_until: player.state.teleport_until,
+            attack_finished: player.state.attack_finished,
+            weapon_frame: f64::from(player.state.weapon_frame),
+            weapon_animation_at: player.state.weapon_animation_at,
+            weapon_animation_base: f64::from(player.state.weapon_animation_base),
+            continuous_firing: player.state.continuous_firing,
+            next_weapon_frame: player.state.next_weapon_frame,
+            lightning_sound_at: player.state.lightning_sound_at,
+            punch_angles: player.state.punch_angles,
+            nail_side: player.state.nail_side,
+            max_health: player.state.max_health,
+            mega_rot_at: player.state.mega_rot_at,
+            hostile_until: player.state.hostile_until,
+            view_angles: player.state.view_angles,
+            water_level: f64::from(player.state.water_level),
+            air_finished: player.state.air_finished,
+            drown_damage: player.state.drown_damage,
+            drown_at: player.state.drown_at,
+            hazard_at: player.state.hazard_at,
+            auto_switch: c11_q1_auto_switch_name(player.state.auto_switch).to_string(),
+        },
+        powerups: player
+            .powerups
+            .iter()
+            .map(|powerup| (powerup.kind.as_str().to_string(), powerup.expires))
+            .collect(),
+    }
+}
+
+/// Foundation checkpoint into the persistence shape.
+#[allow(dead_code)]
+fn c11_q1_foundation_to_save(
+    checkpoint: &qa_content::q1::foundation::checkpoint::Q1FoundationCheckpoint,
+) -> crate::persistence::q1::foundation::Q1FoundationCheckpoint {
+    use crate::persistence::q1::foundation::Q1FoundationCheckpoint;
+    Q1FoundationCheckpoint {
+        provider: c11_q1_provider_name(&checkpoint.provider),
+        precache_phase: c11_q1_precache_phase_name(checkpoint.precaches.phase).to_string(),
+        precache_models: checkpoint.precaches.models.clone(),
+        precache_sounds: checkpoint.precaches.sounds.clone(),
+        edition: c11_q1_edition_name(checkpoint.edition).to_string(),
+        time: checkpoint.time,
+        frame_seconds: checkpoint.frame_seconds,
+        force_retouch: f64::from(checkpoint.force_retouch),
+        sequence: checkpoint.sequence,
+        next_dynamic_slot: u64::from(checkpoint.next_dynamic_slot),
+        total_secrets: f64::from(checkpoint.total_secrets),
+        found_secrets: f64::from(checkpoint.found_secrets),
+        total_monsters: f64::from(checkpoint.total_monsters),
+        killed_monsters: f64::from(checkpoint.killed_monsters),
+        world_type: f64::from(checkpoint.world_type),
+        map_name: checkpoint.map_name.clone(),
+        basis: (checkpoint.basis.forward, checkpoint.basis.right, checkpoint.basis.up),
+        world: checkpoint.world,
+        sight_entity: checkpoint.sight_entity,
+        sight_time: checkpoint.sight_time,
+        intermission: checkpoint.intermission.as_ref().map(|intermission| {
+            crate::persistence::q1::foundation::Q1Intermission {
+                map: intermission.map.clone(),
+                cause: intermission.cause,
+                exit_after: intermission.exit_after,
+            }
+        }),
+        entities: checkpoint.entities.iter().map(c11_q1_entity_to_save).collect(),
+        players: checkpoint.players.iter().map(c11_q1_player_to_save).collect(),
+        extensions: checkpoint
+            .extensions
+            .iter()
+            .map(|extension| (extension.id.clone(), extension.bytes.clone()))
+            .collect(),
+    }
+}
+
+impl super::grapple_runtime::Q1FoundationCheckpointBridge for C11Q1FoundationBridge {
+    fn capture_entities(
+        &self,
+        _game: &qa_content::q1::foundation::entity_services::Q1EntityServices,
+    ) -> crate::persistence::q1::foundation::Q1FoundationCheckpoint {
+        panic!(
+            "Missing siblings: Q1 capture needs the shared arena (`Q1EntityServices::capture` takes `&mut`, and the attack sequence stays private); the Q1 foundation lane owns the `&self` capture"
+        );
+    }
+
+    fn restore_entities(
+        &self,
+        game: &mut qa_content::q1::foundation::entity_services::Q1EntityServices,
+        checkpoint: &crate::persistence::q1::foundation::Q1FoundationCheckpoint,
+        schedule_thinks: bool,
+    ) -> Result<(), qa_world::WorldError> {
+        let content = super::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(checkpoint)?;
+        game.restore(&content, schedule_thinks)
+            .map_err(|error| qa_world::WorldError::BadSave(error.to_string()))?;
         Ok(())
     }
 }
@@ -42350,5 +42839,230 @@ mod tests {
         let mut bad_motion = entity.values.clone();
         bad_motion.motion = "bogus".to_string();
         assert!(c11_q2_values_from_save(&bad_motion).is_err());
+    }
+
+    #[test]
+    fn q1_foundation_bridge_roundtrips_grapple_checkpoint() {
+        use qa_content::q1::foundation::checkpoint::{
+            Q1EntitySourceState as ContentSourceState, Q1FoundationCheckpoint as ContentCheckpoint,
+            Q1SavedCallbacks as ContentCallbacks, Q1SavedEntity as ContentEntity, Q1SavedExtension as ContentExtension,
+            Q1SavedField as ContentField, Q1SavedIntermission as ContentIntermission, Q1SavedMonster as ContentMonster,
+            Q1SavedMove as ContentMove, Q1SavedPlayer as ContentPlayer, Q1SavedPlayerState as ContentPlayerState,
+            Q1SavedPowerup as ContentPowerup, Q1SavedReference as ContentReference,
+        };
+        use qa_content::q1::foundation::entity::Q1ProjectileKind;
+        use qa_content::q1::foundation::entity::{Q1AttackState, Q1MonsterMode, Q1MonsterSpecies, Q1MoverState};
+        use qa_content::q1::foundation::types::{
+            Q1AutoSwitch, Q1Basis, Q1Edition, Q1MoveType, Q1Powerup, Q1PrecachePhase, Q1PrecacheTables, Q1Solid,
+            Q1Weapon,
+        };
+        let actor = |slot| qa_core::identity::SavedActorId { slot, generation: 3 };
+        let provider = || qa_core::identity::ProviderId::new("q1", "game");
+        let vec = || qa_core::math::Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+        let content = ContentCheckpoint {
+            format: "q1-foundation".to_string(),
+            provider: provider(),
+            version: 5,
+            precaches: Q1PrecacheTables {
+                phase: Q1PrecachePhase::Frozen,
+                models: vec!["progs/ogre.mdl".to_string()],
+                sounds: vec!["ogre/ogdrag.wav".to_string()],
+            },
+            edition: Q1Edition::Classic,
+            time: 10.0,
+            frame_seconds: 0.1,
+            force_retouch: 2,
+            basis: Q1Basis {
+                forward: vec(),
+                right: vec(),
+                up: vec(),
+            },
+            sequence: 4,
+            next_dynamic_slot: 8,
+            total_secrets: 3,
+            found_secrets: 1,
+            total_monsters: 12,
+            killed_monsters: 2,
+            world_type: 0,
+            map_name: "e1m1".to_string(),
+            world: Some(actor(0)),
+            sight_entity: None,
+            sight_time: 0.5,
+            intermission: Some(ContentIntermission {
+                map: "e1m2".to_string(),
+                cause: Some(actor(1)),
+                exit_after: 5.0,
+            }),
+            entities: vec![ContentEntity {
+                actor: actor(1),
+                source_slot: Some(1),
+                actor_provider: provider(),
+                classname: "monster_ogre".to_string(),
+                source_ordinal: Some(0),
+                state: ContentSourceState {
+                    model: "progs/ogre.mdl".to_string(),
+                    frame: 1,
+                    skin: 0,
+                    effects: 0,
+                    solid: Q1Solid::Bbox,
+                    movement: Q1MoveType::Step,
+                    target: String::new(),
+                    targetname: String::new(),
+                    killtarget: String::new(),
+                    message: String::new(),
+                    delay: 0.0,
+                    spawnflags: 0,
+                    sounds: 0,
+                    wait: 0.0,
+                    speed: 0.0,
+                    damage: 0.0,
+                    max_health: 200.0,
+                    aimed_damage: false,
+                    next_think: 0.0,
+                    original_model: String::new(),
+                    pos1: vec(),
+                    pos2: vec(),
+                    dest1: vec(),
+                    dest2: vec(),
+                    movedir: vec(),
+                    mangle: vec(),
+                    state: Q1MoverState::Bottom,
+                    trigger_bounds: None,
+                    attack_finished: 0.0,
+                    count: 0.0,
+                    activated: false,
+                    projectile: Some(Q1ProjectileKind::Spike),
+                    projectile_weapon: Some(Q1Weapon::Nailgun),
+                    angular_velocity: vec(),
+                    water_level: 0,
+                    water_type: -3,
+                    movement_flags: 0,
+                    ideal_yaw: 0.0,
+                    yaw_speed: 0.0,
+                    attack_state: Q1AttackState::Straight,
+                },
+                fields: vec![ContentField {
+                    key: "targetname".to_string(),
+                    value: "ogre1".to_string(),
+                }],
+                references: vec![ContentReference {
+                    key: "enemy".to_string(),
+                    actor: None,
+                }],
+                owner: None,
+                activator: None,
+                door_group: Vec::new(),
+                monster: Some(ContentMonster {
+                    species: Q1MonsterSpecies::Ogre,
+                    mode: Q1MonsterMode::Stand,
+                    frame_index: 2,
+                    sequence: vec![1.0, 2.0],
+                    first_frame: 0,
+                    enemy: None,
+                    old_enemy: None,
+                    path: String::new(),
+                    pause_until: 0.0,
+                    attack_finished: 0.0,
+                    pain_finished: 0.0,
+                    search_until: 0.0,
+                    death_drop: false,
+                    refired: false,
+                }),
+                move_completion: Some(ContentMove {
+                    destination: vec(),
+                    done: "done".to_string(),
+                }),
+                callbacks: ContentCallbacks {
+                    think: Some("think".to_string()),
+                    use_callback: None,
+                    touch: None,
+                    pain: None,
+                    die: None,
+                    blocked: None,
+                    path_end: None,
+                },
+            }],
+            players: vec![ContentPlayer {
+                actor_provider: provider(),
+                actor: actor(2),
+                state: ContentPlayerState {
+                    alpha: Some(1.0),
+                    scale: Some(2.0),
+                    weapon: Q1Weapon::Shotgun,
+                    primary_holstered: false,
+                    attack_finished: 0.0,
+                    attack_held: false,
+                    jump_held: false,
+                    teleport_until: 0.0,
+                    weapon_frame: 3,
+                    weapon_animation_at: 0.0,
+                    weapon_animation_base: 4,
+                    continuous_firing: false,
+                    next_weapon_frame: 0.0,
+                    lightning_sound_at: 0.0,
+                    punch_angles: vec(),
+                    nail_side: 0.0,
+                    max_health: 100.0,
+                    mega_rot_at: 0.0,
+                    hostile_until: 0.0,
+                    view_angles: vec(),
+                    water_level: 0,
+                    air_finished: 0.0,
+                    drown_damage: 0.0,
+                    drown_at: 0.0,
+                    hazard_at: 0.0,
+                    auto_switch: Q1AutoSwitch::New,
+                },
+                powerups: vec![ContentPowerup {
+                    kind: Q1Powerup::Quad,
+                    expires: 9.0,
+                }],
+            }],
+            extensions: vec![ContentExtension {
+                id: "ext".to_string(),
+                bytes: vec![1, 2],
+            }],
+        };
+        let saved = c11_q1_foundation_to_save(&content);
+        assert_eq!(saved.provider, "q1:game");
+        assert_eq!(saved.precache_phase, "frozen");
+        assert_eq!(saved.edition, "classic");
+        assert_eq!(saved.sequence, 4);
+        assert_eq!(saved.next_dynamic_slot, 8);
+        assert_eq!(saved.force_retouch, 2.0);
+        assert_eq!(saved.entities.len(), 1);
+        let entity = &saved.entities[0];
+        assert_eq!(entity.source_slot, Some(1));
+        assert_eq!(entity.source_ordinal, Some(0));
+        assert_eq!(entity.state.solid, "bbox");
+        assert_eq!(entity.state.movement, "step");
+        assert_eq!(entity.state.state, "bottom");
+        assert_eq!(entity.state.attack_state, "straight");
+        assert_eq!(entity.state.projectile.as_deref(), Some("spike"));
+        assert_eq!(entity.state.projectile_weapon.as_deref(), Some("nailgun"));
+        assert_eq!(entity.state.water_type, -3);
+        let monster = entity.monster.as_ref().expect("monster");
+        assert_eq!(monster.species, "ogre");
+        assert_eq!(monster.mode, "stand");
+        assert_eq!(monster.frame_index, 2.0);
+        assert_eq!(saved.players.len(), 1);
+        let player = &saved.players[0];
+        assert_eq!(player.state.weapon, "shotgun");
+        assert_eq!(player.state.auto_switch, "new");
+        assert_eq!(player.powerups, vec![("quad".to_string(), 9.0)]);
+        let restored = crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&saved)
+            .expect("roundtrip");
+        assert_eq!(restored, content);
+        let mut bad_save = saved.clone();
+        bad_save.entities[0].state.solid = "bogus".to_string();
+        assert!(
+            crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&bad_save).is_err()
+        );
+        let mut bad_edition = saved.clone();
+        bad_edition.edition = "bogus".to_string();
+        assert!(
+            crate::bootstrap::simulation::q1_checkpoint_bridge::convert_persistence_q1_checkpoint(&bad_edition)
+                .is_err()
+        );
     }
 }

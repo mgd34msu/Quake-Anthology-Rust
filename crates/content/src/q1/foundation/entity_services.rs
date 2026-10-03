@@ -2263,7 +2263,11 @@ impl Q1EntityServices {
         if states.attack_finished > seconds || states.teleport_until > seconds {
             return Ok(false);
         }
-        self.update_player(&id, |player| player.view_angles = view_angles)?;
+        self.time = seconds;
+        self.update_player(&id, |player| {
+            player.view_angles = view_angles;
+            player.water_level = water_level;
+        })?;
         self.weapon_before_fire(&id)?;
         let (fire, ammo, per_shot) = {
             let definition = self
@@ -2336,15 +2340,26 @@ impl Q1EntityServices {
         if self.player_ref(&id).is_none() {
             return Err(q1_error("Player has no Q1 weapon state"));
         }
-        self.update_player(&id, |player| player.view_angles = view_angles)?;
-        let mut fired = false;
+        self.time = seconds;
+        self.update_player(&id, |player| {
+            player.view_angles = view_angles;
+            player.water_level = water_level;
+        })?;
         if let Some(weapon) = pressed {
             self.select_weapon(actor, weapon)?;
         }
         let states = self.player_ref(&id).cloned().expect("player");
-        if states.attack_held {
-            fired = self.attack(actor, view_angles, seconds, water_level)?;
+        if !states.attack_held {
+            if states.continuous_firing {
+                self.update_player(&id, |player| {
+                    player.continuous_firing = false;
+                    player.weapon_animation_at = -1.0;
+                    player.weapon_frame = 0;
+                })?;
+            }
+            return Ok(false);
         }
+        let fired = self.attack(actor, view_angles, seconds, water_level)?;
         if states.continuous_firing && seconds >= states.next_weapon_frame {
             let _ = fired;
             self.weapon_frame(actor, seconds)?;
@@ -3126,5 +3141,56 @@ mod tests {
         assert!(handoff.select(&String::from("q1:weapon/axe")));
         handoff.holster();
         assert!(handoff.is_holstered());
+    }
+
+    #[test]
+    fn weapon_input_sets_time_and_water_and_clears_continuous_on_release() {
+        let (mut game, _) = game();
+        let player = game.create("player", None, None).expect("player entity");
+        let owned = game
+            .entity_ref(&player)
+            .map(|entity| entity.actor.clone())
+            .expect("owned");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
+        game.update_player(&player, |state| {
+            state.continuous_firing = true;
+            state.weapon_frame = 5;
+            state.weapon_animation_at = 3.0;
+        })
+        .expect("prime");
+        game.player_input(
+            &owned,
+            &Q1PlayerInput {
+                attack: false,
+                jump: false,
+                teleport_until: None,
+            },
+        );
+        let angles = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+        assert!(!game.weapon_input(&owned, None, angles, 10.0, 2).expect("release"));
+        let state = game.player_ref(&player).cloned().expect("player");
+        assert!(!state.continuous_firing);
+        assert_eq!(state.weapon_frame, 0);
+        assert_eq!(state.weapon_animation_at, -1.0);
+        assert_eq!(state.view_angles, angles);
+        assert_eq!(state.water_level, 2);
+        assert_eq!(game.time, 10.0);
+    }
+
+    #[test]
+    fn attack_sets_time_and_water_level() {
+        let (mut game, _) = game();
+        let player = game.create("player", None, None).expect("player entity");
+        let owned = game
+            .entity_ref(&player)
+            .map(|entity| entity.actor.clone())
+            .expect("owned");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
+        let angles = Vec3 { x: 4.0, y: 5.0, z: 6.0 };
+        let _ = game.attack(&owned, angles, 12.0, 1);
+        assert_eq!(game.time, 12.0);
+        let state = game.player_ref(&player).cloned().expect("player");
+        assert_eq!(state.view_angles, angles);
+        assert_eq!(state.water_level, 1);
     }
 }
