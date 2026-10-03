@@ -5879,8 +5879,9 @@ pub struct SharedSimulationState {
     pub level_change: Option<LevelChange>,
     /// Donor `weaponProvider`.
     pub weapon_provider: ProviderReference,
-    /// Donor `q1Movement`.
-    pub q1_movement: qa_world::movement::q1::monsters::Q1MonsterMovement<RuntimeMonsterServices>,
+    /// Donor `q1Movement` (shared: the installed MG3 navigation holds
+    /// the same movement the state steps).
+    pub q1_movement: Rc<RefCell<qa_world::movement::q1::monsters::Q1MonsterMovement<RuntimeMonsterServices>>>,
     /// Donor `selectedMonsters`.
     pub selected_monsters: Option<SelectedMonsters>,
     /// Donor `monsterSources`.
@@ -7992,7 +7993,6 @@ impl SharedSimulation {
     /// still missing their sibling bridges, so nothing calls this yet.
     #[allow(dead_code)]
     fn qvm_client_spawned(&self, actor: &ActorId) -> Result<(), RuntimeError> {
-        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
         if !matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) {
             return Ok(());
         }
@@ -8018,17 +8018,10 @@ impl SharedSimulation {
             let Some(selected) = state.selected_arsenal.as_mut() else {
                 return Ok(());
             };
-            // The enum `has` is a missing-sibling stub; dispatch to the
-            // per-family trait methods (donor `has`/`remove`/`admit`).
-            let inner = match selected {
-                SelectedArsenal::Q1(arsenal) => arsenal as &mut dyn FamilyArsenal,
-                SelectedArsenal::Q2(arsenal) => arsenal as &mut dyn FamilyArsenal,
-                SelectedArsenal::Q3(arsenal) => arsenal as &mut dyn FamilyArsenal,
-            };
-            if inner.has(actor) {
-                inner.remove(actor);
+            if selected.has(actor) {
+                selected.remove(actor);
             }
-            let _ = inner.admit(owner.clone(), f64::from(max_health), team);
+            let _ = selected.admit(owner.clone(), f64::from(max_health), team);
         }
         {
             let state = self.peek();
@@ -8511,12 +8504,9 @@ fn construct_simulation(
     // Donor 692: monster movement placeholder; the services adapter's
     // weak link is dead until the post-wrap replace below fills it.
     let monster_ops = qa_core::numeric::NumericOps::select(numeric_profile).expect("provider numeric profile selects");
-    let q1_movement = qa_world::movement::q1::monsters::Q1MonsterMovement::new(RuntimeMonsterServices::new(
-        Weak::new(),
-        Rc::clone(&actors),
-        Rc::clone(&bodies_table),
-        monster_ops,
-    ));
+    let q1_movement = Rc::new(RefCell::new(qa_world::movement::q1::monsters::Q1MonsterMovement::new(
+        RuntimeMonsterServices::new(Weak::new(), Rc::clone(&actors), Rc::clone(&bodies_table), monster_ops),
+    )));
     // State assembly: every donor field plus the gameplay-time option
     // carry. Options borrowed by source creation below (guests,
     // restored clients) are filled in after create_source returns.
@@ -8701,7 +8691,7 @@ fn construct_simulation(
     simulation.lock().events = live_events;
     let movement_random = simulation.peek().random.clone();
     let live_movement = simulation.create_monster_movement(numeric_profile, movement_random);
-    simulation.lock().q1_movement = live_movement;
+    simulation.lock().q1_movement = Rc::new(RefCell::new(live_movement));
     // Post-wrap inputs: guests and registries move out of options (the
     // guest mirrors are filled after source creation); everything else
     // borrows the intact fields. Retained dropped-pickup cargo is
@@ -9251,16 +9241,29 @@ fn finish_construction_inner(
             }
         });
     }
-    // Donor 787: selected monsters prepare outside the guest sources; the
-    // navigation install needs Rc-shared Q1 movement the state does not
-    // carry yet.
+    // Donor 787: selected monsters prepare outside the guest sources.
     if !matches!(
         simulation.peek().source,
         SourceRuntime::Q3Qvm { .. } | SourceRuntime::Q2Native(_)
     ) {
         simulation.prepare_selected_monsters()?;
-        if tail.monster_navigation.is_some() {
-            return fail("Missing siblings: shared Q1 monster movement (monsterNavigation.install)");
+        if let Some(navigation) = tail.monster_navigation {
+            if simulation.with_q1_source(|_| ()).is_none() {
+                return fail("MG3 navigation requires the Q1 source world");
+            }
+            {
+                let mut recipe = simulation.recipe();
+                recipe.movement = recipe.map.entities.clone();
+                let profile = movement_profile(&recipe)?;
+                if !matches!(
+                    profile,
+                    MovementProfile::Q1Netquake(_) | MovementProfile::Q1Quakeworld(_)
+                ) {
+                    return fail("MG3 monsters require Q1 source movement");
+                }
+            }
+            let movement = Rc::clone(&simulation.peek().q1_movement);
+            navigation.install(simulation, movement);
         }
     }
     // Donor 788-794: restores are rejected at validation, so the saved
@@ -9530,13 +9533,19 @@ impl SharedSimulation {
         let mods_requested = options.prepared_mods.is_some()
             || options.enabled_mods.as_ref().is_some_and(|enabled| !enabled.is_empty())
             || options.mod_travel.is_some();
-        let rerelease_navigation = options.prepare_rerelease_navigation.is_some();
+        let prepare_rerelease_navigation = options.prepare_rerelease_navigation.clone();
+        let weapon_behaviors_rerelease = options.weapon_behaviors.as_ref().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| matches!(entry, super::types::PreparedWeaponBehavior::RereleaseNative { .. }))
+        });
         let mut simulation = Self::new_inner(options, true)?;
         match Self::load_inner(
             &simulation,
             &world_entities,
             mods_requested,
-            rerelease_navigation,
+            prepare_rerelease_navigation.as_ref(),
+            weapon_behaviors_rerelease,
             next_frame,
         ) {
             Ok(()) => Ok(simulation),
@@ -9555,12 +9564,25 @@ impl SharedSimulation {
         simulation: &SharedSimulation,
         world_entities: &str,
         mods_requested: bool,
-        rerelease_navigation: bool,
+        prepare_rerelease_navigation: Option<&super::types::PrepareRereleaseNavigation>,
+        weapon_behaviors_rerelease: bool,
         next_frame: &mut dyn FnMut(),
     ) -> Result<(), RuntimeError> {
         // Donor 846-848: rerelease navigation installs before the source loads.
-        if rerelease_navigation {
-            return fail("Missing siblings: rerelease navigation install (installRereleaseNavigation)");
+        if let Some(prepare) = prepare_rerelease_navigation {
+            use qa_content::q2::foundation::host::Q2Edition;
+            let q2_source_rerelease = simulation
+                .q2_source()
+                .is_some_and(|view| view.game.borrow().options.edition == Q2Edition::Rerelease);
+            let q2_guest_rerelease = simulation
+                .peek()
+                .options_q2_guest
+                .as_ref()
+                .is_some_and(|guest| guest.edition() == Q2Edition::Rerelease);
+            if q2_source_rerelease || q2_guest_rerelease || weapon_behaviors_rerelease {
+                let navigation = prepare(simulation).map_err(source_failure)?;
+                simulation.attach_rerelease_navigation(navigation)?;
+            }
         }
         // Donor 849-862: native travel either resolves the source or the
         // fresh guest pumps the loading entry points (restore arms are
@@ -14446,42 +14468,109 @@ pub struct SelectedWeaponEntry {
 
 impl SelectedArsenal {
     /// Whether the arsenal admits an actor (donor `has`).
-    ///
-    /// Missing siblings: the selected-arsenal admission sets
-    /// (`super::arsenal::q1/q2/q3`) expose no `has` query yet.
     pub fn has(&self, actor: &ActorId) -> bool {
-        let _ = actor;
-        false
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.has(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.has(actor),
+        }
+    }
+
+    /// Admit an actor (donor `admit`).
+    pub fn admit(
+        &mut self,
+        actor: OwnedActor,
+        max_health: f64,
+        team_deathmatch: bool,
+    ) -> qa_world::movement::types::ArsenalState {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.admit(actor, max_health, team_deathmatch),
+            SelectedArsenal::Q2(arsenal) => arsenal.admit(actor, max_health, team_deathmatch),
+            SelectedArsenal::Q3(arsenal) => arsenal.admit(actor, max_health, team_deathmatch),
+        }
+    }
+
+    /// Read an actor's arsenal snapshot (donor `read`).
+    pub fn read(&self, actor: &ActorId) -> qa_world::movement::types::ArsenalState {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.read(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.read(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.read(actor),
+        }
+    }
+
+    /// Step an actor's weapon state (donor `step`).
+    pub fn step(
+        &mut self,
+        input: &super::arsenal::selected::WeaponStepInput,
+        intent: Option<&qa_net::common::commands::ArsenalIntent>,
+    ) -> super::arsenal::selected::WeaponStepResult {
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.step(input, intent),
+            SelectedArsenal::Q2(arsenal) => arsenal.step(input, intent),
+            SelectedArsenal::Q3(arsenal) => arsenal.step(input, intent),
+        }
     }
 
     /// Weapon catalog (donor `catalog`).
     ///
-    /// Missing siblings: the selected-arsenal catalogs
-    /// (`super::arsenal::q1/q2/q3`) expose no `catalog` query yet.
+    /// Items delegate to the family catalogs. The family contract shape
+    /// carries item and drop behavior only, so this projection reports no
+    /// ammo linkage.
     pub fn catalog(&self) -> Vec<SelectedWeaponEntry> {
-        Vec::new()
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        let catalog = match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.catalog(),
+            SelectedArsenal::Q2(arsenal) => arsenal.catalog(),
+            SelectedArsenal::Q3(arsenal) => arsenal.catalog(),
+        };
+        catalog
+            .into_iter()
+            .map(|weapon| SelectedWeaponEntry {
+                item: weapon.item,
+                ammo: None,
+            })
+            .collect()
     }
 
     /// Arsenal HUD slice (donor `ui`).
     ///
-    /// Missing siblings: the selected-arsenal HUD projections
-    /// (`super::arsenal::q1/q2/q3`) expose no `ui` query yet.
+    /// `None` while the actor is unadmitted; admitted actors read the
+    /// family projection.
     pub fn ui(
         &self,
         actor: &ActorId,
         provider: &ProviderReference,
     ) -> Option<super::arsenal::selected::SelectedArsenalUi> {
-        let _ = (actor, provider);
-        None
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        if !self.has(actor) {
+            return None;
+        }
+        Some(match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.ui(actor, provider),
+            SelectedArsenal::Q2(arsenal) => arsenal.ui(actor, provider),
+            SelectedArsenal::Q3(arsenal) => arsenal.ui(actor, provider),
+        })
     }
 
     /// Pending weapon (donor `pendingWeapon`).
     ///
-    /// Missing siblings: the selected-arsenal pending slots
-    /// (`super::arsenal::q1/q2/q3`) expose no `pendingWeapon` query yet.
+    /// `None` while the actor is unadmitted; admitted actors read the
+    /// family pending slot.
     pub fn pending_weapon(&self, actor: &ActorId) -> Option<ItemId> {
-        let _ = actor;
-        None
+        use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+        if !self.has(actor) {
+            return None;
+        }
+        match self {
+            SelectedArsenal::Q1(arsenal) => arsenal.pending_weapon(actor),
+            SelectedArsenal::Q2(arsenal) => arsenal.pending_weapon(actor),
+            SelectedArsenal::Q3(arsenal) => arsenal.pending_weapon(actor),
+        }
     }
 
     /// Use an item (donor `useItem`).
@@ -15173,8 +15262,27 @@ impl SharedSimulation {
         use super::physics::{PhysicsFamily, SharedSolid, SolidKind};
         use qa_content::q1::foundation::types::{Q1Edition, Q1Solid};
         match entry {
-            RuntimeExecutionEntry::Q3Source { .. } => {
-                fail("Missing siblings: q3-source entry collision (q3 lane ports entry.collision)")
+            RuntimeExecutionEntry::Q3Source { actor, .. } => {
+                let state = self.peek();
+                let Some(selected) = state.selected_q3_source.as_ref() else {
+                    return fail("Q3-source collision has no selected source");
+                };
+                let solid = selected.collision(actor).map_err(source_failure)?;
+                Ok(SharedSolid {
+                    solid: match solid.solid {
+                        super::arsenal::q3_source::SharedSolidKind::None => SolidKind::None,
+                        super::arsenal::q3_source::SharedSolidKind::Trigger => SolidKind::Trigger,
+                        super::arsenal::q3_source::SharedSolidKind::Box => SolidKind::Box,
+                        super::arsenal::q3_source::SharedSolidKind::Brush => SolidKind::Brush,
+                    },
+                    model: solid.model.and_then(|index| u32::try_from(index).ok()),
+                    family: PhysicsFamily::Q3,
+                    owner: solid.owner.clone(),
+                    monster: None,
+                    dead_monster: None,
+                    q1_corpse: false,
+                    item: None,
+                })
             }
             RuntimeExecutionEntry::QuakeC { .. } => {
                 fail("Missing siblings: QuakeCSource::collision for live QC collision (quakec-source lane)")
@@ -15980,15 +16088,69 @@ impl SharedSimulation {
     }
 
     /// Donor `giveQ2StartItems` (donor runtime.ts 3739).
-    ///
-    /// Missing siblings: the q2-product lane owns players/items/startup
-    /// state; delete this seam when it lands.
     pub fn give_q2_start_items(&self, actor: &ActorId) -> Result<(), RuntimeError> {
-        if !matches!(self.peek().source, SourceRuntime::Q2 { .. }) {
-            return Ok(());
+        use qa_content::q2::base::player::create_q2_players;
+        use qa_content::q2::foundation::fields::parse_q2_entities;
+        use qa_content::q2::foundation::host::Q2Mode;
+        let game = match self.q2_game_services() {
+            Some(game) => game,
+            None => return Ok(()),
+        };
+        let Some(owned) = self.actors.borrow().resolve_owned(actor) else {
+            return fail("Q2 starting inventory requires an admitted player");
+        };
+        {
+            let game = game.borrow();
+            if game.entity(actor).is_none() || !game.players.states.contains_key(actor) {
+                return fail("Q2 starting inventory requires an admitted player");
+            }
         }
-        let _ = actor;
-        fail("Missing siblings: q2 product players/items for Q2 starting inventory (q2-product lane)")
+        let (edition, coop, items, hooks) = {
+            let game = game.borrow();
+            let Some(items) = game.players.items else {
+                return fail("Q2 starting inventory has no registered player module");
+            };
+            let Some(hooks) = game.players.hooks else {
+                return fail("Q2 starting inventory has no registered player module");
+            };
+            (game.options.edition, game.options.mode == Q2Mode::Coop, items, hooks)
+        };
+        let world_entities = self.peek().world_entities.clone();
+        let start_items = self.peek().start_items.clone();
+        let expression = if start_items.is_empty() {
+            parse_q2_entities(&world_entities, edition)
+                .iter()
+                .find(|entity| entity.classname == "worldspawn")
+                .and_then(|worldspawn| worldspawn.values.get("start_items").cloned())
+                .unwrap_or_default()
+        } else {
+            start_items
+        };
+        if !expression.is_empty() {
+            items.give_start_items(&owned, &mut game.borrow_mut(), &expression);
+        }
+        self.state.borrow_mut().pending_start_items.remove(actor);
+        let entries = {
+            let registry = self.actors.borrow();
+            let state = self.peek();
+            state.inventory.entries(registry.inner(), actor)
+        };
+        {
+            let mut game = game.borrow_mut();
+            let Some(entry) = game.players.states.get_mut(actor) else {
+                return fail("Q2 starting inventory requires an admitted player");
+            };
+            entry.spawn_inventory = entries;
+        }
+        if coop {
+            let carry = create_q2_players(items, hooks).save_carry(actor.clone(), &mut game.borrow_mut());
+            let mut game = game.borrow_mut();
+            let Some(entry) = game.players.states.get_mut(actor) else {
+                return fail("Q2 starting inventory requires an admitted player");
+            };
+            entry.coop_respawn = Some(carry);
+        }
+        Ok(())
     }
 }
 
@@ -16061,17 +16223,14 @@ fn q3_checkpoint_to_mirror(
 impl SharedSimulation {
     /// Donor `restoreSelectedArsenalTravel` (donor runtime.ts 3553).
     ///
-    /// Returns the refreshed arsenal for the Q1 arm (`admit_travel`
-    /// reports it); the Q3 arm has no `read` surface yet (the arsenal lane
-    /// owns admit/remove/read), so it reports no refresh and the caller
-    /// fails loudly. The Q2 arm needs `admit` plus the weapon registry,
-    /// which have no Rust surface yet.
+    /// The caller reads the refreshed arsenal after this returns,
+    /// matching the donor.
     pub fn restore_selected_arsenal_travel(
         &self,
         actor: &OwnedActor,
         maximum: f64,
         carry: &super::types::SelectedArsenalTravel,
-    ) -> Result<Option<qa_world::movement::types::ArsenalState>, RuntimeError> {
+    ) -> Result<(), RuntimeError> {
         use super::types::SelectedArsenalTravel;
         let selected_milliseconds = self.peek().selected_milliseconds;
         let mut state = self.state.borrow_mut();
@@ -16081,10 +16240,10 @@ impl SharedSimulation {
         match (selected, carry) {
             (SelectedArsenal::Q1(arsenal), SelectedArsenalTravel::Q1(carry)) => {
                 let canonical = q1_travel_to_canonical(carry);
-                let refreshed = arsenal
+                arsenal
                     .admit_travel(actor.clone(), maximum, &canonical)
                     .map_err(source_failure)?;
-                Ok(Some(refreshed))
+                Ok(())
             }
             (
                 SelectedArsenal::Q3(arsenal),
@@ -16098,7 +16257,7 @@ impl SharedSimulation {
                     .last_fire_milliseconds
                     .map(|last| last + selected_milliseconds - (*milliseconds as f64));
                 arsenal.restore(actor, &checkpoint).map_err(source_failure)?;
-                Ok(None)
+                Ok(())
             }
             _ => fail("Campaign travel selected arsenal family differs from destination"),
         }
@@ -16119,8 +16278,22 @@ impl SharedSimulation {
                 let travel = arsenal.capture_travel(actor).map_err(source_failure)?;
                 Ok(Some(SelectedArsenalTravel::Q1(q1_travel_to_mirror(&travel))))
             }
-            SelectedArsenal::Q2(_) => {
-                fail("Missing siblings: Q2 selected arsenal read (arsenal lane owns admit/remove/read)")
+            SelectedArsenal::Q2(arsenal) => {
+                use super::arsenal::selected::SelectedArsenal as FamilyArsenal;
+                let read = arsenal.read(actor);
+                Ok(Some(SelectedArsenalTravel::Q2 {
+                    weapon: read.active_weapon,
+                    inventory: read
+                        .ammo
+                        .into_iter()
+                        .map(|entry| qa_content::contract::InventoryEntry {
+                            item: entry.item,
+                            count: entry.count,
+                            capacity: entry.count,
+                            count_policy: None,
+                        })
+                        .collect(),
+                }))
             }
             SelectedArsenal::Q3(arsenal) => {
                 let checkpoint = arsenal.capture(actor).map_err(source_failure)?;
@@ -16133,10 +16306,6 @@ impl SharedSimulation {
     }
 
     /// Donor `restoreSelectedTravel` (donor runtime.ts 3580).
-    ///
-    /// Fresh selected-arsenal admission and the post-restore arsenal
-    /// refresh have no Rust surface yet (the arsenal lane owns
-    /// admit/remove/read), so those arms fail loudly until they land.
     pub fn restore_selected_travel(
         &self,
         player: &MovementPlayer,
@@ -16163,23 +16332,29 @@ impl SharedSimulation {
                 }
             };
             if selected_is_fresh_q1 {
-                return fail("Missing siblings: Q1 selected arsenal admit (arsenal lane owns admit/remove/read)");
-            }
-            if let Some(carry) = carry {
-                let refreshed = self.restore_selected_arsenal_travel(&actor, 100.0, carry)?;
-                match refreshed {
-                    Some(arsenal) => {
-                        let mut state = self.state.borrow_mut();
-                        if let Some(record) = state.player_states.get_mut(&actor) {
-                            record.arsenal = arsenal;
-                        }
-                    }
-                    None => {
-                        return fail("Missing siblings: selected arsenal read (arsenal lane owns admit/remove/read)");
-                    }
-                }
+                let mut state = self.state.borrow_mut();
+                let Some(selected) = state.selected_arsenal.as_mut() else {
+                    return fail("Campaign travel selected arsenal family differs from destination");
+                };
+                let _ = selected.admit(actor.clone(), 100.0, false);
+            } else if let Some(carry) = carry {
+                self.restore_selected_arsenal_travel(&actor, 100.0, carry)?;
             } else {
-                return fail("Missing siblings: selected arsenal admit (arsenal lane owns admit/remove/read)");
+                let mut state = self.state.borrow_mut();
+                let Some(selected) = state.selected_arsenal.as_mut() else {
+                    return fail("Campaign travel selected arsenal family differs from destination");
+                };
+                let _ = selected.admit(actor.clone(), 100.0, false);
+            }
+            let arsenal = {
+                let state = self.peek();
+                let Some(selected) = state.selected_arsenal.as_ref() else {
+                    return fail("Campaign travel selected arsenal family differs from destination");
+                };
+                selected.read(actor.id())
+            };
+            if let Some(record) = self.state.borrow_mut().player_states.get_mut(&actor) {
+                record.arsenal = arsenal;
             }
         } else if carried_player
             .and_then(|carried| carried.selected_arsenal.as_ref())
@@ -16637,10 +16812,16 @@ impl SharedSimulation {
             };
             self.restore_selected_travel(&player, carried_player)?;
         }
-        if carried.is_some() {
-            return fail(
-                "Missing siblings: arsenal() refresh for carried players (owning lane ports donor runtime.ts 3872)",
-            );
+        {
+            let state = self.peek();
+            let Some(player) = state.player_states.get(&actor).cloned() else {
+                return fail("Foundation admission lost its player");
+            };
+            drop(state);
+            let arsenal = self.read_player_arsenal(&player)?;
+            if let Some(record) = self.state.borrow_mut().player_states.get_mut(&actor) {
+                record.arsenal = arsenal;
+            }
         }
         if !source_is_q1 && (carried.is_none() || self.peek().pending_start_items.contains(actor.id())) {
             self.give_q2_start_items(actor.id())?;
@@ -18679,6 +18860,94 @@ impl SharedSimulation {
         })
     }
 
+    /// Construct and store the Q1 character foundation game (donor
+    /// `q1CharacterSource` foundation arm, donor runtime.ts 3751).
+    fn build_q1_character_foundation(&self) -> Result<(), RuntimeError> {
+        use qa_content::q1::foundation::types::{Q1Edition, Q1FoundationOptions};
+        let reference = self.peek().recipe.character.definition.clone();
+        let numeric = {
+            let state = self.peek();
+            provider_timing(&state.recipe, &provider_text(&reference.provider))?.numeric
+        };
+        let skill = self.peek().options_skill;
+        let mode = self.peek().options_mode;
+        let max_clients = self.peek().options_max_clients;
+        let campaign = self.peek().recipe.map.entities.provider.clone();
+        let combat_provider = self.peek().recipe.combat.provider.clone();
+        let inventory_provider = self.peek().recipe.inventory.provider.clone();
+        let movement_provider = self.peek().recipe.movement.provider.clone();
+        let gravity = self.peek().physics.gravity();
+        let random = self.peek().random.clone();
+        let tables = C11Tables {
+            actors: self.actors_handle(),
+            bodies: self.bodies_handle(),
+            weak: self.weak(),
+        };
+        let now_tables = tables.clone();
+        let now = Box::new(move || now_tables.sim().time_seconds());
+        let frame_tables = tables.clone();
+        let frame_seconds = Box::new(move || seconds(frame_tables.sim().peek().source_frame.elapsed));
+        let schedule_tables = tables.clone();
+        let schedule = Box::new(move |actor: &OwnedActor, due: Option<f64>| {
+            let sim = schedule_tables.sim();
+            match due {
+                None => {
+                    let actors = sim.actors.borrow();
+                    sim.lock()
+                        .scheduler
+                        .cancel(actors.inner(), actor)
+                        .expect("character think cancel failed");
+                }
+                Some(due) => {
+                    sim.schedule(actor, due).expect("character think schedule failed");
+                }
+            }
+        });
+        let host = self.q1_actor_host(
+            &reference,
+            super::source_hosts::ActorHostRuntime {
+                numeric,
+                random,
+                now,
+                frame_seconds,
+                schedule,
+            },
+            super::source_transition::SourceLevelAuthority::ActorSource,
+        );
+        let mut game = qa_content::q1::foundation::entity_services::Q1EntityServices::new(
+            host,
+            Q1FoundationOptions {
+                provider: Some(reference.provider.clone()),
+                precache_program: None,
+                edition: if reference.content.as_str().contains(":rerelease:") {
+                    Q1Edition::Rerelease
+                } else {
+                    Q1Edition::Classic
+                },
+                physics_edition: Some(self.q1_physics_edition()),
+                skill: i32::from(skill),
+                deathmatch: i32::from(mode == super::types::SimulationMode::Deathmatch),
+                coop: mode == super::types::SimulationMode::Coop,
+                campaign,
+                combat_provider,
+                movement_provider,
+                inventory_provider,
+                gravity,
+                max_clients: Some(max_clients as i32),
+                no_exit: None,
+                teamplay: None,
+                aim_threshold: None,
+            },
+        )
+        .map_err(|error| RuntimeError::Failure(error.to_string()))?;
+        qa_content::q1::base::map_entities::register_map_callbacks(&mut game)
+            .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?;
+        qa_content::q1::base::player::register_character_callbacks(&mut game)
+            .map_err(|error| RuntimeError::Failure(format!("{error:?}")))?;
+        self.state.borrow_mut().q1_character_foundation = Some(game);
+        Ok(())
+    }
+
     /// Donor `attachQ1Character` (C10 seam; C4 owns the canonical port).
     ///
     /// Missing siblings: C4's character attach (q1-kind sources need the q1
@@ -18686,6 +18955,15 @@ impl SharedSimulation {
     pub fn attach_q1_character(&self, player: &MovementPlayer) -> Result<(), RuntimeError> {
         use qa_content::q1::base::player::{Q1CharacterActor, Q1CharacterOptions};
         let actor = player.actor.clone();
+        let needs_foundation = {
+            let state = self.peek();
+            !matches!(state.source, SourceRuntime::Q1 { .. })
+                && !matches!(state.selected_weapon_source, Some(SelectedWeaponSource::Q1 { .. }))
+                && state.q1_character_foundation.is_none()
+        };
+        if needs_foundation {
+            self.build_q1_character_foundation()?;
+        }
         let character = {
             let state = self.peek();
             let game = match &state.source {
@@ -18700,7 +18978,7 @@ impl SharedSimulation {
                 }
                 _ => match state.q1_character_foundation.as_ref() {
                     Some(game) => game,
-                    None => return fail("Missing siblings: q1 character foundation construction"),
+                    None => return fail("Q1 character foundation was not constructed"),
                 },
             };
             Q1CharacterActor::new(
@@ -24062,8 +24340,6 @@ impl SharedSimulation {
     #[allow(dead_code)]
     fn selected_weapon_delay(&self, actor: &qa_core::identity::ActorId, seconds: f64) -> f64 {
         if matches!(self.peek().source, SourceRuntime::Q2Native(_)) {
-            // Missing siblings: the selected-arsenal lane owns `has`/`read`,
-            // so the selection reads empty until it lands.
             if self.peek().native_primary_commands.is_none() {
                 panic!("Selected firing delay has no original weapon policy");
             }
@@ -26323,6 +26599,7 @@ impl SharedSimulation {
                 .sim()
                 .lock()
                 .q1_movement
+                .borrow_mut()
                 .walk_move(actor, yaw, distance)
                 .unwrap_or(false)
         });
@@ -26333,7 +26610,7 @@ impl SharedSimulation {
                 movement.borrow_mut().change_yaw(actor);
                 return;
             }
-            yaw_tables.sim().lock().q1_movement.change_yaw(actor);
+            yaw_tables.sim().lock().q1_movement.borrow_mut().change_yaw(actor);
         });
         let goal_tables = tables.clone();
         let goal_movement = fresh_movement.clone();
@@ -26351,6 +26628,7 @@ impl SharedSimulation {
                     .sim()
                     .lock()
                     .q1_movement
+                    .borrow_mut()
                     .move_to_goal(actor, goal, distance, contact);
             },
         );
@@ -26360,7 +26638,7 @@ impl SharedSimulation {
             if let Some(movement) = bottom_movement.as_ref() {
                 return movement.borrow_mut().check_bottom(actor);
             }
-            bottom_tables.sim().lock().q1_movement.check_bottom(actor)
+            bottom_tables.sim().lock().q1_movement.borrow_mut().check_bottom(actor)
         });
 
         let mut random = random;
@@ -32294,11 +32572,172 @@ impl SharedSimulation {
 
     /// Step the QVM client-command arsenal decision (donor `qvmWeaponStep`).
     fn qvm_weapon_step(&self, application: &ModClientApplication, reached_attack_decision: bool) {
+        use qa_world::movement::types::{AnimationState, UserCommand};
         if !matches!(self.peek().source, SourceRuntime::Q3Qvm { .. }) || self.peek().selected_arsenal.is_none() {
             return;
         }
-        let _ = (application, reached_attack_decision);
-        panic!("Missing siblings: QVM arsenal application bridge (selectedQ3Source/weapon step)");
+        let Some(actor) = self.actors.borrow().resolve_owned(&application.identity.actor) else {
+            return;
+        };
+        if !self
+            .peek()
+            .selected_arsenal
+            .as_ref()
+            .is_some_and(|selected| selected.has(actor.id()))
+        {
+            if let Err(error) = self.qvm_client_spawned(actor.id()) {
+                panic!("{error}");
+            }
+        }
+        self.require_qvm_weapons();
+        let available = {
+            let state = self.peek();
+            let SourceRuntime::Q3Qvm {
+                weapons: Some(weapons), ..
+            } = &state.source
+            else {
+                panic!("Original QVM weapon services have no qualified owner");
+            };
+            weapons
+                .available(actor.id(), true)
+                .expect("qvm weapon availability failed")
+        };
+        if !available {
+            return;
+        }
+        let record = {
+            let state = self.peek();
+            let SourceRuntime::Q3Qvm { game, .. } = &state.source else {
+                return;
+            };
+            game.records.player(game.records.require_slot(actor.id()))
+        };
+        let health = f64::from(record.stats[0]);
+        let active = self
+            .peek()
+            .weapon_slots
+            .get(actor.id())
+            .is_none_or(|slot| slot.primary_selected())
+            && reached_attack_decision;
+        let mut command = application.command;
+        if !active {
+            command = match command {
+                UserCommand::Q1Netquake(mut inner) => {
+                    inner.buttons &= !1;
+                    UserCommand::Q1Netquake(inner)
+                }
+                UserCommand::Q1Quakeworld(mut inner) => {
+                    inner.buttons &= !1;
+                    UserCommand::Q1Quakeworld(inner)
+                }
+                UserCommand::Q2Classic(mut inner) => {
+                    inner.buttons &= !1;
+                    UserCommand::Q2Classic(inner)
+                }
+                UserCommand::Q2Rerelease(mut inner) => {
+                    inner.buttons &= !1;
+                    UserCommand::Q2Rerelease(inner)
+                }
+                UserCommand::Q3(mut inner) => {
+                    inner.buttons &= !1;
+                    UserCommand::Q3(inner)
+                }
+            };
+        }
+        let attack = match command {
+            UserCommand::Q1Netquake(inner) => inner.buttons & 1 != 0,
+            UserCommand::Q1Quakeworld(inner) => inner.buttons & 1 != 0,
+            UserCommand::Q2Classic(inner) => inner.buttons & 1 != 0,
+            UserCommand::Q2Rerelease(inner) => inner.buttons & 1 != 0,
+            UserCommand::Q3(inner) => inner.buttons & 1 != 0,
+        };
+        let alive = health > 0.0;
+        if let Some(selected) = self.peek().selected_q3_source.as_ref() {
+            selected
+                .command(&actor, attack, active, alive)
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let animation = ActorAnimationState {
+            provider: self.peek().recipe.character.definition.provider.clone(),
+            state: AnimationState::Q3 {
+                legs: record.legs_animation,
+                torso: record.torso_animation,
+                legs_timer_milliseconds: record.legs_timer_ms,
+                torso_timer_milliseconds: record.torso_timer_ms,
+            },
+        };
+        let frame = {
+            let state = self.peek();
+            let selected = state.selected_arsenal.as_ref().expect("selected arsenal checked above");
+            if selected.family() == "q1" {
+                let mut frame = selected_q1_frame(&state).unwrap_or_else(|error| panic!("{error}"));
+                frame.elapsed = application.frame.elapsed;
+                frame
+            } else if let Some(SelectedWeaponSource::Q2 { frame, .. }) = state.selected_weapon_source.as_ref() {
+                let mut frame = *frame;
+                frame.elapsed = application.frame.elapsed;
+                frame
+            } else {
+                let mut frame = application.frame;
+                frame.time = SourceTime::Milliseconds(state.selected_milliseconds as i32);
+                frame
+            }
+        };
+        let arsenal = self
+            .peek()
+            .selected_arsenal
+            .as_ref()
+            .expect("selected arsenal checked above")
+            .read(actor.id());
+        let gauntlet = active
+            && matches!(
+                arsenal.state,
+                qa_world::movement::types::WeaponState::Q3 { source_weapon: 1, .. }
+            )
+            && attack
+            && alive
+            && self
+                .peek()
+                .selected_q3_source
+                .as_ref()
+                .map(|selected| selected.gauntlet_hit(&actor).unwrap_or_else(|error| panic!("{error}")))
+                .unwrap_or(false);
+        let intent = application.arsenal.as_ref().map(|intent| ArsenalIntent {
+            provider: provider_text(&intent.provider),
+            weapon: intent.weapon.clone(),
+            use_holdable: intent.use_holdable,
+        });
+        let previous = self.lock().current_qvm_arsenal_application.replace(application.clone());
+        {
+            let mut state = self.lock();
+            let selected = state.selected_arsenal.as_mut().expect("selected arsenal checked above");
+            let input = super::arsenal::selected::WeaponStepInput {
+                actor: actor.clone(),
+                command,
+                frame,
+                arsenal,
+                animation,
+                environment: qa_world::movement::types::MovementEnvironment {
+                    health,
+                    flight: false,
+                    haste: false,
+                    invulnerable: false,
+                    gravity_multiplier: 1.0,
+                    ..Default::default()
+                },
+                gauntlet_hit: gauntlet,
+            };
+            let _ = selected.step(&input, intent.as_ref());
+        }
+        let reconciled = self
+            .lock()
+            .weapon_slots
+            .get_mut(actor.id())
+            .map(|slot| slot.reconcile().map_err(|error| error.to_string()));
+        self.lock().current_qvm_arsenal_application = previous;
+        if let Some(Err(error)) = reconciled {
+            panic!("{error}");
+        }
     }
 
     fn create_grapple(&self) -> Result<Option<GrappleRuntime>, RuntimeError> {
@@ -33557,5 +33996,60 @@ impl SharedSimulation {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_hosts::{test_q1_game, SimActors};
+    use super::*;
+
+    fn selected_q1() -> SelectedArsenal {
+        let (game, _handles) = test_q1_game();
+        SelectedArsenal::Q1(super::super::arsenal::q1::Q1SelectedArsenal::new(
+            super::super::arsenal::q1::Q1SelectedArsenalOptions {
+                game: Rc::new(RefCell::new(game)),
+                native_player: None,
+                replaced_items: Vec::new(),
+                fired: None,
+                impulse: None,
+                prepare_pickup: None,
+                observe: Box::new(|_| super::super::arsenal::q1::Q1Observation {
+                    view_angles: zero(),
+                    water_level: 0,
+                }),
+            },
+        ))
+    }
+
+    #[test]
+    fn selected_arsenal_enum_delegates_admit_has_read() {
+        let mut selected = selected_q1();
+        let actors = SimActors::new("enum-delegation-test");
+        let owner = ProviderId::new("q1", "test");
+        let actor = actors.mint(&owner, "player");
+        assert!(!selected.has(actor.id()));
+        assert_eq!(selected.pending_weapon(actor.id()), None);
+        let admitted = selected.admit(actor.clone(), 100.0, false);
+        assert!(selected.has(actor.id()));
+        assert_eq!(selected.read(actor.id()), admitted);
+        assert_eq!(selected.pending_weapon(actor.id()), None);
+    }
+
+    #[test]
+    fn selected_arsenal_enum_projects_catalog_and_ui() {
+        let mut selected = selected_q1();
+        let actors = SimActors::new("enum-catalog-test");
+        let owner = ProviderId::new("q1", "test");
+        let actor = actors.mint(&owner, "player");
+        assert!(!selected.catalog().is_empty());
+        assert!(selected.catalog().iter().all(|weapon| !weapon.item.is_empty()));
+        let source = ProviderReference {
+            provider: owner,
+            content: ContentId("q1:id1:weapons".to_string()),
+        };
+        assert_eq!(selected.ui(actor.id(), &source), None);
+        let _ = selected.admit(actor.clone(), 100.0, false);
+        assert!(selected.has(actor.id()));
     }
 }
