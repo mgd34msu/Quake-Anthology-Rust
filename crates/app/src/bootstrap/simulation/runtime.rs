@@ -27374,43 +27374,60 @@ fn with_input_command_seam(
     execute(effective, arsenal)
 }
 
-/// Outcome of a movement-lane move (donor `moved`; only the
-/// Q2-rerelease-active check survives the seam).
+/// Outcome of a movement-lane move (donor `moved`; the Q2-rerelease-active
+/// check and the impact routing survive the seam, gated on a move result
+/// the seam cannot produce yet).
 #[allow(dead_code)]
 struct StepMoveOutcome {
     /// Moved stayed active on a Q2-rerelease state.
     q2_rerelease_active: bool,
+    /// Rerelease impact delta from the move result.
+    impact_delta: f64,
+    /// Whether the move ended on a ladder.
+    on_ladder: bool,
 }
 
 /// Move through an applied mod-client command (donor `player.moveCommand`).
 ///
-/// Missing siblings: the movement lane owns the move; no state advances
-/// until it lands.
+/// Sequence consumption is real; the stale skip (donor 4511-4516) drops
+/// retried commands once the seam consumes them.
+///
+/// Missing siblings: the movement lane owns state advance (movement
+/// state, commit, NetQuake input) until it lands.
 #[allow(dead_code)]
 fn move_command_seam(
     player: &mut MovementPlayer,
     relative: &ActorCommand,
     frame: &FrameContext,
 ) -> Result<StepMoveOutcome, RuntimeError> {
-    let _ = (player, relative, frame);
+    player.last_sequence = relative.sequence as i32;
+    let _ = frame;
     Ok(StepMoveOutcome {
         q2_rerelease_active: false,
+        impact_delta: 0.0,
+        on_ladder: false,
     })
 }
 
 /// Move through a raw command (donor `player.move`).
 ///
-/// Missing siblings: the movement lane owns the move; no state advances
-/// until it lands.
+/// Sequence consumption is real; the stale skip (donor 4511-4516) drops
+/// retried commands once the seam consumes them.
+///
+/// Missing siblings: the movement lane owns state advance (movement
+/// state, commit, NetQuake input) until it lands.
 #[allow(dead_code)]
 fn move_seam(
     player: &mut MovementPlayer,
     relative: &ActorCommand,
     frame: &FrameContext,
 ) -> Result<StepMoveOutcome, RuntimeError> {
-    let _ = (player, relative, frame);
+    player.last_sequence = relative.sequence as i32;
+    let _ = frame;
     Ok(StepMoveOutcome {
         q2_rerelease_active: false,
+        impact_delta: 0.0,
+        on_ladder: false,
     })
 }
 
@@ -27437,14 +27454,29 @@ impl SharedSimulation {
     }
 }
 
-/// Q2 movement impact for an active rerelease move (donor
-/// `product.movementImpact`).
-///
-/// Missing siblings: the Q2 lane owns movement impact; unreachable until
-/// the move seam can report an active rerelease move.
-#[allow(dead_code)]
-fn q2_movement_impact_seam(actor: &ActorId) {
-    let _ = actor;
+impl SharedSimulation {
+    /// Route a movement impact to the Q2 product (donor
+    /// `product.movementImpact`, donor runtime.ts 4563).
+    ///
+    /// Reads through the content product runtime's players plus the game
+    /// arena; silent when no Q2 product is bound.
+    ///
+    /// Missing siblings: the movement lane owns the move result (active
+    /// flag, impact delta, ladder flag); unreachable until the move seam
+    /// reports an active rerelease move.
+    fn q2_movement_impact(&self, actor: &ActorId, impact_delta: f64, on_ladder: bool) {
+        let state = self.peek();
+        let pair = match &state.source {
+            SourceRuntime::Q2 { game, .. } => Some((Rc::clone(game), state.q2_product.clone())),
+            _ => None,
+        };
+        drop(state);
+        if let Some((game, Some(product))) = pair {
+            product
+                .borrow()
+                .movement_impact(actor.clone(), &mut game.borrow_mut(), impact_delta, on_ladder);
+        }
+    }
 }
 
 /// Run one Q3-source player think (donor `source.game.playerThink`).
@@ -27992,7 +28024,7 @@ impl SharedSimulation {
                 move_seam(&mut pstate, &relative, &movement_frame)?
             };
             if source_is_q2 && moved.q2_rerelease_active {
-                q2_movement_impact_seam(owned.id());
+                self.q2_movement_impact(owned.id(), moved.impact_delta, moved.on_ladder);
             }
             pstate.gravity_multiplier = saved_multiplier;
         }
