@@ -11,10 +11,10 @@
 //! draw groups' batches as one trailing [`RenderOperation::Draw`].
 //!
 //! Textures resolve through the installed product's mounts
-//! ([`InstalledCatalog::read`]); model skins intentionally resolve to the
-//! shared white/missing handles (the model provider mints no images, so
-//! entity batches need no extra uploads beyond the world view's image
-//! operations).
+//! ([`InstalledCatalog::read`]); model skins resolve through the world's own
+//! texture loader ([`WindowedSkinProvider`](super::windowed_skins::WindowedSkinProvider)),
+//! so skin registrations share the world image registry and their uploads
+//! drain with the first frame view's image operations.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -60,6 +60,7 @@ use qa_content::spr::{parse_sp2, parse_spr};
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::{angles_to_axis, vec3, vec4, Bounds, Vec3};
 
+use super::windowed_skins::WindowedSkinProvider;
 use super::windowed_world::WindowedWorldError;
 
 /// Open one installed product's mounts once for a whole presentation.
@@ -171,15 +172,17 @@ impl SceneImageDecoder for WindowedImageDecoder {
     }
 }
 
-/// Model material provider over the world's shared white/missing handles.
+/// Prepare-time model material provider over the world's shared
+/// white/missing handles and content palette.
 ///
-/// Skins resolve to white and unknown shaders to white as well: entity
-/// batches stay upload-free (the handles are resident once the world view's
-/// image operations are applied) while the full prepare path
-/// ([`prepare_scene_entity`](qa_client::render::scene::models::prepare::prepare_scene_entity)
-/// through [`SceneModelRenderer::prepare`]) still shapes every batch.
+/// Materials are preloaded through the world's texture loader before the
+/// first frame ([`WindowedSkinProvider`](super::windowed_skins::WindowedSkinProvider)),
+/// so the prepare path only reads the cached materials plus this
+/// provider's family, palette, and fallbacks; the load entry points below
+/// are unreachable after that preload and keep the white/missing fallbacks.
 pub struct WindowedModelProvider {
     family: RenderFamily,
+    palette: Option<ModelPalette>,
     white: RendererImage,
     missing: RendererImage,
 }
@@ -190,7 +193,7 @@ impl ModelMaterialProvider for WindowedModelProvider {
     }
 
     fn palette(&self) -> Option<&ModelPalette> {
-        None
+        self.palette.as_ref()
     }
 
     fn white_image(&self) -> RendererImage {
@@ -705,6 +708,10 @@ pub fn build_presentation(
     let (entities, inline_models, skipped_models) =
         build_scene_entities(&mounts, map, records, flags, matches!(kind, BspKind::Q3));
     let palette = load_palette(&mounts, kind, map)?;
+    let model_palette = palette.as_ref().map(|palette| ModelPalette {
+        colors: palette.colors.clone(),
+        source: palette.source.clone(),
+    });
     let mut loader = SceneTextureLoader::new(
         SceneImageRegistry::new(owner),
         Box::new(CatalogSceneReader { mounts }),
@@ -728,7 +735,7 @@ pub fn build_presentation(
         },
         ..WorldSceneOptions::default()
     };
-    let scene = match kind {
+    let mut scene = match kind {
         BspKind::Q1 => {
             let parsed =
                 read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| WindowedWorldError::MapDecode {
@@ -762,12 +769,19 @@ pub fn build_presentation(
         }
     };
     let mut models = SceneModelRenderer::new(
-        WindowedModelProvider { family, white, missing },
+        WindowedModelProvider {
+            family,
+            palette: model_palette,
+            white,
+            missing,
+        },
         ModelLightSampler::fullbright(),
     );
     models.set_world(q3_world, q2_world, 1.0);
+    let skin_palette = models.provider().palette().cloned();
+    let delegate = WindowedSkinProvider::new(scene.shaders_mut().textures_mut(), family, skin_palette);
     models
-        .preload(&entities, &|_| ModelSourceOptions::default())
+        .preload_with(delegate, &entities, &|_| ModelSourceOptions::default())
         .map_err(|error| WindowedWorldError::Presentation {
             map: map.to_string(),
             reason: error.to_string(),

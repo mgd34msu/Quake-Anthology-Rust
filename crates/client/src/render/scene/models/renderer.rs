@@ -574,6 +574,32 @@ impl<P: ModelMaterialProvider> SceneModelRenderer<P> {
         Ok(())
     }
 
+    /// Preload materials through a delegate provider, keeping them in this
+    /// renderer. The delegate owns the texture/registry access for the
+    /// preload pass only; prepared batches afterwards resolve from this
+    /// renderer's material cache, so the delegate can be retired once
+    /// preloading finishes. Returns the delegate for the caller to retire.
+    pub fn preload_with<Q: ModelMaterialProvider>(
+        &mut self,
+        provider: Q,
+        entities: &[SceneEntity],
+        options: &dyn Fn(&SceneEntity) -> ModelSourceOptions,
+    ) -> Result<Q, RenderError> {
+        let mut delegate = SceneModelRenderer {
+            provider,
+            materials: std::mem::take(&mut self.materials),
+            lighting: ModelLightSampler::fullbright(),
+            model_policy: self.model_policy.clone(),
+            identity_light: self.identity_light,
+            q3_world: self.q3_world,
+            q2_world: self.q2_world,
+        };
+        let result = delegate.preload(entities, options);
+        self.materials = delegate.materials;
+        result?;
+        Ok(delegate.provider)
+    }
+
     fn palette_color(&self, index: u8) -> Result<Vec3, RenderError> {
         let palette = self
             .provider
@@ -1454,6 +1480,23 @@ mod tests {
             BatchVertices::Single(vertices) => assert_eq!(vertices.len(), 4),
             _ => panic!("expected single-textured batch"),
         }
+    }
+
+    #[test]
+    fn delegate_preload_keeps_materials_in_the_renderer() {
+        let mut renderer = SceneModelRenderer::new(provider(RenderFamily::Q2), ModelLightSampler::fullbright());
+        let entities = vec![sprite_entity()];
+        let delegate = provider(RenderFamily::Q2);
+        let retired = renderer
+            .preload_with(delegate, &entities, &|_| ModelSourceOptions::default())
+            .expect("delegate preload");
+        assert_eq!(retired.family(), RenderFamily::Q2);
+        // The retired delegate is gone; batches still resolve from the kept cache.
+        let groups = renderer
+            .prepare(&entities, &input(camera()), &|_| ModelSourceOptions::default(), None)
+            .expect("prepare");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].batches.len(), 1);
     }
 
     #[test]
