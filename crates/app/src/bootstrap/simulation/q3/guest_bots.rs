@@ -2,10 +2,12 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/q3/guest-bots.ts`.
 //!
-//! Missing siblings: `ApplicationBotNavigation` (`navigation.ts`, navigation
-//! partition). The [`GuestBotSelectedNavigation`] seam exposes exactly the
-//! donor's selected-navigation surface (area queries plus persistence); the
-//! navigation partition implements it post-merge.
+//! Sibling homes:
+//! [`ApplicationBotNavigation`](super::super::navigation::ApplicationBotNavigation)
+//! (`navigation.ts` port) is the live bot navigation. The
+//! [`GuestBotSelectedNavigation`] seam stays as the narrow interface this
+//! module needs (selected-navigation area queries plus persistence); only
+//! test doubles implement it.
 //!
 //! Three adaptations are forced by missing `qa_bots`/`qa_guest`
 //! capabilities (canonical homes noted; unify post-merge):

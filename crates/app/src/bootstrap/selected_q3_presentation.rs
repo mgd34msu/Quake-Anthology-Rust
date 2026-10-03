@@ -1,21 +1,20 @@
 //! Supplemental selected-source Q3 cgame scenes, one per seat.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/selected-q3-presentation.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/selected-q3-presentation.ts`
 //! (`ApplicationSelectedQ3Presentation`, `ApplicationSelectedQ3Presentations`).
 //! Ownership, generation tracking, audio flushing, the frame gate, seat
 //! retention, and aggregate cleanup errors are concrete here. The Q3
 //! transport, scene presentation, services, renderer, and media live behind
-//! [`SelectedQ3SceneBackend`] because their construction needs
-//! `./q3-client/services.ts` (`createApplicationQ3Services`) and
-//! `./q3-client/visibility.ts` (`selectApplicationQ3Snapshot`), which have
-//! no lane port. Likewise the selected source arrives as
-//! [`SelectedQ3Source`] (`./simulation/arsenal/q3-source.ts` has no lane
-//! port), the viewing seat as [`SelectedQ3Seat`] (`./presentation.ts` has
-//! no lane port), and the cgame audio sink as [`SelectedQ3AudioSink`]
-//! (`./audio.ts` has no lane port). The component-effects frame
-//! (`ApplicationEffectFrame` in `./effects.ts`, unported) stays
-//! backend-opaque: the seat invokes a boolean render effect. Sync port:
-//! the donor's async initialize/prepare become sync calls.
+//! [`SelectedQ3SceneBackend`]; the donor's construction inputs have lane
+//! ports ([`ApplicationQ3Services`](super::q3_client::services::ApplicationQ3Services),
+//! [`select_application_q3_snapshot`](super::q3_client::visibility::select_application_q3_snapshot),
+//! [`q3_source`](super::simulation::arsenal::q3_source),
+//! [`presentation`](super::presentation), [`audio`](super::audio),
+//! [`ApplicationEffectFrame`](super::effects::application::ApplicationEffectFrame)),
+//! but the backend, source, seat, and sink seams are implemented only by
+//! test doubles, so construction stays host-side. The component-effects
+//! frame stays backend-opaque: the seat invokes a boolean render effect.
+//! Sync port: the donor's async initialize/prepare become sync calls.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

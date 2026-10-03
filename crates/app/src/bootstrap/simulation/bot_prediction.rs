@@ -2,13 +2,16 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-prediction.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition),
-//! `MovementPredictionPlayer` plus `createPlayerMovementPrediction` and
-//! `movementObservation` (`player-movement.ts`, player-movement partition).
-//! The [`PlayerMovementPrediction`] seam exposes exactly the donor's
-//! projection surface; the partitions implement it post-merge. The donor
-//! builds the projection from `(simulation, player)` internally; the port
-//! takes the built projection because both live in missing partitions.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation, and
+//! [`MovementPredictionPlayer`](super::player_movement::MovementPredictionPlayer),
+//! [`create_player_movement_prediction`](super::player_movement::create_player_movement_prediction),
+//! and [`movement_observation`](super::player_movement::movement_observation)
+//! (`player-movement.ts` port) are the live projection pieces. The
+//! [`PlayerMovementPrediction`] seam stays as the narrow projection
+//! interface: the donor builds the projection from `(simulation, player)`
+//! internally, while the port takes the built projection; only test
+//! doubles implement it.
 //!
 //! The donor reads origins through `movementOrigin` from `./players.ts`,
 //! which is the q2-classic eighths scaling over [`MovementState::origin`];

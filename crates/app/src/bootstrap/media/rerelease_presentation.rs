@@ -1,6 +1,6 @@
 //! Q2 rerelease configstrings, `svc_locprint`, and `cg_screen.cpp` story draws.
 //!
-//! Sync port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/rerelease-presentation.ts`
+//! Sync port of Quake-Anthology-TS `src/app/bootstrap/rerelease-presentation.ts`
 //! (GPL-2.0-or-later).
 //!
 //! Holds client configstrings and interpolation only. Source game callbacks
@@ -46,9 +46,9 @@ pub struct RereleasePresentationSeat {
     pub language: Option<String>,
 }
 
-/// Absorbed `SimulationPresentationEvent` pick: only the `q2-rerelease` and
-/// `q2-player` sources this presentation consumes (donor
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/types.ts`, out of scope).
+/// Absorbed [`SimulationPresentationEvent`](super::super::simulation::types::SimulationPresentationEvent)
+/// pick (`simulation/types.ts` port): only the `q2-rerelease` and
+/// `q2-player` sources this presentation consumes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RereleasePresentationEvent {
     /// Content identity.
@@ -75,7 +75,7 @@ pub enum RereleasePresentationEventKind {
 }
 
 /// Absorbed `ApplicationAssets` provider pick used by rerelease presentation
-/// (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/assets.ts`, out of scope): content families,
+/// (donor `src/app/bootstrap/assets.ts`, out of scope): content families,
 /// localization mounts, and sky-face images with the missing-texture fallback
 /// applied by the host.
 pub trait RereleasePresentationProvider: 'static {

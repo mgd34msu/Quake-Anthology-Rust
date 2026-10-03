@@ -1,12 +1,15 @@
 //! Frontend audio over the shared gameplay mixer and music decoder.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-audio.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/startup-audio.ts`
 //! (`StartupAudio`). The frontend uses the same mixer and music decoder as
 //! a gameplay session. Output cvars, music settings, menu paths, track
-//! lists, cues, and preferences reuse the ported audio modules; the engine,
-//! music controller, sound banks, and mounts (unported `UnifiedAudio`,
-//! `ApplicationMusic`, `SoundBank`, `MountedContent` behind a shared-mixer
-//! lifetime) arrive as the [`StartupAudioEngine`], [`StartupMusic`],
+//! lists, cues, and preferences reuse the ported audio modules; the engine
+//! (ported [`UnifiedAudio`](qa_client::audio::engine::UnifiedAudio), absorbed
+//! in the seam), music controller
+//! ([`ApplicationMusic`](super::audio::music::ApplicationMusic)), sound banks
+//! ([`SoundBank`](qa_client::audio::bank::SoundBank)), and mounts
+//! ([`MountedContent`](qa_content::mounts::MountedContent)) behind a shared-mixer
+//! lifetime arrive as the [`StartupAudioEngine`], [`StartupMusic`],
 //! [`StartupSoundBank`], and [`StartupMusicMounts`] seams. Banks are shared
 //! through `Rc<RefCell>` like the donor's shared references. Sync port:
 //! the donor's async open/track selection become sync calls with the same

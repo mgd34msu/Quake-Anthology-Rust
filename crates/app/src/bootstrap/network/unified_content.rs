@@ -1,6 +1,6 @@
 //! Unified composition identity and content resolution.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/unified-content.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/unified-content.ts`
 //! (`unifiedResourceId`, `createUnifiedComposition`, `readUnifiedComposition`,
 //! `encodeUnifiedComposition`, `decodeUnifiedComposition`,
 //! `resolveUnifiedComposition`, `loadUnifiedContent`, `resolveUnifiedResource`,
@@ -16,8 +16,10 @@
 //! [`qa_net::common::session::composition_identity`] is not reused because it
 //! digests a fixed four-field composition while the donor digest also covers
 //! sidecars. Async donor flow runs synchronously with order preserved.
-//! Loaded-application handles are injected through [`UnifiedLoadedContent`]
-//! and [`UnifiedContentLoader`] since that lane is unported; every check the
+//! Loaded-application handles
+//! ([`LoadedApplicationContent`](super::super::content::LoadedApplicationContent))
+//! are injected through [`UnifiedLoadedContent`] and [`UnifiedContentLoader`],
+//! which carry the host-side handles; every check the
 //! donor performs (precedence, byte identity, digest equality,
 //! close-on-mismatch) runs here.
 

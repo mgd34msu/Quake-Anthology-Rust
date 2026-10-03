@@ -1,10 +1,13 @@
 //! Per-channel remote view: presentation, effects, components, and Q3 guest.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-seat-view.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-seat-view.ts`
 //! (`RemoteSeatViewOptions`, `RemoteSeatView`). A channel's view and PVS
 //! effects borrow the retained frontend assets and output. All collaborators
-//! (assets, effects, UI, Q3 guest, presentation, components, renderer, audio,
-//! content, input) are unported siblings, so they arrive through the
+//! (assets, still unported, plus [`effects`](super::effects),
+//! [`SeatUiData`](super::presentation::SeatUiData), [`qa_guest`],
+//! [`presentation`](super::presentation), [`component_media`](super::component_media),
+//! [`renderer`](super::renderer), [`audio`](super::audio),
+//! [`content`](super::content), [`input`](super::input)) arrive through the
 //! [`RemoteSeatViewBackend`] seam; this module owns the orchestration:
 //! preparation order, view-angle conversion, client-state mapping, effect
 //! reporting, and aggregate cleanup with the donor's exact texts. Sync port:
@@ -157,7 +160,7 @@ pub struct RemoteSeatViewOptions {
     pub q3_command_angles: Option<[i32; 3]>,
 }
 
-/// View collaborators (all unported siblings behind one seam).
+/// View collaborators (the unported assets plus landed homes behind one seam).
 pub trait RemoteSeatViewBackend {
     /// Backend failure.
     type Error: std::fmt::Display;

@@ -1,11 +1,12 @@
 //! Per-seat Quake fog with worldspawn defaults and transition events.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q1-fog.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q1-fog.ts`
 //! (`Q1MapFog`). Fog state, worldspawn parsing, and the scene-fog value come from the
 //! ported [`Q1FogState`](qa_client::materials::fog::Q1FogState),
 //! [`q1_world_fog`](qa_client::materials::fog::q1_world_fog), and
 //! [`SceneFog`](qa_client::render::types::SceneFog). The presentation-event stream
-//! (`./simulation/types.ts`, out of scope) is shimmed minimally below: this class only
+//! ([`SimulationPresentationEvent`](super::simulation::types::SimulationPresentationEvent),
+//! `./simulation/types.ts` port) is shimmed minimally below: this class only
 //! reads owner retirement plus the `q1-fog` owner/content/player/transition/sky-factor
 //! fields. Construction reports [`ClientError`](qa_client::ClientError) because the merged
 //! worldspawn parser is fallible where the donor's is total.

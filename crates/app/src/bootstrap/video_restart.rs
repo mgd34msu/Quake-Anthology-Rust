@@ -1,11 +1,13 @@
 //! Client renderer restarts between source frames on the retained client.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/video-restart.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/video-restart.ts`
 //! (`PreparedVideoPresentation`, `VideoRestartHost`, `ApplicationVideoRestart`,
 //! `VideoGuestSeat`, `prepareVideoGuests`). Video requests run between
 //! source frames on the retained client. The renderer reuses
-//! [`super::renderer`]; commands reuse `qa_core`; capture, input, guests,
-//! and windows (unported siblings) arrive as injected traits. Sync port:
+//! [`super::renderer`]; commands reuse `qa_core`; capture ([`super::capture`]),
+//! input ([`super::input`]), guests
+//! ([`ApplicationQ3Client`](super::q3_client_app::ApplicationQ3Client)), and windows
+//! ([`SdlWindow`](qa_platform::sdl::SdlWindow)) arrive as injected traits. Sync port:
 //! the donor's async drain/guest reopen become sync host calls with the
 //! same texts, ordering, and aggregate cleanup.
 

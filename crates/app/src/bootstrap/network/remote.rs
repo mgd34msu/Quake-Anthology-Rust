@@ -1,6 +1,6 @@
 //! Quake II remote presentation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/remote.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/remote.ts`
 //! (`Q2RemotePresentation`, `Q2RemotePresentationOptions`,
 //! `q2RemoteEntityBounds`). Decoded source records are presentation state;
 //! this owner has no `Simulation` or combat table. The donor's asynchronous
@@ -8,21 +8,28 @@
 //! the donor's retirement guards collapse onto download-revision checks
 //! around each host call.
 //!
-//! Missing siblings (host-seam surface, documented per the lane rule):
-//! `./q2-remote-view.ts` (`q2RemoteViewHeight`, `q2RemoteViewPosition`,
-//! `q2RemoteBodyBounds`, `q2RemoteCommand`, `Q2RereleaseViewHeight`,
-//! `q2RereleaseViewContinuous`) behind [`Q2RemoteHost`]'s view methods and
-//! [`Q2RereleaseViewHeight`]; `./q2-mvd-presentation.ts` (`q2MvdLayout`,
-//! `q2MvdVisibility`) behind [`Q2RemoteHost::mvd_layout`] and
-//! [`Q2RemoteHost::mvd_visibility`]; `../simulation/prediction.ts`,
-//! `../simulation/players.ts` (`SelectedMovementPrediction`,
-//! `movementProfile`, `movementOrigin`) behind [`Q2RemotePredictor`],
+//! Sibling homes (host-seam surface over live siblings):
+//! [`q2_remote_view`](super::q2_remote_view) (`q2RemoteViewHeight`,
+//! `q2RemoteViewPosition`, `q2RemoteBodyBounds`, `q2RemoteCommand`,
+//! `Q2RereleaseViewHeight`, `q2RereleaseViewContinuous`) behind
+//! [`Q2RemoteHost`]'s view methods and the [`Q2RereleaseViewHeight`]
+//! seam trait (the ported struct keeps host-owned smoothing state);
+//! [`q2_mvd_layout`](super::q2_mvd_presentation::q2_mvd_layout) plus
+//! [`Q2MvdVisibility`](super::q2_mvd_presentation::Q2MvdVisibility)
+//! (`q2-mvd-presentation.ts`) behind [`Q2RemoteHost::mvd_layout`] and
+//! [`Q2RemoteHost::mvd_visibility`];
+//! [`SelectedMovementPrediction`](crate::bootstrap::simulation::prediction::runtime::SelectedMovementPrediction)
+//! plus [`movement_profile`](crate::bootstrap::simulation::players::movement_profile)
+//! and [`movement_origin`](crate::bootstrap::simulation::players::movement_origin)
+//! (`prediction.ts`, `players.ts`) behind [`Q2RemotePredictor`],
 //! [`Q2RemoteHost::movement_profile_kind`], and the [`Q2PredictionBase`] /
-//! [`Q2PredictedPlayer`] mirrors; `./q2-demo.ts` (`Q2MvdPresentation`)
-//! behind the [`Q2MvdPresentation`] mirror. The `q2WeaponStatus` helper
-//! (`../simulation/arsenal/weapon-status.ts`) is mirrored locally as
-//! [`q2_weapon_status`] because its only inputs are the in-worktree weapon
-//! table, display names, and [`WeaponStatus`].
+//! [`Q2PredictedPlayer`] host-local shapes;
+//! [`Q2MvdPresentation`](super::q2_demo::Q2MvdPresentation) (`q2-demo.ts`)
+//! behind the [`Q2RemotePresentationMvd`] binding. The `q2WeaponStatus` helper
+//! ([`arsenal::weapon_status`](crate::bootstrap::simulation::arsenal::weapon_status))
+//! is mirrored locally as [`q2_weapon_status`] because this path reads
+//! the `network::types` weapon table and [`WeaponStatus`] instead of the
+//! arsenal HUD status.
 //!
 //! [`Q2DownloadReceiver`](super::q2_downloads::Q2DownloadReceiver) borrows
 //! its mounts and sinks, so the host owns the receiver and this

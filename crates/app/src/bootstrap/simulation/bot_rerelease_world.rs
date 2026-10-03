@@ -2,11 +2,13 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-rerelease-world.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition)
-//! and `ApplicationBotNavigation` (`navigation.ts`, navigation partition).
-//! The [`RereleaseBotWorldSimulation`] and [`RereleaseBotNavigation`] seams
-//! expose exactly the donor's simulation and navigation surface; the
-//! partitions implement them post-merge.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation, and
+//! [`ApplicationBotNavigation`](super::navigation::ApplicationBotNavigation)
+//! (`navigation.ts` port) is the live bot navigation. The
+//! [`RereleaseBotWorldSimulation`] and [`RereleaseBotNavigation`] seams
+//! stay as the narrow interfaces this module needs (simulation and
+//! navigation surfaces); only test doubles implement them.
 //!
 //! The donor throws when the bot loses its player/body or when the scene
 //! stops answering in the Q3 decision representation. [`BotWorldT`] methods

@@ -1,10 +1,11 @@
 //! Quake II match menus, prompts, and scoreboards for one seat.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q2-match-ui.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/q2-match-ui.ts`
 //! (`Q2MatchUi`). Menus use the ported [`UiMenu`]/[`UiControl`]/[`menu_row`] builders and
 //! prompts use the ported [`HudPrompt`]; the composition events
-//! (`src/content/composition/q2/types.ts` plus the CTF/LMCTF match types, all out of
-//! scope) are shimmed to the fields this class reads. The controller arrives through the
+//! ([`Q2CompositionEvent`](qa_content::q2::composition::types::Q2CompositionEvent) plus the
+//! CTF/LMCTF match types from [`qa_content::q2::multiplayer`]) are shimmed to the fields
+//! this class reads. The controller arrives through the
 //! [`Q2MatchUiController`] seam because the merged native UI controller exposes no
 //! public open API yet; when it does, the seam implementation is one line per method.
 

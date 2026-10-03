@@ -1,8 +1,9 @@
 //! Component console commands staying explicit when original components emit text.
 //!
-//! Port of donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/component-commands.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/component-commands.ts`
 //! (`componentEngineCommands`). Source-administration names arrive through a
-//! caller-provided lookup because the server-administration lane is unported;
+//! caller-provided lookup over
+//! [`SourceServerAdministration`](super::server_administration::SourceServerAdministration);
 //! the `sv` filter, Q3 map commands, and fixed engine names stay here.
 
 use std::collections::HashSet;

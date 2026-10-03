@@ -11,17 +11,21 @@
 //! [`Q2HostContent`] seam and the injected `downloads` handle; bootstrap
 //! ports are sync.
 //!
-//! Missing siblings (host seams, implemented post-merge by their partitions):
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`Q2HostSimulation`].
-//! - `bootstrap/content.ts` (`LoadedApplicationContent`): [`Q2HostContent`].
-//! - `world/session/session.ts` (`EngineSession`): [`Q2HostSession`].
-//! - `bootstrap/network/types.ts` (`Q2ApplicationServerHost` and friends):
-//!   mirrored here as [`Q2ApplicationServerHost`] and the `Q2Application*`
-//!   shapes.
-//! - `bootstrap/network/q2-downloads.ts`
-//!   (`createQ2ApplicationDownloads`): injected `downloads` handle.
-//! - `bootstrap/network/q2-effects.ts` (`q2EffectToWire`): mirrored here as
-//!   [`q2_effect_to_wire`].
+//! Sibling homes (narrow host seams over live siblings):
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`Q2HostSimulation`].
+//! - [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (`bootstrap/content.ts` port): [`Q2HostContent`].
+//! - [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`Q2HostSession`].
+//! - [`network::types`](crate::bootstrap::network::types) port
+//!   (`Q2ApplicationServerHost` and friends): mirrored here as
+//!   [`Q2ApplicationServerHost`] and the `Q2Application*` shapes, which
+//!   keep host-local shapes.
+//! - [`create_q2_application_downloads`](crate::bootstrap::network::q2_downloads::create_q2_application_downloads)
+//!   (`q2-downloads.ts` port): the injected `downloads` handle.
+//! - [`q2_effect_to_wire`] is re-exported from the
+//!   [`q2-effects.ts`](crate::bootstrap::network::q2_effects) port.
 //!
 //! The donor `admit` reads the split seat from `request.splitSeat` (donor
 //! Port of Quake-Anthology-TS `src/network/q2/handshake.ts`); the worktree [`Q2ConnectRequest`] has not
@@ -37,7 +41,7 @@ use qa_content::contract::ItemId;
 use qa_content::q2::base::player::types::{Q2PlayerEvent, Q2PlayerView, Q2PrintLevel as Q2PlayerPrintLevel};
 
 use qa_content::q2::foundation::host::{
-    Q2EffectEvent, Q2PresentationEvent, Q2PrintLevel as Q2HostPrintLevel, Q2SoundLoop,
+    Q2PresentationEvent, Q2PrintLevel as Q2HostPrintLevel, Q2SoundLoop,
 };
 use qa_content::q2::foundation::weapons::definitions::base_weapons;
 use qa_content::q2::foundation::weapons::types::Q2WeaponEvent;
@@ -51,8 +55,8 @@ use qa_net::protocol::ProtocolIdentity;
 use qa_net::q2::{EntityState, PlayerState, ServerData, Usercmd};
 use qa_net::q2_adapters::{to_q2_command, to_q2_rerelease_command};
 use qa_net::q2_net::{
-    Q2ConnectRequest, Q2ServerEvent, Q2ServerMessageOptions, Q2SoundMessage, Q2Status, Q2StatusPlayer, Q2TempEntity,
-    Q2TempField, Q2TempInt, Q2TempType, Q2TempVec, Q2Wire, Q2WireFrame,
+    Q2ConnectRequest, Q2ServerEvent, Q2ServerMessageOptions, Q2SoundMessage, Q2Status, Q2StatusPlayer, Q2Wire,
+    Q2WireFrame,
 };
 use qa_net::q2_solid::{pack_q2_solid, q2_solid_encoding};
 use qa_net::q2_svc::{encode_q2_server_event, MvdCapture, MvdEmission, MvdRecipient};
@@ -218,211 +222,10 @@ pub enum Q2ClientOrigin {
     Remote,
 }
 
-/// Wire shape of a named Q2 effect, mirroring donor `EffectEncoding`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Q2EffectShape {
-    /// Position only.
-    Position,
-    /// Position plus direction.
-    Direction,
-    /// Splash count plus position, direction, and color.
-    Splash,
-}
-
-/// Named Q2 effect encoding, mirroring donor `EffectEncoding`.
-#[derive(Debug, Clone, Copy)]
-struct Q2EffectEncoding {
-    /// Effect name without the `q2:` prefix.
-    name: &'static str,
-    /// Temp entity type.
-    temp: Q2TempType,
-    /// Wire shape.
-    shape: Q2EffectShape,
-}
-
-/// Q2 `CL_ParseTEnt` message shapes; names match the source game
-/// presentation imports (donor `effects`).
-const Q2_EFFECT_ENCODINGS: &[Q2EffectEncoding] = &[
-    Q2EffectEncoding {
-        name: "gunshot",
-        temp: Q2TempType::Gunshot,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "blood",
-        temp: Q2TempType::Blood,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "blaster",
-        temp: Q2TempType::Blaster,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "shotgun",
-        temp: Q2TempType::Shotgun,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "sparks",
-        temp: Q2TempType::Sparks,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "screen-sparks",
-        temp: Q2TempType::ScreenSparks,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "shield-sparks",
-        temp: Q2TempType::ShieldSparks,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "bullet-sparks",
-        temp: Q2TempType::BulletSparks,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "greenblood",
-        temp: Q2TempType::Greenblood,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "blaster2",
-        temp: Q2TempType::Blaster2,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "flechette",
-        temp: Q2TempType::Flechette,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "moreblood",
-        temp: Q2TempType::Moreblood,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "electric-sparks",
-        temp: Q2TempType::ElectricSparks,
-        shape: Q2EffectShape::Direction,
-    },
-    Q2EffectEncoding {
-        name: "splash",
-        temp: Q2TempType::Splash,
-        shape: Q2EffectShape::Splash,
-    },
-    Q2EffectEncoding {
-        name: "laser-sparks",
-        temp: Q2TempType::LaserSparks,
-        shape: Q2EffectShape::Splash,
-    },
-    Q2EffectEncoding {
-        name: "welding-sparks",
-        temp: Q2TempType::WeldingSparks,
-        shape: Q2EffectShape::Splash,
-    },
-    Q2EffectEncoding {
-        name: "tunnel-sparks",
-        temp: Q2TempType::TunnelSparks,
-        shape: Q2EffectShape::Splash,
-    },
-    Q2EffectEncoding {
-        name: "explosion1",
-        temp: Q2TempType::Explosion1,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "explosion2",
-        temp: Q2TempType::Explosion2,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "rocket-explosion",
-        temp: Q2TempType::RocketExplosion,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "grenade-explosion",
-        temp: Q2TempType::GrenadeExplosion,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "rocket-explosion-water",
-        temp: Q2TempType::RocketExplosionWater,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "grenade-explosion-water",
-        temp: Q2TempType::GrenadeExplosionWater,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "bfg-explosion",
-        temp: Q2TempType::BfgExplosion,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "bfg-bigexplosion",
-        temp: Q2TempType::BfgBigexplosion,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "boss-teleport",
-        temp: Q2TempType::Bosstport,
-        shape: Q2EffectShape::Position,
-    },
-    Q2EffectEncoding {
-        name: "other-teleport",
-        temp: Q2TempType::TeleportEffect,
-        shape: Q2EffectShape::Position,
-    },
-];
-
-/// Mirror of `q2EffectToWire` from donor
-/// `src/app/bootstrap/network/q2-effects.ts` (canonical home:
-/// `crate::bootstrap::network::q2_effects`); unify post-merge.
-pub fn q2_effect_to_wire(event: &Q2EffectEvent) -> Option<Q2TempEntity> {
-    let name = event.effect.strip_prefix("q2:").unwrap_or(event.effect.as_str());
-    let encoding = Q2_EFFECT_ENCODINGS.iter().find(|encoding| encoding.name == name)?;
-    let mut fields = Vec::new();
-    if encoding.shape == Q2EffectShape::Splash {
-        fields.push(Q2TempField::Integer {
-            name: Q2TempInt::Count,
-            value: event.count,
-        });
-    }
-    fields.push(Q2TempField::Vector {
-        name: Q2TempVec::Position1,
-        value: [
-            f64::from(event.origin.x),
-            f64::from(event.origin.y),
-            f64::from(event.origin.z),
-        ],
-    });
-    if encoding.shape != Q2EffectShape::Position {
-        fields.push(Q2TempField::Vector {
-            name: Q2TempVec::Direction,
-            value: [
-                f64::from(event.direction.x),
-                f64::from(event.direction.y),
-                f64::from(event.direction.z),
-            ],
-        });
-    }
-    if encoding.shape == Q2EffectShape::Splash {
-        fields.push(Q2TempField::Integer {
-            name: Q2TempInt::Color,
-            value: event.color,
-        });
-    }
-    Some(Q2TempEntity {
-        temp_type: encoding.temp as u8,
-        fields,
-        raw: Vec::new(),
-    })
-}
+/// Translate a presentation effect into a wire entity (`q2EffectToWire`,
+/// re-exported from the `q2-effects.ts` port with its donor `effects`
+/// table).
+pub use crate::bootstrap::network::q2_effects::q2_effect_to_wire;
 
 /// Copy a vector into a wire triple (donor `vector`).
 fn wire_vec(value: &Vec3) -> [f64; 3] {
@@ -2470,6 +2273,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qa_content::q2::foundation::host::Q2EffectEvent;
+    use qa_net::q2_net::{Q2TempField, Q2TempInt, Q2TempType, Q2TempVec};
 
     fn effect(name: &str) -> Q2EffectEvent {
         Q2EffectEvent {

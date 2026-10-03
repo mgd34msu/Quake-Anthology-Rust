@@ -1,12 +1,15 @@
 //! Saved-game browser list over the save directory.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-saves.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/startup-saves.ts`
 //! (`StartupSaveRow`, `StartupSaveList`, `StartupSaves`). Files are inspected
 //! on browser open/refresh; drawing only reads the retained list. Sync port
 //! using `std::fs` (the donor mixes `node:fs` and `Bun.file`). Save decoding
-//! reuses [`crate::persistence::saved_game`]; catalog product resolution and
-//! shared-settings validation (unported siblings) arrive through
-//! [`StartupSaveCatalog`].
+//! reuses [`crate::persistence::saved_game`]; catalog product resolution
+//! ([`InstalledCatalog`](qa_content::catalog::InstalledCatalog),
+//! [`select_q1_save_product`](crate::persistence::q1::selection::select_q1_save_product))
+//! and shared-settings validation
+//! ([`saved_simulation_settings`](super::simulation::save::saved_simulation_settings))
+//! arrive through [`StartupSaveCatalog`].
 
 use std::collections::HashMap;
 use std::path::Path;

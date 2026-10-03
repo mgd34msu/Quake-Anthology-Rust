@@ -1,10 +1,14 @@
 //! Native Quake II client presentation from source host messages.
 //!
-//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/native-q2-client.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/native-q2-client.ts`
 //! (`NativeQ2ClientPresentation`). The reader, configstring layout, and fog
-//! update reuse workspace siblings; the source world and the service-record
-//! translation/printing stay behind [`NativeQ2World`] and
-//! [`NativeQ2ServiceTranslation`] (those donors are unported).
+//! update reuse workspace siblings; the source world
+//! ([`q2_native_world`](super::simulation::q2_native_world)) and the
+//! service-record translation/printing
+//! ([`translate_q2_service_records`](super::network::q2_service_presentation::translate_q2_service_records),
+//! [`q2_service_print`](super::network::q2_service_presentation::q2_service_print))
+//! stay behind [`NativeQ2World`] and [`NativeQ2ServiceTranslation`], which
+//! carry the host-side reader state those functions need.
 
 use qa_content::contract::ContentId;
 use qa_content::q2::foundation::host::Q2Edition;

@@ -1,11 +1,14 @@
 //! Remote seat component-client collection view.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-components.ts`
-//! (`RemoteComponentView`). The component collection (`./mod-presentations.ts`), the media
-//! preparation (`./component-media.ts`), and the unified remote side
-//! (`./network/remote-unified.ts`, all out of scope) arrive through the
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-components.ts`
+//! (`RemoteComponentView`). The component collection (`./mod-presentations.ts`, out of
+//! scope; checkpoint mirror at
+//! [`mod_presentation_checkpoint`](qa_guest::qvm::mod_presentation_checkpoint)), the media
+//! preparation ([`component_media`](super::component_media)), and the unified remote side
+//! ([`network::remote_unified`](super::network::remote_unified)) arrive through the
 //! [`RemoteComponentClients`] and [`RemoteComponentMedia`] seams; the seat presentation
-//! (`./presentation.ts`) and the mod presentation sources stay generic. Documented folds:
+//! ([`presentation`](super::presentation)) and the mod presentation sources stay generic.
+//! Documented folds:
 //! the donor's async dispatch/prepare/media calls are sync through the host; the
 //! `queueCommand` closure the donor installs on the collection options is a shared
 //! [`RemoteComponentQueue`] handle the host clones into its collection before building

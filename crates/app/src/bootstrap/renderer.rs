@@ -1,12 +1,18 @@
 //! Native renderer ownership: window, backend, journal, and frame captures.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/renderer.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/renderer.ts`
 //! (`RendererDiagnostics`, `PreparedRendererRestart`, `NativeRenderer`).
 //! Owns the native surface, image identity, and ordered serial or worker
-//! execution. Windows, backends, and the image registry (unported SDL,
-//! GL/CPU/worker, and scene siblings) arrive as injected traits; the image
-//! journal, display modes, and math reuse `qa_client`, `qa_platform`, and
-//! `qa_core`. Sync port: the donor's async open/restart/close become sync
+//! execution. Windows ([`SdlWindow`](qa_platform::sdl::SdlWindow)), backends
+//! ([`GlRenderer`](qa_client::render::gl::renderer::GlRenderer),
+//! [`CpuRenderer`](qa_client::render::cpu::rasterizer::CpuRenderer),
+//! [`RenderExecutor`](qa_client::render::execution::RenderExecutor); the worker
+//! side is ported ([`worker`](qa_client::render::worker)) and the backend
+//! union stays absorbed behind [`NativeRenderBackend`]), and the image registry
+//! ([`SceneImageRegistry`](qa_client::render::scene::resources::SceneImageRegistry))
+//! arrive as injected traits; the image journal, display modes, and math reuse
+//! `qa_client`, `qa_platform`, and `qa_core`. Sync port: the donor's async
+//! open/restart/close become sync
 //! factory calls with the same aggregate cleanup texts; frame-capture
 //! promises become one-shot callbacks; the restart `publish`/`discard`
 //! closures become id-checked renderer methods; worker context parking is a

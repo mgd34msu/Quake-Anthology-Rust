@@ -1,9 +1,9 @@
 //! MIDI and source-joystick device ownership over the input router.
 //!
-//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/input-devices.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/input-devices.ts`
 //! (`inputDeviceStore`, `loadInputDeviceSettings`, `InputDevices`). The
-//! console root (`config-scripts.ts`) and cvar-archive loading
-//! (`cvar-archives.ts`) are absorbed with citation (both donors unported).
+//! console root ([`config_scripts`](super::config_scripts)) and cvar-archive loading
+//! ([`cvar_archives`](super::cvar_archives)) are absorbed with citation.
 //! MIDI and source-joystick reuse the workspace inputs; seat routing stays
 //! behind [`DeviceRouter`] (the router's seat-input surface drifted).
 

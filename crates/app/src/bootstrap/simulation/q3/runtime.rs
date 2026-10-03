@@ -2,9 +2,9 @@
 //!
 //! Quake III source game runtime composition.
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! None: `q3/types.ts`, `q3/presentation.ts`, and `q3/server-state.ts`
+//! `q3/types.ts`, `q3/presentation.ts`, and `q3/server-state.ts`
 //! have all landed in this directory.
 
 use std::cell::{Cell, RefCell};

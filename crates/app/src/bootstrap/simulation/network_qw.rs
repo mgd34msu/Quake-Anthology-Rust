@@ -8,14 +8,20 @@
 //! (`LoadedApplicationContent.mounts`) live behind the synchronous
 //! [`QwHostContent`] seam; bootstrap ports are sync.
 //!
-//! Missing siblings (host seams, implemented post-merge by their partitions):
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`QwHostSimulation`].
-//! - QuakeWorld QuakeC source (`simulation.quakecSource`): [`QwHostGame`].
-//! - `bootstrap/content.ts` (`LoadedApplicationContent`): [`QwHostContent`].
-//! - `world/session/session.ts` (`EngineSession`): [`QwHostSession`].
-//! - `bootstrap/network/qw-server-types.ts` (`QwApplicationServerHost` and
-//!   friends): mirrored here as [`QwApplicationServerHost`] and the `Qw*`
-//!   shapes.
+//! Sibling homes (narrow host seams over live siblings):
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`QwHostSimulation`].
+//! - QuakeWorld QuakeC source (`simulation.quakecSource`,
+//!   [`quakec_source`](super::quakec_source) port): [`QwHostGame`].
+//! - [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (`bootstrap/content.ts` port): [`QwHostContent`].
+//! - [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): [`QwHostSession`].
+//! - `bootstrap/network/qw-server-types.ts`
+//!   ([`network::qw_server_types`](crate::bootstrap::network::qw_server_types)
+//!   port, `QwApplicationServerHost` and friends): mirrored here as
+//!   [`QwApplicationServerHost`] and the `Qw*` shapes, which keep
+//!   host-local shapes.
 //!
 //! The donor `signon` returns a per-player closure object; the closures are
 //! flattened here into `signon_*`/`spawn`/`begin` host methods taking the

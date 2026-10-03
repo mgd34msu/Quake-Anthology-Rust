@@ -1,40 +1,46 @@
 //! Quake III remote presentation.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/remote-q3.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/remote-q3.ts`
 //! (`Q3RemotePresentation`, `Q3RemotePresentationOptions`, `Q3RemoteWorld`).
 //! Q3 `CL_ParseGamestate` / `CL_SetCGameTime` and cgame host projection.
 //! The donor's asynchronous admission resolves inline, preserving the
 //! donor's receive order.
 //!
-//! Missing siblings (host-seam surface, documented per the lane rule):
-//! `./q3-client.ts` is canonical
-//! [`Q3ApplicationClientHost`](super::q3_client::Q3ApplicationClientHost), so
-//! the presentation exposes the donor's client-host methods as inherent
-//! methods and implements only [`RemotePresentationAccess`].
-//! `../simulation/q3/guest-player.ts` (`q3GuestPlayerUi`) stays behind
-//! [`Q3RemoteHost::guest_player_ui`] for the sim unify; the
-//! `network/q3/adapters.ts` (`toQ3PlayerState`) step ahead of it is canonical
+//! Sibling homes (host-seam surface over live siblings):
+//! [`Q3ApplicationClientHost`](super::q3_client::Q3ApplicationClientHost)
+//! (`./q3-client.ts` port), so the presentation exposes the donor's
+//! client-host methods as inherent methods and implements only
+//! [`RemotePresentationAccess`].
+//! [`q3_guest_player_ui`](crate::bootstrap::simulation::q3::guest_player::q3_guest_player_ui)
+//! (`../simulation/q3/guest-player.ts` port) stays behind
+//! [`Q3RemoteHost::guest_player_ui`] because the ported builder takes
+//! guest state plus catalog/product/inventory while this path carries
+//! the contract player state; the `network/q3/adapters.ts`
+//! (`toQ3PlayerState`) step ahead of it is canonical
 //! [`to_q3_player_state`](qa_net::q3_adapters::to_q3_player_state), applied in
 //! [`Q3RemotePresentation::player_ui`]. `network/q3/clock.ts`
 //! (`Q3ClientClock`) is canonical
 //! [`Q3ClientClock`](qa_net::q3_clock::Q3ClientClock) (options
 //! [`Q3ClockOptions`](qa_net::q3_clock::Q3ClockOptions)), behind
 //! [`Q3RemoteClock`] with the host still building the clock;
-//! `../simulation/prediction/*` (`SelectedMovementPrediction`,
-//! `createPresentationMovementHost`, `PresentationPredictionAdapter`,
-//! `movementProfile`, `readPredictionSourceState`, `predictionSourceHit`)
-//! behind [`Q3RemotePrediction`], [`Q3RemoteHost::build_movement`], and the
-//! [`Q3PredictionBase`] mirror; `../q3-client.ts`
-//! (`ApplicationQ3ClientSource`, canonical
-//! [`Q3RemoteSource`](crate::bootstrap::q3_client_app::Q3RemoteSource))
-//! behind the [`Q3RemoteClientSource`]
-//! mirror. The `presentationSourceCommand` / `relativeQ3SourceCommand`
-//! pair (`../simulation/q3-commands.ts`,
-//! `../simulation/prediction/presentation.ts`) is mirrored locally in
-//! [`Q3RemotePresentation::command`]: on this path the relative step is a
-//! proven no-op (angle space undefined, dialect `q3`) and the presentation
-//! step is pure over local command types. `predictionSourceHit` is
-//! mirrored locally as [`Q3SourceHit`] for the same reason.
+//! [`SelectedMovementPrediction`](crate::bootstrap::simulation::prediction::runtime::SelectedMovementPrediction),
+//! [`create_presentation_movement_host`](crate::bootstrap::simulation::prediction::presentation::create_presentation_movement_host),
+//! [`PresentationPredictionAdapter`](crate::bootstrap::simulation::prediction::presentation::PresentationPredictionAdapter),
+//! [`movement_profile`](crate::bootstrap::simulation::players::movement_profile),
+//! [`read_prediction_source_state`](crate::bootstrap::simulation::prediction::source_state::read_prediction_source_state),
+//! [`prediction_source_hit`](crate::bootstrap::simulation::prediction::source_state::prediction_source_hit)
+//! (`../simulation/prediction/*` ports) behind [`Q3RemotePrediction`],
+//! [`Q3RemoteHost::build_movement`], and the [`Q3PredictionBase`]
+//! host-local shape; `../q3-client.ts` (`ApplicationQ3ClientSource`,
+//! canonical [`Q3RemoteSource`](crate::bootstrap::q3_client_app::Q3RemoteSource))
+//! behind the [`Q3RemoteClientSource`] binding.
+//! [`presentation_source_command`](crate::bootstrap::simulation::prediction::presentation::presentation_source_command)
+//! / [`relative_q3_source_command`](crate::bootstrap::simulation::q3_commands::relative_q3_source_command)
+//! (`../simulation/prediction/presentation.ts`, `../simulation/q3-commands.ts`
+//! ports) fold into [`Q3RemotePresentation::command`]: on this path the
+//! relative step is a proven no-op (angle space undefined, dialect `q3`)
+//! and the presentation step is pure over local command types.
+//! `predictionSourceHit` folds into [`Q3SourceHit`] for the same reason.
 //!
 //! The connection, clock, prediction adapter, downloads, and cinematic
 //! lifecycle follow the donor's ownership: the presentation stores the

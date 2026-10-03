@@ -1,13 +1,14 @@
 //! World scene assembly from presentations, characters, and bodies.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/presentation-scene.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/presentation-scene.ts`
 //! (`seatModelVisible`, `ApplicationWorldScene`). Characters, weapons, entities,
 //! options, operations, and admission are the ported foundation, client, and math
-//! helpers; the model assets (`./assets.ts`), held weapons (`./held-weapon.ts`,
-//! `./native-held-weapon.ts`), and body queries (`./component-bodies.ts`, all out of
-//! scope) arrive through the [`SceneModelAssets`], [`SceneHeldWeapons`], and
-//! [`SceneBodies`] seams, and the model/world renderers through [`SceneRenderer`] and
-//! [`SceneWorld`]. The donor's async loads are sync through the host. Documented
+//! helpers; the model assets (`./assets.ts`, out of scope), held weapons
+//! ([`held_weapon`](super::held_weapon), [`native_held_weapon`](super::native_held_weapon)),
+//! and body queries ([`component_bodies`](super::component_bodies)) arrive through the
+//! [`SceneModelAssets`], [`SceneHeldWeapons`], and [`SceneBodies`] seams, and the
+//! model/world renderers through [`SceneRenderer`] and [`SceneWorld`]. The donor's
+//! async loads are sync through the host. Documented
 //! folds: the shadow plane has no render counterpart (dropped like the sibling media
 //! port); entity actor and opacity ride alongside the ported entity; body time and
 //! integer fields truncate toward zero; the nine-parameter prepare call bundles into

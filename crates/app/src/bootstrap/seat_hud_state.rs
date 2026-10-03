@@ -1,9 +1,10 @@
 //! Per-actor source HUD state folded from presentation events.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/seat-hud-state.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/seat-hud-state.ts`
 //! (`SeatSourceHud`). State addressed to one local actor; source events
-//! remain authoritative. Presentation events (unported `./simulation/types.ts`)
-//! arrive as the absorbed [`SeatHudEvent`]; HUD rows reuse
+//! remain authoritative. Presentation events
+//! ([`SimulationPresentationEvent`](super::simulation::types::SimulationPresentationEvent),
+//! `./simulation/types.ts` port) arrive as the absorbed [`SeatHudEvent`]; HUD rows reuse
 //! `qa_client::ui::hud`; icon loads, pictures, and palettes (donor
 //! `HudAssets` over `./weapon-hud.ts`) arrive through [`SeatHudIcons`].
 //! Sync port: localization and icon loads are sync callbacks.

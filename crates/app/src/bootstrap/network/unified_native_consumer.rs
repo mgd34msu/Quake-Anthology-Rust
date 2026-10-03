@@ -1,14 +1,17 @@
 //! Client-side native component replica.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/unified-native-consumer.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/network/unified-native-consumer.ts`
 //! (`UnifiedNativeConsumers`).
 //!
 //! Native client imports are authored by the server module; clients consume
 //! only its public readout. The donor two-phase prepare/commit closures
 //! become owned commit values; a commit made stale by an interleaved
 //! `retire` fails closed instead of resurrecting the entry. Prepared
-//! presentations and product editions arrive through [`UnifiedNativeHost`]
-//! since those lanes are unported.
+//! presentations
+//! ([`ActiveModClientPresentation`](qa_content::contract::ActiveModClientPresentation))
+//! and product editions ([`GameFamily`](qa_content::contract::GameFamily) plus the
+//! installed catalog) arrive through [`UnifiedNativeHost`], which carries the
+//! host-side handles.
 
 use std::collections::{BTreeMap, HashMap};
 

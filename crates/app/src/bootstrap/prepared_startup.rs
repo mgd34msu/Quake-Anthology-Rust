@@ -1,6 +1,6 @@
 //! Prepared startup registries, seats, and the configuration pipeline.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/prepared-startup.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/prepared-startup.ts`
 //! (`PreparedSeat`, `PreparedSeatConfiguration`, `PreparedConfigurationContinuation`,
 //! `PreparedStartup`, `allowSeatConfigurationCommand`, `PreparedClientCommands`,
 //! `prepareClientCommands`). The startup buffer, deferred/operator/forwarded commands,
@@ -221,7 +221,7 @@ impl SnapshotNames {
 
 /// Canonical console cvar routing bound to slot answers (donor
 /// `ApplicationConsoleRouting`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/console.ts`).
+/// `src/app/bootstrap/console.ts`).
 ///
 /// Canonical [`ApplicationConsoleRouting`](super::console::ApplicationConsoleRouting)
 /// borrows every live registry, so it cannot be stored inside [`PreparedStartup`]
@@ -439,7 +439,7 @@ pub trait PreparedSeatDevice {
 }
 
 /// Canonical live seat device (donor `SeatInput`,
-/// `/home/buzzkill/Projects/quake-typescript/src/input/seat.ts`).
+/// `src/input/seat.ts`).
 ///
 /// Delegates key state, held-command release, and the movement profile to the
 /// canonical [`Seat`]; the stored seat context sources release appends. Binding
@@ -529,7 +529,7 @@ pub trait PreparedMouse {
 }
 
 /// Convert stored tuning to client tuning (donor `MouseTuning`,
-/// `/home/buzzkill/Projects/quake-typescript/src/input/mouse-settings.ts`).
+/// `src/input/mouse-settings.ts`).
 /// The stored and client tunings carry identical fields.
 pub fn client_mouse_tuning(value: &MouseTuning) -> qa_client::input::MouseTuning {
     qa_client::input::MouseTuning {
@@ -616,7 +616,7 @@ impl<M: ConsoleScriptMounts> PreparedScriptFiles for ConsoleScriptFiles<M> {
 }
 
 /// Script read scope: canonical scope (donor `StartupScriptScope`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+/// `src/app/bootstrap/startup-config.ts`).
 pub use super::startup_config::StartupScriptScope;
 
 /// Startup configuration frame driver.
@@ -681,7 +681,7 @@ pub trait PreparedStartupConfig {
 }
 
 /// Configuration scope: canonical scope (donor `StartupConfigOptions["scope"]`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+/// `src/app/bootstrap/startup-config.ts`).
 pub use super::startup_config::StartupConfigScope;
 
 /// Parameters for one configuration (donor `StartupConfigOptions` minus the callbacks,
@@ -712,7 +712,7 @@ pub trait StartupConfigFactory {
 
 impl StartupConfigParams {
     /// Convert to canonical options (donor `StartupConfigOptions`,
-    /// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-config.ts`).
+    /// `src/app/bootstrap/startup-config.ts`).
     /// `seat_index` is run bookkeeping with no canonical counterpart; seat scope
     /// travels via `scope`.
     pub fn into_canonical_options(
@@ -772,7 +772,7 @@ type DispatchLog = Rc<RefCell<Vec<(String, Option<String>)>>>;
 pub type RunCvarRegisterFn = Rc<dyn Fn(&mut CvarRegistry, Dialect)>;
 
 /// Canonical GTV registration hook (donor `registerGtvCvars`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/gtv-commands.ts`).
+/// `src/app/bootstrap/gtv-commands.ts`).
 pub fn canonical_gtv_register() -> GtvRegisterFn {
     Rc::new(|cvars| {
         register_gtv_cvars(cvars).expect("GTV cvar names are always valid");
@@ -780,7 +780,7 @@ pub fn canonical_gtv_register() -> GtvRegisterFn {
 }
 
 /// Canonical run-cvar registration hook (donor `registerRunCvar`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/shared-setting-cvars.ts`).
+/// `src/app/bootstrap/shared-setting-cvars.ts`).
 pub fn canonical_run_cvar_register() -> RunCvarRegisterFn {
     Rc::new(|cvars, dialect| {
         register_run_cvar(cvars, dialect).expect("run cvar names are always valid");
@@ -788,7 +788,7 @@ pub fn canonical_run_cvar_register() -> RunCvarRegisterFn {
 }
 
 /// Canonical operator command names (donor `sourceAdministrationCommandNames`,
-/// `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/server-administration.ts`).
+/// `src/app/bootstrap/server-administration.ts`).
 pub fn canonical_operator_command_names(dialect: Dialect) -> Vec<String> {
     source_administration_command_names(dialect)
         .iter()
@@ -797,7 +797,7 @@ pub fn canonical_operator_command_names(dialect: Dialect) -> Vec<String> {
 }
 
 /// Canonical Q3 map commands for a product policy (donor `q3ProductMapCommands`,
-/// `/home/buzzkill/Projects/quake-typescript/src/core/q3-product-policy.ts`, via
+/// `src/core/q3-product-policy.ts`, via
 /// `q3-map-command.ts`).
 pub fn canonical_q3_map_commands(policy: Q3MapCommandPolicy) -> Vec<String> {
     q3_map_command_policy_commands(policy)
@@ -2013,8 +2013,9 @@ const FORWARDED_COMMANDS: [&str; 10] = [
 ///
 /// `sharedNames` is dropped: host routing captures it at construction. The Q3 product
 /// policy folds to [`PreparedStartupOptions::q3_map_commands`], and the server
-/// administration names arrive precomputed because `server-administration.ts` is a
-/// missing sibling.
+/// administration names arrive precomputed from
+/// [`SourceServerAdministration`](super::server_administration::SourceServerAdministration)
+/// (`server-administration.ts` port).
 pub struct PreparedStartupOptions<M> {
     /// Startup command lines.
     pub startup_commands: Vec<String>,

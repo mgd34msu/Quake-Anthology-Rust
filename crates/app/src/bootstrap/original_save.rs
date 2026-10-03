@@ -1,10 +1,12 @@
 //! Original save import: shared passthrough or Q1 source restoration.
 //!
-//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/original-save.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/original-save.ts`
 //! (`prepareApplicationSave`). Save reading, Q1 product selection, skill
 //! validation, and the restored-option rebuild are a direct port over the
-//! persistence siblings. Content loading plus simulation restore/checkpoint
-//! stay behind [`OriginalSaveRestorer`] (those donors are unported). The
+//! persistence siblings. Content loading
+//! ([`content`](super::content)) plus simulation restore/checkpoint
+//! ([`simulation::save`](super::simulation::save)) stay behind
+//! [`OriginalSaveRestorer`], which carries the host-side handles. The
 //! stripped option fields that have no Rust counterpart
 //! (`authoredCampaignStart`, `teamArenaSkirmish`, `q3MapLaunch`,
 //! `q3Product`, `serverProfile`) need no removal.

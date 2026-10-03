@@ -2,11 +2,12 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/bot-q3-knowledge.ts`.
 //!
-//! Missing siblings: `SharedSimulation` (`runtime.ts`, runtime partition).
-//! The [`Q3BotKnowledgeSimulation`] seam exposes exactly the donor's
-//! `Pick<SharedSimulation, "selectedQ3WeaponSource" | "inventory" |
-//! "combat">` surface; the runtime partition implements it post-merge over
-//! the selected Q3 source and `qa_world`.
+//! Sibling homes: [`SharedSimulation`](super::runtime::SharedSimulation)
+//! (`simulation/runtime.ts` port) is the live shared simulation. The
+//! [`Q3BotKnowledgeSimulation`] seam stays as the narrow interface this
+//! module needs (the donor `Pick<SharedSimulation,
+//! "selectedQ3WeaponSource" | "inventory" | "combat">` surface);
+//! only test doubles implement it.
 //!
 //! The donor resolves weapon infos through the bot library on every
 //! candidates call. The Rust [`WeaponAi`] owns a single selected config, so

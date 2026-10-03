@@ -1,6 +1,6 @@
 //! Per-seat sound captions following mixer voices.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/sound-captions.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/sound-captions.ts`
 //! (`SeatSoundCaptions`). The audio voice observer, seat identity, caption catalog, media
 //! captions, and content-mount siblings are unported, so they are absorbed as local traits and
 //! snapshot types. Sync port: the donor's async catalog reads become a caller-supplied sync

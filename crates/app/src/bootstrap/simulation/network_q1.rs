@@ -3,17 +3,21 @@
 //! Port of Quake-Anthology-TS `src/app/bootstrap/simulation/network-q1.ts`
 //! (`Q1ApplicationServerBindingOptions`, `createQ1ApplicationServerHost`).
 //!
-//! # Missing siblings
+//! # Sibling homes
 //!
-//! - `simulation/runtime.ts` (`SharedSimulation`): [`Q1NativeHostSimulation`]
+//! - [`SharedSimulation`](super::runtime::SharedSimulation)
+//!   (`simulation/runtime.ts` port): [`Q1NativeHostSimulation`]
 //!   extends the QuakeC host simulation seam with the native Q1 surface.
-//! - `app/bootstrap/content.ts` (`LoadedApplicationContent`) and
-//!   `world/session/session.ts` (`EngineSession`): reuses
+//! - [`LoadedApplicationContent`](crate::bootstrap::content::LoadedApplicationContent)
+//!   (`content.ts` port) and [`EngineSession`](qa_world::session::EngineSession)
+//!   (`world/session/session.ts` port): reused through
 //!   [`Q1QuakeCHostContent`] and [`Q1QuakeCHostSession`].
-//! - `app/bootstrap/network/q1-types.ts`: reuses the `network-q1-quakec`
-//!   host mirrors; unify post-merge.
+//! - `app/bootstrap/network/q1-types.ts`
+//!   ([`network::q1_types`](crate::bootstrap::network::q1_types) port):
+//!   reuses the `network-q1-quakec` host mirrors.
 //! - `network/q1/profile.ts` (`createNetQuakeCodec.maxPrecache`): arrives as
-//!   [`Q1ServerOptions::max_precache`].
+//!   [`Q1ServerOptions::max_precache`]; wire limits reuse
+//!   [`qa_net::q1_wide`].
 
 use std::collections::HashMap;
 

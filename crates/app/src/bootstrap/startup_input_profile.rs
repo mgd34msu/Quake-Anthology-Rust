@@ -1,13 +1,14 @@
 //! First-seat input profile shared by the frontend and gameplay.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/startup-input-profile.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/startup-input-profile.ts`
 //! (`StartupInputProfile`). The front end edits the same first-seat profile
 //! that gameplay loads. Sync port: the donor's async store calls become the
-//! sync [`ConfigStore`] methods. The first-seat input (unported `SeatInput`
-//! plus gamepad tuning) arrives through [`StartupSeatInput`]; default
-//! bindings reuse `qa_client`, seat documents reuse `crate::settings`, and
-//! the frontend-preference fold (unported `frontend-preferences.ts`) arrives
-//! as a caller-supplied closure over [`FrontendPreferenceOverrides`].
+//! sync [`ConfigStore`] methods. The first-seat input (unported `SeatInput`;
+//! gamepad tuning lives in [`GamepadTuning`](crate::settings::config::GamepadTuning))
+//! arrives through [`StartupSeatInput`]; default bindings reuse `qa_client`,
+//! seat documents reuse `crate::settings`, and the frontend-preference fold
+//! ([`frontend_preferences`](super::frontend_preferences)) arrives as a
+//! caller-supplied closure over [`FrontendPreferenceOverrides`].
 
 use std::collections::BTreeMap;
 

@@ -1,11 +1,15 @@
 //! Live remote source channel: presentation, network, and content transfers.
 //!
-//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/remote-seat-source.ts`
+//! Port of Quake-Anthology-TS `src/app/bootstrap/remote-seat-source.ts`
 //! (`RemoteSeatPresentation`, `RemoteSeatNetwork`, `RemoteSeatSourceHooks`,
 //! `RemoteSeatSourceOptions`, `RemoteSeatSource`). One live source channel
 //! and its content transfers; frontend ownership stays with the caller. The
-//! five per-family network/presentation pairs plus download receivers,
-//! content selection, and transports are unported siblings, so they arrive
+//! five per-family network/presentation pairs ([`network`](super::network)),
+//! download receivers ([`q2_downloads`](super::network::q2_downloads),
+//! [`q3_downloads`](super::network::q3_downloads),
+//! [`qw_downloads`](super::network::qw_downloads)), content selection
+//! ([`remote_content_selection`](qa_content::catalog::remote_content_selection)),
+//! and transports ([`transport`](super::network::transport)) arrive
 //! as the [`RemoteSeatNetwork`]/[`RemoteSeatPresentation`] traits, the
 //! [`RemoteSeatSourceHooks`] seam, and small download-manager traits. Sync
 //! port: the donor's async content transfers become sync hook calls with
