@@ -10,13 +10,13 @@
 //! as one ordered 2D view, reusing the real menu layout (backdrop, panel,
 //! buttons, titles) through the menu's own `draw` path. A capturing
 //! [`UiRenderServices`](qa_client::ui::common::draw::UiRenderServices)
-//! records fills, images, and text bars as pixel quads, which become one
-//! vertex-colored [`DrawBatch`] over a 1x1 uploaded white image (the same
-//! overlay pattern as the Quake II damage blend). Text renders as measured
-//! placeholder bars: glyph rasterization stays out of scope, but bar bounds
-//! come from the real font metrics so rows and titles sit where the menu
-//! places them. Menu art and fonts are synthetic (no catalog mounts), so the
-//! menu entry is always available, with or without game content.
+//! records fills, images, and text runs as pixel quads, which become two
+//! vertex-colored [`DrawBatch`] values (the same overlay pattern as the
+//! Quake II damage blend): flats over a 1x1 uploaded white image, then one
+//! textured batch binding the synthetic charset atlas from
+//! [`super::windowed_menu_text`] so every glyph draws with real UVs. Menu
+//! art and fonts are synthetic (no catalog mounts), so the menu entry is
+//! always available, with or without game content.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -49,12 +49,13 @@ use qa_client::render::types::TextureFilter;
 use qa_client::render::types::TextureSampling;
 use qa_client::render::types::ViewClear;
 use qa_client::render::types::ViewTarget;
-use qa_client::text::atlas::classic_charset;
 use qa_client::text::atlas::TextFontSelection;
 use qa_client::text::draw2d::Draw2D;
 use qa_client::text::draw2d::ImagePicture;
 use qa_client::text::draw2d::PictureAsset;
 use qa_client::text::draw2d::Rect;
+use qa_client::text::draw2d::TextureRect;
+use qa_client::text::layout::draw_text_layout;
 use qa_client::text::layout::layout_text;
 use qa_client::text::layout::ColorCodes;
 use qa_client::text::layout::TextAlign as LayoutAlign;
@@ -83,10 +84,18 @@ use qa_core::math::vec2;
 use qa_core::math::vec4;
 use qa_core::math::Vec4;
 
+use super::startup_menu::menu_font_slot;
 use super::startup_menu::StartupMenu;
 use super::startup_menu::StartupMenuOptions;
+use super::startup_menu::MENU_TITLE_FONT_SLOT;
 use super::startup_saves::StartupSaveList;
 use super::startup_selection::StartupSelectionModel;
+use super::windowed_menu_text::conchars_rgba;
+use super::windowed_menu_text::font_upload;
+use super::windowed_menu_text::glyph_batches;
+use super::windowed_menu_text::menu_font_selection;
+use super::windowed_menu_text::GlyphQuad;
+use super::windowed_menu_text::FONT_PICTURE_HANDLE;
 
 /// View clear color behind the menu (dark blue charcoal, distinct from the
 /// map view's black clear).
@@ -113,6 +122,8 @@ const BACKDROP_IMAGE_TAG: u32 = u32::MAX;
 /// upward from zero in their own registries, so a high ordinal cannot
 /// collide with a world loaded later in the same backend.
 const MENU_WHITE_ORDINAL: u32 = 0x7FFF_FF01;
+/// Ordinal for the menu font atlas, uploaded beside the white image.
+const MENU_FONT_ORDINAL: u32 = 0x7FFF_FF02;
 
 /// Notice shown when a launch action cannot start a game in this build.
 const MENU_LAUNCH_NOTICE: &str = "Launching from the menu is unavailable in this build";
@@ -124,6 +135,7 @@ pub(crate) struct WindowedMenu {
     client: ClientId,
     font: TextFontSelection,
     white: RendererImage,
+    font_image: RendererImage,
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
     launch_notice: Rc<Cell<bool>>,
@@ -140,10 +152,7 @@ impl WindowedMenu {
         owner: ResourceOwner,
         quit: Rc<Cell<bool>>,
     ) -> Result<Self, String> {
-        let font = TextFontSelection::Classic {
-            classic: classic_charset(7, 128, 128, "conchars", true).map_err(|error| error.to_string())?,
-            unicode: None,
-        };
+        let font = menu_font_selection().map_err(|error| error.to_string())?;
         let art = {
             let authority = IdentityOwner::create("windowed-menu").map_err(|error| error.to_string())?;
             let mut images = SceneImageRegistry::new(ResourceOwner::new(11, authority.session().clone(), 0));
@@ -188,7 +197,7 @@ impl WindowedMenu {
             libraries: None,
         });
         let white = RendererImage {
-            owner,
+            owner: owner.clone(),
             ordinal: MENU_WHITE_ORDINAL,
             source: ImageSource::Generated {
                 name: "windowed-menu-white".to_string(),
@@ -196,12 +205,22 @@ impl WindowedMenu {
             width: 1,
             height: 1,
         };
+        let font_image = RendererImage {
+            owner,
+            ordinal: MENU_FONT_ORDINAL,
+            source: ImageSource::Generated {
+                name: "windowed-menu-font".to_string(),
+            },
+            width: super::windowed_menu_text::CONCHARS_WIDTH,
+            height: super::windowed_menu_text::CONCHARS_HEIGHT,
+        };
         Ok(Self {
             menu,
             seat,
             client,
             font,
             white,
+            font_image,
             uploaded: false,
             clock_ms,
             launch_notice,
@@ -222,8 +241,8 @@ impl WindowedMenu {
     /// Ordered view for the menu plus the image uploads the backend must
     /// apply before executing it. Returns `None` when the live dimensions
     /// cannot host the menu, in which case the frame degrades to clear
-    /// plus swap. The white upload is emitted exactly once; later frames
-    /// carry no image operations.
+    /// plus swap. The white and font-atlas uploads are emitted exactly
+    /// once; later frames carry no image operations.
     pub(crate) fn frame_view(
         &mut self,
         width: i32,
@@ -271,9 +290,15 @@ impl WindowedMenu {
             },
             time_ms: time_ms as i64,
         };
-        let mut capture = MenuCaptureServices::new(self.font.clone());
+        let mut capture = MenuCaptureServices::new(self.font.clone(), self.font.clone());
         let _ignored = self.menu.draw(&context, &mut capture);
-        let batches = menu_batches(&capture.quads, width as f32, height as f32, &self.white);
+        let mut batches = menu_batches(&capture.quads, width as f32, height as f32, &self.white);
+        batches.extend(glyph_batches(
+            &capture.glyphs,
+            width as f32,
+            height as f32,
+            &self.font_image,
+        ));
         let operations = if batches.is_empty() {
             Vec::new()
         } else {
@@ -307,16 +332,23 @@ impl WindowedMenu {
         if !self.uploaded {
             self.uploaded = true;
             uploads.push(white_upload(&self.white));
+            uploads.push(font_upload(&self.font_image, conchars_rgba()));
         }
         Some((view, uploads))
     }
 
-    /// Release the uploaded white image (no-op before the first frame).
+    /// Release the uploaded white and font-atlas images (no-op before the
+    /// first frame).
     pub(crate) fn release_images(&self) -> Vec<ImageResourceOperation> {
         if self.uploaded {
-            vec![ImageResourceOperation::ReleaseImage {
-                image: self.white.clone(),
-            }]
+            vec![
+                ImageResourceOperation::ReleaseImage {
+                    image: self.white.clone(),
+                },
+                ImageResourceOperation::ReleaseImage {
+                    image: self.font_image.clone(),
+                },
+            ]
         } else {
             Vec::new()
         }
@@ -451,20 +483,25 @@ pub(crate) fn convert_router_event(event: &qa_client::input::router::SeatInputEv
     }
 }
 
-/// Capturing render services: every menu draw becomes a pixel quad.
+/// Capturing render services: fills and images become flat pixel quads
+/// while text runs lay out into per-glyph quads with atlas UVs.
 struct MenuCaptureServices {
     quads: Vec<(Rect, Vec4)>,
+    glyphs: Vec<GlyphQuad>,
     color: Vec4,
-    font: TextFontSelection,
+    body_font: TextFontSelection,
+    title_font: TextFontSelection,
 }
 
 impl MenuCaptureServices {
-    /// Capture over the menu body font (used to measure text bars).
-    fn new(font: TextFontSelection) -> Self {
+    /// Capture over the menu body and title fonts.
+    fn new(body_font: TextFontSelection, title_font: TextFontSelection) -> Self {
         Self {
             quads: Vec::new(),
+            glyphs: Vec::new(),
             color: vec4(1.0, 1.0, 1.0, 1.0),
-            font,
+            body_font,
+            title_font,
         }
     }
 
@@ -476,25 +513,12 @@ impl MenuCaptureServices {
         self.quads.push((rect, color));
     }
 
-    /// Measure one text run through the real font metrics.
-    fn measure(&self, text: &str, scale: f32) -> (f32, f32) {
-        layout_text(&TextLayoutOptions {
-            text,
-            font: &self.font,
-            scale,
-            color: vec4(1.0, 1.0, 1.0, 1.0),
-            color_codes: ColorCodes::Literal,
-            force_color: false,
-            alternate: false,
-            max_width: None,
-            align: LayoutAlign::Left,
-            line_height: None,
-            max_glyphs: None,
-            tab_columns: 4,
-        })
-        .map_or((text.chars().count() as f32 * 8.0 * scale, 8.0 * scale), |layout| {
-            (layout.width, layout.height)
-        })
+    /// Record one glyph quad, skipping empty and fully transparent rects.
+    fn push_glyph(&mut self, rect: Rect, uv: TextureRect, color: Vec4) {
+        if rect.width <= 0.0 || rect.height <= 0.0 || color.w <= 0.0 {
+            return;
+        }
+        self.glyphs.push(GlyphQuad { rect, uv, color });
     }
 }
 
@@ -503,31 +527,50 @@ impl UiRenderServices for MenuCaptureServices {
         &mut self,
         _context: &UiDrawContext,
         command: &UiDrawCommand,
-        _draw: &mut Draw2D,
+        draw: &mut Draw2D,
     ) -> Result<(), ClientError> {
         if let UiDrawCommand::Text {
             origin,
             text,
+            font,
             scale,
             color,
             align,
-            ..
+            shadow,
         } = command
         {
-            let (width, height) = self.measure(text, *scale);
-            let x = match align {
-                TextAlign::Left => origin.x,
-                TextAlign::Center => origin.x - width / 2.0,
-                TextAlign::Right => origin.x - width,
+            // Donor `UiTextRenderer.draw`: one layout supplies measurement
+            // and draw positions, then each visible glyph stretches its
+            // atlas cell through the 2D context.
+            let selection = if menu_font_slot(font) == MENU_TITLE_FONT_SLOT {
+                &self.title_font
+            } else {
+                &self.body_font
             };
-            self.push(
-                Rect {
-                    x,
-                    y: origin.y,
-                    width,
-                    height,
-                },
-                *color,
+            let layout = layout_text(&TextLayoutOptions {
+                text,
+                font: selection,
+                scale: *scale,
+                color: *color,
+                color_codes: ColorCodes::Literal,
+                force_color: false,
+                alternate: false,
+                max_width: None,
+                align: LayoutAlign::Left,
+                line_height: None,
+                max_glyphs: None,
+                tab_columns: 4,
+            })?;
+            let offset = match align {
+                TextAlign::Left => 0.0,
+                TextAlign::Center => layout.width / 2.0,
+                TextAlign::Right => layout.width,
+            };
+            draw_text_layout(
+                draw,
+                &layout,
+                vec2(origin.x - offset, origin.y),
+                if *shadow { 1.0 } else { 0.0 },
             );
         }
         Ok(())
@@ -555,9 +598,11 @@ impl UiRenderServices for MenuCaptureServices {
     fn emit(&mut self, command: UiEmitCommand) {
         match command {
             UiEmitCommand::SetColor(color) => self.color = color,
-            UiEmitCommand::StretchPic { rect, image, .. } => {
+            UiEmitCommand::StretchPic { rect, uv, image } => {
                 if image.image == BACKDROP_IMAGE_TAG {
                     self.push(rect, MENU_BACKDROP_COLOR);
+                } else if image.image == FONT_PICTURE_HANDLE {
+                    self.push_glyph(rect, uv, self.color);
                 } else {
                     self.push(rect, self.color);
                 }
@@ -695,10 +740,11 @@ mod tests {
         assert_eq!(menu.menu().active_menu(), Some(expected));
         assert!(menu.release_images().is_empty());
         let (view, uploads) = menu.frame_view(960, 600, None, 16.0).expect("menu view");
-        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads.len(), 2);
         assert!(matches!(uploads[0], ImageResourceOperation::CreateImage { .. }));
+        assert!(matches!(uploads[1], ImageResourceOperation::CreateImage { .. }));
         let batches = batches_of(&view);
-        assert_eq!(batches.len(), 1);
+        assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].lighting, BatchLighting::Vertex);
         let BatchVertices::Single(vertices) = &batches[0].vertices else {
             panic!("expected single-textured vertices");
@@ -708,13 +754,50 @@ mod tests {
             "menu has several quads, got {}",
             vertices.len() / 4
         );
+        let BatchVertices::Single(text) = &batches[1].vertices else {
+            panic!("expected single-textured text vertices");
+        };
+        assert!(!text.is_empty() && text.len() % 4 == 0, "text draws whole glyph quads");
         assert_eq!(view.state.clear.and_then(|clear| clear.color), Some(MENU_CLEAR_COLOR));
         let (repeat, reuploads) = menu.frame_view(960, 600, None, 32.0).expect("menu view");
         assert!(reuploads.is_empty());
-        assert_eq!(batches_of(&repeat)[0].vertices, batches[0].vertices);
+        assert_eq!(batches_of(&repeat), batches);
         let release = menu.release_images();
-        assert_eq!(release.len(), 1);
+        assert_eq!(release.len(), 2);
         assert!(matches!(release[0], ImageResourceOperation::ReleaseImage { .. }));
+        assert!(matches!(release[1], ImageResourceOperation::ReleaseImage { .. }));
+    }
+
+    #[test]
+    fn menu_text_batch_binds_the_font_atlas_with_glyph_uvs() {
+        let mut menu = menu();
+        let (view, uploads) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
+        assert_eq!(uploads.len(), 2);
+        let batches = batches_of(&view);
+        assert_eq!(batches.len(), 2);
+        let TextureBinding::BindImage(font) = &batches[1].texture else {
+            panic!("text batch must bind the font atlas image");
+        };
+        assert_eq!(font.ordinal, MENU_FONT_ORDINAL);
+        assert_eq!((font.width, font.height), (128, 128));
+        let BatchVertices::Single(vertices) = &batches[1].vertices else {
+            panic!("expected single-textured text vertices");
+        };
+        assert!(
+            vertices.len() >= 40,
+            "title plus buttons emit glyphs, got {}",
+            vertices.len() / 4
+        );
+        for quad in vertices.as_chunks::<4>().0 {
+            let (s, t) = (quad[0].tex_coord.x, quad[0].tex_coord.y);
+            let (s2, t2) = (quad[2].tex_coord.x, quad[2].tex_coord.y);
+            assert!(s2 > s && t2 > t, "glyph UVs span an atlas cell");
+            assert!(
+                (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t2),
+                "glyph UVs stay in the atlas"
+            );
+            assert!(quad.iter().all(|vertex| vertex.color.w > 0.0), "glyphs stay opaque");
+        }
     }
 
     #[test]
@@ -743,7 +826,7 @@ mod tests {
         let mut menu = menu();
         let seat = menu.seat.clone();
         let (before, _) = menu.frame_view(640, 480, Some(&seat), 0.0).expect("menu view");
-        let before_batches = batches_of(&before)[0].clone();
+        let before_batches = batches_of(&before).to_vec();
         let enter = UiSeatInputEvent {
             seat,
             time_ms: 0,
@@ -755,7 +838,7 @@ mod tests {
         };
         assert!(menu.input(&enter));
         let (after, _) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
-        assert_ne!(batches_of(&after)[0].vertices, before_batches.vertices);
+        assert_ne!(batches_of(&after), before_batches.as_slice());
     }
 
     #[test]
