@@ -18,6 +18,7 @@ use crate::native_libraries::{host_opengl_driver, NativeLibrary, NativeLibraryOp
 use crate::sdl_render_context::{
     ProcedureGuard, RenderSdl, SdlRenderContext, SdlRenderContextLease, SdlRenderContextTransfer,
 };
+use crate::xshm::XshmPresenter;
 
 const VIDEO_SUBSYSTEM: u32 = 0x20;
 const JOYSTICK_SUBSYSTEM: u32 = 0x200;
@@ -138,6 +139,8 @@ sdl2_symbols! {
     sdl_render_copy: "SDL_RenderCopy": unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void, *const c_void) -> i32;
     sdl_render_present: "SDL_RenderPresent": unsafe extern "C" fn(*mut c_void);
     sdl_render_read_pixels: "SDL_RenderReadPixels": unsafe extern "C" fn(*mut c_void, *const c_void, u32, *mut u8, i32) -> i32;
+    sdl_get_current_video_driver: "SDL_GetCurrentVideoDriver": unsafe extern "C" fn() -> *const u8;
+    sdl_get_window_wm_info: "SDL_GetWindowWMInfo": unsafe extern "C" fn(*mut c_void, *mut u8) -> i32;
     sdl_pump_events: "SDL_PumpEvents": unsafe extern "C" fn();
     sdl_peep_events: "SDL_PeepEvents": unsafe extern "C" fn(*mut u8, i32, i32, u32, u32) -> i32;
     sdl_push_event: "SDL_PushEvent": unsafe extern "C" fn(*const u8) -> i32;
@@ -858,11 +861,22 @@ enum ResourceKind {
         texture: *mut c_void,
         width: i32,
         height: i32,
+        xshm: XshmState,
     },
     Gl {
         context: *mut c_void,
         driver: Option<String>,
     },
+}
+
+/// MIT-SHM fast-present state for a CPU window. The shared-memory path is
+/// probed lazily on the first present: `Unprobed` before the first attempt,
+/// `Failed` when anything is unavailable (the portable renderer present keeps
+/// working), `Live` once attached.
+enum XshmState {
+    Unprobed,
+    Failed,
+    Live(XshmPresenter),
 }
 
 /// An SDL window. Lifetime belongs to the creating thread.
@@ -1211,6 +1225,7 @@ impl SdlWindow {
                         texture: *texture,
                         width,
                         height,
+                        xshm: XshmState::Unprobed,
                     },
                     fullscreen_failure,
                 ))
@@ -2043,14 +2058,107 @@ impl SdlWindow {
                 (sdl.sdl_update_texture)(texture, std::ptr::null(), rgba.as_ptr(), width * 4),
                 "SDL_UpdateTexture",
             )?;
-            sdl.checked(
-                (sdl.sdl_render_copy)(renderer, texture, std::ptr::null(), std::ptr::null()),
-                "SDL_RenderCopy",
-            )?;
-            (sdl.sdl_render_present)(renderer);
+            // MIT-SHM fast path first: on X11 it hands the frame to the server
+            // through shared memory (~0.2ms) instead of the socket (~13ms).
+            // The texture upload above still feeds `read_pixels` either way.
+            let shm_presented = self.present_shm(rgba, width, height);
+            if !shm_presented {
+                sdl.checked(
+                    (sdl.sdl_render_copy)(renderer, texture, std::ptr::null(), std::ptr::null()),
+                    "SDL_RenderCopy",
+                )?;
+                (sdl.sdl_render_present)(renderer);
+            }
         }
         self.has_frame = true;
         Ok(())
+    }
+
+    /// Present through MIT-SHM when attached. Returns `false` when the fast
+    /// path is unavailable so the caller falls back to the renderer present.
+    fn present_shm(&mut self, rgba: &[u8], width: i32, height: i32) -> bool {
+        let window = match self.resources.as_ref() {
+            Some(resources) => match resources.kind {
+                ResourceKind::Cpu { .. } => resources.window,
+                ResourceKind::Gl { .. } => return false,
+            },
+            None => return false,
+        };
+        let shm = match self.resources.as_mut() {
+            Some(resources) => match &mut resources.kind {
+                ResourceKind::Cpu { xshm, .. } => xshm,
+                ResourceKind::Gl { .. } => return false,
+            },
+            None => return false,
+        };
+        let size = (width as u32, height as u32);
+        match shm {
+            XshmState::Live(presenter) => {
+                if presenter.size() != size {
+                    *shm = Self::setup_shm(&self.sdl, &self.lib_options, window, width, height);
+                    return match shm {
+                        XshmState::Live(presenter) => presenter.present(rgba),
+                        _ => false,
+                    };
+                }
+                presenter.present(rgba)
+            }
+            XshmState::Unprobed => {
+                *shm = Self::setup_shm(&self.sdl, &self.lib_options, window, width, height);
+                match shm {
+                    XshmState::Live(presenter) => presenter.present(rgba),
+                    _ => false,
+                }
+            }
+            XshmState::Failed => false,
+        }
+    }
+
+    /// Probe the MIT-SHM fast path once. Any failure yields `Failed` and the
+    /// portable renderer present keeps working.
+    fn setup_shm(
+        sdl: &Sdl2,
+        lib_options: &NativeLibraryOptions,
+        window: *mut c_void,
+        width: i32,
+        height: i32,
+    ) -> XshmState {
+        // SAFETY: SDL guarantees a valid thread-local driver name.
+        let driver = unsafe { (sdl.sdl_get_current_video_driver)() };
+        if driver.is_null() {
+            return XshmState::Failed;
+        }
+        // SAFETY: the driver name is a live NUL-terminated C string.
+        let name = unsafe { c_string_lossy(driver) };
+        if name != "x11" {
+            return XshmState::Failed;
+        }
+        // `SDL_SysWMinfo`: version triplet first, then the subsystem tag at
+        // offset 4, then a platform union with the X11 display pointer and
+        // window id. Verified against SDL2's `SDL_syswm.h`.
+        let mut info = [0u8; 256];
+        info[0] = 2;
+        // SAFETY: the window is live and the buffer spans the info struct.
+        let ok = unsafe { (sdl.sdl_get_window_wm_info)(window, info.as_mut_ptr()) };
+        if ok == 0 {
+            return XshmState::Failed;
+        }
+        if i32::from_ne_bytes([info[4], info[5], info[6], info[7]]) != 2 {
+            return XshmState::Failed;
+        }
+        #[cfg(target_pointer_width = "64")]
+        let (display, xwindow) = {
+            let display = u64::from_ne_bytes(info[8..16].try_into().expect("display bytes"));
+            let xwindow = u64::from_ne_bytes(info[16..24].try_into().expect("window bytes"));
+            (display as *mut c_void, xwindow)
+        };
+        #[cfg(not(target_pointer_width = "64"))]
+        let (display, xwindow) = (std::ptr::null_mut(), 0u64);
+        // SAFETY: the display and window id come from the live SDL window.
+        match unsafe { XshmPresenter::attach(lib_options, display, xwindow, width as u32, height as u32) } {
+            Some(presenter) => XshmState::Live(presenter),
+            None => XshmState::Failed,
+        }
     }
 
     /// Read back the presented CPU frame.
@@ -2310,8 +2418,15 @@ impl SdlWindow {
                 errors.push(error);
             }
         }
-        let resources = self.resources.take().expect("checked");
+        let mut resources = self.resources.take().expect("checked");
         windows().lock().expect("window map").remove(&self.id);
+        // Drop the SHM presenter while the display connection is alive. The
+        // match below only copies `Copy` handles, so without this the
+        // presenter would drop at function end, after `SDL_QuitSubSystem`
+        // closes the X connection its detach calls need.
+        if let ResourceKind::Cpu { xshm, .. } = &mut resources.kind {
+            *xshm = XshmState::Failed;
+        }
         // SAFETY: every handle below is live until its destroy call.
         unsafe {
             match resources.kind {
@@ -3460,6 +3575,34 @@ mod tests {
         if let Ok(Some(mut joystick)) = SdlJoystick::open_first(|_| {}, JoystickProfile::Linux) {
             let _ = joystick.poll_events(JoystickProfile::Linux).unwrap();
             joystick.close();
+        }
+    }
+
+    #[test]
+    fn live_cpu_present_round_trips_frame() {
+        // Regression: presenting attaches the MIT-SHM fast path on X11, and
+        // closing must detach it before SDL quits the video subsystem.
+        let options = SdlWindowOptions {
+            title: "qa-platform present probe".to_string(),
+            width: 64,
+            height: 64,
+            hidden: true,
+            ..SdlWindowOptions::default()
+        };
+        match SdlWindow::open(&options) {
+            Ok(mut window) => {
+                assert_eq!(window.backend().unwrap(), SdlBackendKind::Cpu);
+                let mut rgba = vec![0u8; 64 * 64 * 4];
+                for i in 0..64 * 64 {
+                    rgba[i * 4..(i + 1) * 4].copy_from_slice(&[0x11, 0x22, 0x33, 0xff]);
+                }
+                window.present(&rgba).unwrap();
+                let back = window.read_pixels().unwrap();
+                assert_eq!(back, rgba);
+                window.close().unwrap();
+                assert!(window.is_closed());
+            }
+            Err(error) => assert!(!error.to_string().is_empty(), "{error}"),
         }
     }
 }

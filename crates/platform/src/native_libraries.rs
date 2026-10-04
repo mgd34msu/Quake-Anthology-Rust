@@ -27,6 +27,10 @@ pub enum NativeLibrary {
     TheoraDec,
     /// FreeType (`libfreetype.so.6`, ...).
     FreeType,
+    /// X11 client (`libX11.so.6`, ...). MIT-SHM software present only.
+    X11,
+    /// X11 MIT-SHM extension (`libXext.so.6`, ...). MIT-SHM software present only.
+    Xext,
 }
 
 impl NativeLibrary {
@@ -40,6 +44,8 @@ impl NativeLibrary {
             Self::VorbisFile => "vorbisfile",
             Self::TheoraDec => "theoradec",
             Self::FreeType => "freetype",
+            Self::X11 => "x11",
+            Self::Xext => "xext",
         }
     }
 
@@ -51,6 +57,8 @@ impl NativeLibrary {
             Self::VorbisFile => "QUAKE_VORBISFILE_LIBRARY",
             Self::TheoraDec => "QUAKE_THEORA_LIBRARY",
             Self::FreeType => "QUAKE_FREETYPE_LIBRARY",
+            Self::X11 => "QUAKE_X11_LIBRARY",
+            Self::Xext => "QUAKE_XEXT_LIBRARY",
         }
     }
 
@@ -62,6 +70,8 @@ impl NativeLibrary {
             Self::VorbisFile => &["libvorbisfile.so.3", "libvorbisfile.so"],
             Self::TheoraDec => &["libtheoradec.so.2", "libtheoradec.so"],
             Self::FreeType => &["libfreetype.so.6", "libfreetype.so"],
+            Self::X11 => &["libX11.so.6", "libX11.so"],
+            Self::Xext => &["libXext.so.6", "libXext.so"],
         }
     }
 
@@ -73,6 +83,7 @@ impl NativeLibrary {
             Self::VorbisFile => &["libvorbisfile-3.dll", "vorbisfile.dll"],
             Self::TheoraDec => &["libtheoradec-1.dll", "theoradec.dll"],
             Self::FreeType => &["freetype.dll", "libfreetype-6.dll", "freetype6.dll"],
+            Self::X11 | Self::Xext => &[],
         }
     }
 
@@ -84,6 +95,8 @@ impl NativeLibrary {
             Self::VorbisFile => vec!["libvorbisfile.3.dylib".into(), "libvorbisfile.dylib".into()],
             Self::TheoraDec => vec!["libtheoradec.2.dylib".into(), "libtheoradec.dylib".into()],
             Self::FreeType => vec!["libfreetype.6.dylib".into(), "libfreetype.dylib".into()],
+            Self::X11 => vec!["libX11.6.dylib".into(), "libX11.dylib".into()],
+            Self::Xext => vec!["libXext.6.dylib".into(), "libXext.dylib".into()],
         }
     }
 }

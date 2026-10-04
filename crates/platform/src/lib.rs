@@ -24,5 +24,6 @@ pub mod sdl;
 pub mod sdl_render_context;
 pub mod theora;
 pub mod vorbis;
+pub mod xshm;
 
 pub use error::{AggregateList, Error, Result};
