@@ -14,6 +14,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use thiserror::Error;
 
@@ -82,8 +84,42 @@ pub fn digest_bytes(bytes: &[u8]) -> ContentDigest {
     content_digest_hex(sha256_hex(bytes))
 }
 
+/// Cached file digest, validated by size and modification time.
+struct CachedDigest {
+    /// Digest of the bytes read.
+    digest: ContentDigest,
+    /// File length when hashed.
+    len: u64,
+    /// Modification time when hashed.
+    modified: SystemTime,
+}
+
+/// Process-wide file digest cache. Mount opening re-verifies archives it
+/// just fingerprinted, so without this cache every archive pays two full
+/// hashes per run. A hit requires matching size and mtime, so edited,
+/// replaced, or truncated files re-hash and keep the same observable
+/// behavior (including the changed-bytes errors); only a modification
+/// that preserves both size and mtime within the timer granularity
+/// would reuse a digest, and the pre-existing check it feeds is itself
+/// racy against concurrent writers.
+fn digest_cache() -> &'static Mutex<HashMap<PathBuf, CachedDigest>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedDigest>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// SHA-256 digest of a file, streamed in 1 MiB chunks (`digestFile`).
 pub fn digest_file(path: &Path) -> Result<ContentDigest, MountError> {
+    let io_error = |error: std::io::Error| MountError::Io {
+        path: path.to_string_lossy().into_owned(),
+        message: error.to_string(),
+    };
+    let metadata = std::fs::metadata(path).map_err(&io_error)?;
+    let (len, modified) = (metadata.len(), metadata.modified().map_err(&io_error)?);
+    if let Some(cached) = digest_cache().lock().expect("digest cache").get(path) {
+        if cached.len == len && cached.modified == modified {
+            return Ok(cached.digest.clone());
+        }
+    }
     let mut file = File::open(path).map_err(|error| MountError::Io {
         path: path.to_string_lossy().into_owned(),
         message: error.to_string(),
@@ -100,7 +136,16 @@ pub fn digest_file(path: &Path) -> Result<ContentDigest, MountError> {
         }
         hasher.update(&chunk[..count]);
     }
-    Ok(content_digest_hex(hex_lower(&hasher.finish())))
+    let digest = content_digest_hex(hex_lower(&hasher.finish()));
+    digest_cache().lock().expect("digest cache").insert(
+        path.to_path_buf(),
+        CachedDigest {
+            digest: digest.clone(),
+            len,
+            modified,
+        },
+    );
+    Ok(digest)
 }
 
 /// Resource prefix link into a loose mount (`ResourceLink`).
@@ -1464,6 +1509,13 @@ mod tests {
         std::fs::write(&path, b"abc").unwrap();
         assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abc"));
         assert!(digest_file(&root.join("missing")).is_err());
+        // The stat-validated cache reuses the digest for unchanged files
+        // but re-hashes after any size or content change.
+        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abc"));
+        std::fs::write(&path, b"abcd").unwrap();
+        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abcd"));
+        std::fs::write(&path, b"abce").unwrap();
+        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abce"));
         assert!(is_missing_file(&std::io::Error::new(std::io::ErrorKind::NotFound, "x")));
         assert!(is_missing_file(&std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
