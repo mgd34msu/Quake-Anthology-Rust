@@ -3318,157 +3318,81 @@ impl WorldScene {
         lighting: (u32, Vec<DynamicLight>),
         order: Option<SourceSurfaceOrder>,
     ) -> Result<Vec<SceneOperation>, RenderError> {
-        let surface = at(&self.surfaces, index, "surface")?.clone();
+        // Gather per-branch inputs under short borrows: cloning the whole
+        // surface here (geometry, patch grid, shader, names) cost a full
+        // surface copy per surface per frame.
         let project =
             |point: Vec3| crate::view::project_point(&input.camera, model, point).unwrap_or(vec4(0.0, 0.0, 0.0, 1.0));
         let project_ref: &dyn Fn(Vec3) -> Vec4 = &project;
         let resolved = self.remap(index)?;
-        let selected = resolved
-            .as_ref()
-            .map(|(material, _)| material.clone())
-            .or_else(|| surface.shader().cloned());
-        let time_offset = resolved.map(|(_, offset)| offset).unwrap_or(0.0);
+        let time_offset = resolved.as_ref().map(|(_, offset)| *offset).unwrap_or(0.0);
+        let selected = match resolved {
+            Some((material, _)) => Some(material),
+            None => {
+                let surface = at(&self.surfaces, index, "surface")?;
+                surface.shader().cloned()
+            }
+        };
         if selected.is_none() {
-            let WorldSurfaceData::Legacy {
-                material,
-                lightmap,
-                q1_sky,
-                ..
-            } = &surface.data
-            else {
-                return Ok(Vec::new());
-            };
-            let sky = match material {
-                LegacyMaterial::Q1(_) => q1_sky.is_some(),
-                LegacyMaterial::Q2 { material, .. } => material.surface_flags & 4 != 0,
-            };
-            if matches!(material, LegacyMaterial::Q2 { material, .. } if material.surface_flags & 128 != 0 && !sky) {
-                return Ok(Vec::new());
-            }
-            if let Some(plane) = surface.plane {
-                if dot3(data.local_view_origin, plane.normal) - plane.distance < -0.01 {
-                    return Ok(Vec::new());
-                }
-            }
-            if let Some(layers) = q1_sky {
-                if let Some(sky) = input.source_sky.as_ref() {
-                    return Ok(self
-                        .q2_sky_operations(&surface.geometry, sky, input, project_ref)?
-                        .into_iter()
-                        .map(SceneOperation::Operation)
-                        .collect());
-                }
-                let batches = self.q1_sky_batches(&surface.geometry, layers, input, data)?;
-                return Ok(vec![SceneOperation::Group(sequence_draw_group(
-                    SequencePhase::Sky,
-                    batches,
-                ))]);
-            }
-            if sky && matches!(material, LegacyMaterial::Q2 { .. }) {
-                let fallback = Q2SkyView {
-                    images: self.q2_sky.clone(),
-                    rotation: 0.0,
-                    auto_rotate: false,
-                    axis: vec3(0.0, 0.0, 1.0),
-                };
-                let sky = input.source_sky.as_ref().or(input.q2_sky.as_ref()).unwrap_or(&fallback);
-                return Ok(self
-                    .q2_sky_operations(&surface.geometry, sky, input, project_ref)?
-                    .into_iter()
-                    .map(SceneOperation::Operation)
-                    .collect());
-            }
-            if let Some(lightmap) = lightmap {
-                self.refresh_lightmap(index, lightmap, material, input, model)?;
-            }
-            let fullbright = match material {
-                LegacyMaterial::Q1(material) => {
-                    let animated =
-                        q1_animated_texture(material, data.time, input.alternate_animation).map_err(client_error)?;
-                    self.fullbright_by_texture
-                        .get(&animated)
-                        .and_then(|entry| entry.as_ref())
-                        .map(|image| image.ordinal)
-                }
-                LegacyMaterial::Q2 { .. } => match &surface.data {
-                    WorldSurfaceData::Legacy { fullbright, .. } => fullbright.as_ref().map(|image| image.ordinal),
-                    _ => None,
-                },
-            };
-            let entity = data.entity_rgba;
-            let context = LegacyMaterialDrawContext {
-                // Donor `entityRGBA` is bytes-as-floats (0..255); the legacy
-                // batch builder divides by 255 itself, so pass bytes through.
-                entity_rgba: Some(vec4(
-                    f32::from(entity[0]),
-                    f32::from(entity[1]),
-                    f32::from(entity[2]),
-                    f32::from(entity[3]),
-                )),
-                time: data.time,
-                animation_frame: input.animation_frame.unwrap_or((data.time * 2.0).trunc()),
-                alternate_animation: input.alternate_animation,
-                fullbright,
-                q1_fog_active: input.q1_fog.is_some_and(|fog| fog.density > 0.0),
-                q1_lightmap_encoding: lightmap
-                    .as_ref()
-                    .map(|lightmap| lightmap.encoding)
-                    .unwrap_or(self.options.q1_lightmap_encoding),
-                translucent_lightmap: lightmap.as_ref().map(|lightmap| lightmap.direct.ordinal),
-                cull: if data.mirror != model.is_some_and(|model| model_scale(model).is_ok_and(|scale| scale < 0.0)) {
-                    MaterialCullFace::Back
-                } else {
-                    MaterialCullFace::Front
-                },
-                depth_range: [0.0, 1.0],
-                project: project_ref,
-            };
-            let batches =
-                prepare_legacy_material_batches(material, &surface.geometry, &context).map_err(client_error)?;
-            let alpha = match material {
-                LegacyMaterial::Q1(material) => material.alpha,
-                LegacyMaterial::Q2 { material, .. } => material.alpha,
-            } * f32::from(entity[3])
-                / 255.0;
-            let mut converted = Vec::with_capacity(batches.len());
-            for batch in &batches {
-                converted.push(draw_batch_from_material(
-                    self.shaders.textures().images(),
-                    batch,
-                    None,
-                    &input.dynamic_images,
-                )?);
-            }
-            return Ok(vec![SceneOperation::Group(sequence_draw_group(
-                if alpha < 1.0 {
-                    SequencePhase::Translucent
-                } else {
-                    SequencePhase::Opaque
-                },
-                converted,
-            ))]);
+            return self.unshaded_surface_operations(index, input, data, model, project_ref);
         }
         let shader = selected.expect("resolved selected shader");
-        if matches!(&surface.data, WorldSurfaceData::Q3 { flare: true, .. }) {
-            return Ok(input
+        let flare = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            matches!(&surface.data, WorldSurfaceData::Q3 { flare: true, .. })
+        };
+        if flare {
+            let surface = at(&self.surfaces, index, "surface")?;
+            let operations = input
                 .prepare_flare
                 .as_ref()
-                .map(|hook| hook(&surface, &input.camera))
-                .unwrap_or_default()
-                .into_iter()
-                .map(SceneOperation::Operation)
-                .collect());
+                .map(|hook| hook(surface, &input.camera))
+                .unwrap_or_default();
+            return Ok(operations.into_iter().map(SceneOperation::Operation).collect());
         }
-        if let WorldSurfaceData::Legacy {
-            lightmap: Some(lightmap),
-            material,
-            ..
-        } = &surface.data
         {
-            self.refresh_lightmap(index, lightmap, material, input, model)?;
+            let surface = at(&self.surfaces, index, "surface")?;
+            if let WorldSurfaceData::Legacy {
+                lightmap: Some(lightmap),
+                material,
+                ..
+            } = &surface.data
+            {
+                let (lightmap, material) = (lightmap.clone(), material.clone());
+                self.refresh_lightmap(index, &lightmap, &material, input, model)?;
+            }
         }
+        let (geometry, fog) = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            let fog = match &surface.data {
+                WorldSurfaceData::Q3 { fog: Some(fog), .. } => Some(*fog),
+                _ => None,
+            };
+            let geometry = match &surface.data {
+                WorldSurfaceData::Q3 { grid: Some(grid), .. } => {
+                    let world_origin = match model {
+                        None => grid.lod_origin,
+                        Some(model) => world_point(grid.lod_origin, model).map_err(client_error)?,
+                    };
+                    let mesh = select_patch_lod(
+                        grid,
+                        world_origin,
+                        data.view_origin,
+                        data.deform_view.axis[0],
+                        input.curve_error,
+                    );
+                    MaterialGeometry {
+                        vertices: mesh.vertices,
+                        indices: mesh.indices,
+                    }
+                }
+                _ => surface.geometry.clone(),
+            };
+            (geometry, fog)
+        };
         self.shader_operations(
-            &surface,
+            geometry,
+            fog,
             &shader,
             time_offset,
             input,
@@ -3478,6 +3402,145 @@ impl WorldScene {
             order.as_ref(),
             project_ref,
         )
+    }
+
+    /// Operations for a legacy surface with no selected shader. Clones only
+    /// the small branch inputs (material, lightmap, sky layers) plus the
+    /// geometry the batch builders borrow.
+    fn unshaded_surface_operations(
+        &mut self,
+        index: usize,
+        input: &WorldViewInput,
+        data: &DrawContextData,
+        model: Option<&ModelTransform>,
+        project_ref: &dyn Fn(Vec3) -> Vec4,
+    ) -> Result<Vec<SceneOperation>, RenderError> {
+        let (plane, geometry, material, lightmap, fullbright, q1_sky) = {
+            let surface = at(&self.surfaces, index, "surface")?;
+            let WorldSurfaceData::Legacy {
+                material,
+                lightmap,
+                fullbright,
+                q1_sky,
+                ..
+            } = &surface.data
+            else {
+                return Ok(Vec::new());
+            };
+            (
+                surface.plane,
+                surface.geometry.clone(),
+                material.clone(),
+                lightmap.clone(),
+                fullbright.clone(),
+                q1_sky.clone(),
+            )
+        };
+        let sky = match &material {
+            LegacyMaterial::Q1(_) => q1_sky.is_some(),
+            LegacyMaterial::Q2 { material, .. } => material.surface_flags & 4 != 0,
+        };
+        if matches!(&material, LegacyMaterial::Q2 { material, .. } if material.surface_flags & 128 != 0 && !sky) {
+            return Ok(Vec::new());
+        }
+        if let Some(plane) = plane {
+            if dot3(data.local_view_origin, plane.normal) - plane.distance < -0.01 {
+                return Ok(Vec::new());
+            }
+        }
+        if let Some(layers) = &q1_sky {
+            if let Some(sky) = input.source_sky.as_ref() {
+                return Ok(self
+                    .q2_sky_operations(&geometry, sky, input, project_ref)?
+                    .into_iter()
+                    .map(SceneOperation::Operation)
+                    .collect());
+            }
+            let batches = self.q1_sky_batches(&geometry, layers, input, data)?;
+            return Ok(vec![SceneOperation::Group(sequence_draw_group(
+                SequencePhase::Sky,
+                batches,
+            ))]);
+        }
+        if sky && matches!(&material, LegacyMaterial::Q2 { .. }) {
+            let fallback = Q2SkyView {
+                images: self.q2_sky.clone(),
+                rotation: 0.0,
+                auto_rotate: false,
+                axis: vec3(0.0, 0.0, 1.0),
+            };
+            let sky = input.source_sky.as_ref().or(input.q2_sky.as_ref()).unwrap_or(&fallback);
+            return Ok(self
+                .q2_sky_operations(&geometry, sky, input, project_ref)?
+                .into_iter()
+                .map(SceneOperation::Operation)
+                .collect());
+        }
+        if let Some(lightmap) = &lightmap {
+            self.refresh_lightmap(index, lightmap, &material, input, model)?;
+        }
+        let fullbright = match &material {
+            LegacyMaterial::Q1(material) => {
+                let animated =
+                    q1_animated_texture(material, data.time, input.alternate_animation).map_err(client_error)?;
+                self.fullbright_by_texture
+                    .get(&animated)
+                    .and_then(|entry| entry.as_ref())
+                    .map(|image| image.ordinal)
+            }
+            LegacyMaterial::Q2 { .. } => fullbright.as_ref().map(|image| image.ordinal),
+        };
+        let entity = data.entity_rgba;
+        let context = LegacyMaterialDrawContext {
+            // Donor `entityRGBA` is bytes-as-floats (0..255); the legacy
+            // batch builder divides by 255 itself, so pass bytes through.
+            entity_rgba: Some(vec4(
+                f32::from(entity[0]),
+                f32::from(entity[1]),
+                f32::from(entity[2]),
+                f32::from(entity[3]),
+            )),
+            time: data.time,
+            animation_frame: input.animation_frame.unwrap_or((data.time * 2.0).trunc()),
+            alternate_animation: input.alternate_animation,
+            fullbright,
+            q1_fog_active: input.q1_fog.is_some_and(|fog| fog.density > 0.0),
+            q1_lightmap_encoding: lightmap
+                .as_ref()
+                .map(|lightmap| lightmap.encoding)
+                .unwrap_or(self.options.q1_lightmap_encoding),
+            translucent_lightmap: lightmap.as_ref().map(|lightmap| lightmap.direct.ordinal),
+            cull: if data.mirror != model.is_some_and(|model| model_scale(model).is_ok_and(|scale| scale < 0.0)) {
+                MaterialCullFace::Back
+            } else {
+                MaterialCullFace::Front
+            },
+            depth_range: [0.0, 1.0],
+            project: project_ref,
+        };
+        let batches = prepare_legacy_material_batches(&material, &geometry, &context).map_err(client_error)?;
+        let alpha = match &material {
+            LegacyMaterial::Q1(material) => material.alpha,
+            LegacyMaterial::Q2 { material, .. } => material.alpha,
+        } * f32::from(entity[3])
+            / 255.0;
+        let mut converted = Vec::with_capacity(batches.len());
+        for batch in &batches {
+            converted.push(draw_batch_from_material(
+                self.shaders.textures().images(),
+                batch,
+                None,
+                &input.dynamic_images,
+            )?);
+        }
+        Ok(vec![SceneOperation::Group(sequence_draw_group(
+            if alpha < 1.0 {
+                SequencePhase::Translucent
+            } else {
+                SequencePhase::Opaque
+            },
+            converted,
+        ))])
     }
 
     fn refresh_lightmap(
@@ -3574,7 +3637,8 @@ impl WorldScene {
     #[allow(clippy::too_many_arguments)]
     fn shader_operations(
         &mut self,
-        surface: &WorldSurface,
+        geometry: MaterialGeometry,
+        fog: Option<FogVolume>,
         shader: &RegisteredSceneMaterial,
         time_offset: f32,
         input: &WorldViewInput,
@@ -3585,32 +3649,8 @@ impl WorldScene {
         project: &dyn Fn(Vec3) -> Vec4,
     ) -> Result<Vec<SceneOperation>, RenderError> {
         if shader.finished.iterator.kind == MaterialIteratorKind::Sky {
-            return self.sky_operations(surface, shader, input, data, order, project);
+            return self.sky_operations(&geometry, shader, input, data, order, project);
         }
-        let geometry = match &surface.data {
-            WorldSurfaceData::Q3 { grid: Some(grid), .. } => {
-                let world_origin = match model {
-                    None => grid.lod_origin,
-                    Some(model) => world_point(grid.lod_origin, model).map_err(client_error)?,
-                };
-                let mesh = select_patch_lod(
-                    grid,
-                    world_origin,
-                    data.view_origin,
-                    data.deform_view.axis[0],
-                    input.curve_error,
-                );
-                MaterialGeometry {
-                    vertices: mesh.vertices,
-                    indices: mesh.indices,
-                }
-            }
-            _ => surface.geometry.clone(),
-        };
-        let fog = match &surface.data {
-            WorldSurfaceData::Q3 { fog: Some(fog), .. } => Some(*fog),
-            _ => None,
-        };
         let dlight_ordinal = self.dlight_image.ordinal;
         let filtered: Vec<DynamicLight> = lighting
             .1
@@ -3691,7 +3731,7 @@ impl WorldScene {
                 lights,
             }
         });
-        let batches = prepare_material_batches(shader, &geometry, &context).map_err(client_error)?;
+        let batches = prepare_material_batches(shader, geometry, &context).map_err(client_error)?;
         let mut converted = Vec::with_capacity(batches.len());
         for batch in &batches {
             let mut draw = draw_batch_from_material(
@@ -3713,7 +3753,7 @@ impl WorldScene {
 
     fn sky_operations(
         &mut self,
-        surface: &WorldSurface,
+        geometry: &MaterialGeometry,
         shader: &RegisteredSceneMaterial,
         input: &WorldViewInput,
         data: &DrawContextData,
@@ -3722,7 +3762,7 @@ impl WorldScene {
     ) -> Result<Vec<SceneOperation>, RenderError> {
         if let Some(sky) = input.source_sky.as_ref() {
             return Ok(self
-                .q2_sky_operations(&surface.geometry, sky, input, project)?
+                .q2_sky_operations(geometry, sky, input, project)?
                 .into_iter()
                 .map(SceneOperation::Operation)
                 .collect());
@@ -3730,7 +3770,7 @@ impl WorldScene {
         let origin = input.camera.origin;
         self.shaders
             .sky
-            .clip(&[DeformGeometry::from(surface.geometry.clone())], origin)
+            .clip(&[DeformGeometry::from(geometry.clone())], origin)
             .map_err(client_error)?;
         let far = far_clip(origin, &self.bounds).max(2048.0);
         let built = self.shaders.sky.build(origin, far).map_err(client_error)?;
@@ -3774,7 +3814,7 @@ impl WorldScene {
         }
         if !built.clouds.vertices.is_empty() {
             let context = draw_context(data, &self.noise, project, None, None, 0.0);
-            let batches = evaluate_material_passes(shader, &MaterialGeometry::from(built.clouds.clone()), &context)
+            let batches = evaluate_material_passes(shader, MaterialGeometry::from(built.clouds.clone()), &context)
                 .map_err(client_error)?;
             let mut converted = Vec::with_capacity(batches.len());
             for batch in &batches {

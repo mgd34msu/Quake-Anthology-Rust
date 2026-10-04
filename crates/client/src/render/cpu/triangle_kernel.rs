@@ -214,11 +214,21 @@ fn sample_level(
 ) {
     let (width, height) = (texture.width, texture.height);
     let data = &texture.pixels;
-    let u = if repeat { u - u.floor() } else { clamp(u) };
-    let v = if repeat { v - v.floor() } else { clamp(v) };
+    // Positive in-range wrap truncates like floor; huge or negative
+    // coordinates keep the floor path, so wrapping stays bit-identical.
+    let wrap = |coordinate: f32| {
+        if (0.0..2_147_483_648.0).contains(&coordinate) {
+            coordinate - (coordinate as i32) as f32
+        } else {
+            coordinate - coordinate.floor()
+        }
+    };
+    let u = if repeat { wrap(u) } else { clamp(u) };
+    let v = if repeat { wrap(v) } else { clamp(v) };
     if !linear {
-        let x = ((u * width as f32).floor() as u32).min(width - 1);
-        let y = ((v * height as f32).floor() as u32).min(height - 1);
+        // Post-wrap coordinates are non-negative, so truncation is floor.
+        let x = ((u * width as f32) as u32).min(width - 1);
+        let y = ((v * height as f32) as u32).min(height - 1);
         let offset = ((y * width + x) * 4) as usize;
         output.r = f32::from(data[offset]) / 255.0;
         output.g = f32::from(data[offset + 1]) / 255.0;
@@ -228,8 +238,20 @@ fn sample_level(
     }
     let x = u * width as f32 - 0.5;
     let y = v * height as f32 - 0.5;
-    let mut x0 = x.floor() as i32;
-    let mut y0 = y.floor() as i32;
+    // Post-wrap x spans [-0.5, width - 0.5]: non-negative values truncate
+    // like floor, the only negative subrange floors to -1, and NaN keeps
+    // the saturating-cast zero, so branches replace both floors exactly.
+    let start = |value: f32| {
+        if value >= 0.0 {
+            value as i32
+        } else if value < 0.0 {
+            -1
+        } else {
+            0
+        }
+    };
+    let mut x0 = start(x);
+    let mut y0 = start(y);
     let fx = x - x0 as f32;
     let fy = y - y0 as f32;
     let mut x1 = x0 + 1;

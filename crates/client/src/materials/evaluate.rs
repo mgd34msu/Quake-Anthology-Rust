@@ -8,7 +8,7 @@ use qa_core::math::{Vec2, Vec3, Vec4};
 
 use super::color::{evaluate_stage_color, StageColorContext};
 use super::compile::{CompiledMaterial, FinishedImagePlayback, FinishedStageBinding};
-use super::deform::{deform_geometry, DeformView, ProjectionShadowContext, RendererNoise};
+use super::deform::{deform_geometry, DeformGeometry, DeformView, ProjectionShadowContext, RendererNoise};
 use super::dlight::{project_dlight_texture, receives_projected_dlights};
 use super::fog::{attenuate_fog_color, fog_pass_state, FogAdjustment};
 use super::geometry::{MaterialDeformState, MaterialGeometry, MaterialVertex};
@@ -305,10 +305,12 @@ fn retained_state(state_bits: u32, initial: &RenderState) -> Result<RenderState,
     Ok(result)
 }
 
-/// Prepare material batches (`prepareMaterialBatches`).
+/// Prepare material batches (`prepareMaterialBatches`). Takes the input
+/// geometry by value so the common no-deform path moves it straight into
+/// the deformed result instead of cloning it twice per surface per frame.
 pub fn prepare_material_batches(
     compiled: &CompiledMaterial,
-    input: &MaterialGeometry,
+    input: MaterialGeometry,
     context: &MaterialDrawContext,
 ) -> Result<Vec<MaterialBatch>, ClientError> {
     if compiled.finished.iterator.kind == super::iterator::MaterialIteratorKind::Sky {
@@ -322,7 +324,7 @@ pub fn prepare_material_batches(
 /// Evaluate material passes (`evaluateMaterialPasses`).
 pub fn evaluate_material_passes(
     compiled: &CompiledMaterial,
-    input: &MaterialGeometry,
+    input: MaterialGeometry,
     context: &MaterialDrawContext,
 ) -> Result<Vec<MaterialBatch>, ClientError> {
     let definition = &compiled.registered.definition;
@@ -330,21 +332,28 @@ pub fn evaluate_material_passes(
     if definition.clamp_time != 0.0 && time >= definition.clamp_time {
         time = definition.clamp_time;
     }
-    let mut state = MaterialDeformState::new(
-        input.clone(),
-        context.refdef_time,
-        context.render_text.clone(),
-        Some(definition.name.clone()),
-    );
-    let geometry = deform_geometry(
-        &mut state,
-        &definition.deforms,
-        &context.deform_view,
-        time,
-        context.noise,
-        context.projection_shadow.as_ref(),
-    )?;
-    let geometry_material = MaterialGeometry::from(geometry.clone());
+    // Without deformations the deform pass is the identity, so move the
+    // input through instead of cloning it into state and snapshotting it
+    // back out. (A `[None]` deform list still takes the slow path; the
+    // loop no-ops there, so both paths agree.)
+    let geometry = if definition.deforms.is_empty() {
+        DeformGeometry::from(input)
+    } else {
+        let mut state = MaterialDeformState::new(
+            input,
+            context.refdef_time,
+            context.render_text.clone(),
+            Some(definition.name.clone()),
+        );
+        deform_geometry(
+            &mut state,
+            &definition.deforms,
+            &context.deform_view,
+            time,
+            context.noise,
+            context.projection_shadow.as_ref(),
+        )?
+    };
     let mut batches = Vec::new();
     let mut previous_colors = vec![qa_core::math::vec4(0.0, 0.0, 0.0, 0.0); geometry.vertices.len()];
     let iterator = &compiled.finished.iterator;
@@ -490,7 +499,9 @@ pub fn evaluate_material_passes(
     }
     if let Some(hook) = context.dynamic_light_batches {
         if receives_projected_dlights(compiled) {
-            batches.extend(hook(&geometry_material));
+            // Convert only when the hook runs; most surfaces take no
+            // dynamic-light hook and skip this third geometry clone.
+            batches.extend(hook(&MaterialGeometry::from(geometry.clone())));
         }
     } else if let Some(dynamic) = &context.dynamic_lights {
         if receives_projected_dlights(compiled) {
@@ -587,7 +598,7 @@ pub fn evaluate_material_passes(
             }
         }
     }
-    let _ = (AlphaTest::None, WaveKind::None, state);
+    let _ = (AlphaTest::None, WaveKind::None);
     Ok(batches)
 }
 
@@ -686,7 +697,7 @@ mod tests {
             ],
             indices: vec![0, 1, 2],
         };
-        let batches = prepare_material_batches(&materials[0], &geometry, &context).unwrap();
+        let batches = prepare_material_batches(&materials[0], geometry, &context).unwrap();
         // One material pass; no fog volume means no fog batch.
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].vertices.len(), 3);

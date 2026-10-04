@@ -475,7 +475,7 @@ impl ApplicationQ3SceneRenderer {
                 remap_offset,
                 fog_color,
             );
-            prepare_material_batches(&material.compiled, &geometry, &context)?
+            prepare_material_batches(&material.compiled, geometry, &context)?
         } else {
             let context = self.poly_context_inner(
                 input,
@@ -487,7 +487,7 @@ impl ApplicationQ3SceneRenderer {
                 remap_offset,
                 None,
             );
-            prepare_material_batches(&material.compiled, &geometry, &context)?
+            prepare_material_batches(&material.compiled, geometry, &context)?
         };
         let batches = self.world.draw_batches(batches)?;
         operations.push(SceneOperation::Group(source_draw_group(material, order, batches)?));
@@ -698,7 +698,7 @@ impl ApplicationQ3SceneRenderer {
                 offset,
                 fog_color,
             );
-            prepare_material_batches(&material.compiled, &geometry, &context)?
+            prepare_material_batches(&material.compiled, geometry, &context)?
         } else {
             let context = self.poly_context_inner(
                 input,
@@ -710,7 +710,7 @@ impl ApplicationQ3SceneRenderer {
                 offset,
                 None,
             );
-            prepare_material_batches(&material.compiled, &geometry, &context)?
+            prepare_material_batches(&material.compiled, geometry, &context)?
         };
         let batches = self.world.draw_batches(batches)?;
         operations.push(SceneOperation::Group(source_draw_group(material, order, batches)?));

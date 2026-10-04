@@ -259,7 +259,7 @@ struct PendingEntry {
 }
 
 struct SourceEntry {
-    group: SceneGroup,
+    index: usize,
     ordinal: usize,
     sort: u32,
 }
@@ -294,26 +294,33 @@ pub fn finish_scene_operations(input: Vec<SceneOperation>) -> Result<Vec<RenderO
     let mut result = Vec::new();
     let mut pending: Vec<PendingEntry> = Vec::new();
     let flush = |pending: &mut Vec<PendingEntry>, result: &mut Vec<RenderOperation>| -> Result<(), RenderError> {
-        let mut generic: Vec<&PendingEntry> = pending
+        // Sort and merge by pending index, then move each group's
+        // operations out once. The previous shape cloned every group's
+        // batches into a merged list and cloned the operations again on
+        // extend, doubling batch traffic per flush.
+        let mut generic: Vec<usize> = pending
             .iter()
-            .filter(|entry| matches!(entry.group.order, SceneGroupOrder::Compiled { .. }))
+            .enumerate()
+            .filter(|(_, entry)| matches!(entry.group.order, SceneGroupOrder::Compiled { .. }))
+            .map(|(index, _)| index)
             .collect();
         generic.sort_by(|a, b| {
-            priority(&a.group.order)
-                .cmp(&priority(&b.group.order))
-                .then_with(|| a.ordinal.cmp(&b.ordinal))
+            priority(&pending[*a].group.order)
+                .cmp(&priority(&pending[*b].group.order))
+                .then_with(|| pending[*a].ordinal.cmp(&pending[*b].ordinal))
         });
         let mut source: Vec<SourceEntry> = pending
             .iter()
-            .filter(|entry| matches!(entry.group.order, SceneGroupOrder::Source { .. }))
-            .map(|entry| SourceEntry {
-                group: entry.group.clone(),
+            .enumerate()
+            .filter(|(_, entry)| matches!(entry.group.order, SceneGroupOrder::Source { .. }))
+            .map(|(index, entry)| SourceEntry {
+                index,
                 ordinal: entry.ordinal,
                 sort: 0,
             })
             .collect();
         if let Some(first) = source.first() {
-            let SceneGroupOrder::Source { source: order, .. } = &first.group.order else {
+            let SceneGroupOrder::Source { source: order, .. } = &pending[first.index].group.order else {
                 unreachable!();
             };
             let view = order.view.clone();
@@ -327,7 +334,7 @@ pub fn finish_scene_operations(input: Vec<SceneOperation>) -> Result<Vec<RenderO
                 let SceneGroupOrder::Source {
                     material,
                     source: order,
-                } = &entry.group.order
+                } = &pending[entry.index].group.order
                 else {
                     unreachable!();
                 };
@@ -353,7 +360,7 @@ pub fn finish_scene_operations(input: Vec<SceneOperation>) -> Result<Vec<RenderO
             }
             sort_draw_surfs(&mut SourceRange { entries: &mut source })?;
         }
-        let mut compiled: Vec<PendingEntry> = Vec::new();
+        let mut compiled: Vec<usize> = Vec::with_capacity(source.len() + generic.len());
         let mut source_index = 0;
         let mut generic_index = 0;
         while source_index < source.len() || generic_index < generic.len() {
@@ -361,32 +368,28 @@ pub fn finish_scene_operations(input: Vec<SceneOperation>) -> Result<Vec<RenderO
             let other = generic.get(generic_index);
             let take_native = match (native, other) {
                 (Some(native), Some(other)) => {
-                    priority(&native.group.order) < priority(&other.group.order)
-                        || priority(&native.group.order) == priority(&other.group.order)
-                            && native.ordinal < other.ordinal
+                    priority(&pending[native.index].group.order) < priority(&pending[*other].group.order)
+                        || priority(&pending[native.index].group.order) == priority(&pending[*other].group.order)
+                            && native.ordinal < pending[*other].ordinal
                 }
                 (Some(_), None) => true,
                 _ => false,
             };
             if take_native {
-                let entry = &source[source_index];
-                compiled.push(PendingEntry {
-                    group: entry.group.clone(),
-                    ordinal: entry.ordinal,
-                });
+                compiled.push(source[source_index].index);
                 source_index += 1;
-            } else if let Some(other) = other {
-                compiled.push(PendingEntry {
-                    group: other.group.clone(),
-                    ordinal: other.ordinal,
-                });
+            } else if other.is_some() {
+                compiled.push(generic[generic_index]);
                 generic_index += 1;
             }
         }
-        let sequence: Vec<&PendingEntry> = pending
+        let sequence: Vec<usize> = pending
             .iter()
-            .filter(|entry| matches!(entry.group.order, SceneGroupOrder::Sequence { .. }))
+            .enumerate()
+            .filter(|(_, entry)| matches!(entry.group.order, SceneGroupOrder::Sequence { .. }))
+            .map(|(index, _)| index)
             .collect();
+        let mut ordered: Vec<usize> = Vec::with_capacity(compiled.len() + sequence.len());
         let mut material_index = 0;
         let mut sequence_index = 0;
         while material_index < compiled.len() || sequence_index < sequence.len() {
@@ -394,20 +397,23 @@ pub fn finish_scene_operations(input: Vec<SceneOperation>) -> Result<Vec<RenderO
             let legacy = sequence.get(sequence_index);
             let take_material = match (material, legacy) {
                 (Some(material), Some(legacy)) => {
-                    priority(&material.group.order) < priority(&legacy.group.order)
-                        || priority(&material.group.order) == priority(&legacy.group.order)
-                            && material.ordinal < legacy.ordinal
+                    priority(&pending[*material].group.order) < priority(&pending[*legacy].group.order)
+                        || priority(&pending[*material].group.order) == priority(&pending[*legacy].group.order)
+                            && pending[*material].ordinal < pending[*legacy].ordinal
                 }
                 (Some(_), None) => true,
                 _ => false,
             };
             if take_material {
-                result.extend(compiled[material_index].group.operations.clone());
+                ordered.push(compiled[material_index]);
                 material_index += 1;
             } else if let Some(legacy) = legacy {
-                result.extend(legacy.group.operations.clone());
+                ordered.push(*legacy);
                 sequence_index += 1;
             }
+        }
+        for index in ordered {
+            result.extend(std::mem::take(&mut pending[index].group.operations));
         }
         pending.clear();
         Ok(())

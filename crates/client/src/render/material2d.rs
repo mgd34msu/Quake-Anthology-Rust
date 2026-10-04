@@ -131,7 +131,7 @@ pub fn prepare_material_text(
         fog: None,
         project: &project,
     };
-    let mut batches = prepare_material_batches(compiled, &geometry, &child)?;
+    let mut batches = prepare_material_batches(compiled, geometry, &child)?;
     for batch in &mut batches {
         batch.state.depth_test = DepthTest::Always;
         batch.state.depth_write = false;
