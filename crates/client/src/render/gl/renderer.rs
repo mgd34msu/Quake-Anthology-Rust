@@ -23,9 +23,9 @@ use super::{
 };
 use crate::render::error::RenderError;
 use crate::render::types::{
-    AlphaTest, BatchFog, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DrawBatch, DrawBuffer,
-    ImageResourceOperation, OrderedBackend, PairEnvironment, PolygonOffset, PreparedDraw, RenderOperation, RenderState,
-    RenderViewState, RendererImage, ResourceOwner, TextureBinding,
+    AlphaTest, BatchFog, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest, DrawBatch,
+    DrawBuffer, ImageResourceOperation, OrderedBackend, PairEnvironment, PolygonOffset, PreparedDraw, RenderOperation,
+    RenderState, RenderViewState, RendererImage, ResourceOwner, TextureBinding,
 };
 use qa_core::math::Vec4;
 
@@ -107,6 +107,8 @@ pub struct GlRenderer<C: GlContext> {
     texture_unit: Option<u32>,
     matrices_identity: bool,
     current_cull: Option<CullFace>,
+    current_depth: Option<(DepthTest, bool)>,
+    current_blend: Option<(BlendFactor, BlendFactor)>,
     range: Option<[f32; 2]>,
     offset: Option<Option<PolygonOffset>>,
     closed: bool,
@@ -166,6 +168,8 @@ impl<C: GlContext> GlRenderer<C> {
             texture_unit: None,
             matrices_identity: false,
             current_cull: None,
+            current_depth: None,
+            current_blend: None,
             range: None,
             offset: None,
             closed: false,
@@ -330,6 +334,8 @@ impl<C: GlContext> GlRenderer<C> {
         self.texture_unit = None;
         self.matrices_identity = false;
         self.current_cull = None;
+        self.current_depth = None;
+        self.current_blend = None;
         self.range = None;
         self.offset = None;
     }
@@ -408,18 +414,28 @@ impl<C: GlContext> GlRenderer<C> {
                 }
             );
         }
-        self.gl.borrow_mut().enable(DEPTH_TEST);
-        self.gl.borrow_mut().depth_func(depth_test_value(state.depth_test));
-        self.gl.borrow_mut().depth_mask(state.depth_write);
-        if state.blend == (BlendFactor::One, BlendFactor::Zero) {
-            self.gl.borrow_mut().disable(BLEND);
-        } else {
-            self.gl.borrow_mut().enable(BLEND);
-            self.gl
-                .borrow_mut()
-                .blend_func(blend_factor(state.blend.0), blend_factor(state.blend.1));
+        // Depth and blend states persist across batches, so skip the GL
+        // calls when the request matches. Nothing ever disables the depth
+        // test or enables the alpha test, so those toggles emit at most
+        // once (open disables alpha test already).
+        let depth = (state.depth_test, state.depth_write);
+        if self.current_depth != Some(depth) {
+            self.gl.borrow_mut().enable(DEPTH_TEST);
+            self.gl.borrow_mut().depth_func(depth_test_value(state.depth_test));
+            self.gl.borrow_mut().depth_mask(state.depth_write);
+            self.current_depth = Some(depth);
         }
-        self.gl.borrow_mut().disable(ALPHA_TEST);
+        if self.current_blend != Some(state.blend) {
+            if state.blend == (BlendFactor::One, BlendFactor::Zero) {
+                self.gl.borrow_mut().disable(BLEND);
+            } else {
+                self.gl.borrow_mut().enable(BLEND);
+                self.gl
+                    .borrow_mut()
+                    .blend_func(blend_factor(state.blend.0), blend_factor(state.blend.1));
+            }
+            self.current_blend = Some(state.blend);
+        }
         self.alpha_test = state.alpha_test;
         self.apply_cull(state.cull);
         self.apply_depth_range(state.depth_range);
