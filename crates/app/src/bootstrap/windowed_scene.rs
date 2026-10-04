@@ -60,6 +60,7 @@ use qa_content::spr::{parse_sp2, parse_spr};
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::{angles_to_axis, vec3, vec4, Bounds, Vec3};
 
+use super::windowed_shaders::{load_registry_scripts, read_shader_scripts, ShaderImageIndex};
 use super::windowed_skins::WindowedSkinProvider;
 use super::windowed_world::WindowedWorldError;
 
@@ -712,6 +713,17 @@ pub fn build_presentation(
         colors: palette.colors.clone(),
         source: palette.source.clone(),
     });
+    // Authored `.shader` scripts load before the world scene builds, so
+    // glow/transparency/anim surfaces register their authored stages
+    // instead of implicit materials over the missing handle.
+    let scripts = read_shader_scripts(&mounts).map_err(|error| WindowedWorldError::Presentation {
+        map: map.to_string(),
+        reason: error.to_string(),
+    })?;
+    let skin_index = ShaderImageIndex::build(&scripts).map_err(|error| WindowedWorldError::Presentation {
+        map: map.to_string(),
+        reason: error.to_string(),
+    })?;
     let mut loader = SceneTextureLoader::new(
         SceneImageRegistry::new(owner),
         Box::new(CatalogSceneReader { mounts }),
@@ -726,7 +738,13 @@ pub fn build_presentation(
     loader.set_decoder(Box::new(WindowedImageDecoder));
     let white = loader.white().image.clone();
     let missing = loader.missing().image.clone();
-    let registry = SceneShaderRegistry::with_defaults(loader);
+    let mut registry = SceneShaderRegistry::with_defaults(loader);
+    load_registry_scripts(&mut registry, &scripts, matches!(kind, BspKind::Q3)).map_err(|error| {
+        WindowedWorldError::Presentation {
+            map: map.to_string(),
+            reason: error.to_string(),
+        }
+    })?;
     let options = WorldSceneOptions {
         q2_sky_name: if matches!(kind, BspKind::Q2) {
             worldspawn_sky(records)
@@ -779,7 +797,8 @@ pub fn build_presentation(
     );
     models.set_world(q3_world, q2_world, 1.0);
     let skin_palette = models.provider().palette().cloned();
-    let delegate = WindowedSkinProvider::new(scene.shaders_mut().textures_mut(), family, skin_palette);
+    let delegate = WindowedSkinProvider::new(scene.shaders_mut().textures_mut(), family, skin_palette)
+        .with_authored_index(skin_index);
     models
         .preload_with(delegate, &entities, &|_| ModelSourceOptions::default())
         .map_err(|error| WindowedWorldError::Presentation {

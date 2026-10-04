@@ -3185,8 +3185,13 @@ fn map_batch_lighting(
     match lighting {
         crate::materials::evaluate::BatchLighting::Vertex => Ok(BatchLighting::Vertex),
         crate::materials::evaluate::BatchLighting::Q2World { pass } => {
-            let q2 =
-                q2.ok_or_else(|| RenderError::Backend("Q2 world batch arrived without fragment lighting".to_string()))?;
+            // Donor `evaluateMaterialPasses` falls back to vertex lighting
+            // when the Q2 callbacks are absent (Quake III world input has no
+            // fragment lighting); authored `$lightmap`/`lightingDiffuse`
+            // stages reach this mapping, so the fallback lives here.
+            let Some(q2) = q2 else {
+                return Ok(BatchLighting::Vertex);
+            };
             let pass = match pass {
                 EvaluateLightPass::Model => Q2LightPass::Model {
                     lights: q2

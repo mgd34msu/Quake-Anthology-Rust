@@ -17,15 +17,19 @@ use qa_client::render::scene::textures::{SceneTextureLoadOptions, SceneTextureLo
 use qa_client::render::types::{RenderImage, RendererImage, TextureSampling};
 use qa_client::render::RenderError;
 
+use super::windowed_shaders::{ShaderImageIndex, SkinResolution};
+
 /// Texture provider resolving model skins through the world's loader.
 ///
 /// Borrowed for the preload pass only ([`SceneModelRenderer::preload_with`](qa_client::render::scene::models::renderer::SceneModelRenderer::preload_with)):
-/// Q3 shader names resolve to the representative loader image (the implicit
-/// base image, matching the shader compiler's fallback; the windowed run
-/// loads no authored `.shader` scripts, exactly like its world), legacy
-/// skins load as `skin`/`sprite` usage, and indexed skins register into the
-/// shared registry. Absent skins resolve to `None` so the renderer falls
-/// back to the missing handle, never failing the run.
+/// Q3 shader names with an authored definition resolve to the shader's
+/// representative stage image through [`ShaderImageIndex`] (so
+/// image-less glow shaders bind decoded bytes instead of the missing
+/// handle); other Q3 names resolve to the representative loader image
+/// (the implicit base image, matching the shader compiler's fallback),
+/// legacy skins load as `skin`/`sprite` usage, and indexed skins register
+/// into the shared registry. Absent skins resolve to `None` so the
+/// renderer falls back to the missing handle, never failing the run.
 pub struct WindowedSkinProvider<'a> {
     family: RenderFamily,
     texture_family: TextureFamily,
@@ -33,6 +37,7 @@ pub struct WindowedSkinProvider<'a> {
     white: RendererImage,
     missing: RendererImage,
     textures: &'a mut SceneTextureLoader,
+    authored: Option<ShaderImageIndex>,
 }
 
 impl<'a> WindowedSkinProvider<'a> {
@@ -52,7 +57,29 @@ impl<'a> WindowedSkinProvider<'a> {
             white,
             missing,
             textures,
+            authored: None,
         }
+    }
+
+    /// Resolve authored Q3 shader names through the parsed script index.
+    #[must_use]
+    pub fn with_authored_index(mut self, index: ShaderImageIndex) -> Self {
+        self.authored = Some(index);
+        self
+    }
+
+    /// Load one skin-path candidate through the world's loader.
+    fn load_skin(&mut self, path: &str) -> Result<Option<RendererImage>, RenderError> {
+        let texture = self.textures.load(
+            path,
+            &SceneTextureLoadOptions {
+                mipmap: true,
+                repeat: true,
+                family: TextureFamily::Q3,
+                usage: Some(ImageUsage::Skin),
+            },
+        )?;
+        Ok(texture.map(|texture| texture.image))
     }
 }
 
@@ -96,16 +123,13 @@ impl ModelMaterialProvider for WindowedSkinProvider<'_> {
     }
 
     fn shader_image(&mut self, name: &str) -> Result<Option<RendererImage>, RenderError> {
-        let texture = self.textures.load(
-            name,
-            &SceneTextureLoadOptions {
-                mipmap: true,
-                repeat: true,
-                family: TextureFamily::Q3,
-                usage: Some(ImageUsage::Skin),
-            },
-        )?;
-        Ok(texture.map(|texture| texture.image))
+        let resolution = self.authored.as_ref().and_then(|index| index.resolve(name)).cloned();
+        match resolution {
+            Some(SkinResolution::Image(path)) => self.load_skin(&path),
+            Some(SkinResolution::White) => Ok(Some(self.white.clone())),
+            Some(SkinResolution::Missing) => Ok(None),
+            None => self.load_skin(name),
+        }
     }
 }
 
@@ -199,6 +223,34 @@ mod tests {
             .expect("bare shader name resolves");
         assert_ne!(bare, white);
         assert!(matches!(bare.source, ImageSource::Resource { .. }));
+    }
+
+    #[test]
+    fn authored_shaders_resolve_to_their_stage_image() {
+        use super::super::windowed_shaders::{ShaderImageIndex, ShaderScript};
+
+        let scripts = vec![ShaderScript {
+            path: "scripts/models.shader".to_string(),
+            text: "models/weapons2/plasma/plasma_glass\n{\n\t{\n\t\tmap textures/effects/tinfxb.tga\n\t\ttcGen environment\n\t\tblendfunc GL_ONE GL_ONE\n\t}\n}\ntextures/sfx/lightonly\n{\n\t{\n\t\tmap $lightmap\n\t}\n}\ntextures/sfx/video\n{\n\t{\n\t\tvideoMap intro.roq\n\t}\n}\n".to_string(),
+        }];
+        let index = ShaderImageIndex::build(&scripts).expect("index builds");
+        // No file exists under the shader name itself; only the stage image.
+        let mut textures = loader(&[("textures/effects/tinfxb.tga", tga(2, 2, 200))]);
+        let mut provider = WindowedSkinProvider::new(&mut textures, RenderFamily::Q3, None).with_authored_index(index);
+        let image = provider
+            .shader_image("models/weapons2/plasma/plasma_glass")
+            .unwrap()
+            .expect("authored glow binds its stage image");
+        assert_ne!(image, provider.missing_image());
+        assert_ne!(image, provider.white_image());
+        let light = provider
+            .shader_image("textures/sfx/lightonly")
+            .unwrap()
+            .expect("special-map shader binds white");
+        assert_eq!(light, provider.white_image());
+        assert_eq!(provider.shader_image("textures/sfx/video").unwrap(), None);
+        // Names without an authored definition keep load-by-name behavior.
+        assert_eq!(provider.shader_image("models/ammo/none.TGA").unwrap(), None);
     }
 
     #[test]
