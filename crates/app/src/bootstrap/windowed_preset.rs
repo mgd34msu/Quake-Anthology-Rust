@@ -138,12 +138,14 @@ impl StartupSelectionCollaborators for WindowedPresetCollaborators {
         catalog: &InstalledCatalog,
         product: &str,
         movement: GameFamily,
+        movement_product: Option<&str>,
         character: GameFamily,
         network: &Network,
     ) -> Result<StartupPlayerProducts, String> {
         let options = ApplicationOptions {
             product: product.to_string(),
             movement: options_family(movement),
+            movement_product: movement_product.map(str::to_string),
             character: options_family(character),
             network: network.clone(),
             ..ApplicationOptions::default()
@@ -298,12 +300,29 @@ mod tests {
                 &catalog(),
                 "q2-classic-baseq2",
                 GameFamily::Q2,
+                None,
                 GameFamily::Q2,
                 &Network::Offline,
             )
             .unwrap();
         assert_eq!(products.movement, "q2-classic-baseq2");
         assert_eq!(products.character, "q2-classic-baseq2");
+    }
+
+    #[test]
+    fn player_products_prefer_movement_override_over_family() {
+        let collaborators = WindowedPresetCollaborators;
+        let products = collaborators
+            .player_products(
+                &catalog(),
+                "q2-classic-baseq2",
+                GameFamily::Q1,
+                Some("q2-classic-baseq2"),
+                GameFamily::Q2,
+                &Network::Offline,
+            )
+            .unwrap();
+        assert_eq!(products.movement, "q2-classic-baseq2");
     }
 
     #[test]

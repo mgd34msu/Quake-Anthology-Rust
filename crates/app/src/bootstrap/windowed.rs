@@ -2062,6 +2062,7 @@ mod tests {
                 &catalog,
                 "q2-classic-baseq2",
                 GameFamily::Q2,
+                None,
                 GameFamily::Q2,
                 &Network::Offline,
             )

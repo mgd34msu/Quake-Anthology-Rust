@@ -104,6 +104,7 @@ mod tests {
 
     use super::super::windowed_preset::WindowedPresetCollaborators;
     use super::*;
+    use crate::options::GameFamily as OptionsFamily;
 
     fn model() -> StartupSelectionModel {
         let catalog = InstalledCatalog::new(
@@ -135,12 +136,12 @@ mod tests {
             None,
         )
         .unwrap();
-        StartupSelectionModel::new(
-            catalog,
-            ApplicationOptions::default(),
-            Box::new(WindowedPresetCollaborators),
-        )
-        .unwrap()
+        let initial = ApplicationOptions {
+            movement: OptionsFamily::Q2,
+            character: OptionsFamily::Q2,
+            ..ApplicationOptions::default()
+        };
+        StartupSelectionModel::new(catalog, initial, Box::new(WindowedPresetCollaborators)).unwrap()
     }
 
     #[test]

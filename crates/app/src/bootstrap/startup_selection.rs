@@ -109,6 +109,7 @@ use qa_core::time::ClockProfile;
 use qa_net::protocol::ProtocolIdentity;
 use thiserror::Error;
 
+use super::content::content_family;
 use super::startup_source::StartupQ3Product;
 use super::team_arena_skirmish::plan_team_arena_skirmish;
 use super::team_arena_skirmish::TeamArenaCampaign;
@@ -494,6 +495,7 @@ pub trait StartupSelectionCollaborators {
         catalog: &InstalledCatalog,
         product: &str,
         movement: GameFamily,
+        movement_product: Option<&str>,
         character: GameFamily,
         network: &Network,
     ) -> Result<StartupPlayerProducts, String>;
@@ -826,7 +828,14 @@ impl StartupSelectionModel {
         let campaign = product.expectation.campaign.clone();
         let family = product.expectation.family;
         let player_products = collaborators
-            .player_products(&current_catalog, &initial.product, family, family, &initial.network)
+            .player_products(
+                &current_catalog,
+                &initial.product,
+                content_family(initial.movement),
+                initial.movement_product.as_deref(),
+                content_family(initial.character),
+                &initial.network,
+            )
             .map_err(StartupSelectionError::Failed)?;
         let rules = match initial.rules {
             Some(rules) => rules_str(rules).to_string(),
@@ -2377,6 +2386,7 @@ impl StartupSelectionModel {
                 &catalog,
                 self.value(StartupSelectionField::Product),
                 current.expectation.family,
+                None,
                 current.expectation.family,
                 &self.initial.network,
             )
@@ -3509,6 +3519,7 @@ mod tests {
             _catalog: &InstalledCatalog,
             product: &str,
             _movement: GameFamily,
+            _movement_product: Option<&str>,
             _character: GameFamily,
             _network: &Network,
         ) -> Result<StartupPlayerProducts, String> {
@@ -3604,6 +3615,19 @@ mod tests {
         let mut model = StartupSelectionModel::new(catalog(), options(), Box::new(FakeCollaborators)).unwrap();
         model.prepare_maps().unwrap();
         model
+    }
+
+    #[test]
+    fn menu_defaults_honor_launch_movement_override() {
+        let mut initial = options();
+        initial.movement_product = Some("q1-quakeworld".to_string());
+        let model = StartupSelectionModel::new(
+            catalog(),
+            initial,
+            Box::new(crate::bootstrap::windowed_preset::WindowedPresetCollaborators),
+        )
+        .unwrap();
+        assert_eq!(model.value(StartupSelectionField::Movement), "q1-quakeworld");
     }
 
     #[test]

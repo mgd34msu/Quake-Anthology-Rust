@@ -3584,6 +3584,7 @@ mod tests {
             _catalog: &InstalledCatalog,
             product: &str,
             _movement: GameFamily,
+            _movement_product: Option<&str>,
             _character: GameFamily,
             _network: &Network,
         ) -> Result<StartupPlayerProducts, String> {
