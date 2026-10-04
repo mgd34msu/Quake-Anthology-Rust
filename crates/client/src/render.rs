@@ -33,6 +33,7 @@ pub mod material2d;
 pub mod output_gamma;
 pub mod q3_hardware;
 pub mod scene;
+pub mod stage_timings;
 pub mod types;
 pub mod worker;
 pub mod worker_entry;
