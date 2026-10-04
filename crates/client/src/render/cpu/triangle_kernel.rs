@@ -47,9 +47,23 @@ pub fn clamp(value: f32) -> f32 {
 }
 
 /// Convert a normalized channel to a byte.
+///
+/// Bit-identical to `round`: truncation of `x + 0.5` rounds half away from
+/// zero on non-negative inputs, and the correction covers the one case
+/// float addition can round up across an integer (`x` within half an ulp
+/// below a half-integer). NaN still saturates to zero through the cast.
 #[must_use]
 pub fn byte(value: f32) -> u8 {
-    (clamp(value) * 255.0).round() as u8
+    let scaled = clamp(value) * 255.0;
+    let rounded = (scaled + 0.5) as u32;
+    // `rounded` is at most 255 and never underflows: `scaled >= 0` (or NaN,
+    // which fails the comparison) keeps the decrement out of reach of zero.
+    let corrected = if scaled < rounded as f32 - 0.5 {
+        rounded - 1
+    } else {
+        rounded
+    };
+    corrected as u8
 }
 
 /// Pack normalized channels into one framebuffer word.
@@ -84,7 +98,9 @@ fn trim_span(span: &mut RowSpan, slope: f32, row: f32, constant: f32, inclusive:
     // rounding and lower-left equality at the boundary. The expression is
     // monotone across the row, so every pixel in the resulting span is covered.
     if slope > 0.0 {
-        let mut min = span.min.max((span.max + 1).min(crossing.floor() as i32));
+        // Truncation is only a starting hint: the loops below re-derive the
+        // exact boundary from the edge expression, so floor is unnecessary.
+        let mut min = span.min.max((span.max + 1).min(crossing as i32));
         while min > span.min {
             let value = slope * (min as f32 - 0.5) + row + constant;
             if !(value > 0.0 || (value == 0.0 && inclusive)) {
@@ -101,7 +117,9 @@ fn trim_span(span: &mut RowSpan, slope: f32, row: f32, constant: f32, inclusive:
         }
         span.min = min;
     } else {
-        let mut max = (span.min - 1).max(span.max.min(crossing.ceil() as i32));
+        // Truncation is only a starting hint: the loops below re-derive the
+        // exact boundary from the edge expression, so ceil is unnecessary.
+        let mut max = (span.min - 1).max(span.max.min(crossing as i32));
         while max < span.max {
             let value = slope * (max as f32 + 1.5) + row + constant;
             if !(value > 0.0 || (value == 0.0 && inclusive)) {
@@ -487,9 +505,22 @@ fn sample_bound_components(
     let lambda = (last_level as f32).min(0.5 * rho_sq.log2() as f32);
     let between_levels = image.mipmapping == MipMapping::Linear;
     let selected = if between_levels {
-        lambda.floor() as usize
+        // Truncation matches floor-then-saturate for every input: non-negative
+        // values truncate like floor, and anything below zero saturates to
+        // zero either way (as does NaN).
+        lambda as usize
     } else {
-        ((lambda + 0.5).ceil() as usize).saturating_sub(1)
+        // Nearest-level `ceil(y) - 1` without libm: truncation matches ceil
+        // only above the integer, so exact integers step one down. Reachable
+        // `y` values are small (lambda is bounded by the mip count), where
+        // every integer is exactly representable.
+        let shifted = lambda + 0.5;
+        let truncated = shifted as usize;
+        if shifted > truncated as f32 {
+            truncated
+        } else {
+            truncated.saturating_sub(1)
+        }
     };
     let first = image
         .levels
