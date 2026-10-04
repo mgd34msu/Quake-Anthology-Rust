@@ -1019,6 +1019,7 @@ impl ArmorWatch {
 }
 
 /// Old power-only views fabricated regular armor using this source-owned item.
+/// Canonical shared predicate behind the classic and rerelease wrappers.
 pub fn normalize_legacy_power_only_armor(legacy: &ArmorState, current: &ArmorState, placeholder: &str) -> ArmorState {
     let regular = &legacy.regular;
     let matches = matches!(current.regular, RegularArmor::None)
@@ -1260,5 +1261,110 @@ mod tests {
             NativeModArmorState::new(overlapping, "entity", &records, 4),
             Err(ArmorError::OverlappingFields)
         ));
+    }
+
+    fn fabricated(item: &str) -> ArmorState {
+        ArmorState {
+            regular: RegularArmor::Q2 {
+                points: 0.0,
+                normal_protection: 0.0,
+                energy_protection: 0.0,
+                item: item.to_string(),
+            },
+            powered: PoweredProtection::Shield { cells: 10 },
+        }
+    }
+
+    #[test]
+    fn legacy_power_only_truth_table() {
+        let shield = PoweredProtection::Shield { cells: 10 };
+        let current = ArmorState {
+            regular: RegularArmor::None,
+            powered: shield.clone(),
+        };
+        // Exact fabricated placeholder plus matching power strips the tier.
+        let stripped = normalize_legacy_power_only_armor(&fabricated("q2:none"), &current, "q2:none");
+        assert_eq!(stripped.regular, RegularArmor::None);
+        assert_eq!(stripped.powered, shield);
+        // Every other combination returns the legacy view untouched.
+        let live = ArmorState {
+            regular: RegularArmor::Q2 {
+                points: 25.0,
+                normal_protection: 0.3,
+                energy_protection: 0.0,
+                item: "q2:armor-jacket".to_string(),
+            },
+            powered: shield.clone(),
+        };
+        let cases: Vec<(ArmorState, ArmorState, &str)> = vec![
+            (fabricated("q2:other"), current.clone(), "q2:none"),
+            (fabricated("q2:none"), current.clone(), "q2:other"),
+            (
+                ArmorState {
+                    regular: RegularArmor::None,
+                    powered: shield.clone(),
+                },
+                current.clone(),
+                "q2:none",
+            ),
+            (
+                ArmorState {
+                    regular: live.regular.clone(),
+                    powered: shield.clone(),
+                },
+                current.clone(),
+                "q2:none",
+            ),
+            (
+                fabricated("q2:none"),
+                ArmorState {
+                    regular: live.regular.clone(),
+                    powered: shield.clone(),
+                },
+                "q2:none",
+            ),
+            (
+                fabricated("q2:none"),
+                ArmorState {
+                    regular: RegularArmor::None,
+                    powered: PoweredProtection::Screen { cells: 10 },
+                },
+                "q2:none",
+            ),
+            (
+                fabricated("q2:none"),
+                ArmorState {
+                    regular: RegularArmor::None,
+                    powered: PoweredProtection::Shield { cells: 11 },
+                },
+                "q2:none",
+            ),
+            (
+                fabricated("q2:none"),
+                ArmorState {
+                    regular: RegularArmor::None,
+                    powered: PoweredProtection::None,
+                },
+                "q2:none",
+            ),
+            (
+                ArmorState {
+                    regular: fabricated("q2:none").regular,
+                    powered: PoweredProtection::None,
+                },
+                ArmorState {
+                    regular: RegularArmor::None,
+                    powered: PoweredProtection::None,
+                },
+                "q2:none",
+            ),
+        ];
+        for (legacy, current, placeholder) in &cases {
+            assert_eq!(
+                normalize_legacy_power_only_armor(legacy, current, placeholder),
+                *legacy,
+                "legacy={legacy:?} current={current:?}"
+            );
+        }
     }
 }

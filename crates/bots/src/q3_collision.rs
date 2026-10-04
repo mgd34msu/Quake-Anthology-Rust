@@ -21,8 +21,8 @@ use qa_world::WorldError;
 
 use crate::collision_support::{geometry_mask, select_numeric};
 use crate::scene::{
-    BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, QueryTarget, SceneQueries, TraceContact,
-    TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, VisibilityKind,
+    scene_expect, BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, QueryTarget, SceneQueries,
+    TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, VisibilityKind, WorldKind,
 };
 use qa_world::collision::q3::{TraceQuery as RuntimeTraceQuery, TraceShape as RuntimeTraceShape};
 
@@ -261,23 +261,23 @@ fn scene_result(result: &SourceTraceResult, model: i32) -> TraceResult {
 
 impl SceneQueries for Q3Collision {
     fn trace(&self, query: &TraceQuery) -> TraceResult {
-        self.trace(query).expect("q3 scene trace")
+        scene_expect(self.trace(query), WorldKind::Q3Bsp, "trace")
     }
 
     fn point_contents(&self, query: &PointContentsQuery) -> PointContentsResult {
-        self.point_contents(query).expect("q3 scene contents")
+        scene_expect(self.point_contents(query), WorldKind::Q3Bsp, "contents")
     }
 
     fn box_leaves(&self, bounds: &Bounds, limit: usize) -> LeafQueryResult {
-        self.box_leaves(bounds, limit).expect("q3 scene leaves")
+        scene_expect(self.box_leaves(bounds, limit), WorldKind::Q3Bsp, "leaves")
     }
 
     fn areas_connected(&self, first: i32, second: i32) -> bool {
-        self.areas_connected(first, second).expect("q3 scene areas")
+        scene_expect(self.areas_connected(first, second), WorldKind::Q3Bsp, "areas")
     }
 
     fn cluster_visible(&self, from: i32, to: i32, kind: VisibilityKind) -> bool {
-        self.cluster_visible(from, to, kind).expect("q3 scene visibility")
+        scene_expect(self.cluster_visible(from, to, kind), WorldKind::Q3Bsp, "visibility")
     }
 }
 

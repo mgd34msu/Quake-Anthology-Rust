@@ -362,6 +362,14 @@ pub trait SceneQueries {
     fn cluster_visible(&self, from: i32, to: i32, kind: VisibilityKind) -> bool;
 }
 
+/// Unwrap a scene query result with the family's `expect` message
+/// (`"<family> scene <what>"`). The native fallible cores stay split per
+/// family; only the infallible trait wrappers share this helper.
+pub fn scene_expect<T, E: std::fmt::Debug>(result: Result<T, E>, family: WorldKind, what: &str) -> T {
+    let message = format!("{} scene {what}", family.scene_tag());
+    result.expect(&message)
+}
+
 /// BSP edge between two vertices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BspEdge {
@@ -545,6 +553,16 @@ impl WorldKind {
             WorldKind::Q3Bsp => "q3-bsp",
         }
     }
+
+    /// Short tag used by the infallible scene-query wrappers (`q1`, `q2`, `q3`).
+    #[must_use]
+    pub fn scene_tag(self) -> &'static str {
+        match self {
+            WorldKind::Q1Bsp => "q1",
+            WorldKind::Q2Bsp => "q2",
+            WorldKind::Q3Bsp => "q3",
+        }
+    }
 }
 
 impl DecodedWorld {
@@ -565,6 +583,51 @@ impl DecodedWorld {
             DecodedWorld::Q1(world) => &world.entities,
             DecodedWorld::Q2(world) => &world.entities,
             DecodedWorld::Q3(world) => &world.entities,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn panic_text(result: Result<(), Box<dyn std::any::Any + Send>>) -> String {
+        match result {
+            Ok(()) => panic!("expected a panic"),
+            Err(payload) => payload
+                .downcast::<String>()
+                .map(|text| text.as_str().to_owned())
+                .unwrap_or_else(|_| panic!("expected a string panic payload")),
+        }
+    }
+
+    #[test]
+    fn scene_tags_match_wrapper_prefixes() {
+        assert_eq!(WorldKind::Q1Bsp.scene_tag(), "q1");
+        assert_eq!(WorldKind::Q2Bsp.scene_tag(), "q2");
+        assert_eq!(WorldKind::Q3Bsp.scene_tag(), "q3");
+    }
+
+    #[test]
+    #[allow(clippy::unnecessary_literal_unwrap)]
+    fn scene_expect_matches_literal_expects() {
+        assert_eq!(scene_expect::<u8, String>(Ok(7), WorldKind::Q1Bsp, "trace"), 7);
+        for (family, tag) in [
+            (WorldKind::Q1Bsp, "q1"),
+            (WorldKind::Q2Bsp, "q2"),
+            (WorldKind::Q3Bsp, "q3"),
+        ] {
+            for what in ["trace", "contents", "leaves", "areas", "visibility"] {
+                let message = format!("{tag} scene {what}");
+                let literal = panic_text(std::panic::catch_unwind(|| {
+                    Err::<u8, String>("boom".to_owned()).expect(&message);
+                }));
+                let shared = panic_text(std::panic::catch_unwind(|| {
+                    scene_expect::<u8, String>(Err("boom".to_owned()), family, what);
+                }));
+                assert_eq!(shared, literal);
+                assert!(shared.starts_with(&message));
+            }
         }
     }
 }

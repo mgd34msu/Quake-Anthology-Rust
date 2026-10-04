@@ -339,37 +339,11 @@ impl Default for RereleaseCombatBindings {
 }
 
 /// Old power-only views fabricated regular armor using the exact
-/// source-owned placeholder item.
+/// source-owned placeholder item. Shared predicate lives in
+/// [`crate::q2::native_mod_armor`]; this wrapper keeps the rerelease name.
 #[must_use]
 pub fn normalize_legacy_power_only_armor(legacy: &ArmorState, current: &ArmorState, placeholder: &str) -> ArmorState {
-    let module_powered = |powered: &PoweredProtection| match powered {
-        PoweredProtection::None => None,
-        PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => Some(*cells),
-    };
-    let strip = current.regular == RegularArmor::None
-        && matches!(
-            &legacy.regular,
-            RegularArmor::Q2 {
-                points,
-                normal_protection,
-                energy_protection,
-                item,
-            } if *points == 0.0
-                && *normal_protection == 0.0
-                && *energy_protection == 0.0
-                && item == placeholder
-        )
-        && std::mem::discriminant(&legacy.powered) == std::mem::discriminant(&current.powered)
-        && module_powered(&legacy.powered).is_some()
-        && module_powered(&legacy.powered) == module_powered(&current.powered);
-    if strip {
-        ArmorState {
-            regular: RegularArmor::None,
-            powered: legacy.powered.clone(),
-        }
-    } else {
-        legacy.clone()
-    }
+    crate::q2::native_mod_armor::normalize_legacy_power_only_armor(legacy, current, placeholder)
 }
 
 #[cfg(test)]
@@ -469,5 +443,45 @@ mod tests {
         assert_eq!(normalized.regular, RegularArmor::None);
         bindings.write_health(2, 55.0).expect("health");
         assert_eq!(bindings.combat_state(2).expect("state").health, 55.0);
+    }
+
+    #[test]
+    fn legacy_normalize_matches_shared_predicate() {
+        let shield = PoweredProtection::Shield { cells: 40 };
+        let fabricated = ArmorState {
+            regular: RegularArmor::Q2 {
+                points: 0.0,
+                normal_protection: 0.0,
+                energy_protection: 0.0,
+                item: "q2:none".to_string(),
+            },
+            powered: shield.clone(),
+        };
+        let current = ArmorState {
+            regular: RegularArmor::None,
+            powered: shield,
+        };
+        for placeholder in ["q2:none", "q2:other"] {
+            assert_eq!(
+                normalize_legacy_power_only_armor(&fabricated, &current, placeholder),
+                crate::q2::native_mod_armor::normalize_legacy_power_only_armor(&fabricated, &current, placeholder),
+            );
+        }
+        // Placeholder mismatch keeps the legacy view untouched.
+        assert_eq!(
+            normalize_legacy_power_only_armor(&fabricated, &current, "q2:other"),
+            fabricated
+        );
+        // Live regular armor is never stripped.
+        let live = ArmorState {
+            regular: RegularArmor::Q2 {
+                points: 25.0,
+                normal_protection: 0.3,
+                energy_protection: 0.3,
+                item: "q2:item_armor_jacket".to_string(),
+            },
+            powered: PoweredProtection::Shield { cells: 40 },
+        };
+        assert_eq!(normalize_legacy_power_only_armor(&live, &current, "q2:none"), live);
     }
 }

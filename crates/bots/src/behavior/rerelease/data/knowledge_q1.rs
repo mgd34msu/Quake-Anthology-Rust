@@ -22,18 +22,7 @@ pub fn load_quake1_knowledge(files: &dyn BotSourceFiles) -> Result<Option<BotKno
             BotsError::BotScript("quake rerelease bot weapons were mounted without source skill settings".to_owned())
         })?;
     Ok(Some(BotKnowledge::new(
-        &BotDataFilesT {
-            weapons,
-            settings,
-            characters: read_bot_source_text(files, "bots/characters.txt").unwrap_or_default(),
-            items: read_bot_source_text(files, "bots/items.txt").unwrap_or_default(),
-            monsters: read_bot_source_text(files, "bots/monsters.txt").unwrap_or_default(),
-            interactables: read_bot_source_text(files, "bots/interactables.txt").unwrap_or_default(),
-            game_rules: read_bot_source_text(files, "bots/game_rules.txt").unwrap_or_default(),
-            teams: read_bot_source_text(files, "bots/teams.txt").unwrap_or_default(),
-            chats: read_bot_source_text(files, "bots/chats.txt").unwrap_or_default(),
-            dangers: read_bot_source_text(files, "bots/dangers.txt"),
-        },
+        &BotDataFilesT::from_source_files(files, weapons, settings),
         BotDataFormat::Q1,
         None,
     )))

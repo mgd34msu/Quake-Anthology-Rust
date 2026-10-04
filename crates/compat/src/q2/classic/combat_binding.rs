@@ -1015,28 +1015,12 @@ impl ClassicCombatBindings {
 }
 
 /// Normalize a legacy power-only armor view that fabricated an empty
-/// regular tier from the placeholder item.
+/// regular tier from the placeholder item. Shared predicate lives in
+/// [`crate::q2::native_mod_armor`]; this wrapper keeps the classic name and
+/// its fixed `q2:none` placeholder.
 #[must_use]
 pub fn normalize_legacy_armor(legacy: &ArmorState, current: &ArmorState) -> ArmorState {
-    let placeholder = item_id("q2", "none");
-    let fabricated = matches!(
-        &legacy.regular,
-        RegularArmor::Q2 { item, points, normal_protection, energy_protection }
-            if *item == placeholder && *points == 0.0 && *normal_protection == 0.0 && *energy_protection == 0.0
-    );
-    if current.regular == RegularArmor::None
-        && fabricated
-        && powered_kind(&legacy.powered) == powered_kind(&current.powered)
-        && legacy.powered != PoweredProtection::None
-        && legacy.powered == current.powered
-    {
-        ArmorState {
-            regular: RegularArmor::None,
-            powered: legacy.powered.clone(),
-        }
-    } else {
-        legacy.clone()
-    }
+    crate::q2::native_mod_armor::normalize_legacy_power_only_armor(legacy, current, &item_id("q2", "none"))
 }
 
 fn powered_kind(powered: &PoweredProtection) -> u8 {
@@ -1330,5 +1314,48 @@ mod tests {
         };
         assert_eq!(normalize_legacy_armor(&legacy, &current).regular, RegularArmor::None);
         assert_eq!(normalize_legacy_armor(&current, &current), current);
+    }
+
+    #[test]
+    fn legacy_normalize_matches_shared_predicate() {
+        let fabricated = ArmorState {
+            regular: RegularArmor::Q2 {
+                points: 0.0,
+                normal_protection: 0.0,
+                energy_protection: 0.0,
+                item: "q2:none".to_string(),
+            },
+            powered: PoweredProtection::Shield { cells: 10 },
+        };
+        let current = ArmorState {
+            regular: RegularArmor::None,
+            powered: PoweredProtection::Shield { cells: 10 },
+        };
+        // The classic wrapper pins the shared placeholder to `q2:none`.
+        assert_eq!(
+            normalize_legacy_armor(&fabricated, &current),
+            crate::q2::native_mod_armor::normalize_legacy_power_only_armor(&fabricated, &current, "q2:none")
+        );
+        assert_eq!(
+            normalize_legacy_armor(&fabricated, &current).regular,
+            RegularArmor::None
+        );
+        // Mismatched power or a live current tier keeps the legacy view.
+        for other in [
+            ArmorState {
+                regular: RegularArmor::None,
+                powered: PoweredProtection::Screen { cells: 10 },
+            },
+            ArmorState {
+                regular: RegularArmor::None,
+                powered: PoweredProtection::Shield { cells: 11 },
+            },
+            ArmorState {
+                regular: fabricated.regular.clone(),
+                powered: PoweredProtection::Shield { cells: 10 },
+            },
+        ] {
+            assert_eq!(normalize_legacy_armor(&fabricated, &other), fabricated);
+        }
     }
 }

@@ -9,12 +9,14 @@
 
 use std::collections::HashMap;
 
+use crate::behavior::assets::BotSourceFiles;
 use crate::behavior::rerelease::data::botdata::{
     parse_bot_settings, parse_characters, parse_chats, parse_dangers, parse_game_rules, parse_interactables,
     parse_items, parse_monsters, parse_teams, parse_weapons, BotDataFormat, BotSkillSettings, BotSourceEntry,
     BotWeaponIdentity, CharacterEntry, ChatEntry, DangerEntry, GameRuleEntry, InteractableEntry, ItemEntry,
     MonsterEntry, TeamEntry, WeaponEntry,
 };
+use crate::behavior::rerelease::data::source_files::read_bot_source_text;
 
 /// Item flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,6 +174,28 @@ pub struct BotDataFilesT {
     pub settings: String,
     /// dangers.txt.
     pub dangers: Option<String>,
+}
+
+impl BotDataFilesT {
+    /// Assemble the shared `bots/*.txt` payload around already-resolved
+    /// weapons and settings text. Settings resolution (Q1 platform fallback
+    /// versus Q2 explicit platform) stays with the callers; the remaining
+    /// eight files read in the same order for both.
+    #[must_use]
+    pub fn from_source_files(files: &dyn BotSourceFiles, weapons: String, settings: String) -> Self {
+        Self {
+            weapons,
+            settings,
+            characters: read_bot_source_text(files, "bots/characters.txt").unwrap_or_default(),
+            items: read_bot_source_text(files, "bots/items.txt").unwrap_or_default(),
+            monsters: read_bot_source_text(files, "bots/monsters.txt").unwrap_or_default(),
+            interactables: read_bot_source_text(files, "bots/interactables.txt").unwrap_or_default(),
+            game_rules: read_bot_source_text(files, "bots/game_rules.txt").unwrap_or_default(),
+            teams: read_bot_source_text(files, "bots/teams.txt").unwrap_or_default(),
+            chats: read_bot_source_text(files, "bots/chats.txt").unwrap_or_default(),
+            dangers: read_bot_source_text(files, "bots/dangers.txt"),
+        }
+    }
 }
 
 /// Compiled weapon with hoisted flag tests.
@@ -815,4 +839,117 @@ pub fn weapon_for_item(weapons: &[BotWeaponT], item_name: &str) -> Option<usize>
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use super::*;
+
+    struct RecordingFiles {
+        files: HashMap<String, Vec<u8>>,
+        reads: RefCell<Vec<String>>,
+    }
+
+    impl BotSourceFiles for RecordingFiles {
+        fn read(&self, path: &str) -> Option<Vec<u8>> {
+            self.reads.borrow_mut().push(path.to_owned());
+            self.files.get(path).cloned()
+        }
+
+        fn list(&self, _directory: &str, _extension: &str) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn shared_payload_matches_inline_assembly() {
+        let mut files = HashMap::new();
+        files.insert("bots/characters.txt".to_owned(), b"chars".to_vec());
+        files.insert("bots/dangers.txt".to_owned(), b"danger".to_vec());
+        let sources = RecordingFiles {
+            files,
+            reads: RefCell::new(Vec::new()),
+        };
+        let payload = BotDataFilesT::from_source_files(&sources, "weapons".to_owned(), "settings".to_owned());
+        assert_eq!(payload.weapons, "weapons");
+        assert_eq!(payload.settings, "settings");
+        assert_eq!(payload.characters, "chars");
+        assert_eq!(payload.items, String::new());
+        assert_eq!(payload.monsters, String::new());
+        assert_eq!(payload.interactables, String::new());
+        assert_eq!(payload.game_rules, String::new());
+        assert_eq!(payload.teams, String::new());
+        assert_eq!(payload.chats, String::new());
+        assert_eq!(payload.dangers, Some("danger".to_owned()));
+        // Missing text files default; only dangers stays optional, and the
+        // eight reads keep the previous inline order.
+        assert_eq!(
+            *sources.reads.borrow(),
+            [
+                "bots/characters.txt",
+                "bots/items.txt",
+                "bots/monsters.txt",
+                "bots/interactables.txt",
+                "bots/game_rules.txt",
+                "bots/teams.txt",
+                "bots/chats.txt",
+                "bots/dangers.txt",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    fn recording(pairs: &[(&str, &str)]) -> RecordingFiles {
+        RecordingFiles {
+            files: pairs
+                .iter()
+                .map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec()))
+                .collect(),
+            reads: RefCell::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn q1_loader_keeps_absence_and_fallback() {
+        use crate::behavior::rerelease::data::knowledge_q1::load_quake1_knowledge;
+        // Unmounted weapons stay `None` without further reads.
+        let empty = recording(&[]);
+        assert!(load_quake1_knowledge(&empty).expect("ok").is_none());
+        assert_eq!(*empty.reads.borrow(), vec!["bots/weapons.txt".to_owned()]);
+        // Settings resolve PC, then Consoles, then Nintendo.
+        let consoles = recording(&[("bots/weapons.txt", ""), ("bots/settings_Consoles.txt", "")]);
+        let knowledge = load_quake1_knowledge(&consoles).expect("ok").expect("knowledge");
+        assert_eq!(knowledge.format, BotDataFormat::Q1);
+        assert_eq!(
+            consoles.reads.borrow()[..3],
+            [
+                "bots/weapons.txt".to_owned(),
+                "bots/settings_PC.txt".to_owned(),
+                "bots/settings_Consoles.txt".to_owned(),
+            ]
+        );
+        // Mounted weapons without any settings stay an error.
+        let bare = recording(&[("bots/weapons.txt", "")]);
+        assert!(load_quake1_knowledge(&bare).is_err());
+    }
+
+    #[test]
+    fn q2_loader_keeps_platform_policy() {
+        use crate::behavior::rerelease::data::knowledge_q2::{bot_load_knowledge, SettingsPlatform};
+        let full = recording(&[("bots/weapons.txt", ""), ("bots/settings_PC.txt", "")]);
+        let knowledge = bot_load_knowledge(&full, SettingsPlatform::Pc).expect("knowledge");
+        assert_eq!(knowledge.format, BotDataFormat::Q2);
+        assert_eq!(
+            full.reads.borrow()[..2],
+            ["bots/weapons.txt".to_owned(), "bots/settings_PC.txt".to_owned()]
+        );
+        let missing = recording(&[("bots/weapons.txt", "")]);
+        let error = bot_load_knowledge(&missing, SettingsPlatform::Pc).expect_err("missing settings");
+        assert!(error.to_string().contains("settings_PC.txt"), "{error}");
+    }
 }

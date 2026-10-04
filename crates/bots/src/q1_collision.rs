@@ -31,8 +31,9 @@ use qa_world::WorldError;
 
 use crate::collision_support::{blocks_q1_contents, select_numeric};
 use crate::scene::{
-    BspEdge, BspPlane, IndexRange, LeafQueryResult, PointContentsQuery, PointContentsResult, QueryTarget, SceneQueries,
-    TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape, VisibilityKind,
+    scene_expect, BspEdge, BspPlane, IndexRange, LeafQueryResult, PointContentsQuery, PointContentsResult, QueryTarget,
+    SceneQueries, TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape,
+    VisibilityKind, WorldKind,
 };
 
 /// Native hull bounds: point, player, shambler (`Q1_HULL_BOUNDS`).
@@ -1332,15 +1333,15 @@ pub fn create_shared_q1_collision(geometry: Q1CollisionGeometry) -> Q1Collision 
 
 impl SceneQueries for Q1Collision {
     fn trace(&self, query: &TraceQuery) -> TraceResult {
-        self.trace(query).expect("q1 scene trace")
+        scene_expect(self.trace(query), WorldKind::Q1Bsp, "trace")
     }
 
     fn point_contents(&self, query: &PointContentsQuery) -> PointContentsResult {
-        self.point_contents(query).expect("q1 scene contents")
+        scene_expect(self.point_contents(query), WorldKind::Q1Bsp, "contents")
     }
 
     fn box_leaves(&self, bounds: &Bounds, limit: usize) -> LeafQueryResult {
-        self.box_leaves(bounds, limit).expect("q1 scene leaves")
+        scene_expect(self.box_leaves(bounds, limit), WorldKind::Q1Bsp, "leaves")
     }
 
     fn areas_connected(&self, first: i32, second: i32) -> bool {
@@ -1348,7 +1349,7 @@ impl SceneQueries for Q1Collision {
     }
 
     fn cluster_visible(&self, from: i32, to: i32, kind: VisibilityKind) -> bool {
-        self.cluster_visible(from, to, kind).expect("q1 scene visibility")
+        scene_expect(self.cluster_visible(from, to, kind), WorldKind::Q1Bsp, "visibility")
     }
 }
 

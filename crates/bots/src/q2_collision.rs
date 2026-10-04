@@ -18,9 +18,9 @@ use qa_world::WorldError;
 
 use crate::collision_support::{geometry_mask, select_numeric};
 use crate::scene::{
-    BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, Q2SecondaryImpact, Q2SurfaceInfo, QueryTarget,
-    SceneQueries, TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape,
-    VisibilityKind,
+    scene_expect, BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, Q2SecondaryImpact, Q2SurfaceInfo,
+    QueryTarget, SceneQueries, TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape,
+    VisibilityKind, WorldKind,
 };
 
 /// BSP child reference.
@@ -1087,24 +1087,24 @@ impl Q2Collision {
 
 impl SceneQueries for Q2Collision {
     fn trace(&self, query: &TraceQuery) -> TraceResult {
-        self.trace(query).expect("q2 scene trace")
+        scene_expect(self.trace(query), WorldKind::Q2Bsp, "trace")
     }
 
     fn point_contents(&self, query: &PointContentsQuery) -> PointContentsResult {
-        self.point_contents(query).expect("q2 scene contents")
+        scene_expect(self.point_contents(query), WorldKind::Q2Bsp, "contents")
     }
 
     fn box_leaves(&self, bounds: &Bounds, limit: usize) -> LeafQueryResult {
         let headnode = self.geometry.models.first().map(|model| model.headnode).unwrap_or(0);
-        self.box_leaves(bounds, limit, headnode).expect("q2 scene leaves")
+        scene_expect(self.box_leaves(bounds, limit, headnode), WorldKind::Q2Bsp, "leaves")
     }
 
     fn areas_connected(&self, first: i32, second: i32) -> bool {
-        self.areas_connected(first, second).expect("q2 scene areas")
+        scene_expect(self.areas_connected(first, second), WorldKind::Q2Bsp, "areas")
     }
 
     fn cluster_visible(&self, from: i32, to: i32, kind: VisibilityKind) -> bool {
-        self.cluster_visible(from, to, kind).expect("q2 scene visibility")
+        scene_expect(self.cluster_visible(from, to, kind), WorldKind::Q2Bsp, "visibility")
     }
 }
 

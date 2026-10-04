@@ -242,18 +242,9 @@ pub fn bot_load_knowledge(files: &dyn BotSourceFiles, platform: SettingsPlatform
     let weapons = read("weapons");
     let settings = read(platform.file_name());
     match (weapons, settings) {
-        (Some(weapons), Some(settings)) => Ok(bot_build_knowledge(&BotDataFilesT {
-            weapons,
-            settings,
-            characters: read("characters").unwrap_or_default(),
-            items: read("items").unwrap_or_default(),
-            monsters: read("monsters").unwrap_or_default(),
-            interactables: read("interactables").unwrap_or_default(),
-            game_rules: read("game_rules").unwrap_or_default(),
-            teams: read("teams").unwrap_or_default(),
-            chats: read("chats").unwrap_or_default(),
-            dangers: read("dangers"),
-        })),
+        (Some(weapons), Some(settings)) => Ok(bot_build_knowledge(&BotDataFilesT::from_source_files(
+            files, weapons, settings,
+        ))),
         _ => Err(BotsError::BotScript(format!(
             "Q2 rerelease bot source data unavailable: weapons.txt and {}.txt are required",
             platform.file_name()
