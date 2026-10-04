@@ -9,6 +9,10 @@
 
 use std::rc::Rc;
 
+use crate::input::weapons::{
+    q1_weapon_display_name, Q1_MISSION_WEAPONS, Q1_WEAPONS, Q2_BASE_WEAPONS, Q2_ROGUE_WEAPONS, Q2_XATRIX_WEAPONS,
+    Q3_WEAPONS,
+};
 use crate::input::InputBindingTarget;
 use crate::ui::settings::bindings::BindingAction;
 use crate::ui::types::CommandDialect;
@@ -97,111 +101,33 @@ pub fn canonical_wheel_command(text: &str) -> String {
     }
 }
 
-/// Q1 base weapons in impulse order.
-const Q1_WEAPONS: [&str; 8] = [
-    "axe",
-    "shotgun",
-    "supershotgun",
-    "nailgun",
-    "supernailgun",
-    "grenadelauncher",
-    "rocketlauncher",
-    "lightning",
-];
+/// Q1 mission weapons this catalog resolves beyond the canonical eight.
+///
+/// Base and mission tables plus display names live in
+/// [`crate::input::weapons`]; the catalog keeps only its extras (grapples
+/// and the MG3 set) so alias order stays base, mission, extras.
+const Q1_MISSION_EXTRA: [&str; 4] = ["rogue:grapple", "mg3:laser", "mg3:mjolnir", "ctf:grapple"];
 
-/// Q1 display name for one weapon id.
-fn q1_weapon_display_name(weapon: &str) -> String {
-    match weapon {
-        "axe" => "Axe".to_string(),
-        "shotgun" => "Shotgun".to_string(),
-        "supershotgun" => "Double-barrelled Shotgun".to_string(),
-        "nailgun" => "Nailgun".to_string(),
-        "supernailgun" => "Super Nailgun".to_string(),
-        "grenadelauncher" => "Grenade Launcher".to_string(),
-        "rocketlauncher" => "Rocket Launcher".to_string(),
-        "lightning" => "Thunderbolt".to_string(),
-        "hipnotic:laser" => "Laser Cannon".to_string(),
-        "hipnotic:mjolnir" => "Mjolnir".to_string(),
-        "hipnotic:proximity" => "Proximity Gun".to_string(),
-        other => {
-            let name = other.split(':').next_back().unwrap_or(other);
-            let spaced = name.replace(['_', '-'], " ");
-            let mut titled = String::with_capacity(spaced.len());
-            let mut capitalize = true;
-            for ch in spaced.chars() {
-                if ch == ' ' {
-                    capitalize = true;
-                    titled.push(ch);
-                } else if capitalize {
-                    capitalize = false;
-                    for upper in ch.to_uppercase() {
-                        titled.push(upper);
-                    }
-                } else {
-                    titled.push(ch);
-                }
-            }
-            titled
-        }
-    }
+/// Q2 weapons this catalog resolves beyond the canonical tables.
+const Q2_EXTRA_WEAPONS: [(&str, &str, &str); 1] = [("heatbeam", "q2:weapon_plasmabeam", "Plasma Beam")];
+
+/// All Q1 weapon ids in alias order: base, mission, extras.
+fn q1_weapon_ids() -> impl Iterator<Item = &'static str> {
+    Q1_WEAPONS
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(Q1_MISSION_WEAPONS.iter().map(|(id, _)| *id))
+        .chain(Q1_MISSION_EXTRA.iter().copied())
 }
 
-/// Q1 mission weapons beyond the base eight.
-const Q1_MISSION_WEAPONS: [&str; 12] = [
-    "hipnotic:laser",
-    "hipnotic:mjolnir",
-    "hipnotic:proximity",
-    "rogue:lava-nailgun",
-    "rogue:lava-supernailgun",
-    "rogue:multi-grenade",
-    "rogue:multi-rocket",
-    "rogue:plasma",
-    "rogue:grapple",
-    "mg3:laser",
-    "mg3:mjolnir",
-    "ctf:grapple",
-];
-
-/// Q3 weapon numbers in donor order.
-const Q3_WEAPON_ITEMS: [(u32, &str); 13] = [
-    (1, "q3:weapon/gauntlet"),
-    (2, "q3:weapon/machinegun"),
-    (3, "q3:weapon/shotgun"),
-    (4, "q3:weapon/grenadelauncher"),
-    (5, "q3:weapon/rocketlauncher"),
-    (6, "q3:weapon/lightning"),
-    (7, "q3:weapon/railgun"),
-    (8, "q3:weapon/plasmagun"),
-    (9, "q3:weapon/bfg"),
-    (10, "q3:weapon/grapple"),
-    (11, "q3:weapon/nailgun"),
-    (12, "q3:weapon/proxlauncher"),
-    (13, "q3:weapon/chaingun"),
-];
-
-/// Q2 weapon name, item, and display name.
-const Q2_WEAPONS: [(&str, &str, &str); 20] = [
-    ("blaster", "q2:weapon_blaster", "Blaster"),
-    ("shotgun", "q2:weapon_shotgun", "Shotgun"),
-    ("supershotgun", "q2:weapon_supershotgun", "Super Shotgun"),
-    ("machinegun", "q2:weapon_machinegun", "Machinegun"),
-    ("chaingun", "q2:weapon_chaingun", "Chaingun"),
-    ("grenades", "q2:ammo_grenades", "Grenades"),
-    ("grenadelauncher", "q2:weapon_grenadelauncher", "Grenade Launcher"),
-    ("rocketlauncher", "q2:weapon_rocketlauncher", "Rocket Launcher"),
-    ("hyperblaster", "q2:weapon_hyperblaster", "HyperBlaster"),
-    ("railgun", "q2:weapon_railgun", "Railgun"),
-    ("bfg", "q2:weapon_bfg", "BFG10K"),
-    ("trap", "q2:ammo_trap", "Trap"),
-    ("ionripper", "q2:weapon_boomer", "Ionripper"),
-    ("phalanx", "q2:weapon_phalanx", "Phalanx"),
-    ("tesla", "q2:ammo_tesla", "Tesla"),
-    ("proxlauncher", "q2:weapon_proxlauncher", "Prox Launcher"),
-    ("chainfist", "q2:weapon_chainfist", "Chainfist"),
-    ("disintegrator", "q2:weapon_disintegrator", "Disruptor"),
-    ("etf_rifle", "q2:weapon_etf_rifle", "ETF Rifle"),
-    ("heatbeam", "q2:weapon_plasmabeam", "Plasma Beam"),
-];
+/// All Q2 weapons in alias order: base, Xatrix, Rogue, extras.
+fn q2_weapons() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
+    Q2_BASE_WEAPONS
+        .iter()
+        .chain(Q2_XATRIX_WEAPONS.iter())
+        .chain(Q2_ROGUE_WEAPONS.iter())
+        .chain(Q2_EXTRA_WEAPONS.iter())
+}
 
 /// Lowercase a value and strip ASCII spaces, matching the donor.
 fn normalized(value: &str) -> String {
@@ -210,7 +136,7 @@ fn normalized(value: &str) -> String {
 
 /// Whether an item id is a Q1 base weapon item.
 fn is_q1_base_weapon_item(id: &str) -> bool {
-    Q1_WEAPONS.iter().any(|weapon| id == format!("q1:weapon/{weapon}"))
+    Q1_WEAPONS.iter().any(|(weapon, _)| id == format!("q1:weapon/{weapon}"))
 }
 
 /// Whether an argument is forbidden inside a selection command.
@@ -234,24 +160,20 @@ fn resolve_use(argument: &str, items: &[WeaponBindingItemView]) -> Option<String
     let mut matching: Vec<&WeaponBindingItemView> = Vec::new();
     for item in items {
         let mut hit = false;
-        if let Some(q1) = Q1_WEAPONS
-            .iter()
-            .chain(Q1_MISSION_WEAPONS.iter())
-            .find(|weapon| format!("q1:weapon/{weapon}") == item.id)
-        {
+        if let Some(q1) = q1_weapon_ids().find(|weapon| format!("q1:weapon/{weapon}") == item.id) {
             if normalized(q1) == requested || normalized(&q1_weapon_display_name(q1)) == requested {
                 hit = true;
             }
         }
         if !hit {
             if let Some(short) = item.id.strip_prefix("q3:weapon/") {
-                if Q3_WEAPON_ITEMS.iter().any(|(_, id)| *id == item.id) && normalized(short) == requested {
+                if Q3_WEAPONS.iter().any(|(_, id, _)| *id == item.id) && normalized(short) == requested {
                     hit = true;
                 }
             }
         }
         if !hit {
-            if let Some((name, _, display)) = Q2_WEAPONS.iter().find(|(_, id, _)| *id == item.id) {
+            if let Some((name, _, display)) = q2_weapons().find(|(_, id, _)| *id == item.id) {
                 if normalized(name) == requested || normalized(display) == requested {
                     hit = true;
                 }
@@ -285,12 +207,12 @@ fn resolve_numbered(name: &str, argument: &str, items: &[WeaponBindingItemView])
         return None;
     }
     let id = if name == "weapon" {
-        Q3_WEAPON_ITEMS
+        Q3_WEAPONS
             .iter()
-            .find(|(weapon, _)| *weapon == number)
-            .map(|(_, id)| *id)?
+            .find(|(tag, _, _)| *tag as u32 == number)
+            .map(|(_, id, _)| *id)?
     } else {
-        let weapon = Q1_WEAPONS.get((number as usize).wrapping_sub(1))?;
+        let (weapon, _) = Q1_WEAPONS.get((number as usize).wrapping_sub(1))?;
         return items
             .iter()
             .find(|item| item.kind == BindableItemKind::Weapon && item.id == format!("q1:weapon/{weapon}"))
@@ -567,6 +489,74 @@ mod tests {
             Some("q3:weapon/gauntlet")
         );
         assert_eq!(weapon_binding_item("weapon 99", &q3), None);
+    }
+
+    #[test]
+    fn canonical_alias_order_and_names_match() {
+        let ids: Vec<&str> = q1_weapon_ids().collect();
+        assert_eq!(
+            ids,
+            vec![
+                "axe",
+                "shotgun",
+                "supershotgun",
+                "nailgun",
+                "supernailgun",
+                "grenadelauncher",
+                "rocketlauncher",
+                "lightning",
+                "hipnotic:laser",
+                "hipnotic:mjolnir",
+                "hipnotic:proximity",
+                "rogue:lava-nailgun",
+                "rogue:lava-supernailgun",
+                "rogue:multi-grenade",
+                "rogue:multi-rocket",
+                "rogue:plasma",
+                "rogue:grapple",
+                "mg3:laser",
+                "mg3:mjolnir",
+                "ctf:grapple",
+            ]
+        );
+        assert_eq!(q1_weapon_display_name("supershotgun"), "Double-barrelled Shotgun");
+        assert_eq!(q1_weapon_display_name("lightning"), "Thunderbolt");
+        assert_eq!(q1_weapon_display_name("rogue:lava-nailgun"), "Lava Nailgun");
+        assert_eq!(q1_weapon_display_name("mg3:mjolnir"), "Mjolnir");
+        assert_eq!(q2_weapons().count(), 20);
+        assert!(q2_weapons()
+            .any(|(name, id, label)| (*name, *id, *label) == ("heatbeam", "q2:weapon_plasmabeam", "Plasma Beam")));
+        assert_eq!(Q3_WEAPONS.len(), 13);
+        for id in ids {
+            let item = format!("q1:weapon/{id}");
+            let views = vec![WeaponBindingItemView {
+                id: item.clone(),
+                kind: BindableItemKind::Weapon,
+            }];
+            assert_eq!(
+                weapon_binding_item(&format!("use {id}"), &views).as_deref(),
+                Some(item.as_str()),
+                "alias for {id}"
+            );
+            let display = q1_weapon_display_name(id);
+            assert_eq!(
+                weapon_binding_item(&format!("use {display}"), &views).as_deref(),
+                Some(item.as_str()),
+                "display name for {id}"
+            );
+        }
+        let heatbeam = vec![WeaponBindingItemView {
+            id: "q2:weapon_plasmabeam".to_string(),
+            kind: BindableItemKind::Weapon,
+        }];
+        assert_eq!(
+            weapon_binding_item("use heatbeam", &heatbeam).as_deref(),
+            Some("q2:weapon_plasmabeam")
+        );
+        assert_eq!(
+            weapon_binding_item("use Plasma Beam", &heatbeam).as_deref(),
+            Some("q2:weapon_plasmabeam")
+        );
     }
 
     #[test]

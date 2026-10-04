@@ -611,27 +611,103 @@ fn mip_texture_name<'a>(texture: &'a qa_content::wad::MipTexture<'_>) -> &'a str
     }
 }
 
-/// Adapt a Q1 map into build data, traversal map, and visibility.
-pub fn adapt_q1_build(
-    map: &qa_content::bsp::Q1Map<'_>,
-) -> Result<(WorldBuildData, WorldMap, WorldVisibility), RenderError> {
-    let planes = map
-        .planes
+/// Shared content-plane mapping for the legacy adapt pipeline.
+fn adapt_planes(planes: &[qa_content::bsp::Plane]) -> Vec<Plane> {
+    planes
         .iter()
         .map(|plane| Plane {
             normal: to_vec3(plane.normal),
             distance: plane.distance,
         })
-        .collect::<Vec<_>>();
-    let nodes = map
-        .nodes
+        .collect()
+}
+
+/// Shared content-node mapping for the legacy adapt pipeline.
+fn adapt_nodes(nodes: &[qa_content::bsp::Node]) -> Vec<WorldNode> {
+    nodes
         .iter()
         .map(|node| WorldNode {
             plane: node.plane as usize,
             children: [child_to_bsp(node.children[0]), child_to_bsp(node.children[1])],
             bounds: to_bounds(node.bounds.min, node.bounds.max),
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+/// Shared content-edge mapping for the legacy adapt pipeline.
+fn adapt_edges(edges: &[qa_content::bsp::Edge]) -> Vec<[u32; 2]> {
+    edges.iter().map(|edge| edge.vertices).collect()
+}
+
+/// Shared content-vertex mapping for the legacy adapt pipeline.
+fn adapt_vertices(vertices: &[[f32; 3]]) -> Vec<Vec3> {
+    vertices.iter().map(|vertex| to_vec3(*vertex)).collect()
+}
+
+/// Shared brush texture-projection mapping for the legacy adapt pipeline.
+fn brush_projections(texture_info: &[LegacyTexInfo]) -> Vec<BrushTextureInfo> {
+    texture_info
+        .iter()
+        .map(|info| BrushTextureInfo {
+            projection_s: vec4(info.s[0], info.s[1], info.s[2], info.s[3]),
+            projection_t: vec4(info.t[0], info.t[1], info.t[2], info.t[3]),
+        })
+        .collect()
+}
+
+/// Shared traversal-map assembler; family mappers supply kind and leaves.
+fn assemble_world(
+    kind: WorldKind,
+    nodes: Vec<WorldNode>,
+    leaves: Vec<WorldLeaf>,
+    planes: Vec<Plane>,
+    leaf_faces: &[u32],
+) -> WorldMap {
+    WorldMap {
+        kind,
+        nodes,
+        leaves,
+        planes,
+        leaf_surfaces: leaf_faces.iter().map(|face| *face as usize).collect(),
+    }
+}
+
+/// Shared legacy-face assembler; family mappers normalize edge ranges.
+fn assemble_legacy_face(
+    plane: usize,
+    back: bool,
+    first_edge: usize,
+    edge_count: usize,
+    texture_info: usize,
+    styles: [u8; 4],
+    lighting_offset: Option<u32>,
+) -> LegacyBuildFace {
+    LegacyBuildFace {
+        plane,
+        back,
+        first_edge,
+        edge_count,
+        texture_info,
+        styles,
+        lighting_offset,
+    }
+}
+
+/// Shared model-range assembler; family mappers normalize face ranges.
+fn assemble_build_model(min: [f32; 3], max: [f32; 3], first: usize, count: usize) -> BuildModel {
+    BuildModel {
+        bounds: to_bounds(min, max),
+        first,
+        count,
+    }
+}
+
+/// Adapt a Q1 map into build data, traversal map, and visibility.
+pub fn adapt_q1_build(
+    map: &qa_content::bsp::Q1Map<'_>,
+) -> Result<(WorldBuildData, WorldMap, WorldVisibility), RenderError> {
+    let planes = adapt_planes(&map.planes);
+    let nodes = adapt_nodes(&map.nodes);
     let visible_leaves = map
         .models
         .first()
@@ -651,13 +727,7 @@ pub fn adapt_q1_build(
             visible_leaves,
         })
         .collect::<Vec<_>>();
-    let world = WorldMap {
-        kind: WorldKind::Q1,
-        nodes,
-        leaves,
-        planes: planes.clone(),
-        leaf_surfaces: map.leaf_faces.iter().map(|face| *face as usize).collect(),
-    };
+    let world = assemble_world(WorldKind::Q1, nodes, leaves, planes.clone(), &map.leaf_faces);
     let visibility = WorldVisibility::Q1 {
         data: map.visibility.to_vec(),
     };
@@ -716,28 +786,24 @@ pub fn adapt_q1_build(
     let faces = map
         .faces
         .iter()
-        .map(|face| LegacyBuildFace {
-            plane: face.plane as usize,
-            back: face.back,
-            first_edge: face.edge_first.max(0) as usize,
-            edge_count: face.edge_count as usize,
-            texture_info: face.texture_info as usize,
-            styles: face.styles,
-            lighting_offset: face.lighting_offset,
+        .map(|face| {
+            assemble_legacy_face(
+                face.plane as usize,
+                face.back,
+                face.edge_first.max(0) as usize,
+                face.edge_count as usize,
+                face.texture_info as usize,
+                face.styles,
+                face.lighting_offset,
+            )
         })
         .collect::<Vec<_>>();
     let brush = BrushMapData {
-        texture_info: names
-            .iter()
-            .map(|info| BrushTextureInfo {
-                projection_s: vec4(info.s[0], info.s[1], info.s[2], info.s[3]),
-                projection_t: vec4(info.t[0], info.t[1], info.t[2], info.t[3]),
-            })
-            .collect(),
+        texture_info: brush_projections(&names),
         planes: planes.clone(),
         surface_edges: map.surface_edges.clone(),
-        edges: map.edges.iter().map(|edge| edge.vertices).collect(),
-        vertices: map.vertices.iter().map(|vertex| to_vec3(*vertex)).collect(),
+        edges: adapt_edges(&map.edges),
+        vertices: adapt_vertices(&map.vertices),
         lighting: match &map.lighting {
             qa_content::bsp::BspLighting::Luminance8 { samples: [] } => None,
             qa_content::bsp::BspLighting::Luminance8 { samples } => Some(BspLighting::Luminance8 {
@@ -752,10 +818,13 @@ pub fn adapt_q1_build(
     let models = map
         .models
         .iter()
-        .map(|model| BuildModel {
-            bounds: to_bounds(model.bounds.min, model.bounds.max),
-            first: model.face_first.max(0) as usize,
-            count: model.face_count.max(0) as usize,
+        .map(|model| {
+            assemble_build_model(
+                model.bounds.min,
+                model.bounds.max,
+                model.face_first.max(0) as usize,
+                model.face_count.max(0) as usize,
+            )
         })
         .collect::<Vec<_>>();
     // Donor `src/render/scene/geometry.ts`: Q1 sample offsets scale by 3 for
@@ -781,25 +850,8 @@ pub fn adapt_q1_build(
 pub fn adapt_q2_build(
     map: &qa_content::bsp2::Q2DecodedMap<'_>,
 ) -> Result<(WorldBuildData, WorldMap, WorldVisibility), RenderError> {
-    let planes = map
-        .map
-        .planes
-        .iter()
-        .map(|plane| Plane {
-            normal: to_vec3(plane.normal),
-            distance: plane.distance,
-        })
-        .collect::<Vec<_>>();
-    let nodes = map
-        .map
-        .nodes
-        .iter()
-        .map(|node| WorldNode {
-            plane: node.plane as usize,
-            children: [child_to_bsp(node.children[0]), child_to_bsp(node.children[1])],
-            bounds: to_bounds(node.bounds.min, node.bounds.max),
-        })
-        .collect::<Vec<_>>();
+    let planes = adapt_planes(&map.map.planes);
+    let nodes = adapt_nodes(&map.map.nodes);
     let leaves = map
         .leaves
         .iter()
@@ -814,13 +866,7 @@ pub fn adapt_q2_build(
             visible_leaves: 0,
         })
         .collect::<Vec<_>>();
-    let world = WorldMap {
-        kind: WorldKind::Q2,
-        nodes,
-        leaves,
-        planes: planes.clone(),
-        leaf_surfaces: map.map.leaf_faces.iter().map(|face| *face as usize).collect(),
-    };
+    let world = assemble_world(WorldKind::Q2, nodes, leaves, planes.clone(), &map.map.leaf_faces);
     let visibility = match &map.map.visibility {
         None => WorldVisibility::None,
         Some(vis) => WorldVisibility::Q2 {
@@ -850,14 +896,16 @@ pub fn adapt_q2_build(
     let faces = map
         .faces
         .iter()
-        .map(|face| LegacyBuildFace {
-            plane: face.plane as usize,
-            back: face.back,
-            first_edge: face.edges.first as usize,
-            edge_count: face.edges.count as usize,
-            texture_info: face.texture_info as usize,
-            styles: face.styles,
-            lighting_offset: face.lighting_offset,
+        .map(|face| {
+            assemble_legacy_face(
+                face.plane as usize,
+                face.back,
+                face.edges.first as usize,
+                face.edges.count as usize,
+                face.texture_info as usize,
+                face.styles,
+                face.lighting_offset,
+            )
         })
         .collect::<Vec<_>>();
     let mut decoupled = vec![None; faces.len()];
@@ -870,17 +918,11 @@ pub fn adapt_q2_build(
         }
     }
     let brush = BrushMapData {
-        texture_info: texture_info
-            .iter()
-            .map(|info| BrushTextureInfo {
-                projection_s: vec4(info.s[0], info.s[1], info.s[2], info.s[3]),
-                projection_t: vec4(info.t[0], info.t[1], info.t[2], info.t[3]),
-            })
-            .collect(),
+        texture_info: brush_projections(&texture_info),
         planes,
         surface_edges: map.map.surface_edges.clone(),
-        edges: map.map.edges.iter().map(|edge| edge.vertices).collect(),
-        vertices: map.map.vertices.iter().map(|vertex| to_vec3(*vertex)).collect(),
+        edges: adapt_edges(&map.map.edges),
+        vertices: adapt_vertices(&map.map.vertices),
         lighting: if map.map.lighting.is_empty() {
             None
         } else {
@@ -893,10 +935,13 @@ pub fn adapt_q2_build(
     let models = map
         .models
         .iter()
-        .map(|model| BuildModel {
-            bounds: to_bounds(model.bounds.min, model.bounds.max),
-            first: model.faces.first as usize,
-            count: model.faces.count as usize,
+        .map(|model| {
+            assemble_build_model(
+                model.bounds.min,
+                model.bounds.max,
+                model.faces.first as usize,
+                model.faces.count as usize,
+            )
         })
         .collect::<Vec<_>>();
     Ok((
@@ -4201,6 +4246,59 @@ mod tests {
             Some(BspLighting::Rgb8 { samples }) => assert_eq!(samples, vec![10, 20, 30, 40, 50, 60]),
             other => panic!("expected rgb8 brush lighting, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn shared_assemblers_map_content_records() {
+        let planes = adapt_planes(&[ContentPlane {
+            normal: [1.0, 0.0, 0.0],
+            distance: 4.0,
+            plane_type: 0,
+            signbits: 0,
+        }]);
+        assert_eq!(planes.len(), 1);
+        assert_eq!(planes[0].distance, 4.0);
+        let nodes = adapt_nodes(&[Node {
+            plane: 2,
+            children: [NodeChild::Node(1), NodeChild::Leaf(3)],
+            bounds: qa_content::common::Bounds {
+                min: [0.0; 3],
+                max: [1.0; 3],
+            },
+            faces: IndexRange { first: 0, count: 0 },
+        }]);
+        assert_eq!(nodes[0].plane, 2);
+        assert_eq!(nodes[0].children, [BspChild::Node(1), BspChild::Leaf(3)]);
+        assert_eq!(adapt_edges(&[Edge { vertices: [5, 7] }]), vec![[5, 7]]);
+        assert_eq!(adapt_vertices(&[[1.0, 2.0, 3.0]]), vec![vec3(1.0, 2.0, 3.0)]);
+        let world = assemble_world(WorldKind::Q2, nodes.clone(), Vec::new(), planes.clone(), &[9]);
+        assert_eq!(world.kind, WorldKind::Q2);
+        assert_eq!(world.leaf_surfaces, vec![9]);
+        let face = assemble_legacy_face(1, true, 2, 3, 4, [0, 1, 2, 255], Some(8));
+        assert_eq!(
+            face,
+            LegacyBuildFace {
+                plane: 1,
+                back: true,
+                first_edge: 2,
+                edge_count: 3,
+                texture_info: 4,
+                styles: [0, 1, 2, 255],
+                lighting_offset: Some(8),
+            }
+        );
+        let model = assemble_build_model([0.0; 3], [1.0; 3], 5, 6);
+        assert_eq!((model.first, model.count), (5, 6));
+        let projections = brush_projections(&[LegacyTexInfo {
+            s: [1.0, 0.0, 0.0, 0.5],
+            t: [0.0, 1.0, 0.0, 0.25],
+            texture: 0,
+            name: String::new(),
+            flags: 0,
+            material: String::new(),
+            next: None,
+        }]);
+        assert_eq!(projections.len(), 1);
     }
 
     #[test]

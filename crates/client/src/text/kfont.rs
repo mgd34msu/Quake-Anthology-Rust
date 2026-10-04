@@ -44,39 +44,7 @@ struct TokenState<'a> {
 }
 
 fn parse_q2_token(state: &mut TokenState) -> String {
-    loop {
-        while state.index < state.bytes.len() && state.bytes[state.index] <= b' ' {
-            state.index += 1;
-        }
-        if state.index + 1 < state.bytes.len()
-            && state.bytes[state.index] == b'/'
-            && state.bytes[state.index + 1] == b'/'
-        {
-            while state.index < state.bytes.len() && state.bytes[state.index] != b'\n' {
-                state.index += 1;
-            }
-            continue;
-        }
-        break;
-    }
-    if state.index >= state.bytes.len() {
-        return String::new();
-    }
-    if state.bytes[state.index] == b'"' {
-        state.index += 1;
-        let start = state.index;
-        while state.index < state.bytes.len() && state.bytes[state.index] != b'"' {
-            state.index += 1;
-        }
-        let token = String::from_utf8_lossy(&state.bytes[start..state.index]).into_owned();
-        state.index += 1;
-        return token;
-    }
-    let start = state.index;
-    while state.index < state.bytes.len() && state.bytes[state.index] > b' ' {
-        state.index += 1;
-    }
-    String::from_utf8_lossy(&state.bytes[start..state.index]).into_owned()
+    crate::render::scene::image_policy::next_q2_token(state.bytes, &mut state.index)
 }
 
 /// Parse a `kfont` (`ParseKfont`).
@@ -232,5 +200,34 @@ mod tests {
         let font = Kfont::from(parse_kfont(SAMPLE).unwrap());
         assert!(kfont_lookup(&font, 31).is_none());
         assert!(kfont_lookup(&font, 127).is_none());
+    }
+
+    #[test]
+    fn shared_tokenizer_matches_q2_parse_edges() {
+        fn tokens(text: &str) -> Vec<String> {
+            let mut state = TokenState {
+                bytes: text.as_bytes(),
+                index: 0,
+            };
+            let mut out = Vec::new();
+            loop {
+                let token = parse_q2_token(&mut state);
+                if token.is_empty() {
+                    break;
+                }
+                out.push(token);
+            }
+            out
+        }
+        assert_eq!(tokens("a  b\tc"), vec!["a", "b", "c"]);
+        assert_eq!(tokens("a // skip\nb"), vec!["a", "b"]);
+        assert_eq!(tokens("a // trailing"), vec!["a"]);
+        assert_eq!(tokens("a \"b c\" d"), vec!["a", "b c", "d"]);
+        assert_eq!(tokens("\"unterminated"), vec!["unterminated"]);
+        assert_eq!(tokens(""), Vec::<String>::new());
+        assert_eq!(tokens("   // only"), Vec::<String>::new());
+        assert_eq!(tokens("a/ /b"), vec!["a/", "/b"]);
+        let quoted = parse_kfont("texture \"gfx/my font.tga\"\nmapchar font\n65 0 0 8 8 0\n").unwrap();
+        assert_eq!(quoted.texture_token, "gfx/my font.tga");
     }
 }

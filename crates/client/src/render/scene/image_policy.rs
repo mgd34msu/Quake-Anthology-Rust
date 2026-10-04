@@ -80,12 +80,16 @@ const USAGE_BITS: [(ImageUsage, i32); 5] = [
 ];
 
 /// Byte at an index, or NUL past the end.
-fn char_at(data: &[u8], index: usize) -> u8 {
+pub(crate) fn char_at(data: &[u8], index: usize) -> u8 {
     data.get(index).copied().unwrap_or(0)
 }
 
 /// Next Q2 token, advancing past whitespace, `//` comments, and the word.
-fn next_q2_token(data: &[u8], index: &mut usize) -> String {
+///
+/// Shared `COM_Parse` core: `kfont` parsing delegates here rather than
+/// carrying its own copy (whitespace/`//` skipping, quoted strings, plain
+/// words, empty string at end of input).
+pub(crate) fn next_q2_token(data: &[u8], index: &mut usize) -> String {
     let mut at = *index;
     loop {
         let mut current = char_at(data, at);

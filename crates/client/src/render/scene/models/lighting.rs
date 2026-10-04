@@ -73,20 +73,11 @@ pub fn q2_alias_light(flags: u32, sampled: Vec3, time_seconds: f64, monochrome: 
     }
 }
 
-/// Q2 model-space alias shadow projection onto the sampled world floor.
-#[must_use]
-pub fn alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32, floor_height: f32) -> Vec3 {
-    let height = entity_height - floor_height;
-    vec3(
-        point.x - shade_vector.x * (point.z + height),
-        point.y - shade_vector.y * (point.z + height),
-        -height + 1.0,
-    )
-}
-
-/// GLQuake `GL_DrawAliasShadow` projection with model-space float stores.
-#[must_use]
-pub fn q1_alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32, floor_height: f32) -> Vec3 {
+/// Shared model-space alias shadow projection onto the sampled world floor.
+///
+/// Q2 `gl_mesh.c` and GLQuake `GL_DrawAliasShadow` evaluate identical math;
+/// both public names below wrap this core.
+fn shared_alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32, floor_height: f32) -> Vec3 {
     let height = entity_height - floor_height;
     let elevation = point.z + height;
     vec3(
@@ -94,6 +85,18 @@ pub fn q1_alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32
         point.y - shade_vector.y * elevation,
         -height + 1.0,
     )
+}
+
+/// Q2 model-space alias shadow projection onto the sampled world floor.
+#[must_use]
+pub fn alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32, floor_height: f32) -> Vec3 {
+    shared_alias_shadow_point(point, shade_vector, entity_height, floor_height)
+}
+
+/// GLQuake `GL_DrawAliasShadow` projection with model-space float stores.
+#[must_use]
+pub fn q1_alias_shadow_point(point: Vec3, shade_vector: Vec3, entity_height: f32, floor_height: f32) -> Vec3 {
+    shared_alias_shadow_point(point, shade_vector, entity_height, floor_height)
 }
 
 /// Q1 alias shadow direction for a model yaw angle in radians.
@@ -211,6 +214,21 @@ mod tests {
     fn shadow_point_projects_to_floor() {
         let point = alias_shadow_point(vec3(0.0, 0.0, 8.0), vec3(0.0, 0.0, 1.0), 24.0, 0.0);
         assert_eq!(point.z, -23.0);
+    }
+
+    #[test]
+    fn q1_and_q2_shadow_points_agree() {
+        let cases = [
+            (vec3(0.0, 0.0, 8.0), vec3(0.0, 0.0, 1.0), 24.0, 0.0),
+            (vec3(3.5, -2.25, 10.0), vec3(0.2, -0.4, 0.9), 30.0, 4.0),
+            (vec3(-7.0, 1.5, 0.0), vec3(-0.5, 0.5, 0.7), 12.0, 12.0),
+        ];
+        for (point, shade, entity, floor) in cases {
+            assert_eq!(
+                alias_shadow_point(point, shade, entity, floor),
+                q1_alias_shadow_point(point, shade, entity, floor)
+            );
+        }
     }
 
     #[test]

@@ -16,6 +16,21 @@ pub struct Q2LightStyle {
     pub white: f32,
 }
 
+/// Shared style-frame wrap: euclidean `frame mod len`.
+///
+/// Both families wrap negative frames this way; Q1 then reads consecutive
+/// letters for interpolation while Q2 scales one letter by `1/12`.
+/// Callers guarantee `len` is non-zero.
+fn style_frame_index(len: usize, frame: i64) -> usize {
+    let len = len as i64;
+    (((frame % len) + len) % len) as usize
+}
+
+/// Shared style letter at a wrapped index: byte value minus `a`.
+fn style_letter_at(map: &str, index: usize) -> i32 {
+    i32::from(map.as_bytes()[index]).saturating_sub(97)
+}
+
 /// Q1 light style in 8.8 units (`q1LightStyle`).
 ///
 /// Mode 1 leaves jumps of six letters or more unsmoothed.
@@ -24,13 +39,11 @@ pub fn q1_light_style(map: &str, time: f32, interpolation: u8) -> i32 {
     if map.is_empty() {
         return 256;
     }
-    let bytes = map.as_bytes();
     let phase = time * 10.0;
     let frame = phase.floor() as i64;
-    let len = bytes.len() as i64;
-    let index = ((frame % len) + len) % len;
-    let current = i32::from(bytes[index as usize]).saturating_sub(97);
-    let mut next = i32::from(bytes[(index + 1) as usize % bytes.len()]).saturating_sub(97);
+    let index = style_frame_index(map.len(), frame);
+    let current = style_letter_at(map, index);
+    let mut next = style_letter_at(map, (index + 1) % map.len());
     if interpolation < 2 && (next - current).abs() >= 6 {
         next = current;
     }
@@ -45,10 +58,7 @@ pub fn q2_light_style(map: &str, milliseconds: i32) -> Q2LightStyle {
     let value = if map.is_empty() {
         1.0
     } else {
-        let bytes = map.as_bytes();
-        let len = bytes.len() as i32;
-        let index = ((frame % len) + len) % len;
-        f32::from(bytes[index as usize].saturating_sub(97)) / 12.0
+        style_letter_at(map, style_frame_index(map.len(), i64::from(frame))) as f32 / 12.0
     };
     Q2LightStyle {
         rgb: qa_core::math::vec3(value, value, value),
@@ -186,6 +196,20 @@ fn sample(face: &LightmapFace, style: usize, pixel: usize, channel: usize) -> u8
     samples.get(index).copied().unwrap_or(0)
 }
 
+/// Shared style accumulation: add one lightmap's samples scaled per channel.
+///
+/// Q1 passes a uniform triplet from its 8.8 style; Q2 passes per-channel
+/// `style.rgb * modulate`. Style resolution (and its family-specific
+/// errors) stays at the call sites.
+fn accumulate_style_samples(block: &mut [f32], face: &LightmapFace, size: usize, map: usize, scales: [f32; 3]) {
+    for pixel in 0..size {
+        for (channel, scale) in scales.iter().enumerate() {
+            let offset = pixel * 3 + channel;
+            block[offset] += f32::from(sample(face, map, pixel, channel)) * *scale;
+        }
+    }
+}
+
 fn add_dynamic_lights(block: &mut [f32], face: &LightmapFace, lights: &[SurfaceDynamicLight], scale: f32) {
     for light in lights {
         let distance = dot3(light.origin, face.plane.normal) - face.plane.distance;
@@ -288,12 +312,7 @@ pub fn build_q1_lightmap(
             let scale = styles.get(usize::from(*style)).copied().ok_or_else(|| {
                 ClientError::BadMaterial(format!("Lightmap sample {} is outside {} values", style, styles.len()))
             })?;
-            for pixel in 0..size {
-                for channel in 0..3 {
-                    let offset = pixel * 3 + channel;
-                    block[offset] += f32::from(sample(face, map, pixel, channel)) * scale as f32;
-                }
-            }
+            accumulate_style_samples(&mut block, face, size, map, [scale as f32, scale as f32, scale as f32]);
         }
     }
     if !fullbright && face.lighting.is_some() {
@@ -374,12 +393,7 @@ pub fn build_q2_lightmap(
                 .copied()
                 .ok_or_else(|| ClientError::BadMaterial(format!("Missing Q2 lightstyle {style_index}")))?;
             let scales = [style.rgb.x * modulate, style.rgb.y * modulate, style.rgb.z * modulate];
-            for pixel in 0..size {
-                for (channel, scale) in scales.iter().enumerate() {
-                    let offset = pixel * 3 + channel;
-                    block[offset] += f32::from(sample(face, map, pixel, channel)) * *scale;
-                }
-            }
+            accumulate_style_samples(&mut block, face, size, map, scales);
         }
     }
     if face.lighting.is_some() {
@@ -604,6 +618,18 @@ mod tests {
     }
 
     #[test]
+    fn style_wrap_matches_both_families() {
+        assert_eq!(style_frame_index(4, -1), 3);
+        assert_eq!(style_frame_index(4, 5), 1);
+        assert_eq!(style_letter_at("az", 0), 0);
+        assert_eq!(style_letter_at("az", 1), 25);
+        assert_eq!(q1_light_style("ab", -0.1, 0), q1_light_style("ab", 0.1, 0));
+        let style = q2_light_style("am", -150);
+        assert!((style.rgb.x - style_letter_at("am", style_frame_index(2, -1)) as f32 / 12.0).abs() < 1e-6);
+        assert_eq!(q1_light_style("m", 0.05, 2), 12 * 22);
+    }
+
+    #[test]
     fn q2_style_ticks() {
         let style = q2_light_style("m", 0);
         assert!((style.rgb.x - 1.0).abs() < 1e-6);
@@ -622,6 +648,19 @@ mod tests {
         let style = q2_light_style("m", 0);
         let built = build_q2_lightmap(&face(), &[style], 1.0, Q2Mono::Color, &[]).unwrap();
         assert_eq!(built.encoding, BuiltLightmapEncoding::Q2Rgb);
+    }
+
+    #[test]
+    fn shared_accumulation_scales_per_channel() {
+        let face = face();
+        let mut block = vec![0.0f32; 12];
+        accumulate_style_samples(&mut block, &face, 4, 0, [2.0, 3.0, 4.0]);
+        assert_eq!(block, [256.0, 384.0, 512.0].repeat(4));
+        let mut uniform = vec![0.0f32; 12];
+        accumulate_style_samples(&mut uniform, &face, 4, 0, [256.0, 256.0, 256.0]);
+        let q1 = build_q1_lightmap(&face, &[256], None, false, &[]).unwrap();
+        assert_eq!(q1.pixels.len(), 16);
+        assert!(uniform.iter().all(|value| *value == 128.0 * 256.0));
     }
 
     #[test]

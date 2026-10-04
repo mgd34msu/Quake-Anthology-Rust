@@ -48,7 +48,11 @@ impl WeaponBindingItem {
     }
 }
 
-const Q1_WEAPONS: [(&str, &str); 8] = [
+/// Canonical Q1 base weapons in impulse order: id suffix and display name.
+///
+/// Shared with the settings action catalog, which layers its mission-pack
+/// extras on top rather than carrying a second copy.
+pub(crate) const Q1_WEAPONS: [(&str, &str); 8] = [
     ("axe", "Axe"),
     ("shotgun", "Shotgun"),
     ("supershotgun", "Double-barrelled Shotgun"),
@@ -59,7 +63,8 @@ const Q1_WEAPONS: [(&str, &str); 8] = [
     ("lightning", "Thunderbolt"),
 ];
 
-const Q1_MISSION_WEAPONS: [(&str, &str); 8] = [
+/// Canonical Q1 mission-pack weapons: id suffix and display name.
+pub(crate) const Q1_MISSION_WEAPONS: [(&str, &str); 8] = [
     ("hipnotic:laser", "Laser Cannon"),
     ("hipnotic:mjolnir", "Mjolnir"),
     ("hipnotic:proximity", "Proximity Gun"),
@@ -70,7 +75,8 @@ const Q1_MISSION_WEAPONS: [(&str, &str); 8] = [
     ("rogue:plasma", "Plasma"),
 ];
 
-fn q1_weapon_display_name(weapon: &str) -> String {
+/// Canonical Q1 display name for one weapon id, with title-case fallback.
+pub(crate) fn q1_weapon_display_name(weapon: &str) -> String {
     if let Some((_, label)) = Q1_WEAPONS.iter().find(|(id, _)| *id == weapon) {
         return (*label).to_string();
     }
@@ -94,7 +100,8 @@ fn q1_weapon_display_name(weapon: &str) -> String {
         .join(" ")
 }
 
-const Q2_BASE_WEAPONS: [(&str, &str, &str); 11] = [
+/// Canonical Q2 base weapons: short name, item id, and display name.
+pub(crate) const Q2_BASE_WEAPONS: [(&str, &str, &str); 11] = [
     ("blaster", "q2:weapon_blaster", "Blaster"),
     ("shotgun", "q2:weapon_shotgun", "Shotgun"),
     ("supershotgun", "q2:weapon_supershotgun", "Super Shotgun"),
@@ -108,13 +115,15 @@ const Q2_BASE_WEAPONS: [(&str, &str, &str); 11] = [
     ("bfg", "q2:weapon_bfg", "BFG10K"),
 ];
 
-const Q2_XATRIX_WEAPONS: [(&str, &str, &str); 3] = [
+/// Canonical Q2 Xatrix weapons: short name, item id, and display name.
+pub(crate) const Q2_XATRIX_WEAPONS: [(&str, &str, &str); 3] = [
     ("trap", "q2:ammo_trap", "Trap"),
     ("ionripper", "q2:weapon_boomer", "Ionripper"),
     ("phalanx", "q2:weapon_phalanx", "Phalanx"),
 ];
 
-const Q2_ROGUE_WEAPONS: [(&str, &str, &str); 5] = [
+/// Canonical Q2 Rogue weapons: short name, item id, and display name.
+pub(crate) const Q2_ROGUE_WEAPONS: [(&str, &str, &str); 5] = [
     ("tesla", "q2:ammo_tesla", "Tesla"),
     ("proxlauncher", "q2:weapon_proxlauncher", "Prox Launcher"),
     ("chainfist", "q2:weapon_chainfist", "Chainfist"),
@@ -122,7 +131,8 @@ const Q2_ROGUE_WEAPONS: [(&str, &str, &str); 5] = [
     ("etf_rifle", "q2:weapon_etf_rifle", "ETF Rifle"),
 ];
 
-const Q3_WEAPONS: [(i32, &str, &str); 13] = [
+/// Canonical Q3 weapons in donor order: number, item id, and display name.
+pub(crate) const Q3_WEAPONS: [(i32, &str, &str); 13] = [
     (1, "q3:weapon/gauntlet", "Gauntlet"),
     (2, "q3:weapon/machinegun", "Machinegun"),
     (3, "q3:weapon/shotgun", "Shotgun"),
@@ -417,6 +427,24 @@ mod tests {
         assert_eq!(q3.len(), 10);
         let team_arena = base_weapon_binding_items(WeaponFamily::Q3, "missionpack", "classic");
         assert_eq!(team_arena.len(), 13);
+    }
+
+    #[test]
+    fn canonical_tables_match_shared_contract() {
+        assert_eq!(Q1_WEAPONS.len(), 8);
+        assert_eq!(Q1_MISSION_WEAPONS.len(), 8);
+        assert_eq!(
+            Q2_BASE_WEAPONS.len() + Q2_XATRIX_WEAPONS.len() + Q2_ROGUE_WEAPONS.len(),
+            19
+        );
+        assert_eq!(Q3_WEAPONS.len(), 13);
+        for (id, label) in Q1_WEAPONS.iter().chain(Q1_MISSION_WEAPONS.iter()) {
+            assert_eq!(&q1_weapon_display_name(id), label, "display for {id}");
+        }
+        assert_eq!(q1_weapon_display_name("mg3:laser"), "Laser");
+        assert_eq!(q1_weapon_display_name("rogue:grapple"), "Grapple");
+        let numbers: Vec<i32> = Q3_WEAPONS.iter().map(|(number, _, _)| *number).collect();
+        assert_eq!(numbers, (1..=13).collect::<Vec<_>>());
     }
 
     #[test]

@@ -62,6 +62,49 @@ pub struct SpriteExtents {
     pub bottom: f32,
 }
 
+/// Sprite frame-origin convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpriteFamily {
+    /// Q1 frames: extents extend right/down from the origin corner.
+    Q1,
+    /// Q2 SP2 frames: origins are negated offsets from the left/top edges.
+    Q2,
+}
+
+/// Shared frame-to-quad extents with a family parameter.
+///
+/// Both families scale X extents by `scale_x` and Y extents by `scale_z`;
+/// only the origin convention differs.
+fn sprite_frame_extents(
+    origin_x: i32,
+    origin_y: i32,
+    width: i32,
+    height: i32,
+    scale_x: f32,
+    scale_z: f32,
+    family: SpriteFamily,
+) -> SpriteExtents {
+    match family {
+        SpriteFamily::Q1 => SpriteExtents {
+            left: origin_x as f32 * scale_x,
+            right: (origin_x + width) as f32 * scale_x,
+            top: origin_y as f32 * scale_z,
+            bottom: (origin_y - height) as f32 * scale_z,
+        },
+        SpriteFamily::Q2 => SpriteExtents {
+            left: -(origin_x as f32) * scale_x,
+            right: (width - origin_x) as f32 * scale_x,
+            top: (height - origin_y) as f32 * scale_z,
+            bottom: -(origin_y as f32) * scale_z,
+        },
+    }
+}
+
+/// Whether the sprite quad mirrors for a portal camera.
+fn sprite_mirror(camera: &SceneCamera) -> bool {
+    matches!(camera.clip, CameraClip::Portal { mirror: true, .. })
+}
+
 /// Build a camera-facing sprite quad in world space.
 #[must_use]
 pub fn sprite_quad(
@@ -112,18 +155,20 @@ pub fn q1_sprite_geometry(
     if dot3(axis[0], sub3(camera.origin, origin)) >= 0.0 {
         return MaterialGeometry::empty();
     }
-    let mirror = matches!(camera.clip, CameraClip::Portal { mirror: true, .. });
     sprite_quad(
         origin,
         &axis,
-        SpriteExtents {
-            left: frame.origin_x as f32 * transform.scale.x,
-            right: (frame.origin_x + frame.width) as f32 * transform.scale.x,
-            top: frame.origin_y as f32 * transform.scale.z,
-            bottom: (frame.origin_y - frame.height) as f32 * transform.scale.z,
-        },
+        sprite_frame_extents(
+            frame.origin_x,
+            frame.origin_y,
+            frame.width,
+            frame.height,
+            transform.scale.x,
+            transform.scale.z,
+            SpriteFamily::Q1,
+        ),
         color,
-        mirror,
+        sprite_mirror(camera),
     )
 }
 
@@ -135,18 +180,20 @@ pub fn q2_sprite_geometry(
     camera: &SceneCamera,
     color: [u8; 4],
 ) -> MaterialGeometry {
-    let mirror = matches!(camera.clip, CameraClip::Portal { mirror: true, .. });
     sprite_quad(
         transform.origin,
         &camera.axis,
-        SpriteExtents {
-            left: -(frame.origin_x as f32) * transform.scale.x,
-            right: (frame.width - frame.origin_x) as f32 * transform.scale.x,
-            top: (frame.height - frame.origin_y) as f32 * transform.scale.z,
-            bottom: -(frame.origin_y as f32) * transform.scale.z,
-        },
+        sprite_frame_extents(
+            frame.origin_x,
+            frame.origin_y,
+            frame.width,
+            frame.height,
+            transform.scale.x,
+            transform.scale.z,
+            SpriteFamily::Q2,
+        ),
         color,
-        mirror,
+        sprite_mirror(camera),
     )
 }
 
@@ -297,6 +344,42 @@ mod tests {
             0.0,
         );
         assert!(geometry.vertices.is_empty());
+    }
+
+    #[test]
+    fn shared_extents_match_both_families() {
+        assert_eq!(
+            sprite_frame_extents(-32, 32, 64, 64, 1.0, 1.0, SpriteFamily::Q1),
+            SpriteExtents {
+                left: -32.0,
+                right: 32.0,
+                top: 32.0,
+                bottom: -32.0
+            }
+        );
+        assert_eq!(
+            sprite_frame_extents(32, 32, 64, 64, 2.0, 0.5, SpriteFamily::Q2),
+            SpriteExtents {
+                left: -64.0,
+                right: 64.0,
+                top: 16.0,
+                bottom: -16.0
+            }
+        );
+        let q2 = q2_sprite_geometry(
+            &Sp2Frame {
+                width: 64,
+                height: 64,
+                origin_x: 32,
+                origin_y: 32,
+                image: String::new(),
+            },
+            &EntityTransform::identity(),
+            &camera(),
+            [255, 255, 255, 255],
+        );
+        assert_eq!(q2.vertices.len(), 4);
+        assert_eq!(q2.indices.len(), 6);
     }
 
     #[test]

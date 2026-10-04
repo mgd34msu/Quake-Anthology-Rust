@@ -202,6 +202,14 @@ pub fn q1_texture_animations(
     }
 }
 
+/// Wrap a frame counter into `0..count` (`((value % count) + count) % count`).
+///
+/// Q1 tenth-phases and Q2 frame indices share this wrap; the pickers below
+/// stay split because Q1 selects by tenth ranges while Q2 indexes directly.
+fn wrap_animation_frame(value: i32, count: i32) -> i32 {
+    (value % count + count) % count
+}
+
 /// Pick a Q1 animated texture (`q1AnimatedTexture`).
 pub fn q1_animated_texture(material: &Q1Material, time: f32, alternate: bool) -> Result<u32, ClientError> {
     let frames = if alternate && !material.alternate_animation.is_empty() {
@@ -212,7 +220,7 @@ pub fn q1_animated_texture(material: &Q1Material, time: f32, alternate: bool) ->
     let Some(last) = frames.last() else {
         return Ok(material.texture);
     };
-    let phase = ((time * 10.0).trunc() as i32 % last.end_tenths + last.end_tenths) % last.end_tenths;
+    let phase = wrap_animation_frame((time * 10.0).trunc() as i32, last.end_tenths);
     frames
         .iter()
         .find(|frame| phase >= frame.start_tenths && phase < frame.end_tenths)
@@ -257,7 +265,7 @@ pub fn create_q2_material(
 /// Pick a Q2 animated texture (`q2AnimatedTexture`).
 pub fn q2_animated_texture(material: &Q2Material, frame: f32, name: &str) -> Result<u32, ClientError> {
     let count = material.frames.count as i32;
-    let index = ((frame.trunc() as i32 % count) + count) % count;
+    let index = wrap_animation_frame(frame.trunc() as i32, count);
     material
         .frames
         .frames
@@ -708,6 +716,38 @@ mod tests {
     #[test]
     fn missing_frame_is_an_error() {
         assert!(q1_texture_animations("+0lava", &[("+0lava", 1), ("+2lava", 2)]).is_err());
+    }
+
+    #[test]
+    fn animation_wrap_matches_both_pickers() {
+        assert_eq!(wrap_animation_frame(7, 4), 3);
+        assert_eq!(wrap_animation_frame(-1, 4), 3);
+        assert_eq!(wrap_animation_frame(-9, 4), 3);
+        let q1 = create_q1_material(
+            "+0lava",
+            9,
+            None,
+            false,
+            1.0,
+            vec![
+                Q1AnimFrame {
+                    image: 1,
+                    start_tenths: 0,
+                    end_tenths: 2,
+                },
+                Q1AnimFrame {
+                    image: 2,
+                    start_tenths: 2,
+                    end_tenths: 4,
+                },
+            ],
+            Vec::new(),
+        );
+        assert_eq!(q1_animated_texture(&q1, -0.1, false).unwrap(), 2);
+        assert_eq!(q1_animated_texture(&q1, 0.25, false).unwrap(), 2);
+        let q2 = create_q2_material(&[10, 11, 12], None, false, 0).unwrap();
+        assert_eq!(q2_animated_texture(&q2, -1.0, "lava").unwrap(), 12);
+        assert_eq!(q2_animated_texture(&q2, 4.0, "lava").unwrap(), 11);
     }
 
     #[test]

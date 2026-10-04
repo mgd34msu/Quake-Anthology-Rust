@@ -537,10 +537,18 @@ pub struct Q2SceneFog {
     pub sky_factor: f32,
 }
 
+/// Shared global (non-height) fog mix with wire density scaled by 64.
+///
+/// Q1 fog is exactly this step; Q2 layers height fog and sky blend on top,
+/// keeping the subset relation explicit at both call sites.
+fn global_fog_mix(color: Vec3, fog_color: Vec3, density: f32, depth: f32) -> Vec3 {
+    mix(color, fog_color, global_fog_amount(density / 64.0, depth))
+}
+
 /// Q2 fog color (`q2FogColor`).
 #[must_use]
 pub fn q2_fog_color(color: Vec3, fog: &Q2SceneFog, point: Vec3, view: Vec3, depth: f32, sky: bool) -> Vec3 {
-    let mut result = mix(color, fog.color, global_fog_amount(fog.density / 64.0, depth));
+    let mut result = global_fog_mix(color, fog.color, fog.density, depth);
     if fog.height.density > 0.0 {
         let dx = point.x - view.x;
         let dy = point.y - view.y;
@@ -583,7 +591,7 @@ pub fn q2_fog_color(color: Vec3, fog: &Q2SceneFog, point: Vec3, view: Vec3, dept
 /// Q1 fog color (`q1FogColor`, wire density divided by 64).
 #[must_use]
 pub fn q1_fog_color(color: Vec3, fog: &Q1Fog, depth: f32) -> Vec3 {
-    mix(color, fog.color, global_fog_amount(fog.density / 64.0, depth))
+    global_fog_mix(color, fog.color, fog.density, depth)
 }
 
 #[cfg(test)]
@@ -630,6 +638,46 @@ mod tests {
     fn height_fraction_keeps_double_subtraction() {
         assert_eq!(height_fog_fraction(10.0, 2.0, 12.0), (10.0 - 4.0) / 10.0);
         assert_eq!(height_fog_fraction(0.0, 5.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn q1_fog_is_q2_global_subset() {
+        let color = vec3(0.2, 0.4, 0.8);
+        let fog_color = vec3(0.5, 0.5, 0.5);
+        let q1 = q1_fog_color(
+            color,
+            &Q1Fog {
+                density: 8.0,
+                color: fog_color,
+            },
+            100.0,
+        );
+        let q2 = q2_fog_color(
+            color,
+            &Q2SceneFog {
+                color: fog_color,
+                density: 8.0,
+                height: Q2HeightFog {
+                    density: 0.0,
+                    start: Q2HeightEndpoint {
+                        color: fog_color,
+                        distance: 0.0,
+                    },
+                    end: Q2HeightEndpoint {
+                        color: fog_color,
+                        distance: 1.0,
+                    },
+                    falloff: 1.0,
+                },
+                sky_factor: 0.0,
+            },
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 0.0),
+            100.0,
+            false,
+        );
+        assert_eq!(q1, q2);
+        assert_eq!(global_fog_mix(color, fog_color, 0.0, 100.0), color);
     }
 
     #[test]

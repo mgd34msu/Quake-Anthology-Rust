@@ -170,6 +170,55 @@ pub fn world_point_leaf(map: &WorldMap, point: Vec3) -> Result<i32, RenderError>
     }
 }
 
+/// PVS family selecting the shared RLE core's error strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PvsFamily {
+    /// Quake 1.
+    Q1,
+    /// Quake 2.
+    Q2,
+}
+
+/// Shared PVS RLE core: expand `output_len` bytes from `data` at `read.
+///
+/// Both families share the literal/zero-run encoding; only the row length
+/// source and error strings differ, selected here by `family`.
+fn decompress_pvs_row(data: &[u8], read: usize, output_len: usize, family: PvsFamily) -> Result<Vec<u8>, RenderError> {
+    let truncated = || {
+        RenderError::BadWire(if family == PvsFamily::Q1 {
+            "Truncated Q1 PVS".to_string()
+        } else {
+            "Truncated Q2 PVS".to_string()
+        })
+    };
+    let invalid = || {
+        RenderError::BadWire(if family == PvsFamily::Q1 {
+            "Invalid Q1 PVS run".to_string()
+        } else {
+            "Invalid Q2 PVS run".to_string()
+        })
+    };
+    let mut output = vec![0u8; output_len];
+    let mut read = read;
+    let mut write = 0;
+    while write < output.len() {
+        let value = *data.get(read).ok_or_else(truncated)?;
+        read += 1;
+        if value != 0 {
+            output[write] = value;
+            write += 1;
+            continue;
+        }
+        let count = *data.get(read).ok_or_else(truncated)?;
+        read += 1;
+        if count == 0 || write + count as usize > output.len() {
+            return Err(invalid());
+        }
+        write += count as usize;
+    }
+    Ok(output)
+}
+
 /// Decompress one Q1 PVS row; null offsets and empty lumps see everything.
 pub fn decompress_q1_pvs(data: &[u8], offset: Option<i32>, visible_leaves: usize) -> Result<Vec<u8>, RenderError> {
     let output_len = visible_leaves.div_ceil(8);
@@ -180,29 +229,7 @@ pub fn decompress_q1_pvs(data: &[u8], offset: Option<i32>, visible_leaves: usize
     if offset < 0 {
         return Err(RenderError::BadWire("Truncated Q1 PVS".to_string()));
     }
-    let mut output = vec![0u8; output_len];
-    let mut read = offset as usize;
-    let mut write = 0;
-    while write < output.len() {
-        let value = *data
-            .get(read)
-            .ok_or_else(|| RenderError::BadWire("Truncated Q1 PVS".to_string()))?;
-        read += 1;
-        if value != 0 {
-            output[write] = value;
-            write += 1;
-            continue;
-        }
-        let count = *data
-            .get(read)
-            .ok_or_else(|| RenderError::BadWire("Truncated Q1 PVS".to_string()))?;
-        read += 1;
-        if count == 0 || write + count as usize > output.len() {
-            return Err(RenderError::BadWire("Invalid Q1 PVS run".to_string()));
-        }
-        write += count as usize;
-    }
-    Ok(output)
+    decompress_pvs_row(data, offset as usize, output_len, PvsFamily::Q1)
 }
 
 fn q2_pvs(compressed: &[u8], clusters: &[Q2ClusterVis], cluster: i32) -> Result<Option<Vec<u8>>, RenderError> {
@@ -213,29 +240,13 @@ fn q2_pvs(compressed: &[u8], clusters: &[Q2ClusterVis], cluster: i32) -> Result<
     if entry.pvs_offset < 0 {
         return Ok(None);
     }
-    let mut result = vec![0u8; clusters.len().div_ceil(8)];
-    let mut read = entry.pvs_offset as usize;
-    let mut write = 0;
-    while write < result.len() {
-        let value = *compressed
-            .get(read)
-            .ok_or_else(|| RenderError::BadWire("Truncated Q2 PVS".to_string()))?;
-        read += 1;
-        if value != 0 {
-            result[write] = value;
-            write += 1;
-        } else {
-            let count = *compressed
-                .get(read)
-                .ok_or_else(|| RenderError::BadWire("Truncated Q2 PVS".to_string()))?;
-            read += 1;
-            if count == 0 || write + count as usize > result.len() {
-                return Err(RenderError::BadWire("Invalid Q2 PVS run".to_string()));
-            }
-            write += count as usize;
-        }
-    }
-    Ok(Some(result))
+    decompress_pvs_row(
+        compressed,
+        entry.pvs_offset as usize,
+        clusters.len().div_ceil(8),
+        PvsFamily::Q2,
+    )
+    .map(Some)
 }
 
 fn remaining_frustum_planes(bounds: &Bounds, planes: &[Plane], mut bits: u32) -> Option<u32> {
@@ -703,5 +714,27 @@ mod tests {
         );
         assert!(decompress_q1_pvs(&[0x01], Some(0), 16).is_err());
         assert!(decompress_q1_pvs(&[0x00, 0x00], Some(0), 8).is_err());
+    }
+
+    #[test]
+    fn shared_pvs_core_matches_both_families() {
+        let data = [0x05, 0x00, 0x01, 0xFF];
+        assert_eq!(
+            decompress_pvs_row(&data, 0, 2, PvsFamily::Q1).unwrap(),
+            decompress_pvs_row(&data, 0, 2, PvsFamily::Q2).unwrap()
+        );
+        assert_eq!(decompress_q1_pvs(&data, Some(0), 16).unwrap(), vec![0x05, 0x00]);
+        let clusters = vec![Q2ClusterVis { pvs_offset: 0 }];
+        assert_eq!(
+            q2_pvs(&data, &clusters, 0).unwrap(),
+            Some(decompress_q1_pvs(&data, Some(0), 8).unwrap())
+        );
+        assert_eq!(q2_pvs(&data, &clusters, -1).unwrap(), None);
+        let wide = vec![Q2ClusterVis { pvs_offset: 0 }; 9];
+        assert!(q2_pvs(&[0x01], &wide, 0).is_err());
+        let q1_err = decompress_pvs_row(&[0x01], 0, 2, PvsFamily::Q1).expect_err("q1 truncates");
+        let q2_err = decompress_pvs_row(&[0x01], 0, 2, PvsFamily::Q2).expect_err("q2 truncates");
+        assert_eq!(q1_err, RenderError::BadWire("Truncated Q1 PVS".to_string()));
+        assert_eq!(q2_err, RenderError::BadWire("Truncated Q2 PVS".to_string()));
     }
 }

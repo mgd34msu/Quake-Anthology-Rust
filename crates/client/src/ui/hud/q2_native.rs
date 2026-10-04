@@ -17,7 +17,7 @@ use super::q2_rerelease_layout::{q2_rerelease_inventory, q2_rerelease_layout};
 use super::q2_rerelease_layout::{NativeQ2HudEnvironment, NativeQ2HudTable};
 use super::token::HudTokenizer;
 use crate::error::ClientError;
-use crate::hud::game_atoi;
+use crate::hud::{run_classic_layout, ClassicLayoutEnv};
 use crate::ui::types::{Q2ProtocolFamily, ResourceId};
 
 /// Native Q2 HUD frame: public playerstate plus received statusbar/configstrings.
@@ -216,187 +216,121 @@ pub fn q2_layout_operations(
         };
         return q2_rerelease_layout(source, frame, width, height, environment, arsenal);
     }
-    let config = frame.protocol.layout();
     let mut parser = HudTokenizer::new(source, "Q2 HUD layout");
-    let mut out = Vec::new();
-    let (mut x, mut y) = (0i32, 0i32);
+    let mut tokens = Vec::new();
     while let Some(token) = parser.next(true)? {
-        match token.value.as_str() {
-            "xl" => x = next_integer(&mut parser)?,
-            "xr" => x = width + next_integer(&mut parser)?,
-            "xv" => x = width / 2 - 160 + next_integer(&mut parser)?,
-            "yt" => y = next_integer(&mut parser)?,
-            "yb" => y = height + next_integer(&mut parser)?,
-            "yv" => y = height / 2 - 120 + next_integer(&mut parser)?,
-            "pic" => {
-                let index = next_integer(&mut parser)?;
-                if index == 2 {
-                    if let Some(ammunition) = arsenal.and_then(|arsenal| arsenal.ammunition.as_ref()) {
-                        if let (Some(_), Some(icon)) = (ammunition.count, ammunition.icon.as_ref()) {
-                            out.push(NativeQ2HudOperation::ArsenalPicture {
-                                x: x as f32,
-                                y: y as f32,
-                                resource: icon.resource.clone(),
-                                aspect: icon.aspect,
-                            });
-                        }
-                        continue;
-                    }
-                }
-                if index == 6 {
-                    if let Some(selected) = arsenal.and_then(|arsenal| arsenal.selected_item.as_ref()) {
-                        if native_q2_hud_stat(frame, index, arsenal)? != 0 {
-                            if let Some(icon) = selected.icon.as_ref() {
-                                out.push(NativeQ2HudOperation::ArsenalPicture {
-                                    x: x as f32,
-                                    y: y as f32,
-                                    resource: icon.resource.clone(),
-                                    aspect: icon.aspect,
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                }
-                let image = native_q2_hud_stat(frame, index, arsenal)?;
-                if image < 0 || image >= config.max_images {
-                    return Err(ClientError::BadUi(format!(
-                        "Q2 HUD image {image} is outside configstrings"
-                    )));
-                }
-                push_picture(
-                    &mut out,
-                    x,
-                    y,
-                    frame
-                        .configstrings
-                        .get(&(config.images + image))
-                        .map_or("", String::as_str),
-                );
-            }
-            "picn" => {
-                let name = next_token(&mut parser)?;
-                push_picture(&mut out, x, y, &name);
-            }
-            "num" => {
-                let digits = next_integer(&mut parser)?;
-                let index = next_integer(&mut parser)?;
-                draw_number(
-                    &mut out,
-                    x,
-                    y,
-                    native_q2_hud_stat(frame, index, arsenal)?,
-                    digits,
-                    false,
-                );
-            }
-            "hnum" => {
-                let value = native_q2_hud_stat(frame, 1, arsenal)?;
-                if native_q2_hud_stat(frame, 15, arsenal)? & 1 != 0 {
-                    push_picture(&mut out, x, y, "field_3");
-                }
-                let blink = (frame.server_frame >> 2) & 1 != 0;
-                draw_number(&mut out, x, y, value, 3, value <= 0 || value <= 25 && blink);
-            }
-            "anum" => {
-                let value = native_q2_hud_stat(frame, 3, arsenal)?;
-                if value < 0 {
-                    continue;
-                }
-                if native_q2_hud_stat(frame, 15, arsenal)? & 4 != 0 {
-                    push_picture(&mut out, x, y, "field_3");
-                }
-                let blink = (frame.server_frame >> 2) & 1 != 0;
-                draw_number(&mut out, x, y, value, 3, value <= 5 && blink);
-            }
-            "rnum" => {
-                let value = native_q2_hud_stat(frame, 5, arsenal)?;
-                if value < 1 {
-                    continue;
-                }
-                if native_q2_hud_stat(frame, 15, arsenal)? & 2 != 0 {
-                    push_picture(&mut out, x, y, "field_3");
-                }
-                draw_number(&mut out, x, y, value, 3, false);
-            }
-            "stat_string" => {
-                let index = native_q2_hud_stat(frame, next_integer(&mut parser)?, arsenal)?;
-                if index < 0 || index >= config.max_config_strings {
-                    return Err(ClientError::BadUi(
-                        "Q2 HUD stat_string is outside configstrings".to_string(),
-                    ));
-                }
-                push_text(
-                    &mut out,
-                    x,
-                    y,
-                    frame.configstrings.get(&index).map_or("", String::as_str),
-                    false,
-                );
-            }
-            "string" | "string2" => {
-                let alternate = token.value == "string2";
-                let value = next_token(&mut parser)?;
-                push_text(&mut out, x, y, &value, alternate);
-            }
-            "cstring" | "cstring2" => {
-                let alternate = token.value == "cstring2";
-                let value = next_token(&mut parser)?;
-                let mut line_y = y;
-                for line in value.split('\n') {
-                    let length = line.encode_utf16().count() as i32;
-                    push_text(&mut out, x + (320 - length * 8) / 2, line_y, line, alternate);
-                    line_y += 8;
-                }
-            }
-            "client" => {
-                x = width / 2 - 160 + next_integer(&mut parser)?;
-                y = height / 2 - 120 + next_integer(&mut parser)?;
-                let (name, icon) = client_info(frame, next_integer(&mut parser)?)?;
-                let (score, ping, time) = (
-                    next_integer(&mut parser)?,
-                    next_integer(&mut parser)?,
-                    next_integer(&mut parser)?,
-                );
-                push_text(&mut out, x + 32, y, &name, true);
-                push_text(&mut out, x + 32, y + 8, "Score: ", false);
-                push_text(&mut out, x + 88, y + 8, &score.to_string(), true);
-                push_text(&mut out, x + 32, y + 16, &format!("Ping:  {ping}"), false);
-                push_text(&mut out, x + 32, y + 24, &format!("Time:  {time}"), false);
-                push_picture(&mut out, x, y, &icon);
-            }
-            "ctf" => {
-                x = width / 2 - 160 + next_integer(&mut parser)?;
-                y = height / 2 - 120 + next_integer(&mut parser)?;
-                let index = next_integer(&mut parser)?;
-                let (name, _) = client_info(frame, index)?;
-                let score = next_integer(&mut parser)?;
-                let ping = next_integer(&mut parser)?.min(999);
-                let short: String = name.chars().take(12).collect();
-                push_text(
-                    &mut out,
-                    x,
-                    y,
-                    &format!("{score:>3} {ping:>3} {short:<12}"),
-                    index == frame.player_number,
-                );
-            }
-            "if" => {
-                if native_q2_hud_stat(frame, next_integer(&mut parser)?, arsenal)? != 0 {
-                    continue;
-                }
-                loop {
-                    match parser.next(true)? {
-                        None => break,
-                        Some(skipped) if skipped.value == "endif" => break,
-                        Some(_) => {}
-                    }
-                }
-            }
-            _ => {}
-        }
+        tokens.push(token.value);
     }
-    Ok(out)
+    let mut env = NativeLayoutEnv {
+        frame,
+        arsenal,
+        out: Vec::new(),
+    };
+    run_classic_layout(&tokens, width, height, &mut env)?;
+    Ok(env.out)
+}
+
+/// Native classic-layout environment over [`NativeQ2HudFrame`].
+struct NativeLayoutEnv<'a> {
+    frame: &'a NativeQ2HudFrame,
+    arsenal: Option<&'a NativeQ2HudArsenal>,
+    out: Vec<NativeQ2HudOperation>,
+}
+
+impl ClassicLayoutEnv for NativeLayoutEnv<'_> {
+    type Error = ClientError;
+
+    fn stat(&self, index: i32) -> Result<i32, Self::Error> {
+        native_q2_hud_stat(self.frame, index, self.arsenal)
+    }
+
+    fn image_name(&self, image: i32) -> Result<String, Self::Error> {
+        let config = self.frame.protocol.layout();
+        if image < 0 || image >= config.max_images {
+            return Err(ClientError::BadUi(format!(
+                "Q2 HUD image {image} is outside configstrings"
+            )));
+        }
+        Ok(self
+            .frame
+            .configstrings
+            .get(&(config.images + image))
+            .map_or("", String::as_str)
+            .to_string())
+    }
+
+    fn stat_string(&self, index: i32) -> Result<String, Self::Error> {
+        let config = self.frame.protocol.layout();
+        if index < 0 || index >= config.max_config_strings {
+            return Err(ClientError::BadUi(
+                "Q2 HUD stat_string is outside configstrings".to_string(),
+            ));
+        }
+        Ok(self
+            .frame
+            .configstrings
+            .get(&index)
+            .map_or("", String::as_str)
+            .to_string())
+    }
+
+    fn client(&self, index: i32) -> Result<(String, String), Self::Error> {
+        client_info(self.frame, index)
+    }
+
+    fn server_frame(&self) -> i32 {
+        self.frame.server_frame
+    }
+
+    fn player_number(&self) -> i32 {
+        self.frame.player_number
+    }
+
+    fn cstring_length(&self, line: &str) -> i32 {
+        line.encode_utf16().count() as i32
+    }
+
+    fn try_arsenal_pic(&mut self, x: i32, y: i32, index: i32) -> Result<bool, Self::Error> {
+        if index == 2 {
+            if let Some(ammunition) = self.arsenal.and_then(|arsenal| arsenal.ammunition.as_ref()) {
+                if let (Some(_), Some(icon)) = (ammunition.count, ammunition.icon.as_ref()) {
+                    self.out.push(NativeQ2HudOperation::ArsenalPicture {
+                        x: x as f32,
+                        y: y as f32,
+                        resource: icon.resource.clone(),
+                        aspect: icon.aspect,
+                    });
+                }
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        if index == 6 {
+            if let Some(selected) = self.arsenal.and_then(|arsenal| arsenal.selected_item.as_ref()) {
+                if native_q2_hud_stat(self.frame, index, self.arsenal)? != 0 {
+                    if let Some(icon) = selected.icon.as_ref() {
+                        self.out.push(NativeQ2HudOperation::ArsenalPicture {
+                            x: x as f32,
+                            y: y as f32,
+                            resource: icon.resource.clone(),
+                            aspect: icon.aspect,
+                        });
+                    }
+                }
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        Ok(false)
+    }
+
+    fn emit_text(&mut self, x: i32, y: i32, text: String, alternate: bool) {
+        push_text(&mut self.out, x, y, &text, alternate);
+    }
+
+    fn emit_picture(&mut self, x: i32, y: i32, name: String) {
+        push_picture(&mut self.out, x, y, &name);
+    }
 }
 
 /// Draw the statusbar, layout, and classic inventory panel.
@@ -561,16 +495,6 @@ struct InventoryRow {
     selected: bool,
 }
 
-/// Next layout token, or empty at end of input.
-fn next_token(parser: &mut HudTokenizer) -> Result<String, ClientError> {
-    Ok(parser.next(true)?.map_or_else(String::new, |token| token.value))
-}
-
-/// Next layout token parsed with Quake `atoi` semantics.
-fn next_integer(parser: &mut HudTokenizer) -> Result<i32, ClientError> {
-    Ok(game_atoi(&next_token(parser)?))
-}
-
 /// Push a picture unless its name is empty.
 fn push_picture(out: &mut Vec<NativeQ2HudOperation>, x: i32, y: i32, name: &str) {
     if name.is_empty() {
@@ -594,27 +518,6 @@ fn push_text(out: &mut Vec<NativeQ2HudOperation>, x: i32, y: i32, text: &str, al
         shadow: false,
         xor: false,
     });
-}
-
-/// Draw a right-aligned digit field (`SCR_DrawField`).
-fn draw_number(out: &mut Vec<NativeQ2HudOperation>, x: i32, y: i32, value: i32, digits: i32, alternate: bool) {
-    let count = 5.min(digits);
-    if count < 1 {
-        return;
-    }
-    let value_text = value.to_string();
-    let length = (value_text.len() as i32).min(count);
-    let mut cursor = x + 2 + 16 * (count - length);
-    let set = if alternate { "anum" } else { "num" };
-    for byte in value_text.bytes().take(length as usize) {
-        let glyph = if byte == b'-' {
-            "minus".to_string()
-        } else {
-            (byte as char).to_string()
-        };
-        push_picture(out, cursor, y, &format!("{set}_{glyph}"));
-        cursor += 16;
-    }
 }
 
 /// Resolve a client slot to its scoreboard name and player-icon picture.
@@ -925,6 +828,106 @@ mod tests {
             NativeQ2HudOperation::Text { text, alternate: false, .. }
             if text.contains("Shells")
         )));
+    }
+
+    #[test]
+    fn shared_grammar_matches_headless_emitter() {
+        use crate::hud::{q2_layout_ops, Q2HudFrame, Q2HudOp};
+
+        let source = "xv 0 yv 0 hnum anum rnum num 4 1 pic 7 picn shell string hi string2 yo \
+            cstring ab stat_string 4 if 1 picn shown endif client 0 0 0 12 34 56 ctf 0 0 0 7 1200";
+        let mut stats16 = vec![0i16; 32];
+        stats16[1] = 100;
+        stats16[3] = 25;
+        stats16[5] = 8;
+        stats16[4] = 42;
+        stats16[7] = 0;
+        let mut stats32 = vec![0i32; 32];
+        stats32[1] = 100;
+        stats32[3] = 25;
+        stats32[5] = 8;
+        stats32[4] = 42;
+        stats32[7] = 0;
+        let mut configstrings = BTreeMap::new();
+        configstrings.insert(30, "8".to_string());
+        configstrings.insert(42, "objective".to_string());
+        configstrings.insert(544, "pic/health".to_string());
+        configstrings.insert(1312, "mike\\male/grunt".to_string());
+        let headless = q2_layout_ops(
+            source,
+            &Q2HudFrame {
+                stats: stats16,
+                configstrings: configstrings.clone(),
+                player_number: 0,
+                server_frame: 0,
+                ammo: None,
+            },
+            640,
+            480,
+        )
+        .expect("headless layout");
+        let native = q2_layout_operations(
+            source,
+            &NativeQ2HudFrame {
+                protocol: Q2ProtocolFamily::Classic,
+                stats: stats32,
+                configstrings,
+                layout: String::new(),
+                inventory: Vec::new(),
+                player_number: 0,
+                server_frame: 0,
+                time_ms: 0,
+                frame_time_ms: None,
+            },
+            640,
+            480,
+            None,
+            None,
+        )
+        .expect("native layout");
+        assert_eq!(native.len(), headless.len());
+        for (native, headless) in native.iter().zip(headless.iter()) {
+            match (native, headless) {
+                (
+                    NativeQ2HudOperation::Text {
+                        x,
+                        y,
+                        text,
+                        alternate,
+                        shadow,
+                        xor,
+                    },
+                    Q2HudOp::Text {
+                        x: hx,
+                        y: hy,
+                        text: htext,
+                        alternate: halt,
+                    },
+                ) => {
+                    assert_eq!((*x, *y), (*hx as f32, *hy as f32));
+                    assert_eq!((text, *alternate), (htext, *halt));
+                    assert!(!shadow && !xor);
+                }
+                (
+                    NativeQ2HudOperation::Picture {
+                        x,
+                        y,
+                        name,
+                        anchor_before,
+                    },
+                    Q2HudOp::Picture {
+                        x: hx,
+                        y: hy,
+                        name: hname,
+                    },
+                ) => {
+                    assert_eq!((*x, *y), (*hx as f32, *hy as f32));
+                    assert_eq!(name, hname);
+                    assert!(!anchor_before);
+                }
+                other => panic!("op mismatch: {other:?}"),
+            }
+        }
     }
 
     #[test]

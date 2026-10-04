@@ -551,190 +551,41 @@ fn hud_stat(frame: &Q2HudFrame, index: i32) -> Result<i32, ClientError> {
     Ok(i32::from(frame.stats[index as usize]))
 }
 
-/// Execute a classic Q2 layout string (`SCR_ExecuteLayoutString`).
+/// Classic Q2 layout-grammar environment: stat/config/client resolution plus
+/// thin op emitters.
 ///
-/// Supports cursor (`xl/xr/xv/yt/yb/yv`), `pic/picn`, `num`,
-/// `hnum/anum/rnum`, `stat_string`, `string/string2`,
-/// `cstring/cstring2`, `client/ctf`, and flat `if/endif` skip.
-/// Unknown words are ignored, matching the source switch.
-pub fn q2_layout_ops(source: &str, frame: &Q2HudFrame, width: i32, height: i32) -> Result<Vec<Q2HudOp>, ClientError> {
-    struct Cursor {
-        tokens: Vec<String>,
-        index: usize,
-    }
-    impl Cursor {
-        fn next(&mut self) -> String {
-            if self.index >= self.tokens.len() {
-                return String::new();
-            }
-            let token = self.tokens[self.index].clone();
-            self.index += 1;
-            token
-        }
-        fn integer(&mut self) -> i32 {
-            game_atoi(&self.next())
-        }
-    }
-
-    fn client_name(frame: &Q2HudFrame, index: i32) -> Result<(String, String), ClientError> {
-        let max: i32 = frame
-            .configstrings
-            .get(&Q2_CLASSIC_LAYOUT.max_clients)
-            .map_or(256, |text| game_atoi(text));
-        if index < 0 || index >= max.max(1) {
-            return Err(ClientError::BadHudClient { index });
-        }
-        let info = frame
-            .configstrings
-            .get(&(Q2_CLASSIC_LAYOUT.player_skins + index))
-            .cloned()
-            .unwrap_or_default();
-        let (name, skin) = match info.find('\\') {
-            Some(slash) => (info[..slash].to_string(), info[slash + 1..].to_string()),
-            None => (info, "male/grunt".to_string()),
-        };
-        let skin = if skin.is_empty() {
-            "male/grunt".to_string()
-        } else {
-            skin
-        };
-        Ok((name, format!("/players/{skin}_i.pcx")))
-    }
-
-    let mut cursor = Cursor {
-        tokens: layout_tokens(source),
-        index: 0,
-    };
-    let mut ops = Vec::new();
-    let mut x = 0;
-    let mut y = 0;
-    let text = |ops: &mut Vec<Q2HudOp>, text: String, alternate: bool, x: i32, y: i32| {
-        ops.push(Q2HudOp::Text { x, y, text, alternate });
-    };
-    let picture = |ops: &mut Vec<Q2HudOp>, name: String, x: i32, y: i32| {
-        if !name.is_empty() {
-            ops.push(Q2HudOp::Picture { x, y, name });
-        }
-    };
-    while cursor.index < cursor.tokens.len() {
-        let word = cursor.next();
-        if word == "if" && hud_stat(frame, cursor.integer())? == 0 {
-            while cursor.index < cursor.tokens.len() && cursor.next() != "endif" {}
-            continue;
-        }
-        match word.as_str() {
-            "xl" => x = cursor.integer(),
-            "xr" => x = width + cursor.integer(),
-            "xv" => x = width / 2 - 160 + cursor.integer(),
-            "yt" => y = cursor.integer(),
-            "yb" => y = height + cursor.integer(),
-            "yv" => y = height / 2 - 120 + cursor.integer(),
-            "pic" => {
-                let index = cursor.integer();
-                let image = hud_stat(frame, index)?;
-                if !(0..Q2_CLASSIC_LAYOUT.max_images).contains(&image) {
-                    return Err(ClientError::BadHudImage { index: image });
-                }
-                let name = frame
-                    .configstrings
-                    .get(&(Q2_CLASSIC_LAYOUT.images + image))
-                    .cloned()
-                    .unwrap_or_default();
-                picture(&mut ops, name, x, y);
-            }
-            "picn" => {
-                let name = cursor.next();
-                picture(&mut ops, name, x, y);
-            }
-            "num" => {
-                let digits = cursor.integer();
-                let value = hud_stat(frame, cursor.integer())?;
-                draw_field(&mut ops, value, digits, false, x, y);
-            }
-            "hnum" => {
-                let value = hud_stat(frame, 1)?;
-                if hud_stat(frame, 15)? & 1 != 0 {
-                    picture(&mut ops, "field_3".to_string(), x, y);
-                }
-                let flash = (frame.server_frame >> 2) & 1 != 0;
-                draw_field(&mut ops, value, 3, value <= 0 || value <= 25 && flash, x, y);
-            }
-            "anum" => {
-                let value = hud_stat(frame, 3)?;
-                if value >= 0 {
-                    if hud_stat(frame, 15)? & 4 != 0 {
-                        picture(&mut ops, "field_3".to_string(), x, y);
-                    }
-                    let flash = (frame.server_frame >> 2) & 1 != 0;
-                    draw_field(&mut ops, value, 3, value <= 5 && flash, x, y);
-                }
-            }
-            "rnum" => {
-                let value = hud_stat(frame, 5)?;
-                if value >= 1 {
-                    if hud_stat(frame, 15)? & 2 != 0 {
-                        picture(&mut ops, "field_3".to_string(), x, y);
-                    }
-                    draw_field(&mut ops, value, 3, false, x, y);
-                }
-            }
-            "stat_string" => {
-                let index = hud_stat(frame, cursor.integer())?;
-                if !(0..Q2_CLASSIC_LAYOUT.max_configstrings).contains(&index) {
-                    return Err(ClientError::BadHudConfigstring { index });
-                }
-                let value = frame.configstrings.get(&index).cloned().unwrap_or_default();
-                text(&mut ops, value, false, x, y);
-            }
-            "string" | "string2" => {
-                let value = cursor.next();
-                text(&mut ops, value, word == "string2", x, y);
-            }
-            "cstring" | "cstring2" => {
-                let alternate = word == "cstring2";
-                let mut line_y = y;
-                for line in cursor.next().split('\n') {
-                    #[allow(clippy::cast_possible_wrap)]
-                    let line_x = x + (320 - line.len() as i32 * 8) / 2;
-                    text(&mut ops, line.to_string(), alternate, line_x, line_y);
-                    line_y += 8;
-                }
-            }
-            "client" => {
-                x = width / 2 - 160 + cursor.integer();
-                y = height / 2 - 120 + cursor.integer();
-                let (name, icon) = client_name(frame, cursor.integer())?;
-                let (score, ping, time) = (cursor.integer(), cursor.integer(), cursor.integer());
-                text(&mut ops, name, true, x + 32, y);
-                text(&mut ops, "Score: ".to_string(), false, x + 32, y + 8);
-                text(&mut ops, score.to_string(), true, x + 88, y + 8);
-                text(&mut ops, format!("Ping:  {ping}"), false, x + 32, y + 16);
-                text(&mut ops, format!("Time:  {time}"), false, x + 32, y + 24);
-                picture(&mut ops, icon, x, y);
-            }
-            "ctf" => {
-                x = width / 2 - 160 + cursor.integer();
-                y = height / 2 - 120 + cursor.integer();
-                let index = cursor.integer();
-                let (name, _) = client_name(frame, index)?;
-                let (score, ping) = (cursor.integer(), cursor.integer().min(999));
-                let short: String = name.chars().take(12).collect();
-                text(
-                    &mut ops,
-                    format!("{score:>3} {ping:>3} {short:<12}"),
-                    index == frame.player_number,
-                    x,
-                    y,
-                );
-            }
-            _ => {}
-        }
-    }
-    Ok(ops)
+/// The headless [`q2_layout_ops`] interpreter and the native HUD classic path
+/// share the grammar core ([`run_classic_layout`]); each keeps its own stat
+/// sources, config tables, client-limit parsing, cstring width, error
+/// taxonomy, and op types behind this trait.
+pub(crate) trait ClassicLayoutEnv {
+    /// Caller error type.
+    type Error;
+    /// Read one HUD stat.
+    fn stat(&self, index: i32) -> Result<i32, Self::Error>;
+    /// Resolve a `pic` image index to its picture name (range-checked).
+    fn image_name(&self, image: i32) -> Result<String, Self::Error>;
+    /// Resolve a `stat_string` index to its configstring (range-checked).
+    fn stat_string(&self, index: i32) -> Result<String, Self::Error>;
+    /// Resolve a client slot to its scoreboard name and icon picture.
+    fn client(&self, index: i32) -> Result<(String, String), Self::Error>;
+    /// Server frame driving warning flash.
+    fn server_frame(&self) -> i32;
+    /// Zero-based local player number for `ctf` highlight.
+    fn player_number(&self) -> i32;
+    /// Centered-string length unit: bytes here, UTF-16 units natively.
+    fn cstring_length(&self, line: &str) -> i32;
+    /// Emit an arsenal-backed `pic` (native `pic 2/6`); `Ok(false)` runs the
+    /// normal image path.
+    fn try_arsenal_pic(&mut self, x: i32, y: i32, index: i32) -> Result<bool, Self::Error>;
+    /// Emit one text op.
+    fn emit_text(&mut self, x: i32, y: i32, text: String, alternate: bool);
+    /// Emit one named-picture op.
+    fn emit_picture(&mut self, x: i32, y: i32, name: String);
 }
 
-/// Right-aligned digit pictures (`SCR_DrawField`).
-fn draw_field(ops: &mut Vec<Q2HudOp>, value: i32, digits: i32, alternate: bool, x: i32, y: i32) {
+/// Right-aligned digit pictures (`SCR_DrawField`) through an environment.
+fn draw_layout_field<E: ClassicLayoutEnv>(env: &mut E, value: i32, digits: i32, alternate: bool, x: i32, y: i32) {
     let count = digits.min(5);
     if count < 1 {
         return;
@@ -752,9 +603,253 @@ fn draw_field(ops: &mut Vec<Q2HudOp>, value: i32, digits: i32, alternate: bool, 
                 digit.to_string()
             }
         );
-        ops.push(Q2HudOp::Picture { x: draw_x, y, name });
+        env.emit_picture(draw_x, y, name);
         draw_x += 16;
     }
+}
+
+/// Shared classic Q2 layout grammar (`SCR_ExecuteLayoutString`) over tokens.
+///
+/// Supports cursor (`xl/xr/xv/yt/yb/yv`), `pic/picn`, `num`,
+/// `hnum/anum/rnum`, `stat_string`, `string/string2`,
+/// `cstring/cstring2`, `client/ctf`, and flat `if/endif` skip.
+/// Unknown words are ignored, matching the source switch. Each caller
+/// tokenizes its own way (long-token drop versus error included) and feeds
+/// the token values here; missing arguments read as empty/`0`.
+pub(crate) fn run_classic_layout<E: ClassicLayoutEnv>(
+    tokens: &[String],
+    width: i32,
+    height: i32,
+    env: &mut E,
+) -> Result<(), E::Error> {
+    struct Cursor<'a> {
+        tokens: &'a [String],
+        index: usize,
+    }
+    impl Cursor<'_> {
+        fn next(&mut self) -> String {
+            if self.index >= self.tokens.len() {
+                return String::new();
+            }
+            let token = self.tokens[self.index].clone();
+            self.index += 1;
+            token
+        }
+        fn integer(&mut self) -> i32 {
+            game_atoi(&self.next())
+        }
+    }
+    let mut cursor = Cursor { tokens, index: 0 };
+    let mut x = 0;
+    let mut y = 0;
+    while cursor.index < cursor.tokens.len() {
+        let word = cursor.next();
+        if word == "if" && env.stat(cursor.integer())? == 0 {
+            while cursor.index < cursor.tokens.len() && cursor.next() != "endif" {}
+            continue;
+        }
+        match word.as_str() {
+            "xl" => x = cursor.integer(),
+            "xr" => x = width + cursor.integer(),
+            "xv" => x = width / 2 - 160 + cursor.integer(),
+            "yt" => y = cursor.integer(),
+            "yb" => y = height + cursor.integer(),
+            "yv" => y = height / 2 - 120 + cursor.integer(),
+            "pic" => {
+                let index = cursor.integer();
+                if env.try_arsenal_pic(x, y, index)? {
+                    continue;
+                }
+                let image = env.stat(index)?;
+                let name = env.image_name(image)?;
+                if !name.is_empty() {
+                    env.emit_picture(x, y, name);
+                }
+            }
+            "picn" => {
+                let name = cursor.next();
+                if !name.is_empty() {
+                    env.emit_picture(x, y, name);
+                }
+            }
+            "num" => {
+                let digits = cursor.integer();
+                let value = env.stat(cursor.integer())?;
+                draw_layout_field(env, value, digits, false, x, y);
+            }
+            "hnum" => {
+                let value = env.stat(1)?;
+                if env.stat(15)? & 1 != 0 {
+                    env.emit_picture(x, y, "field_3".to_string());
+                }
+                let flash = (env.server_frame() >> 2) & 1 != 0;
+                draw_layout_field(env, value, 3, value <= 0 || value <= 25 && flash, x, y);
+            }
+            "anum" => {
+                let value = env.stat(3)?;
+                if value >= 0 {
+                    if env.stat(15)? & 4 != 0 {
+                        env.emit_picture(x, y, "field_3".to_string());
+                    }
+                    let flash = (env.server_frame() >> 2) & 1 != 0;
+                    draw_layout_field(env, value, 3, value <= 5 && flash, x, y);
+                }
+            }
+            "rnum" => {
+                let value = env.stat(5)?;
+                if value >= 1 {
+                    if env.stat(15)? & 2 != 0 {
+                        env.emit_picture(x, y, "field_3".to_string());
+                    }
+                    draw_layout_field(env, value, 3, false, x, y);
+                }
+            }
+            "stat_string" => {
+                let index = env.stat(cursor.integer())?;
+                let value = env.stat_string(index)?;
+                env.emit_text(x, y, value, false);
+            }
+            "string" | "string2" => {
+                let value = cursor.next();
+                env.emit_text(x, y, value, word == "string2");
+            }
+            "cstring" | "cstring2" => {
+                let alternate = word == "cstring2";
+                let mut line_y = y;
+                for line in cursor.next().split('\n') {
+                    let line_x = x + (320 - env.cstring_length(line) * 8) / 2;
+                    env.emit_text(line_x, line_y, line.to_string(), alternate);
+                    line_y += 8;
+                }
+            }
+            "client" => {
+                x = width / 2 - 160 + cursor.integer();
+                y = height / 2 - 120 + cursor.integer();
+                let (name, icon) = env.client(cursor.integer())?;
+                let (score, ping, time) = (cursor.integer(), cursor.integer(), cursor.integer());
+                env.emit_text(x + 32, y, name, true);
+                env.emit_text(x + 32, y + 8, "Score: ".to_string(), false);
+                env.emit_text(x + 88, y + 8, score.to_string(), true);
+                env.emit_text(x + 32, y + 16, format!("Ping:  {ping}"), false);
+                env.emit_text(x + 32, y + 24, format!("Time:  {time}"), false);
+                if !icon.is_empty() {
+                    env.emit_picture(x, y, icon);
+                }
+            }
+            "ctf" => {
+                x = width / 2 - 160 + cursor.integer();
+                y = height / 2 - 120 + cursor.integer();
+                let index = cursor.integer();
+                let (name, _) = env.client(index)?;
+                let (score, ping) = (cursor.integer(), cursor.integer().min(999));
+                let short: String = name.chars().take(12).collect();
+                env.emit_text(
+                    x,
+                    y,
+                    format!("{score:>3} {ping:>3} {short:<12}"),
+                    index == env.player_number(),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn client_name(frame: &Q2HudFrame, index: i32) -> Result<(String, String), ClientError> {
+    let max: i32 = frame
+        .configstrings
+        .get(&Q2_CLASSIC_LAYOUT.max_clients)
+        .map_or(256, |text| game_atoi(text));
+    if index < 0 || index >= max.max(1) {
+        return Err(ClientError::BadHudClient { index });
+    }
+    let info = frame
+        .configstrings
+        .get(&(Q2_CLASSIC_LAYOUT.player_skins + index))
+        .cloned()
+        .unwrap_or_default();
+    let (name, skin) = match info.find('\\') {
+        Some(slash) => (info[..slash].to_string(), info[slash + 1..].to_string()),
+        None => (info, "male/grunt".to_string()),
+    };
+    let skin = if skin.is_empty() {
+        "male/grunt".to_string()
+    } else {
+        skin
+    };
+    Ok((name, format!("/players/{skin}_i.pcx")))
+}
+
+/// Headless layout environment over [`Q2HudFrame`].
+struct HudLayoutEnv<'a> {
+    frame: &'a Q2HudFrame,
+    ops: Vec<Q2HudOp>,
+}
+
+impl ClassicLayoutEnv for HudLayoutEnv<'_> {
+    type Error = ClientError;
+
+    fn stat(&self, index: i32) -> Result<i32, Self::Error> {
+        hud_stat(self.frame, index)
+    }
+
+    fn image_name(&self, image: i32) -> Result<String, Self::Error> {
+        if !(0..Q2_CLASSIC_LAYOUT.max_images).contains(&image) {
+            return Err(ClientError::BadHudImage { index: image });
+        }
+        Ok(self
+            .frame
+            .configstrings
+            .get(&(Q2_CLASSIC_LAYOUT.images + image))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn stat_string(&self, index: i32) -> Result<String, Self::Error> {
+        if !(0..Q2_CLASSIC_LAYOUT.max_configstrings).contains(&index) {
+            return Err(ClientError::BadHudConfigstring { index });
+        }
+        Ok(self.frame.configstrings.get(&index).cloned().unwrap_or_default())
+    }
+
+    fn client(&self, index: i32) -> Result<(String, String), Self::Error> {
+        client_name(self.frame, index)
+    }
+
+    fn server_frame(&self) -> i32 {
+        self.frame.server_frame
+    }
+
+    fn player_number(&self) -> i32 {
+        self.frame.player_number
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn cstring_length(&self, line: &str) -> i32 {
+        line.len() as i32
+    }
+
+    fn try_arsenal_pic(&mut self, _x: i32, _y: i32, _index: i32) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    fn emit_text(&mut self, x: i32, y: i32, text: String, alternate: bool) {
+        self.ops.push(Q2HudOp::Text { x, y, text, alternate });
+    }
+
+    fn emit_picture(&mut self, x: i32, y: i32, name: String) {
+        self.ops.push(Q2HudOp::Picture { x, y, name });
+    }
+}
+
+/// Execute a classic Q2 layout string (`SCR_ExecuteLayoutString`) through the
+/// shared grammar core.
+pub fn q2_layout_ops(source: &str, frame: &Q2HudFrame, width: i32, height: i32) -> Result<Vec<Q2HudOp>, ClientError> {
+    let tokens = layout_tokens(source);
+    let mut env = HudLayoutEnv { frame, ops: Vec::new() };
+    run_classic_layout(&tokens, width, height, &mut env)?;
+    Ok(env.ops)
 }
 
 #[cfg(test)]
