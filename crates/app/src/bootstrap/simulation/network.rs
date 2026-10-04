@@ -67,35 +67,13 @@ use crate::bootstrap::network::q2_layout::{q2_application_layout, Q2ApplicationL
 
 use super::types::{SimulationPresentationEvent, SourcePresentationEvent};
 
-/// Mirror of `Q2ApplicationPlayer` (`ApplicationNetworkPlayer`) from donor
-/// `src/app/bootstrap/network/types.ts` (canonical home:
-/// `crate::bootstrap::network::types`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Q2ApplicationPlayer {
-    /// Client handle.
-    pub client: ClientId,
-    /// Player actor.
-    pub actor: ActorId,
-    /// Source entity slot, supplied by the source registry.
-    pub source_entity: u32,
-}
+/// Quake II application player (canonical home:
+/// [`crate::bootstrap::network::types::Q2ApplicationPlayer`]).
+pub use crate::bootstrap::network::types::Q2ApplicationPlayer;
 
-/// Mirror of `Q2ApplicationAdmission` from donor
-/// `src/app/bootstrap/network/types.ts` (canonical home:
-/// `crate::bootstrap::network::types`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Q2ApplicationAdmission {
-    /// Client accepted.
-    Accepted {
-        /// Admitted player.
-        player: Q2ApplicationPlayer,
-    },
-    /// Client rejected.
-    Rejected {
-        /// Reason.
-        reason: String,
-    },
-}
+/// Admission verdict (canonical home:
+/// [`crate::bootstrap::network::types::Q2ApplicationAdmission`]).
+pub use crate::bootstrap::network::types::Q2ApplicationAdmission;
 
 /// Mirror of the donor `gameState` data beyond the ported
 /// `qa_net::q2::ServerData` (canonical home: `qa_net::q2`, extending
@@ -2364,5 +2342,21 @@ mod tests {
         assert_eq!(host_print_level(Q2HostPrintLevel::Low), 0);
         assert_eq!(player_print_level(Q2PlayerPrintLevel::Chat), 3);
         assert_eq!(player_print_level(Q2PlayerPrintLevel::Low), 0);
+    }
+
+    #[test]
+    fn reexported_player_shares_canonical_identity() {
+        use crate::bootstrap::network::types as canonical;
+        let owner = qa_core::identity::IdentityOwner::create("network-unify-test").unwrap();
+        let player: canonical::Q2ApplicationPlayer = Q2ApplicationPlayer {
+            client: owner.client(1, 1),
+            actor: owner.actor(1, 1),
+            source_entity: 9,
+        };
+        let admitted = Q2ApplicationAdmission::Accepted { player };
+        let canonical::Q2ApplicationAdmission::Accepted { player } = admitted else {
+            panic!("expected accepted");
+        };
+        assert_eq!(player.source_entity, 9);
     }
 }

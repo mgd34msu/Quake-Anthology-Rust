@@ -35,8 +35,8 @@ use super::super::weapon_slot::{
     PrimaryWeaponHandoff, RequestStatus, ResumeOutcome, SourceWeaponHandoff, SourceWeaponRequest,
 };
 use super::selected::{
-    ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon, SupplyDrop, WeaponStepInput,
-    WeaponStepResult,
+    contract, provider_name, ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon,
+    SupplyDrop, WeaponStepInput, WeaponStepResult,
 };
 use super::weapon_status::{q3_arsenal_warning, q3_weapon_status};
 use qa_content::contract::PickupSelection;
@@ -273,14 +273,6 @@ impl Q3ArsenalShared {
         player.runtime = q3_request_weapon(&player.runtime, weapon.weapon as i32)?;
         Ok(true)
     }
-}
-
-fn provider_name(provider: &ProviderId) -> String {
-    format!("{}:{}", provider.namespace, provider.name)
-}
-
-fn contract<T>(result: Result<T, Q3ArsenalError>) -> T {
-    result.unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Selected Q3 arsenal over the shared inventory.

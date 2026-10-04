@@ -44,35 +44,13 @@ use thiserror::Error;
 
 use crate::bootstrap::network::q2_layout::{q2_application_layout, Q2ApplicationLayout, Q2LayoutError};
 
-/// Mirror of `Q2ApplicationPlayer` (`ApplicationNetworkPlayer`) from donor
-/// `src/app/bootstrap/network/types.ts` (canonical home:
-/// `crate::bootstrap::network::types`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Q2ApplicationPlayer {
-    /// Client handle.
-    pub client: ClientId,
-    /// Player actor.
-    pub actor: ActorId,
-    /// Source entity slot, supplied by the source registry.
-    pub source_entity: u32,
-}
+/// Quake II application player (canonical home:
+/// [`crate::bootstrap::network::types::Q2ApplicationPlayer`]).
+pub use crate::bootstrap::network::types::Q2ApplicationPlayer;
 
-/// Mirror of `Q2ApplicationAdmission` from donor
-/// `src/app/bootstrap/network/types.ts` (canonical home:
-/// `crate::bootstrap::network::types`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Q2ApplicationAdmission {
-    /// Client accepted.
-    Accepted {
-        /// Admitted player.
-        player: Q2ApplicationPlayer,
-    },
-    /// Client rejected.
-    Rejected {
-        /// Reason.
-        reason: String,
-    },
-}
+/// Admission verdict (canonical home:
+/// [`crate::bootstrap::network::types::Q2ApplicationAdmission`]).
+pub use crate::bootstrap::network::types::Q2ApplicationAdmission;
 
 /// Mirror of the donor `ServerDataParamsT` game-state data beyond the ported
 /// `qa_net::q2::ServerData` (canonical home: `qa_net::q2`, extending
@@ -200,27 +178,13 @@ pub struct CollectedGuestMessage {
     pub wire: RereleaseGuestMessage,
 }
 
-/// Mirror of the donor guest-client phase (`"connected" | "active"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ClassicGuestClientPhase {
-    /// Connected, not yet begun.
-    Connected,
-    /// Active in the game.
-    Active,
-}
+/// Guest-client phase (canonical home:
+/// [`super::classic_guest_world::ClassicGuestClientPhase`]).
+pub use super::classic_guest_world::ClassicGuestClientPhase;
 
-/// Mirror of `ClassicGuestClient`, reused by the rerelease world, from donor
-/// `src/app/bootstrap/simulation/classic-guest-world.ts` (canonical home:
-/// `crate::bootstrap::simulation::classic_guest_world`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClassicGuestClient {
-    /// Client slot.
-    pub slot: u32,
-    /// Client phase.
-    pub phase: ClassicGuestClientPhase,
-    /// Client userinfo.
-    pub userinfo: String,
-}
+/// Connected guest client record (canonical home:
+/// [`super::classic_guest_world::ClassicGuestClient`]).
+pub use super::classic_guest_world::ClassicGuestClient;
 
 /// Mirror of the donor `connect` outcome from
 /// `src/app/bootstrap/simulation/rerelease-guest-world.ts` (canonical home:
@@ -268,16 +232,9 @@ pub struct RereleaseSeatIdentity {
     pub social_id: String,
 }
 
-/// Mirror of the donor host byte records (`{ bytes, reliable }`) from
-/// `src/app/bootstrap/network/types.ts` (canonical home:
-/// `crate::bootstrap::network::types`); unify post-merge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q2GuestByteMessage {
-    /// Wire bytes.
-    pub bytes: Vec<u8>,
-    /// Reliable delivery.
-    pub reliable: bool,
-}
+/// Raw wire bytes with a reliability flag (canonical home:
+/// [`crate::bootstrap::network::types::Q2RawServerMessage`]).
+pub use crate::bootstrap::network::types::Q2RawServerMessage as Q2GuestByteMessage;
 
 /// Mirror of the donor discovery `info` result from
 /// `src/app/bootstrap/network/types.ts` (canonical home:
@@ -2778,5 +2735,32 @@ mod tests {
             panic!("expected unsupported");
         };
         assert_eq!(reasons.len(), 1);
+    }
+
+    #[test]
+    fn reexported_mirrors_share_canonical_identity() {
+        use crate::bootstrap::network::types as canonical;
+        let owner = IdentityOwner::create("q2-rerelease-unify-test").unwrap();
+        let player: canonical::Q2ApplicationPlayer = Q2ApplicationPlayer {
+            client: owner.client(1, 1),
+            actor: owner.actor(1, 1),
+            source_entity: 5,
+        };
+        let admitted = Q2ApplicationAdmission::Accepted { player };
+        let canonical::Q2ApplicationAdmission::Accepted { player } = admitted else {
+            panic!("expected accepted");
+        };
+        assert_eq!(player.source_entity, 5);
+        let message: canonical::Q2RawServerMessage = Q2GuestByteMessage {
+            bytes: vec![1, 2],
+            reliable: true,
+        };
+        assert_eq!(message.bytes, vec![1, 2]);
+        let client: super::super::classic_guest_world::ClassicGuestClient = ClassicGuestClient {
+            slot: 1,
+            phase: ClassicGuestClientPhase::Active,
+            userinfo: String::new(),
+        };
+        assert_eq!(client.phase.as_str(), "active");
     }
 }

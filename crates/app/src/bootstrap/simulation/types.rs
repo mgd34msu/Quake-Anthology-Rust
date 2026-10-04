@@ -36,9 +36,9 @@ use qa_content::bsp::Q1Map;
 use qa_content::bsp2::Q2DecodedMap;
 use qa_content::contract::{
     ArmorState, ContentId, ExecutableRecipe, GameFamily, HeldWeaponDeclaration, InventoryEntry, ItemId, ModCommands,
-    ModDescription, ModIdentity, ModSelection, ModTravelCheckpoint, ModUserFiles, ModuleIdentity, PresentationOwner,
-    ProviderReference, QvmGrappleDefinition, QvmGrappleViewAnchor, ResolvedResourceReference,
-    ResolvedWeaponBehaviorSelection, ResourceRequest,
+    ModDescription, ModIdentity, ModSelection, ModTravelCheckpoint, ModUserFiles, ModuleIdentity,
+    PoweredProtectionState, PresentationOwner, ProviderReference, QvmGrappleDefinition, QvmGrappleViewAnchor,
+    RegularArmorState, ResolvedResourceReference, ResolvedWeaponBehaviorSelection, ResourceRequest,
 };
 use qa_content::mounts::MountedContent;
 use qa_content::q1::base::rules::Q1IntermissionResult;
@@ -50,7 +50,7 @@ use qa_content::q2::base::player::types::{Q2PlayerCarry, Q2PlayerEvent};
 use qa_content::q2::composition::types::Q2CompositionEvent;
 use qa_content::q2::equipment::HandGrenadeEquipmentState;
 use qa_content::q2::foundation::host::Q2PresentationEvent;
-use qa_content::q2::foundation::weapons::types::Q2WeaponEvent;
+use qa_content::q2::foundation::weapons::types::{Q2WeaponDefinition, Q2WeaponEvent};
 use qa_content::q2::multiplayer::lmctf::types::LmctfTravel;
 use qa_content::q2::rerelease::campaign::Q2RereleaseCampaignState;
 use qa_content::q2::rerelease::types::Q2RereleaseEvent;
@@ -64,10 +64,12 @@ use qa_guest::core::contracts::GuestAddress;
 use qa_guest::qc::program::QcProgram;
 use qa_guest::qvm::artifacts::ResolvedQvmArtifact;
 use qa_guest::runtime::windows::contracts::WindowsCapabilities;
+use qa_net::q2_adapters::{Q2PlayerView, Q2Vec3, Q2Vec4};
 use qa_platform::files::writable::UserFileStore;
 use qa_world::movement::types::ArsenalState;
 
 use super::arsenal::selected::{ArsenalAmmoWarning, WeaponHudStatus};
+use super::arsenal::weapon_status::q2_weapon_status;
 use super::powerup_timers::ActivePowerupTimer;
 use super::q3::host::Q3SourceEvent;
 use super::q3::types::Q3SourceSessionCarry;
@@ -1015,6 +1017,87 @@ pub struct UiAmmo {
     pub count: f64,
 }
 
+/// Remote armor item reported for Q2 guest players (classic and rerelease share it).
+pub(crate) const REMOTE_ARMOR_ITEM: &str = "q2:remote-armor";
+
+/// Narrow a Q2 triple into a scene vector (shared guest-player helper).
+pub(crate) fn guest_to_vec3(value: &Q2Vec3) -> Vec3 {
+    Vec3 {
+        x: value.x as f32,
+        y: value.y as f32,
+        z: value.z as f32,
+    }
+}
+
+/// Narrow a Q2 quad into a scene vector (shared guest-player helper).
+pub(crate) fn guest_to_vec4(value: &Q2Vec4) -> Vec4 {
+    Vec4 {
+        x: value.x as f32,
+        y: value.y as f32,
+        z: value.z as f32,
+        w: value.w as f32,
+    }
+}
+
+/// Read a HUD stat slot, defaulting to zero (shared guest-player helper).
+pub(crate) fn guest_stat(stats: &[i16], index: usize) -> i16 {
+    stats.get(index).copied().unwrap_or(0)
+}
+
+/// Build the guest player HUD from the shared view half of a Q2 player state.
+///
+/// Classic and rerelease states carry the same [`Q2PlayerView`]; only the
+/// configstring model base differs per API, so callers pass it in. Only the
+/// selected weapon's ammo is public here; full inventory comes from
+/// svc_inventory.
+pub(crate) fn guest_player_ui(
+    view: &Q2PlayerView,
+    model_base: u32,
+    configstrings: &HashMap<u32, String>,
+    source: ProviderReference,
+    definitions: &[Q2WeaponDefinition],
+) -> PlayerUi {
+    let model = if view.gun_index == 0 {
+        None
+    } else {
+        configstrings.get(&(model_base + view.gun_index as u32))
+    };
+    let weapon = model.and_then(|model| definitions.iter().find(|definition| definition.view_model == *model));
+    let armor = guest_stat(&view.stats, 5);
+    let ammo = guest_stat(&view.stats, 3);
+    PlayerUi {
+        selected_arsenal: false,
+        native_inventory: None,
+        powerups: Vec::new(),
+        weapon_status: q2_weapon_status(weapon, |_: &ItemId| i32::from(ammo), source),
+        arsenal_warning: ArsenalAmmoWarning::None,
+        health: f64::from(guest_stat(&view.stats, 1)),
+        armor: ArmorState {
+            powered: PoweredProtectionState::None,
+            regular: if armor == 0 {
+                RegularArmorState::None
+            } else {
+                RegularArmorState::Q2 {
+                    points: f64::from(armor),
+                    normal_protection: 0.0,
+                    energy_protection: 0.0,
+                    item: REMOTE_ARMOR_ITEM.to_string(),
+                }
+            },
+        },
+        active_weapon: weapon.map(|weapon| weapon.item.clone()),
+        ammo: match weapon {
+            None => None,
+            Some(weapon) => weapon.ammo.as_ref().map(|item| UiAmmo {
+                item: item.clone(),
+                count: f64::from(ammo),
+            }),
+        },
+        inventory: Vec::new(),
+        items: Vec::new(),
+    }
+}
+
 /// Player colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlayerColors {
@@ -1519,6 +1602,61 @@ mod tests {
     fn mode_and_world_kinds() {
         assert_ne!(SimulationMode::Coop, SimulationMode::Deathmatch);
         let _ = ProviderId::new("sim", "test");
+    }
+
+    #[test]
+    fn guest_helpers_narrow_vectors_and_stats() {
+        assert_eq!(
+            guest_to_vec3(&Q2Vec3 { x: 1.0, y: 2.0, z: 3.0 }),
+            Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+        );
+        assert_eq!(
+            guest_to_vec4(&Q2Vec4 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                w: 4.0
+            }),
+            Vec4 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+                w: 4.0
+            }
+        );
+        assert_eq!(guest_stat(&[10, 20], 1), 20);
+        assert_eq!(guest_stat(&[10, 20], 7), 0);
+        assert_eq!(REMOTE_ARMOR_ITEM, "q2:remote-armor");
+    }
+
+    #[test]
+    fn guest_player_ui_reports_health_armor_and_no_weapon() {
+        let view = Q2PlayerView {
+            view_angles: Q2Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            view_offset: Q2Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 22.0,
+            },
+            kick_angles: Q2Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            gun_angles: Q2Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            gun_offset: Q2Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            gun_index: 0,
+            gun_frame: 0,
+            fov: 90,
+            render_flags: 0,
+            stats: vec![0, 100, 0, 12, 0, 50],
+        };
+        let source = ProviderReference {
+            provider: ProviderId::new("test", "native"),
+            content: ContentId("q2:baseq2:baseq2:1".to_string()),
+        };
+        let ui = guest_player_ui(&view, 0, &HashMap::new(), source, &[]);
+        assert_eq!(ui.health, 100.0);
+        assert!(matches!(ui.armor.regular, RegularArmorState::Q2 { .. }));
+        assert!(ui.active_weapon.is_none());
+        assert!(ui.ammo.is_none());
+        assert!(ui.weapon_status.is_none());
     }
 }
 

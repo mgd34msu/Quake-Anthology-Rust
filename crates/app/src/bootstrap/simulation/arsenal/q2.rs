@@ -33,8 +33,8 @@ use super::super::weapon_slot::{
     PrimaryWeaponHandoff, RequestStatus, ResumeOutcome, SourceWeaponHandoff, SourceWeaponRequest,
 };
 use super::selected::{
-    ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon, SupplyDrop, WeaponStepInput,
-    WeaponStepResult,
+    contract, provider_name, ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon,
+    SupplyDrop, WeaponStepInput, WeaponStepResult,
 };
 use super::weapon_status::q2_weapon_status;
 use qa_content::contract::PickupSelection;
@@ -174,14 +174,6 @@ pub struct Q2SelectedArsenalOptions {
     pub loadout: Option<Q2SelectedLoadout>,
     /// Weapon observation.
     pub observe: Rc<dyn Fn(&ActorId) -> Q2SelectedObservation>,
-}
-
-fn provider_name(provider: &ProviderId) -> String {
-    format!("{}:{}", provider.namespace, provider.name)
-}
-
-fn contract<T>(result: Result<T, Q2ArsenalError>) -> T {
-    result.unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn phase_word(phase: Q2WeaponPhase) -> i32 {

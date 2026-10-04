@@ -84,7 +84,7 @@ use super::client_download_policy::ClientDownloadProgress;
 use super::q2_downloads::Q2ApplicationClientDownloads;
 use super::q2_effects::{q2_beam_from_wire, q2_effect_from_wire};
 use super::q2_layout::{q2_application_layout, Q2ApplicationLayout};
-use super::remote_world::RemoteWorldContent;
+use super::remote_world::{lerp_angles, lerp_vec, provider_id, snapshot_entry, vec3, RemoteWorldContent, ZERO};
 use super::types::{
     ApplicationNetworkPlayer, ArsenalWarning, PlayerAmmo, PlayerArsenalItem, PlayerArsenalKind, PlayerUi, PlayerView,
     PresentationFamily, PresentationModel, Q2ApplicationClientHost, Q2ApplicationGameState, Q2ClientPrediction,
@@ -93,9 +93,6 @@ use super::types::{
 use crate::bootstrap::demo_recording::{Q2ProtocolIdentity, R1Q2Revision};
 use crate::bootstrap::q2_damage_blend::interpolate_q2_damage_blend;
 use crate::persistence::recipe::ExecutableRecipe;
-
-/// Zero vector (donor `zero`).
-const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
 /// Solid marker for brush-model entities (donor `entity.solid === 31`).
 const BRUSH_SOLID: u32 = 31;
@@ -606,19 +603,6 @@ pub struct Q2RemotePresentation<H: Q2RemoteHost> {
     packet_acknowledged: u32,
 }
 
-fn provider_id(provider: &str) -> ProviderId {
-    let (namespace, name) = provider.split_once(':').unwrap_or(("", ""));
-    ProviderId::new(namespace, name)
-}
-
-fn vec3(value: [f64; 3]) -> Vec3 {
-    Vec3 {
-        x: value[0] as f32,
-        y: value[1] as f32,
-        z: value[2] as f32,
-    }
-}
-
 fn contract_vec3(value: &Q2Vec3) -> Vec3 {
     Vec3 {
         x: value.x as f32,
@@ -633,44 +617,6 @@ fn vec4(x: f64, y: f64, z: f64, w: f64) -> Vec4 {
         y: y as f32,
         z: z as f32,
         w: w as f32,
-    }
-}
-
-fn lerp_vec(a: Vec3, b: Vec3, fraction: f64) -> Vec3 {
-    let fraction = fraction as f32;
-    Vec3 {
-        x: a.x + (b.x - a.x) * fraction,
-        y: a.y + (b.y - a.y) * fraction,
-        z: a.z + (b.z - a.z) * fraction,
-    }
-}
-
-fn lerp_angles(a: Vec3, b: Vec3, fraction: f64) -> Vec3 {
-    let fraction = fraction as f32;
-    let axis = |a: f32, b: f32| a + (((b - a + 540.0) % 360.0) - 180.0) * fraction;
-    Vec3 {
-        x: axis(a.x, b.x),
-        y: axis(a.y, b.y),
-        z: axis(a.z, b.z),
-    }
-}
-
-/// Map a HUD inventory entry onto the snapshot entry shape.
-fn snapshot_entry(entry: &InventoryEntry) -> qa_world::inventory::InventoryEntry {
-    use qa_content::contract::{InventoryCountPolicy, SourceCounterArithmetic};
-    use qa_world::inventory::{CountArithmetic, CountPolicy};
-    qa_world::inventory::InventoryEntry {
-        item: entry.item.clone(),
-        count: entry.count,
-        capacity: entry.capacity,
-        count_policy: entry.count_policy.map(|policy| match policy {
-            InventoryCountPolicy::Stack => CountPolicy::Stack,
-            InventoryCountPolicy::SourceCounter(arithmetic) => CountPolicy::SourceCounter(match arithmetic {
-                SourceCounterArithmetic::Binary32 => CountArithmetic::Binary32,
-                SourceCounterArithmetic::Binary64 => CountArithmetic::Binary64,
-                SourceCounterArithmetic::Int32 => CountArithmetic::Int32,
-            }),
-        }),
     }
 }
 

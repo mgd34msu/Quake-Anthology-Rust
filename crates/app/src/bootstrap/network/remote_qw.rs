@@ -31,7 +31,7 @@ use std::rc::Rc;
 use qa_client::render::scene::models::types::IndexedModelSkin;
 use qa_content::contract::{ContentId, InventoryEntry, ResolvedResourceReference};
 use qa_content::q3::foundation::presentation::Q3CharacterView;
-use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId, SavedActorId, SeatId};
+use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, SavedActorId, SeatId};
 use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::native_atoi;
 use qa_net::common::commands::{ActorCommand, UserCommand};
@@ -55,6 +55,7 @@ use super::remote_q1::{
     Q1ClientRow, Q1RemoteContent, Q1RemoteHost, Q1RemotePresentation, Q1RemotePresentationEvent,
     Q1RemotePresentationOptions, Q1RemoteWorld,
 };
+use super::remote_world::{provider_id, vec3};
 use super::types::{
     ApplicationNetworkPlayer, PlayerPitchDrift, PlayerUi, PlayerView, PresentationIndexedSkin, PresentationModel,
     WorldText,
@@ -310,19 +311,6 @@ pub struct QwRemotePresentation<H: QwRemoteHost> {
     intermission: Option<QwIntermission>,
     /// Movement variables.
     variables: Option<QwMoveVariables>,
-}
-
-fn provider_id(provider: &str) -> ProviderId {
-    let (namespace, name) = provider.split_once(':').unwrap_or(("", ""));
-    ProviderId::new(namespace, name)
-}
-
-fn vec3(values: [f64; 3]) -> Vec3 {
-    Vec3 {
-        x: values[0] as f32,
-        y: values[1] as f32,
-        z: values[2] as f32,
-    }
 }
 
 fn arr(value: Vec3) -> [f64; 3] {

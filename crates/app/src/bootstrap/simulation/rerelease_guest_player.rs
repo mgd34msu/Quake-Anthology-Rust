@@ -6,21 +6,16 @@
 
 use std::collections::HashMap;
 
-use qa_content::contract::{ArmorState, ItemId, PoweredProtectionState, ProviderReference, RegularArmorState};
+use qa_content::contract::ProviderReference;
 use qa_content::q2::foundation::weapons::types::Q2WeaponDefinition;
-use qa_core::math::{Vec3, Vec4};
+use qa_core::math::Vec3;
 use qa_net::common::commands::{ActorCommand, CommandSource, UserCommand};
 use qa_net::protocol::ProtocolIdentity;
-use qa_net::q2_adapters::{Q2RereleasePlayerState, Q2RereleaseUserCommand, Q2Vec3, Q2Vec4};
+use qa_net::q2_adapters::{Q2RereleasePlayerState, Q2RereleaseUserCommand, Q2Vec3};
 use thiserror::Error;
 
-use super::arsenal::selected::ArsenalAmmoWarning;
-use super::arsenal::weapon_status::q2_weapon_status;
-use super::types::{PlayerUi, PlayerView, UiAmmo};
+use super::types::{guest_player_ui, guest_to_vec3, guest_to_vec4, PlayerUi, PlayerView};
 use crate::bootstrap::network::q2_layout::q2_application_layout;
-
-/// Remote armor item reported for rerelease guest players.
-const REMOTE_ARMOR_ITEM: &str = "q2:remote-armor";
 
 /// Local command mapping failure.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -39,27 +34,6 @@ fn rerelease_model_base() -> u32 {
         .models
 }
 
-fn to_vec3(value: &Q2Vec3) -> Vec3 {
-    Vec3 {
-        x: value.x as f32,
-        y: value.y as f32,
-        z: value.z as f32,
-    }
-}
-
-fn to_vec4(value: &Q2Vec4) -> Vec4 {
-    Vec4 {
-        x: value.x as f32,
-        y: value.y as f32,
-        z: value.z as f32,
-        w: value.w as f32,
-    }
-}
-
-fn stat(stats: &[i16], index: usize) -> i16 {
-    stats.get(index).copied().unwrap_or(0)
-}
-
 /// Rerelease keeps stance height in pmove, separately from camera bob and
 /// damage kick.
 #[must_use]
@@ -68,16 +42,16 @@ pub fn rerelease_guest_player_view(state: &Q2RereleasePlayerState) -> PlayerView
     let offset = &state.view.view_offset;
     PlayerView {
         client_view_offset_delta: None,
-        blend: Some(to_vec4(&state.screen_blend)),
-        damage_blend: Some(to_vec4(&state.damage_blend)),
+        blend: Some(guest_to_vec4(&state.screen_blend)),
+        damage_blend: Some(guest_to_vec4(&state.damage_blend)),
         origin: Vec3 {
             x: (origin.x + offset.x) as f32,
             y: (origin.y + offset.y) as f32,
             z: (origin.z + offset.z) as f32,
         },
-        angles: to_vec3(&state.view.view_angles),
+        angles: guest_to_vec3(&state.view.view_angles),
         view_height: f64::from(state.movement.view_height),
-        kick_angles: Some(to_vec3(&state.view.kick_angles)),
+        kick_angles: Some(guest_to_vec3(&state.view.kick_angles)),
         field_of_view: Some(f64::from(state.view.fov)),
         foreign_character_death: false,
         pitch_drift: None,
@@ -93,45 +67,7 @@ pub fn rerelease_guest_player_ui(
     source: ProviderReference,
     definitions: &[Q2WeaponDefinition],
 ) -> PlayerUi {
-    let model = if state.view.gun_index == 0 {
-        None
-    } else {
-        configstrings.get(&(rerelease_model_base() + state.view.gun_index as u32))
-    };
-    let weapon = model.and_then(|model| definitions.iter().find(|definition| definition.view_model == *model));
-    let armor = stat(&state.view.stats, 5);
-    let ammo = stat(&state.view.stats, 3);
-    PlayerUi {
-        selected_arsenal: false,
-        native_inventory: None,
-        powerups: Vec::new(),
-        weapon_status: q2_weapon_status(weapon, |_: &ItemId| i32::from(ammo), source),
-        arsenal_warning: ArsenalAmmoWarning::None,
-        health: f64::from(stat(&state.view.stats, 1)),
-        armor: ArmorState {
-            powered: PoweredProtectionState::None,
-            regular: if armor == 0 {
-                RegularArmorState::None
-            } else {
-                RegularArmorState::Q2 {
-                    points: f64::from(armor),
-                    normal_protection: 0.0,
-                    energy_protection: 0.0,
-                    item: REMOTE_ARMOR_ITEM.to_string(),
-                }
-            },
-        },
-        active_weapon: weapon.map(|weapon| weapon.item.clone()),
-        ammo: match weapon {
-            None => None,
-            Some(weapon) => weapon.ammo.as_ref().map(|item| UiAmmo {
-                item: item.clone(),
-                count: f64::from(ammo),
-            }),
-        },
-        inventory: Vec::new(),
-        items: Vec::new(),
-    }
+    guest_player_ui(&state.view, rerelease_model_base(), configstrings, source, definitions)
 }
 
 /// Native rerelease ClientThink adds float delta angles; local input already
@@ -171,11 +107,11 @@ pub fn rerelease_guest_local_command(
 
 #[cfg(test)]
 mod tests {
-    use qa_content::contract::ContentId;
+    use qa_content::contract::{ContentId, RegularArmorState};
     use qa_core::identity::{ActorId, ClientId, IdentityOwner, ProviderId};
 
     use super::*;
-    use qa_net::q2_adapters::{Q2PlayerView as Q2View, Q2RereleaseMovementState};
+    use qa_net::q2_adapters::{Q2PlayerView as Q2View, Q2RereleaseMovementState, Q2Vec4};
 
     fn owner() -> IdentityOwner {
         IdentityOwner::create("rerelease-guest-player-test").expect("owner")

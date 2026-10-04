@@ -75,12 +75,23 @@ pub struct ClassicGuestRevisit {
 }
 
 /// Connection phase of a guest client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClassicGuestClientPhase {
     /// Connected, not yet begun.
     Connected,
     /// Begun and playing.
     Active,
+}
+
+impl ClassicGuestClientPhase {
+    /// Donor string spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ClassicGuestClientPhase::Connected => "connected",
+            ClassicGuestClientPhase::Active => "active",
+        }
+    }
 }
 
 /// Connected guest client record.
@@ -1450,5 +1461,11 @@ mod tests {
         assert!(world.pending_retirements.borrow().is_empty());
         assert!(world.clients.is_empty());
         assert_eq!(world.phase, WorldPhase::Closed);
+    }
+
+    #[test]
+    fn client_phase_spells_donor_strings() {
+        assert_eq!(ClassicGuestClientPhase::Connected.as_str(), "connected");
+        assert_eq!(ClassicGuestClientPhase::Active.as_str(), "active");
     }
 }

@@ -76,15 +76,14 @@ use qa_world::session::{
 };
 use thiserror::Error;
 
-use super::remote_world::{RemoteCollisionSettings, RemoteWorldContent, RemoteWorldError};
+use super::remote_world::{
+    provider_id, snapshot_entry, RemoteCollisionSettings, RemoteWorldContent, RemoteWorldError, ZERO,
+};
 use super::types::{
     ApplicationNetworkPlayer, NetworkPresentationEvent, PlayerUi, PlayerView, PresentationModel,
     RemotePresentationAccess, WorldText,
 };
 use crate::persistence::recipe::ExecutableRecipe;
-
-/// Zero vector (donor `zero`).
-const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
 /// Player body bounds (donor `bounds`).
 const Q3_BOUNDS: Bounds = Bounds {
@@ -443,35 +442,11 @@ pub struct Q3RemotePresentation<'conn, H: Q3RemoteHost> {
     prediction: Option<H::Prediction>,
 }
 
-fn provider_id(provider: &str) -> ProviderId {
-    let (namespace, name) = provider.split_once(':').unwrap_or(("", ""));
-    ProviderId::new(namespace, name)
-}
-
 fn vec3(value: [f32; 3]) -> Vec3 {
     Vec3 {
         x: value[0],
         y: value[1],
         z: value[2],
-    }
-}
-
-/// Map a HUD inventory entry onto the snapshot entry shape.
-fn snapshot_entry(entry: &InventoryEntry) -> qa_world::inventory::InventoryEntry {
-    use qa_content::contract::{InventoryCountPolicy, SourceCounterArithmetic};
-    use qa_world::inventory::{CountArithmetic, CountPolicy};
-    qa_world::inventory::InventoryEntry {
-        item: entry.item.clone(),
-        count: entry.count,
-        capacity: entry.capacity,
-        count_policy: entry.count_policy.map(|policy| match policy {
-            InventoryCountPolicy::Stack => CountPolicy::Stack,
-            InventoryCountPolicy::SourceCounter(arithmetic) => CountPolicy::SourceCounter(match arithmetic {
-                SourceCounterArithmetic::Binary32 => CountArithmetic::Binary32,
-                SourceCounterArithmetic::Binary64 => CountArithmetic::Binary64,
-                SourceCounterArithmetic::Int32 => CountArithmetic::Int32,
-            }),
-        }),
     }
 }
 

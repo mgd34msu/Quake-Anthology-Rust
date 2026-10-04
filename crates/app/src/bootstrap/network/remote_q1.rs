@@ -46,7 +46,9 @@ use qa_world::session::{
 
 use super::q1_client::Q1ApplicationClientHost;
 use super::q1_demo::NetQuakeDemoRemote;
-use super::remote_world::{RemoteWorldContent, RemoteWorldError};
+use super::remote_world::{
+    lerp_angles, lerp_vec, provider_id, snapshot_entry, vec3, RemoteWorldContent, RemoteWorldError, ZERO,
+};
 use super::types::{
     ApplicationNetworkPlayer, ArsenalWarning, PlayerAmmo, PlayerArsenalItem, PlayerArsenalKind, PlayerUi, PlayerView,
     PresentationFamily, PresentationModel, PresentationPlayerColors, RemotePresentationAccess, WeaponStatus, WorldText,
@@ -323,8 +325,6 @@ pub struct Q1RemotePresentation<H: Q1RemoteHost> {
     records: Vec<NetQuakeMessage>,
 }
 
-const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-
 /// Native weapon table: (selection bit, name, ammunition or `None`).
 const WEAPONS: [(u32, &str, Option<&str>); 8] = [
     (4096, "axe", None),
@@ -336,25 +336,6 @@ const WEAPONS: [(u32, &str, Option<&str>); 8] = [
     (32, "rocketlauncher", Some("rockets")),
     (64, "lightning", Some("cells")),
 ];
-
-fn lerp_vec(a: Vec3, b: Vec3, fraction: f64) -> Vec3 {
-    let fraction = fraction as f32;
-    Vec3 {
-        x: a.x + (b.x - a.x) * fraction,
-        y: a.y + (b.y - a.y) * fraction,
-        z: a.z + (b.z - a.z) * fraction,
-    }
-}
-
-fn lerp_angles(a: Vec3, b: Vec3, fraction: f64) -> Vec3 {
-    let fraction = fraction as f32;
-    let axis = |a: f32, b: f32| a + (((b - a + 540.0) % 360.0) - 180.0) * fraction;
-    Vec3 {
-        x: axis(a.x, b.x),
-        y: axis(a.y, b.y),
-        z: axis(a.z, b.z),
-    }
-}
 
 /// Decode an entity alpha byte (donor `ENTALPHA_DECODE`).
 fn decode_alpha(alpha: u8) -> f64 {
@@ -379,38 +360,6 @@ fn sound_channel(value: u8) -> Q1SoundChannel {
         4 => Q1SoundChannel::Named(Q1NamedChannel::Body),
         5..=7 => Q1SoundChannel::Number(i64::from(value)),
         _ => panic!("Invalid NetQuake sound channel"),
-    }
-}
-
-fn provider_id(provider: &str) -> ProviderId {
-    let (namespace, name) = provider.split_once(':').unwrap_or(("", ""));
-    ProviderId::new(namespace, name)
-}
-
-fn vec3(value: [f64; 3]) -> Vec3 {
-    Vec3 {
-        x: value[0] as f32,
-        y: value[1] as f32,
-        z: value[2] as f32,
-    }
-}
-
-/// Map a HUD inventory entry onto the snapshot entry shape.
-fn snapshot_entry(entry: &InventoryEntry) -> qa_world::inventory::InventoryEntry {
-    use qa_content::contract::{InventoryCountPolicy, SourceCounterArithmetic};
-    use qa_world::inventory::{CountArithmetic, CountPolicy};
-    qa_world::inventory::InventoryEntry {
-        item: entry.item.clone(),
-        count: entry.count,
-        capacity: entry.capacity,
-        count_policy: entry.count_policy.map(|policy| match policy {
-            InventoryCountPolicy::Stack => CountPolicy::Stack,
-            InventoryCountPolicy::SourceCounter(arithmetic) => CountPolicy::SourceCounter(match arithmetic {
-                SourceCounterArithmetic::Binary32 => CountArithmetic::Binary32,
-                SourceCounterArithmetic::Binary64 => CountArithmetic::Binary64,
-                SourceCounterArithmetic::Int32 => CountArithmetic::Int32,
-            }),
-        }),
     }
 }
 

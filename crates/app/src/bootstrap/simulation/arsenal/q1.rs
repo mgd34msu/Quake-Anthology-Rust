@@ -28,8 +28,8 @@ use super::super::weapon_slot::{
     PrimaryWeaponHandoff, RequestStatus, ResumeOutcome, SourceWeaponHandoff, SourceWeaponRequest,
 };
 use super::selected::{
-    ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon, SupplyDrop, WeaponStepInput,
-    WeaponStepResult,
+    contract, provider_name, ArsenalFamily, ArsenalView, SelectedArsenal, SelectedArsenalUi, SelectedPickupWeapon,
+    SupplyDrop, WeaponStepInput, WeaponStepResult,
 };
 use super::weapon_status::{q1_weapon_display_name, q1_weapon_status, Q1WeaponStatusSource};
 use qa_content::contract::PickupSelection;
@@ -168,14 +168,6 @@ impl Q1WeaponStatusSource for StatusSource {
             )
             .unwrap_or_else(|error| panic!("{error}"))
     }
-}
-
-fn provider_name(provider: &ProviderId) -> String {
-    format!("{}:{}", provider.namespace, provider.name)
-}
-
-fn contract<T>(result: Result<T, Q1ArsenalError>) -> T {
-    result.unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Selected Q1 arsenal over the source entity services.

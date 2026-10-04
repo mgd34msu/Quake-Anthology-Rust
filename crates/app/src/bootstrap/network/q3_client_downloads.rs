@@ -32,9 +32,8 @@ use thiserror::Error;
 
 use super::client_download_policy::{
     client_download_category, ClientDownloadCategory, ClientDownloadPhase, ClientDownloadProgress,
-    ClientDownloadRequest, ClientDownloadTransport,
+    ClientDownloadRequest, ClientDownloadTransport, RemoteContentRoots,
 };
-use super::q2_downloads::RemoteContentRoots;
 use super::q3_downloads::archive_handle;
 
 /// Quake III client download failure.
@@ -104,7 +103,7 @@ fn file_name(path: &Path) -> Option<String> {
 }
 
 /// Download permission callback.
-pub type Q3DownloadPermissionFn<'a> = Box<dyn Fn(&ClientDownloadRequest) -> bool + 'a>;
+pub type Q3DownloadPermissionFn<'a> = super::client_download_policy::ClientDownloadPermissionFn<'a>;
 
 /// Progress callback.
 pub type Q3DownloadProgressFn<'a> = Box<dyn FnMut(&str, i32, i32) + 'a>;

@@ -5,6 +5,9 @@
 //! keeps that shape over [`CvarRegistry`](qa_core::cvar::CvarRegistry). The
 //! local policy never changes the server's download rules.
 
+use std::path::PathBuf;
+
+use qa_content::catalog::RemoteContentSelection;
 use qa_core::cvar::{flags, q2_flags, CvarError, CvarRegistry};
 
 /// Download asset category (`ClientDownloadCategory`).
@@ -166,6 +169,40 @@ pub enum ClientDownloadPhase {
     Done,
 }
 
+/// Download permission callback (shared Q2/Q3 receiver shape).
+pub type ClientDownloadPermissionFn<'a> = Box<dyn Fn(&ClientDownloadRequest) -> bool + 'a>;
+
+/// Projected remote-content roots every download receiver reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteContentRoots {
+    /// Player-model write root.
+    pub base_write_root: PathBuf,
+    /// General write root.
+    pub write_root: PathBuf,
+    /// Selected remote content.
+    pub selection: RemoteContentSelection,
+    /// Selected product's content directory.
+    pub content_directory: String,
+    /// Selected product's loose root, when it has one.
+    pub loose_root: Option<PathBuf>,
+    /// Catalog corpus root.
+    pub corpus_root: PathBuf,
+}
+
+impl From<&super::super::content::RemoteContentMounts> for RemoteContentRoots {
+    /// Project the canonical opened remote content onto the receiver's roots.
+    fn from(mounts: &super::super::content::RemoteContentMounts) -> Self {
+        Self {
+            base_write_root: PathBuf::from(&mounts.base_write_root),
+            write_root: PathBuf::from(&mounts.write_root),
+            selection: mounts.selection.clone(),
+            content_directory: mounts.product.expectation.content_directory.clone(),
+            loose_root: mounts.product.loose_root.as_ref().map(PathBuf::from),
+            corpus_root: PathBuf::from(&mounts.catalog.corpus_root),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +300,20 @@ mod tests {
             &cvars,
             &request(ClientDownloadTransport::Native, ClientDownloadCategory::Metadata)
         ));
+    }
+
+    #[test]
+    fn shared_permission_alias_covers_both_receivers() {
+        use super::super::q2_downloads::Q2DownloadPermissionFn;
+        use super::super::q3_client_downloads::Q3DownloadPermissionFn;
+        let query = ClientDownloadRequest {
+            transport: ClientDownloadTransport::Native,
+            category: ClientDownloadCategory::Map,
+        };
+        let shared: ClientDownloadPermissionFn = Box::new(|_| true);
+        let q2: Q2DownloadPermissionFn = Box::new(|_| true);
+        let q3: Q3DownloadPermissionFn = Box::new(|_| true);
+        assert!(shared(&query) && q2(&query) && q3(&query));
     }
 
     #[test]

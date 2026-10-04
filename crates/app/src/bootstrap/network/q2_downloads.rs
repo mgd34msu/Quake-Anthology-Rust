@@ -11,9 +11,9 @@
 //! and the 1024-byte sender block size are unchanged.
 //!
 //! `RemoteContentMounts` (donor `../content.ts`) is the canonical
-//! [`RemoteContentMounts`](super::super::content::RemoteContentMounts) port; this module
-//! keeps the exact surface the receiver reads ([`RemoteContentRoots`] plus a borrowed
-//! [`MountedContent`](qa_content::mounts::MountedContent)) as a projection built from
+//! [`RemoteContentMounts`](super::super::content::RemoteContentMounts) port; the receiver reads
+//! [`RemoteContentRoots`] plus a borrowed
+//! [`MountedContent`](qa_content::mounts::MountedContent) as a projection built from
 //! the canonical mounts. The donor's
 //! global fetch becomes an explicit
 //! [`HttpClient`](qa_net::services::http_downloads::HttpClient) factory.
@@ -30,7 +30,7 @@ use std::rc::Rc;
 use qa_client::materials::sky::SKY_FACE_SUFFIXES;
 use qa_content::archive::open_archive;
 use qa_content::bsp2::read_q2_bsp;
-use qa_content::catalog::{remote_content_selection, CatalogError, RemoteContentBase, RemoteContentSelection};
+use qa_content::catalog::{remote_content_selection, CatalogError, RemoteContentBase};
 use qa_content::contract::ArchiveFormat;
 use qa_content::md2::parse_md2;
 use qa_content::mounts::{can_download_resource, MountError, MountedContent};
@@ -347,36 +347,9 @@ impl Default for Q2PeerDownload {
 // ---------------------------------------------------------------------------
 
 /// Content roots read from the canonical `RemoteContentMounts` (donor
-/// `../content.ts`, ported at `super::super::content`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteContentRoots {
-    /// Player-model write root.
-    pub base_write_root: PathBuf,
-    /// General write root.
-    pub write_root: PathBuf,
-    /// Selected remote content.
-    pub selection: RemoteContentSelection,
-    /// Selected product's content directory.
-    pub content_directory: String,
-    /// Selected product's loose root, when it has one.
-    pub loose_root: Option<PathBuf>,
-    /// Catalog corpus root.
-    pub corpus_root: PathBuf,
-}
-
-impl From<&super::super::content::RemoteContentMounts> for RemoteContentRoots {
-    /// Project the canonical opened remote content onto the receiver's roots.
-    fn from(mounts: &super::super::content::RemoteContentMounts) -> Self {
-        Self {
-            base_write_root: PathBuf::from(&mounts.base_write_root),
-            write_root: PathBuf::from(&mounts.write_root),
-            selection: mounts.selection.clone(),
-            content_directory: mounts.product.expectation.content_directory.clone(),
-            loose_root: mounts.product.loose_root.as_ref().map(PathBuf::from),
-            corpus_root: PathBuf::from(&mounts.catalog.corpus_root),
-        }
-    }
-}
+/// `../content.ts`, ported at `super::super::content`; canonical home:
+/// [`super::client_download_policy::RemoteContentRoots`]).
+pub use super::client_download_policy::RemoteContentRoots;
 
 /// Client preparation verdict (`Q2DownloadPreparation`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -756,7 +729,7 @@ struct PendingNativeDownload {
 }
 
 /// Download permission callback.
-pub type Q2DownloadPermissionFn<'a> = Box<dyn Fn(&ClientDownloadRequest) -> bool + 'a>;
+pub type Q2DownloadPermissionFn<'a> = super::client_download_policy::ClientDownloadPermissionFn<'a>;
 
 /// [`Q2DownloadReceiver`] constructor options.
 pub struct Q2DownloadReceiverOptions<'a> {

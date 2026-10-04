@@ -697,7 +697,7 @@ pub trait RemotePresentationAccess {
 ///
 /// `source_entity` is supplied by the source entity registry, never derived
 /// from `ActorId`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApplicationNetworkPlayer {
     /// Owning client.
     pub client: ClientId,
@@ -1115,5 +1115,23 @@ mod tests {
         assert_eq!(q2_game_callback(|| 7).expect("value"), 7);
         let error = q2_game_callback(|| -> i32 { panic!("boom") }).expect_err("panic");
         assert_eq!(error, Q2GameCallbackError::Failed("boom".to_string()));
+    }
+
+    #[test]
+    fn application_player_is_hashable_for_simulation_mirrors() {
+        use std::collections::HashSet;
+        let owner = qa_core::identity::IdentityOwner::create("types-player-test").unwrap();
+        let player = Q2ApplicationPlayer {
+            client: owner.client(1, 1),
+            actor: owner.actor(1, 1),
+            source_entity: 3,
+        };
+        let mut seen = HashSet::new();
+        seen.insert(player.clone());
+        assert!(seen.contains(&player));
+        assert!(matches!(
+            Q2ApplicationAdmission::Accepted { player },
+            Q2ApplicationAdmission::Accepted { .. }
+        ));
     }
 }

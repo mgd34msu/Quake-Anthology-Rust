@@ -116,6 +116,16 @@ pub struct ArsenalView {
 /// Movement command, mirroring donor `MovementCommand` (`UserCommand`).
 pub type MovementCommand = UserCommand;
 
+/// Render a provider as `namespace:name` (shared arsenal helper).
+pub(crate) fn provider_name(provider: &ProviderId) -> String {
+    format!("{}:{}", provider.namespace, provider.name)
+}
+
+/// Unwrap an arsenal result, panicking with the donor `contract` message (shared arsenal helper).
+pub(crate) fn contract<T, E: std::fmt::Display>(result: Result<T, E>) -> T {
+    result.unwrap_or_else(|error| panic!("{error}"))
+}
+
 /// Any-family movement state, mirroring donor `MovementState`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MovementState {
@@ -222,6 +232,24 @@ mod tests {
         let family = ArsenalFamily::Q2;
         assert_eq!(family, ArsenalFamily::Q2);
         assert_ne!(family, ArsenalFamily::Q3);
+    }
+
+    #[test]
+    fn shared_provider_name_renders_pair() {
+        assert_eq!(provider_name(&ProviderId::new("q1", "base")), "q1:base");
+    }
+
+    #[test]
+    fn shared_contract_passes_ok_through() {
+        let value: Result<i32, &str> = Ok(7);
+        assert_eq!(contract(value), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "boom")]
+    fn shared_contract_panics_with_display() {
+        let value: Result<i32, &str> = Err("boom");
+        contract(value);
     }
 
     #[test]

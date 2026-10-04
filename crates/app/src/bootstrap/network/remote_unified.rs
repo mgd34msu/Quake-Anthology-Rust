@@ -27,7 +27,7 @@ use qa_net::common::commands::UserCommand;
 use qa_world::WorldError;
 use thiserror::Error;
 
-use super::remote_world::{RemoteWorldContent, RemoteWorldError};
+use super::remote_world::{provider_id, RemoteWorldContent, RemoteWorldError};
 use super::types::{PlayerUi, PlayerView, PresentationModel};
 use super::unified_component_consumer::{
     PreparedComponentMod, UnifiedComponentClientSource, UnifiedComponentConsumerError, UnifiedComponentConsumers,
@@ -1447,11 +1447,6 @@ where
         self.clients.borrow_mut().clear();
         self.sync_viewer();
     }
-}
-
-fn provider_id(provider: &str) -> qa_core::identity::ProviderId {
-    let (namespace, name) = provider.split_once(':').unwrap_or(("", ""));
-    qa_core::identity::ProviderId::new(namespace, name)
 }
 
 #[cfg(test)]
