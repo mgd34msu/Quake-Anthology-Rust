@@ -1744,9 +1744,8 @@ mod tests {
 
     #[test]
     fn windowed_unsupported_selections_fail_before_opening() {
-        let (code, _, stderr) = run_text(&["--windowed", "--renderer", "cpu", "--frames", "1"]);
-        assert_eq!(code, 1);
-        assert!(stderr.contains("--renderer gl"), "{stderr}");
+        // `--renderer cpu` is supported (see the windowed CPU smoke test);
+        // only worker rendering and dedicated conflicts still fail here.
         let (code, _, stderr) = run_text(&["--windowed", "--render-worker", "1", "--frames", "1"]);
         assert_eq!(code, 1);
         assert!(stderr.contains("worker"), "{stderr}");
