@@ -48,6 +48,7 @@ Usage: quake-anthology [options]
   --bot-skill 1|2|3|4|5      Quake III bot difficulty (default 2)
   --dedicated                Run without a window or local seats
   --windowed                 Open a native window and run frames on it
+  --frame-timings            Print per-stage frame timings after a windowed run
   --listen-unified PORT      Host the selected mixed-game recipe
   --connect-unified ADDRESS  Join a mixed-game server
   --listen PORT              Host the selected game's native source protocol
@@ -312,6 +313,8 @@ pub struct ApplicationOptions {
     pub seed: u32,
     /// Close after N simulation steps.
     pub frame_limit: Option<u64>,
+    /// Print per-stage frame timings after a windowed run.
+    pub frame_timings: bool,
     /// Start a hidden window.
     pub hidden: bool,
     /// Network role.
@@ -358,6 +361,7 @@ impl Default for ApplicationOptions {
             rules: None,
             seed: 1,
             frame_limit: None,
+            frame_timings: false,
             hidden: false,
             network: Network::Offline,
         }
@@ -857,6 +861,7 @@ const NON_LAUNCH_FLAGS: &[&str] = &[
     "--hidden",
     "--list-content",
     "--windowed",
+    "--frame-timings",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -923,6 +928,11 @@ pub fn parse_application_command(argv: &[String]) -> Result<ApplicationCommand, 
         }
         if flag == "--windowed" {
             options.windowed = true;
+            index += 1;
+            continue;
+        }
+        if flag == "--frame-timings" {
+            options.frame_timings = true;
             index += 1;
             continue;
         }
@@ -1376,6 +1386,16 @@ mod tests {
         let options = run_options(&["--dedicated", "--map", "e1m1"]);
         assert!(options.dedicated);
         assert_eq!(options.map, "maps/e1m1.bsp");
+    }
+
+    #[test]
+    fn frame_timings_flag_parses() {
+        let options = run_options(&["--menu"]);
+        assert!(!options.frame_timings);
+        let options = run_options(&["--windowed", "--frame-timings", "--frames", "10"]);
+        assert!(options.frame_timings);
+        assert!(options.windowed);
+        assert_eq!(options.frame_limit, Some(10));
     }
 
     #[test]

@@ -28,6 +28,7 @@ use qa_client::render::gl::platform::PlatformGlContext;
 use qa_client::render::gl::renderer::GlRenderer;
 use qa_client::render::gl::{GlContext, DEPTH_BITS, MAX_TEXTURE_COORDS, MAX_TEXTURE_IMAGE_UNITS, MAX_TEXTURE_SIZE};
 use qa_client::render::scene::resources::SceneImageRegistry;
+use qa_client::render::stage_timings::{StageSample, StageTimer, StageTotals};
 use qa_client::render::types::{
     DrawBatch, DrawBuffer, ImageResourceOperation, OrderedBackend, Rect as ClientRect, RenderOperation,
     RenderView as ClientRenderView, RenderViewState, ResourceOwner, SourceTime, ViewClear, ViewTarget,
@@ -1186,6 +1187,8 @@ pub struct WindowedStartupBackend {
     scene: Option<WindowedScene>,
     world: Option<WindowedWorld>,
     menu: Option<WindowedMenu>,
+    timer: StageTimer,
+    totals: StageTotals,
 }
 
 impl WindowedStartupBackend {
@@ -1224,6 +1227,32 @@ impl WindowedStartupBackend {
             scene: None,
             world: None,
             menu: None,
+            timer: StageTimer::new(false),
+            totals: StageTotals::new(),
+        }
+    }
+
+    /// Enable or disable per-stage frame timing collection.
+    pub fn set_frame_timings(&mut self, enabled: bool) {
+        self.timer = StageTimer::new(enabled);
+    }
+
+    /// Run-wide stage totals, when timing is enabled.
+    pub fn timing_totals_mut(&mut self) -> Option<&mut StageTotals> {
+        if self.timer.enabled() {
+            Some(&mut self.totals)
+        } else {
+            None
+        }
+    }
+
+    /// Rendered `--frame-timings` report, when timing is enabled.
+    #[must_use]
+    pub fn timing_report(&self) -> Option<String> {
+        if self.timer.enabled() {
+            Some(self.totals.render())
+        } else {
+            None
         }
     }
 
@@ -1571,22 +1600,39 @@ impl StartupBackend for WindowedStartupBackend {
             };
             renderer.window().poll_events()?
         };
+        self.timer.section("input");
         self.handle_window_events(events)?;
         if let (Some(controllers), Some(router)) = (self.controllers.as_mut(), self.input_router.as_mut()) {
             pump_windowed_controllers(controllers, router)?;
             self.forward_queued_input();
         }
+        self.timer.stop();
         Ok(())
     }
 
     fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
+        self.timer.section("scene");
         self.drain_menu_launch();
         let (commands, image_operations) = self.frame_commands();
-        let (renderer, backends, owner) = self.live_parts()?;
+        // Inline the live borrow (rather than `live_parts`) so the timer
+        // field stays reachable for the timed execute below.
+        let (Some(renderer), Some(backends), Some(owner)) =
+            (self.renderer.as_mut(), self.backends.as_mut(), self.owner.clone())
+        else {
+            self.timer.take_frame();
+            return Err("windowed backend is not open".to_string());
+        };
+        self.timer.section("images");
         Self::apply_frame_images(renderer, &image_operations);
         let frame = RenderFrame { owner, commands };
-        renderer.execute(&frame, backends).map_err(|error| error.to_string())?;
+        if let Err(error) = renderer.execute_with_timer(&frame, backends, &mut self.timer) {
+            self.timer.take_frame();
+            return Err(error.to_string());
+        }
+        self.timer.section("audio");
         refresh_windowed_audio(&mut self.audio, ctx.elapsed_ms);
+        let samples = self.timer.take_frame();
+        self.totals.add_frame(&samples);
         Ok(())
     }
 
@@ -1699,6 +1745,7 @@ pub fn open_windowed_application(
     let resource_owner = ResourceOwner::new(7, identity.session().clone(), 0);
     let mut backend =
         WindowedStartupBackend::new(&config, options.hidden, options.gamma, kind, Rc::clone(&quit), identity);
+    backend.set_frame_timings(options.frame_timings);
     if entry == StartupEntry::Menu {
         let mut menu_model = StartupSelectionModel::new(
             model.catalog().clone(),
@@ -1772,7 +1819,14 @@ pub fn drive_windowed_application(
                 return Err(error);
             }
         }
+        let pace_start = Instant::now();
         pacer.end_frame();
+        if let Some(totals) = app.backend_mut().timing_totals_mut() {
+            totals.add_sample(&StageSample {
+                name: "pacer",
+                elapsed: pace_start.elapsed(),
+            });
+        }
     }
     app.close()?;
     Ok(app.frames())
@@ -1884,6 +1938,25 @@ mod tests {
             .application_preset(&catalog, &options, Some(&movement), Some(&character))
             .unwrap();
         assert_eq!(preset.map.geometry.path, "maps/base1.bsp");
+    }
+
+    #[test]
+    fn timing_report_needs_enabled_timings() {
+        let config = StartupConfig::from_options(&windowed_options()).unwrap();
+        let mut backend = WindowedStartupBackend::new(
+            &config,
+            false,
+            1.0,
+            RenderBackendKind::Gl,
+            Rc::new(Cell::new(false)),
+            IdentityOwner::create("windowed-test").unwrap(),
+        );
+        assert!(backend.timing_report().is_none());
+        assert!(backend.timing_totals_mut().is_none());
+        backend.set_frame_timings(true);
+        assert!(backend.timing_totals_mut().is_some());
+        let report = backend.timing_report().expect("timed report");
+        assert!(report.contains("over 0 frames"), "{report}");
     }
 
     #[test]

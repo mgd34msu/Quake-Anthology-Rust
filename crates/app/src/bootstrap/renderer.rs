@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use qa_client::render::image_journal::ImageDescription;
 use qa_client::render::image_journal::RenderImageJournal;
+use qa_client::render::stage_timings::StageTimer;
 use qa_client::render::types::{
     DrawBuffer as ClientDrawBuffer, ImageResourceOperation, RenderView as ClientRenderView,
 };
@@ -1058,11 +1059,27 @@ where
     where
         BackendFactory: NativeBackendFactory<Backend = Backend>,
     {
+        self.execute_with_timer(frame, backends, &mut StageTimer::new(false))
+    }
+
+    /// Execute one frame, attributing serial dispatch to the `draw` stage
+    /// and buffer swaps to the `present` stage. A disabled timer costs one
+    /// branch per section call.
+    pub fn execute_with_timer<BackendFactory>(
+        &mut self,
+        frame: &RenderFrame,
+        backends: &mut BackendFactory,
+        timer: &mut StageTimer,
+    ) -> Result<(), RendererError>
+    where
+        BackendFactory: NativeBackendFactory<Backend = Backend>,
+    {
         self.writable()?;
         if frame.owner != self.owner {
             return Err(RendererError::ForeignFrame);
         }
         self.resize(backends)?;
+        timer.section("draw");
         if self.backend.is_worker() {
             let captures = if frame
                 .commands
@@ -1090,6 +1107,7 @@ where
                             .execute_serial_command(&RenderCommand::SetColor { color: *color });
                     }
                     RenderCommand::SwapBuffers => {
+                        timer.section("present");
                         let captures = self.captures.take();
                         self.swap(&captures)?;
                     }

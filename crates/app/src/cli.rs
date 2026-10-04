@@ -165,6 +165,11 @@ fn use_windowed_composition(options: &crate::options::ApplicationOptions) -> boo
 
 /// Run the headless application (default dedicated/local behavior).
 fn run_headless(options: &crate::options::ApplicationOptions, stdout: &mut dyn Write) -> Result<(), AppError> {
+    if options.frame_timings {
+        return Err(AppError::ConflictingOptions(
+            "--frame-timings requires a windowed run".to_string(),
+        ));
+    }
     let config = StartupConfig::from_options(options)?;
     let mut application = Application::open(&config, NullRenderer::new())?;
     let stats = application.run()?;
@@ -189,6 +194,9 @@ fn run_windowed(
         crate::bootstrap::windowed::drive_windowed_application(&mut composed.app, &composed.quit, options.frame_limit)
             .map_err(|error| AppError::Startup(error.to_string()))?;
     let _ = writeln!(stdout, "Ran {frames} windowed frames");
+    if let Some(report) = composed.app.backend().timing_report() {
+        let _ = stdout.write_all(report.as_bytes());
+    }
     Ok(())
 }
 

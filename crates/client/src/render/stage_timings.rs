@@ -107,14 +107,20 @@ impl StageTotals {
     pub fn add_frame(&mut self, samples: &[StageSample]) {
         self.frames += 1;
         for sample in samples {
-            let entry = self.totals.entry(sample.name).or_insert_with(|| {
-                self.order.push(sample.name);
-                (Duration::ZERO, 0, Duration::ZERO)
-            });
-            entry.0 += sample.elapsed;
-            entry.1 += 1;
-            entry.2 = entry.2.max(sample.elapsed);
+            self.add_sample(sample);
         }
+    }
+
+    /// Accumulate one span without counting a frame, for stages measured
+    /// outside the frame timer (the drive-loop pacer sleep).
+    pub fn add_sample(&mut self, sample: &StageSample) {
+        let entry = self.totals.entry(sample.name).or_insert_with(|| {
+            self.order.push(sample.name);
+            (Duration::ZERO, 0, Duration::ZERO)
+        });
+        entry.0 += sample.elapsed;
+        entry.1 += 1;
+        entry.2 = entry.2.max(sample.elapsed);
     }
 
     /// Accumulate one externally measured span.
@@ -219,5 +225,22 @@ mod tests {
         assert!(draw_at < setup_at, "{table}");
         assert!(table.contains("80.0%"), "{table}");
         assert!(table.contains("20.0%"), "{table}");
+    }
+
+    #[test]
+    fn add_sample_skips_the_frame_count() {
+        let mut totals = StageTotals::new();
+        totals.add_frame(&[StageSample {
+            name: "draw",
+            elapsed: Duration::from_micros(100),
+        }]);
+        totals.add_sample(&StageSample {
+            name: "pacer",
+            elapsed: Duration::from_micros(50),
+        });
+        assert_eq!(totals.frames(), 1);
+        let table = totals.render();
+        assert!(table.contains("pacer"), "{table}");
+        assert!(table.contains("over 1 frames"), "{table}");
     }
 }
