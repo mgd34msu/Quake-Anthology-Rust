@@ -45,7 +45,7 @@ QuakeC game logic.
 ./target/release/quake-anthology --game q2-classic-baseq2 --skill 2
 
 # Quake III with bots, nightmare bot skill
-./target/release/quake-anthology --game q3-base --bot-skill 5
+./target/release/quake-anthology --game q3-baseq3 --bot-skill 5
 
 # Two-player local splitscreen deathmatch
 ./target/release/quake-anthology --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
