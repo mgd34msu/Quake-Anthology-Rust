@@ -430,8 +430,16 @@ fn worldspawn_sky(records: &[Vec<(String, String)>]) -> Option<String> {
 /// a spawn priority, or without a parseable origin are skipped, never
 /// fatal. The returned origin is at eye height (`eye_height` above the
 /// record feet origin).
+///
+/// Quake II starts carry a `targetname` naming the re-entry point for
+/// travelers arriving from another map; the map-entry spawn is the
+/// untargeted `info_player_start` (donor `selectQ2Spawn` with an empty
+/// spawn point, source `SelectSpawnPoint`). A targeted start still wins
+/// over deathmatch/coop/intermission records when no untargeted start
+/// parses, but loses to an untargeted start regardless of record order.
+/// Other families ignore `targetname` on starts (first record wins).
 pub fn select_spawn(records: &[Vec<(String, String)>], kind: BspKind) -> Option<SpawnPoint> {
-    let mut best: Option<(u32, SpawnPoint)> = None;
+    let mut best: Option<(u32, bool, SpawnPoint)> = None;
     for record in records {
         let Some(classname) = record_get(record, "classname") else {
             continue;
@@ -439,7 +447,11 @@ pub fn select_spawn(records: &[Vec<(String, String)>], kind: BspKind) -> Option<
         let Some(priority) = spawn_priority(classname) else {
             continue;
         };
-        if best.is_some_and(|(best_priority, _)| best_priority <= priority) {
+        let targeted = matches!(kind, BspKind::Q2)
+            && classname == "info_player_start"
+            && record_get(record, "targetname").is_some_and(|name| !name.is_empty());
+        if best.is_some_and(|(best_priority, best_targeted, _)| (best_priority, best_targeted) <= (priority, targeted))
+        {
             continue;
         }
         let Some(feet) = record_get(record, "origin").and_then(parse_triple) else {
@@ -448,13 +460,14 @@ pub fn select_spawn(records: &[Vec<(String, String)>], kind: BspKind) -> Option<
         let origin = vec3(feet.x, feet.y, feet.z + eye_height(kind));
         best = Some((
             priority,
+            targeted,
             SpawnPoint {
                 origin,
                 angles: record_angles(record),
             },
         ));
     }
-    best.map(|(_, spawn)| spawn)
+    best.map(|(_, _, spawn)| spawn)
 }
 
 /// Digest model bytes for the scene-entity resource identity.
@@ -847,6 +860,81 @@ mod tests {
         let spawn = select_spawn(&records, BspKind::Q1).expect("spawn");
         assert_eq!(spawn.origin, vec3(4.0, 5.0, 6.0 + 22.0));
         assert_eq!(spawn.angles, vec3(0.0, 180.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_prefers_untargeted_q2_starts() {
+        // base1 record order: coop and deathmatch spots first, then the
+        // `base2` re-entry start, then the untargeted map-entry start.
+        // Picking the first start spawned at the exit end of the map.
+        let records = vec![
+            record(&[("classname", "worldspawn")]),
+            record(&[
+                ("classname", "info_player_coop"),
+                ("origin", "32 -224 24"),
+                ("angle", "90"),
+            ]),
+            record(&[
+                ("classname", "info_player_deathmatch"),
+                ("origin", "-392 840 -104"),
+                ("angle", "0"),
+            ]),
+            record(&[
+                ("classname", "info_player_start"),
+                ("targetname", "base2"),
+                ("origin", "-1768 1536 128"),
+                ("angle", "0"),
+            ]),
+            record(&[
+                ("classname", "info_player_start"),
+                ("origin", "128 -320 32"),
+                ("angle", "135"),
+            ]),
+        ];
+        let spawn = select_spawn(&records, BspKind::Q2).expect("spawn");
+        assert_eq!(spawn.origin, vec3(128.0, -320.0, 32.0 + 22.0));
+        assert_eq!(spawn.angles, vec3(0.0, 135.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_falls_back_to_targeted_q2_start() {
+        let records = vec![
+            record(&[
+                ("classname", "info_player_start"),
+                ("targetname", "base2"),
+                ("origin", "-1768 1536 128"),
+                ("angle", "0"),
+            ]),
+            record(&[
+                ("classname", "info_player_deathmatch"),
+                ("origin", "1 2 3"),
+                ("angle", "90"),
+            ]),
+        ];
+        let spawn = select_spawn(&records, BspKind::Q2).expect("spawn");
+        assert_eq!(spawn.origin, vec3(-1768.0, 1536.0, 128.0 + 22.0));
+        assert_eq!(spawn.angles, vec3(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_ignores_targetname_for_q1_and_q3() {
+        let records = vec![
+            record(&[
+                ("classname", "info_player_start"),
+                ("targetname", "other"),
+                ("origin", "1 2 3"),
+                ("angle", "0"),
+            ]),
+            record(&[
+                ("classname", "info_player_start"),
+                ("origin", "4 5 6"),
+                ("angle", "180"),
+            ]),
+        ];
+        let q1 = select_spawn(&records, BspKind::Q1).expect("q1 spawn");
+        assert_eq!(q1.origin, vec3(1.0, 2.0, 3.0 + 22.0));
+        let q3 = select_spawn(&records, BspKind::Q3).expect("q3 spawn");
+        assert_eq!(q3.origin, vec3(1.0, 2.0, 3.0 + 26.0));
     }
 
     #[test]
