@@ -23,6 +23,7 @@ use super::super::types::{
 use super::super::{FrameStats, RenderView, RendererBackend, SceneDecal, SceneEntity, SceneLight, SceneParticle};
 use crate::materials::fog::Q1Fog;
 
+use super::super::stage_timings::StageTimer;
 use super::fog::{apply_q1_depth_fog, apply_q2_depth_fog, Q1FogOutput};
 use super::lighting::{shade_q2_fragment, world_attributes, CpuLighting, CpuTriangleLighting, CpuVertex};
 use super::lines::{rasterize_aliased_line, LineFragment, LineScissor};
@@ -309,6 +310,10 @@ pub struct SoftwareRenderer {
     gamma_table: Option<[u8; 256]>,
     output_pixels: Option<Vec<u8>>,
     closed: bool,
+    /// Triangle setups needed before strip-parallel shading kicks in.
+    parallel_min_setups: usize,
+    /// Strip count for parallel shading.
+    parallel_threads: usize,
 }
 
 impl SoftwareRenderer {
@@ -389,6 +394,8 @@ impl SoftwareRenderer {
             gamma_table: None,
             output_pixels: None,
             closed: false,
+            parallel_min_setups: 512,
+            parallel_threads: std::thread::available_parallelism().map_or(4, |threads| threads.get()),
         }
     }
 
@@ -566,18 +573,108 @@ impl SoftwareRenderer {
                 }
             }
             BatchPrimitive::Triangles => {
-                let mut offset = 0;
-                while offset < batch.indices.len() {
-                    let (a, b, c) = (
-                        indexed_vertex(batch, offset),
-                        indexed_vertex(batch, offset + 1),
-                        indexed_vertex(batch, offset + 2),
-                    );
-                    self.draw_triangle(a, b, c, batch, texture, secondary);
-                    offset += 3;
-                }
+                let setups = self.build_batch_setups(batch, texture, secondary);
+                self.shade_setups(&setups);
             }
         }
+    }
+
+    /// Build owned triangle setups for one triangle batch. Lines shade
+    /// immediately and never collect.
+    fn build_batch_setups<'batch>(
+        &self,
+        batch: &'batch DrawBatch,
+        texture: &BoundTexture,
+        secondary: &BoundTexture,
+    ) -> Vec<TriangleSetup<'batch>> {
+        if !matches!(batch.primitive, BatchPrimitive::Triangles) {
+            panic!("triangle setup collection needs a triangle batch");
+        }
+        let mut setups = Vec::new();
+        let mut offset = 0;
+        while offset < batch.indices.len() {
+            let (a, b, c) = (
+                indexed_vertex(batch, offset),
+                indexed_vertex(batch, offset + 1),
+                indexed_vertex(batch, offset + 2),
+            );
+            self.collect_triangle(&mut setups, a, b, c, batch, texture, secondary);
+            offset += 3;
+        }
+        setups
+    }
+
+    /// Shade collected setups into the live framebuffer: serially below the
+    /// parallel threshold, or across row strips on scoped threads above it.
+    /// Strips borrow disjoint rows and setups run in order per strip, so
+    /// parallel shading is pixel-identical to serial shading.
+    fn shade_setups(&mut self, setups: &[TriangleSetup<'_>]) {
+        if setups.is_empty() {
+            return;
+        }
+        if setups.len() < self.parallel_min_setups || self.parallel_threads < 2 {
+            let mut target = self.framebuffer.whole();
+            for setup in setups {
+                run_triangle_rows(setup, &mut target, &mut self.sampled, setup.min_y, setup.max_y);
+            }
+            return;
+        }
+        let mut strips = self.framebuffer.split_strips(self.parallel_threads);
+        std::thread::scope(|scope| {
+            for mut strip in strips.drain(..) {
+                let origin_y = strip.origin_y;
+                let rows = strip.depth.len() / strip.stride.max(1) as usize;
+                let last_y = origin_y + rows as i32 - 1;
+                scope.spawn(move || {
+                    let mut sampled = Sample {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    };
+                    for setup in setups {
+                        let first_y = setup.min_y.max(origin_y);
+                        let strip_last_y = setup.max_y.min(last_y);
+                        if first_y <= strip_last_y {
+                            run_triangle_rows(setup, &mut strip, &mut sampled, first_y, strip_last_y);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /// Draw many triangle batches: begin and bind each one serially, collect
+    /// every triangle setup, then shade the whole run at once. Backends
+    /// gather consecutive triangle batches here so strip-parallel shading
+    /// amortizes one scoped spawn over the run instead of paying it per
+    /// tiny batch. Setup and shading attribute to their own stages.
+    pub fn draw_batches(&mut self, batches: &[&DrawBatch], timer: &mut StageTimer) {
+        timer.section("cpu_setup");
+        let mut setups = Vec::new();
+        for batch in batches {
+            if batch.indices.is_empty() {
+                continue;
+            }
+            if !matches!(batch.primitive, BatchPrimitive::Triangles) {
+                panic!("batched draws need triangle batches");
+            }
+            let mut prepared = self.prepare_geometry(batch);
+            let texture = prepared.batch.texture.clone();
+            let second = match &prepared.batch.vertices {
+                BatchVertices::Pair { second_texture, .. } => Some(second_texture.binding.clone()),
+                BatchVertices::Single(_) => None,
+            };
+            prepared.begin();
+            prepared.apply_texture(0, &texture);
+            if let Some(second) = second {
+                prepared.apply_texture(1, &second);
+            }
+            setups.extend(prepared.collect_triangle_setups(batch));
+            prepared.cleanup();
+        }
+        timer.section("cpu_shade");
+        self.shade_setups(&setups);
     }
 
     fn draw_line(
@@ -640,12 +737,14 @@ impl SoftwareRenderer {
         }
     }
 
-    fn draw_triangle(
-        &mut self,
+    #[allow(clippy::too_many_arguments)]
+    fn collect_triangle<'batch>(
+        &self,
+        setups: &mut Vec<TriangleSetup<'batch>>,
         a: CpuVertex,
         b: CpuVertex,
         c: CpuVertex,
-        batch: &DrawBatch,
+        batch: &'batch DrawBatch,
         texture: &BoundTexture,
         secondary: &BoundTexture,
     ) {
@@ -695,7 +794,7 @@ impl SoftwareRenderer {
             let w_scale = first.position.w.min(second.position.w).min(third.position.w);
             let viewport = self.viewport;
             let subpixel_scale = self.subpixel_scale;
-            self.triangle(
+            if let Some(setup) = self.triangle_setup(
                 project(&first, &viewport, w_scale, subpixel_scale, fog_scale),
                 project(&second, &viewport, w_scale, subpixel_scale, fog_scale),
                 project(&third, &viewport, w_scale, subpixel_scale, fog_scale),
@@ -703,7 +802,9 @@ impl SoftwareRenderer {
                 texture,
                 secondary,
                 interpolation,
-            );
+            ) {
+                setups.push(setup);
+            }
         }
     }
 
@@ -857,22 +958,22 @@ impl SoftwareRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn triangle(
-        &mut self,
+    fn triangle_setup<'batch>(
+        &self,
         a: ScreenVertex,
         mut b: ScreenVertex,
         mut c: ScreenVertex,
-        batch: &DrawBatch,
+        batch: &'batch DrawBatch,
         texture: &BoundTexture,
         secondary_texture: &BoundTexture,
         interpolation: Option<[ScreenVertex; 3]>,
-    ) {
+    ) -> Option<TriangleSetup<'batch>> {
         let mut area = edge(&a, &b, c.x, c.y);
         if !area.is_finite() || area == 0.0 {
-            return;
+            return None;
         }
         if (batch.state.cull == CullFace::Back && area > 0.0) || (batch.state.cull == CullFace::Front && area < 0.0) {
-            return;
+            return None;
         }
         if area < 0.0 {
             std::mem::swap(&mut b, &mut c);
@@ -980,7 +1081,7 @@ impl SoftwareRenderer {
             q_dy,
         };
         let lighting = self.fragment_lighting(batch);
-        let setup = TriangleSetup {
+        Some(TriangleSetup {
             fog: batch.fog,
             fog_depth_scale: ia.fog_depth_scale,
             luminance_alpha: batch.luminance_alpha,
@@ -1076,14 +1177,7 @@ impl SoftwareRenderer {
             stencil_maximum: self.stencil_maximum,
             stencil_depth_fail: self.stencil_depth_fail,
             stencil_depth_pass: self.stencil_depth_pass,
-        };
-        run_triangle_rows(
-            &setup,
-            &mut self.framebuffer,
-            &mut self.sampled,
-            setup.min_y,
-            setup.max_y,
-        );
+        })
     }
 
     fn shadow_pass(
@@ -1357,6 +1451,29 @@ impl PreparedDraw for SoftwarePrepared<'_> {
             panic!("CPU prepared draw has not completed");
         }
         self.phase = PreparedPhase::Cleaned;
+    }
+}
+
+impl SoftwarePrepared<'_> {
+    /// Collect triangle setups without shading, for batched runs. `batch`
+    /// is the original (uncloned) batch so setups borrow from data that
+    /// outlives this prepared draw; it holds identical values to the
+    /// prepared clone. The caller finishes with `cleanup` without `draw`.
+    fn collect_triangle_setups<'batch>(&mut self, batch: &'batch DrawBatch) -> Vec<TriangleSetup<'batch>> {
+        self.renderer.assert_open();
+        let paired = matches!(self.batch.vertices, BatchVertices::Pair { .. });
+        if self.phase != PreparedPhase::Begun || self.next_unit != u32::from(paired) + 1 {
+            panic!("CPU prepared draw has unapplied texture slots");
+        }
+        let primary = self.renderer.images.bound(0);
+        let secondary = if paired {
+            self.renderer.images.bound(1)
+        } else {
+            BoundTexture::Incomplete
+        };
+        let setups = self.renderer.build_batch_setups(batch, &primary, &secondary);
+        self.phase = PreparedPhase::Drawn;
+        setups
     }
 }
 
@@ -2373,5 +2490,77 @@ mod tests {
         );
         assert_eq!(renderer.frames(), 1);
         assert_eq!(renderer.view(), Some(&view));
+    }
+
+    #[test]
+    fn batched_parallel_shading_matches_serial_draws() {
+        fn view() -> RenderViewState {
+            RenderViewState {
+                viewport: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 8.0,
+                    height: 8.0,
+                },
+                clear: Some(ViewClear {
+                    depth: 1.0,
+                    color: Some(vec4(0.0, 0.0, 0.0, 1.0)),
+                    stencil: false,
+                }),
+                clip_plane: None,
+            }
+        }
+        fn tri(color: Vec4, z: f32) -> DrawBatch {
+            // NDC triangle covering window (0,0), (8,0), (0,8).
+            batch(vec![
+                RenderVertex {
+                    position: vec4(-1.0, 1.0, z, 1.0),
+                    tex_coord: vec2(0.0, 0.0),
+                    color,
+                },
+                RenderVertex {
+                    position: vec4(1.0, 1.0, z, 1.0),
+                    tex_coord: vec2(1.0, 0.0),
+                    color,
+                },
+                RenderVertex {
+                    position: vec4(-1.0, -1.0, z, 1.0),
+                    tex_coord: vec2(0.0, 1.0),
+                    color,
+                },
+            ])
+        }
+        // Overlapping depths: nearest (blue) must win everywhere covered.
+        let batches = vec![
+            tri(vec4(1.0, 0.0, 0.0, 1.0), 0.5),
+            tri(vec4(0.0, 1.0, 0.0, 1.0), 0.0),
+            tri(vec4(0.0, 0.0, 1.0, 1.0), -0.5),
+        ];
+        let owner = owner();
+        let mut serial = SoftwareRenderer::new(8, 8, owner.clone());
+        serial.begin_view(&view());
+        for batch in &batches {
+            serial.draw(batch);
+        }
+        let expected_pixels = serial.pixels().to_vec();
+        let expected_depth = serial.framebuffer.depth.clone();
+        assert!(expected_pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[2] == 255));
+
+        let refs: Vec<&DrawBatch> = batches.iter().collect();
+        let mut timer = StageTimer::new(false);
+        let mut batched_serial = SoftwareRenderer::new(8, 8, owner.clone());
+        batched_serial.begin_view(&view());
+        batched_serial.parallel_min_setups = usize::MAX;
+        batched_serial.draw_batches(&refs, &mut timer);
+        assert_eq!(batched_serial.pixels(), expected_pixels.as_slice());
+        assert_eq!(batched_serial.framebuffer.depth, expected_depth);
+
+        let mut parallel = SoftwareRenderer::new(8, 8, owner);
+        parallel.begin_view(&view());
+        parallel.parallel_min_setups = 1;
+        parallel.parallel_threads = 4;
+        parallel.draw_batches(&refs, &mut timer);
+        assert_eq!(parallel.pixels(), expected_pixels.as_slice());
+        assert_eq!(parallel.framebuffer.depth, expected_depth);
     }
 }

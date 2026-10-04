@@ -687,6 +687,107 @@ impl Framebuffer {
 
     /// Store color bytes.
     pub fn store_bytes(&mut self, pixel: usize, bytes: [u8; 4]) {
+        self.whole().store_bytes(pixel, bytes);
+    }
+
+    /// Whole-buffer strip view.
+    pub fn whole(&mut self) -> FramebufferStrip<'_> {
+        let stencil = self.stencil.as_mut().map(|stencil| &mut stencil[..]);
+        FramebufferStrip {
+            pixels: &mut self.pixels,
+            depth: &mut self.depth,
+            stencil,
+            stride: self.stride,
+            origin_x: self.origin_x,
+            origin_y: self.origin_y,
+        }
+    }
+
+    /// Split storage into `count` contiguous row strips for strip-parallel
+    /// shading. Strips are as even as possible; fewer come back when the
+    /// buffer holds fewer rows. Strips borrow disjoint rows, so threads
+    /// shading different strips never share a pixel.
+    pub fn split_strips(&mut self, count: usize) -> Vec<FramebufferStrip<'_>> {
+        let stride = self.stride as usize;
+        assert!(stride > 0, "framebuffer stride must be positive");
+        let rows = self.pixels.len() / (stride * 4);
+        assert_eq!(
+            self.depth.len(),
+            rows * stride,
+            "depth storage must match color storage"
+        );
+        if let Some(stencil) = &self.stencil {
+            assert_eq!(stencil.len(), rows * stride, "stencil storage must match color storage");
+        }
+        let count = count.max(1).min(rows.max(1));
+        let base = rows / count;
+        let extra = rows % count;
+        let mut pixels = &mut self.pixels[..];
+        let mut depth = &mut self.depth[..];
+        let mut stencil = self.stencil.as_mut().map(|stencil| &mut stencil[..]);
+        let mut strips = Vec::with_capacity(count);
+        let mut row = self.origin_y;
+        for index in 0..count {
+            let strip_rows = base + usize::from(index < extra);
+            let cells = strip_rows * stride;
+            let (head_pixels, rest_pixels) = pixels.split_at_mut(cells * 4);
+            pixels = rest_pixels;
+            let (head_depth, rest_depth) = depth.split_at_mut(cells);
+            depth = rest_depth;
+            let head_stencil = stencil.take().map(|strip| {
+                let (head, rest) = strip.split_at_mut(cells);
+                stencil = Some(rest);
+                head
+            });
+            strips.push(FramebufferStrip {
+                pixels: head_pixels,
+                depth: head_depth,
+                stencil: head_stencil,
+                stride: self.stride,
+                origin_x: self.origin_x,
+                origin_y: row,
+            });
+            row += strip_rows as i32;
+        }
+        strips
+    }
+}
+
+/// Mutable row-range view over a [`Framebuffer`] for strip-parallel shading.
+///
+/// Slices start at `origin_y`; pixel indices use the same
+/// `(y - origin_y) * stride - origin_x + x` formula as the full buffer, so
+/// shading code is identical for whole-buffer and strip views.
+pub struct FramebufferStrip<'a> {
+    /// Strip RGBA bytes.
+    pub pixels: &'a mut [u8],
+    /// Strip depth values.
+    pub depth: &'a mut [f32],
+    /// Strip stencil values, absent without stencil bits.
+    pub stencil: Option<&'a mut [u32]>,
+    /// Row stride in pixels (same as the parent).
+    pub stride: u32,
+    /// Absolute X origin (same as the parent).
+    pub origin_x: i32,
+    /// Absolute Y origin: the strip's first row.
+    pub origin_y: i32,
+}
+
+impl FramebufferStrip<'_> {
+    /// Load normalized color channels.
+    #[must_use]
+    pub fn load_normalized(&self, pixel: usize) -> [f32; 4] {
+        let offset = pixel * 4;
+        [
+            f32::from(self.pixels[offset]) / 255.0,
+            f32::from(self.pixels[offset + 1]) / 255.0,
+            f32::from(self.pixels[offset + 2]) / 255.0,
+            f32::from(self.pixels[offset + 3]) / 255.0,
+        ]
+    }
+
+    /// Store color bytes.
+    pub fn store_bytes(&mut self, pixel: usize, bytes: [u8; 4]) {
         let offset = pixel * 4;
         self.pixels[offset..offset + 4].copy_from_slice(&bytes);
     }
@@ -920,7 +1021,7 @@ pub struct TriangleSetup<'a> {
 /// coverage and interpolation retain absolute coordinates.
 pub fn run_triangle_rows(
     setup: &TriangleSetup,
-    framebuffer: &mut Framebuffer,
+    target: &mut FramebufferStrip,
     sampled: &mut Sample,
     first_y: i32,
     last_y: i32,
@@ -938,7 +1039,7 @@ pub fn run_triangle_rows(
         let attribute_row_a = setup.attribute_ay * sample_y;
         let attribute_row_b = setup.attribute_by * sample_y;
         let attribute_row_c = setup.attribute_cy * sample_y;
-        let row_offset = (y - framebuffer.origin_y) * framebuffer.stride as i32 - framebuffer.origin_x;
+        let row_offset = (y - target.origin_y) * target.stride as i32 - target.origin_x;
         span.min = setup.min_x;
         span.max = setup.max_x;
         trim_span(&mut span, setup.edge_ax, row_a, setup.edge_ac, setup.edge_a_inclusive);
@@ -960,10 +1061,7 @@ pub fn run_triangle_rows(
                 )
             };
             let pixel = (row_offset + x) as usize;
-            let old_depth = *framebuffer
-                .depth
-                .get(pixel)
-                .expect("fragment is outside the depth buffer");
+            let old_depth = *target.depth.get(pixel).expect("fragment is outside the depth buffer");
             let depth_passed = !((setup.depth_test == super::super::types::DepthTest::LessEqual && depth > old_depth)
                 || (setup.depth_test == super::super::types::DepthTest::Equal && depth != old_depth));
             if !depth_passed && !setup.stencil_enabled {
@@ -1132,7 +1230,7 @@ pub fn run_triangle_rows(
             }
             if setup.stencil_enabled
                 && !stencil_fragment(
-                    framebuffer.stencil.as_deref_mut(),
+                    target.stencil.as_deref_mut(),
                     pixel,
                     depth_passed,
                     StencilTest {
@@ -1151,7 +1249,7 @@ pub fn run_triangle_rows(
                 continue;
             }
             if setup.blending == BlendMode::Opaque {
-                framebuffer.store_bytes(
+                target.store_bytes(
                     pixel,
                     [
                         byte(r),
@@ -1162,7 +1260,7 @@ pub fn run_triangle_rows(
                 );
             } else {
                 write_fragment(
-                    framebuffer,
+                    target,
                     setup.alpha_bits,
                     pixel,
                     [r, g, blue, alpha],
@@ -1171,7 +1269,7 @@ pub fn run_triangle_rows(
                 );
             }
             if setup.depth_write {
-                framebuffer.depth[pixel] = depth;
+                target.depth[pixel] = depth;
             }
         }
     }
@@ -1179,7 +1277,7 @@ pub fn run_triangle_rows(
 }
 
 fn write_fragment(
-    framebuffer: &mut Framebuffer,
+    target: &mut FramebufferStrip,
     alpha_bits: u32,
     pixel: usize,
     color: [f32; 4],
@@ -1187,14 +1285,14 @@ fn write_fragment(
     mode: BlendMode,
 ) {
     let (r, g, blue, alpha) = (clamp(color[0]), clamp(color[1]), clamp(color[2]), clamp(color[3]));
-    let [dr, dg, db, da_full] = framebuffer.load_normalized(pixel);
+    let [dr, dg, db, da_full] = target.load_normalized(pixel);
     let da = if alpha_bits == 0 { 1.0 } else { da_full };
     let out_alpha = |value: f32| if alpha_bits == 0 { 255 } else { byte(value) };
     match mode {
         BlendMode::Opaque => unreachable!("opaque fragments bypass the blend writer"),
         BlendMode::Alpha => {
             let inverse = 1.0 - alpha;
-            framebuffer.store_bytes(
+            target.store_bytes(
                 pixel,
                 [
                     byte(r * alpha + dr * inverse),
@@ -1205,20 +1303,20 @@ fn write_fragment(
             );
         }
         BlendMode::Add => {
-            framebuffer.store_bytes(
+            target.store_bytes(
                 pixel,
                 [byte(r + dr), byte(g + dg), byte(blue + db), out_alpha(alpha + da)],
             );
         }
         BlendMode::Multiply => {
-            framebuffer.store_bytes(
+            target.store_bytes(
                 pixel,
                 [byte(r * dr), byte(g * dg), byte(blue * db), out_alpha(alpha * da)],
             );
         }
         BlendMode::DstColorInverseDstAlpha => {
             let inverse = 1.0 - da;
-            framebuffer.store_bytes(
+            target.store_bytes(
                 pixel,
                 [
                     byte(r * dr + dr * inverse),
@@ -1229,7 +1327,7 @@ fn write_fragment(
             );
         }
         BlendMode::General => {
-            framebuffer.store_bytes(
+            target.store_bytes(
                 pixel,
                 [
                     blend(r, dr, alpha, da, blend_state, false),
@@ -1424,7 +1522,7 @@ mod tests {
         });
         let mut frame = Framebuffer::new(4, 4, false);
         let mut sampled = Sample::default();
-        assert!(!run_triangle_rows(&setup, &mut frame, &mut sampled, 0, 3));
+        assert!(!run_triangle_rows(&setup, &mut frame.whole(), &mut sampled, 0, 3));
         // Covered exactly where x + y < 3; vertex A is red, B and C black.
         let red = |x: usize, y: usize| frame.pixels[(y * 4 + x) * 4];
         assert_eq!(red(0, 0), 191);

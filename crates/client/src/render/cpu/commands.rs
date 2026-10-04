@@ -6,7 +6,8 @@
 
 use qa_core::math::{vec4, Vec4};
 
-use super::super::types::{OrderedBackend, RenderCommand, RenderFrame, RenderOperation};
+use super::super::stage_timings::StageTimer;
+use super::super::types::{BatchPrimitive, DrawBatch, OrderedBackend, RenderCommand, RenderFrame, RenderOperation};
 use super::rasterizer::SoftwareRenderer;
 
 /// Presentation surface for finished CPU frames.
@@ -61,23 +62,43 @@ impl CpuRenderTarget {
     }
 
     fn operations(&mut self, operations: &[RenderOperation]) {
+        let mut pending: Vec<&DrawBatch> = Vec::new();
+        // Headless runs carry no frame timer; batched draws run untimed.
+        let mut timer = StageTimer::new(false);
+        let flush = |backend: &mut SoftwareRenderer, timer: &mut StageTimer, pending: &mut Vec<&DrawBatch>| {
+            if !pending.is_empty() {
+                backend.draw_batches(pending, timer);
+                pending.clear();
+            }
+        };
         for operation in operations {
             match operation {
                 RenderOperation::Draw(batches) => {
                     for batch in batches {
-                        self.backend.draw(batch);
+                        if matches!(batch.primitive, BatchPrimitive::Triangles) {
+                            pending.push(batch);
+                        } else {
+                            flush(&mut self.backend, &mut timer, &mut pending);
+                            self.backend.draw(batch);
+                        }
                     }
                 }
-                RenderOperation::ObjectOpacity { opacity, batches } => {
-                    self.backend.with_object_opacity(*opacity, |backend| {
-                        for batch in batches {
-                            backend.draw(batch);
+                operation => {
+                    flush(&mut self.backend, &mut timer, &mut pending);
+                    match operation {
+                        RenderOperation::ObjectOpacity { opacity, batches } => {
+                            self.backend.with_object_opacity(*opacity, |backend| {
+                                for batch in batches {
+                                    backend.draw(batch);
+                                }
+                            });
                         }
-                    });
+                        operation => self.backend.draw_immediate(operation),
+                    }
                 }
-                operation => self.backend.draw_immediate(operation),
             }
         }
+        flush(&mut self.backend, &mut timer, &mut pending);
     }
 
     /// Execute one frame's commands in order.

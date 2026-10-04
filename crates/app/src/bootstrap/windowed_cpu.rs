@@ -9,8 +9,10 @@
 //! share the reference CPU framebuffer.
 
 use qa_client::render::cpu::rasterizer::SoftwareRenderer;
+use qa_client::render::stage_timings::StageTimer;
 use qa_client::render::types::{
-    ImageResourceOperation, OrderedBackend, RenderOperation, RenderView as ClientRenderView, ResourceOwner,
+    BatchPrimitive, DrawBatch, ImageResourceOperation, OrderedBackend, RenderOperation, RenderView as ClientRenderView,
+    ResourceOwner,
 };
 use qa_core::math::{vec4, Vec4};
 
@@ -43,32 +45,53 @@ impl NativeCpuBackend {
     }
 
     /// Execute one operation list (donor `CpuRenderTarget` operation path).
-    fn execute_operations(&mut self, operations: &[RenderOperation]) {
+    /// Consecutive triangle batches gather into one batched run so
+    /// strip-parallel shading amortizes a single spawn; anything else
+    /// flushes the run and executes serially in order.
+    fn execute_operations(&mut self, operations: &[RenderOperation], timer: &mut StageTimer) {
+        let mut pending: Vec<&DrawBatch> = Vec::new();
+        let flush = |renderer: &mut SoftwareRenderer, timer: &mut StageTimer, pending: &mut Vec<&DrawBatch>| {
+            if !pending.is_empty() {
+                renderer.draw_batches(pending, timer);
+                pending.clear();
+            }
+        };
         for operation in operations {
             match operation {
                 RenderOperation::Draw(batches) => {
                     for batch in batches {
-                        self.renderer.draw(batch);
+                        if matches!(batch.primitive, BatchPrimitive::Triangles) {
+                            pending.push(batch);
+                        } else {
+                            flush(&mut self.renderer, timer, &mut pending);
+                            self.renderer.draw(batch);
+                        }
                     }
                 }
-                RenderOperation::ObjectOpacity { opacity, batches } => {
-                    self.renderer.with_object_opacity(*opacity, |renderer| {
-                        for batch in batches {
-                            renderer.draw(batch);
+                operation => {
+                    flush(&mut self.renderer, timer, &mut pending);
+                    match operation {
+                        RenderOperation::ObjectOpacity { opacity, batches } => {
+                            self.renderer.with_object_opacity(*opacity, |renderer| {
+                                for batch in batches {
+                                    renderer.draw(batch);
+                                }
+                            });
                         }
-                    });
+                        operation => self.renderer.draw_immediate(operation),
+                    }
                 }
-                operation => self.renderer.draw_immediate(operation),
             }
         }
+        flush(&mut self.renderer, timer, &mut pending);
     }
 
     /// Execute one ordered view: before-view operations, the view state,
     /// then the view operations (donor `CpuRenderTarget` view path).
-    fn execute_view(&mut self, view: &ClientRenderView) {
-        self.execute_operations(&view.before_view);
+    fn execute_view(&mut self, view: &ClientRenderView, timer: &mut StageTimer) {
+        self.execute_operations(&view.before_view, timer);
         self.renderer.begin_view(&view.state);
-        self.execute_operations(&view.operations);
+        self.execute_operations(&view.operations, timer);
     }
 }
 
@@ -101,6 +124,10 @@ impl NativeRenderBackend for NativeCpuBackend {
     }
 
     fn execute_serial_command(&mut self, command: &RenderCommand) {
+        self.execute_serial_command_timed(command, &mut StageTimer::new(false));
+    }
+
+    fn execute_serial_command_timed(&mut self, command: &RenderCommand, timer: &mut StageTimer) {
         match command {
             RenderCommand::SetColor { color } => {
                 self.color = *color;
@@ -109,7 +136,7 @@ impl NativeRenderBackend for NativeCpuBackend {
                 self.renderer.select_draw_buffer(*buffer, *clear);
             }
             RenderCommand::View(view) => {
-                self.execute_view(view);
+                self.execute_view(view, timer);
             }
             RenderCommand::Draw | RenderCommand::SwapBuffers => {}
         }

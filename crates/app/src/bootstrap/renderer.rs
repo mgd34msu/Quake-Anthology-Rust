@@ -392,6 +392,11 @@ pub trait NativeRenderBackend {
     fn apply_image_resource(&mut self, operation: &ImageResourceOperation);
     /// Execute one serial command.
     fn execute_serial_command(&mut self, command: &RenderCommand);
+    /// Execute one serial command with stage timing. Backends without
+    /// timed sub-stages keep the default untimed dispatch.
+    fn execute_serial_command_timed(&mut self, command: &RenderCommand, _timer: &mut StageTimer) {
+        self.execute_serial_command(command);
+    }
     /// Execute worker commands with captures and image operations.
     fn execute_worker(
         &mut self,
@@ -1104,7 +1109,7 @@ where
                     RenderCommand::SetColor { color } => {
                         self.color = *color;
                         self.backend
-                            .execute_serial_command(&RenderCommand::SetColor { color: *color });
+                            .execute_serial_command_timed(&RenderCommand::SetColor { color: *color }, timer);
                     }
                     RenderCommand::SwapBuffers => {
                         timer.section("present");
@@ -1112,16 +1117,20 @@ where
                         self.swap(&captures)?;
                     }
                     RenderCommand::Draw => {
-                        self.backend.execute_serial_command(&RenderCommand::Draw);
+                        self.backend.execute_serial_command_timed(&RenderCommand::Draw, timer);
                     }
                     RenderCommand::DrawBuffer { buffer, clear } => {
-                        self.backend.execute_serial_command(&RenderCommand::DrawBuffer {
-                            buffer: *buffer,
-                            clear: *clear,
-                        });
+                        self.backend.execute_serial_command_timed(
+                            &RenderCommand::DrawBuffer {
+                                buffer: *buffer,
+                                clear: *clear,
+                            },
+                            timer,
+                        );
                     }
                     RenderCommand::View(view) => {
-                        self.backend.execute_serial_command(&RenderCommand::View(view.clone()));
+                        self.backend
+                            .execute_serial_command_timed(&RenderCommand::View(view.clone()), timer);
                     }
                 }
                 index += 1;

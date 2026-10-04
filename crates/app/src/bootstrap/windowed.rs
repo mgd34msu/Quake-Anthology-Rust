@@ -565,6 +565,13 @@ impl NativeRenderBackend for NativeWindowedBackend {
         }
     }
 
+    fn execute_serial_command_timed(&mut self, command: &RenderCommand, timer: &mut StageTimer) {
+        match self {
+            Self::Gl(backend) => backend.execute_serial_command_timed(command, timer),
+            Self::Cpu(backend) => backend.execute_serial_command_timed(command, timer),
+        }
+    }
+
     fn execute_worker(
         &mut self,
         commands: &[RenderCommand],
