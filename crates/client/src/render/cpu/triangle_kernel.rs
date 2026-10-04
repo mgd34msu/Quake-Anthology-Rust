@@ -240,53 +240,56 @@ fn sample_level(
         y0 = wrap_texel(y0, height) as i32;
         y1 = wrap_texel(y1, height) as i32;
     }
-    let w00 = (1.0 - fx) * (1.0 - fy) / 255.0;
-    let w10 = fx * (1.0 - fy) / 255.0;
-    let w01 = (1.0 - fx) * fy / 255.0;
-    let w11 = fx * fy / 255.0;
+    // Folded reciprocal: identical weights up to float rounding, no divides.
+    const INV_255: f32 = 1.0 / 255.0;
+    let w00 = (1.0 - fx) * (1.0 - fy) * INV_255;
+    let w10 = fx * (1.0 - fy) * INV_255;
+    let w01 = (1.0 - fx) * fy * INV_255;
+    let w11 = fx * fy * INV_255;
     let has_border = !repeat && (x0 < 0 || y0 < 0 || x1 >= width as i32 || y1 >= height as i32);
-    // Channel extraction consumes signed 32-bit words; avoid unsigned-number conversion.
-    let word = |x: i32, y: i32| -> u32 {
+    // A missing tap denotes a GL_CLAMP border tap (zeroed here, weighted
+    // into the border color below), not the nearest edge texel.
+    let tap = |x: i32, y: i32, missing: bool| -> [f32; 4] {
+        if missing {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
         let offset = ((y as u32 * width + x as u32) * 4) as usize;
-        (u32::from(data[offset]) << 24)
-            | (u32::from(data[offset + 1]) << 16)
-            | (u32::from(data[offset + 2]) << 8)
-            | u32::from(data[offset + 3])
+        [
+            f32::from(data[offset]),
+            f32::from(data[offset + 1]),
+            f32::from(data[offset + 2]),
+            f32::from(data[offset + 3]),
+        ]
     };
-    let (c00, c10, c01, c11, border_weight) = if has_border {
-        // A missing tap denotes a GL_CLAMP border tap, not the nearest edge texel.
-        let p00 = x0 < 0 || y0 < 0;
-        let p10 = x1 >= width as i32 || y0 < 0;
-        let p01 = x0 < 0 || y1 >= height as i32;
-        let p11 = x1 >= width as i32 || y1 >= height as i32;
-        let weight = (if p00 { w00 } else { 0.0 }
+    let (p00, p10, p01, p11) = if has_border {
+        (
+            x0 < 0 || y0 < 0,
+            x1 >= width as i32 || y0 < 0,
+            x0 < 0 || y1 >= height as i32,
+            x1 >= width as i32 || y1 >= height as i32,
+        )
+    } else {
+        (false, false, false, false)
+    };
+    let border_weight = if has_border {
+        (if p00 { w00 } else { 0.0 }
             + if p10 { w10 } else { 0.0 }
             + if p01 { w01 } else { 0.0 }
             + if p11 { w11 } else { 0.0 })
-            * 255.0;
-        (
-            if p00 { 0 } else { word(x0, y0) },
-            if p10 { 0 } else { word(x1, y0) },
-            if p01 { 0 } else { word(x0, y1) },
-            if p11 { 0 } else { word(x1, y1) },
-            weight,
-        )
+            * 255.0
     } else {
-        (word(x0, y0), word(x1, y0), word(x0, y1), word(x1, y1), 0.0)
+        0.0
     };
-    output.r =
-        (c00 >> 24) as f32 * w00 + (c10 >> 24) as f32 * w10 + (c01 >> 24) as f32 * w01 + (c11 >> 24) as f32 * w11;
-    output.g = ((c00 >> 16) & 255) as f32 * w00
-        + ((c10 >> 16) & 255) as f32 * w10
-        + ((c01 >> 16) & 255) as f32 * w01
-        + ((c11 >> 16) & 255) as f32 * w11;
-    output.b = ((c00 >> 8) & 255) as f32 * w00
-        + ((c10 >> 8) & 255) as f32 * w10
-        + ((c01 >> 8) & 255) as f32 * w01
-        + ((c11 >> 8) & 255) as f32 * w11;
+    let c00 = tap(x0, y0, p00);
+    let c10 = tap(x1, y0, p10);
+    let c01 = tap(x0, y1, p01);
+    let c11 = tap(x1, y1, p11);
+    output.r = c00[0] * w00 + c10[0] * w10 + c01[0] * w01 + c11[0] * w11;
+    output.g = c00[1] * w00 + c10[1] * w10 + c01[1] * w01 + c11[1] * w11;
+    output.b = c00[2] * w00 + c10[2] * w10 + c01[2] * w01 + c11[2] * w11;
     // RGB storage contributes no alpha to any texture environment.
     output.a = if texture.has_alpha {
-        (c00 & 255) as f32 * w00 + (c10 & 255) as f32 * w10 + (c01 & 255) as f32 * w01 + (c11 & 255) as f32 * w11
+        c00[3] * w00 + c10[3] * w10 + c01[3] * w01 + c11[3] * w11
     } else {
         1.0
     };
@@ -419,28 +422,22 @@ fn sample_bound_components(
         }
         panic!("sampling an incomplete texture");
     };
-    let mut estimated = false;
-    let mut rho = rho;
-    if rho.is_none() {
-        let estimate = if image.mipmapping == MipMapping::Nearest {
-            nearest_rho_estimate(x_u, x_v, y_u, y_v)
-        } else {
-            0.0
-        };
-        if estimate > 0.0
-            && (estimate * (1.0 + NEAREST_MIP_GUARD) <= image.magnification_limit
-                || estimate * (1.0 - NEAREST_MIP_GUARD) > image.magnification_limit)
-        {
-            rho = Some(estimate);
-            estimated = true;
-        } else {
-            rho = Some(derivative_length(x_u, x_v).max(derivative_length(y_u, y_v)));
+    // Squared LOD (rho^2): comparing squares skips the per-pixel
+    // sqrt/hypot entirely, and lambda halves one log2. Explicit rho (line
+    // sampling) normalizes edge-first so scalar edge semantics survive:
+    // NaN stays minified, negatives stay magnified.
+    let rho_sq: f64 = match rho {
+        Some(rho) => {
+            let clamped = if rho.is_nan() { f32::INFINITY } else { rho.max(0.0) };
+            let wide = f64::from(clamped);
+            wide * wide
         }
-    }
-    let rho = rho.unwrap_or(0.0);
+        None => max_squared_derivative(x_u, x_v, y_u, y_v),
+    };
+    let limit = f64::from(image.magnification_limit).max(0.0);
     // OpenGL 2.1 equations 3.18, 3.27-3.29. This CPU profile uses ideal rho;
     // drivers may approximate it, so LOD is deterministic rather than driver exact.
-    if rho <= image.magnification_limit {
+    if rho_sq <= limit * limit {
         sample_level(
             &image.levels[0],
             &image.border_color,
@@ -465,15 +462,7 @@ fn sample_bound_components(
         return;
     }
     let last_level = image.levels.len() - 1;
-    let mut lambda = (last_level as f32).min(rho.log2());
-    if estimated {
-        let shifted = lambda + 0.5;
-        let fraction = shifted - shifted.floor();
-        if !(fraction > NEAREST_MIP_GUARD && 1.0 - fraction > NEAREST_MIP_GUARD) {
-            let exact = derivative_length(x_u, x_v).max(derivative_length(y_u, y_v));
-            lambda = (last_level as f32).min(exact.log2());
-        }
-    }
+    let lambda = (last_level as f32).min(0.5 * rho_sq.log2() as f32);
     let between_levels = image.mipmapping == MipMapping::Linear;
     let selected = if between_levels {
         lambda.floor() as usize
@@ -538,14 +527,34 @@ pub struct TexturePlaneDerivative {
     pub q_dy: f32,
 }
 
-fn derivative_length(x: f32, y: f32) -> f32 {
-    if x == 0.0 {
-        return y.abs();
+/// Maximum squared texture-space derivative length for LOD without sqrt.
+///
+/// Zero components short-circuit (axis-aligned surfaces dominate).
+/// Non-finite components or squares fall back to `0.0` (magnified),
+/// matching the old out-of-range estimate; absurd finite magnitudes (past
+/// `f32` square range) magnify where the old hypot path minified, and no
+/// finite scene input lands there.
+fn max_squared_derivative(x_u: f32, x_v: f32, y_u: f32, y_v: f32) -> f64 {
+    let pair = |a: f32, b: f32| -> f64 {
+        if !a.is_finite() || !b.is_finite() {
+            return 0.0;
+        }
+        if a == 0.0 {
+            let b = f64::from(b);
+            return b * b;
+        }
+        if b == 0.0 {
+            let a = f64::from(a);
+            return a * a;
+        }
+        f64::from(a) * f64::from(a) + f64::from(b) * f64::from(b)
+    };
+    let squared = pair(x_u, x_v).max(pair(y_u, y_v));
+    if squared.is_finite() {
+        squared
+    } else {
+        0.0
     }
-    if y == 0.0 {
-        return x.abs();
-    }
-    x.hypot(y)
 }
 
 fn sample_perspective_bound(
@@ -584,24 +593,6 @@ fn sample_perspective_bound(
         (derivative.u_anchor, derivative.v_anchor)
     };
     sample_bound_components(texture, anchor_u + u, anchor_v + v, rho, output, x_u, x_v, y_u, y_v);
-}
-
-const NEAREST_MIP_GUARD: f32 = 2.328_306_4e-10; // 2^-32
-const MIN_NEAREST_COMPONENT: f64 = 6.223_015_277_861_142e-61; // 2^-200
-const MAX_NEAREST_COMPONENT: f64 = 1.606_938_044_258_990_3e60; // 2^200
-
-fn nearest_rho_estimate(x_u: f32, x_v: f32, y_u: f32, y_v: f32) -> f32 {
-    let in_range = |value: f32| {
-        let magnitude = f64::from(value.abs());
-        magnitude == 0.0 || (MIN_NEAREST_COMPONENT..=MAX_NEAREST_COMPONENT).contains(&magnitude)
-    };
-    if in_range(x_u) && in_range(x_v) && in_range(y_u) && in_range(y_v) {
-        (f64::from(x_u) * f64::from(x_u) + f64::from(x_v) * f64::from(x_v))
-            .max(f64::from(y_u) * f64::from(y_u) + f64::from(y_v) * f64::from(y_v))
-            .sqrt() as f32
-    } else {
-        0.0
-    }
 }
 
 /// Sample a bound texture along a line with per-pixel derivatives.
