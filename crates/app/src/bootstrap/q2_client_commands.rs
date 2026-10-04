@@ -11,11 +11,11 @@ use std::rc::Rc;
 
 use qa_content::q2::base::player::commands::Q2_CLIENT_COMMANDS;
 use qa_core::cmd::Dialect;
-use qa_core::cmd_buffer::{
-    BufferError, CommandBuffer, CommandContext, CommandDocumentation, CommandOrigin, Invocation,
-};
+use qa_core::cmd_buffer::{BufferError, CommandBuffer, CommandContext, CommandDocumentation};
 use qa_core::cvar::CvarRegistry;
 use qa_core::identity::SeatId;
+
+use super::q1_client_commands::register_forwarded_client_command;
 
 /// Host callback for client commands (donor `execute`).
 pub type Q2ClientCommandExecute = Rc<dyn Fn(&str, &[String], Option<SeatId>, &CommandContext)>;
@@ -39,14 +39,6 @@ impl Q2ClientCommandGuard {
             commands.unregister(name);
         }
     }
-}
-
-/// Unwrap script origins to the commanding origin.
-fn root_origin(mut origin: &CommandOrigin) -> &CommandOrigin {
-    while let CommandOrigin::Script { caller, .. } = origin {
-        origin = caller;
-    }
-    origin
 }
 
 /// Register the Q2 client commands (donor `registerQ2ClientCommands`).
@@ -90,20 +82,14 @@ pub fn register_q2_client_commands(
                     allowed_values: None,
                 }
             };
-            let execute = Rc::clone(&execute);
-            let source_name = definition.name;
-            let registered = commands.register(
-                name,
-                Some(Rc::new(move |invocation: &mut Invocation| {
-                    let origin = root_origin(&invocation.source.origin);
-                    let seat = match origin {
-                        CommandOrigin::LocalSeat { seat, .. } => Some(seat.clone()),
-                        _ => None,
-                    };
-                    execute(source_name, invocation.args(), seat, &invocation.source);
-                })),
-                Some(documentation),
+            let registered = register_forwarded_client_command(
+                commands,
                 cvars,
+                name,
+                definition.name,
+                documentation,
+                None,
+                &execute,
             )?;
             if registered {
                 names.push(name.to_string());

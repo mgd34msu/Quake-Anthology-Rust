@@ -45,12 +45,59 @@ impl Q1ClientCommandGuard {
     }
 }
 
-/// Unwrap script origins to the commanding origin.
-fn root_origin(mut origin: &CommandOrigin) -> &CommandOrigin {
+/// Unwrap script origins to the commanding origin, shared by the
+/// client-command ports.
+pub(crate) fn root_origin(mut origin: &CommandOrigin) -> &CommandOrigin {
     while let CommandOrigin::Script { caller, .. } = origin {
         origin = caller;
     }
     origin
+}
+
+/// Seat behind a commanding origin, if the command came from a local seat.
+pub(crate) fn origin_seat(origin: &CommandOrigin) -> Option<SeatId> {
+    match origin {
+        CommandOrigin::LocalSeat { seat, .. } => Some(seat.clone()),
+        _ => None,
+    }
+}
+
+/// Invocation-args rewrite against the commanding origin (Q1 `giveall`).
+pub(crate) type ClientCommandArgsMap = Rc<dyn Fn(&CommandOrigin, &[String]) -> Vec<String>>;
+
+/// Register one client command that forwards to `execute` under
+/// `forwarded` with donor documentation. `map_args` rewrites the
+/// invocation args against the commanding origin (Q1 `giveall`);
+/// [`None`] forwards them unchanged. Returns whether the command
+/// registered: existing names report `false` without registering,
+/// exactly like the direct `register` path.
+pub(crate) fn register_forwarded_client_command(
+    commands: &mut CommandBuffer,
+    cvars: &CvarRegistry,
+    name: &str,
+    forwarded: &str,
+    documentation: CommandDocumentation,
+    map_args: Option<ClientCommandArgsMap>,
+    execute: &Q1ClientCommandExecute,
+) -> Result<bool, BufferError> {
+    if commands.exists(name) {
+        return Ok(false);
+    }
+    let execute = Rc::clone(execute);
+    let forwarded = forwarded.to_string();
+    commands.register(
+        name,
+        Some(Rc::new(move |invocation: &mut Invocation| {
+            let origin = root_origin(&invocation.source.origin);
+            let args = match map_args.as_ref() {
+                Some(map) => map(origin, invocation.args()),
+                None => invocation.args().to_vec(),
+            };
+            execute(&forwarded, &args, origin_seat(origin), &invocation.source);
+        })),
+        Some(documentation),
+        cvars,
+    )
 }
 
 /// Always-registered client commands with their donor summaries.
@@ -101,11 +148,6 @@ pub fn register_q1_client_commands(
     }
     let mut names = Vec::new();
     for (name, summary) in table {
-        if commands.exists(name) {
-            continue;
-        }
-        let execute = Rc::clone(&execute);
-        let owned = name.to_string();
         let usage = if name == "give" {
             "give [client slot: server console only] <all|health|armor|weapons|ammo|keys|item> [amount]".to_string()
         } else {
@@ -116,44 +158,37 @@ pub fn register_q1_client_commands(
         } else {
             vec![name.to_string()]
         };
-        let registered = commands.register(
+        let forwarded = if name == "giveall" {
+            "give"
+        } else if name == "suicide" {
+            "kill"
+        } else {
+            name
+        };
+        let map_args = if name == "giveall" {
+            Some(Rc::new(|origin: &CommandOrigin, args: &[String]| {
+                if matches!(origin, CommandOrigin::ServerConsole) {
+                    args.iter().cloned().chain(std::iter::once("all".to_string())).collect()
+                } else {
+                    vec!["all".to_string()]
+                }
+            }) as ClientCommandArgsMap)
+        } else {
+            None
+        };
+        let registered = register_forwarded_client_command(
+            commands,
+            cvars,
             name,
-            Some(Rc::new(move |invocation: &mut Invocation| {
-                let origin = root_origin(&invocation.source.origin);
-                let args: Vec<String> = if owned == "giveall" {
-                    if matches!(origin, CommandOrigin::ServerConsole) {
-                        invocation
-                            .args()
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once("all".to_string()))
-                            .collect()
-                    } else {
-                        vec!["all".to_string()]
-                    }
-                } else {
-                    invocation.args().to_vec()
-                };
-                let forwarded = if owned == "giveall" {
-                    "give"
-                } else if owned == "suicide" {
-                    "kill"
-                } else {
-                    owned.as_str()
-                };
-                let seat = match origin {
-                    CommandOrigin::LocalSeat { seat, .. } => Some(seat.clone()),
-                    _ => None,
-                };
-                execute(forwarded, &args, seat, &invocation.source);
-            })),
-            Some(CommandDocumentation {
+            forwarded,
+            CommandDocumentation {
                 summary: summary.to_string(),
                 usage,
                 examples,
                 allowed_values: None,
-            }),
-            cvars,
+            },
+            map_args,
+            &execute,
         )?;
         if registered {
             names.push(name.to_string());
@@ -208,10 +243,7 @@ pub fn resolve_q1_host_command_actor(
     local_actor: impl FnOnce() -> ActorId,
     takes_arguments: bool,
 ) -> Result<ActorId, Q1HostCommandError> {
-    let mut origin = source.map(|context| &context.origin);
-    while let Some(CommandOrigin::Script { caller, .. }) = origin {
-        origin = Some(caller);
-    }
+    let origin = source.map(|context| root_origin(&context.origin));
     if matches!(origin, Some(CommandOrigin::ServerConsole)) {
         let usage = || {
             let slots = players
@@ -375,5 +407,27 @@ mod tests {
         assert_eq!(denied, Q1HostCommandError::NoAdmittedClient);
         let local = resolve_q1_host_command_actor("god", &[], None, &[], || owner.actor(9, 9), false).unwrap();
         assert_eq!(local, owner.actor(9, 9));
+    }
+
+    #[test]
+    fn shared_origin_helpers_unwrap_and_select_seats() {
+        let owner = IdentityOwner::create("q1-origin").unwrap();
+        let seat = owner.seat(0);
+        let client = owner.client(1, 1);
+        let nested = CommandOrigin::Script {
+            name: "outer".to_string(),
+            caller: Box::new(CommandOrigin::Script {
+                name: "inner".to_string(),
+                caller: Box::new(CommandOrigin::LocalSeat {
+                    seat: seat.clone(),
+                    client,
+                }),
+            }),
+        };
+        let root = root_origin(&nested);
+        assert!(matches!(root, CommandOrigin::LocalSeat { .. }));
+        assert_eq!(origin_seat(root), Some(seat));
+        assert_eq!(origin_seat(&CommandOrigin::ServerConsole), None);
+        assert_eq!(origin_seat(&CommandOrigin::LocalConsole), None);
     }
 }

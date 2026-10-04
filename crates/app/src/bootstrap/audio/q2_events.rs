@@ -5,6 +5,8 @@
 //! following `cl_fx.c` `CL_EntityEvent` and `CL_ParseMuzzleFlash`.
 //! Copyright id Software. SPDX-License-Identifier: GPL-2.0-or-later.
 
+use qa_core::numeric::float_to_wrapped_i32;
+
 use super::output_settings::js_number_string;
 
 /// One Quake II event sound.
@@ -20,23 +22,6 @@ pub struct Q2EventSound {
     pub volume: f64,
     /// Delay in seconds.
     pub delay_seconds: f64,
-}
-
-/// JavaScript `ToInt32` conversion.
-fn to_int32(value: f64) -> i32 {
-    const TWO_32: f64 = 4_294_967_296.0;
-    const TWO_31: f64 = 2_147_483_648.0;
-    if !value.is_finite() {
-        return 0;
-    }
-    let wrapped = value % TWO_32;
-    let positive = if wrapped < 0.0 { wrapped + TWO_32 } else { wrapped };
-    let signed = if positive >= TWO_31 {
-        positive - TWO_32
-    } else {
-        positive
-    };
-    signed.trunc() as i32
 }
 
 /// JavaScript `String.fromCharCode` for one code.
@@ -58,7 +43,7 @@ pub fn q2_entity_sound(event: i32, random: &mut dyn FnMut() -> f64) -> Option<Q2
     match event {
         1 => Some(sound("items/respawn1.wav".to_string(), 1, 2.0)),
         2 => Some(sound(
-            format!("player/step{}.wav", (to_int32(random()) & 3) + 1),
+            format!("player/step{}.wav", (float_to_wrapped_i32(random()) & 3) + 1),
             4,
             1.0,
         )),
@@ -225,6 +210,16 @@ mod tests {
         assert_eq!(q2_entity_sound(6, &mut || 0.0).unwrap().attenuation, 2.0);
         assert_eq!(q2_entity_sound(0, &mut || 0.0), None);
         assert_eq!(q2_entity_sound(7, &mut || 0.0), None);
+    }
+
+    #[test]
+    fn step_sounds_follow_canonical_wrap() {
+        // The canonical `ToInt32` agrees with the old local conversion
+        // on the step-sound domain: fractions truncate, negatives wrap.
+        assert_eq!(q2_entity_sound(2, &mut || 0.5).unwrap().path, "player/step1.wav");
+        assert_eq!(q2_entity_sound(2, &mut || -1.0).unwrap().path, "player/step4.wav");
+        assert_eq!(q2_entity_sound(2, &mut || -5.0).unwrap().path, "player/step4.wav");
+        assert_eq!(float_to_wrapped_i32(f64::NAN), 0);
     }
 
     #[test]

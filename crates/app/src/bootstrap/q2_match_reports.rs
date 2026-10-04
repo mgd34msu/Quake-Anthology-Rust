@@ -152,13 +152,38 @@ pub trait Q2MatchSimulation {
     fn map_path(&self) -> String;
 }
 
+/// How non-finite values render in the shared JS number format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JsNumberNonFinite {
+    /// JavaScript template interpolation (`NaN`/`inf`/`-inf` via `format!`).
+    Template,
+    /// `JSON.stringify` (`null`).
+    JsonNull,
+}
+
+/// Format a float the way JavaScript template interpolation and
+/// `JSON.stringify` agree on finite values: integral magnitudes below
+/// 1e21 render as integers (saturating through `as i64`, exactly like the
+/// donor ports), everything else renders with `format!`. The non-finite
+/// policy stays an explicit parameter because the two call sites differ.
+pub(crate) fn js_number_with_policy(value: f64, non_finite: JsNumberNonFinite) -> String {
+    if value.is_finite() {
+        if value.fract() == 0.0 && value.abs() < 1e21 {
+            format!("{}", value.trunc() as i64)
+        } else {
+            format!("{value}")
+        }
+    } else {
+        match non_finite {
+            JsNumberNonFinite::Template => format!("{value}"),
+            JsNumberNonFinite::JsonNull => "null".to_string(),
+        }
+    }
+}
+
 /// Format a timestamp the way JavaScript template interpolation does.
 fn js_number(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e21 {
-        format!("{}", value.trunc() as i64)
-    } else {
-        format!("{value}")
-    }
+    js_number_with_policy(value, JsNumberNonFinite::Template)
 }
 
 /// Publish and seed the round identity for deathmatch (donor `prepareQ2MatchReports`).
@@ -344,6 +369,34 @@ mod tests {
             stats[*index] = *value;
         }
         stats
+    }
+
+    #[test]
+    fn shared_js_number_policies_match_both_ports() {
+        use JsNumberNonFinite::{JsonNull, Template};
+        for policy in [Template, JsonNull] {
+            let format = |value| js_number_with_policy(value, policy);
+            assert_eq!(format(42.0), "42");
+            assert_eq!(format(-3.0), "-3");
+            assert_eq!(format(4.5), "4.5");
+            assert_eq!(format(0.0), "0");
+            // Integral magnitudes below 1e21 render as integers.
+            assert_eq!(format(1_000_000_000_000_000.0), "1000000000000000");
+            // At and above 1e21 the ports fall back to `format!`.
+            assert_eq!(format(1e21), "1000000000000000000000");
+            // Out-of-`i64` magnitudes saturate through `as i64`, exactly
+            // like the pre-merge ports.
+            assert_eq!(format(9.5e18), i64::MAX.to_string());
+        }
+        assert_eq!(js_number_with_policy(f64::NAN, Template), "NaN");
+        assert_eq!(js_number_with_policy(f64::INFINITY, Template), "inf");
+        assert_eq!(js_number_with_policy(f64::NEG_INFINITY, Template), "-inf");
+        assert_eq!(js_number_with_policy(f64::NAN, JsonNull), "null");
+        assert_eq!(js_number_with_policy(f64::INFINITY, JsonNull), "null");
+        assert_eq!(js_number_with_policy(f64::NEG_INFINITY, JsonNull), "null");
+        // The local wrappers keep their historical policies.
+        assert_eq!(js_number(f64::NAN), "NaN");
+        assert_eq!(js_number(7.0), "7");
     }
 
     #[test]

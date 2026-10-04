@@ -35,15 +35,17 @@ pub enum BaseArenaProgressionError {
     Cvar(#[from] CvarError),
 }
 
-/// `bg_lib` atoi (`gameAtoi`): skip donor whitespace (signed bytes `<= 32`,
-/// NUL excluded), read an optional sign and decimal digits, wrap every
-/// operation. Shared by the arena ports; `qa_core::numeric::native_atoi`
-/// saturates on overflow while the donor wraps.
-pub fn game_atoi(text: &str) -> Result<i32, BaseArenaProgressionError> {
+/// `bg_lib` atoi (`gameAtoi`) core shared by the arena ports:
+/// skip donor whitespace (signed bytes `<= 32`, NUL excluded), read an
+/// optional sign and decimal digits, wrap every operation.
+/// `qa_core::numeric::native_atoi` saturates on overflow while the donor
+/// wraps, so the ports keep this local core. `Err(())` means the text is
+/// not source bytes.
+pub(crate) fn game_atoi_value(text: &str) -> Result<i32, ()> {
     let mut bytes = Vec::with_capacity(text.len());
     for c in text.chars() {
         if c as u32 > 255 {
-            return Err(BaseArenaProgressionError::NonByteText);
+            return Err(());
         }
         bytes.push(c as u8);
     }
@@ -69,6 +71,11 @@ pub fn game_atoi(text: &str) -> Result<i32, BaseArenaProgressionError> {
         offset += 1;
     }
     Ok(value.wrapping_mul(sign))
+}
+
+/// `bg_lib` atoi (`gameAtoi`) over the shared [`game_atoi_value`] core.
+pub fn game_atoi(text: &str) -> Result<i32, BaseArenaProgressionError> {
+    game_atoi_value(text).map_err(|()| BaseArenaProgressionError::NonByteText)
 }
 
 /// Arena difficulty (`ArenaSkill`).
@@ -472,6 +479,13 @@ mod tests {
         assert_eq!(game_atoi(""), Ok(0));
         assert_eq!(game_atoi("9999999999"), Ok(9_999_999_999_i64 as i32));
         assert!(game_atoi("\u{20ac}").is_err());
+    }
+
+    #[test]
+    fn shared_core_maps_non_byte_text() {
+        assert_eq!(game_atoi_value("12"), Ok(12));
+        assert_eq!(game_atoi_value("1€"), Err(()));
+        assert_eq!(game_atoi("1€"), Err(BaseArenaProgressionError::NonByteText));
     }
 
     #[test]

@@ -40,6 +40,7 @@ use crate::bootstrap::server_browser_addresses::{
 };
 use crate::bootstrap::server_browser_cache::{read_q3_browser_cache, write_q3_browser_cache, ServerBrowserCacheError};
 use crate::bootstrap::server_master_list::{fetch_server_master_list, MasterHttpResponse, MasterListError};
+use crate::bootstrap::team_arena_scores::truncate_utf16;
 use crate::settings::config::ConfigStore;
 use crate::settings::json::{parse_json, stringify, Json};
 use crate::settings::SettingsError;
@@ -503,20 +504,6 @@ fn clean_text(text: &str) -> String {
             }
         })
         .collect()
-}
-
-fn truncate_utf16(text: &str, max_units: usize) -> &str {
-    let mut units = 0;
-    let mut end = 0;
-    for (index, c) in text.char_indices() {
-        let width = c.len_utf16();
-        if units + width > max_units {
-            break;
-        }
-        units += width;
-        end = index + c.len_utf8();
-    }
-    &text[..end]
 }
 
 /// Q2 wire that always sends `status` queries (donor override).
@@ -2065,6 +2052,17 @@ mod tests {
         let (clock, now) = FakeClock::new(1000.0);
         let browser = StartupServerBrowser::open_with_transport(test_config(), transport.clone(), now).unwrap();
         (browser, transport, clock)
+    }
+
+    #[test]
+    fn shared_truncate_keeps_browser_budgets() {
+        assert_eq!(truncate_utf16("Quake III Arena server", 31), "Quake III Arena server");
+        assert_eq!(
+            truncate_utf16("abcdefghijklmnopqrstuvwxyz0123456789", 31),
+            "abcdefghijklmnopqrstuvwxyz01234"
+        );
+        assert_eq!(truncate_utf16("a🙂bc", 2), "a");
+        assert_eq!(truncate_utf16("a🙂bc", 3), "a🙂");
     }
 
     #[test]

@@ -12,8 +12,15 @@ use qa_core::cmd::Dialect;
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
 use qa_core::numeric::native_atoi;
 
-/// Declare one identity variable, merging flags over an existing Q1 declaration.
-fn declare(cvars: &mut CvarRegistry, name: &str, value: &str, declaration_flags: u32) -> Result<(), CvarError> {
+/// Declare one identity variable, merging flags over an existing Q1
+/// declaration. Shared by the userinfo ports; on non-Q1 registries this
+/// is a plain registration.
+pub(crate) fn declare_userinfo_cvar(
+    cvars: &mut CvarRegistry,
+    name: &str,
+    value: &str,
+    declaration_flags: u32,
+) -> Result<(), CvarError> {
     let existing = cvars.get(name);
     if !cvars.dialect().is_q1() || existing.is_none() || cvars.is_console_created(name) {
         cvars.register(name, value, declaration_flags)?;
@@ -21,6 +28,20 @@ fn declare(cvars: &mut CvarRegistry, name: &str, value: &str, declaration_flags:
         if snapshot.flags & declaration_flags != declaration_flags {
             cvars.add_flags(name, declaration_flags)?;
         }
+    }
+    Ok(())
+}
+
+/// Declare identity rows (name, value, flags) in order, shared by the
+/// userinfo ports.
+pub(crate) fn declare_userinfo_rows<S, V, R>(cvars: &mut CvarRegistry, rows: R) -> Result<(), CvarError>
+where
+    S: AsRef<str>,
+    V: AsRef<str>,
+    R: IntoIterator<Item = (S, V, u32)>,
+{
+    for (name, value, declaration_flags) in rows {
+        declare_userinfo_cvar(cvars, name.as_ref(), value.as_ref(), declaration_flags)?;
     }
     Ok(())
 }
@@ -36,31 +57,37 @@ pub fn register_player_userinfo(cvars: &mut CvarRegistry, index: u32, model: &st
     }
     let info_flags = flags::ARCHIVE | flags::USER_INFO;
     if dialect == Dialect::Q1Netquake || dialect == Dialect::Q1Quakeworld {
-        declare(cvars, "qts_weapon_autoswitch", "always", info_flags)?;
+        declare_userinfo_cvar(cvars, "qts_weapon_autoswitch", "always", info_flags)?;
     }
     if dialect == Dialect::Q2Rerelease {
-        declare(cvars, "autoswitch", "0", info_flags)?;
+        declare_userinfo_cvar(cvars, "autoswitch", "0", info_flags)?;
     }
     if dialect == Dialect::Q1Netquake {
         let name = cvars
             .get("name")
             .map_or_else(|| format!("Player {}", index + 1), |snapshot| snapshot.value);
-        declare(cvars, "_cl_name", &name, flags::ARCHIVE)?;
+        declare_userinfo_cvar(cvars, "_cl_name", &name, flags::ARCHIVE)?;
         let color = cvars
             .get("color")
             .map_or_else(|| "0".to_string(), |snapshot| snapshot.value);
-        declare(cvars, "_cl_color", &color, flags::ARCHIVE)?;
+        declare_userinfo_cvar(cvars, "_cl_color", &color, flags::ARCHIVE)?;
         return Ok(());
     }
-    declare(cvars, "name", &format!("Player {}", index + 1), info_flags)?;
+    declare_userinfo_cvar(cvars, "name", &format!("Player {}", index + 1), info_flags)?;
     if dialect == Dialect::Q1Quakeworld {
-        for (name, value) in [("topcolor", "0"), ("bottomcolor", "0"), ("team", ""), ("skin", "")] {
-            declare(cvars, name, value, info_flags)?;
-        }
+        declare_userinfo_rows(
+            cvars,
+            [
+                ("topcolor", "0", info_flags),
+                ("bottomcolor", "0", info_flags),
+                ("team", "", info_flags),
+                ("skin", "", info_flags),
+            ],
+        )?;
         return Ok(());
     }
-    declare(cvars, "spectator", "0", flags::USER_INFO)?;
-    declare(cvars, "password", "", flags::USER_INFO)?;
+    declare_userinfo_cvar(cvars, "spectator", "0", flags::USER_INFO)?;
+    declare_userinfo_cvar(cvars, "password", "", flags::USER_INFO)?;
     let skin_model = if model == "female" {
         "athena"
     } else if model == "cyborg" {
@@ -70,16 +97,17 @@ pub fn register_player_userinfo(cvars: &mut CvarRegistry, index: u32, model: &st
     };
     let gender = if model == "female" { "female" } else { "male" };
     let skin = format!("{model}/{skin_model}");
-    for (name, value) in [
-        ("skin", skin.as_str()),
-        ("rate", "25000"),
-        ("msg", "1"),
-        ("hand", "0"),
-        ("fov", "90"),
-        ("gender", gender),
-    ] {
-        declare(cvars, name, value, info_flags)?;
-    }
+    declare_userinfo_rows(
+        cvars,
+        [
+            ("skin", skin.as_str(), info_flags),
+            ("rate", "25000", info_flags),
+            ("msg", "1", info_flags),
+            ("hand", "0", info_flags),
+            ("fov", "90", info_flags),
+            ("gender", gender, info_flags),
+        ],
+    )?;
     Ok(())
 }
 
@@ -216,5 +244,38 @@ mod tests {
             strip_info_keys("\\topcolor\\1\\bottomcolor\\2", &["topcolor", "bottomcolor"]),
             ""
         );
+    }
+
+    #[test]
+    fn shared_rows_declare_in_order() {
+        let mut cvars = CvarRegistry::new(Dialect::Q3);
+        declare_userinfo_rows(
+            &mut cvars,
+            [
+                ("row_a", "1", flags::ARCHIVE),
+                ("row_b", "2", flags::ARCHIVE | flags::USER_INFO),
+            ],
+        )
+        .unwrap();
+        declare_userinfo_rows(&mut cvars, [("row_c".to_string(), "3".to_string(), flags::USER_INFO)]).unwrap();
+        assert_eq!(cvars.variable_string("row_a"), "1");
+        assert_eq!(cvars.get("row_a").unwrap().flags, flags::ARCHIVE);
+        assert_eq!(cvars.get("row_b").unwrap().flags, flags::ARCHIVE | flags::USER_INFO);
+        assert_eq!(cvars.variable_string("row_c"), "3");
+        assert_eq!(cvars.get("row_c").unwrap().flags, flags::USER_INFO);
+    }
+
+    #[test]
+    fn shared_declare_matches_plain_register_off_q1() {
+        // On Quake III registries the shared helper registers directly,
+        // so declaring twice behaves exactly like registering twice.
+        let mut declared = CvarRegistry::new(Dialect::Q3);
+        declare_userinfo_cvar(&mut declared, "dup", "1", flags::ARCHIVE).unwrap();
+        declare_userinfo_cvar(&mut declared, "dup", "2", flags::ARCHIVE).unwrap();
+        let mut registered = CvarRegistry::new(Dialect::Q3);
+        registered.register("dup", "1", flags::ARCHIVE).unwrap();
+        registered.register("dup", "2", flags::ARCHIVE).unwrap();
+        assert_eq!(declared.variable_string("dup"), registered.variable_string("dup"));
+        assert_eq!(declared.get("dup").unwrap().flags, registered.get("dup").unwrap().flags);
     }
 }

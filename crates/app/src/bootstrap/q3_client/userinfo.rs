@@ -8,6 +8,8 @@
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
 use thiserror::Error;
 
+use crate::bootstrap::player_userinfo::declare_userinfo_rows;
+
 /// Quake III client identity for userinfo defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Q3ClientIdentity {
@@ -26,38 +28,41 @@ pub enum Q3UserinfoError {
 }
 
 /// Register Quake III client cvars (donor `initializeQ3ClientCvars`).
+/// Registration order, defaults, and flag words match the donor exactly;
+/// rows declare through the shared userinfo helper, which is a plain
+/// registration on Quake III registries.
 pub fn initialize_q3_client_cvars(
     cvars: &mut CvarRegistry,
     identity: &Q3ClientIdentity,
 ) -> Result<(), Q3UserinfoError> {
-    cvars.register("cl_timeNudge", "0", flags::TEMPORARY)?;
-    cvars.register("rate", "25000", flags::ARCHIVE | flags::USER_INFO)?;
-    cvars.register("cl_maxpackets", "30", flags::ARCHIVE)?;
-    cvars.register("cl_packetdup", "1", flags::ARCHIVE)?;
-    cvars.register("snaps", "20", flags::ARCHIVE | flags::USER_INFO)?;
-    cvars.register("name", &identity.name, flags::ARCHIVE | flags::USER_INFO)?;
-    for name in ["model", "headmodel", "team_model", "team_headmodel"] {
-        cvars.register(
-            name,
-            &format!("{}/default", identity.model),
-            flags::ARCHIVE | flags::USER_INFO,
-        )?;
-    }
-    for (name, value) in [
-        ("color1", "4"),
-        ("color2", "5"),
-        ("sex", "male"),
-        ("cl_anonymous", "0"),
-        ("cg_predictItems", "1"),
-    ] {
-        cvars.register(name, value, flags::ARCHIVE | flags::USER_INFO)?;
-    }
-    cvars.register("teamtask", "0", flags::USER_INFO)?;
-    cvars.register("password", "", flags::USER_INFO)?;
-    cvars.register("handicap", "100", flags::ARCHIVE | flags::USER_INFO)?;
-    cvars.register("cl_maxPing", "800", flags::ARCHIVE)?;
-    cvars.register("cl_serverStatusResendTime", "750", flags::NONE)?;
-    cvars.register("sv_master1", "master.quake3arena.com", flags::NONE)?;
+    let info_flags = flags::ARCHIVE | flags::USER_INFO;
+    let model_default = format!("{}/default", identity.model);
+    declare_userinfo_rows(
+        cvars,
+        [
+            ("cl_timeNudge", "0", flags::TEMPORARY),
+            ("rate", "25000", info_flags),
+            ("cl_maxpackets", "30", flags::ARCHIVE),
+            ("cl_packetdup", "1", flags::ARCHIVE),
+            ("snaps", "20", info_flags),
+            ("name", identity.name.as_str(), info_flags),
+            ("model", model_default.as_str(), info_flags),
+            ("headmodel", model_default.as_str(), info_flags),
+            ("team_model", model_default.as_str(), info_flags),
+            ("team_headmodel", model_default.as_str(), info_flags),
+            ("color1", "4", info_flags),
+            ("color2", "5", info_flags),
+            ("sex", "male", info_flags),
+            ("cl_anonymous", "0", info_flags),
+            ("cg_predictItems", "1", info_flags),
+            ("teamtask", "0", flags::USER_INFO),
+            ("password", "", flags::USER_INFO),
+            ("handicap", "100", info_flags),
+            ("cl_maxPing", "800", flags::ARCHIVE),
+            ("cl_serverStatusResendTime", "750", flags::NONE),
+            ("sv_master1", "master.quake3arena.com", flags::NONE),
+        ],
+    )?;
     Ok(())
 }
 

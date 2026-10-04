@@ -3,11 +3,14 @@
 //! Donor: `src/app/bootstrap/team-arena-scores.ts`
 //! (`UI_CalcPostGameStats` and `postGameInfo_t`).
 //! Async file access becomes a sync `TeamArenaScoreFiles` trait.
-//! `gameAtoi` is absorbed locally: `qa_core::numeric::native_atoi`
-//! saturates on overflow while the donor wraps every digit operation.
+//! `gameAtoi` is shared from [`super::base_arena_progression`]:
+//! `qa_core::numeric::native_atoi` saturates on overflow while the donor
+//! wraps every digit operation.
 
-use qa_core::numeric::qvm_float_to_int;
+use qa_core::numeric::{float_to_wrapped_i32, qvm_float_to_int};
 use thiserror::Error;
+
+use super::base_arena_progression::game_atoi_value;
 
 /// Team Arena score failure.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -17,62 +20,16 @@ pub enum TeamArenaScoresError {
     NonByteText,
 }
 
-/// `bg_lib` atoi: skip donor whitespace (bytes `<= 32`, NUL excluded),
-/// read an optional sign and decimal digits, wrap every operation.
+/// `bg_lib` atoi over the shared [`game_atoi_value`] core: skip donor
+/// whitespace (bytes `<= 32`, NUL excluded), read an optional sign and
+/// decimal digits, wrap every operation.
 pub fn game_atoi(text: &str) -> Result<i32, TeamArenaScoresError> {
-    let mut bytes = Vec::with_capacity(text.len());
-    for c in text.chars() {
-        if c as u32 > 255 {
-            return Err(TeamArenaScoresError::NonByteText);
-        }
-        bytes.push(c as u8);
-    }
-    let mut offset = 0;
-    while offset < bytes.len() && bytes[offset] != 0 && (bytes[offset] as i8 as i32) <= 32 {
-        offset += 1;
-    }
-    if offset >= bytes.len() || bytes[offset] == 0 {
-        return Ok(0);
-    }
-    let mut sign = 1i32;
-    if bytes[offset] == b'+' || bytes[offset] == b'-' {
-        sign = if bytes[offset] == b'-' { -1 } else { 1 };
-        offset += 1;
-    }
-    let mut value = 0i32;
-    while offset < bytes.len() {
-        let byte = bytes[offset];
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
-        offset += 1;
-    }
-    Ok(value.wrapping_mul(sign))
+    game_atoi_value(text).map_err(|()| TeamArenaScoresError::NonByteText)
 }
 
-/// JavaScript `ToInt32` (`| 0`): truncate toward zero, wrap modulo 2^32.
-fn js_to_int32(value: f64) -> i32 {
-    if !value.is_finite() {
-        return 0;
-    }
-    let truncated = value.trunc();
-    if truncated == 0.0 {
-        return 0;
-    }
-    let mut wrapped = truncated % 4_294_967_296.0;
-    if wrapped < 0.0 {
-        wrapped += 4_294_967_296.0;
-    }
-    if wrapped >= 2_147_483_648.0 {
-        (wrapped - 4_294_967_296.0) as i32
-    } else {
-        wrapped as i32
-    }
-}
-
-/// Truncate to a UTF-16-unit budget (donor `slice` semantics).
-fn truncate_utf16(text: &str, max_units: usize) -> &str {
+/// Truncate to a UTF-16-unit budget (donor `slice` semantics), shared
+/// by the arena ports and the server browser.
+pub(crate) fn truncate_utf16(text: &str, max_units: usize) -> &str {
     let mut units = 0;
     let mut end = 0;
     for (index, c) in text.char_indices() {
@@ -218,7 +175,7 @@ pub fn calculate_team_arena_score(input: &TeamArenaScoreInput, previous: &TeamAr
     let elapsed = (stats.end_time as f32) - (input.match_start_time as f32);
     let time = qvm_float_to_int((f64::from(elapsed) / 1000.0) as f32);
     let time_bonus = if f64::from(time) < input.time_to_beat {
-        js_to_int32(input.time_to_beat - f64::from(time)).wrapping_mul(10)
+        float_to_wrapped_i32(input.time_to_beat - f64::from(time)).wrapping_mul(10)
     } else {
         0
     };
@@ -482,5 +439,72 @@ mod tests {
         assert!(files.files.contains_key("games/tourney_4.game"));
         let second = record_team_arena_score("tourney", 4, &input, &mut files);
         assert!(!second.new_high_score);
+    }
+
+    #[test]
+    fn shared_game_atoi_matches_base_port() {
+        use crate::bootstrap::base_arena_progression::game_atoi as base_game_atoi;
+        for text in [
+            "",
+            "  -42 score",
+            "+7",
+            "abc",
+            "007",
+            "--12",
+            "  +0x10",
+            "4294967296",
+            "2147483648",
+            "-2147483649",
+            "99999999999999999999",
+            "ÿ12",
+            "1€",
+            "\u{0}12",
+            " \t\n 33 ",
+        ] {
+            let base = base_game_atoi(text);
+            let team = game_atoi(text);
+            match (base, team) {
+                (Ok(expected), Ok(actual)) => assert_eq!(actual, expected, "{text:?}"),
+                (Err(_), Err(TeamArenaScoresError::NonByteText)) => {}
+                (base, team) => panic!("divergent outcomes for {text:?}: {base:?} vs {team:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn shared_truncate_counts_utf16_units() {
+        assert_eq!(truncate_utf16("abcdef", 3), "abc");
+        assert_eq!(truncate_utf16("abcdef", 0), "");
+        assert_eq!(truncate_utf16("", 31), "");
+        assert_eq!(truncate_utf16("ab", 31), "ab");
+        // `é` is one UTF-16 unit; `𝄞` and emoji are two.
+        assert_eq!(truncate_utf16("aébc", 2), "aé");
+        assert_eq!(truncate_utf16("a𝄞bc", 2), "a");
+        assert_eq!(truncate_utf16("a𝄞bc", 3), "a𝄞");
+        assert_eq!(truncate_utf16("🙂🙂", 2), "🙂");
+        // Never splits a character: the 31-unit server-browser budget
+        // keeps whole glyphs.
+        assert_eq!(truncate_utf16("name🙂", 5), "name");
+        assert_eq!(truncate_utf16("name🙂", 6), "name🙂");
+    }
+
+    #[test]
+    fn canonical_to_int32_keeps_score_domains() {
+        // Values on the time-bonus path plus the wrap edges the old
+        // local `js_to_int32` shared with the canonical conversion.
+        for (value, expected) in [
+            (80.0, 80),
+            (0.5, 0),
+            (-0.5, 0),
+            (-1.0, -1),
+            (2_147_483_647.0, 2_147_483_647),
+            (2_147_483_648.0, i32::MIN),
+            (4_294_967_296.0, 0),
+            (f64::NAN, 0),
+            (f64::INFINITY, 0),
+            (f64::NEG_INFINITY, 0),
+        ] {
+            assert_eq!(float_to_wrapped_i32(value), expected, "{value}");
+        }
     }
 }

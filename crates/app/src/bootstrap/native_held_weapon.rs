@@ -15,7 +15,7 @@ use qa_client::render::scene::models::replacements::{replacement_entity, select_
 use qa_client::render::scene::models::transform::compose_model_transform;
 use qa_client::render::scene::models::types::{EntityTransform, SceneEntity};
 use qa_client::render::RenderError;
-use qa_content::contract::{ContentId, ModelAttachmentDefinition, ModelTransform};
+use qa_content::contract::{ContentId, ModelAttachmentDefinition};
 use qa_content::model_attachment::{read_model_attachment, ModelAttachmentError};
 use qa_content::q2::foundation::weapon_attachments::q2_weapon_attachment;
 use qa_content::q3::foundation::held_weapons::Q3_WEAPON_HAND_GRIP;
@@ -23,6 +23,8 @@ use qa_core::math::Vec3;
 use std::collections::HashMap;
 use std::rc::Rc;
 use thiserror::Error;
+
+use super::held_weapon::entity_of;
 
 /// Failure of native held-weapon resolution.
 #[derive(Debug, Error)]
@@ -70,14 +72,6 @@ pub enum HeldPurpose {
 
 /// Resolved held entity for one camera and purpose.
 pub type ResolvedHeldEntity = Box<dyn Fn(Vec3, HeldPurpose) -> Result<Option<SceneEntity>, NativeHeldWeaponError>>;
-
-fn entity_of(transform: &ModelTransform) -> EntityTransform {
-    EntityTransform {
-        origin: transform.origin,
-        axis: transform.axis,
-        scale: transform.scale,
-    }
-}
 
 /// Native held weapons with cached carrier grips.
 pub struct NativeHeldWeapons<M, G> {

@@ -129,7 +129,9 @@ pub struct HeldWeaponPass {
     pub actor: Option<ActorId>,
 }
 
-fn entity_of(transform: &ModelTransform) -> EntityTransform {
+/// Contract transform to scene-entity transform, shared by the
+/// held-weapon ports.
+pub(crate) fn entity_of(transform: &ModelTransform) -> EntityTransform {
     EntityTransform {
         origin: transform.origin,
         axis: transform.axis,
@@ -137,7 +139,8 @@ fn entity_of(transform: &ModelTransform) -> EntityTransform {
     }
 }
 
-fn model_of(transform: &EntityTransform) -> ModelTransform {
+/// Scene-entity transform to contract transform.
+pub(crate) fn model_of(transform: &EntityTransform) -> ModelTransform {
     ModelTransform {
         origin: transform.origin,
         axis: transform.axis,
@@ -500,5 +503,18 @@ mod tests {
         let missing = source(GameFamily::Q3, "unknown/model.md3");
         let err = weapons.frame(&missing, &character()).expect_err("unresolved");
         assert!(err.to_string().contains("has no authored held model declaration"));
+    }
+
+    #[test]
+    fn shared_transform_conversions_roundtrip() {
+        let grip = identity_grip();
+        let entity = entity_of(&grip);
+        assert_eq!(entity.origin, grip.origin);
+        assert_eq!(entity.axis, grip.axis);
+        assert_eq!(entity.scale, grip.scale);
+        let back = model_of(&entity);
+        assert_eq!(back.origin, grip.origin);
+        assert_eq!(back.axis, grip.axis);
+        assert_eq!(back.scale, grip.scale);
     }
 }

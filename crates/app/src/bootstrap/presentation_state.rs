@@ -22,6 +22,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
+use super::q2_match_reports::{js_number_with_policy, JsNumberNonFinite};
 use super::simulation::q1_fog::{Q1FogContext, SimulationQ1Fog, SimulationQ1FogOptions};
 use qa_client::materials::fog::Q1FogTransition;
 use qa_client::materials::material::{normalize_shader_name, strip_shader_extension};
@@ -695,13 +696,7 @@ fn write_vector(value: Vec3) -> SaveJson {
 
 /// Format a float the way `JSON.stringify` does for the loop key.
 fn js_number(value: f64) -> String {
-    if value.is_finite() && value.fract() == 0.0 && value.abs() < 1e21 {
-        format!("{}", value.trunc() as i64)
-    } else if value.is_finite() {
-        format!("{value}")
-    } else {
-        "null".to_string()
-    }
+    js_number_with_policy(value, JsNumberNonFinite::JsonNull)
 }
 
 /// Escape a JSON string.
@@ -3157,5 +3152,16 @@ mod tests {
         assert!(taken
             .iter()
             .all(|event| !matches!(event.source, SourcePresentationEvent::Q1Fog { player: Some(_), .. })));
+    }
+
+    #[test]
+    fn loop_key_keeps_json_null_policy() {
+        assert_eq!(js_number(f64::NAN), "null");
+        assert_eq!(js_number(f64::INFINITY), "null");
+        assert_eq!(js_number(3.0), "3");
+        assert_eq!(
+            q2_loop_key(None, f64::NAN, "x", None, None),
+            "[\"sound\",null,-1,-1,null,\"x\",null]"
+        );
     }
 }

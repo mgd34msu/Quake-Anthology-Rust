@@ -10,6 +10,7 @@ use qa_client::render::types::{
     RenderVertex, RendererImage, TextureBinding,
 };
 use qa_core::math::{Vec2, Vec4};
+use qa_core::numeric::float_to_wrapped_i32;
 
 /// Donor default vignette border fraction (`fraction = 0.2`).
 pub const DAMAGE_BLEND_BORDER: f32 = 0.2;
@@ -32,20 +33,9 @@ pub fn interpolate_q2_damage_blend(previous: Option<&Vec4>, current: &Vec4, frac
     }
 }
 
-/// JS `ToInt32` via modulo 2^32 (`NaN`/infinities map to 0).
-fn to_int32(value: f32) -> i32 {
-    let narrowed = (f64::from(value) % 4_294_967_296.0 + 4_294_967_296.0) % 4_294_967_296.0;
-    let signed = if narrowed >= 2_147_483_648.0 {
-        narrowed - 4_294_967_296.0
-    } else {
-        narrowed
-    };
-    signed as i32
-}
-
 /// Donor `byte`: `(Math.trunc(Math.fround(v * 255)) & 255) / 255`.
 fn blend_byte(value: f32) -> f32 {
-    f32::from((to_int32((value * 255.0).trunc()) & 255) as u8) / 255.0
+    f32::from((float_to_wrapped_i32(f64::from((value * 255.0).trunc())) & 255) as u8) / 255.0
 }
 
 /// Build the vignette batch for a damage blend over `viewport`. Returns no
@@ -235,5 +225,16 @@ mod tests {
         assert_eq!(vertices[0].color.w, 1.0);
         let expected = 2.0 * 40.0 / 320.0 - 1.0;
         assert!((vertices[4].position.x - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn blend_bytes_follow_canonical_wrap() {
+        // The canonical `ToInt32` agrees with the old local conversion
+        // on byte-domain inputs, including negatives and overflow.
+        assert_eq!(blend_byte(1.0), 1.0);
+        assert_eq!(blend_byte(0.5), 127.0 / 255.0);
+        assert_eq!(blend_byte(0.0), 0.0);
+        assert_eq!(blend_byte(-1.0), 1.0 / 255.0);
+        assert_eq!(blend_byte(2.0), 254.0 / 255.0);
     }
 }
