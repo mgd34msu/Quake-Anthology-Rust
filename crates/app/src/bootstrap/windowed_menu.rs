@@ -13,10 +13,11 @@
 //! records fills, images, and text runs as pixel quads, which become two
 //! vertex-colored [`DrawBatch`] values (the same overlay pattern as the
 //! Quake II damage blend): flats over a 1x1 uploaded white image, then one
-//! textured batch binding the synthetic charset atlas from
-//! [`super::windowed_menu_text`] so every glyph draws with real UVs. Menu
-//! art and fonts are synthetic (no catalog mounts), so the menu entry is
-//! always available, with or without game content.
+//! textured batch binding the console charset atlas from
+//! [`super::windowed_menu_text`] so every glyph draws with real UVs. The
+//! atlas loads the real `conchars` through installed content mounts when
+//! game data is present and falls back to the synthetic atlas otherwise,
+//! so the menu entry is always available, with or without game content.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -91,10 +92,14 @@ use super::startup_menu::MENU_TITLE_FONT_SLOT;
 use super::startup_saves::StartupSaveList;
 use super::startup_selection::StartupSelectionModel;
 use super::windowed_menu_text::conchars_rgba;
-use super::windowed_menu_text::font_upload;
+use super::windowed_menu_text::font_upload_sized;
 use super::windowed_menu_text::glyph_batches;
 use super::windowed_menu_text::menu_font_selection;
+use super::windowed_menu_text::menu_font_selection_for;
+use super::windowed_menu_text::resolve_menu_charset;
 use super::windowed_menu_text::GlyphQuad;
+use super::windowed_menu_text::CONCHARS_HEIGHT;
+use super::windowed_menu_text::CONCHARS_WIDTH;
 use super::windowed_menu_text::FONT_PICTURE_HANDLE;
 
 /// View clear color behind the menu (dark blue charcoal, distinct from the
@@ -133,6 +138,9 @@ pub(crate) struct WindowedMenu {
     font: TextFontSelection,
     white: RendererImage,
     font_image: RendererImage,
+    font_width: u32,
+    font_height: u32,
+    font_pixels: Vec<u8>,
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
     model: Rc<RefCell<StartupSelectionModel>>,
@@ -151,7 +159,22 @@ impl WindowedMenu {
         quit: Rc<Cell<bool>>,
         launch: super::windowed_menu_launch::MenuLaunchQueue,
     ) -> Result<Self, String> {
-        let font = menu_font_selection().map_err(|error| error.to_string())?;
+        let (font, font_width, font_height, font_pixels) = {
+            let preferred = model.options().ok().map(|options| options.product);
+            match resolve_menu_charset(model.catalog(), preferred.as_deref()) {
+                Some(charset) => {
+                    let selection = menu_font_selection_for(charset.width, charset.height, charset.baked)
+                        .map_err(|error| error.to_string())?;
+                    (selection, charset.width, charset.height, charset.pixels)
+                }
+                None => (
+                    menu_font_selection().map_err(|error| error.to_string())?,
+                    CONCHARS_WIDTH,
+                    CONCHARS_HEIGHT,
+                    conchars_rgba(),
+                ),
+            }
+        };
         let art = {
             let authority = IdentityOwner::create("windowed-menu").map_err(|error| error.to_string())?;
             let mut images = SceneImageRegistry::new(ResourceOwner::new(11, authority.session().clone(), 0));
@@ -217,8 +240,8 @@ impl WindowedMenu {
             source: ImageSource::Generated {
                 name: "windowed-menu-font".to_string(),
             },
-            width: super::windowed_menu_text::CONCHARS_WIDTH,
-            height: super::windowed_menu_text::CONCHARS_HEIGHT,
+            width: font_width,
+            height: font_height,
         };
         Ok(Self {
             menu,
@@ -227,6 +250,9 @@ impl WindowedMenu {
             font,
             white,
             font_image,
+            font_width,
+            font_height,
+            font_pixels,
             uploaded: false,
             clock_ms,
             model: shared,
@@ -237,6 +263,18 @@ impl WindowedMenu {
     #[cfg(test)]
     pub(crate) fn menu(&self) -> &StartupMenu {
         &self.menu
+    }
+
+    /// Atlas size behind the font image.
+    #[cfg(test)]
+    pub(crate) fn font_atlas_size(&self) -> (u32, u32) {
+        (self.font_width, self.font_height)
+    }
+
+    /// Atlas texels behind the font image.
+    #[cfg(test)]
+    pub(crate) fn font_atlas_pixels(&self) -> &[u8] {
+        &self.font_pixels
     }
 
     /// Shared selection model behind the menu.
@@ -358,7 +396,12 @@ impl WindowedMenu {
         if !self.uploaded {
             self.uploaded = true;
             uploads.push(white_upload(&self.white));
-            uploads.push(font_upload(&self.font_image, conchars_rgba()));
+            uploads.push(font_upload_sized(
+                &self.font_image,
+                self.font_width,
+                self.font_height,
+                self.font_pixels.clone(),
+            ));
         }
         Some((view, uploads))
     }
@@ -874,6 +917,16 @@ mod tests {
         assert!(menu.frame_view(0, 600, None, 0.0).is_none());
         assert!(menu.frame_view(960, 0, None, 0.0).is_none());
         assert!(menu.release_images().is_empty());
+    }
+
+    #[test]
+    fn menu_falls_back_to_synthetic_without_charset() {
+        let menu = menu();
+        assert_eq!(menu.font_atlas_size(), (128, 128));
+        assert_eq!(
+            menu.font_atlas_pixels(),
+            super::super::windowed_menu_text::conchars_rgba().as_slice()
+        );
     }
 
     #[test]
