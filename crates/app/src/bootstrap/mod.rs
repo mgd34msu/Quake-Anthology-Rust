@@ -154,5 +154,6 @@ pub mod windowed_menu_text;
 pub mod windowed_pacer;
 pub mod windowed_preset;
 pub mod windowed_scene;
+pub mod windowed_shaders;
 pub mod windowed_skins;
 pub mod windowed_world;
