@@ -36,8 +36,8 @@ use qa_world::spawn::{SpawnFields, SpawnRequest};
 use thiserror::Error;
 
 use super::play::{
-    admit_player, build_clip, eye_height_for_family, movement_dialect_for_selection, provider_for_product, PlayerBody,
-    PlayerClip,
+    admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
+    provider_for_product, PlayerBody, PlayerClip,
 };
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::ApplicationOptions;
@@ -408,12 +408,13 @@ pub fn load_play_world(
         .require(&content)
         .map_err(|_| PlayWorldError::UnknownProduct(content.clone()))?;
     let family = product.expectation.family;
-    let edition = product.expectation.edition.clone();
     let campaign = product.expectation.campaign.clone();
+    let movement_edition = movement_content_edition(catalog, options.movement_product.as_deref())
+        .map_err(|_| PlayWorldError::UnknownProduct(options.movement_product.clone().unwrap_or_default()))?;
     let dialect = movement_dialect_for_selection(
         super::content::content_family(options.movement),
         options.movement_product.as_deref(),
-        &edition,
+        &movement_edition,
     );
     let mounts = open_product_mounts(catalog, &content, &options.map)?;
     let bytes = mounts
@@ -459,6 +460,7 @@ pub fn load_play_world(
                 feet,
                 spawn.angles,
                 dialect,
+                &movement_edition,
             )
             .map_err(|reason| PlayWorldError::Play {
                 map: options.map.clone(),

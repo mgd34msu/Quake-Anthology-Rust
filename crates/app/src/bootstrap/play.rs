@@ -314,7 +314,7 @@ pub fn q1_parameters() -> Q1MovementParameters {
 
 /// Canonical Quake I NetQuake movement profile for a provider.
 #[must_use]
-pub fn q1_profile(provider: ProviderId) -> Q1MovementProfile {
+pub fn q1_profile(provider: ProviderId, edition: Q1Edition) -> Q1MovementProfile {
     Q1MovementProfile {
         id: provider,
         clock: qa_core::time::ClockProfile::Q1Netquake {
@@ -323,7 +323,7 @@ pub fn q1_profile(provider: ProviderId) -> Q1MovementProfile {
             fixed_frame_seconds: None,
         },
         numeric: Q1_DONOR_PROFILE,
-        edition: Q1Edition::Classic,
+        edition,
         parameters: q1_parameters(),
         edge_friction: 2.0,
         no_clip_angle_hack: false,
@@ -552,6 +552,7 @@ impl Q1PlayerBody {
         feet: Vec3,
         angles: Vec3,
         dialect: Dialect,
+        q1_edition: Q1Edition,
     ) -> Result<Self, String> {
         let body = BodyState {
             origin: feet,
@@ -585,7 +586,7 @@ impl Q1PlayerBody {
                     fix_angle: false,
                     health: 100.0,
                 }),
-                Q1BodyProfile::Netquake(q1_profile(provider.clone())),
+                Q1BodyProfile::Netquake(q1_profile(provider.clone(), q1_edition)),
             ),
             Dialect::Q1Quakeworld => (
                 Q1State::Quakeworld(QwMovementState {
@@ -825,6 +826,33 @@ pub fn movement_dialect_for_selection(movement: GameFamily, movement_product: Op
     }
 }
 
+/// Edition of the resolved movement content: the exact movement product
+/// when one was selected, else classic (every family base product is a
+/// classic edition, and the donor defaults movement the same way).
+pub fn movement_content_edition(
+    catalog: &qa_content::catalog::InstalledCatalog,
+    movement_product: Option<&str>,
+) -> Result<String, String> {
+    match movement_product {
+        Some(id) => catalog
+            .require(id)
+            .map(|product| product.expectation.edition.clone())
+            .map_err(|error| error.to_string()),
+        None => Ok("classic".to_string()),
+    }
+}
+
+/// Quake I profile edition for a movement content edition: rerelease
+/// only gates gib bounce, never walk physics (donor `movementProfile`).
+#[must_use]
+pub fn q1_edition_for_movement(edition: &str) -> Q1Edition {
+    if edition == "rerelease" {
+        Q1Edition::Rerelease
+    } else {
+        Q1Edition::Classic
+    }
+}
+
 /// Simulation spawn provider id for a catalog family and campaign.
 #[must_use]
 pub fn provider_for_product(family: GameFamily, campaign: &str) -> ProviderId {
@@ -854,6 +882,8 @@ pub enum PlayerClip {
 /// or `None` when the family has no body wired yet (the camera falls
 /// back to the static spawn, exactly the pre-play behavior, until its
 /// arm lands). A provider outside the family's own is a contract error.
+/// The movement content edition seeds the Quake I profile (gib bounce);
+/// Quake II/III physics ride the dialect and ignore it.
 pub fn admit_player(
     simulation: &mut Simulation,
     family: GameFamily,
@@ -861,10 +891,16 @@ pub fn admit_player(
     feet: Vec3,
     angles: Vec3,
     dialect: Dialect,
+    movement_edition: &str,
 ) -> Result<Option<PlayerBody>, String> {
     match family {
         GameFamily::Q1 => Ok(Some(PlayerBody::Q1(Q1PlayerBody::admit(
-            simulation, provider, feet, angles, dialect,
+            simulation,
+            provider,
+            feet,
+            angles,
+            dialect,
+            q1_edition_for_movement(movement_edition),
         )?))),
         GameFamily::Q2 | GameFamily::Q3 => Ok(None),
     }
@@ -1078,7 +1114,15 @@ mod tests {
         let simulation = server.simulation_mut();
         let feet = vec3(0.0, 0.0, 32.0);
         let angles = vec3(0.0, 180.0, 0.0);
-        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap();
+        let player = Q1PlayerBody::admit(
+            simulation,
+            player_provider(),
+            feet,
+            angles,
+            Dialect::Q1Netquake,
+            Q1Edition::Classic,
+        )
+        .unwrap();
         let body = simulation.body_state(&player.actor).expect("player body");
         assert_eq!(body.origin, feet);
         assert_eq!(player.eye(), vec3(0.0, 0.0, 54.0));
@@ -1117,7 +1161,15 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1190,7 +1242,15 @@ mod tests {
         }
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1227,7 +1287,15 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1286,7 +1354,15 @@ mod tests {
         let simulation = server.simulation_mut();
         let feet = vec3(0.0, 0.0, 32.0);
         let angles = vec3(0.0, 180.0, 0.0);
-        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Quakeworld).unwrap();
+        let player = Q1PlayerBody::admit(
+            simulation,
+            player_provider(),
+            feet,
+            angles,
+            Dialect::Q1Quakeworld,
+            Q1Edition::Classic,
+        )
+        .unwrap();
         assert!(matches!(player.state, Q1State::Quakeworld(_)));
         assert!(matches!(player.profile, Q1BodyProfile::Quakeworld(_)));
         assert_eq!(player.eye(), vec3(0.0, 0.0, 54.0));
@@ -1303,7 +1379,15 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Quakeworld).unwrap()
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Quakeworld,
+                Q1Edition::Classic,
+            )
+            .unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1342,9 +1426,25 @@ mod tests {
         let angles = vec3(0.0, 180.0, 0.0);
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
         };
-        assert!(Q1PlayerBody::admit(server.simulation_mut(), player_provider(), feet, angles, Dialect::Q3).is_err());
+        assert!(Q1PlayerBody::admit(
+            server.simulation_mut(),
+            player_provider(),
+            feet,
+            angles,
+            Dialect::Q3,
+            Q1Edition::Classic
+        )
+        .is_err());
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
@@ -1360,5 +1460,86 @@ mod tests {
                 &frame,
             )
             .is_err());
+    }
+
+    fn edition_catalog() -> qa_content::catalog::InstalledCatalog {
+        use qa_content::catalog::{CatalogProduct, InstalledCatalog, ProductAvailability, ProductExpectation};
+        use qa_content::contract::ContentId;
+
+        let product = |id: &str, family: GameFamily, edition: &str| CatalogProduct {
+            id: ContentId(id.to_string()),
+            expectation: ProductExpectation {
+                id: id.to_string(),
+                family,
+                edition: edition.to_string(),
+                campaign: "id1".to_string(),
+                title: id.to_string(),
+                content_directory: "id1".to_string(),
+                base_product: None,
+                required_content_archives: Vec::new(),
+                required_programs: Vec::new(),
+                map_witness: None,
+                unresolved_reason: None,
+            },
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root: None,
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        InstalledCatalog::new(
+            "edition-test".to_string(),
+            vec![
+                product("q1-classic-id1", GameFamily::Q1, "classic"),
+                product("q1-rerelease-id1", GameFamily::Q1, "rerelease"),
+            ],
+            Vec::new(),
+            0,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn movement_edition_follows_the_movement_product() {
+        let catalog = edition_catalog();
+        assert_eq!(movement_content_edition(&catalog, None).unwrap(), "classic");
+        assert_eq!(
+            movement_content_edition(&catalog, Some("q1-rerelease-id1")).unwrap(),
+            "rerelease"
+        );
+        assert!(movement_content_edition(&catalog, Some("q9-elsewhere")).is_err());
+    }
+
+    #[test]
+    fn q1_rerelease_movement_seeds_the_rerelease_profile() {
+        assert_eq!(q1_edition_for_movement("rerelease"), Q1Edition::Rerelease);
+        assert_eq!(q1_edition_for_movement("classic"), Q1Edition::Classic);
+        let profile = q1_profile(player_provider(), Q1Edition::Rerelease);
+        assert_eq!(profile.edition, Q1Edition::Rerelease);
+    }
+
+    #[test]
+    fn admit_carries_movement_edition_into_the_profile() {
+        let mut server = q1_server();
+        let feet = vec3(0.0, 0.0, 32.0);
+        let angles = vec3(0.0, 180.0, 0.0);
+        let player = {
+            let simulation = server.simulation_mut();
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Rerelease,
+            )
+            .unwrap()
+        };
+        let Q1BodyProfile::Netquake(profile) = &player.profile else {
+            panic!("admitted the wrong Quake I profile");
+        };
+        assert_eq!(profile.edition, Q1Edition::Rerelease);
     }
 }
