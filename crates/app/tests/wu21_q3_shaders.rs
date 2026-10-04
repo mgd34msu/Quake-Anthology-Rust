@@ -16,13 +16,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use qa_app::bootstrap::play_world::load_play_world;
 use qa_app::bootstrap::startup::StartupEntry;
 use qa_app::bootstrap::windowed::{drive_windowed_application, open_windowed_application};
 use qa_app::bootstrap::windowed_shaders::{
     discover_shader_script_paths, load_registry_scripts, read_shader_scripts, ShaderImageIndex, ShaderScript,
     SkinResolution,
 };
-use qa_app::bootstrap::windowed_world::load_windowed_world;
 use qa_app::options::ApplicationOptions;
 use qa_app::startup::StartupConfig;
 use qa_client::materials::material::{
@@ -390,7 +390,7 @@ fn q3dm1_spawn_view_applies_authored_blend_stages() {
     let catalog = discover_installed_content(&DiscoverContentOptions::new(corpus.clone())).unwrap();
     let owner = test_owner("wu21-spawn-view");
     let mut world =
-        load_windowed_world(&config, &catalog, &options, owner).unwrap_or_else(|error| panic!("q3dm1 loads: {error}"));
+        load_play_world(&config, &catalog, &options, owner).unwrap_or_else(|error| panic!("q3dm1 loads: {error}"));
     assert!(
         world.presentation_error().is_none(),
         "q3dm1 presents: {:?}",

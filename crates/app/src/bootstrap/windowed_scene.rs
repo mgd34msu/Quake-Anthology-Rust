@@ -60,9 +60,9 @@ use qa_content::spr::{parse_sp2, parse_spr};
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::{angles_to_axis, vec3, vec4, Bounds, Vec3};
 
+use super::play_world::PlayWorldError;
 use super::windowed_shaders::{load_registry_scripts, read_shader_scripts, ShaderImageIndex};
 use super::windowed_skins::WindowedSkinProvider;
-use super::windowed_world::WindowedWorldError;
 
 /// Open one installed product's mounts once for a whole presentation.
 ///
@@ -73,16 +73,14 @@ pub(crate) fn open_product_mounts(
     catalog: &InstalledCatalog,
     content: &str,
     map: &str,
-) -> Result<MountedContent, WindowedWorldError> {
-    let mounts = catalog
-        .mounts_for(content)
-        .map_err(|error| WindowedWorldError::MapUnread {
-            content: content.to_string(),
-            map: map.to_string(),
-            reason: error.to_string(),
-        })?;
+) -> Result<MountedContent, PlayWorldError> {
+    let mounts = catalog.mounts_for(content).map_err(|error| PlayWorldError::MapUnread {
+        content: content.to_string(),
+        map: map.to_string(),
+        reason: error.to_string(),
+    })?;
     let plan = ResolvedMountPlan {
-        id: create_mount_plan_id("windowed", content).map_err(|error| WindowedWorldError::MapUnread {
+        id: create_mount_plan_id("windowed", content).map_err(|error| PlayWorldError::MapUnread {
             content: content.to_string(),
             map: map.to_string(),
             reason: error.to_string(),
@@ -91,7 +89,7 @@ pub(crate) fn open_product_mounts(
         default_order: mounts.iter().map(|mount| mount.identity().id.clone()).collect(),
         prefix_orders: Vec::new(),
     };
-    open_mount_plan(&plan, OpenMountOptions::default()).map_err(|error| WindowedWorldError::MapUnread {
+    open_mount_plan(&plan, OpenMountOptions::default()).map_err(|error| PlayWorldError::MapUnread {
         content: content.to_string(),
         map: map.to_string(),
         reason: error.to_string(),
@@ -256,7 +254,7 @@ pub struct SkippedModel {
 }
 
 /// Windowed presentation: decoded world plus model-bearing map entities.
-pub struct WindowedPresentation {
+pub struct PlayPresentation {
     scene: WorldScene,
     models: SceneModelRenderer<WindowedModelProvider>,
     entities: Vec<SceneEntity>,
@@ -267,10 +265,10 @@ pub struct WindowedPresentation {
     skipped_models: Vec<SkippedModel>,
 }
 
-impl std::fmt::Debug for WindowedPresentation {
+impl std::fmt::Debug for PlayPresentation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("WindowedPresentation")
+            .debug_struct("PlayPresentation")
             .field("surfaces", &self.scene.surfaces().len())
             .field("entities", &self.entities.len())
             .field("inline_models", &self.inline_models.len())
@@ -280,7 +278,7 @@ impl std::fmt::Debug for WindowedPresentation {
     }
 }
 
-impl WindowedPresentation {
+impl PlayPresentation {
     /// Prepared world surfaces.
     #[must_use]
     pub fn surface_count(&self) -> usize {
@@ -575,12 +573,8 @@ fn build_scene_entity(
 
 /// Source palette for a map family (donor `paletteFor`): none for Q3,
 /// `gfx/palette.lmp` for Q1, the `pics/colormap.pcx` palette for Q2.
-fn load_palette(
-    mounts: &MountedContent,
-    kind: BspKind,
-    map: &str,
-) -> Result<Option<ClientPalette>, WindowedWorldError> {
-    let failed = |reason: String| WindowedWorldError::Presentation {
+fn load_palette(mounts: &MountedContent, kind: BspKind, map: &str) -> Result<Option<ClientPalette>, PlayWorldError> {
+    let failed = |reason: String| PlayWorldError::Presentation {
         map: map.to_string(),
         reason,
     };
@@ -709,8 +703,8 @@ pub fn build_presentation(
     bytes: &[u8],
     records: &[Vec<(String, String)>],
     owner: ResourceOwner,
-) -> Result<WindowedPresentation, WindowedWorldError> {
-    let kind = classify_bsp(bytes, map).map_err(|error| WindowedWorldError::MapDecode {
+) -> Result<PlayPresentation, PlayWorldError> {
+    let kind = classify_bsp(bytes, map).map_err(|error| PlayWorldError::MapDecode {
         map: map.to_string(),
         reason: error.to_string(),
     })?;
@@ -729,11 +723,11 @@ pub fn build_presentation(
     // Authored `.shader` scripts load before the world scene builds, so
     // glow/transparency/anim surfaces register their authored stages
     // instead of implicit materials over the missing handle.
-    let scripts = read_shader_scripts(&mounts).map_err(|error| WindowedWorldError::Presentation {
+    let scripts = read_shader_scripts(&mounts).map_err(|error| PlayWorldError::Presentation {
         map: map.to_string(),
         reason: error.to_string(),
     })?;
-    let skin_index = ShaderImageIndex::build(&scripts).map_err(|error| WindowedWorldError::Presentation {
+    let skin_index = ShaderImageIndex::build(&scripts).map_err(|error| PlayWorldError::Presentation {
         map: map.to_string(),
         reason: error.to_string(),
     })?;
@@ -744,7 +738,7 @@ pub fn build_presentation(
         None,
         224,
     )
-    .map_err(|error| WindowedWorldError::Presentation {
+    .map_err(|error| PlayWorldError::Presentation {
         map: map.to_string(),
         reason: error.to_string(),
     })?;
@@ -753,7 +747,7 @@ pub fn build_presentation(
     let missing = loader.missing().image.clone();
     let mut registry = SceneShaderRegistry::with_defaults(loader);
     load_registry_scripts(&mut registry, &scripts, matches!(kind, BspKind::Q3)).map_err(|error| {
-        WindowedWorldError::Presentation {
+        PlayWorldError::Presentation {
             map: map.to_string(),
             reason: error.to_string(),
         }
@@ -769,31 +763,31 @@ pub fn build_presentation(
     let mut scene = match kind {
         BspKind::Q1 => {
             let parsed =
-                read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| WindowedWorldError::MapDecode {
+                read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| PlayWorldError::MapDecode {
                     map: map.to_string(),
                     reason: error.to_string(),
                 })?;
-            WorldScene::load_q1(&parsed, registry, options).map_err(|error| WindowedWorldError::Presentation {
+            WorldScene::load_q1(&parsed, registry, options).map_err(|error| PlayWorldError::Presentation {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?
         }
         BspKind::Q2 => {
-            let parsed = decode_q2_map(bytes, map, None).map_err(|error| WindowedWorldError::MapDecode {
+            let parsed = decode_q2_map(bytes, map, None).map_err(|error| PlayWorldError::MapDecode {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?;
-            WorldScene::load_q2(&parsed, registry, options).map_err(|error| WindowedWorldError::Presentation {
+            WorldScene::load_q2(&parsed, registry, options).map_err(|error| PlayWorldError::Presentation {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?
         }
         BspKind::Q3 => {
-            let parsed = decode_q3_world(bytes, map).map_err(|error| WindowedWorldError::MapDecode {
+            let parsed = decode_q3_world(bytes, map).map_err(|error| PlayWorldError::MapDecode {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?;
-            WorldScene::load_q3(&parsed, registry, options).map_err(|error| WindowedWorldError::Presentation {
+            WorldScene::load_q3(&parsed, registry, options).map_err(|error| PlayWorldError::Presentation {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?
@@ -814,11 +808,11 @@ pub fn build_presentation(
         .with_authored_index(skin_index);
     models
         .preload_with(delegate, &entities, &|_| ModelSourceOptions::default())
-        .map_err(|error| WindowedWorldError::Presentation {
+        .map_err(|error| PlayWorldError::Presentation {
             map: map.to_string(),
             reason: error.to_string(),
         })?;
-    Ok(WindowedPresentation {
+    Ok(PlayPresentation {
         scene,
         models,
         entities,

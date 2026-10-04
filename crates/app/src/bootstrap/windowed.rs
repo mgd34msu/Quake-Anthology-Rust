@@ -49,8 +49,10 @@ use qa_platform::sdl::{
     SdlWindowPresentation,
 };
 use qa_platform::sdl_render_context::SdlWorkerRenderContext;
+use qa_world::session::SessionSeat;
 
-use super::input::{dialect_family, seat_sample, user_command, NullRegistry};
+use super::input::{dialect_family, seat_sample, user_command, LocalPlayer, NullRegistry};
+use super::play_world::{load_play_world, PlayWorld};
 use super::renderer::{
     CaptureId, ImageLevel, NativeBackendFactory, NativeRenderBackend, NativeRenderWindow, NativeRenderer,
     NativeRendererOptions, NativeWindowFactory, RenderBackendKind, RenderCommand, RenderDriverInfo, RenderFrame,
@@ -64,8 +66,7 @@ use super::windowed_menu::WindowedMenu;
 use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, MenuLaunchQueue};
 use super::windowed_pacer::WindowedPacer;
 use super::windowed_preset::WindowedPresetCollaborators;
-use super::windowed_scene::WindowedPresentation;
-use super::windowed_world::{load_windowed_world, WindowedWorld};
+use super::windowed_scene::PlayPresentation;
 use crate::options::{ApplicationOptions, Renderer};
 use crate::startup::StartupConfig;
 
@@ -973,7 +974,7 @@ struct WindowedScene {
     /// Static batches submitted inside the view when no presentation loaded.
     batches: Vec<DrawBatch>,
     /// Live map presentation, prepared fresh every frame.
-    presentation: Option<WindowedPresentation>,
+    presentation: Option<PlayPresentation>,
     /// View clear color (donor world-view clear).
     clear_color: Vec4,
 }
@@ -1197,13 +1198,14 @@ pub struct WindowedStartupBackend {
     start: Instant,
     input_router: Option<InputRouter>,
     input_seat: Option<SeatId>,
+    local_player: Option<LocalPlayer>,
     input_queue: WindowedInputQueue,
     input_log: VecDeque<SeatInputEvent>,
     command_builder: Option<InputCommandBuilder>,
     controllers: Option<SdlControllers>,
     launch: MenuLaunchQueue,
     scene: Option<WindowedScene>,
-    world: Option<WindowedWorld>,
+    world: Option<PlayWorld>,
     menu: Option<WindowedMenu>,
     timer: StageTimer,
     totals: StageTotals,
@@ -1238,6 +1240,7 @@ impl WindowedStartupBackend {
             start: Instant::now(),
             input_router: None,
             input_seat: None,
+            local_player: None,
             input_queue: Rc::new(RefCell::new(Vec::new())),
             input_log: VecDeque::new(),
             command_builder: None,
@@ -1325,7 +1328,7 @@ impl WindowedStartupBackend {
     /// presentation (world geometry plus model-bearing entities) when it
     /// built, else the legacy empty batches. The live actor count is
     /// available through [`Self::world_entity_count`].
-    fn set_world(&mut self, mut world: WindowedWorld) {
+    fn set_world(&mut self, mut world: PlayWorld) {
         let presentation = world.take_presentation();
         self.scene = Some(WindowedScene {
             batches: Vec::new(),
@@ -1339,6 +1342,33 @@ impl WindowedStartupBackend {
         self.command_builder = Some(builder);
         self.world = Some(world);
         self.apply_input_profile();
+        self.pair_local_player();
+    }
+
+    /// Pair the driving seat with the admitted body as the one local
+    /// player: the established [`LocalPlayer`] identity (seat plus the
+    /// body's own simulation actor), not a parallel player concept. Runs
+    /// at world set and at input-profile install, whichever sees both
+    /// the seat and the admitted body; idempotent.
+    fn pair_local_player(&mut self) {
+        let (Some(seat), Some(world)) = (self.input_seat.clone(), self.world.as_ref()) else {
+            return;
+        };
+        let Some(actor) = world.player_actor() else {
+            return;
+        };
+        let client = self.identity.client(0, 0);
+        self.local_player = Some(LocalPlayer {
+            seat: SessionSeat::new(seat, client),
+            actor: actor.clone(),
+        });
+    }
+
+    /// The paired local player (driving seat plus admitted body actor),
+    /// or `None` until a seat and a body are both present.
+    #[must_use]
+    pub fn local_player(&self) -> Option<&LocalPlayer> {
+        self.local_player.as_ref()
     }
 
     /// Install the world's dialect and default key bindings on the live
@@ -1359,9 +1389,10 @@ impl WindowedStartupBackend {
             eprintln!("windowed: keeping input profile ({error})");
         }
         seat_input.unbind_all();
-        for binding in super::windowed_play::windowed_action_bindings(dialect) {
+        for binding in super::play::play_action_bindings(dialect) {
             seat_input.bind(binding);
         }
+        self.pair_local_player();
     }
 
     /// Run one interactive play step: sample the seat, build the family
@@ -1375,7 +1406,7 @@ impl WindowedStartupBackend {
         if self.world.is_none() {
             return;
         }
-        let command = if self.world.as_ref().is_some_and(WindowedWorld::has_player) {
+        let command = if self.world.as_ref().is_some_and(PlayWorld::has_player) {
             self.sample_player_command()
         } else {
             None
@@ -1437,7 +1468,7 @@ impl WindowedStartupBackend {
     /// Live map-entity count, or `None` when no map world loaded.
     #[must_use]
     pub fn world_entity_count(&self) -> Option<usize> {
-        self.world.as_ref().map(WindowedWorld::entity_count)
+        self.world.as_ref().map(PlayWorld::entity_count)
     }
 
     /// Display refresh rate in Hz hosting the window, or 0 when the
@@ -1560,7 +1591,7 @@ impl WindowedStartupBackend {
         };
         let config = StartupConfig::from_options(&options).map_err(|error| error.to_string())?;
         let owner = ResourceOwner::new(7, self.identity.session().clone(), 0);
-        let world = load_windowed_world(&config, &catalog, &options, owner).map_err(|error| error.to_string())?;
+        let world = load_play_world(&config, &catalog, &options, owner).map_err(|error| error.to_string())?;
         eprintln!(
             "windowed: menu launched {} of {} map entities ({} {})",
             world.spawned(),
@@ -1615,7 +1646,7 @@ impl WindowedStartupBackend {
                 Vec::new(),
             );
         }
-        let player = self.world.as_ref().and_then(WindowedWorld::player_eye);
+        let player = self.world.as_ref().and_then(PlayWorld::player_eye);
         build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut(), player)
     }
 
@@ -1824,6 +1855,7 @@ impl StartupBackend for WindowedStartupBackend {
         self.renderer = None;
         self.scene = None;
         self.world = None;
+        self.local_player = None;
         self.menu = None;
         if let Some(mut audio) = self.audio.take() {
             let _ignored = audio.close();
@@ -1885,7 +1917,7 @@ pub fn open_windowed_application(
         )?;
         backend.set_menu(menu);
     } else {
-        match load_windowed_world(&config, model.catalog(), options, resource_owner) {
+        match load_play_world(&config, model.catalog(), options, resource_owner) {
             Ok(world) => {
                 eprintln!(
                     "windowed: spawned {} of {} map entities ({} {})",
@@ -2636,6 +2668,44 @@ mod tests {
                 assert_eq!(frames, 3);
                 assert!(composed.app.is_closed());
                 windowed_sdl_router_attach_pumps_keys();
+            }
+            Err(error) => assert!(!error.is_empty(), "honest open failure"),
+        }
+    }
+
+    #[test]
+    fn run_pairs_local_player_with_admitted_body() {
+        // One local player concept: the driving seat plus the admitted
+        // body's own simulation actor, paired exactly when a world with
+        // a body is set. Without a display the honest open failure is
+        // required instead.
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let options = windowed_options();
+        match open_windowed_application(&options, StartupEntry::Run) {
+            Ok(composed) => {
+                let composed = composed;
+                let seat = composed.app.input_seat().expect("run publishes a seat");
+                match composed
+                    .app
+                    .backend()
+                    .world
+                    .as_ref()
+                    .and_then(|world| world.player_actor().cloned())
+                {
+                    Some(actor) => {
+                        let local = composed
+                            .app
+                            .backend()
+                            .local_player()
+                            .expect("body pairs a local player");
+                        assert_eq!(local.seat_id(), &seat, "paired seat drives");
+                        assert_eq!(local.actor, actor, "paired actor is the body");
+                    }
+                    None => assert!(
+                        composed.app.backend().local_player().is_none(),
+                        "no body pairs no local player"
+                    ),
+                }
             }
             Err(error) => assert!(!error.is_empty(), "honest open failure"),
         }

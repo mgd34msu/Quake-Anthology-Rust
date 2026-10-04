@@ -1,4 +1,4 @@
-//! Windowed map world: the selected map's real entities in a live server.
+//! Play map world: the selected map's real entities in a live server.
 //!
 //! Donor provenance: `src/app/bootstrap/content.ts`
 //! (`loadApplicationContent`: catalog discovery, mount read of
@@ -20,7 +20,7 @@
 //! deterministic order; per-game spawn behaviors still live in the guest
 //! game modules, which the windowed run does not bind (the same no-op
 //! logic hooks as the stub path). Records that fail field parse or spawn
-//! are recorded in [`WindowedWorld::skipped`] instead of aborting the load.
+//! are recorded in [`PlayWorld::skipped`] instead of aborting the load.
 
 use std::collections::BTreeSet;
 
@@ -35,11 +35,10 @@ use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
 use thiserror::Error;
 
-use super::windowed_play::{
-    admit_player, build_clip, dialect_for_product, eye_height_for_family, provider_for_product, WindowedClip,
-    WindowedPlayer,
+use super::play::{
+    admit_player, build_clip, dialect_for_product, eye_height_for_family, provider_for_product, PlayerBody, PlayerClip,
 };
-use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, WindowedPresentation};
+use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::ApplicationOptions;
 use crate::startup::{open_server, StartupConfig};
 
@@ -65,7 +64,7 @@ pub struct MapSpawnSummary {
 
 /// Windowed map-world load failure.
 #[derive(Debug, Error)]
-pub enum WindowedWorldError {
+pub enum PlayWorldError {
     /// The selected content product is not in the catalog.
     #[error("unknown content product {0}")]
     UnknownProduct(String),
@@ -127,24 +126,24 @@ pub enum WindowedWorldError {
 }
 
 /// A live server holding one map's real entities.
-pub struct WindowedWorld {
+pub struct PlayWorld {
     server: Server<GuestServerLogic>,
     content: String,
     map: String,
     entity_records: usize,
     spawned: usize,
     skipped: Vec<SkippedEntity>,
-    presentation: Option<WindowedPresentation>,
+    presentation: Option<PlayPresentation>,
     presentation_error: Option<String>,
-    clip: Option<WindowedClip>,
-    player: Option<WindowedPlayer>,
+    clip: Option<PlayerClip>,
+    player: Option<PlayerBody>,
     dialect: qa_core::cmd::Dialect,
 }
 
-impl std::fmt::Debug for WindowedWorld {
+impl std::fmt::Debug for PlayWorld {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("WindowedWorld")
+            .debug_struct("PlayWorld")
             .field("content", &self.content)
             .field("map", &self.map)
             .field("entity_records", &self.entity_records)
@@ -157,7 +156,7 @@ impl std::fmt::Debug for WindowedWorld {
     }
 }
 
-impl WindowedWorld {
+impl PlayWorld {
     /// Borrow the live server.
     #[must_use]
     pub fn server(&self) -> &Server<GuestServerLogic> {
@@ -174,7 +173,7 @@ impl WindowedWorld {
     /// static spawn).
     #[must_use]
     pub fn player_eye(&self) -> Option<(qa_core::math::Vec3, qa_core::math::Vec3)> {
-        self.player.as_ref().map(WindowedPlayer::eye)
+        self.player.as_ref().map(PlayerBody::eye)
     }
 
     /// Whether an interactive player is admitted.
@@ -183,17 +182,23 @@ impl WindowedWorld {
         self.player.is_some()
     }
 
+    /// The admitted body's simulation actor, or `None` without a player.
+    #[must_use]
+    pub fn player_actor(&self) -> Option<&qa_core::identity::ActorId> {
+        self.player.as_ref().map(PlayerBody::actor)
+    }
+
     /// Run one player movement step for a world user command. No admitted
     /// player (or no clip) keeps the static-spawn behavior: the world still
     /// ticks, the camera just does not follow.
-    pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), WindowedWorldError> {
+    pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_ref()) else {
             return Ok(());
         };
         let (simulation, triggers) = self.server.simulation_and_triggers();
         player
             .step(simulation, triggers, clip, command)
-            .map_err(|reason| WindowedWorldError::Play {
+            .map_err(|reason| PlayWorldError::Play {
                 map: self.map.clone(),
                 reason,
             })
@@ -244,7 +249,7 @@ impl WindowedWorld {
     /// Scene presentation (world geometry plus model-bearing entities), or
     /// `None` when presentation failed (see [`Self::presentation_error`]).
     #[must_use]
-    pub fn presentation(&self) -> Option<&WindowedPresentation> {
+    pub fn presentation(&self) -> Option<&PlayPresentation> {
         self.presentation.as_ref()
     }
 
@@ -255,7 +260,7 @@ impl WindowedWorld {
     }
 
     /// Move the scene presentation out for the windowed scene view.
-    pub fn take_presentation(&mut self) -> Option<WindowedPresentation> {
+    pub fn take_presentation(&mut self) -> Option<PlayPresentation> {
         self.presentation.take()
     }
 }
@@ -270,40 +275,36 @@ fn map_content_id(options: &ApplicationOptions) -> &str {
 /// Quake II entity strings share the Quake brace syntax, so they parse
 /// with the Quake reader, matching the donor (`native-q2-map.ts` parses
 /// `world.entities` with `parseQ1Entities`).
-fn decode_map_entities(
-    bytes: &[u8],
-    map: &str,
-    kind: BspKind,
-) -> Result<Vec<Vec<(String, String)>>, WindowedWorldError> {
+fn decode_map_entities(bytes: &[u8], map: &str, kind: BspKind) -> Result<Vec<Vec<(String, String)>>, PlayWorldError> {
     match kind {
         BspKind::Q1 => {
             let parsed =
-                read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| WindowedWorldError::MapDecode {
+                read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| PlayWorldError::MapDecode {
                     map: map.to_string(),
                     reason: error.to_string(),
                 })?;
             Ok(parsed.entity_list.into_iter().map(|entity| entity.properties).collect())
         }
         BspKind::Q2 => {
-            let parsed = read_q2_bsp(bytes, map).map_err(|error| WindowedWorldError::MapDecode {
+            let parsed = read_q2_bsp(bytes, map).map_err(|error| PlayWorldError::MapDecode {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?;
             parse_q1_entities(&parsed.entities, &format!("{map}:entities"))
                 .map(|entities| entities.into_iter().map(|entity| entity.properties).collect())
-                .map_err(|error| WindowedWorldError::EntityParse {
+                .map_err(|error| PlayWorldError::EntityParse {
                     map: map.to_string(),
                     reason: error.to_string(),
                 })
         }
         BspKind::Q3 => {
-            let parsed = parse_q3_bsp(bytes, map).map_err(|error| WindowedWorldError::MapDecode {
+            let parsed = parse_q3_bsp(bytes, map).map_err(|error| PlayWorldError::MapDecode {
                 map: map.to_string(),
                 reason: error.to_string(),
             })?;
             parse_q3_entities(&parsed.entities, &format!("{map}:entities"))
                 .map(|entities| entities.into_iter().map(|entity| entity.properties).collect())
-                .map_err(|error| WindowedWorldError::EntityParse {
+                .map_err(|error| PlayWorldError::EntityParse {
                     map: map.to_string(),
                     reason: error.to_string(),
                 })
@@ -395,16 +396,16 @@ pub fn spawn_map_entities(
 /// (the windowed renderer's resource owner, so the presentation's image
 /// uploads apply to the live backend). Fails honestly when the product is
 /// unknown, the map is unreadable or undecodable, or no record spawns.
-pub fn load_windowed_world(
+pub fn load_play_world(
     config: &StartupConfig,
     catalog: &InstalledCatalog,
     options: &ApplicationOptions,
     owner: qa_client::render::types::ResourceOwner,
-) -> Result<WindowedWorld, WindowedWorldError> {
+) -> Result<PlayWorld, PlayWorldError> {
     let content = map_content_id(options).to_string();
     let product = catalog
         .require(&content)
-        .map_err(|_| WindowedWorldError::UnknownProduct(content.clone()))?;
+        .map_err(|_| PlayWorldError::UnknownProduct(content.clone()))?;
     let family = product.expectation.family;
     let edition = product.expectation.edition.clone();
     let campaign = product.expectation.campaign.clone();
@@ -412,30 +413,30 @@ pub fn load_windowed_world(
     let mounts = open_product_mounts(catalog, &content, &options.map)?;
     let bytes = mounts
         .read(qa_content::mounts::ResourceRef::Path(&options.map))
-        .map_err(|error| WindowedWorldError::MapUnread {
+        .map_err(|error| PlayWorldError::MapUnread {
             content: content.clone(),
             map: options.map.clone(),
             reason: error.to_string(),
         })?;
-    let kind = classify_bsp(&bytes, &options.map).map_err(|error| WindowedWorldError::MapDecode {
+    let kind = classify_bsp(&bytes, &options.map).map_err(|error| PlayWorldError::MapDecode {
         map: options.map.clone(),
         reason: error.to_string(),
     })?;
     let entities = decode_map_entities(&bytes, &options.map, kind)?;
-    let mut server = open_server(config).map_err(|error| WindowedWorldError::Server(error.to_string()))?;
+    let mut server = open_server(config).map_err(|error| PlayWorldError::Server(error.to_string()))?;
     let summary = spawn_map_entities(&mut server, &entities, &options.map);
     if summary.spawned == 0 {
         let reason = summary.skipped.first().map_or_else(
             || "map has no entity records".to_string(),
             |skipped| skipped.reason.clone(),
         );
-        return Err(WindowedWorldError::NothingSpawned {
+        return Err(PlayWorldError::NothingSpawned {
             map: options.map.clone(),
             records: entities.len(),
             reason,
         });
     }
-    let clip = build_clip(&bytes, &options.map, family).map_err(|reason| WindowedWorldError::Play {
+    let clip = build_clip(&bytes, &options.map, family).map_err(|reason| PlayWorldError::Play {
         map: options.map.clone(),
         reason,
     })?;
@@ -453,7 +454,7 @@ pub fn load_windowed_world(
                 feet,
                 spawn.angles,
             )
-            .map_err(|reason| WindowedWorldError::Play {
+            .map_err(|reason| PlayWorldError::Play {
                 map: options.map.clone(),
                 reason,
             })?
@@ -464,7 +465,7 @@ pub fn load_windowed_world(
         Ok(presentation) => (Some(presentation), None),
         Err(error) => (None, Some(error.to_string())),
     };
-    Ok(WindowedWorld {
+    Ok(PlayWorld {
         server,
         content,
         map: options.map.clone(),
@@ -609,12 +610,12 @@ mod tests {
         )))
         .unwrap();
         let config = test_config(&options);
-        let error = load_windowed_world(&config, &catalog, &options, test_owner()).unwrap_err();
+        let error = load_play_world(&config, &catalog, &options, test_owner()).unwrap_err();
         let message = error.to_string();
         assert!(
             matches!(
                 error,
-                WindowedWorldError::UnknownProduct(_) | WindowedWorldError::MapUnread { .. }
+                PlayWorldError::UnknownProduct(_) | PlayWorldError::MapUnread { .. }
             ),
             "{message}"
         );
@@ -638,7 +639,7 @@ mod tests {
                 ..ApplicationOptions::default()
             };
             let config = test_config(&options);
-            let world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+            let world = match load_play_world(&config, &catalog, &options, test_owner()) {
                 Ok(world) => world,
                 Err(error) => {
                     eprintln!("skipped: {product} {map}: {error}");
@@ -674,7 +675,7 @@ mod tests {
             ..ApplicationOptions::default()
         };
         let config = test_config(&options);
-        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
                 eprintln!("skipped: q1-classic-id1 maps/start.bsp: {error}");
@@ -718,7 +719,7 @@ mod tests {
             ..ApplicationOptions::default()
         };
         let config = test_config(&options);
-        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
                 eprintln!("skipped: {product} {map}: {error}");
@@ -808,7 +809,7 @@ mod tests {
             ..ApplicationOptions::default()
         };
         let config = test_config(&options);
-        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
                 eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");
@@ -856,7 +857,7 @@ mod tests {
             ..ApplicationOptions::default()
         };
         let config = test_config(&options);
-        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
                 eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");

@@ -16,9 +16,9 @@
 
 use std::path::{Path, PathBuf};
 
+use qa_app::bootstrap::play_world::load_play_world;
 use qa_app::bootstrap::startup::StartupEntry;
 use qa_app::bootstrap::windowed::{drive_windowed_application, open_windowed_application};
-use qa_app::bootstrap::windowed_world::load_windowed_world;
 use qa_app::options::ApplicationOptions;
 use qa_app::startup::StartupConfig;
 use qa_client::materials::geometry::{MaterialGeometry, MaterialVertex};
@@ -98,7 +98,7 @@ fn prepare_spawn_view(corpus: &Path, product: &str, map: &str) -> SpawnViewStats
     let catalog = discover_installed_content(&DiscoverContentOptions::new(corpus.to_path_buf())).unwrap();
     let identity = IdentityOwner::create("wu12-spawn-view").unwrap();
     let owner = ResourceOwner::new(7, identity.session().clone(), 0);
-    let mut world = load_windowed_world(&config, &catalog, &options, owner)
+    let mut world = load_play_world(&config, &catalog, &options, owner)
         .unwrap_or_else(|error| panic!("{product} {map} loads: {error}"));
     assert!(
         world.presentation_error().is_none(),

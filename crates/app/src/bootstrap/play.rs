@@ -1,19 +1,21 @@
-//! Windowed interactive play: the missing seat-to-world game layer.
+//! Interactive play: the seat-to-world game layer.
 //!
-//! The windowed composition renders the map and samples input, but nothing
-//! between them ever ran: no player was admitted, no command was built, no
-//! server tick advanced the world, and the camera sat at the static spawn.
-//! This module closes that gap, following the donor `Application.step`
-//! shape (sample seat, build command, step simulation, present from the
-//! player) and the qsrc physics it ports (WinQuake `world.c` hull traces,
-//! `cl_input.c` command building).
+//! The game composition renders the map and samples input; this module is
+//! everything between them: the admitted player body, the family user
+//! command, the movement step, and the eye the camera follows. It follows
+//! the donor `Application.step` shape (sample seat, build command, step
+//! simulation, present from the player) and the qsrc physics it ports
+//! (WinQuake `world.c` hull traces, `cl_input.c` command building).
 //!
-//! Quake I ships first: [`Q1ClipWorld`] builds the collision hulls from
-//! the parsed BSP, [`WindowedQ1Services`] implements the movement
-//! services over those hulls plus the live server bodies, and
-//! [`step_q1_player`] runs one [`move_netquake`](qa_world::movement::q1::netquake::move_netquake)
-//! step per windowed frame and commits the result back to the sim body.
-//! Quake II and III players follow the same shape in later phases.
+//! One shared path with family arms: [`PlayerBody`] and [`PlayerClip`]
+//! dispatch per family, and every family reuses the same admit, step, and
+//! eye flow. [`Q1ClipWorld`] builds the Quake I collision hulls from the
+//! parsed BSP, [`Q1PlayerServices`] implements the movement services over
+//! those hulls plus the live server bodies, and the Q1 arm runs one
+//! [`move_netquake`](qa_world::movement::q1::netquake::move_netquake)
+//! step per frame and commits the result back to the sim body. Quake II
+//! and III arrive as new arms on these same enums, extending the existing
+//! trace and movement cores rather than forking them.
 
 use qa_content::bsp::{read_q1_bsp, ClipChild as BspClipChild, NodeChild, Plane as BspPlaneData, Q1BspOptions};
 use qa_content::contract::GameFamily;
@@ -359,7 +361,7 @@ pub fn q1_rest_animation(provider: ProviderId) -> ActorAnimationState {
 /// bodies: world traces run the map hulls, entity traces sweep every
 /// non-trigger body but the mover, and trigger overlap stays with the
 /// server's trigger sweep each tick.
-pub struct WindowedQ1Services<'s> {
+pub struct Q1PlayerServices<'s> {
     ops: NumericOps,
     clip: &'s Q1ClipWorld,
     simulation: &'s Simulation,
@@ -367,7 +369,7 @@ pub struct WindowedQ1Services<'s> {
     ignore: ActorId,
 }
 
-impl<'s> WindowedQ1Services<'s> {
+impl<'s> Q1PlayerServices<'s> {
     /// Borrow the clip world, the server simulation and trigger table,
     /// ignoring the moving actor's own body in entity traces.
     #[must_use]
@@ -456,7 +458,7 @@ fn q1_trace_from_hull(trace: &HullTrace, fraction: f64, hit: TraceHit, plane: &q
     }
 }
 
-impl Q1MovementServices for WindowedQ1Services<'_> {
+impl Q1MovementServices for Q1PlayerServices<'_> {
     fn numeric(&self) -> NumericOps {
         self.ops
     }
@@ -490,9 +492,9 @@ impl Q1MovementServices for WindowedQ1Services<'_> {
     }
 }
 
-/// One admitted Quake I windowed player: the sim actor plus its
+/// One admitted Quake I player body: the sim actor plus its
 /// authoritative movement state, view angles, and command sequence.
-pub struct WindowedQ1Player {
+pub struct Q1PlayerBody {
     /// Sim actor id.
     pub actor: ActorId,
     owned: OwnedActor,
@@ -506,7 +508,7 @@ pub struct WindowedQ1Player {
     profile: Q1MovementProfile,
 }
 
-impl WindowedQ1Player {
+impl Q1PlayerBody {
     /// Admit a player: spawn a body at the feet origin and seed walk
     /// movement state with the spawn angles.
     pub fn admit(simulation: &mut Simulation, provider: ProviderId, feet: Vec3, angles: Vec3) -> Result<Self, String> {
@@ -596,7 +598,7 @@ impl WindowedQ1Player {
         };
         let options = Q1MovementOptions::<NoQ1Hooks>::default();
         let result = {
-            let mut services = WindowedQ1Services::new(clip, simulation, triggers, &self.actor);
+            let mut services = Q1PlayerServices::new(clip, simulation, triggers, &self.actor);
             move_netquake(input, &mut services, options).map_err(|error| error.to_string())?
         };
         match result {
@@ -608,7 +610,7 @@ impl WindowedQ1Player {
                     .map_err(|error| error.to_string())?;
                 Ok(())
             }
-            MovementOutcome::ActorRemoved { .. } => Err("windowed Q1 player was removed mid-step".to_string()),
+            MovementOutcome::ActorRemoved { .. } => Err("Q1 player body was removed mid-step".to_string()),
         }
     }
 }
@@ -623,15 +625,15 @@ pub fn eye_height_for_family(family: GameFamily) -> f32 {
     }
 }
 
-/// Default windowed bindings as direct action targets: the same keys as
-/// the donor defaults (WASD, Space, Ctrl, Shift, Mouse1, Tab, gamepad
-/// face buttons), but bound straight to input actions so presses drive
-/// seat buttons without a command buffer (the windowed run has none; the
+/// Default play bindings as direct action targets: the same keys as the
+/// donor defaults (WASD, Space, Ctrl, Shift, Mouse1, Tab, gamepad face
+/// buttons), but bound straight to input actions so presses drive seat
+/// buttons without a command buffer (the game composition wires none; the
 /// `+command` text path would append to a null registry and go nowhere).
 /// Wheel and weapon-wheel entries need the command buffer and arrive with
 /// weapon selection.
 #[must_use]
-pub fn windowed_action_bindings(dialect: Dialect) -> Vec<qa_client::input::InputBinding> {
+pub fn play_action_bindings(dialect: Dialect) -> Vec<qa_client::input::InputBinding> {
     use qa_client::input::bindings::named_physical_input;
     use qa_client::input::{InputAction, InputBinding, InputBindingTarget};
 
@@ -693,16 +695,16 @@ pub fn provider_for_product(family: GameFamily, campaign: &str) -> ProviderId {
     ProviderId::new(namespace, campaign)
 }
 
-/// Admitted windowed player for any family: one enum, one step dispatch.
-/// Quake I is live; Quake II and III admit in the movement commits that
-/// follow this one, keeping the same shape.
-pub enum WindowedPlayer {
+/// Admitted player body for any family: one enum, one step dispatch.
+/// Quake I is live; Quake II and III arrive as new arms on this same
+/// enum, extending the existing trace and movement cores.
+pub enum PlayerBody {
     /// Quake I player.
-    Q1(WindowedQ1Player),
+    Q1(Q1PlayerBody),
 }
 
-/// Map collision for any family, matching [`WindowedPlayer`].
-pub enum WindowedClip {
+/// Map collision for any family, matching [`PlayerBody`].
+pub enum PlayerClip {
     /// Quake I clip hulls.
     Q1(Q1ClipWorld),
 }
@@ -716,9 +718,9 @@ pub fn admit_player(
     provider: ProviderId,
     feet: Vec3,
     angles: Vec3,
-) -> Result<Option<WindowedPlayer>, String> {
+) -> Result<Option<PlayerBody>, String> {
     match family {
-        GameFamily::Q1 => Ok(Some(WindowedPlayer::Q1(WindowedQ1Player::admit(
+        GameFamily::Q1 => Ok(Some(PlayerBody::Q1(Q1PlayerBody::admit(
             simulation, provider, feet, angles,
         )?))),
         GameFamily::Q2 | GameFamily::Q3 => Ok(None),
@@ -727,19 +729,29 @@ pub fn admit_player(
 
 /// Build map collision for a catalog family, or `None` when the family
 /// has no collision wired yet (matching [`admit_player`]).
-pub fn build_clip(bytes: &[u8], map: &str, family: GameFamily) -> Result<Option<WindowedClip>, String> {
+pub fn build_clip(bytes: &[u8], map: &str, family: GameFamily) -> Result<Option<PlayerClip>, String> {
     match family {
-        GameFamily::Q1 => Ok(Some(WindowedClip::Q1(build_q1_clip_world(bytes, map)?))),
+        GameFamily::Q1 => Ok(Some(PlayerClip::Q1(build_q1_clip_world(bytes, map)?))),
         GameFamily::Q2 | GameFamily::Q3 => Ok(None),
     }
 }
 
-impl WindowedPlayer {
+impl PlayerBody {
     /// Eye origin plus view angles for the follow camera.
     #[must_use]
     pub fn eye(&self) -> (Vec3, Vec3) {
         match self {
-            WindowedPlayer::Q1(player) => (player.eye(), player.view_angles),
+            PlayerBody::Q1(player) => (player.eye(), player.view_angles),
+        }
+    }
+
+    /// The body's simulation actor: the same identity the driving seat's
+    /// [`LocalPlayer`](super::input::LocalPlayer) controls. The body is
+    /// the embodiment half of that one concept, never a parallel player.
+    #[must_use]
+    pub fn actor(&self) -> &ActorId {
+        match self {
+            PlayerBody::Q1(player) => &player.actor,
         }
     }
 
@@ -750,17 +762,15 @@ impl WindowedPlayer {
         &mut self,
         simulation: &mut Simulation,
         triggers: &TriggerTable,
-        clip: &WindowedClip,
+        clip: &PlayerClip,
         command: WorldUserCommand,
     ) -> Result<(), String> {
         let frame = simulation.frame();
         match (self, clip, command) {
-            (WindowedPlayer::Q1(player), WindowedClip::Q1(clip), WorldUserCommand::Q1Netquake(command)) => {
+            (PlayerBody::Q1(player), PlayerClip::Q1(clip), WorldUserCommand::Q1Netquake(command)) => {
                 player.step(simulation, triggers, clip, command, &frame)
             }
-            (WindowedPlayer::Q1(_), _, _) => {
-                Err("windowed Q1 player needs Q1 hulls and a NetQuake command".to_string())
-            }
+            (PlayerBody::Q1(_), _, _) => Err("Q1 player body needs Q1 hulls and a NetQuake command".to_string()),
         }
     }
 }
@@ -852,12 +862,12 @@ mod tests {
     }
 
     #[test]
-    fn windowed_bindings_cover_the_movement_keys() {
+    fn play_bindings_cover_the_movement_keys() {
         use qa_client::input::{InputAction, InputBindingTarget};
         use qa_core::cmd::Dialect;
 
         for dialect in [Dialect::Q1Netquake, Dialect::Q2Classic, Dialect::Q3] {
-            let bindings = windowed_action_bindings(dialect);
+            let bindings = play_action_bindings(dialect);
             assert_eq!(bindings.len(), 14, "{dialect:?} resolves every row");
             let actions: Vec<InputAction> = bindings
                 .iter()
@@ -916,7 +926,7 @@ mod tests {
         let simulation = server.simulation_mut();
         let feet = vec3(0.0, 0.0, 32.0);
         let angles = vec3(0.0, 180.0, 0.0);
-        let player = WindowedQ1Player::admit(simulation, player_provider(), feet, angles).unwrap();
+        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap();
         let body = simulation.body_state(&player.actor).expect("player body");
         assert_eq!(body.origin, feet);
         assert_eq!(player.eye(), vec3(0.0, 0.0, 54.0));
@@ -952,7 +962,7 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            WindowedQ1Player::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1025,7 +1035,7 @@ mod tests {
         }
         let mut player = {
             let simulation = server.simulation_mut();
-            WindowedQ1Player::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
@@ -1062,7 +1072,7 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            WindowedQ1Player::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
