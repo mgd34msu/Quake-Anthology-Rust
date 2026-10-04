@@ -8,7 +8,7 @@
 //! and raw [`SdlEvent`] values through the backend's test-only event pump
 //! (the same events an X server would deliver). It asserts focus and
 //! selection state changes, captures X screenshots before and after an
-//! injected Down key to show the gold highlight moving rows, activates
+//! injected Down key to show the focus bar moving rows, activates
 //! Quit into a clean drive-loop exit, and — when the Steel corpus is
 //! present — plays through Custom game into a live game view.
 
@@ -86,27 +86,30 @@ fn write_ppm(name: &str, pixels: &[u8]) {
     eprintln!("menu screenshot: {}", path.display());
 }
 
-/// Whether a pixel reads as the menu's gold focus accent (1.0, 0.73, 0.35):
-/// hot red, mid green, cool blue. White labels fail on red-vs-blue, and the
-/// dark fills fail on red outright.
-fn is_gold(pixel: &[u8]) -> bool {
+/// Whether a pixel reads as the menu's focused-fill bar
+/// (`UiSkinColors.focused` (0.30, 0.19, 0.09) over the dark backdrop):
+/// brown, strictly red > green > blue. Baked Q1/Q2 charsets draw menu
+/// text white (donor `menu-font.ts` picks "baked" for non-Q3), so focus
+/// is tracked through the bar fill, not text tint. White labels fail on
+/// red-vs-green, and the dark fills fail on red outright.
+fn is_focus_bar(pixel: &[u8]) -> bool {
     let (red, green, blue) = (pixel[0], pixel[1], pixel[2]);
-    red > 150 && green > 90 && green < 230 && blue < 170 && red > blue.saturating_add(40) && red >= green
+    (35..130).contains(&red) && (20..85).contains(&green) && (8..60).contains(&blue) && red > green && green > blue
 }
 
-/// Count gold pixels in one menu row band (buttons sit at x 64..288,
+/// Count focus-bar pixels in one menu row band (buttons sit at x 64..288,
 /// y `118 + row * 34`, 30 tall).
-fn row_gold(pixels: &[u8], row: u32) -> usize {
-    let mut gold = 0;
+fn row_focused(pixels: &[u8], row: u32) -> usize {
+    let mut bar = 0;
     for y in (118 + row * 34)..(118 + row * 34 + 30) {
         for x in 64..288 {
             let at = ((y * WIDTH + x) * 4) as usize;
-            if is_gold(&pixels[at..at + 3]) {
-                gold += 1;
+            if is_focus_bar(&pixels[at..at + 3]) {
+                bar += 1;
             }
         }
     }
-    gold
+    bar
 }
 
 /// Fraction of pixels that differ between two captures inside one row band.
@@ -246,26 +249,18 @@ fn startup_menu_navigates_activates_launches_and_quits() {
         let after = composed.app.capture_next_frame().expect("menu capture works");
         write_ppm("qa-wu16-menu-after.ppm", &after);
 
-        // The gold highlight leaves row 0 for row 1; untouched rows rest.
-        let gold_before = [row_gold(&before, 0), row_gold(&before, 1)];
-        let gold_after = [row_gold(&after, 0), row_gold(&after, 1)];
+        // The focus bar leaves row 0 for row 1; untouched rows rest.
+        let bar_before = [row_focused(&before, 0), row_focused(&before, 1)];
+        let bar_after = [row_focused(&after, 0), row_focused(&after, 1)];
+        assert!(bar_before[0] >= 20, "row 0 holds the focus bar, got {}", bar_before[0]);
         assert!(
-            gold_before[0] >= 20,
-            "row 0 holds the gold highlight, got {}",
-            gold_before[0]
+            bar_before[0] > 3 * bar_before[1].max(1),
+            "focus bar sits on row 0 before, got {bar_before:?}"
         );
+        assert!(bar_after[1] >= 20, "row 1 holds the focus bar, got {}", bar_after[1]);
         assert!(
-            gold_before[0] > 3 * gold_before[1].max(1),
-            "gold sits on row 0 before, got {gold_before:?}"
-        );
-        assert!(
-            gold_after[1] >= 20,
-            "row 1 holds the gold highlight, got {}",
-            gold_after[1]
-        );
-        assert!(
-            gold_after[1] > 3 * gold_after[0].max(1),
-            "gold sits on row 1 after, got {gold_after:?}"
+            bar_after[1] > 3 * bar_after[0].max(1),
+            "focus bar sits on row 1 after, got {bar_after:?}"
         );
         assert!(row_diff(&before, &after, 0) > 0.02, "row 0 repaints without focus");
         assert!(row_diff(&before, &after, 1) > 0.02, "row 1 repaints with focus");
