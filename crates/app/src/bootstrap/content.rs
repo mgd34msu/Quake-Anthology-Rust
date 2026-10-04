@@ -434,7 +434,7 @@ fn base_product(family: GameFamily) -> &'static str {
     }
 }
 
-fn content_family(family: OptionsFamily) -> GameFamily {
+pub(crate) fn content_family(family: OptionsFamily) -> GameFamily {
     match family {
         OptionsFamily::Q1 => GameFamily::Q1,
         OptionsFamily::Q2 => GameFamily::Q2,

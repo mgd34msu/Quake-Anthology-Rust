@@ -31,15 +31,16 @@ use qa_world::hull::{
     ClipNode as HullClipNode, Hull, HullTrace,
 };
 use qa_world::movement::q1::netquake::move_netquake;
+use qa_world::movement::q1::quakeworld::move_quake_world;
 use qa_world::movement::q1::types::{
     NoQ1Hooks, Q1AnimationStepInput, Q1AnimationStepResult, Q1Edition, Q1MovementInput, Q1MovementOptions,
     Q1MovementProfile, Q1MovementServices, Q1MovementState, Q1State, Q1Trace, Q1TraceQuery, Q1WeaponStepInput,
-    Q1WeaponStepResult, Q1_MOVE_WALK,
+    Q1WeaponStepResult, QwMovementInput, QwMovementProfile, QwMovementState, Q1_MOVE_WALK,
 };
 use qa_world::movement::types::{
     ActorAnimationState, AnimationState, ArsenalState, MovementContinuation, MovementEnvironment, MovementExecution,
-    MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, TraceContact, TraceHit, TraceShape,
-    UserCommand as WorldUserCommand, WeaponState,
+    MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, QwUserCommand, TraceContact, TraceHit,
+    TraceShape, UserCommand as WorldUserCommand, WeaponState,
 };
 use qa_world::movement::Q1MovementParameters;
 use qa_world::session::Simulation;
@@ -329,6 +330,20 @@ pub fn q1_profile(provider: ProviderId) -> Q1MovementProfile {
     }
 }
 
+/// Canonical QuakeWorld movement profile: same donor tuning as
+/// [`q1_profile`], with the QuakeWorld command clock.
+#[must_use]
+pub fn qw_profile(provider: ProviderId) -> QwMovementProfile {
+    QwMovementProfile {
+        id: provider,
+        clock: qa_core::time::ClockProfile::Q1Quakeworld {
+            maximum_command_milliseconds: crate::startup::QW_COMMAND_MILLISECONDS,
+        },
+        numeric: Q1_DONOR_PROFILE,
+        parameters: q1_parameters(),
+    }
+}
+
 /// Fresh Quake I arsenal: no weapon yet, no ammo. Weapon grants arrive
 /// with the spawn loadout in the weapons phase.
 #[must_use]
@@ -492,26 +507,52 @@ impl Q1MovementServices for Q1PlayerServices<'_> {
     }
 }
 
+/// Movement profile matching the admitted Quake I provider.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Q1BodyProfile {
+    /// NetQuake profile.
+    Netquake(Q1MovementProfile),
+    /// QuakeWorld profile.
+    Quakeworld(QwMovementProfile),
+}
+
+/// Origin of either Quake I movement state.
+fn q1_state_origin(state: &Q1State) -> Vec3 {
+    match state {
+        Q1State::Netquake(state) => state.origin,
+        Q1State::Quakeworld(state) => state.origin,
+    }
+}
+
 /// One admitted Quake I player body: the sim actor plus its
 /// authoritative movement state, view angles, and command sequence.
+/// State and profile always match the admitted provider (NetQuake or
+/// QuakeWorld); the step dispatch treats any skew as a contract error.
 pub struct Q1PlayerBody {
     /// Sim actor id.
     pub actor: ActorId,
     owned: OwnedActor,
     /// Authoritative movement state.
-    pub state: Q1MovementState,
+    pub state: Q1State,
     /// View angles in degrees.
     pub view_angles: Vec3,
     sequence: i32,
     arsenal: ArsenalState,
     animation: ActorAnimationState,
-    profile: Q1MovementProfile,
+    profile: Q1BodyProfile,
 }
 
 impl Q1PlayerBody {
     /// Admit a player: spawn a body at the feet origin and seed walk
-    /// movement state with the spawn angles.
-    pub fn admit(simulation: &mut Simulation, provider: ProviderId, feet: Vec3, angles: Vec3) -> Result<Self, String> {
+    /// movement state with the spawn angles for the resolved provider.
+    /// Non-Quake-I dialects are contract errors, never silent NetQuake.
+    pub fn admit(
+        simulation: &mut Simulation,
+        provider: ProviderId,
+        feet: Vec3,
+        angles: Vec3,
+        dialect: Dialect,
+    ) -> Result<Self, String> {
         let body = BodyState {
             origin: feet,
             angles,
@@ -523,26 +564,48 @@ impl Q1PlayerBody {
             .spawn(provider.clone(), "player", Some(body), None, Vec::new())
             .map_err(|error| error.to_string())?;
         let actor = owned.id().clone();
-        let state = Q1MovementState {
-            origin: feet,
-            velocity: vec3(0.0, 0.0, 0.0),
-            angles,
-            old_origin: feet,
-            angular_velocity: vec3(0.0, 0.0, 0.0),
-            view_angles: angles,
-            punch_angles: vec3(0.0, 0.0, 0.0),
-            move_type: Q1_MOVE_WALK,
-            flags: 0,
-            ground: TraceHit::None,
-            water_level: 0,
-            water_type: CONTENTS_EMPTY,
-            teleport_time_seconds: 0.0,
-            water_jump_direction: vec3(0.0, 0.0, 0.0),
-            ideal_pitch: 0.0,
-            fix_angle: false,
-            health: 100.0,
+        let (state, profile) = match dialect {
+            Dialect::Q1Netquake => (
+                Q1State::Netquake(Q1MovementState {
+                    origin: feet,
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    angles,
+                    old_origin: feet,
+                    angular_velocity: vec3(0.0, 0.0, 0.0),
+                    view_angles: angles,
+                    punch_angles: vec3(0.0, 0.0, 0.0),
+                    move_type: Q1_MOVE_WALK,
+                    flags: 0,
+                    ground: TraceHit::None,
+                    water_level: 0,
+                    water_type: CONTENTS_EMPTY,
+                    teleport_time_seconds: 0.0,
+                    water_jump_direction: vec3(0.0, 0.0, 0.0),
+                    ideal_pitch: 0.0,
+                    fix_angle: false,
+                    health: 100.0,
+                }),
+                Q1BodyProfile::Netquake(q1_profile(provider.clone())),
+            ),
+            Dialect::Q1Quakeworld => (
+                Q1State::Quakeworld(QwMovementState {
+                    origin: feet,
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    angles,
+                    old_buttons: 0,
+                    water_jump_time_seconds: 0.0,
+                    dead: false,
+                    spectator: 0,
+                    ground: TraceHit::None,
+                }),
+                Q1BodyProfile::Quakeworld(qw_profile(provider.clone())),
+            ),
+            other => {
+                return Err(format!(
+                    "Q1 player body needs a Quake I movement dialect, got {other:?}"
+                ));
+            }
         };
-        let profile = q1_profile(provider.clone());
         Ok(Self {
             actor,
             owned,
@@ -558,16 +621,66 @@ impl Q1PlayerBody {
     /// Eye origin: feet plus the Quake I view height.
     #[must_use]
     pub fn eye(&self) -> Vec3 {
-        vec3(
-            self.state.origin.x,
-            self.state.origin.y,
-            self.state.origin.z + Q1_VIEW_HEIGHT,
-        )
+        let origin = q1_state_origin(&self.state);
+        vec3(origin.x, origin.y, origin.z + Q1_VIEW_HEIGHT)
     }
 
     /// Run one authoritative movement step for a user command, then
-    /// commit the resulting origin back to the sim body.
+    /// commit the resulting origin back to the sim body. The command
+    /// must match the admitted provider; mismatches are contract
+    /// errors, never silent drops.
     pub fn step(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        clip: &Q1ClipWorld,
+        command: WorldUserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        self.sequence += 1;
+        match command {
+            WorldUserCommand::Q1Netquake(command) => self.step_netquake(simulation, triggers, clip, command, frame),
+            WorldUserCommand::Q1Quakeworld(command) => self.step_quakeworld(simulation, triggers, clip, command, frame),
+            other => Err(format!(
+                "Q1 player body needs a Quake I user command, got {:?}",
+                other.dialect()
+            )),
+        }
+    }
+
+    /// Shared command fields; NetQuake reports live health while
+    /// QuakeWorld carries none and uses the default environment.
+    fn fields(&self, frame: &ClockFrame) -> MovementInputFields {
+        let environment = match &self.state {
+            Q1State::Netquake(state) => MovementEnvironment {
+                health: state.health,
+                ..MovementEnvironment::default()
+            },
+            Q1State::Quakeworld(_) => MovementEnvironment::default(),
+        };
+        MovementInputFields {
+            actor: self.owned.clone(),
+            command_sequence: self.sequence,
+            frame: *frame,
+            shape: TraceShape::Box(q1_player_bounds()),
+            current_bounds: None,
+            environment,
+            arsenal: self.arsenal.clone(),
+            animation: self.animation.clone(),
+            execution: MovementExecution::Authoritative,
+        }
+    }
+
+    /// Commit a stepped origin back to the sim body.
+    fn commit_origin(&self, simulation: &mut Simulation, origin: Vec3) -> Result<(), String> {
+        simulation
+            .set_body_origin(&self.actor, origin)
+            .map_err(|error| error.to_string())
+    }
+
+    /// One NetQuake step; QuakeWorld-admitted bodies reject NetQuake
+    /// commands instead of stepping the wrong core.
+    fn step_netquake(
         &mut self,
         simulation: &mut Simulation,
         triggers: &TriggerTable,
@@ -575,26 +688,14 @@ impl Q1PlayerBody {
         command: Q1UserCommand,
         frame: &ClockFrame,
     ) -> Result<(), String> {
-        self.sequence += 1;
-        let fields = MovementInputFields {
-            actor: self.owned.clone(),
-            command_sequence: self.sequence,
-            frame: *frame,
-            shape: TraceShape::Box(q1_player_bounds()),
-            current_bounds: None,
-            environment: MovementEnvironment {
-                health: self.state.health,
-                ..MovementEnvironment::default()
-            },
-            arsenal: self.arsenal.clone(),
-            animation: self.animation.clone(),
-            execution: MovementExecution::Authoritative,
+        let (Q1State::Netquake(state), Q1BodyProfile::Netquake(profile)) = (&self.state, &self.profile) else {
+            return Err("NetQuake command reached a QuakeWorld-admitted body".to_string());
         };
         let input = Q1MovementInput {
-            fields,
+            fields: self.fields(frame),
             command,
-            state: self.state.clone(),
-            profile: self.profile.clone(),
+            state: state.clone(),
+            profile: profile.clone(),
         };
         let options = Q1MovementOptions::<NoQ1Hooks>::default();
         let result = {
@@ -604,11 +705,44 @@ impl Q1PlayerBody {
         match result {
             MovementOutcome::Active { fields, state } => {
                 self.view_angles = fields.view_angles;
-                self.state = state;
-                simulation
-                    .set_body_origin(&self.actor, self.state.origin)
-                    .map_err(|error| error.to_string())?;
-                Ok(())
+                self.state = Q1State::Netquake(state);
+                let origin = q1_state_origin(&self.state);
+                self.commit_origin(simulation, origin)
+            }
+            MovementOutcome::ActorRemoved { .. } => Err("Q1 player body was removed mid-step".to_string()),
+        }
+    }
+
+    /// One QuakeWorld step; NetQuake-admitted bodies reject QuakeWorld
+    /// commands instead of stepping the wrong core.
+    fn step_quakeworld(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        clip: &Q1ClipWorld,
+        command: QwUserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        let (Q1State::Quakeworld(state), Q1BodyProfile::Quakeworld(profile)) = (&self.state, &self.profile) else {
+            return Err("QuakeWorld command reached a NetQuake-admitted body".to_string());
+        };
+        let input = QwMovementInput {
+            fields: self.fields(frame),
+            command,
+            state: state.clone(),
+            profile: profile.clone(),
+        };
+        let options = Q1MovementOptions::<NoQ1Hooks>::default();
+        let result = {
+            let mut services = Q1PlayerServices::new(clip, simulation, triggers, &self.actor);
+            move_quake_world(input, &mut services, options).map_err(|error| error.to_string())?
+        };
+        match result {
+            MovementOutcome::Active { fields, state } => {
+                self.view_angles = fields.view_angles;
+                self.state = Q1State::Quakeworld(state);
+                let origin = q1_state_origin(&self.state);
+                self.commit_origin(simulation, origin)
             }
             MovementOutcome::ActorRemoved { .. } => Err("Q1 player body was removed mid-step".to_string()),
         }
@@ -667,11 +801,18 @@ pub fn play_action_bindings(dialect: Dialect) -> Vec<qa_client::input::InputBind
         .collect()
 }
 
-/// Input dialect for a catalog family/edition pair: NetQuake for Quake
-/// I (both editions), classic or rerelease for Quake II, Q3 for Quake III.
+/// Movement provider for a launch selection: the donor selects movement
+/// by family or exact product (`--movement q1|q2|q3|qw|PRODUCT`), so a
+/// QuakeWorld product moves as QuakeWorld even on Quake I maps, and a
+/// rerelease edition moves as rerelease. Mirrors the client-family and
+/// clock-profile resolution; the catalog-family half of product
+/// resolution already ran upstream.
 #[must_use]
-pub fn dialect_for_product(family: GameFamily, edition: &str) -> Dialect {
-    match family {
+pub fn movement_dialect_for_selection(movement: GameFamily, movement_product: Option<&str>, edition: &str) -> Dialect {
+    if movement_product == Some("q1-quakeworld") {
+        return Dialect::Q1Quakeworld;
+    }
+    match movement {
         GameFamily::Q1 => Dialect::Q1Netquake,
         GameFamily::Q2 => {
             if edition == "rerelease" {
@@ -684,7 +825,7 @@ pub fn dialect_for_product(family: GameFamily, edition: &str) -> Dialect {
     }
 }
 
-/// Movement provider id for a catalog family and campaign.
+/// Simulation spawn provider id for a catalog family and campaign.
 #[must_use]
 pub fn provider_for_product(family: GameFamily, campaign: &str) -> ProviderId {
     let namespace = match family {
@@ -709,19 +850,21 @@ pub enum PlayerClip {
     Q1(Q1ClipWorld),
 }
 
-/// Admit a player for a catalog family, or `None` when the family has no
-/// movement provider wired yet (the camera falls back to the static spawn,
-/// exactly the pre-play behavior, until its movement commit lands).
+/// Admit a player for a catalog family and resolved movement provider,
+/// or `None` when the family has no body wired yet (the camera falls
+/// back to the static spawn, exactly the pre-play behavior, until its
+/// arm lands). A provider outside the family's own is a contract error.
 pub fn admit_player(
     simulation: &mut Simulation,
     family: GameFamily,
     provider: ProviderId,
     feet: Vec3,
     angles: Vec3,
+    dialect: Dialect,
 ) -> Result<Option<PlayerBody>, String> {
     match family {
         GameFamily::Q1 => Ok(Some(PlayerBody::Q1(Q1PlayerBody::admit(
-            simulation, provider, feet, angles,
+            simulation, provider, feet, angles, dialect,
         )?))),
         GameFamily::Q2 | GameFamily::Q3 => Ok(None),
     }
@@ -766,11 +909,8 @@ impl PlayerBody {
         command: WorldUserCommand,
     ) -> Result<(), String> {
         let frame = simulation.frame();
-        match (self, clip, command) {
-            (PlayerBody::Q1(player), PlayerClip::Q1(clip), WorldUserCommand::Q1Netquake(command)) => {
-                player.step(simulation, triggers, clip, command, &frame)
-            }
-            (PlayerBody::Q1(_), _, _) => Err("Q1 player body needs Q1 hulls and a NetQuake command".to_string()),
+        match (self, clip) {
+            (PlayerBody::Q1(player), PlayerClip::Q1(clip)) => player.step(simulation, triggers, clip, command, &frame),
         }
     }
 }
@@ -852,6 +992,18 @@ mod tests {
         }
     }
 
+    fn qw_forward_command(angles: Vec3) -> QwUserCommand {
+        QwUserCommand {
+            milliseconds: 16,
+            angles,
+            forward_move: 200.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0,
+            impulse: 0,
+        }
+    }
+
     fn spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
         let parsed = read_q1_bsp(bytes, "maps/start.bsp", Q1BspOptions::default()).unwrap();
         let records: Vec<Vec<(String, String)>> =
@@ -926,12 +1078,15 @@ mod tests {
         let simulation = server.simulation_mut();
         let feet = vec3(0.0, 0.0, 32.0);
         let angles = vec3(0.0, 180.0, 0.0);
-        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap();
+        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap();
         let body = simulation.body_state(&player.actor).expect("player body");
         assert_eq!(body.origin, feet);
         assert_eq!(player.eye(), vec3(0.0, 0.0, 54.0));
         assert_eq!(player.view_angles, angles);
-        assert_eq!(player.state.move_type, Q1_MOVE_WALK);
+        let Q1State::Netquake(state) = &player.state else {
+            panic!("NetQuake admit seeds NetQuake state");
+        };
+        assert_eq!(state.move_type, Q1_MOVE_WALK);
     }
 
     #[test]
@@ -962,13 +1117,13 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
         for frame in 0..120 {
             time += step_seconds;
-            let command = forward_command(angles, time);
+            let command = WorldUserCommand::Q1Netquake(forward_command(angles, time));
             let (simulation, triggers) = server.simulation_and_triggers();
             player
                 .step(
@@ -980,7 +1135,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let moved = player.state.origin;
+        let moved = q1_state_origin(&player.state);
         let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
         assert!(horizontal > 10.0, "player did not advance: {moved:?} from {feet:?}");
         let yaw = f64::from(angles.y).to_radians();
@@ -1035,13 +1190,13 @@ mod tests {
         }
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
         for frame in 0..120 {
             time += step_seconds;
-            let command = forward_command(angles, time);
+            let command = WorldUserCommand::Q1Netquake(forward_command(angles, time));
             let (simulation, triggers) = server.simulation_and_triggers();
             player
                 .step(
@@ -1053,7 +1208,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let moved = player.state.origin;
+        let moved = q1_state_origin(&player.state);
         let traveled = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
         assert!(traveled > 1.0, "player never moved: {moved:?}");
         assert!(
@@ -1072,13 +1227,13 @@ mod tests {
         let mut server = q1_server();
         let mut player = {
             let simulation = server.simulation_mut();
-            Q1PlayerBody::admit(simulation, player_provider(), feet, angles).unwrap()
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
         };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
         for frame in 0..60 {
             time += step_seconds;
-            let command = still_command(angles, time);
+            let command = WorldUserCommand::Q1Netquake(still_command(angles, time));
             let (simulation, triggers) = server.simulation_and_triggers();
             player
                 .step(
@@ -1090,7 +1245,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let moved = player.state.origin;
+        let moved = q1_state_origin(&player.state);
         let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
         assert!(horizontal < 2.0, "idle player drifted: {moved:?} from {feet:?}");
         assert!(moved.z <= feet.z + 1.0, "idle player rose: {moved:?} from {feet:?}");
@@ -1098,5 +1253,112 @@ mod tests {
             moved.z >= feet.z - 72.0,
             "idle player fell through: {moved:?} from {feet:?}"
         );
+    }
+
+    #[test]
+    fn movement_dialect_resolution_follows_product_and_edition() {
+        use qa_content::contract::GameFamily;
+        assert_eq!(
+            movement_dialect_for_selection(GameFamily::Q1, None, "classic"),
+            Dialect::Q1Netquake
+        );
+        assert_eq!(
+            movement_dialect_for_selection(GameFamily::Q1, Some("q1-quakeworld"), "classic"),
+            Dialect::Q1Quakeworld
+        );
+        assert_eq!(
+            movement_dialect_for_selection(GameFamily::Q2, None, "classic"),
+            Dialect::Q2Classic
+        );
+        assert_eq!(
+            movement_dialect_for_selection(GameFamily::Q2, None, "rerelease"),
+            Dialect::Q2Rerelease
+        );
+        assert_eq!(
+            movement_dialect_for_selection(GameFamily::Q3, None, "baseq3"),
+            Dialect::Q3
+        );
+    }
+
+    #[test]
+    fn admit_quakeworld_seeds_quakeworld_state() {
+        let mut server = q1_server();
+        let simulation = server.simulation_mut();
+        let feet = vec3(0.0, 0.0, 32.0);
+        let angles = vec3(0.0, 180.0, 0.0);
+        let player = Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Quakeworld).unwrap();
+        assert!(matches!(player.state, Q1State::Quakeworld(_)));
+        assert!(matches!(player.profile, Q1BodyProfile::Quakeworld(_)));
+        assert_eq!(player.eye(), vec3(0.0, 0.0, 54.0));
+        assert_eq!(player.view_angles, angles);
+    }
+
+    #[test]
+    fn qw_player_walks_forward_on_start() {
+        let Some(bytes) = start_bsp_bytes() else {
+            return;
+        };
+        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let (feet, angles) = spawn_feet_and_angles(&bytes);
+        let mut server = q1_server();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Quakeworld).unwrap()
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            let command = WorldUserCommand::Q1Quakeworld(qw_forward_command(angles));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &clip,
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = q1_state_origin(&player.state);
+        let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(
+            horizontal > 10.0,
+            "QuakeWorld player did not advance: {moved:?} from {feet:?}"
+        );
+        assert!(
+            moved.z >= feet.z - 72.0 && moved.z <= feet.z + 8.0,
+            "QuakeWorld player left the floor: {moved:?} from {feet:?}"
+        );
+        let body = server.simulation().body_state(&player.actor).expect("player body");
+        assert_eq!(body.origin, moved);
+    }
+
+    #[test]
+    fn provider_mismatches_are_contract_errors() {
+        let mut server = q1_server();
+        let feet = vec3(0.0, 0.0, 32.0);
+        let angles = vec3(0.0, 180.0, 0.0);
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q1PlayerBody::admit(simulation, player_provider(), feet, angles, Dialect::Q1Netquake).unwrap()
+        };
+        assert!(Q1PlayerBody::admit(server.simulation_mut(), player_provider(), feet, angles, Dialect::Q3).is_err());
+        let Some(bytes) = start_bsp_bytes() else {
+            return;
+        };
+        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let frame = command_frame(0, 1.0 / 60.0, 1.0 / 60.0);
+        let (simulation, triggers) = server.simulation_and_triggers();
+        assert!(player
+            .step(
+                simulation,
+                triggers,
+                &clip,
+                WorldUserCommand::Q1Quakeworld(qw_forward_command(angles)),
+                &frame,
+            )
+            .is_err());
     }
 }
