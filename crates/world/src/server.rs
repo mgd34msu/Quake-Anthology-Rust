@@ -390,6 +390,20 @@ impl<L: ServerLogic> Server<L> {
         }
     }
 
+    /// Tick with wall milliseconds, converting to the plan's unit (donor
+    /// `session.stepAsync` takes milliseconds; fixed millisecond plans
+    /// reject second-denominated steps, freezing the simulation).
+    pub fn tick_wall_milliseconds(&mut self, elapsed_ms: f64) -> Result<ServerTick, WorldError> {
+        let elapsed = match self.plan {
+            TickPlan::Fixed { step } => match step {
+                SourceTime::Milliseconds(_) => SourceTime::Milliseconds(elapsed_ms.trunc() as i32),
+                SourceTime::Seconds(_) => SourceTime::Seconds((elapsed_ms / 1000.0) as f32),
+            },
+            TickPlan::Clamped { .. } => SourceTime::Seconds((elapsed_ms / 1000.0) as f32),
+        };
+        self.tick(elapsed)
+    }
+
     fn run_frame(&mut self, step: SourceTime) -> Result<Vec<ServerEvent>, WorldError> {
         let mut events = Vec::new();
         if let Some(source) = self.bots.as_mut() {
@@ -688,6 +702,15 @@ mod tests {
         let plan = plan_for_profile(&profile).unwrap();
         let simulation = Simulation::new("test", primary.clone(), profile, SourceTime::Milliseconds(0), 8).unwrap();
         Server::new(simulation, NullLogic, plan, primary, bounds(16.0), bounds(1024.0))
+    }
+
+    #[test]
+    fn wall_milliseconds_tick_fixed_plans() {
+        let mut server = q3_server();
+        assert!(server.tick(SourceTime::Seconds(0.1)).is_err());
+        let tick = server.tick_wall_milliseconds(100.0).unwrap();
+        assert_eq!(tick.frames, 2);
+        assert_eq!(server.simulation.frame().frame, 2);
     }
 
     #[test]

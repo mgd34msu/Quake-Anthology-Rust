@@ -39,7 +39,6 @@ use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::cmd::Dialect;
 use qa_core::identity::{IdentityOwner, SeatId};
 use qa_core::math::{angles_to_axis, vec3, vec4, Vec3, Vec4};
-use qa_core::time::SourceTime as ClockTime;
 use qa_platform::controller::ControllerEvent;
 use qa_platform::controller::ControllerSelection;
 use qa_platform::controller::SdlControllers;
@@ -1416,8 +1415,7 @@ impl WindowedStartupBackend {
         };
         // Tick first: the player step below reads the fresh clock frame
         // for its step length, so a tickless step would stand still.
-        let elapsed = ClockTime::Seconds((elapsed_ms / 1000.0) as f32);
-        if let Err(error) = world.server_mut().tick(elapsed) {
+        if let Err(error) = world.server_mut().tick_wall_milliseconds(elapsed_ms) {
             eprintln!("windowed: server tick failed ({error})");
         }
         if let Some(command) = command {
