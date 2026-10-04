@@ -3872,6 +3872,7 @@ impl WorldScene {
 
 #[cfg(test)]
 mod tests {
+    use super::super::material_registrations::lock_remap_tests;
     use super::super::textures::SceneTextureLoader;
     use super::*;
     use crate::render::types::{fresh_owner_identity, Palette, ResourceOwner};
@@ -4199,6 +4200,7 @@ mod tests {
 
     #[test]
     fn world_cache_serves_repeated_views_identically() {
+        let _remap_lock = lock_remap_tests();
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
@@ -4292,6 +4294,7 @@ mod tests {
 
     #[test]
     fn world_cache_invalidates_on_world_change() {
+        let _remap_lock = lock_remap_tests();
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
@@ -4358,6 +4361,7 @@ mod tests {
 
     #[test]
     fn raw_remap_round_trips_through_shader_names() {
+        let _remap_lock = lock_remap_tests();
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
@@ -4368,17 +4372,19 @@ mod tests {
             WorldSceneOptions::default(),
         )
         .expect("load");
+        // Unique probe key: the remap table is process-global and a parallel
+        // test clears "textures/rock", which used to steal this remap.
         scene
-            .remap_shader("textures/rock", "textures/rock", 0.0)
+            .remap_shader("textures/rock_roundtrip", "textures/rock_roundtrip", 0.0)
             .expect("clear");
-        assert!(current_remap("textures/rock").is_none());
+        assert!(current_remap("textures/rock_roundtrip").is_none());
         scene
-            .remap_shader("textures/rock", "textures/other", 1.5)
+            .remap_shader("textures/rock_roundtrip", "textures/other", 1.5)
             .expect("remap");
-        let remap = current_remap("textures/rock").expect("remap");
+        let remap = current_remap("textures/rock_roundtrip").expect("remap");
         assert_eq!(remap.material, "textures/other");
         assert_eq!(remap.time_offset, 1.5);
-        remove_remap("textures/rock");
+        remove_remap("textures/rock_roundtrip");
     }
 
     #[test]

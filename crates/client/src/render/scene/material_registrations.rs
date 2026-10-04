@@ -19,6 +19,20 @@ static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_WORLD: AtomicU64 = AtomicU64::new(1);
 static TABLE: OnceLock<Mutex<MaterialRegistrationTable>> = OnceLock::new();
 
+/// Serializes tests that mutate or observe process-wide remap state: the
+/// table and its revision are shared across test threads, and world-ops
+/// cache keys capture the revision, so an interleaved publish or removal
+/// flips exact cache-hit assertions in parallel tests.
+#[cfg(test)]
+pub(crate) static REMAP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Hold process-wide remap state still for one test. Poisoning is
+/// absorbed so one failing test cannot cascade into the others.
+#[cfg(test)]
+pub(crate) fn lock_remap_tests() -> std::sync::MutexGuard<'static, ()> {
+    REMAP_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn table() -> &'static Mutex<MaterialRegistrationTable> {
     TABLE.get_or_init(|| Mutex::new(MaterialRegistrationTable::default()))
 }
@@ -287,6 +301,7 @@ mod tests {
 
     #[test]
     fn global_table_round_trips() {
+        let _remap_lock = lock_remap_tests();
         publish_remap(
             "unit/global-remap-probe",
             MaterialRemap {
@@ -296,7 +311,7 @@ mod tests {
         );
         let remap = current_remap("unit/global-remap-probe.tga").expect("global remap");
         assert_eq!(remap.material, "probe-target");
-        clear_remaps();
+        remove_remap("unit/global-remap-probe");
         assert!(current_remap("unit/global-remap-probe").is_none());
     }
 

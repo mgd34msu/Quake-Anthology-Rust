@@ -150,7 +150,9 @@ mod tests {
     };
     use crate::materials::deform::{DeformView, RendererNoise};
     use crate::materials::evaluate::TextureRef;
-    use crate::render::scene::material_registrations::{admit_material, clear_remaps, publish_remap, MaterialRemap};
+    use crate::render::scene::material_registrations::{
+        admit_material, lock_remap_tests, publish_remap, remove_remap, MaterialRemap,
+    };
 
     struct Host;
 
@@ -329,12 +331,13 @@ mod tests {
 
     #[test]
     fn remap_switches_to_the_admitted_replacement() {
+        let _remap_lock = lock_remap_tests();
         let original = compile("material2d-remap-src", "textures/rock.tga");
         let replacement = compile("material2d-remap-dst", "textures/replacement.tga");
         admit_material(replacement);
         let fixture = fixture();
-        // The remap table is process-global and other tests clear it; retry
-        // the publish/prepare window until the replacement is observed.
+        // The remap table is process-global; retry the publish/prepare
+        // window until the replacement is observed.
         let mut batches = Vec::new();
         for _ in 0..50 {
             publish_remap(
@@ -349,13 +352,14 @@ mod tests {
                 break;
             }
         }
-        clear_remaps();
+        remove_remap("material2d-remap-src");
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].texture, TextureRef::BindImage(9));
     }
 
     #[test]
     fn dangling_remap_falls_back_to_original() {
+        let _remap_lock = lock_remap_tests();
         let original = compile("material2d-dangling", "textures/rock.tga");
         publish_remap(
             "material2d-dangling",
@@ -366,7 +370,7 @@ mod tests {
         );
         let fixture = fixture();
         let batches = prepare_material_text(&draw(&original), &viewport(), &context(&fixture)).unwrap();
-        clear_remaps();
+        remove_remap("material2d-dangling");
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].texture, TextureRef::BindImage(4));
     }
