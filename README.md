@@ -50,7 +50,7 @@ QuakeC game logic.
 # Two-player local splitscreen deathmatch
 ./target/release/quake-anthology --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
 
-# Software rendering instead of GL (headless only, so with --frames)
+# Software rendering instead of GL, 20 frames, then quit
 ./target/release/quake-anthology --renderer cpu --width 1280 --height 720 --gamma 1.2 --frames 20
 
 # Mixed-game recipe
@@ -60,23 +60,19 @@ QuakeC game logic.
 Movement, characters, and models follow the game you pick
 (`--movement q1|q2|q3|qw`, `--character`, `--model`); `+command`
 arguments run startup console commands (`'+bind x "+attack"'` as one
-shell argument). `--frames N` runs N headless simulation steps and
-quits — useful for smoke-testing a setup without a window:
+shell argument). `--frames N` opens the game, runs N frames, and
+quits — useful for smoke-testing a setup:
 
 ```sh
-# Headless smoke test: prints `Ran 20 host frames, 20 server ticks,
-# 5 entities (20 render frames)` and exits 0
-./target/release/quake-anthology --frames 20
-
-# Windowed smoke test: opens a window, runs 600 frames, prints
+# Smoke test: opens a window, runs 600 frames, prints
 # `Ran 600 windowed frames` and exits 0 (needs a display; use
 # xvfb-run on a headless machine)
 xvfb-run -a ./target/release/quake-anthology --windowed --frames 600
 ```
 
 Without `--frames` (and without `--dedicated`), `quake-anthology` opens a
-window and runs until quit; `--dedicated` without `--frames` runs
-the headless server until stopped.
+window and runs until quit; `--dedicated` runs the headless server
+until stopped (add `--frames N` to stop it after N steps).
 
 ## Hosting and joining
 

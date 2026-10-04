@@ -135,39 +135,39 @@ fn run_inner(argv: &[String], stdout: &mut dyn Write, version: &str) -> Result<(
             Ok(())
         }
         ApplicationCommand::Run { options } => {
-            if use_windowed_composition(&options) {
+            if use_game_composition(&options) {
                 run_windowed(&options, crate::bootstrap::startup::StartupEntry::Run, stdout)?;
                 return Ok(());
             }
-            run_headless(&options, stdout)?;
+            run_dedicated(&options, stdout)?;
             Ok(())
         }
         ApplicationCommand::Menu { options } => {
-            if use_windowed_composition(&options) {
+            if use_game_composition(&options) {
                 run_windowed(&options, crate::bootstrap::startup::StartupEntry::Menu, stdout)?;
                 return Ok(());
             }
-            run_headless(&options, stdout)?;
+            run_dedicated(&options, stdout)?;
             Ok(())
         }
     }
 }
 
-/// Whether Run/Menu dispatches to the windowed composition.
+/// Whether Run/Menu dispatches to the game composition.
 ///
-/// Non-dedicated runs without `--frames` open the existing `--windowed`
-/// composition, which runs until quit (donor parity). Every `--frames`
-/// path and every `--dedicated` path keeps the previous headless
-/// behavior and output byte for byte.
-fn use_windowed_composition(options: &crate::options::ApplicationOptions) -> bool {
-    options.windowed || (!options.dedicated && options.frame_limit.is_none())
+/// Every non-dedicated run opens the game (a window, until quit or
+/// `--frames`); only `--dedicated` serves headless. There is no third
+/// mode: headless exists solely to bring up dedicated servers.
+fn use_game_composition(options: &crate::options::ApplicationOptions) -> bool {
+    !options.dedicated
 }
 
-/// Run the headless application (default dedicated/local behavior).
-fn run_headless(options: &crate::options::ApplicationOptions, stdout: &mut dyn Write) -> Result<(), AppError> {
+/// Run the dedicated server: no window, no local seats, no player. This
+/// is the only headless mode; everything else opens the game.
+fn run_dedicated(options: &crate::options::ApplicationOptions, stdout: &mut dyn Write) -> Result<(), AppError> {
     if options.frame_timings {
         return Err(AppError::ConflictingOptions(
-            "--frame-timings requires a windowed run".to_string(),
+            "--frame-timings requires the game".to_string(),
         ));
     }
     let config = StartupConfig::from_options(options)?;
@@ -1627,26 +1627,28 @@ mod tests {
     use qa_guest::qc::program::load_qc_program;
 
     #[test]
-    fn windowed_routing_covers_dedicated_and_frame_limits() {
+    fn game_routing_covers_dedicated_and_frame_limits() {
         let base = ApplicationOptions::default();
-        assert!(use_windowed_composition(&base));
+        assert!(use_game_composition(&base));
         let mut windowed = base.clone();
         windowed.windowed = true;
-        assert!(use_windowed_composition(&windowed));
+        assert!(use_game_composition(&windowed));
         let mut windowed_frames = base.clone();
         windowed_frames.windowed = true;
         windowed_frames.frame_limit = Some(600);
-        assert!(use_windowed_composition(&windowed_frames));
-        let mut headless_frames = base.clone();
-        headless_frames.frame_limit = Some(20);
-        assert!(!use_windowed_composition(&headless_frames));
+        assert!(use_game_composition(&windowed_frames));
+        // A bare frame cap still opens the game (and closes after N);
+        // only dedicated serves headless.
+        let mut capped = base.clone();
+        capped.frame_limit = Some(20);
+        assert!(use_game_composition(&capped));
         let mut dedicated = base.clone();
         dedicated.dedicated = true;
-        assert!(!use_windowed_composition(&dedicated));
+        assert!(!use_game_composition(&dedicated));
         let mut dedicated_frames = base.clone();
         dedicated_frames.dedicated = true;
         dedicated_frames.frame_limit = Some(20);
-        assert!(!use_windowed_composition(&dedicated_frames));
+        assert!(!use_game_composition(&dedicated_frames));
     }
 
     /// Minimal version-6 `progs.dat`: two statements, one function global,
@@ -1735,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn headless_run_reports_stats() {
+    fn dedicated_run_reports_stats() {
         let (code, stdout, _) = run_text(&["--dedicated", "--movement", "q3", "--frames", "4"]);
         assert_eq!(code, 0);
         assert!(stdout.contains("4 host frames"), "{stdout}");
