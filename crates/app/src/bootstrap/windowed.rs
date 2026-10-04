@@ -1,4 +1,4 @@
-//! Windowed game path: native SDL window, GL renderer, and startup driver.
+//! Windowed game path: native SDL window, GL or CPU renderer, and startup driver.
 //!
 //! Donor provenance: `src/app/bootstrap/startup.ts`
 //! (`StartupApplication.open` graphics tail),
@@ -55,6 +55,7 @@ use super::renderer::{
 };
 use super::startup::{StartupAction, StartupApplication, StartupBackend, StartupEntry, StartupError, StartupFrame};
 use super::startup_selection::StartupSelectionModel;
+use super::windowed_cpu::NativeCpuBackend;
 use super::windowed_menu::WindowedMenu;
 use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, MenuLaunchQueue};
 use super::windowed_pacer::WindowedPacer;
@@ -68,7 +69,7 @@ use crate::startup::StartupConfig;
 const SDL_WINDOWEVENT_CLOSE: u8 = 14;
 
 /// Native renderer over the windowed adapters.
-type WindowedRenderer = NativeRenderer<NativeSdlWindow, NativeGlBackend, NativeImages>;
+type WindowedRenderer = NativeRenderer<NativeSdlWindow, NativeWindowedBackend, NativeImages>;
 
 /// State shared between the windowed factories and adapters.
 #[derive(Default)]
@@ -166,8 +167,14 @@ impl NativeRenderWindow for NativeSdlWindow {
             .map_err(|error| error.to_string())
     }
 
-    fn present_pixels(&mut self, _pixels: &[u8]) -> Result<(), String> {
-        Err("present requires a CPU window".to_string())
+    fn present_pixels(&mut self, pixels: &[u8]) -> Result<(), String> {
+        if self.kind != RenderBackendKind::Cpu {
+            return Err("present requires a CPU window".to_string());
+        }
+        self.window
+            .borrow_mut()
+            .present(pixels)
+            .map_err(|error| error.to_string())
     }
 
     fn capture_presentation(&self) -> RenderWindowPresentation {
@@ -208,9 +215,17 @@ impl NativeWindowFactory for NativeSdlWindowFactory {
     type Error = String;
 
     fn open_window(&mut self, options: &RenderWindowOptions) -> Result<NativeSdlWindow, String> {
-        if options.backend != RenderBackendKind::Gl {
-            return Err("windowed CPU composition is not implemented".to_string());
-        }
+        let backend = match options.backend {
+            RenderBackendKind::Gl => SdlBackend::Gl(SdlGlOptions {
+                stereo: false,
+                stencil_bits: 0,
+                color_bits: 0.0,
+                depth_bits: 0.0,
+                driver: None,
+                allow_software_gl: true,
+            }),
+            RenderBackendKind::Cpu => SdlBackend::Cpu,
+        };
         let window_options = SdlWindowOptions {
             title: "Quake".to_string(),
             width: options.width,
@@ -223,14 +238,7 @@ impl NativeWindowFactory for NativeSdlWindowFactory {
             min_display_refresh: 0,
             max_display_refresh: 0,
             position: None,
-            backend: SdlBackend::Gl(SdlGlOptions {
-                stereo: false,
-                stencil_bits: 0,
-                color_bits: 0.0,
-                depth_bits: 0.0,
-                driver: None,
-                allow_software_gl: true,
-            }),
+            backend,
         };
         let window = SdlWindow::open(&window_options).map_err(|error| error.to_string())?;
         let presentation = window.capture_presentation().map_err(|error| error.to_string())?;
@@ -239,7 +247,7 @@ impl NativeWindowFactory for NativeSdlWindowFactory {
         Ok(NativeSdlWindow {
             window: shared,
             share: Rc::clone(&self.share),
-            kind: RenderBackendKind::Gl,
+            kind: options.backend,
             presentation,
         })
     }
@@ -498,15 +506,163 @@ fn gl_capable(gl: &mut PlatformGlContext<'_>) -> bool {
     coords.min(units) >= 4 && max_texture >= 1 && depth >= 1
 }
 
-/// [`NativeBackendFactory`] adopting GL and building [`GlRenderer`] (donor
-/// `openBackend`).
-struct NativeGlBackendFactory {
+/// Windowed backend: GL or CPU composition behind one renderer type.
+enum NativeWindowedBackend {
+    Gl(Box<NativeGlBackend>),
+    Cpu(Box<NativeCpuBackend>),
+}
+
+impl NativeRenderBackend for NativeWindowedBackend {
+    type Error = String;
+
+    fn width(&self) -> i32 {
+        match self {
+            Self::Gl(backend) => backend.width(),
+            Self::Cpu(backend) => backend.width(),
+        }
+    }
+
+    fn height(&self) -> i32 {
+        match self {
+            Self::Gl(backend) => backend.height(),
+            Self::Cpu(backend) => backend.height(),
+        }
+    }
+
+    fn is_worker(&self) -> bool {
+        match self {
+            Self::Gl(backend) => backend.is_worker(),
+            Self::Cpu(backend) => backend.is_worker(),
+        }
+    }
+
+    fn is_software(&self) -> bool {
+        match self {
+            Self::Gl(backend) => backend.is_software(),
+            Self::Cpu(backend) => backend.is_software(),
+        }
+    }
+
+    fn set_output_gamma(&mut self, gamma: f64) -> Result<(), String> {
+        match self {
+            Self::Gl(backend) => backend.set_output_gamma(gamma),
+            Self::Cpu(backend) => backend.set_output_gamma(gamma),
+        }
+    }
+
+    fn apply_image_resource(&mut self, operation: &ImageResourceOperation) {
+        match self {
+            Self::Gl(backend) => backend.apply_image_resource(operation),
+            Self::Cpu(backend) => backend.apply_image_resource(operation),
+        }
+    }
+
+    fn execute_serial_command(&mut self, command: &RenderCommand) {
+        match self {
+            Self::Gl(backend) => backend.execute_serial_command(command),
+            Self::Cpu(backend) => backend.execute_serial_command(command),
+        }
+    }
+
+    fn execute_worker(
+        &mut self,
+        commands: &[RenderCommand],
+        captures: &[CaptureId],
+        operations: Vec<ImageResourceOperation>,
+    ) {
+        match self {
+            Self::Gl(backend) => backend.execute_worker(commands, captures, operations),
+            Self::Cpu(backend) => backend.execute_worker(commands, captures, operations),
+        }
+    }
+
+    fn synchronize(&mut self) {
+        match self {
+            Self::Gl(backend) => backend.synchronize(),
+            Self::Cpu(backend) => backend.synchronize(),
+        }
+    }
+
+    fn set_worker_swap_interval(&mut self, interval: i32) {
+        match self {
+            Self::Gl(backend) => backend.set_worker_swap_interval(interval),
+            Self::Cpu(backend) => backend.set_worker_swap_interval(interval),
+        }
+    }
+
+    fn worker_swap_interval(&self) -> i32 {
+        match self {
+            Self::Gl(backend) => backend.worker_swap_interval(),
+            Self::Cpu(backend) => backend.worker_swap_interval(),
+        }
+    }
+
+    fn resize_backend(&mut self, width: i32, height: i32) {
+        match self {
+            Self::Gl(backend) => backend.resize_backend(width, height),
+            Self::Cpu(backend) => backend.resize_backend(width, height),
+        }
+    }
+
+    fn finish_software(&mut self) {
+        match self {
+            Self::Gl(backend) => backend.finish_software(),
+            Self::Cpu(backend) => backend.finish_software(),
+        }
+    }
+
+    fn software_pixels(&self) -> Vec<u8> {
+        match self {
+            Self::Gl(backend) => backend.software_pixels(),
+            Self::Cpu(backend) => backend.software_pixels(),
+        }
+    }
+
+    fn read_pixels_backend(&mut self) -> ImageLevel {
+        match self {
+            Self::Gl(backend) => backend.read_pixels_backend(),
+            Self::Cpu(backend) => backend.read_pixels_backend(),
+        }
+    }
+
+    fn present_backend(&mut self) {
+        match self {
+            Self::Gl(backend) => backend.present_backend(),
+            Self::Cpu(backend) => backend.present_backend(),
+        }
+    }
+
+    fn driver(&self) -> Option<RenderDriverInfo> {
+        match self {
+            Self::Gl(backend) => backend.driver(),
+            Self::Cpu(backend) => backend.driver(),
+        }
+    }
+
+    fn gl_config(&self) -> Option<RenderGlConfig> {
+        match self {
+            Self::Gl(backend) => backend.gl_config(),
+            Self::Cpu(backend) => backend.gl_config(),
+        }
+    }
+
+    fn close_backend(&mut self) -> Result<(), String> {
+        match self {
+            Self::Gl(backend) => backend.close_backend(),
+            Self::Cpu(backend) => backend.close_backend(),
+        }
+    }
+}
+
+/// [`NativeBackendFactory`] adopting GL and building [`GlRenderer`], or
+/// opening the software rasterizer (donor `openBackend`).
+struct NativeWindowedBackendFactory {
     share: Rc<RefCell<WindowedShare>>,
     owner: ResourceOwner,
 }
 
-impl NativeBackendFactory for NativeGlBackendFactory {
-    type Backend = NativeGlBackend;
+impl NativeBackendFactory for NativeWindowedBackendFactory {
+    type Backend = NativeWindowedBackend;
     type Error = String;
 
     fn open_backend(
@@ -516,12 +672,13 @@ impl NativeBackendFactory for NativeGlBackendFactory {
         height: i32,
         gamma: f64,
         worker: bool,
-    ) -> Result<NativeGlBackend, String> {
-        if kind != RenderBackendKind::Gl {
-            return Err("windowed CPU composition is not implemented".to_string());
-        }
+    ) -> Result<NativeWindowedBackend, String> {
         if worker {
             return Err("windowed worker rendering is not implemented".to_string());
+        }
+        if kind == RenderBackendKind::Cpu {
+            let backend = NativeCpuBackend::open(width, height, gamma, self.owner.clone())?;
+            return Ok(NativeWindowedBackend::Cpu(Box::new(backend)));
         }
         if width <= 0 || height <= 0 {
             return Err("windowed GL backend requires positive dimensions".to_string());
@@ -581,7 +738,7 @@ impl NativeBackendFactory for NativeGlBackendFactory {
             color: vec4(1.0, 1.0, 1.0, 1.0),
         };
         self.share.borrow_mut().detached = true;
-        Ok(backend)
+        Ok(NativeWindowedBackend::Gl(Box::new(backend)))
     }
 }
 
@@ -1005,16 +1162,17 @@ fn count_non_black(pixels: &[u8]) -> usize {
         .count()
 }
 
-/// Production [`StartupBackend`] presenting frames on a native GL window.
+/// Production [`StartupBackend`] presenting frames on a native window.
 pub struct WindowedStartupBackend {
     width: u32,
     height: u32,
     hidden: bool,
     gamma: f64,
+    backend_kind: RenderBackendKind,
     identity: IdentityOwner,
     owner: Option<RendererResourceOwner>,
     renderer: Option<WindowedRenderer>,
-    backends: Option<NativeGlBackendFactory>,
+    backends: Option<NativeWindowedBackendFactory>,
     audio: Option<UnifiedAudio>,
     share: Rc<RefCell<WindowedShare>>,
     quit: Rc<Cell<bool>>,
@@ -1035,12 +1193,20 @@ impl WindowedStartupBackend {
     /// identity owns the GL renderer, the image registry, and the input
     /// seat; the map world (loaded before open) builds its presentation
     /// over the same identity so its image uploads apply to the backend.
-    fn new(config: &StartupConfig, hidden: bool, gamma: f64, quit: Rc<Cell<bool>>, identity: IdentityOwner) -> Self {
+    fn new(
+        config: &StartupConfig,
+        hidden: bool,
+        gamma: f64,
+        backend_kind: RenderBackendKind,
+        quit: Rc<Cell<bool>>,
+        identity: IdentityOwner,
+    ) -> Self {
         Self {
             width: config.width,
             height: config.height,
             hidden,
             gamma,
+            backend_kind,
             identity,
             owner: None,
             renderer: None,
@@ -1163,7 +1329,7 @@ impl WindowedStartupBackend {
     ) -> Result<
         (
             &mut WindowedRenderer,
-            &mut NativeGlBackendFactory,
+            &mut NativeWindowedBackendFactory,
             RendererResourceOwner,
         ),
         String,
@@ -1359,7 +1525,7 @@ impl StartupBackend for WindowedStartupBackend {
         let mut windows = NativeSdlWindowFactory {
             share: Rc::clone(&self.share),
         };
-        let mut backends = NativeGlBackendFactory {
+        let mut backends = NativeWindowedBackendFactory {
             share: Rc::clone(&self.share),
             owner: resource_owner.clone(),
         };
@@ -1368,7 +1534,7 @@ impl StartupBackend for WindowedStartupBackend {
             owner: owner.clone(),
         };
         let options = NativeRendererOptions {
-            renderer: RenderBackendKind::Gl,
+            renderer: self.backend_kind,
             width: self.width as i32,
             height: self.height as i32,
             hidden: self.hidden,
@@ -1508,18 +1674,19 @@ pub struct WindowedApplication {
 }
 
 /// Open the windowed composition: selection model over the real catalog,
-/// production GL backend, and [`StartupApplication::open`]. Fails before
-/// touching a window when the renderer selection is not supported.
+/// production GL or CPU backend, and [`StartupApplication::open`]. Fails
+/// before touching a window when the renderer selection is not supported.
 pub fn open_windowed_application(
     options: &ApplicationOptions,
     entry: StartupEntry,
 ) -> Result<WindowedApplication, String> {
-    if options.renderer != Renderer::Gl {
-        return Err("windowed mode requires --renderer gl".to_string());
-    }
     if options.render_worker == Some(true) {
         return Err("windowed worker rendering is not implemented".to_string());
     }
+    let kind = match options.renderer {
+        Renderer::Cpu => RenderBackendKind::Cpu,
+        Renderer::Gl => RenderBackendKind::Gl,
+    };
     let config = StartupConfig::from_options(options).map_err(|error| error.to_string())?;
     let catalog = discover_installed_content(&DiscoverContentOptions::new(PathBuf::from(&options.corpus_root)))
         .map_err(|error| error.to_string())?;
@@ -1530,7 +1697,8 @@ pub fn open_windowed_application(
     let menu_seat = identity.seat(0);
     let menu_client = identity.client(0, 0);
     let resource_owner = ResourceOwner::new(7, identity.session().clone(), 0);
-    let mut backend = WindowedStartupBackend::new(&config, options.hidden, options.gamma, Rc::clone(&quit), identity);
+    let mut backend =
+        WindowedStartupBackend::new(&config, options.hidden, options.gamma, kind, Rc::clone(&quit), identity);
     if entry == StartupEntry::Menu {
         let mut menu_model = StartupSelectionModel::new(
             model.catalog().clone(),
@@ -1719,13 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn windowed_rejects_cpu_and_worker_before_opening() {
-        let mut options = windowed_options();
-        options.renderer = Renderer::Cpu;
-        let Err(error) = open_windowed_application(&options, StartupEntry::Run) else {
-            panic!("expected failure");
-        };
-        assert!(error.contains("--renderer gl"), "{error}");
+    fn windowed_rejects_worker_before_opening() {
         let mut options = windowed_options();
         options.render_worker = Some(true);
         let Err(error) = open_windowed_application(&options, StartupEntry::Run) else {
@@ -1741,6 +1903,7 @@ mod tests {
             &config,
             false,
             1.0,
+            RenderBackendKind::Gl,
             Rc::new(Cell::new(false)),
             IdentityOwner::create("windowed-test").unwrap(),
         );
@@ -1999,6 +2162,7 @@ mod tests {
             &config,
             false,
             1.0,
+            RenderBackendKind::Gl,
             Rc::clone(&quit),
             IdentityOwner::create("windowed-test").unwrap(),
         );
@@ -2142,6 +2306,7 @@ mod tests {
             &config,
             false,
             1.0,
+            RenderBackendKind::Gl,
             Rc::new(Cell::new(false)),
             IdentityOwner::create("windowed-test").unwrap(),
         );
@@ -2227,6 +2392,7 @@ mod tests {
             &config,
             false,
             1.0,
+            RenderBackendKind::Gl,
             Rc::new(Cell::new(false)),
             IdentityOwner::create("windowed-test").unwrap(),
         );
@@ -2276,6 +2442,36 @@ mod tests {
                 assert_eq!(frames, 3);
                 assert!(composed.app.is_closed());
                 windowed_sdl_router_attach_pumps_keys();
+            }
+            Err(error) => assert!(!error.is_empty(), "honest open failure"),
+        }
+    }
+
+    #[test]
+    fn live_windowed_cpu_smoke_runs_frames() {
+        // CPU composition through a real SDL software window: open, capture
+        // one software frame, then drive to the frame limit. Without a
+        // display the honest open failure is required instead.
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let mut options = windowed_options();
+        options.renderer = Renderer::Cpu;
+        match open_windowed_application(&options, StartupEntry::Run) {
+            Ok(composed) => {
+                let mut composed = composed;
+                let pixels = composed.app.capture_next_frame().expect("windowed CPU capture works");
+                assert_eq!(pixels.len(), 64 * 64 * 4);
+                if composed.app.active_game() {
+                    let lit = count_non_black(&pixels);
+                    assert!(
+                        lit > 64,
+                        "expected a presented world, got {lit} non-black pixels of {}",
+                        64 * 64
+                    );
+                }
+                let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+                    .expect("windowed CPU drive works");
+                assert_eq!(frames, 3);
+                assert!(composed.app.is_closed());
             }
             Err(error) => assert!(!error.is_empty(), "honest open failure"),
         }
@@ -2408,6 +2604,7 @@ mod tests {
             &config,
             false,
             1.0,
+            RenderBackendKind::Gl,
             Rc::new(Cell::new(false)),
             IdentityOwner::create("windowed-test").unwrap(),
         );
@@ -2510,6 +2707,7 @@ mod tests {
             &config,
             true,
             1.0,
+            RenderBackendKind::Gl,
             Rc::new(Cell::new(false)),
             IdentityOwner::create("windowed-fill-test").unwrap(),
         );

@@ -148,6 +148,7 @@ pub mod weapon_behavior_tool_options;
 pub mod weapon_hud;
 pub mod weapon_view;
 pub mod windowed;
+pub mod windowed_cpu;
 pub mod windowed_menu;
 pub mod windowed_menu_launch;
 pub mod windowed_menu_text;
