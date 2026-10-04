@@ -11,11 +11,11 @@ use super::dimensions::{accept_body_bounds, character_height};
 use super::math::{Q2Math, Q2MathEdition};
 use super::swept::{sweep_q2_body, Q2SweepBody};
 use super::types::{
-    button, kex_pm_type, pm_flags, refdef_flags, water_level, CSurface, KexPmove, KexTouchList, PmConfig, SrcVec3,
-    StuckResult, TraceT, AXES, CONTENTS_CURRENT_0, CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90,
-    CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LAVA, CONTENTS_NONE, CONTENTS_NO_WATERJUMP, CONTENTS_SLIME,
-    CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT, MASK_PLAYERSOLID, MASK_SOLID, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE,
-    SURF_SLICK,
+    button, kex_pm_type, pm_flags, refdef_flags, search_initial_snap_position, water_level, CSurface, KexPmove,
+    KexTouchList, PmConfig, SrcVec3, StuckResult, TraceT, AXES, CONTENTS_CURRENT_0, CONTENTS_CURRENT_180,
+    CONTENTS_CURRENT_270, CONTENTS_CURRENT_90, CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LAVA,
+    CONTENTS_NONE, CONTENTS_NO_WATERJUMP, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT,
+    MASK_PLAYERSOLID, MASK_SOLID, MASK_WATER, MAXTOUCH, PITCH, Q2_INITIAL_SNAP_OFFSETS, STEPSIZE, SURF_SLICK,
 };
 use super::view::rerelease_view_angles;
 
@@ -792,22 +792,8 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
     fn air_accelerate(&mut self, wishdir: SrcVec3, wishspeed: f64, accel: f64) {
         let n = self.runner.n;
         let math = self.runner.math;
-        let mut wishspd = wishspeed;
-        if wishspd > 30.0 {
-            wishspd = 30.0;
-        }
-        let currentspeed = math.dot(self.pml.velocity, wishdir);
-        let addspeed = n.sub(wishspd, currentspeed);
-        if addspeed <= 0.0 {
-            return;
-        }
-        let mut accelspeed = n.mul(n.mul(accel, wishspeed), self.pml.frametime);
-        if accelspeed > addspeed {
-            accelspeed = addspeed;
-        }
-        for i in AXES {
-            self.pml.velocity[i] = f64::from(n.store(n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i]))));
-        }
+        let frametime = self.pml.frametime;
+        super::math::q2_air_accelerate(n, math, &mut self.pml.velocity, wishdir, wishspeed, accel, frametime);
     }
 
     fn add_currents(&mut self, wishvel: &mut SrcVec3) {
@@ -1556,23 +1542,19 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
 
     fn initial_snap_position(&mut self) {
         let n = self.runner.n;
-        let offset = [0.0, -1.0, 1.0];
         let base = self.pm.s.origin;
-        for z in AXES {
-            self.pm.s.origin[2] = f64::from(n.store(n.add(base[2], offset[z])));
-            for y in AXES {
-                self.pm.s.origin[1] = f64::from(n.store(n.add(base[1], offset[y])));
-                for x in AXES {
-                    self.pm.s.origin[0] = f64::from(n.store(n.add(base[0], offset[x])));
-                    if self.good_position() {
-                        let origin = self.pm.s.origin;
-                        self.set_origin(origin);
-                        self.pml.previous_origin = origin;
-                        return;
-                    }
-                }
+        search_initial_snap_position(|x, y, z| {
+            self.pm.s.origin[2] = f64::from(n.store(n.add(base[2], Q2_INITIAL_SNAP_OFFSETS[z])));
+            self.pm.s.origin[1] = f64::from(n.store(n.add(base[1], Q2_INITIAL_SNAP_OFFSETS[y])));
+            self.pm.s.origin[0] = f64::from(n.store(n.add(base[0], Q2_INITIAL_SNAP_OFFSETS[x])));
+            if self.good_position() {
+                let origin = self.pm.s.origin;
+                self.set_origin(origin);
+                self.pml.previous_origin = origin;
+                return true;
             }
-        }
+            false
+        });
     }
 
     fn clamp_angles(&mut self) {

@@ -11,9 +11,10 @@ use super::dimensions::{accept_body_bounds, character_height};
 use super::math::{Q2Math, Q2MathEdition};
 use super::swept::sweep_q2_body;
 use super::types::{
-    pm_flags, pm_type, CPlane, CSurface, ClassicPmove, SrcVec3, TraceT, AXES, CONTENTS_CURRENT_0, CONTENTS_CURRENT_180,
-    CONTENTS_CURRENT_270, CONTENTS_CURRENT_90, CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LADDER,
-    CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE,
+    pm_flags, pm_type, search_initial_snap_position, CPlane, CSurface, ClassicPmove, SrcVec3, TraceT, AXES,
+    CONTENTS_CURRENT_0, CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90, CONTENTS_CURRENT_DOWN,
+    CONTENTS_CURRENT_UP, CONTENTS_LADDER, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT, MASK_WATER,
+    MAXTOUCH, PITCH, Q2_INITIAL_SNAP_OFFSETS, STEPSIZE,
 };
 use super::view::classic_view_angles;
 
@@ -218,25 +219,10 @@ impl ClassicRunner<'_, '_> {
     }
 
     fn air_accelerate(&mut self, wishdir: SrcVec3, wishspeed: f64, accel: f64) {
-        let mut wishspd = wishspeed;
-        if wishspd > 30.0 {
-            wishspd = 30.0;
-        }
-        let currentspeed = self.math.dot(self.pml.velocity, wishdir);
-        let addspeed = self.n.sub(wishspd, currentspeed);
-        if addspeed <= 0.0 {
-            return;
-        }
-        let mut accelspeed = self.n.mul(self.n.mul(accel, wishspeed), self.pml.frametime);
-        if accelspeed > addspeed {
-            accelspeed = addspeed;
-        }
-        for i in AXES {
-            self.pml.velocity[i] = f64::from(
-                self.n
-                    .store(self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i]))),
-            );
-        }
+        let n = self.n;
+        let math = self.math;
+        let frametime = self.pml.frametime;
+        super::math::q2_air_accelerate(n, math, &mut self.pml.velocity, wishdir, wishspeed, accel, frametime);
     }
 
     fn add_currents(&mut self, wishvel: &mut SrcVec3) {
@@ -843,29 +829,26 @@ impl ClassicRunner<'_, '_> {
     }
 
     fn initial_snap_position(&mut self) {
-        const OFFSET: [f64; 3] = [0.0, -1.0, 1.0];
         let mut base = [0i16; 3];
         for i in AXES {
             base[i] = f64::from(self.n.store(self.pm.s.origin[i] as f64)) as i16;
         }
-        for z in AXES {
-            self.pm.s.origin[2] = to_short(self.n.add(base[2] as f64, OFFSET[z]));
-            for y in AXES {
-                self.pm.s.origin[1] = to_short(self.n.add(base[1] as f64, OFFSET[y]));
-                for x in AXES {
-                    self.pm.s.origin[0] = to_short(self.n.add(base[0] as f64, OFFSET[x]));
-                    if self.good_position() {
-                        self.pml.origin[0] = f64::from(self.n.store(self.n.mul(self.pm.s.origin[0] as f64, 0.125)));
-                        self.pml.origin[1] = f64::from(self.n.store(self.n.mul(self.pm.s.origin[1] as f64, 0.125)));
-                        self.pml.origin[2] = f64::from(self.n.store(self.n.mul(self.pm.s.origin[2] as f64, 0.125)));
-                        for i in AXES {
-                            self.pml.previous_origin[i] = f64::from(self.n.store(self.pm.s.origin[i] as f64));
-                        }
-                        return;
-                    }
+        let n = self.n;
+        search_initial_snap_position(|x, y, z| {
+            self.pm.s.origin[2] = to_short(n.add(base[2] as f64, Q2_INITIAL_SNAP_OFFSETS[z]));
+            self.pm.s.origin[1] = to_short(n.add(base[1] as f64, Q2_INITIAL_SNAP_OFFSETS[y]));
+            self.pm.s.origin[0] = to_short(n.add(base[0] as f64, Q2_INITIAL_SNAP_OFFSETS[x]));
+            if self.good_position() {
+                self.pml.origin[0] = f64::from(n.store(n.mul(self.pm.s.origin[0] as f64, 0.125)));
+                self.pml.origin[1] = f64::from(n.store(n.mul(self.pm.s.origin[1] as f64, 0.125)));
+                self.pml.origin[2] = f64::from(n.store(n.mul(self.pm.s.origin[2] as f64, 0.125)));
+                for i in AXES {
+                    self.pml.previous_origin[i] = f64::from(n.store(self.pm.s.origin[i] as f64));
                 }
+                return true;
             }
-        }
+            false
+        });
     }
 
     fn clamp_angles(&mut self) {

@@ -20,8 +20,8 @@ use super::common::{MovementContext, NONE, ZERO};
 use super::result::finish_quakeworld;
 use super::types::{
     NoQ1Hooks, Q1LifecyclePhase, Q1MovementHooks, Q1MovementOptions, Q1MovementServices, Q1State, Q1Trace,
-    QwMovementInput, QwMovementResult, QwMovementState, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SLIME, Q1_CONTENTS_SOLID,
-    Q1_CONTENTS_WATER, Q1_STEP_HEIGHT,
+    QwMovementInput, QwMovementResult, QwMovementState, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SOLID, Q1_CONTENTS_WATER,
+    Q1_STEP_HEIGHT,
 };
 
 /// Split a command into slices of at most `maximum_milliseconds`, mirroring
@@ -328,19 +328,18 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         if self.state.dead || self.state.water_jump_time_seconds != 0.0 {
             return;
         }
-        let n = self.context.math.n;
         let wish = if air { speed.min(30.0) } else { speed };
-        let add = n.sub(wish, self.context.math.dot(self.state.velocity, direction));
-        if add <= 0.0 {
-            return;
-        }
-        let amount = if air {
-            n.mul(n.mul(acceleration, speed), self.frame_seconds)
-        } else {
-            n.mul(n.mul(acceleration, self.frame_seconds), speed)
-        }
-        .min(add);
-        self.state.velocity = self.context.math.ma(self.state.velocity, amount, direction);
+        let math = self.context.math;
+        self.state.velocity = super::common::q1_accelerate_apply(
+            math,
+            self.state.velocity,
+            direction,
+            wish,
+            speed,
+            acceleration,
+            self.frame_seconds,
+            air,
+        );
     }
 
     fn wish_velocity(&mut self) -> Vec3 {
@@ -528,13 +527,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         }
         if self.water_level >= 2 {
             self.state.ground = NONE;
-            let vertical = if self.water_type == Q1_CONTENTS_WATER {
-                100.0
-            } else if self.water_type == Q1_CONTENTS_SLIME {
-                80.0
-            } else {
-                50.0
-            };
+            let vertical = super::player_actions::q1_swim_vertical(self.water_type);
             self.state.velocity = self.context.math.vec(
                 f64::from(self.state.velocity.x),
                 f64::from(self.state.velocity.y),
@@ -550,7 +543,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         self.state.velocity = self.context.math.vec(
             f64::from(self.state.velocity.x),
             f64::from(self.state.velocity.y),
-            n.add(f64::from(self.state.velocity.z), 270.0),
+            n.add(f64::from(self.state.velocity.z), super::player_actions::Q1_JUMP_IMPULSE),
         );
         self.state.old_buttons |= 2;
     }

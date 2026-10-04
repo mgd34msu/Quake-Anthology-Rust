@@ -515,7 +515,6 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             Q1PlayerInput::Netquake(input) => input.profile.parameters,
             Q1PlayerInput::Quakeworld(_) => panic!("NetQuake mover with QuakeWorld input"),
         };
-        let n = self.context.math.n;
         let wish = if air {
             self.context.math.length(direction).min(30.0)
         } else {
@@ -526,17 +525,17 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         } else {
             direction
         };
-        let add = n.sub(wish, self.context.math.dot(self.state.velocity, axis));
-        if add <= 0.0 {
-            return;
-        }
-        let acceleration = if air {
-            n.mul(n.mul(parameters.accelerate, speed), self.frame_seconds)
-        } else {
-            n.mul(n.mul(parameters.accelerate, self.frame_seconds), speed)
-        }
-        .min(add);
-        self.state.velocity = self.context.math.ma(self.state.velocity, acceleration, axis);
+        let math = self.context.math;
+        self.state.velocity = super::common::q1_accelerate_apply(
+            math,
+            self.state.velocity,
+            axis,
+            wish,
+            speed,
+            parameters.accelerate,
+            self.frame_seconds,
+            air,
+        );
     }
 
     fn water_move(&mut self) {

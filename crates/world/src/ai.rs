@@ -1,9 +1,11 @@
 //! Quake I monster AI rules ported from `src/movement/q1/monsters.ts`
 //! (`WinQuake/sv_move.c`, `PF_changeyaw`/`PF_walkmove` from `pr_cmds.c`) and
 //! the movement constants in `src/movement/q1/types.ts`. Pure decision
-//! helpers: angle stepping, chase-direction order, fly/swim depth adjust,
-//! range tests, and think-gating predicates. Scene traces and actor writes
-//! stay with the owning provider; this module pins the donor numbers.
+//! helpers: chase-direction order, fly/swim depth adjust, range tests, and
+//! think-gating predicates. Scene traces and actor writes stay with the
+//! owning provider; this module pins the donor numbers. Yaw stepping lives
+//! only in [`crate::movement::q1::monsters`], which keeps the donor's
+//! profile-rounded arithmetic.
 
 use qa_core::math::{Bounds, Vec3};
 
@@ -42,38 +44,6 @@ pub const Q1_SWEEP_MAX_YAW: i32 = 315;
 /// Diagonal chase constant for southwest. The donor notes this is 215 in
 /// both the released source and the donor (not the symmetric 225).
 pub const Q1_CHASE_DIAGONAL_SOUTHWEST: i32 = 215;
-
-/// Wrap an angle to `[0, 360)` through the donor's 16-bit yaw encoding
-/// (`angle * 65536 / 360` truncated to `u16`, scaled back).
-#[must_use]
-pub fn q1_angle_mod(angle: f64) -> f64 {
-    let encoded = (angle * (65536.0 / 360.0)).trunc() as i64 & 0xffff;
-    360.0 / 65536.0 * encoded as f64
-}
-
-/// One yaw step toward `ideal`, limited to `yaw_speed` degrees. Mirrors
-/// `changeYaw`: the shortest arc across the 180-degree seam wins.
-#[must_use]
-pub fn q1_change_yaw_step(current: f64, ideal: f64, yaw_speed: f64) -> f64 {
-    let current = q1_angle_mod(current);
-    if current == ideal {
-        return current;
-    }
-    let mut delta = ideal - current;
-    if ideal > current {
-        if delta >= 180.0 {
-            delta -= 360.0;
-        }
-    } else if delta <= -180.0 {
-        delta += 360.0;
-    }
-    let step = if delta > 0.0 {
-        delta.min(yaw_speed)
-    } else {
-        delta.max(-yaw_speed)
-    };
-    q1_angle_mod(current + step)
-}
 
 /// Whether `walkMove`/`moveToGoal` may run: grounded, flying, or swimming.
 #[must_use]
@@ -155,49 +125,10 @@ pub fn q1_retarget_chase(random: i32, stepped: bool) -> bool {
     random & 3 == 1 || !stepped
 }
 
-/// Whether a successful `stepDirection` keeps its move: the donor reverts
-/// moves whose yaw error lands strictly between 45 and 315 degrees.
-#[must_use]
-pub fn q1_step_keeps_move(angle_yaw: f64, ideal_yaw: f64) -> bool {
-    let delta = angle_yaw - ideal_yaw;
-    !(delta > Q1_STEP_YAW_CLAMP && delta < 360.0 - Q1_STEP_YAW_CLAMP)
-}
-
-/// Turnaround direction for an old quantized direction.
-#[must_use]
-pub fn q1_turnaround(old_direction: f64) -> f64 {
-    q1_angle_mod(old_direction - 180.0)
-}
-
-/// Quantize an ideal yaw to a 45-degree chase direction.
-#[must_use]
-pub fn q1_quantize_chase_direction(ideal_yaw: f64) -> f64 {
-    q1_angle_mod((ideal_yaw / 45.0).trunc() * 45.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use qa_core::math::vec3;
-
-    #[test]
-    fn angle_mod_matches_donor_encoding() {
-        assert_eq!(q1_angle_mod(0.0), 0.0);
-        assert_eq!(q1_angle_mod(360.0), 0.0);
-        assert_eq!(q1_angle_mod(90.0), 90.0);
-        assert!((q1_angle_mod(45.0) - 45.0).abs() < 0.01);
-        assert_eq!(q1_angle_mod(-90.0), 270.0);
-    }
-
-    #[test]
-    fn change_yaw_takes_shortest_arc_and_caps_speed() {
-        assert_eq!(q1_change_yaw_step(0.0, 0.0, 10.0), 0.0);
-        assert_eq!(q1_change_yaw_step(0.0, 90.0, 10.0), q1_angle_mod(10.0));
-        assert_eq!(q1_change_yaw_step(0.0, 90.0, 100.0), 90.0);
-        assert!((q1_change_yaw_step(350.0, 10.0, 45.0) - 10.0).abs() < 0.01);
-        assert!((q1_change_yaw_step(10.0, 350.0, 45.0) - 350.0).abs() < 0.01);
-        assert!((q1_change_yaw_step(0.0, 180.0, 10.0) - 350.0).abs() < 0.01);
-    }
 
     #[test]
     fn ground_move_requires_contact_or_flight() {
@@ -229,15 +160,10 @@ mod tests {
     }
 
     #[test]
-    fn chase_gating_and_step_revert_match_donor() {
+    fn chase_gating_matches_donor() {
         assert!(q1_retarget_chase(1, true));
         assert!(!q1_retarget_chase(0, true));
         assert!(q1_retarget_chase(0, false));
-        assert!(q1_step_keeps_move(10.0, 0.0));
-        assert!(!q1_step_keeps_move(100.0, 0.0));
-        assert!(q1_step_keeps_move(320.0, 0.0));
-        assert_eq!(q1_turnaround(0.0), 180.0);
-        assert_eq!(q1_quantize_chase_direction(100.0), 90.0);
     }
 
     #[test]

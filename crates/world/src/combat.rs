@@ -472,22 +472,67 @@ pub fn apply_damage_modifier(
     }
 }
 
+/// Health-take rule per game: floor plus the source integer conversion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HealthTakeSpec {
+    /// Health floor.
+    pub floor: f64,
+    /// Truncate the remainder toward zero.
+    pub truncate: bool,
+    /// Convert through 32-bit int after truncation (`| 0`).
+    pub int32: bool,
+}
+
+/// Q1 health rule: floor `-99`, no conversion.
+pub const Q1_HEALTH_TAKE: HealthTakeSpec = HealthTakeSpec {
+    floor: -99.0,
+    truncate: false,
+    int32: false,
+};
+
+/// Q2 health rule: floor `-999` with truncation.
+pub const Q2_HEALTH_TAKE: HealthTakeSpec = HealthTakeSpec {
+    floor: -999.0,
+    truncate: true,
+    int32: false,
+};
+
+/// Q3 health rule: floor `-999` with `| 0` conversion.
+pub const Q3_HEALTH_TAKE: HealthTakeSpec = HealthTakeSpec {
+    floor: -999.0,
+    truncate: true,
+    int32: true,
+};
+
+/// Apply one health take under a per-game rule.
+#[must_use]
+pub fn health_take_with(health: f64, take: f64, spec: HealthTakeSpec) -> f64 {
+    let mut value = health - take;
+    if spec.truncate {
+        value = value.trunc();
+    }
+    if spec.int32 {
+        value = f64::from(value as i32);
+    }
+    value.max(spec.floor)
+}
+
 /// Q1 health floor is `-99`.
 #[must_use]
 pub fn q1_health_take(health: f64, take: f64) -> f64 {
-    (health - take).max(-99.0)
+    health_take_with(health, take, Q1_HEALTH_TAKE)
 }
 
 /// Q2 health floor is `-999` with truncation.
 #[must_use]
 pub fn q2_health_take(health: f64, take: f64) -> f64 {
-    (health - take).trunc().max(-999.0)
+    health_take_with(health, take, Q2_HEALTH_TAKE)
 }
 
 /// Q3 health floor is `-999` with `| 0` conversion.
 #[must_use]
 pub fn q3_health_take(health: f64, take: f64) -> f64 {
-    f64::from((health - take).trunc() as i32).max(-999.0)
+    health_take_with(health, take, Q3_HEALTH_TAKE)
 }
 
 /// Reaction for committed health.
@@ -722,6 +767,30 @@ mod tests {
         assert_eq!(reaction_for_health(-1.0, false), Reaction::Death);
         assert_eq!(reaction_for_health(5.0, true), Reaction::None);
         assert_eq!(reaction_for_health(5.0, false), Reaction::Pain);
+    }
+
+    #[test]
+    fn health_take_table_matches_each_source_conversion() {
+        assert_eq!(health_take_with(100.75, 0.25, Q1_HEALTH_TAKE), 100.5);
+        assert_eq!(health_take_with(100.75, 0.25, Q2_HEALTH_TAKE), 100.0);
+        assert_eq!(health_take_with(100.75, 0.25, Q3_HEALTH_TAKE), 100.0);
+        assert_eq!(health_take_with(-50.0, 60.0, Q1_HEALTH_TAKE), -99.0);
+        assert_eq!(health_take_with(-50.0, 60.0, Q2_HEALTH_TAKE), -110.0);
+        assert_eq!(health_take_with(-50.0, 60.0, Q3_HEALTH_TAKE), -110.0);
+        assert_eq!(health_take_with(0.0, 5000.0, Q2_HEALTH_TAKE), -999.0);
+        assert_eq!(health_take_with(0.0, 5000.0, Q3_HEALTH_TAKE), -999.0);
+        assert_eq!(
+            q1_health_take(100.75, 0.25),
+            health_take_with(100.75, 0.25, Q1_HEALTH_TAKE)
+        );
+        assert_eq!(
+            q2_health_take(100.75, 0.25),
+            health_take_with(100.75, 0.25, Q2_HEALTH_TAKE)
+        );
+        assert_eq!(
+            q3_health_take(100.75, 0.25),
+            health_take_with(100.75, 0.25, Q3_HEALTH_TAKE)
+        );
     }
 
     #[test]

@@ -249,6 +249,36 @@ impl Q2Math {
     }
 }
 
+/// Shared Q2 air accelerate: classic and rerelease pmove carry identical
+/// bodies (30-unit wish cap, `accel * wishspeed * frametime` gain order).
+#[allow(clippy::too_many_arguments)]
+pub fn q2_air_accelerate(
+    n: NumericOps,
+    math: Q2Math,
+    velocity: &mut SrcVec3,
+    wishdir: SrcVec3,
+    wishspeed: f64,
+    accel: f64,
+    frametime: f64,
+) {
+    let mut wishspd = wishspeed;
+    if wishspd > 30.0 {
+        wishspd = 30.0;
+    }
+    let currentspeed = math.dot(*velocity, wishdir);
+    let addspeed = n.sub(wishspd, currentspeed);
+    if addspeed <= 0.0 {
+        return;
+    }
+    let mut accelspeed = n.mul(n.mul(accel, wishspeed), frametime);
+    if accelspeed > addspeed {
+        accelspeed = addspeed;
+    }
+    for i in AXES {
+        velocity[i] = f64::from(n.store(n.add(velocity[i], n.mul(accelspeed, wishdir[i]))));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +314,21 @@ mod tests {
         let math = math();
         let clipped = math.slide_clip_velocity([0.05, 0.2, 1.0], [0.0, 0.0, 1.0], 1.0);
         assert_eq!(clipped, [0.0, 0.2, 0.0]);
+    }
+
+    #[test]
+    fn shared_air_accelerate_caps_wish_and_gates_add_speed() {
+        let math = math();
+        let n = math.n;
+        let mut velocity = [0.0, 0.0, 0.0];
+        q2_air_accelerate(n, math, &mut velocity, [1.0, 0.0, 0.0], 300.0, 10.0, 0.1);
+        assert!((velocity[0] - 30.0).abs() < 1e-6, "{velocity:?}");
+        let mut fast = [100.0, 0.0, 0.0];
+        q2_air_accelerate(n, math, &mut fast, [1.0, 0.0, 0.0], 300.0, 10.0, 0.1);
+        assert_eq!(fast, [100.0, 0.0, 0.0]);
+        let mut small = [0.0, 0.0, 0.0];
+        q2_air_accelerate(n, math, &mut small, [0.0, 1.0, 0.0], 20.0, 1.0, 0.01);
+        assert!((small[1] - 0.2).abs() < 1e-6, "{small:?}");
     }
 
     #[test]

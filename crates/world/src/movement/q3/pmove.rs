@@ -29,13 +29,10 @@ const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
 /// Drop locomotion timers.
 pub fn drop_q3_movement_timers(motion: &mut Q3Motion, milliseconds: i32) {
-    if motion.pm_time != 0 {
-        if milliseconds >= motion.pm_time {
-            motion.pm_flags &= !ALL_TIMES;
-            motion.pm_time = 0;
-        } else {
-            motion.pm_time -= milliseconds;
-        }
+    let (time, expired) = super::super::q3_timer_countdown(motion.pm_time, milliseconds);
+    motion.pm_time = time;
+    if expired {
+        motion.pm_flags &= !ALL_TIMES;
     }
 }
 

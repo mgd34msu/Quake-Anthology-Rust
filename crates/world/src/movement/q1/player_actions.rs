@@ -31,6 +31,23 @@ pub struct Q1JumpResult {
     pub action: Q1JumpAction,
 }
 
+/// Ground-jump vertical impulse shared by NetQuake gamecode and QuakeWorld
+/// pmove.
+pub const Q1_JUMP_IMPULSE: f64 = 270.0;
+
+/// Swim vertical impulse by water contents. NetQuake gamecode (`client.qc`)
+/// and QuakeWorld pmove (`pmove.c`) carry the same table.
+#[must_use]
+pub fn q1_swim_vertical(water_type: i32) -> f64 {
+    if water_type == Q1_CONTENTS_WATER {
+        100.0
+    } else if water_type == Q1_CONTENTS_SLIME {
+        80.0
+    } else {
+        50.0
+    }
+}
+
 /// Gamecode jump/swim entry. Gamecode owns sounds and timers; do not run in
 /// addition to QC.
 #[must_use]
@@ -42,13 +59,7 @@ pub fn q1_player_jump<S: Q1MovementServices>(state: &Q1MovementState, services: 
         };
     }
     if state.water_level >= 2 {
-        let vertical = if state.water_type == Q1_CONTENTS_WATER {
-            100.0
-        } else if state.water_type == Q1_CONTENTS_SLIME {
-            80.0
-        } else {
-            50.0
-        };
+        let vertical = q1_swim_vertical(state.water_type);
         return Q1JumpResult {
             state: Q1MovementState {
                 velocity: Vec3 {
@@ -74,7 +85,7 @@ pub fn q1_player_jump<S: Q1MovementServices>(state: &Q1MovementState, services: 
             velocity: Vec3 {
                 x: state.velocity.x,
                 y: state.velocity.y,
-                z: numeric.store(numeric.add(f64::from(state.velocity.z), 270.0)),
+                z: numeric.store(numeric.add(f64::from(state.velocity.z), Q1_JUMP_IMPULSE)),
             },
             ..state.clone()
         },
@@ -159,6 +170,8 @@ mod tests {
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
 
+    use super::super::types::Q1_CONTENTS_EMPTY;
+
     #[test]
     fn water_jump_blocks_regular_jump() {
         let owner = IdentityOwner::create("q1-actions").unwrap();
@@ -178,6 +191,15 @@ mod tests {
         assert_eq!((slime.action, slime.state.velocity.z), (Q1JumpAction::Swim, 80.0));
         let lava = q1_player_jump(&jump_state(0, 2, -5), &services);
         assert_eq!((lava.action, lava.state.velocity.z), (Q1JumpAction::Swim, 50.0));
+    }
+
+    #[test]
+    fn shared_jump_table_matches_both_donors() {
+        assert_eq!(Q1_JUMP_IMPULSE, 270.0);
+        assert_eq!(q1_swim_vertical(Q1_CONTENTS_WATER), 100.0);
+        assert_eq!(q1_swim_vertical(Q1_CONTENTS_SLIME), 80.0);
+        assert_eq!(q1_swim_vertical(-5), 50.0);
+        assert_eq!(q1_swim_vertical(Q1_CONTENTS_EMPTY), 50.0);
     }
 
     #[test]

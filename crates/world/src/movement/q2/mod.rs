@@ -6,7 +6,8 @@
 use std::cell::RefCell;
 
 use qa_core::identity::{same_actor, ProviderId};
-use qa_core::math::{vec3, Bounds, Plane, Vec3};
+use qa_core::math::{Bounds, Plane, Vec3};
+use qa_core::numeric::NumericOps;
 use qa_core::time::SourceTime;
 
 pub mod classic;
@@ -24,11 +25,12 @@ pub use types::{button, kex_pm_type, pm_flags, pm_type, water_level, ClassicPmov
 
 use super::client_outputs::{client_movement_mode, client_movement_type, client_stance_command};
 use super::types::{
-    MovementContinuation, MovementDialect, MovementEffect, MovementError, MovementExecution, MovementInputContinuation,
-    MovementOutcome, MovementResultFields, OrderedMovementEffect, TouchSurface, TraceContact, TraceHit, TraceShape,
-    UserCommand,
+    MovementContinuation, MovementDialect, MovementEffect, MovementEnvironment, MovementError, MovementExecution,
+    MovementInputContinuation, MovementInputFields, MovementOutcome, MovementResultFields, OrderedMovementEffect,
+    TouchSurface, TraceContact, TraceHit, TraceShape, UserCommand,
 };
 use dimensions::command_duration;
+use swept::{scene as vector, source as source_vector};
 use types::{pm_flags as flags, pm_type as classic_type, Q2MovementServices};
 use types::{
     CPlane, CSurface, ClassicPmoveCmd, ClassicPmoveState, KexPmoveCmd, KexPmoveState, KexTouchList, MovementEntity,
@@ -38,14 +40,6 @@ use types::{
 };
 
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-
-fn vector(source: SrcVec3) -> Vec3 {
-    vec3(source[0] as f32, source[1] as f32, source[2] as f32)
-}
-
-fn source_vector(value: Vec3) -> SrcVec3 {
-    [f64::from(value.x), f64::from(value.y), f64::from(value.z)]
-}
 
 fn body_bounds(shape: &TraceShape) -> Bounds {
     match *shape {
@@ -282,17 +276,82 @@ fn touch_contacts<S: Q2MovementServices>(
     Ok(MovementContinuation::Continue(state))
 }
 
+/// Resolve a client stance override and check the movement dialect.
+fn resolve_stanced_command<C>(
+    command: UserCommand,
+    stance: Option<bool>,
+    extract: impl FnOnce(UserCommand) -> Option<C>,
+) -> Result<C, MovementError> {
+    let command = client_stance_command(command, stance).map_err(|error| MovementError::Contract(error.0))?;
+    extract(command).ok_or(MovementError::Contract("Client output changed movement dialect"))
+}
+
+/// Flight gate plus equipment speed multiplier from the environment.
+fn q2_flight_and_speed(environment: &MovementEnvironment) -> (bool, f64) {
+    (
+        environment.flight && environment.health > 0.0,
+        environment.speed_multiplier.unwrap_or(1.0),
+    )
+}
+
+/// Planar speed under profile arithmetic.
+fn q2_planar_speed(n: NumericOps, x: f64, y: f64) -> f64 {
+    n.sqrt(n.add(n.mul(x, x), n.mul(y, y)))
+}
+
+/// Apply a fixed-pose crouch override to a pmove flag word.
+fn apply_pose_duck(pm_flags: &mut i32, crouched: bool) {
+    if crouched {
+        *pm_flags |= flags::DUCKED;
+    } else {
+        *pm_flags &= !flags::DUCKED;
+    }
+}
+
+/// Assemble shared result fields for a classic or rerelease Q2 step.
+#[allow(clippy::too_many_arguments)]
+fn q2_result_fields(
+    fields: &MovementInputFields,
+    bounds: Bounds,
+    view_angles: Vec3,
+    view_height: f64,
+    ground: Option<MovementEntity>,
+    water_level: i32,
+    water_type: i32,
+    horizontal_speed: f64,
+    contacts: Vec<Q2MovementContact>,
+) -> MovementResultFields<Q2MovementContact> {
+    MovementResultFields {
+        actor: fields.actor.id().clone(),
+        command_sequence: fields.command_sequence,
+        bounds,
+        view_angles,
+        view_height,
+        ground: ground.unwrap_or(TraceHit::None),
+        water_level,
+        water_type,
+        horizontal_speed,
+        contacts,
+        effects: Vec::new(),
+        arsenal: fields.arsenal.clone(),
+        animation: fields.animation.clone(),
+    }
+}
+
 fn move_q2_classic_physics<S: Q2MovementServices>(
     input: Q2MovementInput,
     services: &mut S,
 ) -> Result<Q2MovementResult, MovementError> {
     let output = input.fields.environment.client_outputs;
     let mode = client_movement_mode(output.as_ref(), input.fields.environment.health);
-    let command = client_stance_command(UserCommand::Q2Classic(input.command), output.and_then(|o| o.stance))
-        .map_err(|error| MovementError::Contract(error.0))?;
-    let UserCommand::Q2Classic(command) = command else {
-        return Err(MovementError::Contract("Client output changed movement dialect"));
-    };
+    let command = resolve_stanced_command(
+        UserCommand::Q2Classic(input.command),
+        output.and_then(|o| o.stance),
+        |command| match command {
+            UserCommand::Q2Classic(command) => Some(command),
+            _ => None,
+        },
+    )?;
     let input = Q2MovementInput { command, ..input };
     command_duration(input.command.milliseconds)?;
     let n = services.numeric();
@@ -358,8 +417,7 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
         }),
         pointcontents: Box::new(|point| adapter.borrow_mut().pointcontents(point)),
     };
-    let flight = input.fields.environment.flight && input.fields.environment.health > 0.0;
-    let speed = input.fields.environment.speed_multiplier.unwrap_or(1.0);
+    let (flight, speed) = q2_flight_and_speed(&input.fields.environment);
     classic::pmove_classic(
         &mut pm,
         n,
@@ -371,11 +429,7 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
     if let Some(pose) = pose {
         pm.s.pm_type = input.state.move_type;
         pm.viewheight = pose.view_height;
-        if pose.crouched {
-            pm.s.pm_flags |= flags::DUCKED;
-        } else {
-            pm.s.pm_flags &= !flags::DUCKED;
-        }
+        apply_pose_duck(&mut pm.s.pm_flags, pose.crouched);
     }
     let state = Q2MovementState {
         move_type: if mode.is_none() {
@@ -391,29 +445,22 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
         delta_angle_shorts: pm.s.delta_angles,
     };
     let contacts = movement_contacts(&pm.touchtraces[..pm.numtouch.min(pm.touchtraces.len())]);
-    let horizontal = n.sqrt(n.add(
-        n.mul(pm.s.velocity[0] as f64 / 8.0, pm.s.velocity[0] as f64 / 8.0),
-        n.mul(pm.s.velocity[1] as f64 / 8.0, pm.s.velocity[1] as f64 / 8.0),
-    ));
+    let horizontal = q2_planar_speed(n, pm.s.velocity[0] as f64 / 8.0, pm.s.velocity[1] as f64 / 8.0);
     Ok(MovementOutcome::Active {
-        fields: MovementResultFields {
-            actor: input.fields.actor.id().clone(),
-            command_sequence: input.fields.command_sequence,
-            bounds: Bounds {
+        fields: q2_result_fields(
+            &input.fields,
+            Bounds {
                 min: vector(pm.mins),
                 max: vector(pm.maxs),
             },
-            view_angles: vector(pm.viewangles),
-            view_height: pm.viewheight,
-            ground: pm.groundentity.clone().unwrap_or(TraceHit::None),
-            water_level: pm.waterlevel,
-            water_type: pm.watertype,
-            horizontal_speed: horizontal,
+            vector(pm.viewangles),
+            pm.viewheight,
+            pm.groundentity.clone(),
+            pm.waterlevel,
+            pm.watertype,
+            horizontal,
             contacts,
-            effects: Vec::new(),
-            arsenal: input.fields.arsenal.clone(),
-            animation: input.fields.animation.clone(),
-        },
+        ),
         state,
     })
 }
@@ -523,11 +570,14 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
 ) -> Result<Q2RereleaseMovementResult, MovementError> {
     let output = input.fields.environment.client_outputs;
     let mode = client_movement_mode(output.as_ref(), input.fields.environment.health);
-    let command = client_stance_command(UserCommand::Q2Rerelease(input.command), output.and_then(|o| o.stance))
-        .map_err(|error| MovementError::Contract(error.0))?;
-    let UserCommand::Q2Rerelease(command) = command else {
-        return Err(MovementError::Contract("Client output changed movement dialect"));
-    };
+    let command = resolve_stanced_command(
+        UserCommand::Q2Rerelease(input.command),
+        output.and_then(|o| o.stance),
+        |command| match command {
+            UserCommand::Q2Rerelease(command) => Some(command),
+            _ => None,
+        },
+    )?;
     let input = Q2RereleaseMovementInput { command, ..input };
     command_duration(input.command.milliseconds)?;
     let n = services.numeric();
@@ -597,8 +647,7 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
         step_clip: false,
         impact_delta: 0.0,
     };
-    let flight = input.fields.environment.flight && input.fields.environment.health > 0.0;
-    let speed = input.fields.environment.speed_multiplier.unwrap_or(1.0);
+    let (flight, speed) = q2_flight_and_speed(&input.fields.environment);
     let config = PmConfig {
         airaccel: input.profile.air_accelerate,
         n64_physics: input.profile.n64_physics,
@@ -608,11 +657,7 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
     if let Some(pose) = pose {
         pm.s.pm_type = input.state.move_type;
         pm.s.viewheight = pose.view_height;
-        if pose.crouched {
-            pm.s.pm_flags |= flags::DUCKED;
-        } else {
-            pm.s.pm_flags &= !flags::DUCKED;
-        }
+        apply_pose_duck(&mut pm.s.pm_flags, pose.crouched);
     }
     let presentation = Q2RereleasePresentation {
         screen_blend: qa_core::math::Vec4 {
@@ -641,29 +686,22 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
         view_height: pm.s.viewheight,
     };
     let contacts = movement_contacts(&pm.touch.traces[..pm.touch.num.min(pm.touch.traces.len())]);
-    let horizontal = n.sqrt(n.add(
-        n.mul(pm.s.velocity[0], pm.s.velocity[0]),
-        n.mul(pm.s.velocity[1], pm.s.velocity[1]),
-    ));
+    let horizontal = q2_planar_speed(n, pm.s.velocity[0], pm.s.velocity[1]);
     Ok(Q2RereleaseMovementResult::Active {
-        fields: MovementResultFields {
-            actor: input.fields.actor.id().clone(),
-            command_sequence: input.fields.command_sequence,
-            bounds: Bounds {
+        fields: q2_result_fields(
+            &input.fields,
+            Bounds {
                 min: vector(pm.mins),
                 max: vector(pm.maxs),
             },
-            view_angles: vector(pm.viewangles),
-            view_height: pm.s.viewheight,
-            ground: pm.groundentity.clone().unwrap_or(TraceHit::None),
-            water_level: pm.waterlevel,
-            water_type: pm.watertype,
-            horizontal_speed: horizontal,
+            vector(pm.viewangles),
+            pm.s.viewheight,
+            pm.groundentity.clone(),
+            pm.waterlevel,
+            pm.watertype,
+            horizontal,
             contacts,
-            effects: Vec::new(),
-            arsenal: input.fields.arsenal.clone(),
-            animation: input.fields.animation.clone(),
-        },
+        ),
         state,
         presentation,
     })
@@ -925,6 +963,7 @@ fn result_actor(result: &Q2MovementResult) -> &qa_core::identity::ActorId {
 mod tests {
     use super::*;
     use qa_core::identity::IdentityOwner;
+    use qa_core::math::vec3;
     use qa_core::numeric::{NumericOps, Q2_DONOR_PROFILE};
     use qa_core::time::{ClockProfile, FrameContext, FramePhase, SourceTime};
 
@@ -1145,5 +1184,74 @@ mod tests {
     #[test]
     fn player_shape_is_source_box() {
         assert_eq!(q2_player_shape(), TraceShape::Box(Q2_PLAYER_BOUNDS));
+    }
+
+    #[test]
+    fn shared_stage_helpers_match_both_physics_paths() {
+        let input = classic_input();
+        let resolved: Q2UserCommand =
+            resolve_stanced_command(UserCommand::Q2Classic(input.command), None, |command| match command {
+                UserCommand::Q2Classic(command) => Some(command),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(resolved, input.command);
+        let mismatch: Result<Q2UserCommand, MovementError> = resolve_stanced_command(
+            UserCommand::Q2Rerelease(rerelease_input().command),
+            None,
+            |command| match command {
+                UserCommand::Q2Classic(command) => Some(command),
+                _ => None,
+            },
+        );
+        assert_eq!(
+            mismatch,
+            Err(MovementError::Contract("Client output changed movement dialect"))
+        );
+
+        let mut environment = MovementEnvironment::default();
+        assert_eq!(q2_flight_and_speed(&environment), (false, 1.0));
+        environment.flight = true;
+        environment.speed_multiplier = Some(2.0);
+        assert_eq!(q2_flight_and_speed(&environment), (true, 2.0));
+        environment.health = 0.0;
+        assert_eq!(q2_flight_and_speed(&environment), (false, 2.0));
+
+        let n = NumericOps::select(Q2_DONOR_PROFILE).unwrap();
+        assert_eq!(q2_planar_speed(n, 3.0, 4.0), 5.0);
+        assert_eq!(q2_planar_speed(n, 800.0 / 8.0, 0.0), 100.0);
+
+        let mut pm_flags = 0;
+        apply_pose_duck(&mut pm_flags, true);
+        assert_eq!(pm_flags, flags::DUCKED);
+        apply_pose_duck(&mut pm_flags, false);
+        assert_eq!(pm_flags, 0);
+
+        let fields = fields();
+        let assembled = q2_result_fields(
+            &fields,
+            Q2_PLAYER_BOUNDS,
+            vec3(0.0, 90.0, 0.0),
+            22.0,
+            None,
+            0,
+            0,
+            100.0,
+            Vec::new(),
+        );
+        assert_eq!(assembled.actor, fields.actor.id().clone());
+        assert_eq!(assembled.command_sequence, 1);
+        assert_eq!(assembled.bounds, Q2_PLAYER_BOUNDS);
+        assert_eq!(assembled.ground, TraceHit::None);
+        assert_eq!(assembled.horizontal_speed, 100.0);
+        assert!(assembled.effects.is_empty());
+        assert_eq!(assembled.arsenal, fields.arsenal);
+        assert_eq!(assembled.animation, fields.animation);
+    }
+
+    #[test]
+    fn swept_converters_serve_both_call_sites() {
+        assert_eq!(vector([1.0, 2.0, 3.0]), vec3(1.0, 2.0, 3.0));
+        assert_eq!(source_vector(vec3(1.0, 2.0, 3.0)), [1.0, 2.0, 3.0]);
     }
 }

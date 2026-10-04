@@ -175,6 +175,34 @@ impl MovementMath {
     }
 }
 
+/// Shared Q1 accelerate kernel. NetQuake and QuakeWorld differ only in their
+/// guards and wish/axis selection; the add-speed gate, ground/air gain order,
+/// and velocity apply step are one donor formula.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn q1_accelerate_apply(
+    math: MovementMath,
+    velocity: Vec3,
+    axis: Vec3,
+    wish: f64,
+    speed: f64,
+    accelerate: f64,
+    frame_seconds: f64,
+    air: bool,
+) -> Vec3 {
+    let n = math.n;
+    let add = n.sub(wish, math.dot(velocity, axis));
+    if add <= 0.0 {
+        return velocity;
+    }
+    let gain = if air {
+        n.mul(n.mul(accelerate, speed), frame_seconds)
+    } else {
+        n.mul(n.mul(accelerate, frame_seconds), speed)
+    };
+    math.ma(velocity, gain.min(add), axis)
+}
+
 /// Shared per-step movement context: contacts, effects, traces, lifecycle.
 pub struct MovementContext<'s, S: Q1MovementServices, H: Q1MovementHooks = NoQ1Hooks> {
     /// Player input.
@@ -693,6 +721,26 @@ mod tests {
             fix_angle: false,
             health: 100.0,
         })
+    }
+
+    #[test]
+    fn accelerate_kernel_gates_and_gains_like_both_donors() {
+        let math = MovementMath::new(NumericOps::select(Q1_DONOR_PROFILE).unwrap());
+        let axis = vec3(1.0, 0.0, 0.0);
+        let resting = vec3(0.0, 0.0, 0.0);
+        let ground = q1_accelerate_apply(math, resting, axis, 320.0, 320.0, 10.0, 0.05, false);
+        assert!((f64::from(ground.x) - 160.0).abs() < 1e-6);
+        let air = q1_accelerate_apply(math, resting, axis, 30.0, 320.0, 10.0, 0.05, true);
+        assert!((f64::from(air.x) - 30.0).abs() < 1e-6);
+        let fast = vec3(400.0, 0.0, 0.0);
+        assert_eq!(
+            q1_accelerate_apply(math, fast, axis, 320.0, 320.0, 10.0, 0.05, false),
+            fast
+        );
+        assert_eq!(
+            q1_accelerate_apply(math, fast, axis, 30.0, 320.0, 10.0, 0.05, true),
+            fast
+        );
     }
 
     #[test]

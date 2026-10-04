@@ -651,6 +651,28 @@ mod tests {
     }
 
     #[test]
+    fn yaw_takes_shortest_arc_across_seam() {
+        let (owner, harness) = harness();
+        let id = owner.actor(1, 0);
+        let actor = owner
+            .owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test"))
+            .unwrap();
+        let mut movement = Q1MonsterMovement::new(harness);
+        let state = movement.services.state.as_mut().unwrap();
+        state.angles = vec3(0.0, 350.0, 0.0);
+        state.ideal_yaw = 10.0;
+        movement.change_yaw(&actor);
+        let yaw = movement.services.state.as_ref().unwrap().angles.y;
+        assert!((f64::from(yaw) - 10.0).abs() < 0.01, "{yaw}");
+        let state = movement.services.state.as_mut().unwrap();
+        state.angles = vec3(0.0, 10.0, 0.0);
+        state.ideal_yaw = 350.0;
+        movement.change_yaw(&actor);
+        let yaw = movement.services.state.as_ref().unwrap().angles.y;
+        assert!((f64::from(yaw) - 350.0).abs() < 0.01, "{yaw}");
+    }
+
+    #[test]
     fn solid_corners_pass_bottom_check() {
         let (owner, harness) = harness();
         let id = owner.actor(1, 0);

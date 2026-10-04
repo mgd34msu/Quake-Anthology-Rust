@@ -174,9 +174,10 @@ pub fn clip_velocity_q3_default(velocity: Vec3, normal: Vec3) -> Vec3 {
     clip_velocity_q3(velocity, normal, 1.001)
 }
 
-/// Q1 `ClipVelocity`: profile arithmetic with the `0.1` snap-to-zero.
-#[must_use]
-pub fn clip_velocity_q1(velocity: Vec3, normal: Vec3, overbounce: f64, ops: &NumericOps) -> Vec3 {
+/// Shared Q1/Q2 clip core: profile arithmetic with the `0.1` snap-to-zero.
+/// The Q1 `abs() < 0.1` and Q2 interval dead-zone predicates agree on every
+/// `f32`, including NaN (both keep the value).
+fn clip_velocity_q1_q2(velocity: Vec3, normal: Vec3, overbounce: f64, ops: &NumericOps) -> Vec3 {
     let dot = ops.add(
         ops.add(
             ops.mul(f64::from(velocity.x), f64::from(normal.x)),
@@ -199,29 +200,16 @@ pub fn clip_velocity_q1(velocity: Vec3, normal: Vec3, overbounce: f64, ops: &Num
     )
 }
 
+/// Q1 `ClipVelocity`: profile arithmetic with the `0.1` snap-to-zero.
+#[must_use]
+pub fn clip_velocity_q1(velocity: Vec3, normal: Vec3, overbounce: f64, ops: &NumericOps) -> Vec3 {
+    clip_velocity_q1_q2(velocity, normal, overbounce, ops)
+}
+
 /// Q2 `SlideClipVelocity`: profile arithmetic with the `0.1` dead zone.
 #[must_use]
 pub fn slide_clip_q2(velocity: Vec3, normal: Vec3, overbounce: f64, ops: &NumericOps) -> Vec3 {
-    let dot = ops.add(
-        ops.add(
-            ops.mul(f64::from(velocity.x), f64::from(normal.x)),
-            ops.mul(f64::from(velocity.y), f64::from(normal.y)),
-        ),
-        ops.mul(f64::from(velocity.z), f64::from(normal.z)),
-    );
-    let backoff = ops.mul(dot, overbounce);
-    let clean = |value: f32| {
-        if value > -0.1 && value < 0.1 {
-            0.0
-        } else {
-            value
-        }
-    };
-    vec3(
-        clean(ops.store(ops.sub(f64::from(velocity.x), ops.mul(f64::from(normal.x), backoff)))),
-        clean(ops.store(ops.sub(f64::from(velocity.y), ops.mul(f64::from(normal.y), backoff)))),
-        clean(ops.store(ops.sub(f64::from(velocity.z), ops.mul(f64::from(normal.z), backoff)))),
-    )
+    clip_velocity_q1_q2(velocity, normal, overbounce, ops)
 }
 
 /// A requested local hull expands only after the selected source collision
@@ -241,16 +229,27 @@ pub fn movement_bounds(previous: &Bounds, requested: &Bounds, clear: &dyn Fn(&Bo
     }
 }
 
+/// Shared Q3 movement-timer countdown. Returns the remaining time and whether
+/// the timer just expired; each caller clears its own flag word (the `u32`
+/// kernel flags here and the `i32` pmove flags share the same timer bits).
+#[must_use]
+pub fn q3_timer_countdown(pm_time: i32, milliseconds: i32) -> (i32, bool) {
+    if pm_time == 0 {
+        (pm_time, false)
+    } else if milliseconds >= pm_time {
+        (0, true)
+    } else {
+        (pm_time - milliseconds, false)
+    }
+}
+
 /// Q3 movement-timer countdown. Clears every timer when the step covers the
 /// remaining time.
 pub fn drop_q3_movement_timers(pm_time: &mut i32, pm_flags: &mut u32, milliseconds: i32) {
-    if *pm_time != 0 {
-        if milliseconds >= *pm_time {
-            *pm_flags &= !q3_flag::ALL_TIMES;
-            *pm_time = 0;
-        } else {
-            *pm_time -= milliseconds;
-        }
+    let (time, expired) = q3_timer_countdown(*pm_time, milliseconds);
+    *pm_time = time;
+    if expired {
+        *pm_flags &= !q3_flag::ALL_TIMES;
     }
 }
 
@@ -392,6 +391,29 @@ mod tests {
     fn q2_slide_clip_applies_the_dead_zone() {
         let clipped = slide_clip_q2(vec3(0.05, 0.2, 0.0), vec3(0.0, 0.0, 1.0), 1.0, &q1_ops());
         assert_eq!(clipped, vec3(0.0, 0.2, 0.0));
+    }
+
+    #[test]
+    fn q1_q2_clip_wrappers_agree_on_shared_core() {
+        let ops = q1_ops();
+        let cases = [
+            (vec3(1.0, 0.05, -1.0), vec3(0.0, 0.0, 1.0), 1.0),
+            (vec3(0.05, 0.2, 0.0), vec3(0.0, 0.0, 1.0), 1.0),
+            (vec3(0.1, -0.1, 0.09), vec3(0.0, 1.0, 0.0), 1.0),
+            (vec3(-3.5, 2.25, 300.0), vec3(0.0, 0.0, 1.0), 1.5),
+            (vec3(10.0, -10.0, 10.0), vec3(1.0, 0.0, 0.0), 0.5),
+        ];
+        for (velocity, normal, overbounce) in cases {
+            assert_eq!(
+                clip_velocity_q1(velocity, normal, overbounce, &ops),
+                slide_clip_q2(velocity, normal, overbounce, &ops),
+                "wrappers disagree on {velocity:?}"
+            );
+        }
+        assert_eq!(q3_timer_countdown(0, 50), (0, false));
+        assert_eq!(q3_timer_countdown(100, 30), (70, false));
+        assert_eq!(q3_timer_countdown(100, 100), (0, true));
+        assert_eq!(q3_timer_countdown(100, 250), (0, true));
     }
 
     #[test]

@@ -62,6 +62,25 @@ pub fn element(values: &[f64], index: usize) -> f64 {
         .unwrap_or_else(|| panic!("Quake II movement index {index} outside {}", values.len()))
 }
 
+/// Initial-snap candidate offsets shared by classic and rerelease pmove.
+pub const Q2_INITIAL_SNAP_OFFSETS: [f64; 3] = [0.0, -1.0, 1.0];
+
+/// Drive the 27-candidate initial-snap search in source order (z outer, x
+/// inner), stopping at the first candidate the probe accepts. Classic snaps
+/// wrapped short storage and rerelease snaps float storage; both probe the
+/// same offset sequence, so the loop is generic over the per-candidate write.
+pub fn search_initial_snap_position(mut attempt: impl FnMut(usize, usize, usize) -> bool) {
+    for z in AXES {
+        for y in AXES {
+            for x in AXES {
+                if attempt(x, y, z) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// Classic pmove types (`PmTypeT`).
 pub mod pm_type {
     /// Normal.
@@ -831,6 +850,28 @@ mod tests {
         assert_eq!(STEPSIZE, 18.0);
         assert_eq!(MAXTOUCH, 32);
         assert_eq!(PITCH, 0);
+    }
+
+    #[test]
+    fn snap_search_visits_source_order_and_stops_early() {
+        assert_eq!(Q2_INITIAL_SNAP_OFFSETS, [0.0, -1.0, 1.0]);
+        let mut visits = Vec::new();
+        search_initial_snap_position(|x, y, z| {
+            visits.push((x, y, z));
+            false
+        });
+        assert_eq!(visits.len(), 27);
+        assert_eq!(visits[0], (0, 0, 0));
+        assert_eq!(visits[1], (1, 0, 0));
+        assert_eq!(visits[3], (0, 1, 0));
+        assert_eq!(visits[9], (0, 0, 1));
+        assert_eq!(visits[26], (2, 2, 2));
+        let mut early = 0;
+        search_initial_snap_position(|_, _, _| {
+            early += 1;
+            true
+        });
+        assert_eq!(early, 1);
     }
 
     #[test]
