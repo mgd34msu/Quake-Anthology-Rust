@@ -23,10 +23,16 @@ const HEIGHT: u32 = 480;
 const TITLE_BAND: (u32, u32, u32, u32) = (64, 44, 304, 92);
 
 /// Button labels at x 74, y `124 + row * 34`, scale 2.6 (20.8-pixel cells).
+///
+/// Minima are the floor over both menu atlas paths: the synthetic fallback
+/// atlas renders wider glyph advances (7/8/7/5 runs here) while the real
+/// console charset loaded when game content is installed sets tighter
+/// advances (5/4/3/3 runs). Either way the bands must hold multiple
+/// glyph-shaped clusters rather than flat fills or blanks.
 const LABEL_BANDS: [(u32, u32, u32, u32, &str, usize); 4] = [
-    (74, 124, 307, 145, "Play a game", 6),
-    (74, 158, 267, 179, "Load Game", 5),
-    (74, 192, 225, 213, "Options", 4),
+    (74, 124, 307, 145, "Play a game", 5),
+    (74, 158, 267, 179, "Load Game", 4),
+    (74, 192, 225, 213, "Options", 3),
     (74, 226, 163, 247, "Quit", 3),
 ];
 
