@@ -7,6 +7,7 @@ use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3}
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::contract::{apply_source_damage_core, SourceDamageRequest, SourceDamageTransform};
 use crate::q3::base::game::entities::{
     use_actor, DamageParticipant, EntityRef, ItemId, PoolHandle, ProviderId, Q3ItemTable,
 };
@@ -1166,6 +1167,58 @@ pub struct CombatAuthority {
     pub read: Rc<dyn Fn(&ActorId) -> Option<CombatState>>,
 }
 
+impl SourceDamageRequest for DamageRequest {
+    type Amount = f32;
+    type Owner = ProviderId;
+
+    fn source_attacker(&self) -> Option<&ActorId> {
+        self.attack.attacker.as_ref()
+    }
+
+    fn source_inflictor(&self) -> Option<&ActorId> {
+        self.attack.inflictor.as_ref()
+    }
+
+    fn source_powerup_owner(&self) -> Option<&ProviderId> {
+        self.attack.damage_powerup_owner.as_ref()
+    }
+
+    fn source_amount(&self) -> f32 {
+        self.amount
+    }
+
+    fn with_source_damage(
+        &self,
+        attacker: Option<ActorId>,
+        inflictor: Option<ActorId>,
+        powerup_owner: ProviderId,
+        amount: f32,
+    ) -> Self {
+        let mut attack = self.attack.clone();
+        attack.attacker = attacker;
+        attack.inflictor = inflictor;
+        attack.damage_powerup_owner = Some(powerup_owner);
+        DamageRequest {
+            attack,
+            amount,
+            ..self.clone()
+        }
+    }
+}
+
+impl SourceDamageTransform for SourceDamageModifier {
+    type Amount = f32;
+    type Owner = ProviderId;
+
+    fn modifier_owner(&self) -> &ProviderId {
+        &self.owner
+    }
+
+    fn transform_amount(&self, attacker: Option<&ActorId>, amount: f32) -> f32 {
+        (self.transform)(attacker.cloned(), amount)
+    }
+}
+
 /// Apply the source damage modifier (`applySourceDamageModifier`).
 #[must_use]
 pub fn apply_source_damage_modifier(
@@ -1173,25 +1226,7 @@ pub fn apply_source_damage_modifier(
     modifier: Option<&SourceDamageModifier>,
     is_live: &dyn Fn(&ActorId) -> bool,
 ) -> DamageRequest {
-    let Some(modifier) = modifier else {
-        return request.clone();
-    };
-    let current =
-        |actor: &Option<ActorId>| -> Option<ActorId> { actor.as_ref().filter(|handle| is_live(handle)).cloned() };
-    let mut attack = request.attack.clone();
-    attack.attacker = current(&request.attack.attacker);
-    attack.inflictor = current(&request.attack.inflictor);
-    let amount = if attack.damage_powerup_owner.as_ref() == Some(&modifier.owner) {
-        request.amount
-    } else {
-        (modifier.transform)(attack.attacker.clone(), request.amount)
-    };
-    attack.damage_powerup_owner = Some(modifier.owner.clone());
-    DamageRequest {
-        attack,
-        amount,
-        ..request.clone()
-    }
+    apply_source_damage_core(request.clone(), modifier, |actor| is_live(actor))
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,4 +1357,71 @@ pub fn q3_accuracy_hit(team_game: bool, target: &AccuracySubject, attacker: &Acc
         && attacker.player
         && target.health > 0
         && (!team_game || target.team != attacker.team)
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::IdentityOwner;
+
+    use super::*;
+
+    #[test]
+    fn damage_modifier_transforms_and_stamps_owner() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let attacker = owner.actor(7, 0);
+        let dead = owner.actor(9, 0);
+        let provider = String::from("q3:test");
+        let request = DamageRequest {
+            attack: AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Milliseconds { value: 1000 },
+                attacker: Some(attacker.clone()),
+                inflictor: Some(dead),
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider.clone(),
+                cause: AttackCause::Q3 {
+                    means_of_death: 7,
+                    damage_flags: 0,
+                },
+            },
+            target: owner.actor(1, 0),
+            amount: 10.0,
+            knockback: 10.0,
+            direction: vec3(0.0, 0.0, 1.0),
+            point: vec3(0.0, 0.0, 0.0),
+            normal: vec3(0.0, 0.0, 1.0),
+            delivery: DamageDelivery::Direct,
+        };
+        let modifier = SourceDamageModifier {
+            owner: provider.clone(),
+            transform: Rc::new(|attacker, amount| {
+                assert!(attacker.is_some());
+                amount * 2.0
+            }),
+        };
+        let live_attacker = attacker.clone();
+        let applied = apply_source_damage_modifier(&request, Some(&modifier), &|actor| *actor == live_attacker);
+        assert_eq!(applied.amount, 20.0);
+        assert_eq!(applied.attack.attacker, Some(attacker));
+        assert_eq!(applied.attack.inflictor, None);
+        assert_eq!(applied.attack.damage_powerup_owner, Some(provider.clone()));
+
+        let mut stamped = request;
+        stamped.attack.damage_powerup_owner = Some(provider.clone());
+        let skipped = apply_source_damage_modifier(
+            &stamped,
+            Some(&SourceDamageModifier {
+                owner: provider.clone(),
+                transform: Rc::new(|_, _| panic!("must not run")),
+            }),
+            &|_| true,
+        );
+        assert_eq!(skipped.amount, 10.0);
+        assert_eq!(skipped.attack.damage_powerup_owner, Some(provider));
+    }
 }

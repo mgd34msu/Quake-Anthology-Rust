@@ -9,7 +9,7 @@ use qa_core::time::SourceTime;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::contract::{ItemId, ProtectionChannel};
+use crate::contract::{decode_attack_damage_flags, ItemId, ProtectionChannel};
 use qa_world::combat::{Delivery, Reaction};
 
 // Intra-group imports: sibling modules split from the same flat port.
@@ -887,38 +887,34 @@ pub fn attack_damage_flags(request: &DamageRequest) -> AttackDamageFlags {
         AttackCause::Q3 { damage_flags, .. } => *damage_flags,
         _ => 0,
     };
+    let bypass = matches!(
+        cause,
+        AttackCause::Q1 {
+            armor_effect: Some(Q1ArmorEffect::Bypass),
+            ..
+        }
+    );
+    let half = matches!(
+        cause,
+        AttackCause::Q1 {
+            armor_effect: Some(Q1ArmorEffect::HalfEffectiveness),
+            ..
+        }
+    );
+    let bits = decode_attack_damage_flags(q2, q3, bypass, half);
     AttackDamageFlags {
         armor: ArmorDamageFlags {
             stage: None,
-            no_armor: ((q2 | q3) & 2) != 0
-                || matches!(
-                    cause,
-                    AttackCause::Q1 {
-                        armor_effect: Some(Q1ArmorEffect::Bypass),
-                        ..
-                    }
-                ),
-            no_power_armor: (q2 & 0x100) != 0,
-            no_regular_armor: (q2 & 0x80) != 0,
-            energy: (q2 & 4) != 0,
-            regular_protection_scale: Some(
-                if matches!(
-                    cause,
-                    AttackCause::Q1 {
-                        armor_effect: Some(Q1ArmorEffect::HalfEffectiveness),
-                        ..
-                    }
-                ) {
-                    0.5
-                } else {
-                    1.0
-                },
-            ),
+            no_armor: bits.no_armor,
+            no_power_armor: bits.no_power_armor,
+            no_regular_armor: bits.no_regular_armor,
+            energy: bits.energy,
+            regular_protection_scale: Some(if bits.half_protection { 0.5 } else { 1.0 }),
         },
-        no_knockback: (q2 & 8) != 0 || (q3 & 4) != 0,
-        no_protection: (q2 & 0x20) != 0 || (q3 & 8) != 0,
-        no_team_protection: (q3 & 0x10) != 0,
-        destroy_armor: (q2 & 0x40) != 0,
+        no_knockback: bits.no_knockback,
+        no_protection: bits.no_protection,
+        no_team_protection: bits.no_team_protection,
+        destroy_armor: bits.destroy_armor,
     }
 }
 
@@ -1836,5 +1832,33 @@ mod tests {
         let result = absorb_native_armor(&armor, 100, &flags, &context);
         assert_eq!(result.regular_saved, 50);
         assert_eq!(result.power_saved, 0);
+    }
+
+    #[test]
+    fn damage_flags_follow_shared_decoder() {
+        use qa_core::identity::IdentityOwner;
+
+        let owner = IdentityOwner::create("test").expect("owner");
+        let target = owner.actor(1, 0);
+        let mut q3 = test_request(target.clone(), None, 10.0);
+        q3.attack.cause = AttackCause::Q3 {
+            means_of_death: 7,
+            damage_flags: 4 | 8 | 0x10,
+        };
+        let flags = attack_damage_flags(&q3);
+        assert!(!flags.armor.no_armor);
+        assert!(flags.no_knockback);
+        assert!(flags.no_protection);
+        assert!(flags.no_team_protection);
+        assert!(!flags.destroy_armor);
+
+        let mut bypass = test_request(target, None, 10.0);
+        bypass.attack.cause = AttackCause::Q1 {
+            death_type: String::from("test"),
+            armor_effect: Some(Q1ArmorEffect::Bypass),
+        };
+        let flags = attack_damage_flags(&bypass);
+        assert!(flags.armor.no_armor);
+        assert_eq!(flags.armor.regular_protection_scale, Some(1.0));
     }
 }

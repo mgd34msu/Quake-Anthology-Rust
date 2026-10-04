@@ -15,6 +15,7 @@ use qa_core::numeric::qvm_float_to_int;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::contract::vertical_move_direction;
 use crate::q3::base::game::format::{game_format, GameFormatArgument};
 use crate::q3::base::game::state::*;
 use crate::q3::base::game::state::{
@@ -390,14 +391,7 @@ pub fn team_command(driver: &mut dyn Q3Driver, team: Team, command: &str) {
 /// Editor direction conversion (`moveDirection`).
 #[must_use]
 pub fn move_direction(angles: Vec3) -> (Vec3, Vec3) {
-    let vertical = angles.x == 0.0 && angles.z == 0.0;
-    let direction = if vertical && angles.y == -1.0 {
-        vec3(0.0, 0.0, 1.0)
-    } else if vertical && angles.y == -2.0 {
-        vec3(0.0, 0.0, -1.0)
-    } else {
-        angle_vectors(angles).forward
-    };
+    let direction = vertical_move_direction(angles).unwrap_or_else(|| angle_vectors(angles).forward);
     (direction, vec3(0.0, 0.0, 0.0))
 }
 
@@ -485,6 +479,9 @@ mod tests {
         assert!(*fired.borrow());
         let (direction, zero) = move_direction(vec3(0.0, -1.0, 0.0));
         assert_eq!(direction, vec3(0.0, 0.0, 1.0));
+        assert_eq!(zero, vec3(0.0, 0.0, 0.0));
+        let (direction, zero) = move_direction(vec3(0.0, -2.0, 0.0));
+        assert_eq!(direction, vec3(0.0, 0.0, -1.0));
         assert_eq!(zero, vec3(0.0, 0.0, 0.0));
     }
 }

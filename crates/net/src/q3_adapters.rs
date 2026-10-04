@@ -12,6 +12,7 @@
 use thiserror::Error;
 
 use crate::protocol::ProtocolIdentity;
+use crate::q2_adapters::ContractVec3;
 use crate::q3::WireUserCommand;
 use crate::q3_net::{Q3EntityState, Q3PlayerSlots, Q3PlayerState, Q3Product, Q3Trajectory, Snapshot};
 
@@ -44,15 +45,7 @@ pub fn require_q3_protocol(protocol: ProtocolIdentity) -> Result<ProtocolIdentit
 }
 
 /// Contract three-vector (`Vec3` in `src/contracts/math.ts`, donor precision).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Q3ContractVec3 {
-    /// X component.
-    pub x: f64,
-    /// Y component.
-    pub y: f64,
-    /// Z component.
-    pub z: f64,
-}
+pub type Q3ContractVec3 = ContractVec3;
 
 fn vec_to_wire(value: &Q3ContractVec3) -> [f32; 3] {
     [value.x as f32, value.y as f32, value.z as f32]

@@ -15,11 +15,11 @@ use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, Vec3, Vec4};
 use qa_core::numeric::float_to_wrapped_i32;
 
 use crate::contract::{
-    InventoryCountPolicy, InventoryEntry, ItemId, PickupAmmoGrant, PickupAmmoReceipt, PickupSupplyPreview,
-    SourceCounterArithmetic,
+    apply_source_damage_core, InventoryCountPolicy, InventoryEntry, ItemId, PickupAmmoGrant, PickupAmmoReceipt,
+    PickupSupplyPreview, SourceCounterArithmetic,
 };
 
-use super::contracts::{AttackProvenance, DamageRequest, SourceDamageModifier};
+use super::contracts::{DamageRequest, SourceDamageModifier};
 
 // `src/core/common-parse.ts`.
 
@@ -507,28 +507,7 @@ pub fn apply_source_damage_modifier(
     modifier: Option<&SourceDamageModifier>,
     is_live: &mut dyn FnMut(&ActorId) -> bool,
 ) -> DamageRequest {
-    let Some(modifier) = modifier else {
-        return request;
-    };
-    let mut current = |actor: Option<ActorId>| actor.filter(|actor| is_live(actor));
-    let attack = AttackProvenance {
-        attacker: current(request.attack.attacker.clone()),
-        inflictor: current(request.attack.inflictor.clone()),
-        ..request.attack.clone()
-    };
-    let amount = if attack.damage_powerup_owner.as_ref() == Some(&modifier.owner) {
-        request.amount
-    } else {
-        (modifier.transform)(attack.attacker.as_ref(), request.amount)
-    };
-    DamageRequest {
-        amount,
-        attack: AttackProvenance {
-            damage_powerup_owner: Some(modifier.owner.clone()),
-            ..attack
-        },
-        ..request
-    }
+    apply_source_damage_core(request, modifier, is_live)
 }
 
 // `src/world/gameplay/pickups.ts` + `src/world/gameplay/inventory.ts`.
@@ -817,5 +796,59 @@ mod tests {
             },
         );
         assert!(!denied.accepted);
+    }
+
+    #[test]
+    fn damage_modifier_transforms_and_stamps_owner() {
+        use qa_core::identity::{IdentityOwner, ProviderId};
+        use qa_core::time::SourceTime;
+
+        use crate::q2::support::contracts::{AttackCause, AttackProvenance, DamageDelivery};
+
+        fn double(_: Option<&ActorId>, amount: f64) -> f64 {
+            amount * 2.0
+        }
+
+        let owner = IdentityOwner::create("test").expect("owner");
+        let attacker = owner.actor(7, 0);
+        let dead = owner.actor(9, 0);
+        let provider = ProviderId::new("q2", "test");
+        let request = DamageRequest {
+            attack: AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Seconds(1.0),
+                attacker: Some(attacker.clone()),
+                inflictor: Some(dead),
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider.clone(),
+                cause: AttackCause::Q2 {
+                    means_of_death: 1,
+                    damage_flags: 0,
+                    native: None,
+                },
+            },
+            target: owner.actor(1, 0),
+            amount: 10.0,
+            knockback: 10.0,
+            direction: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            point: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            delivery: DamageDelivery::Direct,
+        };
+        let modifier = SourceDamageModifier {
+            owner: provider.clone(),
+            transform: double,
+        };
+        let live_attacker = attacker.clone();
+        let applied = apply_source_damage_modifier(request, Some(&modifier), &mut |actor| *actor == live_attacker);
+        assert_eq!(applied.amount, 20.0);
+        assert_eq!(applied.attack.attacker, Some(attacker));
+        assert_eq!(applied.attack.inflictor, None);
+        assert_eq!(applied.attack.damage_powerup_owner, Some(provider));
     }
 }

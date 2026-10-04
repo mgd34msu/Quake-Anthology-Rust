@@ -26,9 +26,13 @@ pub enum Q2AdapterError {
     TooManyStats,
 }
 
-/// Contract three-vector (`Vec3` in `src/contracts/math.ts`, donor precision).
+/// Shared contract three-vector (`Vec3` in `src/contracts/math.ts`, donor
+/// precision).
+///
+/// Home for the Q2 and Q3 adapter contract shapes, which are identical;
+/// each protocol keeps its own public alias so call sites are unchanged.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Q2Vec3 {
+pub struct ContractVec3 {
     /// X component.
     pub x: f64,
     /// Y component.
@@ -36,6 +40,9 @@ pub struct Q2Vec3 {
     /// Z component.
     pub z: f64,
 }
+
+/// Contract three-vector (`Vec3` in `src/contracts/math.ts`, donor precision).
+pub type Q2Vec3 = ContractVec3;
 
 /// Contract four-vector (`Vec4` in `src/contracts/math.ts`, donor precision).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -795,5 +802,20 @@ mod tests {
         assert_eq!(back.angles.x, 90.0);
         assert_eq!(back.angles.y, -180.0);
         assert_eq!(back.server_frame, 1234);
+    }
+
+    #[test]
+    fn contract_vec3_aliases_share_one_shape() {
+        use crate::q3_adapters::Q3ContractVec3;
+
+        fn assert_same<T>(value: T) -> T {
+            value
+        }
+        let shared = ContractVec3 { x: 1.0, y: 2.0, z: 3.0 };
+        let q2: Q2Vec3 = assert_same(shared);
+        let q3: Q3ContractVec3 = assert_same(q2);
+        let back: ContractVec3 = assert_same(q3);
+        assert_eq!(back, shared);
+        assert_eq!(Q2Vec3::default(), Q3ContractVec3::default());
     }
 }

@@ -21,7 +21,7 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{Bounds, Plane, Vec3};
 use qa_core::time::SourceTime;
 
-use crate::contract::{ArmorState, ItemId, ProjectileRole};
+use crate::contract::{ArmorState, ItemId, ProjectileRole, SourceDamageRequest, SourceDamageTransform};
 
 /// Original mod damage-cause encodings (`Q2NativeCause`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -184,6 +184,60 @@ pub enum DamageDelivery {
     Direct,
     /// Radius damage.
     Radius,
+}
+
+impl SourceDamageRequest for DamageRequest {
+    type Amount = f64;
+    type Owner = ProviderId;
+
+    fn source_attacker(&self) -> Option<&ActorId> {
+        self.attack.attacker.as_ref()
+    }
+
+    fn source_inflictor(&self) -> Option<&ActorId> {
+        self.attack.inflictor.as_ref()
+    }
+
+    fn source_powerup_owner(&self) -> Option<&ProviderId> {
+        self.attack.damage_powerup_owner.as_ref()
+    }
+
+    fn source_amount(&self) -> f64 {
+        self.amount
+    }
+
+    fn with_source_damage(
+        &self,
+        attacker: Option<ActorId>,
+        inflictor: Option<ActorId>,
+        powerup_owner: ProviderId,
+        amount: f64,
+    ) -> Self {
+        let attack = AttackProvenance {
+            attacker,
+            inflictor,
+            damage_powerup_owner: Some(powerup_owner),
+            ..self.attack.clone()
+        };
+        DamageRequest {
+            amount,
+            attack,
+            ..self.clone()
+        }
+    }
+}
+
+impl SourceDamageTransform for SourceDamageModifier {
+    type Amount = f64;
+    type Owner = ProviderId;
+
+    fn modifier_owner(&self) -> &ProviderId {
+        &self.owner
+    }
+
+    fn transform_amount(&self, attacker: Option<&ActorId>, amount: f64) -> f64 {
+        (self.transform)(attacker, amount)
+    }
 }
 
 /// One committed combat mutation (`DamageMutation`).

@@ -213,6 +213,23 @@ pub fn decode_qpic(bytes: &[u8], source: &str) -> Result<IndexedImage, ContentEr
     })
 }
 
+/// Read one PCX run-length packet, returning the pixel value and the
+/// run length (donor `LoadPCX` packet loop).
+///
+/// Shared by the Q1 screenshot decoder below and the Q3 decoder in
+/// [`super::q3_pcx`]; the scanline loops stay split because Q1 pads rows
+/// to `bytes_per_line` and rejects overruns while Q3 decodes tight rows
+/// with its own overrun error.
+pub fn read_pcx_run(reader: &mut BinaryReader<'_>) -> Result<(u8, usize), ContentError> {
+    let head = reader.u8()?;
+    if head & 192 == 192 {
+        let value = reader.u8()?;
+        Ok((value, usize::from(head & 63)))
+    } else {
+        Ok((head, 1))
+    }
+}
+
 /// Decode a screenshot PCX (`decodePcx`).
 pub fn decode_pcx(bytes: &[u8], source: &str) -> Result<PcxImage, ContentError> {
     let mut reader = BinaryReader::new(bytes, source);
@@ -251,12 +268,7 @@ pub fn decode_pcx(bytes: &[u8], source: &str) -> Result<PcxImage, ContentError> 
     for y in 0..height_usize {
         let mut x = 0usize;
         while x < stride {
-            let mut value = encoded.u8()?;
-            let mut count = 1usize;
-            if value & 192 == 192 {
-                count = usize::from(value & 63);
-                value = encoded.u8()?;
-            }
+            let (value, count) = read_pcx_run(&mut encoded)?;
             if count == 0 || count > stride - x {
                 return Err(fail(
                     source,
@@ -473,6 +485,20 @@ mod tests {
         encoded[129] = 9;
         let error = decode_pcx(&encoded, "<test>").unwrap_err();
         assert_eq!(error.message, "PCX run exceeds its scanline");
+    }
+
+    #[test]
+    fn pcx_packet_reads_literal_and_run() {
+        use qa_core::binary::BinaryReader;
+
+        let mut literal = BinaryReader::new(&[7u8], "<test>");
+        assert_eq!(read_pcx_run(&mut literal).unwrap(), (7, 1));
+        let mut run = BinaryReader::new(&[0xc5u8, 9], "<test>");
+        assert_eq!(read_pcx_run(&mut run).unwrap(), (9, 5));
+        let mut escaped = BinaryReader::new(&[0xc1u8, 192], "<test>");
+        assert_eq!(read_pcx_run(&mut escaped).unwrap(), (192, 1));
+        let mut truncated = BinaryReader::new(&[0xc2u8], "<test>");
+        assert!(read_pcx_run(&mut truncated).is_err());
     }
 
     #[test]

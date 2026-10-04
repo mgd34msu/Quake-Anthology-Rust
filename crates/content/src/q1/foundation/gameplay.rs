@@ -12,7 +12,7 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{Bounds, Plane, Vec3};
 use qa_core::time::SourceTime;
 
-use crate::contract::{ArmorState, ItemId};
+use crate::contract::{apply_source_damage_core, ArmorState, ItemId, SourceDamageRequest, SourceDamageTransform};
 use crate::monsters::MonsterMission;
 
 /// Attack cause (`AttackProvenance["cause"]`, donor `gameplay.ts`).
@@ -322,6 +322,58 @@ impl std::fmt::Debug for SourceDamageModifier {
     }
 }
 
+impl SourceDamageRequest for DamageRequest {
+    type Amount = f64;
+    type Owner = ProviderId;
+
+    fn source_attacker(&self) -> Option<&ActorId> {
+        self.attack.attacker.as_ref()
+    }
+
+    fn source_inflictor(&self) -> Option<&ActorId> {
+        self.attack.inflictor.as_ref()
+    }
+
+    fn source_powerup_owner(&self) -> Option<&ProviderId> {
+        self.attack.damage_powerup_owner.as_ref()
+    }
+
+    fn source_amount(&self) -> f64 {
+        self.amount
+    }
+
+    fn with_source_damage(
+        &self,
+        attacker: Option<ActorId>,
+        inflictor: Option<ActorId>,
+        powerup_owner: ProviderId,
+        amount: f64,
+    ) -> Self {
+        let mut attack = self.attack.clone();
+        attack.attacker = attacker;
+        attack.inflictor = inflictor;
+        attack.damage_powerup_owner = Some(powerup_owner);
+        DamageRequest {
+            attack,
+            amount,
+            ..self.clone()
+        }
+    }
+}
+
+impl SourceDamageTransform for SourceDamageModifier {
+    type Amount = f64;
+    type Owner = ProviderId;
+
+    fn modifier_owner(&self) -> &ProviderId {
+        &self.owner
+    }
+
+    fn transform_amount(&self, attacker: Option<&ActorId>, amount: f64) -> f64 {
+        (self.transform)(attacker, amount)
+    }
+}
+
 /// Apply a source damage modifier, expiring dead attacker/inflictor
 /// lifetimes to the original world context (`applySourceDamageModifier`,
 /// donor `world/gameplay/damage-modifier.ts`).
@@ -330,22 +382,7 @@ pub fn apply_source_damage_modifier(
     modifier: Option<&SourceDamageModifier>,
     is_live: &dyn Fn(&ActorId) -> bool,
 ) -> DamageRequest {
-    let Some(modifier) = modifier else { return request };
-    let current = |actor: Option<ActorId>| -> Option<ActorId> { actor.filter(|actor| is_live(actor)) };
-    let mut attack = request.attack.clone();
-    attack.attacker = current(attack.attacker.clone());
-    attack.inflictor = current(attack.inflictor.clone());
-    let amount = if attack.damage_powerup_owner.as_ref() == Some(&modifier.owner) {
-        request.amount
-    } else {
-        (modifier.transform)(attack.attacker.as_ref(), request.amount)
-    };
-    attack.damage_powerup_owner = Some(modifier.owner.clone());
-    DamageRequest {
-        attack,
-        amount,
-        ..request
-    }
+    apply_source_damage_core(request, modifier, |actor| is_live(actor))
 }
 
 /// Mission gate (`MissionGate`, donor `gameplay.ts`).
@@ -765,5 +802,67 @@ mod tests {
         let unchanged = apply_source_damage_modifier(request.clone(), None, &|_| true);
         assert_eq!(unchanged.amount, 10.0);
         assert_eq!(unchanged.attack.damage_powerup_owner, None);
+    }
+
+    #[test]
+    fn damage_modifier_transforms_and_stamps_owner() {
+        use qa_core::identity::IdentityOwner;
+
+        let owner = IdentityOwner::create("test").expect("owner");
+        let attacker = owner.actor(7, 0);
+        let dead = owner.actor(9, 0);
+        let provider = ProviderId::new("q1", "test");
+        let mut request = DamageRequest {
+            attack: AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Seconds(1.0),
+                attacker: Some(attacker.clone()),
+                inflictor: Some(dead.clone()),
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider.clone(),
+                cause: AttackCause::Q1 {
+                    death_type: String::new(),
+                    armor_effect: None,
+                },
+            },
+            target: owner.actor(1, 0),
+            amount: 10.0,
+            knockback: 10.0,
+            direction: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            point: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            delivery: DamageDelivery::Direct,
+        };
+        let modifier = SourceDamageModifier {
+            owner: provider.clone(),
+            transform: Box::new(|attacker, amount| {
+                assert!(attacker.is_some());
+                amount * 2.0
+            }),
+        };
+        let live_attacker = attacker.clone();
+        let applied = apply_source_damage_modifier(request.clone(), Some(&modifier), &|actor| *actor == live_attacker);
+        assert_eq!(applied.amount, 20.0);
+        assert_eq!(applied.attack.attacker, Some(attacker));
+        assert_eq!(applied.attack.inflictor, None);
+        assert_eq!(applied.attack.damage_powerup_owner, Some(provider.clone()));
+
+        // A source that already applied its modifier keeps its amount.
+        request.attack.damage_powerup_owner = Some(provider.clone());
+        let skipped = apply_source_damage_modifier(
+            request,
+            Some(&SourceDamageModifier {
+                owner: provider.clone(),
+                transform: Box::new(|_, _| panic!("must not run")),
+            }),
+            &|_| true,
+        );
+        assert_eq!(skipped.amount, 10.0);
+        assert_eq!(skipped.attack.damage_powerup_owner, Some(provider));
     }
 }

@@ -9,6 +9,7 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
 use super::ai::{angles_vectors, vector_angles};
+use crate::contract::gib_impulse_coefficients;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2MotionKind};
 use crate::q2::support::contracts::{AttackCause, CombatTraitChanges, DeathReaction, TouchContact};
@@ -169,10 +170,14 @@ pub fn throw_gib(
         }
     }
     let factor = if damage < 50.0 { 0.7 } else { 1.2 };
+    let random_x = game.random();
+    let random_y = game.random();
+    let random_z = game.random();
+    let coefficients = gib_impulse_coefficients(random_x, random_y, random_z);
     let impulse = Vec3 {
-        x: (100.0 * (game.random() * 2.0 - 1.0) * factor) as f32,
-        y: (100.0 * (game.random() * 2.0 - 1.0) * factor) as f32,
-        z: ((200.0 + 100.0 * game.random()) * factor) as f32,
+        x: (coefficients[0] * factor) as f32,
+        y: (coefficients[1] * factor) as f32,
+        z: (coefficients[2] * factor) as f32,
     };
     let push = if options.metallic { 1.0 } else { 0.5 };
     let velocity = Vec3 {

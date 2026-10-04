@@ -16,6 +16,7 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 
 use crate::bsp::{q1_entity_value, Q1Entity};
+use crate::contract::vertical_move_direction;
 use crate::q1::Q1Error;
 
 use super::entity_services::Q1EntityServices;
@@ -658,15 +659,8 @@ pub fn source_angles(source: &Q1Entity) -> Vec3 {
 /// (`moveDirection`). The services argument selects the saved QC basis,
 /// exactly like the donor.
 pub fn move_direction(angles: Vec3, game: Option<&mut Q1EntityServices>) -> Vec3 {
-    if angles.y == -1.0 && angles.x == 0.0 && angles.z == 0.0 {
-        return Vec3 { x: 0.0, y: 0.0, z: 1.0 };
-    }
-    if angles.y == -2.0 && angles.x == 0.0 && angles.z == 0.0 {
-        return Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
-        };
+    if let Some(vertical) = vertical_move_direction(angles) {
+        return vertical;
     }
     match game {
         Some(game) => game.make_vectors(angles).forward,
@@ -715,6 +709,21 @@ mod tests {
                 None
             ),
             Vec3 { x: 0.0, y: 0.0, z: 1.0 }
+        );
+        assert_eq!(
+            move_direction(
+                Vec3 {
+                    x: 0.0,
+                    y: -2.0,
+                    z: 0.0
+                },
+                None
+            ),
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0
+            }
         );
     }
 }

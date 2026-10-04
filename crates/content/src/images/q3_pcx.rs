@@ -6,6 +6,7 @@
 
 use qa_core::binary::BinaryReader;
 
+use super::indexed::read_pcx_run;
 use super::{fail, ContentError, ImageLevel};
 
 /// Header rejection message (`PcxRejection`).
@@ -79,12 +80,7 @@ pub fn decode_q3_pcx_indexed(bytes: &[u8], source: &str) -> Result<Q3PcxIndexed,
         let mut x = 0usize;
         while x < width_usize {
             let packet_offset = reader.offset();
-            let mut data_byte = reader.u8()?;
-            let mut run_length = 1usize;
-            if data_byte & 0xc0 == 0xc0 {
-                run_length = usize::from(data_byte & 0x3f);
-                data_byte = reader.u8()?;
-            }
+            let (data_byte, run_length) = read_pcx_run(&mut reader)?;
             let destination = y * width_usize + x;
             if run_length > indices.len() - destination {
                 return Err(fail(

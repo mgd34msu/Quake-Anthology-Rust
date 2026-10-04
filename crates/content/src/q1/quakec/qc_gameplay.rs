@@ -17,7 +17,7 @@
 use qa_core::identity::{ActorId, OwnedActor, ProviderId, SavedActorId};
 use qa_core::math::Vec3;
 
-use crate::contract::ArmorState;
+use crate::contract::{decode_attack_damage_flags, ArmorState};
 
 use super::super::foundation::gameplay::{AttackCause, DamageReaction, DamageRequest, Q1ArmorEffect};
 
@@ -148,34 +148,28 @@ pub fn attack_damage_flags(request: &DamageRequest) -> AttackDamageFlags {
         AttackCause::Q3 { damage_flags, .. } => *damage_flags,
         _ => 0,
     };
+    let bypass = matches!(
+        cause,
+        AttackCause::Q1 { armor_effect, .. } if *armor_effect == Some(Q1ArmorEffect::Bypass)
+    );
+    let half = matches!(
+        cause,
+        AttackCause::Q1 { armor_effect, .. } if *armor_effect == Some(Q1ArmorEffect::HalfEffectiveness)
+    );
+    let bits = decode_attack_damage_flags(q2, q3, bypass, half);
     AttackDamageFlags {
         armor: ArmorDamageFlags {
             stage: None,
-            no_armor: (q2 | q3) & 2 != 0
-                || matches!(
-                    cause,
-                    AttackCause::Q1 { armor_effect, .. }
-                        if *armor_effect == Some(Q1ArmorEffect::Bypass)
-                ),
-            no_power_armor: q2 & 0x100 != 0,
-            no_regular_armor: q2 & 0x80 != 0,
-            energy: q2 & 4 != 0,
-            regular_protection_scale: Some(
-                if matches!(
-                    cause,
-                    AttackCause::Q1 { armor_effect, .. }
-                        if *armor_effect == Some(Q1ArmorEffect::HalfEffectiveness)
-                ) {
-                    0.5
-                } else {
-                    1.0
-                },
-            ),
+            no_armor: bits.no_armor,
+            no_power_armor: bits.no_power_armor,
+            no_regular_armor: bits.no_regular_armor,
+            energy: bits.energy,
+            regular_protection_scale: Some(if bits.half_protection { 0.5 } else { 1.0 }),
         },
-        no_knockback: q2 & 8 != 0 || q3 & 4 != 0,
-        no_protection: q2 & 0x20 != 0 || q3 & 8 != 0,
-        no_team_protection: q3 & 0x10 != 0,
-        destroy_armor: q2 & 0x40 != 0,
+        no_knockback: bits.no_knockback,
+        no_protection: bits.no_protection,
+        no_team_protection: bits.no_team_protection,
+        destroy_armor: bits.destroy_armor,
     }
 }
 
@@ -275,5 +269,14 @@ mod tests {
         assert!(q2.armor.energy);
         assert!(q2.no_knockback);
         assert!(!q2.no_protection);
+        let q3 = attack_damage_flags(&request(AttackCause::Q3 {
+            means_of_death: 1,
+            damage_flags: 4 | 8 | 0x10,
+        }));
+        assert!(!q3.armor.no_armor);
+        assert!(q3.no_knockback);
+        assert!(q3.no_protection);
+        assert!(q3.no_team_protection);
+        assert!(!q3.destroy_armor);
     }
 }

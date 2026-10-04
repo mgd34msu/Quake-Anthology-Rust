@@ -17,8 +17,23 @@ use qa_core::numeric::float_to_wrapped_i32;
 use thiserror::Error;
 
 use crate::angles::{q2_angle_to_short, q2_short_to_angle};
-use crate::msg::{MsgError, MsgReader, MsgWriter};
+use crate::msg::{
+    read_delta_usercmd_core, write_delta_usercmd_core, DeltaUsercmdChanged, DeltaUsercmdLayout, DeltaUsercmdMoves,
+    MsgError, MsgReader, MsgWriter,
+};
 use crate::protocol::q2 as protocol;
+
+/// Quake II delta user-command bit layout (sequential bits).
+const USERCMD_LAYOUT: DeltaUsercmdLayout = DeltaUsercmdLayout {
+    angle1: protocol::CM_ANGLE1,
+    angle2: protocol::CM_ANGLE2,
+    angle3: protocol::CM_ANGLE3,
+    forward: protocol::CM_FORWARD,
+    side: protocol::CM_SIDE,
+    up: protocol::CM_UP,
+    buttons: protocol::CM_BUTTONS,
+    impulse: protocol::CM_IMPULSE,
+};
 
 /// Maximum edicts (`MAX_EDICTS`).
 pub const MAX_EDICTS: u16 = 1024;
@@ -303,88 +318,76 @@ pub struct ServerData {
 
 /// Write a delta user command (`MSG_WriteDeltaUsercmd`).
 pub fn write_delta_usercmd(writer: &mut MsgWriter, from: &Usercmd, cmd: &Usercmd) -> Result<(), MsgError> {
-    let mut bits = 0;
-    if cmd.angles[0] != from.angles[0] {
-        bits |= protocol::CM_ANGLE1;
-    }
-    if cmd.angles[1] != from.angles[1] {
-        bits |= protocol::CM_ANGLE2;
-    }
-    if cmd.angles[2] != from.angles[2] {
-        bits |= protocol::CM_ANGLE3;
-    }
-    if cmd.forwardmove != from.forwardmove {
-        bits |= protocol::CM_FORWARD;
-    }
-    if cmd.sidemove != from.sidemove {
-        bits |= protocol::CM_SIDE;
-    }
-    if cmd.upmove != from.upmove {
-        bits |= protocol::CM_UP;
-    }
-    if cmd.buttons != from.buttons {
-        bits |= protocol::CM_BUTTONS;
-    }
-    if cmd.impulse != from.impulse {
-        bits |= protocol::CM_IMPULSE;
-    }
-    writer.write_byte(bits as u8)?;
-    if (bits & protocol::CM_ANGLE1) != 0 {
-        writer.write_short(cmd.angles[0])?;
-    }
-    if (bits & protocol::CM_ANGLE2) != 0 {
-        writer.write_short(cmd.angles[1])?;
-    }
-    if (bits & protocol::CM_ANGLE3) != 0 {
-        writer.write_short(cmd.angles[2])?;
-    }
-    if (bits & protocol::CM_FORWARD) != 0 {
-        writer.write_short(cmd.forwardmove)?;
-    }
-    if (bits & protocol::CM_SIDE) != 0 {
-        writer.write_short(cmd.sidemove)?;
-    }
-    if (bits & protocol::CM_UP) != 0 {
-        writer.write_short(cmd.upmove)?;
-    }
-    if (bits & protocol::CM_BUTTONS) != 0 {
-        writer.write_byte(cmd.buttons)?;
-    }
-    if (bits & protocol::CM_IMPULSE) != 0 {
-        writer.write_byte(cmd.impulse)?;
-    }
-    writer.write_byte(cmd.msec)?;
-    writer.write_byte(cmd.lightlevel)
+    let changed = DeltaUsercmdChanged {
+        angles: [
+            cmd.angles[0] != from.angles[0],
+            cmd.angles[1] != from.angles[1],
+            cmd.angles[2] != from.angles[2],
+        ],
+        forward: cmd.forwardmove != from.forwardmove,
+        side: cmd.sidemove != from.sidemove,
+        up: cmd.upmove != from.upmove,
+        buttons: cmd.buttons != from.buttons,
+        impulse: cmd.impulse != from.impulse,
+    };
+    let moves = DeltaUsercmdMoves {
+        forward: cmd.forwardmove,
+        side: cmd.sidemove,
+        up: cmd.upmove,
+        buttons: cmd.buttons,
+        impulse: cmd.impulse,
+    };
+    write_delta_usercmd_core(
+        writer,
+        &USERCMD_LAYOUT,
+        &changed,
+        &moves,
+        |writer| {
+            if changed.angles[0] {
+                writer.write_short(cmd.angles[0])?;
+            }
+            if changed.angles[1] {
+                writer.write_short(cmd.angles[1])?;
+            }
+            if changed.angles[2] {
+                writer.write_short(cmd.angles[2])?;
+            }
+            Ok(())
+        },
+        |writer| {
+            writer.write_byte(cmd.msec)?;
+            writer.write_byte(cmd.lightlevel)
+        },
+    )
 }
 
 /// Read a delta user command (`MSG_ReadDeltaUsercmd`).
 pub fn read_delta_usercmd(reader: &mut MsgReader<'_>, from: &Usercmd) -> Result<Usercmd, MsgError> {
     let mut cmd = from.clone();
-    let bits = u32::from(reader.byte()?);
-    if (bits & protocol::CM_ANGLE1) != 0 {
-        cmd.angles[0] = reader.short()?;
-    }
-    if (bits & protocol::CM_ANGLE2) != 0 {
-        cmd.angles[1] = reader.short()?;
-    }
-    if (bits & protocol::CM_ANGLE3) != 0 {
-        cmd.angles[2] = reader.short()?;
-    }
-    if (bits & protocol::CM_FORWARD) != 0 {
-        cmd.forwardmove = reader.short()?;
-    }
-    if (bits & protocol::CM_SIDE) != 0 {
-        cmd.sidemove = reader.short()?;
-    }
-    if (bits & protocol::CM_UP) != 0 {
-        cmd.upmove = reader.short()?;
-    }
-    if (bits & protocol::CM_BUTTONS) != 0 {
-        cmd.buttons = reader.byte()?;
-    }
-    if (bits & protocol::CM_IMPULSE) != 0 {
-        cmd.impulse = reader.byte()?;
-    }
+    let mut moves = DeltaUsercmdMoves {
+        forward: cmd.forwardmove,
+        side: cmd.sidemove,
+        up: cmd.upmove,
+        buttons: cmd.buttons,
+        impulse: cmd.impulse,
+    };
+    read_delta_usercmd_core(reader, &USERCMD_LAYOUT, &mut moves, |reader, bits| {
+        if (bits & protocol::CM_ANGLE1) != 0 {
+            cmd.angles[0] = reader.short()?;
+        }
+        if (bits & protocol::CM_ANGLE2) != 0 {
+            cmd.angles[1] = reader.short()?;
+        }
+        if (bits & protocol::CM_ANGLE3) != 0 {
+            cmd.angles[2] = reader.short()?;
+        }
+        Ok(())
+    })?;
+    cmd.forwardmove = moves.forward;
+    cmd.sidemove = moves.side;
+    cmd.upmove = moves.up;
+    cmd.buttons = moves.buttons;
+    cmd.impulse = moves.impulse;
     cmd.msec = reader.byte()?;
     cmd.lightlevel = reader.byte()?;
     Ok(cmd)
@@ -1333,6 +1336,67 @@ mod tests {
         let decoded = read_delta_usercmd(&mut reader, &from).unwrap();
         assert_eq!(decoded, cmd);
         let decoded = read_delta_usercmd(&mut reader, &decoded).unwrap();
+        assert_eq!(decoded, cmd);
+        reader.finish().unwrap();
+    }
+
+    #[test]
+    fn usercmd_bits_keep_q2_layout() {
+        // A yaw-only delta sits at bit 1 (sequential layout, unlike
+        // QuakeWorld); an empty delta writes bits plus msec and
+        // lightlevel.
+        let from = Usercmd::default();
+        let yaw = Usercmd {
+            angles: [0, 500, 0],
+            msec: 7,
+            lightlevel: 11,
+            ..Default::default()
+        };
+        let mut writer = MsgWriter::new(protocol::MAX_MSGLEN, false);
+        write_delta_usercmd(&mut writer, &from, &yaw).unwrap();
+        let bytes = writer.bytes().to_vec();
+        assert_eq!(bytes[0], 0x02);
+        let mut reader = MsgReader::new(&bytes);
+        let decoded = read_delta_usercmd(&mut reader, &from).unwrap();
+        assert_eq!(decoded, yaw);
+        reader.finish().unwrap();
+
+        let mut writer = MsgWriter::new(protocol::MAX_MSGLEN, false);
+        write_delta_usercmd(
+            &mut writer,
+            &from,
+            &Usercmd {
+                msec: 9,
+                lightlevel: 12,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(writer.bytes(), &[0, 9, 12]);
+    }
+
+    #[test]
+    fn usercmd_full_delta_bytes() {
+        let from = Usercmd::default();
+        let cmd = Usercmd {
+            msec: 50,
+            buttons: 3,
+            angles: [100, -200, 300],
+            forwardmove: 400,
+            sidemove: -400,
+            upmove: 10,
+            impulse: 8,
+            lightlevel: 200,
+            server_frame: 0,
+        };
+        let mut writer = MsgWriter::new(protocol::MAX_MSGLEN, false);
+        write_delta_usercmd(&mut writer, &from, &cmd).unwrap();
+        let bytes = writer.bytes().to_vec();
+        assert_eq!(bytes[0], 0xff);
+        assert_eq!(bytes.len(), 1 + 3 * 2 + 3 * 2 + 1 + 1 + 2);
+        assert_eq!(bytes[bytes.len() - 2..], [50, 200]);
+        let mut reader = MsgReader::new(&bytes);
+        let decoded = read_delta_usercmd(&mut reader, &from).unwrap();
         assert_eq!(decoded, cmd);
         reader.finish().unwrap();
     }

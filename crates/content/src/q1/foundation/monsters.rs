@@ -14,6 +14,7 @@
 use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::{Bounds, Vec3};
 
+use crate::contract::gib_impulse_coefficients;
 use crate::monsters::monster_target_eligible;
 
 use super::entity::{Q1AttackState, Q1Monster, Q1MonsterMode, Q1MonsterSpecies};
@@ -1137,11 +1138,15 @@ fn damage_velocity(game: &mut Q1EntityServices, damage: f64) -> Vec3 {
     } else {
         10.0
     };
+    let random_x = game.host.random();
+    let random_y = game.host.random();
+    let random_z = game.host.random();
+    let coefficients = gib_impulse_coefficients(random_x, random_y, random_z);
     vscale(
         Vec3 {
-            x: (100.0 * (game.host.random() * 2.0 - 1.0)) as f32,
-            y: (100.0 * (game.host.random() * 2.0 - 1.0)) as f32,
-            z: (200.0 + 100.0 * game.host.random()) as f32,
+            x: coefficients[0] as f32,
+            y: coefficients[1] as f32,
+            z: coefficients[2] as f32,
         },
         scale,
     )

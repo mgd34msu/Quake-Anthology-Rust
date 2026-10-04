@@ -477,6 +477,185 @@ impl<'a> MsgReader<'a> {
     }
 }
 
+/// Bit layout for a delta user-command codec.
+///
+/// QuakeWorld and Quake II share the field order (angles, moves, buttons,
+/// impulse, trailer) but not the bit positions: QuakeWorld parks yaw
+/// (`ANGLE2`) at bit 7 while Quake II lays the bits out sequentially.
+/// Each codec passes its own protocol constants so wire bytes stay exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeltaUsercmdLayout {
+    /// Pitch bit.
+    pub angle1: u32,
+    /// Yaw bit.
+    pub angle2: u32,
+    /// Roll bit.
+    pub angle3: u32,
+    /// Forward-move bit.
+    pub forward: u32,
+    /// Side-move bit.
+    pub side: u32,
+    /// Up-move bit.
+    pub up: u32,
+    /// Buttons bit.
+    pub buttons: u32,
+    /// Impulse bit.
+    pub impulse: u32,
+}
+
+/// Which delta user-command fields changed since `from`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeltaUsercmdChanged {
+    /// Changed angles (pitch, yaw, roll).
+    pub angles: [bool; 3],
+    /// Changed forward move.
+    pub forward: bool,
+    /// Changed side move.
+    pub side: bool,
+    /// Changed up move.
+    pub up: bool,
+    /// Changed buttons.
+    pub buttons: bool,
+    /// Changed impulse.
+    pub impulse: bool,
+}
+
+/// Move/button/impulse payload shared by the QW and Q2 codecs.
+///
+/// All three moves encode as shorts and buttons/impulse as bytes in both
+/// protocols; only the angle encoding and the trailer differ.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeltaUsercmdMoves {
+    /// Forward move.
+    pub forward: i16,
+    /// Side move.
+    pub side: i16,
+    /// Up move.
+    pub up: i16,
+    /// Buttons.
+    pub buttons: u8,
+    /// Impulse.
+    pub impulse: u8,
+}
+
+/// Compute the delta bits byte for the changed fields.
+#[must_use]
+pub fn delta_usercmd_bits(layout: &DeltaUsercmdLayout, changed: &DeltaUsercmdChanged) -> u8 {
+    let mut bits = 0;
+    if changed.angles[0] {
+        bits |= layout.angle1;
+    }
+    if changed.angles[1] {
+        bits |= layout.angle2;
+    }
+    if changed.angles[2] {
+        bits |= layout.angle3;
+    }
+    if changed.forward {
+        bits |= layout.forward;
+    }
+    if changed.side {
+        bits |= layout.side;
+    }
+    if changed.up {
+        bits |= layout.up;
+    }
+    if changed.buttons {
+        bits |= layout.buttons;
+    }
+    if changed.impulse {
+        bits |= layout.impulse;
+    }
+    bits as u8
+}
+
+/// Write the shared move/button/impulse body in wire order.
+pub fn write_delta_usercmd_moves(
+    writer: &mut MsgWriter,
+    layout: &DeltaUsercmdLayout,
+    bits: u32,
+    moves: &DeltaUsercmdMoves,
+) -> Result<(), MsgError> {
+    if (bits & layout.forward) != 0 {
+        writer.write_short(moves.forward)?;
+    }
+    if (bits & layout.side) != 0 {
+        writer.write_short(moves.side)?;
+    }
+    if (bits & layout.up) != 0 {
+        writer.write_short(moves.up)?;
+    }
+    if (bits & layout.buttons) != 0 {
+        writer.write_byte(moves.buttons)?;
+    }
+    if (bits & layout.impulse) != 0 {
+        writer.write_byte(moves.impulse)?;
+    }
+    Ok(())
+}
+
+/// Read the shared move/button/impulse body in wire order.
+pub fn read_delta_usercmd_moves(
+    reader: &mut MsgReader<'_>,
+    layout: &DeltaUsercmdLayout,
+    bits: u32,
+    moves: &mut DeltaUsercmdMoves,
+) -> Result<(), MsgError> {
+    if (bits & layout.forward) != 0 {
+        moves.forward = reader.short()?;
+    }
+    if (bits & layout.side) != 0 {
+        moves.side = reader.short()?;
+    }
+    if (bits & layout.up) != 0 {
+        moves.up = reader.short()?;
+    }
+    if (bits & layout.buttons) != 0 {
+        moves.buttons = reader.byte()?;
+    }
+    if (bits & layout.impulse) != 0 {
+        moves.impulse = reader.byte()?;
+    }
+    Ok(())
+}
+
+/// Write a delta user command through the shared core.
+///
+/// The caller supplies the protocol bit layout plus the angle writer and
+/// the trailer writer (QW writes only `msec`; Q2 appends `lightlevel`),
+/// keeping every wire byte identical to the split donors.
+pub fn write_delta_usercmd_core(
+    writer: &mut MsgWriter,
+    layout: &DeltaUsercmdLayout,
+    changed: &DeltaUsercmdChanged,
+    moves: &DeltaUsercmdMoves,
+    write_angles: impl FnOnce(&mut MsgWriter) -> Result<(), MsgError>,
+    write_trailer: impl FnOnce(&mut MsgWriter) -> Result<(), MsgError>,
+) -> Result<(), MsgError> {
+    let bits = delta_usercmd_bits(layout, changed);
+    writer.write_byte(bits)?;
+    write_angles(writer)?;
+    write_delta_usercmd_moves(writer, layout, u32::from(bits), moves)?;
+    write_trailer(writer)
+}
+
+/// Read a delta user command through the shared core.
+///
+/// Reads the bits byte, the caller-supplied angles, and the shared
+/// move/button/impulse body, returning the bits so the caller can read
+/// its own trailer next.
+pub fn read_delta_usercmd_core(
+    reader: &mut MsgReader<'_>,
+    layout: &DeltaUsercmdLayout,
+    moves: &mut DeltaUsercmdMoves,
+    read_angles: impl FnOnce(&mut MsgReader<'_>, u32) -> Result<(), MsgError>,
+) -> Result<u32, MsgError> {
+    let bits = u32::from(reader.byte()?);
+    read_angles(reader, bits)?;
+    read_delta_usercmd_moves(reader, layout, bits, moves)?;
+    Ok(bits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

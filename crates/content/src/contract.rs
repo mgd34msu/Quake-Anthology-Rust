@@ -9546,9 +9546,265 @@ pub fn borrow_mod_file_mounts(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared attack damage-flag decoder (`attackDamageFlags`).
+// ---------------------------------------------------------------------------
+
+/// Decoded attack-flag bits shared by the Q1 QuakeC pipeline and the Q3
+/// combat bridge.
+///
+/// Each game keeps its own `AttackDamageFlags` struct (the regular
+/// protection scale is `f64` in Q1 and `f32` in Q3), but the bit decoding
+/// is one function so the donors cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttackDamageBits {
+    /// Bypass all armor.
+    pub no_armor: bool,
+    /// Bypass power armor.
+    pub no_power_armor: bool,
+    /// Bypass regular armor.
+    pub no_regular_armor: bool,
+    /// Energy damage.
+    pub energy: bool,
+    /// Halve regular protection (`Some(0.5)` scale, else `Some(1.0)`).
+    pub half_protection: bool,
+    /// Immunity to damage momentum.
+    pub no_knockback: bool,
+    /// No protection applies.
+    pub no_protection: bool,
+    /// No team protection applies.
+    pub no_team_protection: bool,
+    /// Destroy armor.
+    pub destroy_armor: bool,
+}
+
+/// Decode native damage flags by origin, never reinterpreted as another
+/// game's bit positions (donor `attackDamageFlags` from
+/// `src/world/gameplay/armor.ts`).
+///
+/// `q2`/`q3` carry the native damage flags when the cause belongs to that
+/// game (else zero); `bypass`/`half` carry the Q1 armor-effect override.
+#[must_use]
+pub fn decode_attack_damage_flags(q2: i32, q3: i32, bypass: bool, half: bool) -> AttackDamageBits {
+    AttackDamageBits {
+        no_armor: (q2 | q3) & 2 != 0 || bypass,
+        no_power_armor: q2 & 0x100 != 0,
+        no_regular_armor: q2 & 0x80 != 0,
+        energy: q2 & 4 != 0,
+        half_protection: half,
+        no_knockback: q2 & 8 != 0 || q3 & 4 != 0,
+        no_protection: q2 & 0x20 != 0 || q3 & 8 != 0,
+        no_team_protection: q3 & 0x10 != 0,
+        destroy_armor: q2 & 0x40 != 0,
+    }
+}
+
+/// Vertical move-direction shortcut shared by the Q1 and Q3
+/// `moveDirection` donors.
+///
+/// Spawn angles `(0, -1, 0)` point straight up and `(0, -2, 0)` straight
+/// down; anything else returns `None` so the caller falls through to its
+/// own angle basis (Q1 evaluates trigonometry in binary64 while Q3 rounds
+/// through binary32, so the general case stays split by design).
+#[must_use]
+pub fn vertical_move_direction(angles: Vec3) -> Option<Vec3> {
+    if angles.x == 0.0 && angles.z == 0.0 {
+        if angles.y == -1.0 {
+            return Some(Vec3 { x: 0.0, y: 0.0, z: 1.0 });
+        }
+        if angles.y == -2.0 {
+            return Some(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            });
+        }
+    }
+    None
+}
+
+/// Raw gib-impulse coefficients shared by the Q1 and Q2 gib spawners.
+///
+/// Both donors scatter gibs from `100 * (r * 2 - 1)` on x/y and
+/// `200 + 100 * r` on z before applying their own damage scaling, push,
+/// and clamping (kept split: Q1 scales in binary32 after the cast while
+/// Q2 folds its factor into the binary64 expression).
+#[must_use]
+pub fn gib_impulse_coefficients(random_x: f64, random_y: f64, random_z: f64) -> [f64; 3] {
+    [
+        100.0 * (random_x * 2.0 - 1.0),
+        100.0 * (random_y * 2.0 - 1.0),
+        200.0 + 100.0 * random_z,
+    ]
+}
+
+/// Damage-request surface for the shared source-damage core.
+///
+/// Implemented once per game next to each `DamageRequest`; the core
+/// below is the only copy of the donor `applySourceDamageModifier`
+/// logic.
+pub trait SourceDamageRequest: Clone {
+    /// Damage amount word (`f64` in Q1/Q2, `f32` in Q3).
+    type Amount: Copy + PartialEq;
+    /// Modifier owner word (`ProviderId` in Q1/Q2, `String` in Q3).
+    type Owner: Clone + PartialEq;
+
+    /// Attacking actor before lifetime expiry.
+    fn source_attacker(&self) -> Option<&ActorId>;
+    /// Inflicting actor before lifetime expiry.
+    fn source_inflictor(&self) -> Option<&ActorId>;
+    /// Provider that already applied its damage modifier, if any.
+    fn source_powerup_owner(&self) -> Option<&Self::Owner>;
+    /// Requested damage amount.
+    fn source_amount(&self) -> Self::Amount;
+    /// Rebuild the request with expired actors, a new amount, and the
+    /// modifier stamped as its powerup owner.
+    fn with_source_damage(
+        &self,
+        attacker: Option<ActorId>,
+        inflictor: Option<ActorId>,
+        powerup_owner: Self::Owner,
+        amount: Self::Amount,
+    ) -> Self;
+}
+
+/// Attacker damage policy for the shared source-damage core.
+pub trait SourceDamageTransform {
+    /// Damage amount word, matching the request.
+    type Amount: Copy + PartialEq;
+    /// Modifier owner word, matching the request.
+    type Owner: Clone + PartialEq;
+
+    /// Owning provider.
+    fn modifier_owner(&self) -> &Self::Owner;
+    /// Transform the source amount for the live attacker.
+    fn transform_amount(&self, attacker: Option<&ActorId>, amount: Self::Amount) -> Self::Amount;
+}
+
+/// Apply a source damage modifier, expiring dead attacker/inflictor
+/// lifetimes to the original world context (donor
+/// `applySourceDamageModifier` from
+/// `src/world/gameplay/damage-modifier.ts`).
+///
+/// Source kick stays independent: only the attacker/inflictor handles
+/// expire, the amount transform runs over the live attacker unless this
+/// source already applied its modifier, and the modifier stamps itself
+/// as the powerup owner either way.
+pub fn apply_source_damage_core<R, M>(request: R, modifier: Option<&M>, mut is_live: impl FnMut(&ActorId) -> bool) -> R
+where
+    R: SourceDamageRequest,
+    M: SourceDamageTransform<Amount = R::Amount, Owner = R::Owner>,
+{
+    let Some(modifier) = modifier else {
+        return request;
+    };
+    let attacker = request.source_attacker().cloned().filter(|actor| is_live(actor));
+    let inflictor = request.source_inflictor().cloned().filter(|actor| is_live(actor));
+    let amount = if request.source_powerup_owner() == Some(modifier.modifier_owner()) {
+        request.source_amount()
+    } else {
+        modifier.transform_amount(attacker.as_ref(), request.source_amount())
+    };
+    request.with_source_damage(attacker, inflictor, modifier.modifier_owner().clone(), amount)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attack_damage_flags_decode_each_origin() {
+        let none = decode_attack_damage_flags(0, 0, false, false);
+        assert_eq!(
+            none,
+            AttackDamageBits {
+                no_armor: false,
+                no_power_armor: false,
+                no_regular_armor: false,
+                energy: false,
+                half_protection: false,
+                no_knockback: false,
+                no_protection: false,
+                no_team_protection: false,
+                destroy_armor: false,
+            }
+        );
+        let q2 = decode_attack_damage_flags(2 | 4 | 8 | 0x20 | 0x40 | 0x80 | 0x100, 0, false, false);
+        assert!(q2.no_armor);
+        assert!(q2.no_power_armor);
+        assert!(q2.no_regular_armor);
+        assert!(q2.energy);
+        assert!(q2.no_knockback);
+        assert!(q2.no_protection);
+        assert!(!q2.no_team_protection);
+        assert!(q2.destroy_armor);
+        let q3 = decode_attack_damage_flags(0, 2 | 4 | 8 | 0x10, false, false);
+        assert!(q3.no_armor);
+        assert!(!q3.energy);
+        assert!(q3.no_knockback);
+        assert!(q3.no_protection);
+        assert!(q3.no_team_protection);
+        assert!(!q3.destroy_armor);
+        assert!(decode_attack_damage_flags(0, 0, true, false).no_armor);
+        assert!(!decode_attack_damage_flags(0, 0, true, false).half_protection);
+        assert!(decode_attack_damage_flags(0, 0, false, true).half_protection);
+        assert!(!decode_attack_damage_flags(0, 0, false, true).no_armor);
+    }
+
+    #[test]
+    fn vertical_move_direction_covers_shortcuts() {
+        use qa_core::math::Vec3;
+
+        assert_eq!(
+            vertical_move_direction(Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0
+            }),
+            Some(Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+        );
+        assert_eq!(
+            vertical_move_direction(Vec3 {
+                x: 0.0,
+                y: -2.0,
+                z: 0.0
+            }),
+            Some(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0
+            })
+        );
+        assert_eq!(vertical_move_direction(Vec3 { x: 0.0, y: 0.0, z: 0.0 }), None);
+        assert_eq!(
+            vertical_move_direction(Vec3 {
+                x: 10.0,
+                y: -1.0,
+                z: 0.0
+            }),
+            None
+        );
+        assert_eq!(
+            vertical_move_direction(Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 5.0
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn gib_impulse_coefficients_match_donor_scatter() {
+        assert_eq!(gib_impulse_coefficients(0.0, 1.0, 0.5), [-100.0, 100.0, 250.0]);
+        assert_eq!(gib_impulse_coefficients(0.5, 0.5, 0.0), [0.0, 0.0, 200.0]);
+        // Q1 scales in binary32 after the cast; Q2 folds its factor into
+        // the binary64 expression. Both spellings below must keep working
+        // on top of the shared coefficients.
+        let coefficients = gib_impulse_coefficients(0.25, 0.75, 1.0);
+        assert_eq!(coefficients, [-50.0, 50.0, 300.0]);
+        assert_eq!((coefficients[0] * 0.7) as f32, (-50.0f64 * 0.7) as f32);
+    }
 
     fn content_id() -> ContentId {
         create_content_id(&ContentIdentity {
