@@ -713,6 +713,38 @@ pub(crate) struct GlyphQuad {
     pub color: Vec4,
 }
 
+/// Inset glyph UVs by half a texel so edge-exact samples stay inside the
+/// glyph cell. Quad edges land exactly on pixel centers, and the GL
+/// backend's fixed-point UV interpolation can round an exact cell boundary
+/// down into the previous texel: with the Q2 charset that sampled the
+/// previous cell's last ink column as stray bars at glyph edges (CPU
+/// rendering was unaffected). Interior texel centers are unaffected.
+fn inset_glyph_uv(uv: TextureRect, atlas_width: u32, atlas_height: u32) -> TextureRect {
+    let half_s = if atlas_width == 0 {
+        0.0
+    } else {
+        0.5 / atlas_width as f32
+    };
+    let half_t = if atlas_height == 0 {
+        0.0
+    } else {
+        0.5 / atlas_height as f32
+    };
+    let (s, s2) = if uv.s2 - uv.s > half_s * 2.0 {
+        (uv.s + half_s, uv.s2 - half_s)
+    } else {
+        let mid = (uv.s + uv.s2) / 2.0;
+        (mid, mid)
+    };
+    let (t, t2) = if uv.t2 - uv.t > half_t * 2.0 {
+        (uv.t + half_t, uv.t2 - half_t)
+    } else {
+        let mid = (uv.t + uv.t2) / 2.0;
+        (mid, mid)
+    };
+    TextureRect { s, t, s2, t2 }
+}
+
 /// Textured overlay batches for captured glyph quads in NDC space (the same
 /// depth-always blended overlay as the flat menu batch, bound to the font
 /// atlas instead of the 1x1 white image).
@@ -721,15 +753,16 @@ pub(crate) fn glyph_batches(glyphs: &[GlyphQuad], width: f32, height: f32, font:
     let mut indices = Vec::with_capacity(glyphs.len() * 6);
     for quad in glyphs {
         let base = vertices.len() as u32;
+        let uv = inset_glyph_uv(quad.uv, font.width, font.height);
         let left = 2.0 * quad.rect.x / width - 1.0;
         let right = 2.0 * (quad.rect.x + quad.rect.width) / width - 1.0;
         let top = 1.0 - 2.0 * quad.rect.y / height;
         let bottom = 1.0 - 2.0 * (quad.rect.y + quad.rect.height) / height;
         for (x, y, s, t) in [
-            (left, top, quad.uv.s, quad.uv.t),
-            (right, top, quad.uv.s2, quad.uv.t),
-            (right, bottom, quad.uv.s2, quad.uv.t2),
-            (left, bottom, quad.uv.s, quad.uv.t2),
+            (left, top, uv.s, uv.t),
+            (right, top, uv.s2, uv.t),
+            (right, bottom, uv.s2, uv.t2),
+            (left, bottom, uv.s, uv.t2),
         ] {
             vertices.push(RenderVertex {
                 position: vec4(x, y, 0.0, 1.0),
@@ -925,11 +958,50 @@ mod tests {
             .iter()
             .map(|vertex| (vertex.tex_coord.x, vertex.tex_coord.y))
             .collect();
+        let half = 0.5 / CONCHARS_WIDTH as f32;
         assert_eq!(
             uvs,
-            vec![(0.0625, 0.25), (0.125, 0.25), (0.125, 0.3125), (0.0625, 0.3125)]
+            vec![
+                (0.0625 + half, 0.25 + half),
+                (0.125 - half, 0.25 + half),
+                (0.125 - half, 0.3125 - half),
+                (0.0625 + half, 0.3125 - half),
+            ]
         );
         assert!(vertices.iter().all(|vertex| vertex.color.w > 0.0));
+    }
+
+    #[test]
+    fn glyph_uvs_inset_half_texel_inside_cell() {
+        let font = font_image();
+        let quad = GlyphQuad {
+            rect: Rect {
+                x: 276.5,
+                y: 155.0,
+                width: 26.0,
+                height: 26.0,
+            },
+            uv: TextureRect {
+                s: 40.0 / 128.0,
+                t: 48.0 / 128.0,
+                s2: 48.0 / 128.0,
+                t2: 56.0 / 128.0,
+            },
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+        };
+        let batches = glyph_batches(&[quad], 960.0, 600.0, &font);
+        let BatchVertices::Single(vertices) = &batches[0].vertices else {
+            panic!("glyph batch must be single-textured");
+        };
+        // Edge-exact UVs would sit on texel 40/48; the inset keeps every
+        // sample strictly inside the cell so fixed-point interpolation
+        // cannot round down into the previous cell's ink column.
+        for vertex in vertices {
+            let s = vertex.tex_coord.x * CONCHARS_WIDTH as f32;
+            let t = vertex.tex_coord.y * CONCHARS_HEIGHT as f32;
+            assert!(s > 40.0 && s < 48.0, "s stays in the cell, got {s}");
+            assert!(t > 48.0 && t < 56.0, "t stays in the cell, got {t}");
+        }
     }
 
     #[test]

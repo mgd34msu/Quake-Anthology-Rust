@@ -74,7 +74,6 @@ fn band_runs(pixels: &[u8], band: (u32, u32, u32, u32)) -> (usize, f64) {
     let (x0, y0, x1, y1) = band;
     let mut runs = 0;
     let mut in_run = false;
-    let mut empty = 0;
     let mut ink = 0usize;
     for x in x0..x1.min(WIDTH) {
         let background = column_background(pixels, x, y0, y1.min(HEIGHT));
@@ -90,17 +89,15 @@ fn band_runs(pixels: &[u8], band: (u32, u32, u32, u32)) -> (usize, f64) {
             }
         }
         ink += column_ink;
+        // One fully-clear column breaks a run: glyph UVs inset by half a
+        // texel, so dense charset gaps can be a single pixel wide.
         if column_ink >= 2 {
             if !in_run {
                 runs += 1;
                 in_run = true;
             }
-            empty = 0;
         } else {
-            empty += 1;
-            if empty >= 2 {
-                in_run = false;
-            }
+            in_run = false;
         }
     }
     let area = (x1.saturating_sub(x0) * y1.saturating_sub(y0)) as f64;
@@ -184,7 +181,9 @@ fn menu_uses_real_charset_with_steel_and_falls_back_without_content() {
             "{label} title ink is partial, got {title_ink:.3}"
         );
         for (band, name, minimum) in [
-            ((74, 124, 307, 145), "Play a game", 6),
+            // The focused button carries the focus-glow frame at its top
+            // and bottom edges; measure the text core between the bars.
+            ((74, 128, 307, 141), "Play a game", 6),
             ((74, 158, 267, 179), "Load Game", 5),
             ((74, 192, 225, 213), "Options", 4),
             ((74, 226, 163, 247), "Quit", 3),

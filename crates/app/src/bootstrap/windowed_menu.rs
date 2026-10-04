@@ -10,14 +10,16 @@
 //! as one ordered 2D view, reusing the real menu layout (backdrop, panel,
 //! buttons, titles) through the menu's own `draw` path. A capturing
 //! [`UiRenderServices`](qa_client::ui::common::draw::UiRenderServices)
-//! records fills, images, and text runs as pixel quads, which become two
+//! records fills, images, and text runs as pixel quads, which become
 //! vertex-colored [`DrawBatch`] values (the same overlay pattern as the
-//! Quake II damage blend): flats over a 1x1 uploaded white image, then one
-//! textured batch binding the console charset atlas from
-//! [`super::windowed_menu_text`] so every glyph draws with real UVs. The
-//! atlas loads the real `conchars` through installed content mounts when
-//! game data is present and falls back to the synthetic atlas otherwise,
-//! so the menu entry is always available, with or without game content.
+//! Quake II damage blend): fills over a 1x1 uploaded white image grouped
+//! into emit-order runs with the textured donor art quads (backdrop plus
+//! nine-slice panel and focus), then one textured batch binding the
+//! console charset atlas from [`super::windowed_menu_text`] so every glyph
+//! draws with real UVs. The atlas loads the real `conchars` through
+//! installed content mounts when game data is present and falls back to
+//! the synthetic atlas otherwise, so the menu entry is always available,
+//! with or without game content.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -111,17 +113,25 @@ const MENU_CLEAR_COLOR: Vec4 = Vec4 {
     w: 1.0,
 };
 
-/// Stand-in for the menu backdrop art, which has no uploaded image: deep
-/// warm charcoal in the spirit of the Quake menu background.
-const MENU_BACKDROP_COLOR: Vec4 = Vec4 {
-    x: 0.10,
-    y: 0.08,
-    z: 0.07,
-    w: 1.0,
-};
+/// Embedded donor menu artwork (see `crates/app/assets/ui`): the same PNGs
+/// the donor reads through `loadMenuArtImage`, decoded at open and
+/// validated against the art manifest dimensions.
+const MENU_BACKGROUND_PNG: &[u8] = include_bytes!("../../assets/ui/menu-background.png");
+/// Embedded menu panel nine-slice art.
+const MENU_PANEL_PNG: &[u8] = include_bytes!("../../assets/ui/menu-panel.png");
+/// Embedded focus glow nine-slice art.
+const MENU_FOCUS_PNG: &[u8] = include_bytes!("../../assets/ui/menu-focus.png");
+/// Embedded main-menu backdrop art.
+const MAIN_MENU_BACKGROUND_PNG: &[u8] = include_bytes!("../../assets/ui/main-menu-background.png");
 
-/// Tag marking backdrop image pictures in captured emits.
-const BACKDROP_IMAGE_TAG: u32 = u32::MAX;
+/// Tag marking menu art pictures in captured emits.
+const ART_BACKGROUND_TAG: u32 = u32::MAX - 3;
+/// Tag marking the main-menu backdrop picture in captured emits.
+const ART_MAIN_BACKGROUND_TAG: u32 = u32::MAX - 2;
+/// Tag marking the menu panel picture in captured emits.
+const ART_PANEL_TAG: u32 = u32::MAX - 1;
+/// Tag marking the menu focus picture in captured emits.
+const ART_FOCUS_TAG: u32 = u32::MAX;
 
 /// Ordinal for the menu white image. Scene loaders allocate ordinals
 /// upward from zero in their own registries, so a high ordinal cannot
@@ -129,6 +139,16 @@ const BACKDROP_IMAGE_TAG: u32 = u32::MAX;
 const MENU_WHITE_ORDINAL: u32 = 0x7FFF_FF01;
 /// Ordinal for the menu font atlas, uploaded beside the white image.
 const MENU_FONT_ORDINAL: u32 = 0x7FFF_FF02;
+/// First ordinal for the four uploaded menu art images.
+const MENU_ART_ORDINAL_BASE: u32 = 0x7FFF_FF10;
+
+/// One uploaded menu art image.
+struct MenuArtUpload {
+    /// Backend image handle.
+    image: RendererImage,
+    /// Decoded level.
+    level: ImageLevel,
+}
 
 /// Menu overlay over the ported startup menu (donor frontend menu).
 pub(crate) struct WindowedMenu {
@@ -141,6 +161,7 @@ pub(crate) struct WindowedMenu {
     font_width: u32,
     font_height: u32,
     font_pixels: Vec<u8>,
+    art: [MenuArtUpload; 4],
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
     model: Rc<RefCell<StartupSelectionModel>>,
@@ -175,16 +196,22 @@ impl WindowedMenu {
                 ),
             }
         };
+        let levels = [
+            decode_embedded_art("assets/ui/menu-background.png", MENU_BACKGROUND_PNG)?,
+            decode_embedded_art("assets/ui/main-menu-background.png", MAIN_MENU_BACKGROUND_PNG)?,
+            decode_embedded_art("assets/ui/menu-panel.png", MENU_PANEL_PNG)?,
+            decode_embedded_art("assets/ui/menu-focus.png", MENU_FOCUS_PNG)?,
+        ];
         let art = {
             let authority = IdentityOwner::create("windowed-menu").map_err(|error| error.to_string())?;
             let mut images = SceneImageRegistry::new(ResourceOwner::new(11, authority.session().clone(), 0));
             let font_id = ResourceId::new("resource:windowed-menu:font").map_err(|error| error.to_string())?;
-            let mut read = |path: &str| match path {
-                "assets/ui/menu-background.png" => Ok(solid(1536, 1024)),
-                "assets/ui/main-menu-background.png" => Ok(solid(1672, 941)),
-                "assets/ui/menu-panel.png" => Ok(solid(1254, 1254)),
-                "assets/ui/menu-focus.png" => Ok(solid(2172, 724)),
-                other => Err(ClientError::BadUi(format!("missing asset: {other}"))),
+            let mut read = |path: &str| {
+                levels
+                    .iter()
+                    .find(|level| level.0 == path)
+                    .map(|level| level.1.clone())
+                    .ok_or_else(|| ClientError::BadUi(format!("missing asset: {path}")))
             };
             load_native_ui_art(&font_id, &mut images, &mut read).map_err(|error| error.to_string())?
         };
@@ -235,7 +262,7 @@ impl WindowedMenu {
             height: 1,
         };
         let font_image = RendererImage {
-            owner,
+            owner: owner.clone(),
             ordinal: MENU_FONT_ORDINAL,
             source: ImageSource::Generated {
                 name: "windowed-menu-font".to_string(),
@@ -243,6 +270,21 @@ impl WindowedMenu {
             width: font_width,
             height: font_height,
         };
+        let art_uploads = levels.map(|(path, level)| {
+            let ordinal = MENU_ART_ORDINAL_BASE + art_ordinal(path);
+            MenuArtUpload {
+                image: RendererImage {
+                    owner: owner.clone(),
+                    ordinal,
+                    source: ImageSource::Generated {
+                        name: format!("windowed-menu-art:{path}"),
+                    },
+                    width: level.width,
+                    height: level.height,
+                },
+                level,
+            }
+        });
         Ok(Self {
             menu,
             seat,
@@ -253,6 +295,7 @@ impl WindowedMenu {
             font_width,
             font_height,
             font_pixels,
+            art: art_uploads,
             uploaded: false,
             clock_ms,
             model: shared,
@@ -356,7 +399,7 @@ impl WindowedMenu {
         };
         let mut capture = MenuCaptureServices::new(self.font.clone(), self.font.clone());
         let _ignored = self.menu.draw(&context, &mut capture);
-        let mut batches = menu_batches(&capture.quads, width as f32, height as f32, &self.white);
+        let mut batches = menu_batches(&capture.runs, width as f32, height as f32, &self.white, &self.art);
         batches.extend(glyph_batches(
             &capture.glyphs,
             width as f32,
@@ -402,34 +445,69 @@ impl WindowedMenu {
                 self.font_height,
                 self.font_pixels.clone(),
             ));
+            uploads.extend(self.art.iter().map(art_upload));
         }
         Some((view, uploads))
     }
 
-    /// Release the uploaded white and font-atlas images (no-op before the
-    /// first frame).
+    /// Release the uploaded white, font-atlas, and art images (no-op before
+    /// the first frame).
     pub(crate) fn release_images(&self) -> Vec<ImageResourceOperation> {
         if self.uploaded {
-            vec![
+            let mut release = vec![
                 ImageResourceOperation::ReleaseImage {
                     image: self.white.clone(),
                 },
                 ImageResourceOperation::ReleaseImage {
                     image: self.font_image.clone(),
                 },
-            ]
+            ];
+            release.extend(self.art.iter().map(|upload| ImageResourceOperation::ReleaseImage {
+                image: upload.image.clone(),
+            }));
+            release
         } else {
             Vec::new()
         }
     }
 }
 
-/// Solid placeholder level for synthetic menu art.
-fn solid(width: u32, height: u32) -> ImageLevel {
-    ImageLevel {
-        width,
-        height,
-        pixels: vec![9; (width * height * 4) as usize],
+/// Decode one embedded menu PNG, rejecting unknown paths like the donor.
+fn decode_embedded_art(path: &'static str, bytes: &[u8]) -> Result<(&'static str, ImageLevel), String> {
+    let image = super::menu_art::load_menu_art_image(path, bytes).map_err(|error| error.to_string())?;
+    Ok((
+        path,
+        ImageLevel {
+            width: image.width,
+            height: image.height,
+            pixels: image.pixels,
+        },
+    ))
+}
+
+/// Ordinal slot for one art path (matches the manifest load order).
+fn art_ordinal(path: &str) -> u32 {
+    match path {
+        "assets/ui/menu-background.png" => 0,
+        "assets/ui/main-menu-background.png" => 1,
+        "assets/ui/menu-panel.png" => 2,
+        _ => 3,
+    }
+}
+
+/// Upload operation for one menu art image (donor `loadNativeUiArt`
+/// sampling: clamp with linear filtering).
+fn art_upload(upload: &MenuArtUpload) -> ImageResourceOperation {
+    ImageResourceOperation::CreateImage {
+        image: upload.image.clone(),
+        content: RenderImage::Rgba8 {
+            levels: vec![upload.level.clone()],
+            border_color: vec4(0.0, 0.0, 0.0, 0.0),
+        },
+        sampling: TextureSampling {
+            repeat: false,
+            filter: TextureFilter::Linear,
+        },
     }
 }
 
@@ -552,10 +630,33 @@ pub(crate) fn convert_router_event(event: &qa_client::input::router::SeatInputEv
     }
 }
 
-/// Capturing render services: fills and images become flat pixel quads
-/// while text runs lay out into per-glyph quads with atlas UVs.
+/// One textured menu quad: fills carry degenerate UVs over the white
+/// image while art quads (backdrop, nine-slice panel/focus) carry real UVs
+/// over their uploaded image.
+struct MenuQuad {
+    /// Destination rectangle in drawable pixels.
+    rect: Rect,
+    /// Source coordinates.
+    uv: TextureRect,
+    /// Quad color.
+    color: Vec4,
+}
+
+/// One emit-order run of quads over a single image: consecutive fills and
+/// art quads group into runs so painter order survives batching (panel art
+/// stays under later control fills, focus art over its control fill).
+struct MenuQuadRun {
+    /// Art slot, or `None` for the white image.
+    art: Option<usize>,
+    /// Run quads in emit order.
+    quads: Vec<MenuQuad>,
+}
+
+/// Capturing render services: fills and images become textured pixel quads
+/// grouped into emit-order runs while text runs lay out into per-glyph
+/// quads with atlas UVs.
 struct MenuCaptureServices {
-    quads: Vec<(Rect, Vec4)>,
+    runs: Vec<MenuQuadRun>,
     glyphs: Vec<GlyphQuad>,
     color: Vec4,
     body_font: TextFontSelection,
@@ -566,7 +667,7 @@ impl MenuCaptureServices {
     /// Capture over the menu body and title fonts.
     fn new(body_font: TextFontSelection, title_font: TextFontSelection) -> Self {
         Self {
-            quads: Vec::new(),
+            runs: Vec::new(),
             glyphs: Vec::new(),
             color: vec4(1.0, 1.0, 1.0, 1.0),
             body_font,
@@ -575,11 +676,17 @@ impl MenuCaptureServices {
     }
 
     /// Record one quad, skipping empty and fully transparent rects.
-    fn push(&mut self, rect: Rect, color: Vec4) {
+    fn push(&mut self, art: Option<usize>, rect: Rect, uv: TextureRect, color: Vec4) {
         if rect.width <= 0.0 || rect.height <= 0.0 || color.w <= 0.0 {
             return;
         }
-        self.quads.push((rect, color));
+        let extend = self.runs.last().is_some_and(|run| run.art == art);
+        if !extend {
+            self.runs.push(MenuQuadRun { art, quads: Vec::new() });
+        }
+        if let Some(run) = self.runs.last_mut() {
+            run.quads.push(MenuQuad { rect, uv, color });
+        }
     }
 
     /// Record one glyph quad, skipping empty and fully transparent rects.
@@ -654,77 +761,121 @@ impl UiRenderServices for MenuCaptureServices {
     }
 
     fn picture(&self, resource: &ResourceId) -> Result<PictureAsset, ClientError> {
-        if resource.as_str().contains("background") {
-            return Ok(PictureAsset::Image(ImagePicture {
-                image: BACKDROP_IMAGE_TAG,
-                width: 1,
-                height: 1,
-            }));
-        }
-        Ok(self.white())
+        let tag = match resource.as_str() {
+            "resource:engine-menu:background" => ART_BACKGROUND_TAG,
+            "resource:engine-menu:main-background" => ART_MAIN_BACKGROUND_TAG,
+            "resource:engine-menu:panel" => ART_PANEL_TAG,
+            "resource:engine-menu:focus" => ART_FOCUS_TAG,
+            _ => return Ok(self.white()),
+        };
+        Ok(PictureAsset::Image(ImagePicture {
+            image: tag,
+            width: 1,
+            height: 1,
+        }))
     }
 
     fn emit(&mut self, command: UiEmitCommand) {
         match command {
             UiEmitCommand::SetColor(color) => self.color = color,
             UiEmitCommand::StretchPic { rect, uv, image } => {
-                if image.image == BACKDROP_IMAGE_TAG {
-                    self.push(rect, MENU_BACKDROP_COLOR);
-                } else if image.image == FONT_PICTURE_HANDLE {
+                if image.image == FONT_PICTURE_HANDLE {
                     self.push_glyph(rect, uv, self.color);
                 } else {
-                    self.push(rect, self.color);
+                    self.push(tag_art_slot(image.image), rect, uv, self.color);
                 }
             }
         }
     }
 
     fn material(&mut self, draw: UiMaterialDraw) {
-        self.push(draw.rect, draw.color);
+        self.push(
+            None,
+            draw.rect,
+            TextureRect {
+                s: 0.0,
+                t: 0.0,
+                s2: 0.0,
+                t2: 0.0,
+            },
+            draw.color,
+        );
     }
 }
 
-/// Vertex-colored overlay batches for captured quads in NDC space (the
+/// Art upload slot for one tagged picture (`None` is the white image).
+fn tag_art_slot(tag: u32) -> Option<usize> {
+    match tag {
+        ART_BACKGROUND_TAG => Some(0),
+        ART_MAIN_BACKGROUND_TAG => Some(1),
+        ART_PANEL_TAG => Some(2),
+        ART_FOCUS_TAG => Some(3),
+        _ => None,
+    }
+}
+
+/// Vertex-colored overlay batches for captured runs in NDC space (the
 /// damage-blend overlay pattern: depth-always, no depth writes, blended).
-fn menu_batches(quads: &[(Rect, Vec4)], width: f32, height: f32, white: &RendererImage) -> Vec<DrawBatch> {
-    let mut vertices = Vec::with_capacity(quads.len() * 4);
-    let mut indices = Vec::with_capacity(quads.len() * 6);
-    for (rect, color) in quads {
-        let base = vertices.len() as u32;
-        let left = 2.0 * rect.x / width - 1.0;
-        let right = 2.0 * (rect.x + rect.width) / width - 1.0;
-        let top = 1.0 - 2.0 * rect.y / height;
-        let bottom = 1.0 - 2.0 * (rect.y + rect.height) / height;
-        for (x, y) in [(left, top), (right, top), (right, bottom), (left, bottom)] {
-            vertices.push(RenderVertex {
-                position: vec4(x, y, 0.0, 1.0),
-                tex_coord: vec2(0.0, 0.0),
-                color: *color,
-            });
+/// Each run binds its own image (white for fills, one art image for
+/// backdrop and nine-slice quads) so painter order survives batching.
+fn menu_batches(
+    runs: &[MenuQuadRun],
+    width: f32,
+    height: f32,
+    white: &RendererImage,
+    art: &[MenuArtUpload; 4],
+) -> Vec<DrawBatch> {
+    let mut batches = Vec::with_capacity(runs.len());
+    for run in runs {
+        let mut vertices = Vec::with_capacity(run.quads.len() * 4);
+        let mut indices = Vec::with_capacity(run.quads.len() * 6);
+        for quad in &run.quads {
+            let base = vertices.len() as u32;
+            let left = 2.0 * quad.rect.x / width - 1.0;
+            let right = 2.0 * (quad.rect.x + quad.rect.width) / width - 1.0;
+            let top = 1.0 - 2.0 * quad.rect.y / height;
+            let bottom = 1.0 - 2.0 * (quad.rect.y + quad.rect.height) / height;
+            for (x, y, s, t) in [
+                (left, top, quad.uv.s, quad.uv.t),
+                (right, top, quad.uv.s2, quad.uv.t),
+                (right, bottom, quad.uv.s2, quad.uv.t2),
+                (left, bottom, quad.uv.s, quad.uv.t2),
+            ] {
+                vertices.push(RenderVertex {
+                    position: vec4(x, y, 0.0, 1.0),
+                    tex_coord: vec2(s, t),
+                    color: quad.color,
+                });
+            }
+            indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
         }
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        if vertices.is_empty() {
+            continue;
+        }
+        let texture = match run.art {
+            Some(slot) => TextureBinding::BindImage(art[slot].image.clone()),
+            None => TextureBinding::BindImage(white.clone()),
+        };
+        batches.push(DrawBatch {
+            fog: None,
+            luminance_alpha: false,
+            indices,
+            texture,
+            state: RenderState {
+                blend: (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
+                depth_test: DepthTest::Always,
+                depth_write: false,
+                alpha_test: AlphaTest::None,
+                cull: CullFace::None,
+                depth_range: [0.0, 1.0],
+                polygon_offset: None,
+            },
+            lighting: BatchLighting::Vertex,
+            primitive: BatchPrimitive::Triangles,
+            vertices: BatchVertices::Single(vertices),
+        });
     }
-    if vertices.is_empty() {
-        return Vec::new();
-    }
-    vec![DrawBatch {
-        fog: None,
-        luminance_alpha: false,
-        indices,
-        texture: TextureBinding::BindImage(white.clone()),
-        state: RenderState {
-            blend: (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
-            depth_test: DepthTest::Always,
-            depth_write: false,
-            alpha_test: AlphaTest::None,
-            cull: CullFace::None,
-            depth_range: [0.0, 1.0],
-            polygon_offset: None,
-        },
-        lighting: BatchLighting::Vertex,
-        primitive: BatchPrimitive::Triangles,
-        vertices: BatchVertices::Single(vertices),
-    }]
+    batches
 }
 
 #[cfg(test)]
@@ -810,21 +961,21 @@ mod tests {
         assert_eq!(menu.menu().active_menu(), Some(expected));
         assert!(menu.release_images().is_empty());
         let (view, uploads) = menu.frame_view(960, 600, None, 16.0).expect("menu view");
-        assert_eq!(uploads.len(), 2);
-        assert!(matches!(uploads[0], ImageResourceOperation::CreateImage { .. }));
-        assert!(matches!(uploads[1], ImageResourceOperation::CreateImage { .. }));
+        assert_eq!(uploads.len(), 6);
+        for upload in &uploads {
+            assert!(matches!(upload, ImageResourceOperation::CreateImage { .. }));
+        }
         let batches = batches_of(&view);
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].lighting, BatchLighting::Vertex);
-        let BatchVertices::Single(vertices) = &batches[0].vertices else {
-            panic!("expected single-textured vertices");
+        assert_eq!(batches.len(), 7);
+        for batch in batches {
+            assert_eq!(batch.lighting, BatchLighting::Vertex);
+        }
+        // Backdrop first, text last.
+        let TextureBinding::BindImage(backdrop) = &batches[0].texture else {
+            panic!("first batch must bind a menu image");
         };
-        assert!(
-            vertices.len() >= 20,
-            "menu has several quads, got {}",
-            vertices.len() / 4
-        );
-        let BatchVertices::Single(text) = &batches[1].vertices else {
+        assert_eq!(backdrop.ordinal, MENU_ART_ORDINAL_BASE + 1);
+        let BatchVertices::Single(text) = &batches.last().expect("text batch").vertices else {
             panic!("expected single-textured text vertices");
         };
         assert!(!text.is_empty() && text.len() % 4 == 0, "text draws whole glyph quads");
@@ -833,24 +984,25 @@ mod tests {
         assert!(reuploads.is_empty());
         assert_eq!(batches_of(&repeat), batches);
         let release = menu.release_images();
-        assert_eq!(release.len(), 2);
-        assert!(matches!(release[0], ImageResourceOperation::ReleaseImage { .. }));
-        assert!(matches!(release[1], ImageResourceOperation::ReleaseImage { .. }));
+        assert_eq!(release.len(), 6);
+        for release in &release {
+            assert!(matches!(release, ImageResourceOperation::ReleaseImage { .. }));
+        }
     }
 
     #[test]
     fn menu_text_batch_binds_the_font_atlas_with_glyph_uvs() {
         let mut menu = menu();
         let (view, uploads) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
-        assert_eq!(uploads.len(), 2);
+        assert_eq!(uploads.len(), 6);
         let batches = batches_of(&view);
-        assert_eq!(batches.len(), 2);
-        let TextureBinding::BindImage(font) = &batches[1].texture else {
+        let text_batch = batches.last().expect("text batch");
+        let TextureBinding::BindImage(font) = &text_batch.texture else {
             panic!("text batch must bind the font atlas image");
         };
         assert_eq!(font.ordinal, MENU_FONT_ORDINAL);
         assert_eq!((font.width, font.height), (128, 128));
-        let BatchVertices::Single(vertices) = &batches[1].vertices else {
+        let BatchVertices::Single(vertices) = &text_batch.vertices else {
             panic!("expected single-textured text vertices");
         };
         assert!(
@@ -874,21 +1026,59 @@ mod tests {
     fn menu_backdrop_covers_the_viewport() {
         let mut menu = menu();
         let (view, _) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
-        let BatchVertices::Single(vertices) = &batches_of(&view)[0].vertices else {
+        let batches = batches_of(&view);
+        let TextureBinding::BindImage(backdrop_image) = &batches[0].texture else {
+            panic!("first batch must bind a menu image");
+        };
+        assert_eq!(backdrop_image.ordinal, MENU_ART_ORDINAL_BASE + 1);
+        assert_eq!((backdrop_image.width, backdrop_image.height), (1672, 941));
+        let BatchVertices::Single(vertices) = &batches[0].vertices else {
             panic!("expected single-textured vertices");
         };
-        let backdrop = vertices.as_chunks::<4>().0.iter().find(|quad| {
-            quad.iter().all(|vertex| {
-                (vertex.color.x - MENU_BACKDROP_COLOR.x).abs() < f32::EPSILON
-                    && (vertex.color.y - MENU_BACKDROP_COLOR.y).abs() < f32::EPSILON
-                    && (vertex.color.z - MENU_BACKDROP_COLOR.z).abs() < f32::EPSILON
-            })
-        });
-        let quad = backdrop.expect("a fullscreen backdrop quad");
+        assert_eq!(vertices.len(), 4, "backdrop is one fullscreen quad");
+        let quad = vertices.as_chunks::<4>().0.first().expect("backdrop quad");
         let xs: Vec<f32> = quad.iter().map(|vertex| vertex.position.x).collect();
         let ys: Vec<f32> = quad.iter().map(|vertex| vertex.position.y).collect();
         assert_eq!(xs, vec![-1.0, 1.0, 1.0, -1.0]);
         assert_eq!(ys, vec![1.0, 1.0, -1.0, -1.0]);
+        assert!(
+            quad.iter().all(|vertex| vertex.color == vec4(1.0, 1.0, 1.0, 1.0)),
+            "backdrop art draws untinted"
+        );
+        let (s, t) = (quad[0].tex_coord.x, quad[0].tex_coord.y);
+        let (s2, t2) = (quad[2].tex_coord.x, quad[2].tex_coord.y);
+        assert!(s2 > s && t2 > t, "backdrop UVs span the art");
+    }
+
+    #[test]
+    fn menu_panel_and_focus_use_nine_slice_art() {
+        let mut menu = menu();
+        let (view, _) = menu.frame_view(960, 600, None, 0.0).expect("menu view");
+        let batches = batches_of(&view);
+        let ordinals: Vec<u32> = batches
+            .iter()
+            .filter_map(|batch| match &batch.texture {
+                TextureBinding::BindImage(image) => Some(image.ordinal),
+                _ => None,
+            })
+            .collect();
+        let panel = MENU_ART_ORDINAL_BASE + 2;
+        let focus = MENU_ART_ORDINAL_BASE + 3;
+        assert!(ordinals.contains(&panel), "panel art batch present: {ordinals:?}");
+        assert!(ordinals.contains(&focus), "focus art batch present: {ordinals:?}");
+        let panel_batch = batches
+            .iter()
+            .find(|batch| matches!(&batch.texture, TextureBinding::BindImage(image) if image.ordinal == panel))
+            .expect("panel batch");
+        let BatchVertices::Single(vertices) = &panel_batch.vertices else {
+            panic!("expected single-textured panel vertices");
+        };
+        assert_eq!(vertices.len() % 4, 0);
+        assert!(
+            vertices.len() / 4 >= 4,
+            "panel nine-slice emits corner quads, got {}",
+            vertices.len() / 4
+        );
     }
 
     #[test]
@@ -1038,26 +1228,24 @@ mod tests {
             ratio > 0.25,
             "menu capture must differ from the run capture, got {ratio:.3}"
         );
-        let backdrop = MENU_BACKDROP_COLOR;
-        let expected = [
-            (backdrop.x * 255.0).round() as u8,
-            (backdrop.y * 255.0).round() as u8,
-            (backdrop.z * 255.0).round() as u8,
+        let samples = [
+            (0, 0),
+            (479, 0),
+            (0, 299),
+            (479, 299),
+            (240, 0),
+            (240, 299),
+            (0, 150),
+            (479, 150),
         ];
-        let backdrop_pixels = menu_pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|pixel| {
-                pixel[0].abs_diff(expected[0]) <= 2
-                    && pixel[1].abs_diff(expected[1]) <= 2
-                    && pixel[2].abs_diff(expected[2]) <= 2
-            })
-            .count();
-        let backdrop_ratio = backdrop_pixels as f64 / (480.0 * 300.0);
+        let mut distinct = std::collections::BTreeSet::new();
+        for (x, y) in samples {
+            let at = (y * 480 + x) * 4;
+            distinct.insert((menu_pixels[at], menu_pixels[at + 1], menu_pixels[at + 2]));
+        }
         assert!(
-            backdrop_ratio > 0.10,
-            "menu backdrop must be visible, got {backdrop_ratio:.3}"
+            distinct.len() >= 3,
+            "menu backdrop art varies across the viewport, got {distinct:?}"
         );
         let temporary = std::env::temp_dir();
         let menu_path = temporary.join("qa-wu13-menu.ppm");
