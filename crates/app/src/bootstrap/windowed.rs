@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use qa_client::audio::engine::{SdlDeviceFactory, UnifiedAudio, UnifiedAudioOptions};
 use qa_client::input::router::{InputRouter, RouterError, RouterWindow, Seat, SeatInputEvent, SeatRoute, UiCallback};
+use qa_client::input::{FrameContext as ClientFrameContext, InputCommandBuilder};
 use qa_client::render::dynamic_texture::resolve_draw_textures;
 use qa_client::render::gl::platform::PlatformGlContext;
 use qa_client::render::gl::renderer::GlRenderer;
@@ -37,7 +38,8 @@ use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, Scen
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::cmd::Dialect;
 use qa_core::identity::{IdentityOwner, SeatId};
-use qa_core::math::{angles_to_axis, vec3, vec4, Vec4};
+use qa_core::math::{angles_to_axis, vec3, vec4, Vec3, Vec4};
+use qa_core::time::SourceTime as ClockTime;
 use qa_platform::controller::ControllerEvent;
 use qa_platform::controller::ControllerSelection;
 use qa_platform::controller::SdlControllers;
@@ -48,12 +50,13 @@ use qa_platform::sdl::{
 };
 use qa_platform::sdl_render_context::SdlWorkerRenderContext;
 
-use super::input::NullRegistry;
+use super::input::{dialect_family, seat_sample, user_command, NullRegistry};
 use super::renderer::{
     CaptureId, ImageLevel, NativeBackendFactory, NativeRenderBackend, NativeRenderWindow, NativeRenderer,
     NativeRendererOptions, NativeWindowFactory, RenderBackendKind, RenderCommand, RenderDriverInfo, RenderFrame,
     RenderGlConfig, RenderImageRegistry, RenderWindowOptions, RenderWindowPresentation, RendererResourceOwner,
 };
+use super::simulation::players::net_to_world;
 use super::startup::{StartupAction, StartupApplication, StartupBackend, StartupEntry, StartupError, StartupFrame};
 use super::startup_selection::StartupSelectionModel;
 use super::windowed_cpu::NativeCpuBackend;
@@ -1051,20 +1054,26 @@ fn windowed_scene_view(
     seat: Option<&SeatId>,
     time_ms: f64,
     scene: &mut WindowedScene,
+    player: Option<(Vec3, Vec3)>,
 ) -> Option<(ClientRenderView, Vec<ImageResourceOperation>)> {
     let target = match seat {
         Some(seat) => ViewTarget::Seat(seat.clone()),
         None => ViewTarget::Preview("windowed".to_string()),
     };
     if let Some(presentation) = scene.presentation.as_mut() {
-        let (origin, angles) = presentation
-            .spawn()
-            .map_or(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]), |spawn| {
-                (
-                    [spawn.origin.x, spawn.origin.y, spawn.origin.z],
-                    [spawn.angles.x, spawn.angles.y, spawn.angles.z],
-                )
-            });
+        let (origin, angles) = player.map_or_else(
+            || {
+                presentation
+                    .spawn()
+                    .map_or(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]), |spawn| {
+                        (
+                            [spawn.origin.x, spawn.origin.y, spawn.origin.z],
+                            [spawn.angles.x, spawn.angles.y, spawn.angles.z],
+                        )
+                    })
+            },
+            |(eye, angles)| ([eye.x, eye.y, eye.z], [angles.x, angles.y, angles.z]),
+        );
         let camera = windowed_camera_for(width, height, origin, angles)?;
         let clear_color = scene.clear_color;
         let (mut view, image_operations) = presentation
@@ -1119,6 +1128,7 @@ fn build_windowed_commands(
     seat: Option<&SeatId>,
     time_ms: f64,
     scene: Option<&mut WindowedScene>,
+    player: Option<(Vec3, Vec3)>,
 ) -> (Vec<RenderCommand>, Vec<ImageResourceOperation>) {
     match scene {
         None => (
@@ -1131,7 +1141,7 @@ fn build_windowed_commands(
             ],
             Vec::new(),
         ),
-        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene) {
+        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene, player) {
             Some((view, image_operations)) => (
                 vec![
                     RenderCommand::DrawBuffer {
@@ -1189,6 +1199,7 @@ pub struct WindowedStartupBackend {
     input_seat: Option<SeatId>,
     input_queue: WindowedInputQueue,
     input_log: VecDeque<SeatInputEvent>,
+    command_builder: Option<InputCommandBuilder>,
     controllers: Option<SdlControllers>,
     launch: MenuLaunchQueue,
     scene: Option<WindowedScene>,
@@ -1229,6 +1240,7 @@ impl WindowedStartupBackend {
             input_seat: None,
             input_queue: Rc::new(RefCell::new(Vec::new())),
             input_log: VecDeque::new(),
+            command_builder: None,
             controllers: None,
             launch: MenuLaunchQueue::new(),
             scene: None,
@@ -1320,7 +1332,106 @@ impl WindowedStartupBackend {
             presentation,
             clear_color: vec4(0.0, 0.0, 0.0, 1.0),
         });
+        let mut builder = InputCommandBuilder::new(dialect_family(world.dialect()));
+        if let Some((_, angles)) = world.player_eye() {
+            let _ignored = builder.set_view_angles(angles);
+        }
+        self.command_builder = Some(builder);
         self.world = Some(world);
+        self.apply_input_profile();
+    }
+
+    /// Install the world's dialect and default key bindings on the live
+    /// seat (donor startup input profile). Runs at world set and at open,
+    /// whichever sees both the world and the router; direct launches set
+    /// the world before the router exists, menu launches after.
+    fn apply_input_profile(&mut self) {
+        let (Some(world), Some(router), Some(seat)) =
+            (self.world.as_ref(), self.input_router.as_mut(), self.input_seat.clone())
+        else {
+            return;
+        };
+        let dialect = world.dialect();
+        let Some(seat_input) = router.seat_mut(&seat) else {
+            return;
+        };
+        if let Err(error) = seat_input.set_profile(dialect) {
+            eprintln!("windowed: keeping input profile ({error})");
+        }
+        seat_input.unbind_all();
+        for binding in super::windowed_play::windowed_action_bindings(dialect) {
+            seat_input.bind(binding);
+        }
+    }
+
+    /// Run one interactive play step: sample the seat, build the family
+    /// user command, step the admitted player, and tick the server. The
+    /// server ticks even without a player so the world animates; command
+    /// failures keep the previous frame's stillness instead of aborting.
+    fn step_play(&mut self, elapsed_ms: f64) {
+        if self.menu.is_some() {
+            return;
+        }
+        if self.world.is_none() {
+            return;
+        }
+        let command = if self.world.as_ref().is_some_and(WindowedWorld::has_player) {
+            self.sample_player_command()
+        } else {
+            None
+        };
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        // Tick first: the player step below reads the fresh clock frame
+        // for its step length, so a tickless step would stand still.
+        let elapsed = ClockTime::Seconds((elapsed_ms / 1000.0) as f32);
+        if let Err(error) = world.server_mut().tick(elapsed) {
+            eprintln!("windowed: server tick failed ({error})");
+        }
+        if let Some(command) = command {
+            if let Err(error) = world.step_player(command) {
+                eprintln!("windowed: player step failed ({error})");
+            }
+        }
+    }
+
+    /// Sample the live seat and build one world user command, or `None`
+    /// when input is not ready (router, seat, or builder missing).
+    fn sample_player_command(&mut self) -> Option<qa_world::movement::types::UserCommand> {
+        let router = self.input_router.as_mut()?;
+        let seat = self.input_seat.clone()?;
+        let builder = self.command_builder.as_mut()?;
+        let seat_input = router.seat_mut(&seat)?;
+        let now_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        let frame = seat_input.sample(now_ms, 16.0).ok()?;
+        let sample = seat_sample(&frame);
+        let world = self.world.as_ref()?;
+        let clock = world.server().simulation().frame();
+        let context = match builder.family() {
+            qa_world::client::ClientFamily::Q1Netquake => ClientFrameContext::Q1Netquake {
+                ack_time_s: clock.time.as_seconds_f64(),
+                pitch_drift: None,
+            },
+            qa_world::client::ClientFamily::Q1Quakeworld => ClientFrameContext::Q1Quakeworld { pitch_drift: None },
+            qa_world::client::ClientFamily::Q2Classic => ClientFrameContext::Q2Classic {
+                delta_angles: vec3(0.0, 0.0, 0.0),
+                light_level: 0,
+                attack_allowed: true,
+            },
+            qa_world::client::ClientFamily::Q2Rerelease => ClientFrameContext::Q2Rerelease {
+                delta_angles: vec3(0.0, 0.0, 0.0),
+                server_frame: clock.frame,
+                attack_allowed: true,
+            },
+            qa_world::client::ClientFamily::Q3 => ClientFrameContext::Q3 {
+                server_time_ms: clock.time.as_milliseconds_truncated(),
+                weapon: 0,
+                sensitivity: 1.0,
+            },
+        };
+        let built = builder.build(&sample, &context).ok()?;
+        Some(net_to_world(&user_command(&built)))
     }
 
     /// Live map-entity count, or `None` when no map world loaded.
@@ -1504,7 +1615,8 @@ impl WindowedStartupBackend {
                 Vec::new(),
             );
         }
-        build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut())
+        let player = self.world.as_ref().and_then(WindowedWorld::player_eye);
+        build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut(), player)
     }
 
     /// Apply image uploads to the live backend before executing a view.
@@ -1597,6 +1709,7 @@ impl StartupBackend for WindowedStartupBackend {
         self.input_seat = Some(seat);
         self.controllers = open_windowed_controllers();
         self.audio = open_windowed_audio();
+        self.apply_input_profile();
         Ok(())
     }
 
@@ -1620,6 +1733,7 @@ impl StartupBackend for WindowedStartupBackend {
     fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
         self.timer.section("scene");
         self.drain_menu_launch();
+        self.step_play(ctx.elapsed_ms);
         let (commands, image_operations) = self.frame_commands();
         // Inline the live borrow (rather than `live_parts`) so the timer
         // field stays reachable for the timed execute below.
@@ -2609,7 +2723,7 @@ mod tests {
 
     #[test]
     fn windowed_commands_degrade_without_scene() {
-        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None);
+        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None, None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 2);
         assert!(matches!(
@@ -2627,7 +2741,7 @@ mod tests {
         let owner = IdentityOwner::create("windowed-scene-test").unwrap();
         let seat = owner.seat(0);
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        let (commands, image_operations) = build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene));
+        let (commands, image_operations) = build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene), None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 3);
         assert!(matches!(
@@ -2655,7 +2769,7 @@ mod tests {
     #[test]
     fn windowed_scene_view_uses_preview_without_seat_and_live_size() {
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.1, 0.2, 0.3, 1.0));
-        let (view, image_operations) = windowed_scene_view(128, 96, None, 7.0, &mut scene).expect("preview view");
+        let (view, image_operations) = windowed_scene_view(128, 96, None, 7.0, &mut scene, None).expect("preview view");
         assert!(image_operations.is_empty());
         assert_eq!((view.state.viewport.width, view.state.viewport.height), (128.0, 96.0));
         assert!(matches!(view.target, ViewTarget::Preview(_)));
@@ -2663,15 +2777,15 @@ mod tests {
         let clear = view.state.clear.expect("view clears");
         assert_eq!(clear.depth, 1.0);
         assert_eq!(clear.color, Some(vec4(0.1, 0.2, 0.3, 1.0)));
-        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene).expect("other size");
+        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene, None).expect("other size");
         assert_eq!((other.state.viewport.width, other.state.viewport.height), (32.0, 32.0));
     }
 
     #[test]
     fn windowed_invalid_size_degrades_even_with_scene() {
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene).is_none());
-        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene));
+        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene, None).is_none());
+        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene), None);
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], RenderCommand::DrawBuffer { clear: true, .. }));
         assert!(matches!(commands[1], RenderCommand::SwapBuffers));
@@ -2714,7 +2828,7 @@ mod tests {
             clear: true,
         });
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.0, 0.0, 0.0, 1.0));
-        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene).unwrap();
+        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene, None).unwrap();
         backend.execute_serial_command(&RenderCommand::View(view));
         backend.execute_serial_command(&RenderCommand::Draw);
         backend.execute_serial_command(&RenderCommand::SwapBuffers);

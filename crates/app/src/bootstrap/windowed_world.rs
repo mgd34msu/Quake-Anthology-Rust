@@ -29,12 +29,17 @@ use qa_content::bsp2::read_q2_bsp;
 use qa_content::bsp3::{parse_q3_bsp, parse_q3_entities};
 use qa_content::catalog::InstalledCatalog;
 use qa_content::{classify_bsp, BspKind};
+use qa_core::math::vec3;
 use qa_guest::server::GuestServerLogic;
 use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
 use thiserror::Error;
 
-use super::windowed_scene::{build_presentation, open_product_mounts, WindowedPresentation};
+use super::windowed_play::{
+    admit_player, build_clip, dialect_for_product, eye_height_for_family, provider_for_product, WindowedClip,
+    WindowedPlayer,
+};
+use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, WindowedPresentation};
 use crate::options::ApplicationOptions;
 use crate::startup::{open_server, StartupConfig};
 
@@ -111,6 +116,14 @@ pub enum WindowedWorldError {
         /// First skip reason, or `map has no entity records`.
         reason: String,
     },
+    /// The map loaded but its interactive player could not start.
+    #[error("cannot start play on {map}: {reason}")]
+    Play {
+        /// Map resource path.
+        map: String,
+        /// Clip-build or admission failure.
+        reason: String,
+    },
 }
 
 /// A live server holding one map's real entities.
@@ -123,6 +136,9 @@ pub struct WindowedWorld {
     skipped: Vec<SkippedEntity>,
     presentation: Option<WindowedPresentation>,
     presentation_error: Option<String>,
+    clip: Option<WindowedClip>,
+    player: Option<WindowedPlayer>,
+    dialect: qa_core::cmd::Dialect,
 }
 
 impl std::fmt::Debug for WindowedWorld {
@@ -148,6 +164,41 @@ impl WindowedWorld {
         &self.server
     }
 
+    /// Borrow the live server mutably (per-frame tick and player steps).
+    pub fn server_mut(&mut self) -> &mut Server<GuestServerLogic> {
+        &mut self.server
+    }
+
+    /// Player eye origin plus view angles for the follow camera, or `None`
+    /// when the family has no admitted player (the view falls back to the
+    /// static spawn).
+    #[must_use]
+    pub fn player_eye(&self) -> Option<(qa_core::math::Vec3, qa_core::math::Vec3)> {
+        self.player.as_ref().map(WindowedPlayer::eye)
+    }
+
+    /// Whether an interactive player is admitted.
+    #[must_use]
+    pub fn has_player(&self) -> bool {
+        self.player.is_some()
+    }
+
+    /// Run one player movement step for a world user command. No admitted
+    /// player (or no clip) keeps the static-spawn behavior: the world still
+    /// ticks, the camera just does not follow.
+    pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), WindowedWorldError> {
+        let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_ref()) else {
+            return Ok(());
+        };
+        let (simulation, triggers) = self.server.simulation_and_triggers();
+        player
+            .step(simulation, triggers, clip, command)
+            .map_err(|reason| WindowedWorldError::Play {
+                map: self.map.clone(),
+                reason,
+            })
+    }
+
     /// Content product the map bytes came from.
     #[must_use]
     pub fn content(&self) -> &str {
@@ -158,6 +209,12 @@ impl WindowedWorld {
     #[must_use]
     pub fn map(&self) -> &str {
         &self.map
+    }
+
+    /// Input dialect for the map's catalog family and edition.
+    #[must_use]
+    pub fn dialect(&self) -> qa_core::cmd::Dialect {
+        self.dialect
     }
 
     /// Parsed entity records in the map's entity string.
@@ -213,11 +270,11 @@ fn map_content_id(options: &ApplicationOptions) -> &str {
 /// Quake II entity strings share the Quake brace syntax, so they parse
 /// with the Quake reader, matching the donor (`native-q2-map.ts` parses
 /// `world.entities` with `parseQ1Entities`).
-fn decode_map_entities(bytes: &[u8], map: &str) -> Result<Vec<Vec<(String, String)>>, WindowedWorldError> {
-    let kind = classify_bsp(bytes, map).map_err(|error| WindowedWorldError::MapDecode {
-        map: map.to_string(),
-        reason: error.to_string(),
-    })?;
+fn decode_map_entities(
+    bytes: &[u8],
+    map: &str,
+    kind: BspKind,
+) -> Result<Vec<Vec<(String, String)>>, WindowedWorldError> {
     match kind {
         BspKind::Q1 => {
             let parsed =
@@ -345,9 +402,13 @@ pub fn load_windowed_world(
     owner: qa_client::render::types::ResourceOwner,
 ) -> Result<WindowedWorld, WindowedWorldError> {
     let content = map_content_id(options).to_string();
-    if catalog.require(&content).is_err() {
-        return Err(WindowedWorldError::UnknownProduct(content));
-    }
+    let product = catalog
+        .require(&content)
+        .map_err(|_| WindowedWorldError::UnknownProduct(content.clone()))?;
+    let family = product.expectation.family;
+    let edition = product.expectation.edition.clone();
+    let campaign = product.expectation.campaign.clone();
+    let dialect = dialect_for_product(family, &edition);
     let mounts = open_product_mounts(catalog, &content, &options.map)?;
     let bytes = mounts
         .read(qa_content::mounts::ResourceRef::Path(&options.map))
@@ -356,7 +417,11 @@ pub fn load_windowed_world(
             map: options.map.clone(),
             reason: error.to_string(),
         })?;
-    let entities = decode_map_entities(&bytes, &options.map)?;
+    let kind = classify_bsp(&bytes, &options.map).map_err(|error| WindowedWorldError::MapDecode {
+        map: options.map.clone(),
+        reason: error.to_string(),
+    })?;
+    let entities = decode_map_entities(&bytes, &options.map, kind)?;
     let mut server = open_server(config).map_err(|error| WindowedWorldError::Server(error.to_string()))?;
     let summary = spawn_map_entities(&mut server, &entities, &options.map);
     if summary.spawned == 0 {
@@ -370,6 +435,31 @@ pub fn load_windowed_world(
             reason,
         });
     }
+    let clip = build_clip(&bytes, &options.map, family).map_err(|reason| WindowedWorldError::Play {
+        map: options.map.clone(),
+        reason,
+    })?;
+    let player = match select_spawn(&entities, kind) {
+        Some(spawn) => {
+            let feet = vec3(
+                spawn.origin.x,
+                spawn.origin.y,
+                spawn.origin.z - eye_height_for_family(family),
+            );
+            admit_player(
+                server.simulation_mut(),
+                family,
+                provider_for_product(family, &campaign),
+                feet,
+                spawn.angles,
+            )
+            .map_err(|reason| WindowedWorldError::Play {
+                map: options.map.clone(),
+                reason,
+            })?
+        }
+        None => None,
+    };
     let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
         Ok(presentation) => (Some(presentation), None),
         Err(error) => (None, Some(error.to_string())),
@@ -383,6 +473,9 @@ pub fn load_windowed_world(
         skipped: summary.skipped,
         presentation,
         presentation_error,
+        clip,
+        player,
+        dialect,
     })
 }
 
@@ -560,10 +653,55 @@ mod tests {
                 "{product} {map}: expected more than the stub 5, got {}",
                 world.entity_count()
             );
-            assert_eq!(world.entity_count(), world.spawned());
+            let players = usize::from(world.has_player());
+            assert_eq!(world.entity_count(), world.spawned() + players);
             loaded += 1;
         }
         assert!(loaded > 0, "expected at least one Steel map to load");
+    }
+
+    #[test]
+    fn live_q1_world_admits_player_and_eye_follows_steps() {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let Some(catalog) = steel_catalog() else {
+            eprintln!("skipped: Steel corpus root has no game data");
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q1-classic-id1".to_string(),
+            map: "maps/start.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_windowed_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                eprintln!("skipped: q1-classic-id1 maps/start.bsp: {error}");
+                return;
+            }
+        };
+        assert!(world.has_player(), "Q1 world admits no player");
+        let (start_eye, angles) = world.player_eye().expect("player eye");
+        for step in 0..30 {
+            let command = UserCommand::Q1Netquake(Q1UserCommand {
+                acknowledged_server_time_seconds: f64::from(step) / 60.0,
+                view_angles: angles,
+                forward_move: 200.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 0,
+                impulse: 0,
+            });
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+            world.step_player(command).unwrap();
+        }
+        let (eye, _) = world.player_eye().expect("player eye");
+        let moved = ((eye.x - start_eye.x) as f64).hypot((eye.y - start_eye.y) as f64);
+        assert!(moved > 5.0, "eye did not follow the player: {eye:?} from {start_eye:?}");
     }
 
     /// Assert one Steel map presents draw batches at its spawn camera.

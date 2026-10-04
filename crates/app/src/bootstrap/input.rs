@@ -429,7 +429,7 @@ fn seat_context(session: &SessionId, seat: &SeatId, client: &ClientId) -> Comman
 }
 
 /// Dialect to client family.
-fn dialect_family(dialect: Dialect) -> ClientFamily {
+pub(crate) fn dialect_family(dialect: Dialect) -> ClientFamily {
     match dialect {
         Dialect::Q1Netquake => ClientFamily::Q1Netquake,
         Dialect::Q1Quakeworld => ClientFamily::Q1Quakeworld,
@@ -6442,7 +6442,7 @@ impl ApplicationInput {
 }
 
 /// Sample a seat frame as builder input.
-fn seat_sample(frame: &SeatFrame) -> SeatSample {
+pub(crate) fn seat_sample(frame: &SeatFrame) -> SeatSample {
     SeatSample {
         buttons: frame.buttons.clone(),
         mouse: frame.mouse,
@@ -6456,7 +6456,7 @@ fn seat_sample(frame: &SeatFrame) -> SeatSample {
 }
 
 /// Built command as a net user command.
-fn user_command(built: &BuiltCommand) -> UserCommand {
+pub(crate) fn user_command(built: &BuiltCommand) -> UserCommand {
     match *built {
         BuiltCommand::Q1Netquake {
             ack_time_s,

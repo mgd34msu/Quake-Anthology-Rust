@@ -257,6 +257,12 @@ impl<L: ServerLogic> Server<L> {
         &mut self.simulation
     }
 
+    /// Borrow the simulation mutably alongside the trigger table, for
+    /// movement services that trace bodies while skipping triggers.
+    pub fn simulation_and_triggers(&mut self) -> (&mut Simulation, &TriggerTable) {
+        (&mut self.simulation, &self.triggers)
+    }
+
     /// Borrow the game logic.
     #[must_use]
     pub fn logic(&self) -> &L {

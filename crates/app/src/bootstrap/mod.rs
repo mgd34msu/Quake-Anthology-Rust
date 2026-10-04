@@ -153,6 +153,7 @@ pub mod windowed_menu;
 pub mod windowed_menu_launch;
 pub mod windowed_menu_text;
 pub mod windowed_pacer;
+pub mod windowed_play;
 pub mod windowed_preset;
 pub mod windowed_scene;
 pub mod windowed_shaders;
