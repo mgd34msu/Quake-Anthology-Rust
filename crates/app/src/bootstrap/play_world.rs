@@ -23,11 +23,13 @@
 //! are recorded in [`PlayWorld::skipped`] instead of aborting the load.
 
 use std::collections::BTreeSet;
+use std::rc::Rc;
 
 use qa_content::bsp::{parse_q1_entities, read_q1_bsp, Q1BspOptions};
 use qa_content::bsp2::read_q2_bsp;
 use qa_content::bsp3::{parse_q3_bsp, parse_q3_entities};
 use qa_content::catalog::InstalledCatalog;
+use qa_content::mounts::MountedContent;
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::vec3;
 use qa_guest::server::GuestServerLogic;
@@ -139,6 +141,7 @@ pub struct PlayWorld {
     clip: Option<PlayerClip>,
     player: Option<PlayerBody>,
     dialect: qa_core::cmd::Dialect,
+    audio_mounts: Option<Rc<MountedContent>>,
 }
 
 impl std::fmt::Debug for PlayWorld {
@@ -153,6 +156,7 @@ impl std::fmt::Debug for PlayWorld {
             .field("entity_count", &self.entity_count())
             .field("presentation", &self.presentation)
             .field("presentation_error", &self.presentation_error)
+            .field("audio_mounts", &self.audio_mounts.is_some())
             .finish()
     }
 }
@@ -187,6 +191,14 @@ impl PlayWorld {
     #[must_use]
     pub fn player_actor(&self) -> Option<&qa_core::identity::ActorId> {
         self.player.as_ref().map(PlayerBody::actor)
+    }
+
+    /// Retained product mounts for game audio (see
+    /// [`MountsSoundContent`](super::audio_bridge::MountsSoundContent)), or
+    /// `None` when the audio open failed (the run stays silent).
+    #[must_use]
+    pub fn audio_mounts(&self) -> Option<Rc<MountedContent>> {
+        self.audio_mounts.clone()
     }
 
     /// Run one player movement step for a world user command. No admitted
@@ -473,6 +485,16 @@ pub fn load_play_world(
         }
         None => None,
     };
+    // The presentation consumes its mounts, so audio keeps a second open over
+    // the same product: without retained mounts no bank can open `sound/*`
+    // bytes. Best-effort only; a failed audio open keeps the run silent.
+    let audio_mounts = match open_product_mounts(catalog, &content, &options.map) {
+        Ok(mounts) => Some(Rc::new(mounts)),
+        Err(error) => {
+            eprintln!("windowed: game audio unavailable ({error})");
+            None
+        }
+    };
     let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
         Ok(presentation) => (Some(presentation), None),
         Err(error) => (None, Some(error.to_string())),
@@ -489,6 +511,7 @@ pub fn load_play_world(
         clip,
         player,
         dialect,
+        audio_mounts,
     })
 }
 

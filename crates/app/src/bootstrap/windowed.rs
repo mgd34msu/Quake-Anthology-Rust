@@ -22,6 +22,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use qa_client::audio::engine::{SdlDeviceFactory, UnifiedAudio, UnifiedAudioOptions};
+use qa_client::audio::types::AudioAudience;
 use qa_client::input::router::{InputRouter, RouterError, RouterWindow, Seat, SeatInputEvent, SeatRoute, UiCallback};
 use qa_client::input::{FrameContext as ClientFrameContext, InputCommandBuilder};
 use qa_client::render::dynamic_texture::resolve_draw_textures;
@@ -50,6 +51,7 @@ use qa_platform::sdl::{
 use qa_platform::sdl_render_context::SdlWorkerRenderContext;
 use qa_world::session::SessionSeat;
 
+use super::audio_bridge::{AudioBridge, MountsSoundContent};
 use super::input::{dialect_family, seat_sample, user_command, LocalPlayer, NullRegistry};
 use super::play_world::{load_play_world, PlayWorld};
 use super::renderer::{
@@ -948,6 +950,26 @@ fn open_windowed_audio() -> Option<UnifiedAudio> {
     open_windowed_audio_on(None, false)
 }
 
+/// Refresh windowed game audio once per frame: set the local seat/eye
+/// listener, then drain sim sound events into the engine (donor
+/// `ApplicationAudio.frame` order: listeners, receive, music, pump). The
+/// windowed sim produces no presentation sound events yet, so the receive
+/// drains an empty batch; the music advance and pump stay in
+/// [`refresh_windowed_audio`]. Never fails; engine errors log and the run
+/// stays silent.
+fn refresh_windowed_bridge_audio(
+    audio: &mut Option<UnifiedAudio>,
+    bridge: &mut Option<AudioBridge<MountsSoundContent>>,
+    seat: Option<&SeatId>,
+    world: Option<&PlayWorld>,
+) {
+    let (Some(engine), Some(bridge), Some(seat), Some(world)) = (audio.as_mut(), bridge.as_mut(), seat, world) else {
+        return;
+    };
+    bridge.update_listeners(engine, seat, world.player_eye(), world.player_actor());
+    bridge.receive(engine, &[], &AudioAudience::World);
+}
+
 /// Refresh windowed audio once per frame: advance music decoding and pump
 /// queued PCM. Never fails; a lost device stays silent.
 fn refresh_windowed_audio(audio: &mut Option<UnifiedAudio>, work_ms: f64) {
@@ -1192,6 +1214,7 @@ pub struct WindowedStartupBackend {
     renderer: Option<WindowedRenderer>,
     backends: Option<NativeWindowedBackendFactory>,
     audio: Option<UnifiedAudio>,
+    audio_bridge: Option<AudioBridge<MountsSoundContent>>,
     share: Rc<RefCell<WindowedShare>>,
     quit: Rc<Cell<bool>>,
     start: Instant,
@@ -1234,6 +1257,7 @@ impl WindowedStartupBackend {
             renderer: None,
             backends: None,
             audio: None,
+            audio_bridge: None,
             share: Rc::new(RefCell::new(WindowedShare::default())),
             quit,
             start: Instant::now(),
@@ -1339,6 +1363,9 @@ impl WindowedStartupBackend {
             let _ignored = builder.set_view_angles(angles);
         }
         self.command_builder = Some(builder);
+        self.audio_bridge = world
+            .audio_mounts()
+            .map(|mounts| AudioBridge::new(MountsSoundContent::new(mounts)));
         self.world = Some(world);
         self.apply_input_profile();
         self.pair_local_player();
@@ -1780,6 +1807,12 @@ impl StartupBackend for WindowedStartupBackend {
             return Err(error.to_string());
         }
         self.timer.section("audio");
+        refresh_windowed_bridge_audio(
+            &mut self.audio,
+            &mut self.audio_bridge,
+            self.input_seat.as_ref(),
+            self.world.as_ref(),
+        );
         refresh_windowed_audio(&mut self.audio, ctx.elapsed_ms);
         let samples = self.timer.take_frame();
         self.totals.add_frame(&samples);
@@ -1853,6 +1886,7 @@ impl StartupBackend for WindowedStartupBackend {
         self.renderer = None;
         self.scene = None;
         self.world = None;
+        self.audio_bridge = None;
         self.local_player = None;
         self.menu = None;
         if let Some(mut audio) = self.audio.take() {
