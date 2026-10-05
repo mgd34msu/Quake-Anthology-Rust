@@ -1009,6 +1009,114 @@ mod tests {
         assert!(moved > 5.0, "eye did not follow the player: {eye:?} from {start_eye:?}");
     }
 
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_start_doors_travel_along_map_angles() {
+        use qa_core::math::{normalize3, sub3};
+
+        use super::super::simulation::native_q1_spawns::q1_movedir;
+
+        let Some(catalog) = steel_catalog() else {
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q1-classic-id1".to_string(),
+            map: "maps/start.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                require_live_data::<()>(&format!("q1-classic-id1 maps/start.bsp load ({error})"), None);
+                return;
+            }
+        };
+        // Expected travel directions, read straight from the raw map
+        // records (independent of `SpawnFields::parse`, so the pre-fix
+        // +X collapse fails this proof instead of passing vacuously).
+        let Some(mounts) = require_live_data(
+            "q1-classic-id1 mounts for maps/start.bsp",
+            open_product_mounts(&catalog, "q1-classic-id1", "maps/start.bsp").ok(),
+        ) else {
+            return;
+        };
+        let Some(bytes) = require_live_data(
+            "maps/start.bsp bytes",
+            mounts
+                .read(qa_content::mounts::ResourceRef::Path("maps/start.bsp"))
+                .ok(),
+        ) else {
+            return;
+        };
+        let records = decode_map_entities(&bytes, "maps/start.bsp", BspKind::Q1)
+            .unwrap()
+            .records;
+        let mut expected = Vec::new();
+        for record in &records {
+            let get = |key: &str| {
+                record
+                    .iter()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, value)| value.as_str())
+            };
+            if get("classname") != Some("func_door") {
+                continue;
+            }
+            let angles = match (get("angles"), get("angle")) {
+                (Some(triple), _) => {
+                    let mut parts = triple.split_whitespace();
+                    let (x, y, z) = (parts.next(), parts.next(), parts.next());
+                    match (x, y, z, parts.next()) {
+                        (Some(x), Some(y), Some(z), None) => vec3(
+                            x.parse::<f32>().unwrap(),
+                            y.parse::<f32>().unwrap(),
+                            z.parse::<f32>().unwrap(),
+                        ),
+                        _ => panic!("start.bsp door has a malformed angles triple"),
+                    }
+                }
+                (None, Some(yaw)) => vec3(0.0, yaw.parse::<f32>().unwrap(), 0.0),
+                (None, None) => vec3(0.0, 0.0, 0.0),
+            };
+            expected.push(q1_movedir(angles));
+        }
+        assert!(!expected.is_empty(), "start.bsp has func_door records");
+        assert!(
+            expected.iter().any(|dir| (dir.x - 1.0).abs() > 0.5),
+            "start.bsp pins doors that do not travel +X"
+        );
+        // Actual travel directions from the live door movers.
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let door_ids: Vec<_> = behaviors.borrow().doors.keys().cloned().collect();
+        let mut actual = Vec::new();
+        for id in &door_ids {
+            let mover = world.server_mut().movers_mut().get(id).expect("door mover");
+            let travel = sub3(mover.pos2, mover.pos1);
+            let length = f64::from(travel.x)
+                .hypot(f64::from(travel.y))
+                .hypot(f64::from(travel.z));
+            assert!(length > 0.0, "door {id:?} travels somewhere");
+            actual.push(normalize3(travel));
+        }
+        assert_eq!(actual.len(), expected.len(), "every map door spawned a mover");
+        let mut expected_sorted = expected.clone();
+        let mut actual_sorted = actual.clone();
+        for sorted in [&mut expected_sorted, &mut actual_sorted] {
+            sorted.sort_by(|left, right| {
+                left.x
+                    .total_cmp(&right.x)
+                    .then(left.y.total_cmp(&right.y))
+                    .then(left.z.total_cmp(&right.z))
+            });
+        }
+        for (index, (got, want)) in actual_sorted.iter().zip(expected_sorted.iter()).enumerate() {
+            let delta = sub3(*got, *want);
+            let distance = f64::from(delta.x).hypot(f64::from(delta.y)).hypot(f64::from(delta.z));
+            assert!(distance < 1e-3, "door {index} travels {got:?}, map angle says {want:?}");
+        }
+    }
+
     /// Assert one Steel map presents draw batches at its spawn camera.
     /// Returns `None` when the corpus or map is unavailable (skip).
     fn steel_presentation_batches(product: &str, map: &str) -> Option<usize> {

@@ -846,6 +846,25 @@ mod tests {
     }
 
     #[test]
+    fn door_angle_scalar_travels_along_yaw_forward() {
+        let fields = door_fields(&[("angle", "90"), ("origin", "0 0 0"), ("model", "*0")]);
+        assert_eq!(fields.angles, vec3(0.0, 90.0, 0.0));
+        let params = q1_door_params(&fields, &door_model()).unwrap();
+        assert_eq!(params.movedir, angle_vectors(vec3(0.0, 90.0, 0.0)).forward);
+        let travel = vec3(
+            params.pos2.x - params.pos1.x,
+            params.pos2.y - params.pos1.y,
+            params.pos2.z - params.pos1.z,
+        );
+        assert!(travel.x.abs() < 1e-4);
+        assert!(travel.y > 0.0);
+        assert_eq!(travel.z, 0.0);
+        let fields = door_fields(&[("angle", "-1"), ("origin", "0 0 0"), ("model", "*0")]);
+        let params = q1_door_params(&fields, &door_model()).unwrap();
+        assert_eq!(params.movedir, vec3(0.0, 0.0, 1.0));
+    }
+
+    #[test]
     fn inhibition_follows_skill_and_deathmatch() {
         assert!(q1_spawn_inhibited(SPAWNFLAG_NOT_EASY, 0, false));
         assert!(!q1_spawn_inhibited(SPAWNFLAG_NOT_EASY, 1, false));

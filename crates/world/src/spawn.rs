@@ -41,6 +41,10 @@ impl SpawnFields {
                 "classname" => fields.classname = (*value).to_string(),
                 "origin" => fields.origin = parse_vec3(value)?,
                 "angles" => fields.angles = parse_vec3(value)?,
+                // Stock anglehack (`ED_ParseEdict`): QuakeEd writes the
+                // scalar `angle` yaw, which rewrites to `angles` as the
+                // whole vector `(0, N, 0)`, applied sequentially per key.
+                "angle" => fields.angles = parse_angle(value)?,
                 "spawnflags" => {
                     fields.spawnflags = value
                         .parse::<i32>()
@@ -76,6 +80,16 @@ fn parse_vec3(text: &str) -> Result<Vec3, WorldError> {
         values[index] = value as f32;
     }
     Ok(vec3(values[0], values[1], values[2]))
+}
+
+fn parse_angle(text: &str) -> Result<Vec3, WorldError> {
+    let yaw: f64 = text
+        .parse()
+        .map_err(|_| WorldError::BadSpawnFields(format!("Invalid angle: {text}")))?;
+    if !yaw.is_finite() {
+        return Err(WorldError::BadSpawnFields(format!("Invalid angle: {text}")));
+    }
+    Ok(vec3(0.0, yaw as f32, 0.0))
 }
 
 /// Engine-side spawn request produced by a spawn function.
@@ -170,6 +184,30 @@ mod tests {
         assert!(SpawnFields::parse(&[("classname", "x"), ("origin", "1 2 oops")]).is_err());
         assert!(SpawnFields::parse(&[("classname", "x"), ("spawnflags", "nope")]).is_err());
         assert!(SpawnFields::parse(&[("origin", "0 0 0")]).is_err());
+    }
+
+    #[test]
+    fn spawn_fields_anglehack_rewrites_scalar_to_yaw() {
+        let fields = SpawnFields::parse(&[("classname", "func_door"), ("angle", "-1")]).unwrap();
+        assert_eq!(fields.angles, vec3(0.0, -1.0, 0.0));
+        assert!(!fields.extra.contains_key("angle"));
+        let fields = SpawnFields::parse(&[("classname", "func_door"), ("angle", "90")]).unwrap();
+        assert_eq!(fields.angles, vec3(0.0, 90.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_fields_angle_and_angles_apply_sequentially() {
+        let fields = SpawnFields::parse(&[("classname", "func_door"), ("angle", "90"), ("angles", "0 180 0")]).unwrap();
+        assert_eq!(fields.angles, vec3(0.0, 180.0, 0.0));
+        let fields = SpawnFields::parse(&[("classname", "func_door"), ("angles", "0 180 0"), ("angle", "90")]).unwrap();
+        assert_eq!(fields.angles, vec3(0.0, 90.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_fields_reject_bad_angles() {
+        assert!(SpawnFields::parse(&[("classname", "x"), ("angle", "nope")]).is_err());
+        assert!(SpawnFields::parse(&[("classname", "x"), ("angle", "nan")]).is_err());
+        assert!(SpawnFields::parse(&[("classname", "x"), ("angle", "1 2")]).is_err());
     }
 
     #[test]
