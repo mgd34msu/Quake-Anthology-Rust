@@ -20,7 +20,7 @@
 //! pusher transaction, and shootable doors need damage routing.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_core::identity::{ActorId, OwnedActor};
@@ -112,6 +112,16 @@ pub fn q1_pre_spawn(classname: &str, fields: &SpawnFields, skill: u8, deathmatch
         | "light_flame_small_yellow"
         | "light_flame_small_white" => Q1PreSpawn::Skip("static visual (makestatic)".to_string()),
         _ => Q1PreSpawn::Spawn,
+    }
+}
+
+/// Record stock solidity for a spawned Q1 actor: `monster_*` spawns
+/// `SOLID_SLIDEBOX` (`monsters.qc`). Doors record through
+/// `brush_models` in `build_q1_door`; info points, lights, items, and
+/// map triggers stay `SOLID_NOT` and never link.
+pub fn q1_note_solid(classname: &str, actor: &ActorId, behaviors: &mut Q1NativeBehaviors) {
+    if classname.starts_with("monster_") {
+        behaviors.solids.insert(actor.clone());
     }
 }
 
@@ -326,6 +336,10 @@ pub struct Q1NativeBehaviors {
     pub doors: HashMap<ActorId, Q1Door>,
     /// Brush-model index by door actor, for inline-hull clips.
     pub brush_models: HashMap<ActorId, u32>,
+    /// Box-solid actors (`SOLID_SLIDEBOX` monsters, the admitted
+    /// player). Doors ride `brush_models`; everything else the stock
+    /// spawn functions leave `SOLID_NOT` stays out of the scene.
+    pub solids: HashSet<ActorId>,
     /// Trigger-field actors by id.
     pub fields: HashMap<ActorId, Q1DoorField>,
     /// Admitted player opener (`None` on dedicated servers: with no

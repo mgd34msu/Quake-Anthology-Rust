@@ -42,11 +42,11 @@ use thiserror::Error;
 use super::audio_bridge::{map_speakers, MapSpeaker};
 use super::play::{
     admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
-    provider_for_product, PlayerBody, PlayerClip,
+    provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
 };
 use super::simulation::native_q1_spawns::{
-    build_q1_door, install_q1_native, link_q1_doors, q1_pre_spawn, register_q1_spawns, Q1NativeBehaviors,
-    Q1PendingDoor, Q1PreSpawn,
+    build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
+    Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
@@ -244,12 +244,18 @@ impl PlayWorld {
     /// player (or no clip) keeps the static-spawn behavior: the world still
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
-        let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_ref()) else {
+        let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
+        let behaviors = self.q1_behaviors.clone();
+        let borrowed = behaviors.as_ref().map(|behaviors| behaviors.borrow());
+        let links = borrowed.as_ref().map(|behaviors| Q1SceneLinks {
+            door_models: &behaviors.brush_models,
+            solids: &behaviors.solids,
+        });
         let (simulation, triggers) = self.server.simulation_and_triggers();
         player
-            .step(simulation, triggers, clip, command)
+            .step(simulation, triggers, clip, links.as_ref(), command)
             .map_err(|reason| PlayWorldError::Play {
                 map: self.map.clone(),
                 reason,
@@ -533,7 +539,12 @@ pub fn spawn_map_entities(
             }
         }
         match server.spawn_entity(&fields) {
-            Ok(_) => summary.spawned += 1,
+            Ok(actor) => {
+                if let Some(q1) = context.q1.as_ref() {
+                    q1_note_solid(&classname, actor.id(), &mut q1.behaviors.borrow_mut());
+                }
+                summary.spawned += 1;
+            }
             Err(error) => summary.skipped.push(SkippedEntity {
                 index,
                 classname,
@@ -678,9 +689,11 @@ pub fn load_play_world(
         None => None,
     };
     if let (Some(player), Some(q1)) = (player.as_ref(), context.q1.as_ref()) {
-        q1.behaviors
-            .borrow_mut()
-            .set_player(Some(PlayerBody::actor(player).clone()));
+        let mut behaviors = q1.behaviors.borrow_mut();
+        behaviors.set_player(Some(PlayerBody::actor(player).clone()));
+        // Stock players spawn `SOLID_SLIDEBOX`; the scene links the
+        // mover like every other solid and skips it via passentity.
+        behaviors.solids.insert(PlayerBody::actor(player).clone());
     }
     // The presentation consumes its mounts, so audio keeps a second open over
     // the same product: without retained mounts no bank can open `sound/*`

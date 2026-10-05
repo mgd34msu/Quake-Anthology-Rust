@@ -55,6 +55,12 @@ impl TriggerTable {
         self.triggers.iter().any(|id| id == actor)
     }
 
+    /// Marked triggers in mark order. The scene link step snapshots this
+    /// once per tick so body classification stays linear.
+    pub fn iter(&self) -> impl Iterator<Item = &ActorId> {
+        self.triggers.iter()
+    }
+
     /// Forget memberships for released actors.
     pub fn retain_live(&mut self, registry: &ActorRegistry) {
         self.triggers.retain(|id| registry.is_live(id));
