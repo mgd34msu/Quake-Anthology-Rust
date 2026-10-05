@@ -397,6 +397,10 @@ pub trait NativeRenderBackend {
     fn execute_serial_command_timed(&mut self, command: &RenderCommand, _timer: &mut StageTimer) {
         self.execute_serial_command(command);
     }
+    /// Execute one borrowed view with stage timing. The serial dispatch
+    /// calls this directly so production frames never deep-clone the
+    /// submitted view into a temporary command.
+    fn execute_serial_view_timed(&mut self, view: &ClientRenderView, timer: &mut StageTimer);
     /// Execute worker commands with captures and image operations.
     fn execute_worker(
         &mut self,
@@ -1137,8 +1141,7 @@ where
                         );
                     }
                     RenderCommand::View(view) => {
-                        self.backend
-                            .execute_serial_command_timed(&RenderCommand::View(view.clone()), timer);
+                        self.backend.execute_serial_view_timed(view, timer);
                     }
                 }
                 index += 1;
@@ -1389,6 +1392,10 @@ mod tests {
 
         fn execute_serial_command(&mut self, command: &RenderCommand) {
             self.executed.push(command.clone());
+        }
+
+        fn execute_serial_view_timed(&mut self, view: &ClientRenderView, _timer: &mut StageTimer) {
+            self.executed.push(RenderCommand::View(view.clone()));
         }
 
         fn execute_worker(
