@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crate::cmd::{ascii_fold, source_command_text, Dialect};
+use crate::cmd::{ascii_fold, source_command_text, Dialect, EngineText};
 use crate::identity::SessionId;
 use crate::numeric::{native_atof, native_atoi};
 
@@ -106,29 +106,36 @@ const Q2_NO_ARCHIVE: u32 =
     q2_flags::NO_SET | q2_flags::CHEAT | q2_flags::PRIVATE | q2_flags::READ_ONLY | q2_flags::NO_ARCHIVE;
 const MAX_CVARS: usize = 1024;
 
+/// Engine length of cleaned display text, measured through the byte
+/// model so high bytes count once (see [`EngineText`]).
+fn engine_len(text: &str) -> usize {
+    EngineText::from(text).len()
+}
+
 /// Quake `Q_atof`: sign, `0x` hex, `'c'` character constant, or decimal
 /// with an optional point. Stops at the first unrecognized byte.
 #[must_use]
 pub fn quake_atof(text: &str) -> f64 {
-    let chars: Vec<char> = text.chars().collect();
-    let at = |index: usize| chars.get(index).copied().unwrap_or('\0');
+    let engine = EngineText::from(text);
+    let bytes = engine.as_bytes();
+    let at = |index: usize| bytes.get(index).copied().unwrap_or(0);
     let mut offset = 0;
     let mut sign = 1.0;
-    if at(offset) == '-' {
+    if at(offset) == b'-' {
         sign = -1.0;
         offset += 1;
     }
-    if at(offset) == '0' && matches!(at(offset + 1), 'x' | 'X') {
+    if at(offset) == b'0' && matches!(at(offset + 1), b'x' | b'X') {
         offset += 2;
         let mut value = 0.0;
-        while offset < chars.len() {
-            let digit = chars[offset];
+        while offset < bytes.len() {
+            let digit = bytes[offset];
             let digit = if digit.is_ascii_digit() {
-                digit as i32 - 48
-            } else if ('a'..='f').contains(&digit) {
-                digit as i32 - 87
-            } else if ('A'..='F').contains(&digit) {
-                digit as i32 - 55
+                i32::from(digit) - 48
+            } else if (b'a'..=b'f').contains(&digit) {
+                i32::from(digit) - 87
+            } else if (b'A'..=b'F').contains(&digit) {
+                i32::from(digit) - 55
             } else {
                 -1
             };
@@ -140,19 +147,15 @@ pub fn quake_atof(text: &str) -> f64 {
         }
         return value * sign;
     }
-    if at(offset) == '\'' {
-        let code = if offset + 1 < chars.len() {
-            chars[offset + 1] as u32
-        } else {
-            0
-        };
+    if at(offset) == b'\'' {
+        let code = if offset + 1 < bytes.len() { bytes[offset + 1] } else { 0 };
         return sign * f64::from(code);
     }
     let mut value = 0.0;
     let mut decimal: i64 = -1;
     let mut total: i64 = 0;
-    while offset < chars.len() {
-        let byte = chars[offset] as u32;
+    while offset < bytes.len() {
+        let byte = u32::from(bytes[offset]);
         offset += 1;
         if byte == 46 {
             decimal = total;
@@ -1041,7 +1044,7 @@ impl CvarRegistry {
     }
 
     fn valid_info(text: &str) -> bool {
-        !text.chars().any(|c| c == '\\' || c == '"' || c == ';')
+        !text.bytes().any(|byte| byte == b'\\' || byte == b'"' || byte == b';')
     }
 
     /// Register a variable. Re-registration merges flags per dialect and
@@ -1383,7 +1386,7 @@ impl CvarRegistry {
         if kind != SetCommandKind::Archive
             && (!Self::valid_info(&clean_name)
                 || !Self::valid_info(&clean_value)
-                || (q2 && (clean_name.len() >= 64 || clean_value.len() >= 64)))
+                || (q2 && (engine_len(&clean_name) >= 64 || engine_len(&clean_value) >= 64)))
         {
             self.print("invalid info cvar name or value\n");
             return Ok(());
@@ -1411,7 +1414,7 @@ impl CvarRegistry {
             let retained_bad = self
                 .variables
                 .get(&key)
-                .is_some_and(|state| !Self::valid_info(&state.value) || (q2 && state.value.len() >= 64));
+                .is_some_and(|state| !Self::valid_info(&state.value) || (q2 && engine_len(&state.value) >= 64));
             if kind != SetCommandKind::Archive && retained_bad {
                 self.print("invalid retained info cvar value\n");
                 return Ok(());
@@ -1827,8 +1830,8 @@ impl CvarRegistry {
     pub fn write_variables(&mut self, include: &dyn Fn(&str) -> bool, write: &mut dyn FnMut(&str)) {
         for command in self.archive_commands(include) {
             let line = format!("{command}\n");
-            if !self.dialect.is_q1() && line.len() >= 1024 {
-                self.print(&format!("Com_sprintf: overflow of {} in 1024\n", line.len()));
+            if !self.dialect.is_q1() && engine_len(&line) >= 1024 {
+                self.print(&format!("Com_sprintf: overflow of {} in 1024\n", engine_len(&line)));
             }
             if self.dialect.is_q1() {
                 write(&line);
@@ -2331,7 +2334,7 @@ impl VmCvar for RegistryVmCvar {
             return Ok(());
         }
         self.count = i64::from(source.modification_count);
-        if source.value.len() > 255 {
+        if engine_len(&source.value) > 255 {
             return Err(CvarError::Domain(
                 "Cvar_Update: value exceeds MAX_CVAR_VALUE_STRING".to_string(),
             ));
@@ -2616,6 +2619,97 @@ mod tests {
         assert_eq!(quake_atof("3.5"), 3.5);
         assert_eq!(quake_atof("12abc"), 12.0);
         assert_eq!(quake_atof(""), 0.0);
+    }
+
+    #[test]
+    fn quake_atof_reads_single_bytes() {
+        assert_eq!(quake_atof("'ÿ"), 255.0);
+        assert_eq!(quake_atof("'€"), 172.0);
+        assert_eq!(quake_atof("12ÿ"), 12.0);
+        assert_eq!(quake_atof("ÿ12"), 0.0);
+        assert_eq!(quake_atof("0xÿ"), 0.0);
+    }
+
+    #[test]
+    fn q2_info_limits_count_engine_bytes() {
+        let mut registry = CvarRegistry::new(Dialect::Q2Classic);
+        // 40 engine bytes, 80 UTF-8 bytes: under the 64 limit.
+        registry
+            .set_command_flags("skin", &"ÿ".repeat(40), SetCommandKind::Userinfo)
+            .unwrap();
+        assert_eq!(registry.variable_string("skin"), "ÿ".repeat(40));
+        assert!(registry.take_notifications().is_empty());
+        // 64 engine bytes is rejected before the write, keeping the old value.
+        registry
+            .set_command_flags("skin", &"ÿ".repeat(64), SetCommandKind::Userinfo)
+            .unwrap();
+        let notes = registry.take_notifications();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("invalid info cvar name or value"));
+        assert_eq!(registry.variable_string("skin"), "ÿ".repeat(40));
+        // 64 engine bytes on a new variable is rejected outright.
+        registry
+            .set_command_flags("fresh", &"ÿ".repeat(64), SetCommandKind::Userinfo)
+            .unwrap();
+        let notes = registry.take_notifications();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("invalid info cvar name or value"));
+        assert!(registry.get("fresh").is_none());
+    }
+
+    #[test]
+    fn archive_overflow_detection_counts_engine_bytes() {
+        let mut registry = CvarRegistry::new(Dialect::Q2Classic);
+        registry.register("v", &"ÿ".repeat(900), q2_flags::ARCHIVE).unwrap();
+        let _ = registry.take_notifications();
+        // 909 engine bytes but 1809 UTF-8 bytes: no overflow, no cut.
+        let mut written = Vec::new();
+        registry.write_variables(&|_| true, &mut |line| written.push(line.to_string()));
+        assert!(registry.take_notifications().is_empty());
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].chars().count(), 909);
+        assert!(written[0].contains(&"ÿ".repeat(900)));
+    }
+
+    #[test]
+    fn vm_update_limit_counts_engine_bytes() {
+        let registry = Rc::new(RefCell::new(CvarRegistry::new(Dialect::Q3)));
+        let mut vm = RegistryVmCvar::registered(Rc::clone(&registry), "g_name", "x", flags::NONE).unwrap();
+        // 200 engine bytes, 400 UTF-8 bytes: under the 256 limit.
+        registry.borrow_mut().set("g_name", &"ÿ".repeat(200), true).unwrap();
+        vm.update().unwrap();
+        assert_eq!(vm.value(), "ÿ".repeat(200));
+        // 256 engine bytes exceeds MAX_CVAR_VALUE_STRING.
+        registry.borrow_mut().set("g_name", &"ÿ".repeat(256), true).unwrap();
+        assert!(vm.update().is_err());
+    }
+
+    #[test]
+    fn info_string_limits_count_engine_bytes() {
+        let options = InfoOptions {
+            dialect: Dialect::Q2Classic,
+            maximum_length: 512,
+            target: InfoTarget::ClientUserinfo,
+            server_high_characters: false,
+        };
+        // 40 engine bytes, 80 UTF-8 bytes: under the 64 limit.
+        let mut printed = Vec::new();
+        let out = set_info_value("", "name", &"ÿ".repeat(40), options, &mut |text| {
+            printed.push(text.to_string());
+        })
+        .unwrap();
+        assert!(printed.is_empty());
+        assert_eq!(out.chars().count(), 6);
+        assert!(out.contains("name"));
+        // 64 engine bytes is rejected.
+        let mut printed = Vec::new();
+        let out = set_info_value("", "name", &"ÿ".repeat(64), options, &mut |text| {
+            printed.push(text.to_string());
+        })
+        .unwrap();
+        assert_eq!(printed.len(), 1);
+        assert!(printed[0].contains("must be < 64 characters"));
+        assert_eq!(out, "");
     }
 
     #[test]
