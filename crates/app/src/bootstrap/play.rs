@@ -13,7 +13,7 @@
 //! authoritative movement step per frame and commits the result back to
 //! the sim body.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use qa_bots::q1_collision::q1_collision_geometry;
@@ -70,6 +70,8 @@ use qa_world::session::Simulation;
 use qa_world::spatial::{ActorCollision, CollisionFamily, CollisionRole, CollisionShape};
 use qa_world::triggers::TriggerTable;
 
+use super::simulation::native_q1_spawns::{Q1EdictSet, Q1EdictTable};
+
 /// Quake I player collision box, matching qsrc hull 1 (`gl_model.c`
 /// `Mod_LoadClipnodes`): x/y half-width 16, feet at -24, head at +32.
 #[must_use]
@@ -120,9 +122,9 @@ fn q1_link_bounds(state: &BodyState) -> Bounds {
 /// set admits box-solid bodies.
 pub struct Q1SceneLinks<'b> {
     /// Brush-model index by door actor.
-    pub door_models: &'b HashMap<ActorId, u32>,
+    pub door_models: &'b Q1EdictTable<u32>,
     /// Box-solid actors (monsters, the admitted player).
-    pub solids: &'b HashSet<ActorId>,
+    pub solids: &'b Q1EdictSet,
 }
 
 /// Relink every solid live body into the shared scene in simulation
@@ -1972,10 +1974,10 @@ mod tests {
             )
             .unwrap()
         };
-        let door_models = HashMap::new();
-        let mut solids = HashSet::new();
-        solids.insert(solid.id().clone());
-        solids.insert(player.actor.clone());
+        let door_models = Q1EdictTable::new();
+        let mut solids = Q1EdictSet::new();
+        solids.insert(solid.id());
+        solids.insert(&player.actor);
         let links = Q1SceneLinks {
             door_models: &door_models,
             solids: &solids,
@@ -2412,10 +2414,10 @@ mod tests {
             )
             .unwrap()
         };
-        let door_models = HashMap::new();
-        let mut solids = HashSet::new();
-        solids.insert(blocker.id().clone());
-        solids.insert(player.actor.clone());
+        let door_models = Q1EdictTable::new();
+        let mut solids = Q1EdictSet::new();
+        solids.insert(blocker.id());
+        solids.insert(&player.actor);
         let links = Q1SceneLinks {
             door_models: &door_models,
             solids: &solids,

@@ -582,7 +582,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
                 source,
                 noise,
             };
-            behaviors.triggers.insert(actor.id().clone(), trigger);
+            behaviors.triggers.insert(actor.id(), trigger);
             if max_health != 0.0 {
                 // Shootable multiples go `SOLID_BBOX` with `takedamage`
                 // (`triggers.qc:132-142`); the touch stays null, so the
@@ -595,14 +595,14 @@ pub fn build_q1_trigger<L: ServerLogic>(
                         ..CombatState::default()
                     },
                 )?;
-                behaviors.solids.insert(actor.id().clone());
+                behaviors.solids.insert(actor.id());
             } else if fields.spawnflags & TRIGGER_NOTOUCH == 0 {
                 server.mark_trigger(actor.id())?;
             }
         }
         "trigger_hurt" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::Hurt {
                         dmg: q1_field_or(fields, "dmg", 5.0),
@@ -615,7 +615,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_push" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::Push {
                         movedir: q1_trigger_movedir(fields),
@@ -630,7 +630,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_setskill" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::SetSkill,
                     source,
@@ -641,7 +641,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_onlyregistered" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::OnlyRegistered { attack_until: 0.0 },
                     source,
@@ -660,7 +660,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
                 ));
             }
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::Teleport {
                         player_only: fields.spawnflags & TELEPORT_PLAYER_ONLY != 0,
@@ -762,7 +762,7 @@ pub fn build_q1_button<L: ServerLogic>(
         actor.id().clone(),
         MoverState::new(MoverKind::Button, params.pos1, params.pos2, params.speed, params.wait),
     );
-    behaviors.brush_models.insert(actor.id().clone(), model);
+    behaviors.brush_models.insert(actor.id(), model);
     if params.health != 0.0 {
         server.simulation_mut().set_combat(
             actor.id(),
@@ -776,7 +776,7 @@ pub fn build_q1_button<L: ServerLogic>(
         server.mark_trigger(actor.id())?;
     }
     behaviors.buttons.insert(
-        actor.id().clone(),
+        actor.id(),
         Q1Button {
             source: Q1UseSource::from_fields(fields),
             enemy: None,
@@ -808,7 +808,7 @@ pub fn q1_note_use_point(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, fie
         Q1TriggerKind::Relay
     };
     behaviors.triggers.insert(
-        actor.clone(),
+        actor,
         Q1Trigger {
             kind,
             source: Q1UseSource::from_fields(fields),
@@ -836,7 +836,7 @@ pub fn q1_note_light(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, fields:
     behaviors
         .light_styles
         .insert(style, if start_off { LIGHTSTYLE_OFF } else { LIGHTSTYLE_ON });
-    behaviors.lights.insert(actor.clone(), Q1Light { style, start_off });
+    behaviors.lights.insert(actor, Q1Light { style, start_off });
 }
 
 /// Record an `info_teleport_destination` (`triggers.qc:425-435`):
@@ -854,7 +854,7 @@ pub fn q1_note_teleport_destination(
         ));
     }
     behaviors.teleport_destinations.insert(
-        actor.clone(),
+        actor,
         Q1TeleportDestination {
             origin: vec3(fields.origin.x, fields.origin.y, fields.origin.z + 27.0),
             mangle: fields.angles,
@@ -1490,7 +1490,7 @@ fn q1_spawn_teledeath(
         return;
     };
     behaviors.triggers.insert(
-        death.id().clone(),
+        death.id(),
         Q1Trigger {
             kind: Q1TriggerKind::Teledeath { owner: owner.clone() },
             source: Q1UseSource::default(),
@@ -1501,16 +1501,21 @@ fn q1_spawn_teledeath(
     behaviors.schedule_think(death.id(), Q1ThinkKind::Remove, now + 0.2);
 }
 
-/// Native think dispatch for Q1 triggers: fire due scheduled thinks
-/// (removals, multiple re-arms, hurt re-solidifies) and due delayed
-/// uses, each in schedule order. Runs after the mover pass and before
-/// the trigger sweep, so removals apply before touches.
+/// Native think dispatch for Q1 triggers: clear last tick's teleport
+/// fogs, then fire due scheduled thinks (removals, multiple re-arms,
+/// hurt re-solidifies) and due delayed uses, each in schedule order.
+/// Runs after the mover pass and before the trigger sweep, so removals
+/// apply before touches and fresh touches queue fresh fogs.
 pub fn q1_trigger_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
     movers: &mut MoverTable,
     triggers: &mut TriggerTable,
 ) {
+    // The think pass runs before the trigger sweep, so last tick's fogs
+    // clear here and this tick's touches queue fresh ones; the
+    // presentation slice publishes them as `TE_TELEPORT` temp entities.
+    behaviors.teleport_fogs.clear();
     let now = simulation.frame().time.as_seconds_f64();
     let pending = std::mem::take(&mut behaviors.thinks);
     let (due, later): (Vec<Q1PendingThink>, Vec<Q1PendingThink>) =
@@ -1760,7 +1765,7 @@ mod tests {
 
     fn admit_player(behaviors: &mut Q1NativeBehaviors, player: &qa_core::identity::OwnedActor) {
         behaviors.set_player(Some(player.id().clone()));
-        behaviors.solids.insert(player.id().clone());
+        behaviors.solids.insert(player.id());
     }
 
     fn touch(
@@ -2851,6 +2856,10 @@ mod tests {
             server.simulation().body_state(player.id()).unwrap().origin,
             vec3(500.0, 0.0, 27.0)
         );
+        // One teleport queues two fogs; the next tick's think clears them.
+        assert_eq!(shared.borrow().teleport_fogs.len(), 2);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(shared.borrow().teleport_fogs.is_empty());
         // Back across, then let the gate lapse: shut again.
         server
             .simulation_mut()
@@ -2918,7 +2927,7 @@ mod tests {
         );
         // Solid, living, but never admitted: a monster stand-in.
         let monster = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
-        behaviors.solids.insert(monster.id().clone());
+        behaviors.solids.insert(monster.id());
         server
             .simulation_mut()
             .set_body_velocity(monster.id(), vec3(10.0, 20.0, 30.0))
@@ -2969,7 +2978,7 @@ mod tests {
             server.simulation().body_state(player.id()).unwrap().origin,
             vec3(32.0, 32.0, 32.0)
         );
-        behaviors.solids.insert(player.id().clone());
+        behaviors.solids.insert(player.id());
         // Dead: health zero.
         server
             .simulation_mut()
@@ -3021,7 +3030,7 @@ mod tests {
         let player = spawn_player(&mut server, vec3(4000.0, 4000.0, 4000.0));
         admit_player(&mut shared.borrow_mut(), &player);
         let victim = spawn_player(&mut server, vec3(100.0, 0.0, 27.0));
-        shared.borrow_mut().solids.insert(victim.id().clone());
+        shared.borrow_mut().solids.insert(victim.id());
         super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
         touch_via(&mut server, &shared, teleporter.id(), player.id());
         let death = shared

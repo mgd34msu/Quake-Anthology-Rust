@@ -789,7 +789,7 @@ pub fn load_play_world(
         behaviors.set_player(Some(PlayerBody::actor(player).clone()));
         // Stock players spawn `SOLID_SLIDEBOX`; the scene links the
         // mover like every other solid and skips it via passentity.
-        behaviors.solids.insert(PlayerBody::actor(player).clone());
+        behaviors.solids.insert(PlayerBody::actor(player));
         // Stock players always carry health (`PutClientInServer`); the
         // touch gates (door fields, hurt, push) read it.
         let _ignored = server
