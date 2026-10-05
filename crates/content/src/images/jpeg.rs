@@ -258,27 +258,30 @@ impl Entropy {
         Ok(())
     }
 
-    fn symbol(&mut self, input: &mut Input<'_>, table: &HashMap<u32, u8>) -> Result<u8, ContentError> {
+    fn symbol(&mut self, input: &mut Input<'_>, table: &DerivedHuffman) -> Result<u8, ContentError> {
         if self.remaining < 8 {
             self.fill(input, 0)?;
         }
-        let mut minimum = 1u32;
         if self.remaining >= 8 {
-            let look = (self.value >> ((self.remaining - 8) as u32)) & 255;
-            for length in 1u32..=8 {
-                if let Some(value) = table.get(&((1u32 << length) + (look >> (8 - length)))) {
-                    self.remaining -= length as i32;
-                    return Ok(*value);
-                }
+            // jdhuff.c HUFF_LOOKAHEAD fast path: one array probe per symbol.
+            let look = ((self.value >> ((self.remaining - 8) as u32)) & 255) as usize;
+            let nbits = table.look_nbits[look];
+            if nbits != 0 {
+                self.remaining -= i32::from(nbits);
+                return Ok(table.look_sym[look]);
             }
-            minimum = 9;
         }
-        let mut code = (1u32 << minimum) + self.bits(input, minimum)?;
-        for _ in minimum..=16 {
-            if let Some(value) = table.get(&code) {
-                return Ok(*value);
+        // jpeg_huff_decode slow path: one bit at a time against maxcode/valptr.
+        let mut code = self.bits(input, 1)? as i32;
+        for length in 1..=16usize {
+            if code <= table.maxcode[length] {
+                let index = code + table.valptr[length];
+                if let Some(&symbol) = table.symbols.get(index as usize) {
+                    return Ok(symbol);
+                }
+                break;
             }
-            code = code * 2 + self.bits(input, 1)?;
+            code = code * 2 + self.bits(input, 1)? as i32;
         }
         // jpeg_huff_decode consumes the seventeenth bit before recovery.
         input.warnings.emit("Corrupt JPEG data: bad Huffman code".to_string());
@@ -362,15 +365,29 @@ enum ColorSpace {
 struct ScanComponent {
     component: usize,
     prediction_dc: i32,
-    dc: HashMap<u32, u8>,
-    ac: HashMap<u32, u8>,
     multipliers: [f32; 64],
+}
+
+/// IJG `d_derived_tbl` (jdhuff.c): 256-entry lookahead plus `maxcode`/`valptr`
+/// for codes longer than 8 bits. Built once per DHT definition and borrowed
+/// by every scan; never cloned per scan.
+struct DerivedHuffman {
+    /// Symbols in code order (`huffval`).
+    symbols: [u8; 256],
+    /// Largest code of each length, `-1` when the length is unused (`maxcode`).
+    maxcode: [i32; 18],
+    /// `symbols` index of each length's first code minus that code (`valptr`).
+    valptr: [i32; 18],
+    /// Fast path: code length for each 8-bit prefix, `0` when longer (`look_nbits`).
+    look_nbits: [u8; 256],
+    /// Fast path: symbol for each 8-bit prefix (`look_sym`).
+    look_sym: [u8; 256],
 }
 
 struct HuffmanTable {
     counts: [u8; 16],
     values: Vec<u8>,
-    derived: Option<HashMap<u32, u8>>,
+    derived: Option<DerivedHuffman>,
 }
 
 fn read_frame(
@@ -590,49 +607,95 @@ fn read_huffman(input: &mut Input<'_>, tables: &mut HashMap<u8, HuffmanTable>) -
 }
 
 // jdhuff.c derives tables at scan startup, not while reading DHT markers.
+// jpeg_make_d_derived_tbl: canonical codes feed the lookahead plus
+// maxcode/valptr; callers borrow the stored table instead of cloning it.
+fn build_derived(input: &Input<'_>, raw: &HuffmanTable) -> Result<DerivedHuffman, ContentError> {
+    let mut derived = DerivedHuffman {
+        symbols: [0; 256],
+        maxcode: [-1; 18],
+        valptr: [0; 18],
+        look_nbits: [0; 256],
+        look_sym: [0; 256],
+    };
+    let mut code = 0u32;
+    let mut value_index = 0usize;
+    let mut symbol_index = 0usize;
+    for (length0, count) in raw.counts.iter().enumerate() {
+        let length = length0 as u32 + 1;
+        // Short overfull codes write beyond IJG's 256-entry lookahead arrays.
+        if length <= 8 && *count != 0 && code + u32::from(*count) > 1u32 << length {
+            return Err(input.fail("oversubscribed Huffman table exceeds source lookahead allocation"));
+        }
+        let first_code = code;
+        let first_symbol = symbol_index;
+        let mut assigned = 0u32;
+        for _ in 0..*count {
+            let value = raw
+                .values
+                .get(value_index)
+                .copied()
+                .ok_or_else(|| input.fail("oversubscribed Huffman table exceeds source lookahead allocation"))?;
+            value_index += 1;
+            if code < 1u32 << length {
+                derived.symbols[symbol_index] = value;
+                symbol_index += 1;
+                assigned += 1;
+            }
+            code += 1;
+        }
+        if assigned > 0 {
+            derived.maxcode[length as usize] = (first_code + assigned - 1) as i32;
+            derived.valptr[length as usize] = first_symbol as i32 - first_code as i32;
+            if length <= 8 {
+                let span = 1usize << (8 - length);
+                for offset in 0..assigned {
+                    let prefix = ((first_code + offset) << (8 - length)) as usize;
+                    let symbol = derived.symbols[first_symbol + offset as usize];
+                    for slot in prefix..prefix + span {
+                        derived.look_nbits[slot] = length as u8;
+                        derived.look_sym[slot] = symbol;
+                    }
+                }
+            }
+        }
+        code *= 2;
+    }
+    derived.maxcode[17] = 0xFFFFF;
+    Ok(derived)
+}
+
 fn derive_huffman(
     input: &mut Input<'_>,
     tables: &mut HashMap<u8, HuffmanTable>,
     selector: u8,
-) -> Result<HashMap<u32, u8>, ContentError> {
+) -> Result<(), ContentError> {
     let raw = tables
         .get(&selector)
         .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))?;
-    if let Some(derived) = &raw.derived {
-        return Ok(derived.clone());
+    if raw.derived.is_some() {
+        return Ok(());
     }
-    let table = {
+    let derived = {
         let raw = tables
             .get(&selector)
             .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))?;
-        let mut table = HashMap::new();
-        let mut code = 0u32;
-        let mut value_index = 0usize;
-        for (length, count) in raw.counts.iter().enumerate() {
-            let length = length as u32 + 1;
-            // Short overfull codes write beyond IJG's 256-entry lookahead arrays.
-            if length <= 8 && code + u32::from(*count) > 1u32 << length && *count != 0 {
-                return Err(input.fail("oversubscribed Huffman table exceeds source lookahead allocation"));
-            }
-            for _ in 0..*count {
-                let value =
-                    raw.values.get(value_index).copied().ok_or_else(|| {
-                        input.fail("oversubscribed Huffman table exceeds source lookahead allocation")
-                    })?;
-                value_index += 1;
-                if code < 1u32 << length {
-                    table.insert((1u32 << length) + code, value);
-                }
-                code += 1;
-            }
-            code *= 2;
-        }
-        table
+        build_derived(input, raw)?
     };
     if let Some(raw) = tables.get_mut(&selector) {
-        raw.derived = Some(table.clone());
+        raw.derived = Some(derived);
     }
-    Ok(table)
+    Ok(())
+}
+
+fn derived_table<'a>(
+    tables: &'a HashMap<u8, HuffmanTable>,
+    selector: u8,
+    input: &Input<'_>,
+) -> Result<&'a DerivedHuffman, ContentError> {
+    tables
+        .get(&selector)
+        .and_then(|raw| raw.derived.as_ref())
+        .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))
 }
 
 // jdmarker.c get_dac validates these tables even for a Huffman frame.
@@ -781,11 +844,14 @@ fn idct_sample(value: f32) -> u8 {
     (index - 896) as u8
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_block(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
     frame: &mut Frame,
     scan: &mut ScanComponent,
+    dc: &DerivedHuffman,
+    ac: &DerivedHuffman,
     column: usize,
     row: usize,
     block: &mut [f32; 64],
@@ -810,14 +876,14 @@ fn decode_block(
             *slot = f32::from(*value);
         }
     }
-    let dc_size = entropy.symbol(input, &scan.dc)?;
+    let dc_size = entropy.symbol(input, dc)?;
     scan.prediction_dc = scan
         .prediction_dc
         .wrapping_add(entropy.signed(input, u32::from(dc_size))?);
     block[0] = ((scan.prediction_dc << 16) >> 16) as f32;
     let mut index = 1i32;
     while index < 64 {
-        let symbol = entropy.symbol(input, &scan.ac)?;
+        let symbol = entropy.symbol(input, ac)?;
         let run = i32::from(symbol >> 4);
         let size = symbol & 15;
         if size == 0 {
@@ -1270,19 +1336,28 @@ fn read_scan(
             if !huffman.contains_key(&table_selector) {
                 return Err(input.source_fail(format!("Huffman table 0x{:02x} was not defined", table_selector & 15)));
             }
+            derive_huffman(input, huffman, table_selector)?;
         }
-        let dc = derive_huffman(input, huffman, selector >> 4)?;
-        let ac = derive_huffman(input, huffman, 16 + (selector & 15))?;
-        scans.push(ScanComponent {
-            component,
-            prediction_dc: 0,
-            dc,
-            ac,
-            multipliers,
-        });
+        scans.push((
+            ScanComponent {
+                component,
+                prediction_dc: 0,
+                multipliers,
+            },
+            selector,
+        ));
     }
+    let tables = &*huffman;
+    let mut scans = scans
+        .into_iter()
+        .map(|(scan, selector)| {
+            let dc = derived_table(tables, selector >> 4, input)?;
+            let ac = derived_table(tables, 16 + (selector & 15), input)?;
+            Ok((scan, dc, ac))
+        })
+        .collect::<Result<Vec<(ScanComponent, &DerivedHuffman, &DerivedHuffman)>, ContentError>>()?;
     let single = if scans.len() == 1 {
-        Some(scans[0].component)
+        Some(scans[0].0.component)
     } else {
         None
     };
@@ -1311,14 +1386,15 @@ fn read_scan(
             entropy.restart(input, restart)?;
             restart = (restart + 1) & 7;
             for scan in &mut scans {
-                scan.prediction_dc = 0;
+                scan.0.prediction_dc = 0;
             }
         }
         let column = mcu % columns;
         let row = mcu / columns;
         let mut block_index = 0usize;
         let mut pending = Vec::new();
-        for (index, scan) in scans.iter_mut().enumerate() {
+        for (index, entry) in scans.iter_mut().enumerate() {
+            let (scan, dc, ac) = (&mut entry.0, entry.1, entry.2);
             let (h, v) = match single {
                 None => (frame.components[scan.component].h, frame.components[scan.component].v),
                 Some(_) => (1, 1),
@@ -1335,6 +1411,8 @@ fn read_scan(
                         &mut entropy,
                         frame,
                         scan,
+                        dc,
+                        ac,
                         block_column,
                         block_row,
                         &mut blocks[block_index],
@@ -1380,7 +1458,7 @@ fn read_scan(
 fn progressive_ac_first(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
-    table: &HashMap<u32, u8>,
+    table: &DerivedHuffman,
     coefficients: &mut [i16],
     offset: usize,
     start: u8,
@@ -1437,7 +1515,7 @@ fn refine_coefficient(
 fn progressive_ac_refine(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
-    table: &HashMap<u32, u8>,
+    table: &DerivedHuffman,
     coefficients: &mut [i16],
     offset: usize,
     start: u8,
@@ -1602,25 +1680,40 @@ fn read_progressive_scan(
             storage.bits[index] = low as i8;
         }
     }
-    enum ProgressiveKind {
+    enum ProgressiveKind<'a> {
         DcRefine,
-        DcFirst(HashMap<u32, u8>),
-        AcFirst(HashMap<u32, u8>),
-        AcRefine(HashMap<u32, u8>),
+        DcFirst(&'a DerivedHuffman),
+        AcFirst(&'a DerivedHuffman),
+        AcRefine(&'a DerivedHuffman),
     }
+    for (_, selector) in &members {
+        if start == 0 && high != 0 {
+            continue;
+        }
+        derive_huffman(
+            input,
+            huffman,
+            if start == 0 {
+                selector >> 4
+            } else {
+                16 + (selector & 15)
+            },
+        )?;
+    }
+    let tables = &*huffman;
     let mut scans = Vec::with_capacity(members.len());
     for (component, selector) in members {
         let kind = if start == 0 && high != 0 {
             ProgressiveKind::DcRefine
         } else {
-            let table = derive_huffman(
-                input,
-                huffman,
+            let table = derived_table(
+                tables,
                 if start == 0 {
                     selector >> 4
                 } else {
                     16 + (selector & 15)
                 },
+                input,
             )?;
             if start == 0 {
                 ProgressiveKind::DcFirst(table)
