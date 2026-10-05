@@ -9325,7 +9325,8 @@ impl SharedSimulation {
                     qa_content::q1::foundation::types::Q1MoveType::None
                     | qa_content::q1::foundation::types::Q1MoveType::Noclip => Q2MotionKind::Stationary,
                     qa_content::q1::foundation::types::Q1MoveType::Push => Q2MotionKind::Push,
-                    qa_content::q1::foundation::types::Q1MoveType::Step => Q2MotionKind::Step,
+                    qa_content::q1::foundation::types::Q1MoveType::Walk
+                    | qa_content::q1::foundation::types::Q1MoveType::Step => Q2MotionKind::Step,
                     qa_content::q1::foundation::types::Q1MoveType::Toss => Q2MotionKind::Toss,
                     qa_content::q1::foundation::types::Q1MoveType::Bounce => Q2MotionKind::Bounce,
                     qa_content::q1::foundation::types::Q1MoveType::Fly => Q2MotionKind::Fly,
@@ -13527,14 +13528,18 @@ impl GameplayAuthority {
                 && policy_context.teamplay == 1
                 && policy_same_team(&latest, live_attacker().as_ref())
         {
-            return Ok(complete_decision(Vec::new(), 0.0, DamageReaction::None, None));
+            // Stock `T_Damage` consumes armor and applies knockback
+            // BEFORE the god/invulnerability/team early-outs
+            // (`quake/progs106/combat.qc:117-165`): the early-out skips
+            // only the health take, so the committed impulse survives.
+            return Ok(complete_decision(mutations, 0.0, DamageReaction::None, None));
         }
         if source_effects
             .before_health
             .as_ref()
             .is_some_and(|stage| !stage(request, damage, &latest, live_attacker().as_ref()))
         {
-            return Ok(complete_decision(Vec::new(), 0.0, DamageReaction::None, None));
+            return Ok(complete_decision(mutations, 0.0, DamageReaction::None, None));
         }
         let Some(latest) = live_target() else {
             return Ok(complete_decision(Vec::new(), 0.0, DamageReaction::None, None));

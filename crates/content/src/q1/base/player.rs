@@ -545,7 +545,7 @@ impl Q1CharacterActor {
                 Q1Solid::None
             },
             movement: if self.life == Q1PlayerLife::Alive {
-                Q1MoveType::Step
+                Q1MoveType::Walk
             } else if self.model == "progs/h_player.mdl" {
                 Q1MoveType::Bounce
             } else {

@@ -324,7 +324,7 @@ pub fn actor_motion(entry: &ActorExecution, body: &BodyState) -> Result<Q2Motion
                 Q1MoveType::Flymissile => Q2MotionKind::FlyMissile,
                 Q1MoveType::None | Q1MoveType::Noclip => Q2MotionKind::Stationary,
                 Q1MoveType::Push => Q2MotionKind::Push,
-                Q1MoveType::Step => Q2MotionKind::Step,
+                Q1MoveType::Walk | Q1MoveType::Step => Q2MotionKind::Step,
                 Q1MoveType::Toss => Q2MotionKind::Toss,
                 Q1MoveType::Bounce => Q2MotionKind::Bounce,
                 Q1MoveType::Fly => Q2MotionKind::Fly,

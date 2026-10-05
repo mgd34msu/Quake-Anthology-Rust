@@ -24,6 +24,13 @@
 //! - CTF character poses map onto the source pose; grapple selection
 //!   snapshots across CTF registration, which only reads the
 //!   selection and native-slot probe.
+//!
+//! qsrc functionality reference: `quake/progs106/combat.qc:164` and
+//! `Mission Packs/quake-mp1/COMBAT.QC:208` (base-game and Hipnotic
+//! `teamplay == 1` friendly-fire gate). Rogue comments the base gate
+//! out (`Mission Packs/quake-mp2/COMBAT.QC:204`) in favor of its own
+//! team rules, so `base_team_health` stays off for Rogue and on for
+//! the base game.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -728,8 +735,11 @@ impl Q1SourceComposition {
                 },
             )?;
         }
-        if program == Q1SourceProgram::Rogue {
+        if program != Q1SourceProgram::Rogue {
             game.set_base_team_health();
+        }
+        if program == Q1SourceProgram::Mg3 {
+            game.set_mg3_nightmare_pain();
         }
         register_q1_base(
             game,

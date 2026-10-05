@@ -3,6 +3,9 @@
 //! weapons.qc/player.qc, Copyright (C) 1996-2022 id Software LLC.
 //! GPL-2.0-or-later.
 //!
+//! qsrc functionality reference: `quake/progs106/weapons.qc:878-941`
+//! (`W_Attack` refire delays; lightning is `time + 0.1` every shot).
+//!
 //! Aim selection ports `aimQ1` (donor
 //! `src/world/gameplay/q1-aim.ts`) over game-provided eligibility,
 //! bodies, and traces.
@@ -851,7 +854,9 @@ pub fn fire_base_weapon(game: &mut Q1EntityServices, player: &ActorId) -> Result
             )?;
         }
         Q1Weapon::Lightning => {
-            delay = if repeating { 0.2 } else { 0.1 };
+            // Stock `W_Attack` refires lightning every 0.1s, including
+            // sustained fire (`quake/progs106/weapons.qc:937`).
+            delay = 0.1;
             let lightning_sound_at = game
                 .player_ref(&player_id)
                 .map(|player| player.lightning_sound_at)
@@ -1043,4 +1048,70 @@ pub fn register_base_weapon_definitions(game: &mut Q1EntityServices) -> Result<(
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::ProviderId;
+
+    use super::super::entity_services::Q1AttachOptions;
+    use super::super::host::mock::mock_host;
+    use super::super::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
+    use super::*;
+
+    fn options() -> Q1FoundationOptions {
+        Q1FoundationOptions {
+            provider: None,
+            precache_program: Some(Q1PrecacheProgram::Id1),
+            edition: Q1Edition::Classic,
+            physics_edition: None,
+            skill: 1,
+            deathmatch: 0,
+            coop: false,
+            campaign: ProviderId::new("q1", "campaign"),
+            combat_provider: ProviderId::new("q1", "combat"),
+            movement_provider: ProviderId::new("q1", "movement"),
+            inventory_provider: ProviderId::new("q1", "inventory"),
+            gravity: 800.0,
+            max_clients: Some(4),
+            no_exit: None,
+            teamplay: None,
+            aim_threshold: None,
+        }
+    }
+
+    #[test]
+    fn lightning_sustained_refire_is_tenth_second() {
+        let (host, _) = mock_host();
+        let mut game = Q1EntityServices::new(host, options()).expect("game");
+        let player = game.create("player", None, None).expect("player");
+        let owned = game
+            .entity_ref(&player)
+            .map(|entity| entity.actor.clone())
+            .expect("owned");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
+        game.host.combat.set_health(&owned, 100.0).expect("health");
+        let cells = String::from("q1:ammo/cells");
+        assert!(game.host.inventory.give(&owned, &cells, 50.0) > 0.0);
+        game.update_player(&player, |state| state.weapon = Q1Weapon::Lightning)
+            .expect("weapon");
+
+        game.time = 10.0;
+        assert!(fire_base_weapon(&mut game, &player).expect("fire"));
+        let first = game
+            .player_ref(&player)
+            .map(|state| state.attack_finished)
+            .expect("delay");
+        assert!((first - 10.1).abs() < 0.01, "first refire {first}");
+
+        game.time = 10.11;
+        assert!(fire_base_weapon(&mut game, &player).expect("sustain"));
+        let second = game
+            .player_ref(&player)
+            .map(|state| state.attack_finished)
+            .expect("delay");
+        // Stock `W_Attack` refires lightning every 0.1s, including
+        // sustained fire (`weapons.qc:937`).
+        assert!((second - first - 0.1).abs() < 0.01, "sustained refire {second}");
+    }
 }

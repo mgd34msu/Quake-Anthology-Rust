@@ -875,9 +875,8 @@ fn monster_pain(
                 "soldier/pain2.wav"
             },
         )?;
-        if game.options().skill == 3 {
-            monster.pain_finished = game.time + 5.0;
-        }
+        // Nightmare `pain_finished` is centralized in `invoke_pain`
+        // (`quake/progs106/combat.qc:198-204`).
     } else {
         game.sound_simple(id, "dog/dpain1.wav")?;
         if game.host.random() > 0.5 {

@@ -4,6 +4,10 @@
 //! from id Software Quake / Quake rerelease QuakeC.
 //! Copyright (C) 1996-2022 id Software LLC. GPL-2.0-or-later.
 //!
+//! qsrc functionality reference: `quake/progs106/combat.qc:18-56`
+//! (`CanDamage`), `quake/progs106/combat.qc:102-207` (`T_Damage`),
+//! `quake/progs106/combat.qc:212-249` (`T_RadiusDamage`).
+//!
 //! Entities live in the services object and callbacks dispatch by
 //! registered name plus subject actor id; see
 //! [`super::entity`] for the ownership rationale. Insertion-order
@@ -152,6 +156,7 @@ pub struct Q1EntityServices {
     /// Precache registry.
     pub precaches: Q1PrecacheRegistry,
     base_team_health: bool,
+    mg3_nightmare_pain: bool,
     path_touches: Vec<(String, Q1PathTouchHandler)>,
     source_damage_effects: Vec<(String, Q1DamageSourceEffects)>,
     /// Active pickup rules.
@@ -252,6 +257,7 @@ impl Q1EntityServices {
             named: Q1CallbackRegistry::new(),
             precaches: Q1PrecacheRegistry::new(),
             base_team_health: false,
+            mg3_nightmare_pain: false,
             path_touches: Vec::new(),
             source_damage_effects: Vec::new(),
             pickup_rules: None,
@@ -514,6 +520,14 @@ impl Q1EntityServices {
     /// Enable base team-health rules.
     pub fn set_base_team_health(&mut self) {
         self.base_team_health = true;
+    }
+
+    /// Enable the MG3 nightmare pain rule (`quakec_mg3/combat.qc:351-355`:
+    /// `skill > 2` sparing `monster_boss` and `monster_zombie`). The
+    /// default rule covers every monster on `skill == 3`
+    /// (`quake/progs106/combat.qc:198-204`).
+    pub fn set_mg3_nightmare_pain(&mut self) {
+        self.mg3_nightmare_pain = true;
     }
 
     /// Register a path-touch handler.
@@ -1553,30 +1567,37 @@ impl Q1EntityServices {
     }
 
     /// Resolve the combat policy context for a request.
+    ///
+    /// Stock rules (`quake/progs106/combat.qc:102-207`): `teamplay`
+    /// defaults to 0 (the stock cvar default; deathmatch does not imply
+    /// teamplay); knockback applies only to `MOVETYPE_WALK` targets,
+    /// which stock reserves for players (`defs.qc:248`), along
+    /// `targ.origin - inflictor_center` (`combat.qc:141-146`).
     pub fn combat_context(&mut self, request: &DamageRequest) -> Q1CombatContext {
-        let teamplay = match self.options().teamplay {
-            Some(teamplay) => teamplay,
-            None => {
-                if self.options().deathmatch == 0 {
-                    0
-                } else {
-                    1
-                }
-            }
+        let teamplay = self.options().teamplay.unwrap_or(0);
+        let walk = match self.entity_ref(&request.target) {
+            Some(entity) => entity.movement == Q1MoveType::Walk,
+            // Attached players without a materialized entity record are
+            // implicitly `MOVETYPE_WALK` (stock `PutClientInServer`).
+            None => self.player_owned(&request.target).is_some(),
         };
-        let walk = self
-            .entity_ref(&request.target)
-            .is_some_and(|entity| entity.movement == Q1MoveType::Step);
         let quad = match request.attack.attacker.as_ref() {
             Some(attacker) => self.powerup_expires(attacker, Q1Powerup::Quad) > self.time,
             None => false,
         };
-        let momentum_direction = self
-            .world
-            .as_ref()
-            .filter(|world| same_actor(world, &request.target))
-            .and_then(|_| self.host.bodies.linked(&request.target))
-            .map(|linked| linked.state.velocity);
+        let momentum_direction = (|| {
+            let inflictor = request.attack.inflictor.as_ref()?;
+            if self.world.as_ref().is_some_and(|world| same_actor(world, inflictor)) {
+                return None;
+            }
+            let target_body = self.host.bodies.read(&request.target)?;
+            let inflictor_body = self.host.bodies.read(inflictor)?;
+            let center = vadd(
+                inflictor_body.origin,
+                vscale(vadd(inflictor_body.bounds.min, inflictor_body.bounds.max), 0.5),
+            );
+            Some(vsub(target_body.origin, center))
+        })();
         Q1CombatContext {
             arithmetic: Q1CombatArithmetic::Binary32,
             quad,
@@ -1617,17 +1638,39 @@ impl Q1EntityServices {
     }
 
     /// Whether an inflictor can damage a target along a clear trace.
+    ///
+    /// Stock `CanDamage` (`quake/progs106/combat.qc:18-56`): traces start
+    /// at `inflictor.origin`; push targets (`MOVETYPE_PUSH`, whose
+    /// origin is `0,0,0`) trace to the target center and accept
+    /// `trace_ent == targ`; all other targets trace to `targ.origin`
+    /// plus the zero offset and the four `+/-15` planar offsets.
     pub fn can_damage(&mut self, target: &ActorId, inflictor: &ActorId) -> bool {
         let (Some(target_body), Some(inflictor_body)) =
             (self.host.bodies.read(target), self.host.bodies.read(inflictor))
         else {
             return false;
         };
-        let start = vadd(
-            inflictor_body.origin,
-            vscale(vadd(inflictor_body.bounds.min, inflictor_body.bounds.max), 0.5),
-        );
+        let start = inflictor_body.origin;
+        let push = self
+            .entity_ref(target)
+            .is_some_and(|entity| entity.movement == Q1MoveType::Push);
+        if push {
+            let center = vadd(
+                target_body.origin,
+                vscale(vadd(target_body.bounds.min, target_body.bounds.max), 0.5),
+            );
+            let trace = self.host.trace(&Q1TraceRequest {
+                start,
+                end: center,
+                bounds: POINT,
+                ignore: Some(inflictor.clone()),
+                monsters: false,
+                missile: false,
+            });
+            return trace.fraction == 1.0 || trace.actor.as_ref().is_some_and(|hit| hit == target);
+        }
         for offset in [
+            ZERO,
             Vec3 {
                 x: 15.0,
                 y: 15.0,
@@ -1635,35 +1678,29 @@ impl Q1EntityServices {
             },
             Vec3 {
                 x: -15.0,
-                y: 15.0,
-                z: 0.0,
-            },
-            Vec3 {
-                x: 15.0,
                 y: -15.0,
                 z: 0.0,
             },
             Vec3 {
                 x: -15.0,
+                y: 15.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 15.0,
                 y: -15.0,
                 z: 0.0,
             },
         ] {
             let trace = self.host.trace(&Q1TraceRequest {
                 start,
-                end: vadd(
-                    vadd(
-                        target_body.origin,
-                        vscale(vadd(target_body.bounds.min, target_body.bounds.max), 0.5),
-                    ),
-                    offset,
-                ),
+                end: vadd(target_body.origin, offset),
                 bounds: POINT,
                 ignore: Some(inflictor.clone()),
                 monsters: false,
                 missile: false,
             });
-            if trace.fraction == 1.0 {
+            if trace.fraction == 1.0 || trace.actor.as_ref().is_some_and(|hit| hit == target) {
                 return true;
             }
         }
@@ -1671,6 +1708,12 @@ impl Q1EntityServices {
     }
 
     /// Damage actors within a radius, scaling by distance.
+    ///
+    /// Stock `T_RadiusDamage` (`quake/progs106/combat.qc:212-249`):
+    /// candidates filter by `takedamage` within `damage + 40` of
+    /// `inflictor.origin`; points fall off as `damage - 0.5 * dist`
+    /// (clamped at zero); the attacker takes half; shamblers take half
+    /// of all explosion damage.
     pub fn radius_damage(
         &mut self,
         inflictor: &ActorId,
@@ -1686,38 +1729,54 @@ impl Q1EntityServices {
             if !self.is_live(target) || ignore == Some(target) {
                 continue;
             }
+            if !self.is_damageable(target) {
+                continue;
+            }
             let target_body = self.host.bodies.read(target);
             let inflictor_body = self.host.bodies.read(inflictor);
             let (Some(target_body), Some(inflictor_body)) = (target_body, inflictor_body) else {
                 continue;
             };
-            let target_traits = self.source_target(target);
-            if self.player_owned(target).is_none() && !target_traits.slidebox && !target_traits.push {
-                continue;
-            }
             let mine = vadd(
                 target_body.origin,
                 vscale(vadd(target_body.bounds.min, target_body.bounds.max), 0.5),
             );
             let distance = f64::from(length(vsub(mine, inflictor_body.origin)));
-            if distance > damage + 40.0 || !self.can_damage(target, inflictor) {
+            if distance > damage + 40.0 {
                 continue;
             }
-            let points = 0.5f64.mul_add(distance, damage);
-            if points > 0.0 {
-                self.damage(
-                    target,
-                    Some(inflictor),
-                    attacker,
-                    points,
-                    &Q1DamageParams {
-                        weapon,
-                        delivery: DamageDelivery::Radius,
-                        death_type: death_type.to_string(),
-                        ..Default::default()
-                    },
-                );
+            let mut points = 0.5 * distance;
+            if points < 0.0 {
+                points = 0.0;
             }
+            points = damage - points;
+            if attacker.is_some_and(|attacker| attacker == target) {
+                points *= 0.5;
+            }
+            if points <= 0.0 {
+                continue;
+            }
+            if !self.can_damage(target, inflictor) {
+                continue;
+            }
+            if self
+                .entity_ref(target)
+                .is_some_and(|entity| entity.classname == "monster_shambler")
+            {
+                points *= 0.5;
+            }
+            self.damage(
+                target,
+                Some(inflictor),
+                attacker,
+                points,
+                &Q1DamageParams {
+                    weapon,
+                    delivery: DamageDelivery::Radius,
+                    death_type: death_type.to_string(),
+                    ..Default::default()
+                },
+            );
         }
     }
 
@@ -2704,12 +2763,31 @@ impl Q1EntityServices {
     }
 
     /// Invoke a stored pain callback by name.
+    ///
+    /// Nightmare mode (`quake/progs106/combat.qc:198-204`) sets
+    /// `pain_finished = time + 5` for every monster after `th_pain`
+    /// runs on `skill == 3`; MG3 spares `monster_boss` and
+    /// `monster_zombie` (`quakec_mg3/combat.qc:351-355`).
     pub fn invoke_pain(&mut self, id: &ActorId, attacker: Option<&ActorId>, damage: f64) -> Result<(), Q1Error> {
         let name = self.callback_store(id, Q1CallbackSlot::Pain)?;
         if let Some(name) = name {
             let handler = self.named.pain_handler(&name)?;
             let attacker = attacker.cloned();
-            return handler(self, id, attacker.as_ref(), damage);
+            handler(self, id, attacker.as_ref(), damage)?;
+            if self.options().skill >= 3 {
+                let spared = self.mg3_nightmare_pain
+                    && self.entity_ref(id).is_some_and(|entity| {
+                        entity.classname == "monster_boss" || entity.classname == "monster_zombie"
+                    });
+                if !spared {
+                    let until = self.time + 5.0;
+                    self.update_entity(id, |entity| {
+                        if let Some(monster) = entity.monster.as_mut() {
+                            monster.pain_finished = until;
+                        }
+                    })?;
+                }
+            }
         }
         Ok(())
     }
@@ -3192,5 +3270,422 @@ mod tests {
         let state = game.player_ref(&player).cloned().expect("player");
         assert_eq!(state.view_angles, angles);
         assert_eq!(state.water_level, 1);
+    }
+
+    struct RecordingCombat {
+        inner: super::super::host::mock::MockCombat,
+        applied: Rc<RefCell<Vec<DamageRequest>>>,
+    }
+
+    impl super::super::host::Q1GameplayAuthority for RecordingCombat {
+        fn create(&mut self, actor: &OwnedActor, initial: &CombatState) -> Result<(), Q1Error> {
+            self.inner.create(actor, initial)
+        }
+
+        fn read(&self, actor: &ActorId) -> Option<CombatState> {
+            self.inner.read(actor)
+        }
+
+        fn set_health(&mut self, actor: &OwnedActor, health: f64) -> Result<(), Q1Error> {
+            self.inner.set_health(actor, health)
+        }
+
+        fn set_armor(&mut self, actor: &OwnedActor, armor: &ArmorState) -> Result<(), Q1Error> {
+            self.inner.set_armor(actor, armor)
+        }
+
+        fn set_traits(&mut self, actor: &OwnedActor, traits: CombatTraits) -> Result<(), Q1Error> {
+            self.inner.set_traits(actor, traits)
+        }
+
+        fn set_regular_armor(&mut self, actor: &OwnedActor, regular: &RegularArmorState) -> Result<(), Q1Error> {
+            self.inner.set_regular_armor(actor, regular)
+        }
+
+        fn set_regular_points(&mut self, actor: &OwnedActor, points: f64) -> Result<(), Q1Error> {
+            self.inner.set_regular_points(actor, points)
+        }
+
+        fn bind_damage_adjustment(&mut self, actor: &OwnedActor, adjust: super::super::host::Q1DamageAdjustHook) {
+            self.inner.bind_damage_adjustment(actor, adjust);
+        }
+
+        fn apply(&mut self, request: &DamageRequest) -> DamageOutcome {
+            self.applied.borrow_mut().push(request.clone());
+            self.inner.apply(request)
+        }
+    }
+
+    fn combat_game() -> (Q1EntityServices, Rc<RefCell<Vec<DamageRequest>>>) {
+        let (mut host, _) = mock_host();
+        let applied = Rc::new(RefCell::new(Vec::new()));
+        host.combat = Box::new(RecordingCombat {
+            inner: super::super::host::mock::MockCombat::default(),
+            applied: Rc::clone(&applied),
+        });
+        (Q1EntityServices::new(host, options()).expect("game"), applied)
+    }
+
+    fn place(game: &mut Q1EntityServices, id: &ActorId, x: f32) {
+        game.set_origin(id, Vec3 { x, y: 0.0, z: 0.0 }).expect("origin");
+    }
+
+    #[test]
+    fn radius_damage_matches_stock_falloff_halves_and_filter() {
+        let (mut game, applied) = combat_game();
+        let inflictor = game.create("grenade", None, None).expect("inflictor");
+        place(&mut game, &inflictor, 0.0);
+        let soldier = game.create("monster_army", None, None).expect("soldier");
+        place(&mut game, &soldier, 100.0);
+        game.set_damageable(&soldier, true).expect("damageable");
+        let suicide = game.create("player", None, None).expect("attacker");
+        place(&mut game, &suicide, 100.0);
+        game.set_damageable(&suicide, true).expect("damageable");
+        let shambler = game.create("monster_shambler", None, None).expect("shambler");
+        // Offset in Y so the shambler shares the 100-unit distance.
+        game.set_origin(
+            &shambler,
+            Vec3 {
+                x: 0.0,
+                y: 100.0,
+                z: 0.0,
+            },
+        )
+        .expect("origin");
+        game.set_damageable(&shambler, true).expect("damageable");
+        let immune = game.create("monster_army", None, None).expect("immune");
+        place(&mut game, &immune, 100.0);
+        let far = game.create("monster_army", None, None).expect("far");
+        place(&mut game, &far, 500.0);
+        game.set_damageable(&far, true).expect("damageable");
+
+        game.radius_damage(&inflictor, Some(&suicide), 120.0, None, None, "grenade");
+
+        let applied = applied.borrow();
+        let amount = |target: &ActorId| {
+            applied
+                .iter()
+                .find(|request| request.target == *target)
+                .map(|request| request.amount)
+        };
+        // Stock: 120 - 0.5 * 100 = 70 (`combat.qc:231-234`).
+        assert_eq!(amount(&soldier), Some(70.0));
+        // Attacker takes half (`combat.qc:235-236`).
+        assert_eq!(amount(&suicide), Some(35.0));
+        // Shamblers take half of explosion damage (`combat.qc:238-241`).
+        assert_eq!(amount(&shambler), Some(35.0));
+        // No takedamage, no damage (`combat.qc:227`).
+        assert_eq!(amount(&immune), None);
+        // Beyond damage + 40 (`combat.qc:220`).
+        assert_eq!(amount(&far), None);
+    }
+
+    #[test]
+    fn can_damage_matches_stock_trace_shape() {
+        use super::super::types::{Q1Trace, Q1TraceRequest};
+
+        let (mut game, _) = game();
+        let inflictor = game.create("grenade", None, None).expect("inflictor");
+        game.set_origin(
+            &inflictor,
+            Vec3 {
+                x: 10.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        )
+        .expect("origin");
+        game.set_bounds(
+            &inflictor,
+            Bounds {
+                min: Vec3 {
+                    x: -8.0,
+                    y: -8.0,
+                    z: -8.0,
+                },
+                max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
+            },
+        )
+        .expect("bounds");
+        let target = game.create("monster_army", None, None).expect("target");
+        place(&mut game, &target, 100.0);
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen_trace = Rc::clone(&seen);
+        game.host.trace = Box::new(move |request: &Q1TraceRequest| {
+            seen_trace.borrow_mut().push((request.start, request.end));
+            Q1Trace {
+                fraction: 0.5,
+                end: request.end,
+                normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+                actor: None,
+                start_solid: false,
+                all_solid: false,
+                sky: false,
+                in_open: true,
+                in_water: false,
+            }
+        });
+        assert!(!game.can_damage(&target, &inflictor));
+        let seen = seen.borrow();
+        // Zero offset plus the four +/-15 planar offsets (`combat.qc:37-55`).
+        assert_eq!(seen.len(), 5);
+        // Every trace starts at inflictor.origin, not its center.
+        for (start, _) in seen.iter() {
+            assert_eq!(
+                *start,
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0
+                }
+            );
+        }
+        assert_eq!(
+            seen[0].1,
+            Vec3 {
+                x: 100.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
+        drop(seen);
+
+        // trace_ent == targ accepts a blocked trace.
+        let target_id = target.clone();
+        game.host.trace = Box::new(move |request: &Q1TraceRequest| Q1Trace {
+            fraction: 0.5,
+            end: request.end,
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            actor: Some(target_id.clone()),
+            start_solid: false,
+            all_solid: false,
+            sky: false,
+            in_open: true,
+            in_water: false,
+        });
+        assert!(game.can_damage(&target, &inflictor));
+
+        // Push targets trace once to the center (`combat.qc:22-31`).
+        let door = game.create("func_door", None, None).expect("door");
+        place(&mut game, &door, 100.0);
+        game.update_entity(&door, |entity| entity.movement = Q1MoveType::Push)
+            .expect("push");
+        game.set_bounds(
+            &door,
+            Bounds {
+                min: Vec3 {
+                    x: -32.0,
+                    y: -32.0,
+                    z: 0.0,
+                },
+                max: Vec3 {
+                    x: 32.0,
+                    y: 32.0,
+                    z: 64.0,
+                },
+            },
+        )
+        .expect("bounds");
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen_trace = Rc::clone(&seen);
+        game.host.trace = Box::new(move |request: &Q1TraceRequest| {
+            seen_trace.borrow_mut().push((request.start, request.end));
+            Q1Trace {
+                fraction: 1.0,
+                end: request.end,
+                normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+                actor: None,
+                start_solid: false,
+                all_solid: false,
+                sky: false,
+                in_open: true,
+                in_water: false,
+            }
+        });
+        assert!(game.can_damage(&door, &inflictor));
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].1,
+            Vec3 {
+                x: 100.0,
+                y: 0.0,
+                z: 32.0
+            }
+        );
+    }
+
+    #[test]
+    fn combat_context_gates_knockback_to_walk_and_defaults_teamplay() {
+        use super::super::gameplay::AttackProvenance;
+
+        let (host, _) = mock_host();
+        let mut armed = options();
+        armed.deathmatch = 1;
+        let mut game = Q1EntityServices::new(host, armed).expect("game");
+        let inflictor = game.create("grenade", None, None).expect("inflictor");
+        place(&mut game, &inflictor, 0.0);
+        game.set_bounds(
+            &inflictor,
+            Bounds {
+                min: Vec3 {
+                    x: -8.0,
+                    y: -8.0,
+                    z: -8.0,
+                },
+                max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
+            },
+        )
+        .expect("bounds");
+        let monster = game.create("monster_army", None, None).expect("monster");
+        place(&mut game, &monster, 30.0);
+        game.update_entity(&monster, |entity| entity.movement = Q1MoveType::Step)
+            .expect("step");
+
+        let provider = ProviderId::new("q1", "test");
+        let request = DamageRequest {
+            attack: AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Seconds(1.0),
+                attacker: None,
+                inflictor: Some(inflictor.clone()),
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider.clone(),
+                cause: AttackCause::Q1 {
+                    death_type: String::new(),
+                    armor_effect: None,
+                },
+            },
+            target: monster.clone(),
+            amount: 10.0,
+            knockback: 10.0,
+            direction: ZERO,
+            point: ZERO,
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            delivery: DamageDelivery::Direct,
+        };
+        let context = game.combat_context(&request);
+        // Deathmatch does not imply teamplay (stock default 0).
+        assert_eq!(context.teamplay, 0);
+        // Step monsters take no knockback (`combat.qc:141`).
+        assert!(!context.walk);
+
+        game.update_entity(&monster, |entity| entity.movement = Q1MoveType::Walk)
+            .expect("walk");
+        let context = game.combat_context(&request);
+        assert!(context.walk);
+        // targ.origin - inflictor center (`combat.qc:143`).
+        assert_eq!(
+            context.momentum_direction,
+            Some(Vec3 {
+                x: 30.0,
+                y: 0.0,
+                z: 0.0
+            })
+        );
+
+        // The world inflicts no knockback (`combat.qc:141`).
+        let world = game.create("worldspawn", None, None).expect("world");
+        game.world = Some(world.clone());
+        let mut world_request = request.clone();
+        world_request.attack.inflictor = Some(world);
+        let context = game.combat_context(&world_request);
+        assert_eq!(context.momentum_direction, None);
+    }
+
+    fn pain_probe(
+        game: &mut Q1EntityServices,
+        id: &ActorId,
+        _attacker: Option<&ActorId>,
+        _damage: f64,
+    ) -> Result<(), Q1Error> {
+        game.update_entity(id, |entity| entity.count = 99.0)
+    }
+
+    fn nightmare_monster(game: &mut Q1EntityServices, classname: &str) -> ActorId {
+        use crate::q1::foundation::entity::{Q1Monster, Q1MonsterMode, Q1MonsterSpecies};
+
+        let _ = game.named.register(
+            "test:pain",
+            Q1CallbackHandlers {
+                pain: Some(pain_probe),
+                ..Default::default()
+            },
+        );
+        let id = game.create(classname, None, None).expect("monster");
+        game.update_entity(&id, |entity| {
+            entity.pain = Some(String::from("test:pain"));
+            entity.monster = Some(Q1Monster {
+                species: Q1MonsterSpecies::Army,
+                mode: Q1MonsterMode::Stand,
+                frame_index: 0,
+                sequence: Vec::new(),
+                first_frame: 0,
+                enemy: None,
+                old_enemy: None,
+                path: String::new(),
+                pause_until: 0.0,
+                attack_finished: 0.0,
+                pain_finished: 0.0,
+                search_until: 0.0,
+                death_drop: false,
+                refired: false,
+            });
+        })
+        .expect("monster");
+        id
+    }
+
+    #[test]
+    fn nightmare_pain_covers_every_monster_after_th_pain() {
+        let (host, _) = mock_host();
+        let mut armed = options();
+        armed.skill = 3;
+        let mut game = Q1EntityServices::new(host, armed).expect("game");
+        game.time = 10.0;
+        let id = nightmare_monster(&mut game, "monster_demon");
+        game.invoke_pain(&id, None, 5.0).expect("pain");
+        let entity = game.entity_ref(&id).expect("entity");
+        // The pain handler ran.
+        assert_eq!(entity.count, 99.0);
+        // Nightmare extends the cooldown after th_pain (`combat.qc:198-204`).
+        assert_eq!(entity.monster.as_ref().map(|monster| monster.pain_finished), Some(15.0));
+    }
+
+    #[test]
+    fn mg3_nightmare_pain_spares_boss_and_zombie() {
+        let (host, _) = mock_host();
+        let mut armed = options();
+        armed.skill = 3;
+        let mut game = Q1EntityServices::new(host, armed).expect("game");
+        game.set_mg3_nightmare_pain();
+        game.time = 10.0;
+        let boss = nightmare_monster(&mut game, "monster_boss");
+        game.invoke_pain(&boss, None, 5.0).expect("pain");
+        assert_eq!(
+            game.entity_ref(&boss)
+                .and_then(|entity| entity.monster.as_ref().map(|monster| monster.pain_finished)),
+            Some(0.0)
+        );
+        let zombie = nightmare_monster(&mut game, "monster_zombie");
+        game.invoke_pain(&zombie, None, 5.0).expect("pain");
+        assert_eq!(
+            game.entity_ref(&zombie)
+                .and_then(|entity| entity.monster.as_ref().map(|monster| monster.pain_finished)),
+            Some(0.0)
+        );
+        let grunt = nightmare_monster(&mut game, "monster_army");
+        game.invoke_pain(&grunt, None, 5.0).expect("pain");
+        assert_eq!(
+            game.entity_ref(&grunt)
+                .and_then(|entity| entity.monster.as_ref().map(|monster| monster.pain_finished)),
+            Some(15.0)
+        );
     }
 }

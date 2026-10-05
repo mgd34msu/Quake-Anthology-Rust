@@ -2,6 +2,10 @@
 //!
 //! Q1 gameplay adapted from id Software Quake / Quake rerelease QuakeC.
 //! Copyright (C) 1996-2022 id Software LLC. GPL-2.0-or-later.
+//!
+//! qsrc functionality reference: `quake/progs106/defs.qc:245-256`
+//! (`.movetype` constants: `MOVETYPE_WALK=3` players-only,
+//! `MOVETYPE_STEP=4` monsters).
 
 use std::collections::HashMap;
 
@@ -398,6 +402,10 @@ pub enum Q1MoveType {
     None,
     /// Pusher.
     Push,
+    /// Player ground movement (`MOVETYPE_WALK`; players only per
+    /// `quake/progs106/defs.qc:248`). Only `Walk` targets take T_Damage
+    /// knockback (`quake/progs106/combat.qc:141`).
+    Walk,
     /// Step.
     Step,
     /// Toss.
@@ -421,6 +429,7 @@ impl Q1MoveType {
         match self {
             Q1MoveType::None => "none",
             Q1MoveType::Push => "push",
+            Q1MoveType::Walk => "walk",
             Q1MoveType::Step => "step",
             Q1MoveType::Toss => "toss",
             Q1MoveType::Bounce => "bounce",
@@ -436,6 +445,7 @@ impl Q1MoveType {
         match text {
             "none" => Ok(Q1MoveType::None),
             "push" => Ok(Q1MoveType::Push),
+            "walk" => Ok(Q1MoveType::Walk),
             "step" => Ok(Q1MoveType::Step),
             "toss" => Ok(Q1MoveType::Toss),
             "bounce" => Ok(Q1MoveType::Bounce),
@@ -1153,5 +1163,13 @@ mod tests {
         });
         assert!((f64::from(basis.forward.x) - 0.0).abs() < 1e-6);
         assert!((f64::from(basis.forward.y) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn walk_movetype_round_trips() {
+        // Stock `MOVETYPE_WALK` (`defs.qc:248`), players only.
+        assert_eq!(Q1MoveType::Walk.as_str(), "walk");
+        assert_eq!(Q1MoveType::parse("walk"), Ok(Q1MoveType::Walk));
+        assert_ne!(Q1MoveType::Walk, Q1MoveType::Step);
     }
 }
