@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, angle_mod_rerelease as medic_angle_mod, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::super::common::{
     blocked_check_platform, chainfist, check_gib, monster_flash, reacts_to_pain, rerelease_random,
@@ -157,18 +157,6 @@ pub fn rerelease_medic_reinforcements(fields: &BTreeMap<String, String>) -> Vec<
             MedicReinforcement { classname, strength }
         })
         .collect()
-}
-
-/// Angle mod (`anglemod`, rerelease `fmod` form).
-fn medic_angle_mod(angle: f64) -> f64 {
-    // Rerelease `anglemod` (q_std.h): `fmod(a, 360)`, plus 360 when
-    // negative. Kept local until `qa_core::math` gains a rerelease form.
-    let wrapped = angle % 360.0;
-    if wrapped < 0.0 {
-        360.0 + wrapped
-    } else {
-        wrapped
-    }
 }
 
 /// Spawn grow laser think (`spawnGrowLaserThink`).
