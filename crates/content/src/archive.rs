@@ -874,21 +874,10 @@ pub fn zip_data_offset(
     Ok(data_offset)
 }
 
-/// IEEE CRC-32 (donor `Bun.hash.crc32`; same bit loop as `images::png`).
+/// IEEE CRC-32 (donor `Bun.hash.crc32`).
 #[must_use]
 fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc: u32 = 0xffff_ffff;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            if crc & 1 == 0 {
-                crc >>= 1;
-            } else {
-                crc = (crc >> 1) ^ 0xedb8_8320;
-            }
-        }
-    }
-    crc ^ 0xffff_ffff
+    crc32fast::hash(bytes)
 }
 
 fn inflate_raw_capped(compressed: &[u8], cap: u64) -> Result<Vec<u8>, String> {
