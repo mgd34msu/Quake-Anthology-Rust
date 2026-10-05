@@ -3,7 +3,7 @@
 //! Quake II rogue/m_medic.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, angle_mod, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::combat::{cleanup_rogue_heal_target, rogue_heal_effects};
 use super::rogue_common::{
@@ -137,11 +137,6 @@ fn reinforcement_bounds(index: i32) -> Bounds {
     } else {
         HUMANOID_BOUNDS
     }
-}
-
-/// Angle mod (`anglemod`).
-fn angle_mod(angle: f64) -> f64 {
-    ((angle * 65536.0 / 360.0).trunc() as i64 & 65535) as f64 * 360.0 / 65536.0
 }
 
 /// Pick a rogue coop target (`pickRogueCoopTarget`).

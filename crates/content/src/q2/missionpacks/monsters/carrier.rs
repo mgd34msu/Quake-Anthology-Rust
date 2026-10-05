@@ -3,7 +3,7 @@
 //! Quake II rogue/m_carrier.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{add3, dot3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, angle_mod, dot3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::spawn::{create_rogue_monster, find_rogue_spawn_point, rogue_spawn_callbacks, rogue_spawn_grow};
 use super::tables::rogue_carrier::{carrier_frame, carrier_moves};
@@ -66,11 +66,6 @@ fn carrier_relation(context: &mut MonsterContext, actor: &ActorId) -> CarrierRel
         back: forward < -0.3,
         below: -direction.z > 0.95,
     }
-}
-
-/// Angle mod (`anglemod`).
-fn angle_mod(angle: f64) -> f64 {
-    ((angle * 65536.0 / 360.0).trunc() as i64 & 65535) as f64 * 360.0 / 65536.0
 }
 
 /// Rocket (`rocket`).
@@ -778,4 +773,19 @@ pub fn create_carrier_definition() -> Q2MonsterDefinition {
         definition.callbacks.insert(name.to_string(), handler);
     }
     with_boss_explosion_callbacks(definition)
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::math::angle_mod;
+
+    /// Classic `anglemod` keeps the 16-bit fixed-point form: fractional
+    /// inputs quantize instead of surviving like the rerelease `fmod` form.
+    #[test]
+    fn classic_angle_mod_quantizes() {
+        assert_eq!(angle_mod(720.5), 0.4998779296875);
+        assert_eq!(angle_mod(-90.0), 270.0);
+        assert_eq!(angle_mod(360.0), 0.0);
+        assert_eq!(angle_mod(0.0), 0.0);
+    }
 }
