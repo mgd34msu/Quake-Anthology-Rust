@@ -683,11 +683,19 @@ impl SharedSceneQueries {
                 CollisionShape::Model(model) => {
                     #[allow(clippy::cast_possible_wrap)]
                     let model = model as i32;
+                    // Stock Quake I never rotates brush clips
+                    // (`SV_ClipMoveToEntity` reads no angles), so a
+                    // door's movedir yaw must not tilt its hull.
+                    let angles = if matches!(query.policy, TracePolicy::Q1 { .. }) {
+                        vec3(0.0, 0.0, 0.0)
+                    } else {
+                        actor.body.state.angles
+                    };
                     let model_query = TraceQuery {
                         target: QueryTarget::Model {
                             model,
                             origin: actor.body.state.origin,
-                            angles: actor.body.state.angles,
+                            angles,
                         },
                         ..moving_query.clone()
                     };
@@ -1389,6 +1397,42 @@ mod tests {
         assert_eq!(shared.query_actors(&world, QueryRole::Solid).len(), 1);
         let hit = shared.trace(&q1_query()).unwrap();
         assert_eq!(hit.hit, TraceHit::Actor { actor });
+    }
+
+    #[test]
+    fn shared_q1_model_trace_ignores_angles() {
+        let bounds = Bounds {
+            min: vec3(-16.0, -16.0, -24.0),
+            max: vec3(16.0, 16.0, 32.0),
+        };
+        // Brush body carrying spawn angles (a door's movedir yaw),
+        // shifted so its hull wins over the world wall on fraction.
+        let mut tilted = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let door = test_actor(1);
+        let (mut linked, mut collision) = body(door.clone(), bounds);
+        linked.state.origin = vec3(-10.0, 0.0, 0.0);
+        linked.state.angles = vec3(0.0, 90.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-26.0, -16.0, -24.0),
+            max: vec3(6.0, 16.0, 32.0),
+        };
+        collision.shape = CollisionShape::Model(0);
+        tilted.link(&linked, &collision);
+        let tilted_hit = tilted.trace(&q1_query()).unwrap();
+        // Same body with zero angles traces identically.
+        let mut straight = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let (mut linked, mut collision) = body(door.clone(), bounds);
+        linked.state.origin = vec3(-10.0, 0.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-26.0, -16.0, -24.0),
+            max: vec3(6.0, 16.0, 32.0),
+        };
+        collision.shape = CollisionShape::Model(0);
+        straight.link(&linked, &collision);
+        let straight_hit = straight.trace(&q1_query()).unwrap();
+        assert_eq!(tilted_hit, straight_hit);
+        assert!(straight_hit.fraction < 1.0);
+        assert_eq!(straight_hit.hit, TraceHit::Actor { actor: door });
     }
 
     #[test]
