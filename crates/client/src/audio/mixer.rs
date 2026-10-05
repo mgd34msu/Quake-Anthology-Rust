@@ -14,7 +14,9 @@ use qa_core::cvar::CvarRegistry;
 use qa_core::math::{add3, dot3, length3, sub3, vec3, Axis, Vec3};
 
 use super::error::AudioError;
-use super::paint::{int32, write_linear_blast_stereo16_float};
+use super::paint::{
+    int32, integral_gains, paint_sample_f64, paint_span_f64, paint_span_i32, write_linear_blast_stereo16,
+};
 use super::types::{SharedPcm, SoundAsset, VoiceStopReason};
 use super::wav::PcmSound;
 use crate::audio::{
@@ -327,6 +329,35 @@ struct LoopMix {
     old_doppler_scale: f64,
 }
 
+/// One voice's paint work for a block, resolved by index without cloning.
+struct VoicePaint {
+    /// Cached output-rate PCM (`None` only on the bank-memory path).
+    resampled: Option<Rc<[i16]>>,
+    /// Bank memory for the slow path.
+    memory: Option<SharedMixerMemory>,
+    /// Source sound for the slow path.
+    sound: SharedPcm,
+    /// Stored output length, as the old bounds checks used.
+    output_frames: i64,
+    /// Loop restart in output frames.
+    loop_start: Option<i64>,
+    /// Sound frame of block output frame zero.
+    first_offset: i64,
+    /// Merged stereo gains times the effects gain.
+    left_gain: f64,
+    right_gain: f64,
+}
+
+/// One synchronized-gain group for a block, keyed by sound and limit.
+#[derive(Clone, Copy)]
+struct GainGroup {
+    sound: usize,
+    limit_bits: u64,
+    left: f64,
+    right: f64,
+    painted: bool,
+}
+
 /// Paint range request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoundPaintRange {
@@ -463,6 +494,12 @@ pub struct AudioMixer {
     output_channels: u8,
     entity_capacity: usize,
     resample_cache: HashMap<ResampleKey, ResampledSound>,
+    /// Fixed integer paint buffer: one block never exceeds `PAINTBUFFER_SIZE`.
+    paint: [i32; PAINTBUFFER_SIZE * 2],
+    /// Per-block voice plans, reused across blocks.
+    paint_plan: Vec<VoicePaint>,
+    /// Per-block synchronized-gain groups, reused across blocks.
+    gain_groups: Vec<GainGroup>,
 }
 
 impl AudioMixer {
@@ -510,6 +547,9 @@ impl AudioMixer {
             output_channels,
             entity_capacity,
             resample_cache: HashMap::new(),
+            paint: [0; PAINTBUFFER_SIZE * 2],
+            paint_plan: Vec::new(),
+            gain_groups: Vec::new(),
         })
     }
 
@@ -2083,26 +2123,158 @@ impl AudioMixer {
         checked_sample(&prepared.sound.samples, source_frame)
     }
 
-    /// Paint one effect sample into a stereo paint buffer.
-    fn paint_effect(
-        paint: &mut [f64],
-        output_frame: usize,
-        sample: i32,
-        volume: MixerStereoVolume,
-        effects_gain: f64,
-    ) -> Result<(), AudioError> {
-        let left_gain = volume.left * effects_gain;
-        let right_gain = volume.right * effects_gain;
-        let left_index = output_frame * 2;
-        let right_index = left_index + 1;
-        if right_index >= paint.len() {
-            return Err(AudioError::BadPaintIndex {
-                index: right_index.to_string(),
-                length: paint.len().to_string(),
+    /// Resolve one block of voice plans by index: merged gains, no clone.
+    fn plan_voice_block(&mut self, effects_gain: f64) -> Result<(), AudioError> {
+        self.gain_groups.clear();
+        self.paint_plan.clear();
+        for voice in self.voices.iter().flatten() {
+            let Some(limit) = voice.policy.and_then(|policy| policy.synchronized_gain_limit) else {
+                continue;
+            };
+            if !matches!(voice.start, VoiceStart::Started { .. }) {
+                continue;
+            }
+            let sound = Rc::as_ptr(&voice.prepared.sound) as usize;
+            let limit_bits = limit.to_bits();
+            match self
+                .gain_groups
+                .iter_mut()
+                .find(|group| group.sound == sound && group.limit_bits == limit_bits)
+            {
+                Some(group) => {
+                    group.left += voice.stereo_volume.left;
+                    group.right += voice.stereo_volume.right;
+                }
+                None => self.gain_groups.push(GainGroup {
+                    sound,
+                    limit_bits,
+                    left: voice.stereo_volume.left,
+                    right: voice.stereo_volume.right,
+                    painted: false,
+                }),
+            }
+        }
+        for index in 0..self.voices.len() {
+            let Some(voice) = self.voices[index].as_ref() else {
+                continue;
+            };
+            if matches!(voice.start, VoiceStart::Scheduled { .. }) {
+                continue;
+            }
+            let VoiceStart::Started { sample: start_sample } = voice.start else {
+                return Err(AudioError::PendingSound);
+            };
+            let mut stereo = voice.stereo_volume;
+            if let Some(limit) = voice.policy.and_then(|policy| policy.synchronized_gain_limit) {
+                let sound = Rc::as_ptr(&voice.prepared.sound) as usize;
+                let limit_bits = limit.to_bits();
+                let Some(group) = self
+                    .gain_groups
+                    .iter_mut()
+                    .find(|group| group.sound == sound && group.limit_bits == limit_bits)
+                else {
+                    continue;
+                };
+                if group.painted {
+                    continue;
+                }
+                group.painted = true;
+                stereo = MixerStereoVolume {
+                    left: group.left.min(limit),
+                    right: group.right.min(limit),
+                };
+            }
+            if stereo.left == 0.0 && stereo.right == 0.0 {
+                continue;
+            }
+            let voice = self.voices[index].as_ref().expect("planned voice is live");
+            self.paint_plan.push(VoicePaint {
+                resampled: voice.prepared.resampled.clone(),
+                memory: voice.prepared.memory.clone(),
+                sound: Rc::clone(&voice.prepared.sound),
+                output_frames: voice.prepared.output_frames as i64,
+                loop_start: voice
+                    .policy
+                    .and_then(|policy| policy.loop_start)
+                    .map(|marker| marker as i64),
+                first_offset: self.painted_time - start_sample,
+                left_gain: stereo.left * effects_gain,
+                right_gain: stereo.right * effects_gain,
             });
         }
-        paint[left_index] += (f64::from(sample) * left_gain / 256.0).floor();
-        paint[right_index] += (f64::from(sample) * right_gain / 256.0).floor();
+        Ok(())
+    }
+
+    /// Paint one planned span: a contiguous resampled slice, or the slow
+    /// bank-memory path sample by sample.
+    fn paint_plan_span(
+        paint: &mut [i32],
+        plan: &VoicePaint,
+        sound_start: usize,
+        out_start: usize,
+        len: usize,
+    ) -> Result<(), AudioError> {
+        if let (Some(memory), None) = (plan.memory.as_ref(), plan.resampled.as_ref()) {
+            for offset in 0..len {
+                let sample = memory.borrow().sample(&plan.sound, sound_start + offset);
+                paint_sample_f64(paint, out_start + offset, sample, plan.left_gain, plan.right_gain)?;
+            }
+            return Ok(());
+        }
+        let Some(resampled) = plan.resampled.as_ref() else {
+            return Ok(());
+        };
+        let sound_end = sound_start.checked_add(len).ok_or_else(|| AudioError::BadSampleIndex {
+            index: sound_start.to_string(),
+            length: resampled.len().to_string(),
+        })?;
+        let samples = resampled
+            .get(sound_start..sound_end)
+            .ok_or_else(|| AudioError::BadSampleIndex {
+                index: sound_start.to_string(),
+                length: resampled.len().to_string(),
+            })?;
+        if integral_gains(plan.left_gain, plan.right_gain) {
+            paint_span_i32(paint, out_start, samples, plan.left_gain as i64, plan.right_gain as i64)
+        } else {
+            paint_span_f64(paint, out_start, samples, plan.left_gain, plan.right_gain)
+        }
+    }
+
+    /// Paint all planned voices as `[start, end)` spans over cached PCM.
+    fn paint_voice_plans(paint: &mut [i32], plans: &[VoicePaint], count: i64) -> Result<(), AudioError> {
+        for plan in plans {
+            let total = plan.output_frames;
+            if total <= 0 {
+                continue;
+            }
+            let first = plan.first_offset;
+            let direct_start = first.max(0);
+            let direct_end = (first + count).min(total);
+            if direct_start < direct_end {
+                Self::paint_plan_span(
+                    paint,
+                    plan,
+                    direct_start as usize,
+                    (direct_start - first) as usize,
+                    (direct_end - direct_start) as usize,
+                )?;
+            }
+            let Some(loop_start) = plan.loop_start else {
+                continue;
+            };
+            let span = total - loop_start;
+            if span <= 0 {
+                continue;
+            }
+            let mut pos = (total - first).max(0).min(count);
+            while pos < count {
+                let offset = (first + pos - total) % span;
+                let run = (span - offset).min(count - pos);
+                Self::paint_plan_span(paint, plan, (loop_start + offset) as usize, pos as usize, run as usize)?;
+                pos += run;
+            }
+        }
         Ok(())
     }
 
@@ -2128,8 +2300,9 @@ impl AudioMixer {
     }
 
     /// Paint a loop mix across a paint block.
+    #[allow(clippy::too_many_arguments)]
     fn paint_loop(
-        paint: &mut [f64],
+        paint: &mut [i32],
         memory: &Option<SharedMixerMemory>,
         doppler_enabled: bool,
         painted_time: i64,
@@ -2146,22 +2319,21 @@ impl AudioMixer {
             let sample_offset = (painted_time + output_frame) % output_frames;
             let count = (frames - output_frame).min(output_frames - sample_offset);
             if !doppler_enabled || !loop_mix.doppler || loop_mix.doppler_scale == 1.0 {
-                for index in 0..count {
-                    if sample_offset + index < 0 {
-                        return Err(AudioError::NegativeLoopAccess);
-                    }
-                    let sample = Self::effect_sample(memory, &loop_mix.prepared, (sample_offset + index) as usize)?;
-                    Self::paint_effect(
-                        paint,
-                        (output_frame + index) as usize,
-                        sample,
-                        MixerStereoVolume {
-                            left: loop_mix.left_volume,
-                            right: loop_mix.right_volume,
-                        },
-                        effects_gain,
-                    )?;
+                if sample_offset < 0 {
+                    return Err(AudioError::NegativeLoopAccess);
                 }
+                let left_gain = loop_mix.left_volume * effects_gain;
+                let right_gain = loop_mix.right_volume * effects_gain;
+                Self::paint_loop_span(
+                    paint,
+                    memory,
+                    &loop_mix.prepared,
+                    sample_offset as usize,
+                    output_frame as usize,
+                    count as usize,
+                    left_gain,
+                    right_gain,
+                )?;
             } else {
                 Self::paint_doppler_loop(
                     paint,
@@ -2178,9 +2350,50 @@ impl AudioMixer {
         Ok(())
     }
 
+    /// Paint one loop span: a contiguous cached slice, or the slow
+    /// bank-memory path sample by sample.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_loop_span(
+        paint: &mut [i32],
+        memory: &Option<SharedMixerMemory>,
+        prepared: &PreparedSound,
+        sound_start: usize,
+        out_start: usize,
+        len: usize,
+        left_gain: f64,
+        right_gain: f64,
+    ) -> Result<(), AudioError> {
+        if let (Some(memory), None) = (memory, prepared.resampled.as_ref()) {
+            for offset in 0..len {
+                let sample = memory.borrow().sample(&prepared.sound, sound_start + offset);
+                paint_sample_f64(paint, out_start + offset, sample, left_gain, right_gain)?;
+            }
+            return Ok(());
+        }
+        let Some(resampled) = prepared.resampled.as_ref() else {
+            return Ok(());
+        };
+        let sound_end = sound_start.checked_add(len).ok_or_else(|| AudioError::BadSampleIndex {
+            index: sound_start.to_string(),
+            length: resampled.len().to_string(),
+        })?;
+        let samples = resampled
+            .get(sound_start..sound_end)
+            .ok_or_else(|| AudioError::BadSampleIndex {
+                index: sound_start.to_string(),
+                length: resampled.len().to_string(),
+            })?;
+        if integral_gains(left_gain, right_gain) {
+            paint_span_i32(paint, out_start, samples, left_gain as i64, right_gain as i64)
+        } else {
+            paint_span_f64(paint, out_start, samples, left_gain, right_gain)
+        }
+    }
+
     /// Paint a Doppler-scaled loop span.
+    #[allow(clippy::too_many_arguments)]
     fn paint_doppler_loop(
-        paint: &mut [f64],
+        paint: &mut [i32],
         memory: &Option<SharedMixerMemory>,
         output_frame: i64,
         count: i64,
@@ -2229,12 +2442,12 @@ impl AudioMixer {
             let divisor = 256.0f32 * (last - first) as f32;
             let left_contribution = (sample_total * left_volume) / divisor;
             let right_contribution = (sample_total * right_volume) / divisor;
-            Self::add_float_paint(
+            Self::add_int_paint(
                 paint,
                 ((output_frame + index) * 2) as usize,
                 f64::from(left_contribution),
             )?;
-            Self::add_float_paint(
+            Self::add_int_paint(
                 paint,
                 ((output_frame + index) * 2 + 1) as usize,
                 f64::from(right_contribution),
@@ -2244,8 +2457,9 @@ impl AudioMixer {
     }
 
     /// Paint a wide Doppler span with periodic range sums.
+    #[allow(clippy::too_many_arguments)]
     fn paint_wide_doppler_loop(
-        paint: &mut [f64],
+        paint: &mut [i32],
         memory: &Option<SharedMixerMemory>,
         output_frame: i64,
         count: i64,
@@ -2295,12 +2509,12 @@ impl AudioMixer {
                     0.0
                 };
             let average = (cycle_total + tail) / (cycle_samples + (last - first) as f64);
-            Self::add_float_paint(
+            Self::add_int_paint(
                 paint,
                 ((output_frame + index) * 2) as usize,
                 average * loop_mix.left_volume * effects_gain / 256.0,
             )?;
-            Self::add_float_paint(
+            Self::add_int_paint(
                 paint,
                 ((output_frame + index) * 2 + 1) as usize,
                 average * loop_mix.right_volume * effects_gain / 256.0,
@@ -2310,14 +2524,14 @@ impl AudioMixer {
         Ok(())
     }
 
-    /// Add a truncated float contribution to a paint cell.
-    fn add_float_paint(paint: &mut [f64], index: usize, contribution: f64) -> Result<(), AudioError> {
+    /// Add a truncated float contribution to an integer paint cell.
+    fn add_int_paint(paint: &mut [i32], index: usize, contribution: f64) -> Result<(), AudioError> {
         let length = paint.len();
         let cell = paint.get_mut(index).ok_or_else(|| AudioError::BadPaintIndex {
             index: index.to_string(),
             length: length.to_string(),
         })?;
-        *cell += contribution.trunc();
+        *cell = cell.wrapping_add(contribution.trunc() as i32);
         Ok(())
     }
 
@@ -2378,27 +2592,28 @@ impl AudioMixer {
     }
 
     /// Paint the raw stream into a paint block (replacing covered frames).
-    fn paint_raw(&self, paint: &mut [f64], frames: i64) -> Result<(), AudioError> {
-        let stop = (self.painted_time + frames).min(self.raw_end_time);
-        let mut absolute = self.painted_time;
+    fn paint_raw(
+        raw_samples: &[i32],
+        painted_time: i64,
+        raw_end_time: i64,
+        paint: &mut [i32],
+        frames: i64,
+    ) -> Result<(), AudioError> {
+        let stop = (painted_time + frames).min(raw_end_time);
+        let mut absolute = painted_time;
         while absolute < stop {
-            let output_frame = (absolute - self.painted_time) as usize;
+            let output_frame = (absolute - painted_time) as usize;
             let raw_index = (absolute & (RAW_SAMPLE_CAPACITY as i64 - 1)) as usize;
-            let left = self
-                .raw_samples
-                .get(raw_index * 2)
-                .copied()
-                .ok_or(AudioError::BadRawIndex {
-                    index: (raw_index * 2).to_string(),
-                    length: self.raw_samples.len().to_string(),
-                })?;
-            let right = self
-                .raw_samples
+            let left = raw_samples.get(raw_index * 2).copied().ok_or(AudioError::BadRawIndex {
+                index: (raw_index * 2).to_string(),
+                length: raw_samples.len().to_string(),
+            })?;
+            let right = raw_samples
                 .get(raw_index * 2 + 1)
                 .copied()
                 .ok_or(AudioError::BadRawIndex {
                     index: (raw_index * 2 + 1).to_string(),
-                    length: self.raw_samples.len().to_string(),
+                    length: raw_samples.len().to_string(),
                 })?;
             let Some(left_cell) = paint.get_mut(output_frame * 2) else {
                 return Err(AudioError::BadPaintIndex {
@@ -2406,21 +2621,21 @@ impl AudioMixer {
                     length: paint.len().to_string(),
                 });
             };
-            *left_cell = f64::from(left);
+            *left_cell = left;
             let Some(right_cell) = paint.get_mut(output_frame * 2 + 1) else {
                 return Err(AudioError::BadPaintIndex {
                     index: (output_frame * 2 + 1).to_string(),
                     length: paint.len().to_string(),
                 });
             };
-            *right_cell = f64::from(right);
+            *right_cell = right;
             absolute += 1;
         }
         Ok(())
     }
 
-    /// Mix frames, consuming the paint clock or painting an explicit range.
-    pub fn mix(&mut self, request: MixRequest) -> Result<Vec<i16>, AudioError> {
+    /// Validate a mix request into its `(start frame, frame count)`.
+    fn mix_span(&self, request: MixRequest) -> Result<(i64, i64), AudioError> {
         let (start_frame, frames) = match request {
             MixRequest::Consume(frames) => (self.painted_time, frames),
             MixRequest::Range(range) => (
@@ -2434,12 +2649,33 @@ impl AudioMixer {
         if frames < 0 {
             return Err(AudioError::BadMixFrames);
         }
-        let sample_count = frames.checked_mul(2).ok_or(AudioError::MixOutputTooLarge)?;
         let end_frame = start_frame.checked_add(frames).ok_or(AudioError::BadPaintEnd)?;
         if matches!(request, MixRequest::Consume(_)) && end_frame < self.sound_time {
             return Err(AudioError::MixRewind);
         }
+        Ok((start_frame, frames))
+    }
+
+    /// Mix frames, consuming the paint clock or painting an explicit range.
+    pub fn mix(&mut self, request: MixRequest) -> Result<Vec<i16>, AudioError> {
+        let (_, frames) = self.mix_span(request)?;
+        let sample_count = frames.checked_mul(2).ok_or(AudioError::MixOutputTooLarge)?;
         let mut output = vec![0i16; sample_count as usize];
+        self.mix_into(request, &mut output)?;
+        Ok(output)
+    }
+
+    /// Mix frames into a caller buffer: no output allocation, no voice-table
+    /// clone, and no per-block hash sets. Voices paint as `[start, end)`
+    /// spans over cached output-rate PCM into the fixed integer paint
+    /// buffer, with one clip at transfer.
+    pub fn mix_into(&mut self, request: MixRequest, output: &mut [i16]) -> Result<(), AudioError> {
+        let (start_frame, frames) = self.mix_span(request)?;
+        let sample_count = frames.checked_mul(2).ok_or(AudioError::MixOutputTooLarge)?;
+        if output.len() != sample_count as usize {
+            return Err(AudioError::BlastOutput);
+        }
+        let end_frame = start_frame.checked_add(frames).expect("validated mix span");
         self.painted_time = start_frame;
         self.scan_channel_starts();
         let effects_gain = f64::from((self.effects_volume * 255.0).trunc());
@@ -2451,85 +2687,29 @@ impl AudioMixer {
                     count = count.min(sample - self.painted_time);
                 }
             }
-            let mut paint = vec![0.0f64; (count * 2) as usize];
-            self.paint_raw(&mut paint, count)?;
-            let voices = self.voices.clone();
-            let mut merged_voices: HashSet<usize> = HashSet::new();
-            for (index, voice) in voices.iter().enumerate() {
-                let Some(voice) = voice else {
-                    continue;
-                };
-                if matches!(voice.start, VoiceStart::Scheduled { .. }) || merged_voices.contains(&index) {
-                    continue;
-                }
-                if !matches!(voice.start, VoiceStart::Started { .. }) {
-                    return Err(AudioError::PendingSound);
-                }
-                let mut stereo = voice.stereo_volume;
-                if let Some(limit) = voice.policy.and_then(|policy| policy.synchronized_gain_limit) {
-                    let mut left = stereo.left;
-                    let mut right = stereo.right;
-                    merged_voices.insert(index);
-                    for (candidate_index, candidate) in voices.iter().enumerate() {
-                        let Some(candidate) = candidate else {
-                            continue;
-                        };
-                        if merged_voices.contains(&candidate_index)
-                            || !matches!(candidate.start, VoiceStart::Started { .. })
-                        {
-                            continue;
-                        }
-                        if candidate.policy.and_then(|policy| policy.synchronized_gain_limit) != Some(limit) {
-                            continue;
-                        }
-                        if !Rc::ptr_eq(&candidate.prepared.sound, &voice.prepared.sound) {
-                            continue;
-                        }
-                        merged_voices.insert(candidate_index);
-                        left += candidate.stereo_volume.left;
-                        right += candidate.stereo_volume.right;
-                    }
-                    stereo = MixerStereoVolume {
-                        left: left.min(limit),
-                        right: right.min(limit),
-                    };
-                }
-                if stereo.left == 0.0 && stereo.right == 0.0 {
-                    continue;
-                }
-                let VoiceStart::Started { sample: start_sample } = voice.start else {
-                    return Err(AudioError::PendingSound);
-                };
-                let first_offset = self.painted_time - start_sample;
-                for output_frame in 0..count {
-                    let mut sound_frame = first_offset + output_frame;
-                    if let Some(loop_start) = voice.policy.and_then(|policy| policy.loop_start) {
-                        let output_frames = voice.prepared.output_frames as i64;
-                        if sound_frame >= output_frames {
-                            sound_frame =
-                                loop_start as i64 + (sound_frame - output_frames) % (output_frames - loop_start as i64);
-                        }
-                    }
-                    if sound_frame < 0 || sound_frame >= voice.prepared.output_frames as i64 {
-                        continue;
-                    }
-                    let sample = Self::effect_sample(&self.sound_memory, &voice.prepared, sound_frame as usize)?;
-                    Self::paint_effect(&mut paint, output_frame as usize, sample, stereo, effects_gain)?;
-                }
-            }
-            for loop_mix in &mut self.loop_channels {
-                let skip = self.sound_memory.as_ref().is_some_and(|memory| {
+            let paint_len = (count * 2) as usize;
+            self.paint[..paint_len].fill(0);
+            let painted_time = self.painted_time;
+            let raw_end_time = self.raw_end_time;
+            let (raw_samples, paint) = (&self.raw_samples, &mut self.paint[..paint_len]);
+            Self::paint_raw(raw_samples, painted_time, raw_end_time, paint, count)?;
+            self.plan_voice_block(effects_gain)?;
+            let (plans, paint) = (&self.paint_plan, &mut self.paint[..paint_len]);
+            Self::paint_voice_plans(paint, plans, count)?;
+            let testsound = self.diagnostic_setting("s_testsound")? != 0;
+            let memory = self.sound_memory.clone();
+            let doppler_enabled = self.doppler_enabled;
+            let (loop_channels, paint) = (&mut self.loop_channels, &mut self.paint[..paint_len]);
+            for loop_mix in loop_channels.iter_mut() {
+                let skip = memory.as_ref().is_some_and(|memory| {
                     !memory.borrow().has_data(&loop_mix.prepared.sound)
                         || memory.borrow().frame_count(&loop_mix.prepared.sound) == 0
                 });
                 if skip {
                     continue;
                 }
-                let memory = self.sound_memory.clone();
-                let painted_time = self.painted_time;
-                let doppler_enabled = self.doppler_enabled;
                 Self::paint_loop(
-                    &mut paint,
+                    paint,
                     &memory,
                     doppler_enabled,
                     painted_time,
@@ -2538,15 +2718,16 @@ impl AudioMixer {
                     effects_gain,
                 )?;
             }
-            if self.diagnostic_setting("s_testsound")? != 0 {
+            if testsound {
                 for frame in 0..count {
-                    let sample = (((self.painted_time + frame) as f64 * 0.1).sin() * 20000.0 * 256.0).trunc();
+                    let sample = ((painted_time + frame) as f64 * 0.1).sin() * 20000.0 * 256.0;
+                    let sample = sample.trunc() as i32;
                     paint[(frame * 2) as usize] = sample;
                     paint[(frame * 2 + 1) as usize] = sample;
                 }
             }
-            let output_offset = ((self.painted_time - start_frame) * 2) as usize;
-            write_linear_blast_stereo16_float(&paint, &mut output[output_offset..], paint.len())?;
+            let output_offset = ((painted_time - start_frame) * 2) as usize;
+            write_linear_blast_stereo16(&paint[..paint_len], &mut output[output_offset..], paint_len)?;
             self.painted_time += count;
             for index in 0..self.voices.len() {
                 let ended = matches!(&self.voices[index], Some(voice) if matches!(voice.start, VoiceStart::Started { sample } if (voice.policy.is_none() || voice.policy.is_some_and(|policy| policy.loop_start.is_none())) && sample + voice.prepared.output_frames as i64 <= self.painted_time));
@@ -2565,7 +2746,7 @@ impl AudioMixer {
         if matches!(request, MixRequest::Consume(_)) {
             self.sound_time = end_frame;
         }
-        Ok(output)
+        Ok(())
     }
 }
 
@@ -2729,6 +2910,84 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0,
             ]
         );
+    }
+
+    #[test]
+    fn merged_loop_spans_match_scalar_oracle() {
+        let mut mixer = mixer();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        let frames = 64usize;
+        let sound: SharedPcm = Rc::new(PcmSound {
+            sample_rate: 44100,
+            channels: 1,
+            samples: (0..frames)
+                .map(|frame| (frame as i16).wrapping_mul(401).wrapping_add(frame as i16))
+                .collect(),
+            frame_count: frames,
+            loop_start: None,
+        });
+        let policy = || VoicePolicy {
+            attenuation: 0.0,
+            distance_offset: 0.0,
+            stereo_scale: 1.0,
+            unattenuated_mono: false,
+            loop_start: Some(0),
+            synchronized_gain_limit: Some(255.0),
+            role: VoiceRole::Effect,
+            key: 0,
+        };
+        for _ in 0..2 {
+            assert!(mixer
+                .admit_source_sound(
+                    &sound,
+                    &SourceSoundOptions {
+                        entity: 0,
+                        origin: MixerVoiceOrigin::Entity { entity: 0 },
+                        volume: 0.6,
+                        attenuation: 0.0,
+                    },
+                    &ChannelCommand::Auto,
+                    policy(),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap());
+        }
+        let voices: Vec<_> = mixer.voices.iter().flatten().collect();
+        assert_eq!(voices.len(), 2);
+        // Each voice sits at the truncated share per side; the merged group
+        // must clamp the doubled sum to the 255 limit, which neither voice
+        // paints alone.
+        let each = (0.6f64 * 255.0).trunc();
+        assert!(each > 0.0 && each < 255.0 && each + each > 255.0);
+        for voice in &voices {
+            assert_eq!(voice.stereo_volume.left, each);
+            assert_eq!(voice.stereo_volume.right, each);
+        }
+        let effects_gain = f64::from((mixer.effects_volume * 255.0).trunc());
+        let gain = 255.0f64.min(each + each) * effects_gain;
+        let total = voices[0].prepared.output_frames as i64;
+        let resampled = voices[0].prepared.resampled.clone().expect("cached resample");
+        let VoiceStart::Started { sample: start } = voices[0].start else {
+            panic!("voice must be started");
+        };
+        const COUNT: i64 = 5000;
+        let mixed = mixer.mix(MixRequest::Consume(COUNT)).unwrap();
+        assert_eq!(mixed.len(), (COUNT * 2) as usize);
+        // Scalar oracle: the old per-frame loop formula over cached PCM.
+        let (slots, _) = mixed.as_chunks::<2>();
+        for (frame, slot) in slots.iter().enumerate() {
+            let mut sound_frame = start + frame as i64;
+            if sound_frame >= total {
+                sound_frame %= total;
+            }
+            let sample = f64::from(resampled[sound_frame as usize]);
+            let painted = (sample * gain / 256.0).floor() as i32;
+            let expected = (painted >> 8).clamp(-32768, 32767) as i16;
+            assert_eq!(slot[0], expected, "left frame {frame}");
+            assert_eq!(slot[1], expected, "right frame {frame}");
+        }
     }
 
     #[test]
