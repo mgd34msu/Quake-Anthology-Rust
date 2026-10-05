@@ -2,12 +2,11 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/renderer.ts`
 //! (`RendererDiagnostics`, `PreparedRendererRestart`, `NativeRenderer`).
-//! Owns the native surface, image identity, and ordered serial or worker
+//! Owns the native surface, image identity, and ordered serial
 //! execution. Windows ([`SdlWindow`](qa_platform::sdl::SdlWindow)), backends
 //! ([`GlRenderer`](qa_client::render::gl::renderer::GlRenderer),
 //! [`CpuRenderer`](qa_client::render::cpu::rasterizer::CpuRenderer),
-//! [`RenderExecutor`](qa_client::render::execution::RenderExecutor); the worker
-//! side is ported ([`worker`](qa_client::render::worker)) and the backend
+//! [`RenderExecutor`](qa_client::render::execution::RenderExecutor); the backend
 //! union stays absorbed behind [`NativeRenderBackend`]), and the image registry
 //! ([`SceneImageRegistry`](qa_client::render::scene::resources::SceneImageRegistry))
 //! arrive as injected traits; the image journal, display modes, and math reuse
@@ -15,8 +14,7 @@
 //! open/restart/close become sync
 //! factory calls with the same aggregate cleanup texts; frame-capture
 //! promises become one-shot callbacks; the restart `publish`/`discard`
-//! closures become id-checked renderer methods; worker context parking is a
-//! backend-internal no-op.
+//! closures become id-checked renderer methods.
 
 use std::collections::HashMap;
 
