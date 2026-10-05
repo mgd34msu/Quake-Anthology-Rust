@@ -1607,12 +1607,14 @@ mod tests {
         }
     }
 
-    /// One live server tick at the 1/60 s host step.
+    /// One live server tick at the 1/60 s host step, plus the monster
+    /// pass (the production order: tick, then steps).
     fn live_tick(world: &mut PlayWorld) {
         world
             .server_mut()
             .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
             .unwrap();
+        world.step_monsters();
     }
 
     /// Master-clock seconds of the live simulation.
@@ -1631,6 +1633,7 @@ mod tests {
                 .server_mut()
                 .tick(qa_core::time::SourceTime::Seconds(1.0))
                 .unwrap();
+            world.step_monsters();
             guard += 1;
             assert!(guard < 100_000, "live_advance stalled before {target}s");
         }
@@ -3056,5 +3059,692 @@ mod tests {
     fn live_steel_q2_presentation_prepares_draw_batches() {
         // Asserts internally; `None` means the helper already skipped.
         steel_presentation_batches("q2-classic-baseq2", "maps/base1.bsp");
+    }
+
+    /// Live dogs on the map, in record order.
+    fn live_dogs(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed
+            .monsters
+            .iter()
+            .filter(|(_, monster)| monster.kind == Q1MonsterKind::Dog)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Two dogs denning within earshot (< 500 units), if the map dens
+    /// any together.
+    fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
+        let dogs = live_dogs(world);
+        dogs.iter().find_map(|first| {
+            dogs.iter()
+                .find(|second| {
+                    *second != first && {
+                        let a = live_dog_feet(world, first);
+                        let b = live_dog_feet(world, second);
+                        ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt() < 500.0
+                    }
+                })
+                .map(|second| (first.clone(), second.clone()))
+        })
+    }
+
+    /// Dog feet position (placement handle for facing offsets).
+    fn live_dog_feet(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
+        let body = world.server().simulation().body_state(dog).expect("dog body");
+        vec3(body.origin.x, body.origin.y, body.origin.z + body.bounds.min.z)
+    }
+
+    /// Dog facing yaw in degrees (live ideal yaw).
+    fn live_dog_yaw(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> f64 {
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed.monsters.get(dog).expect("dog record").ideal_yaw
+    }
+
+    /// Stand the player `dist` units along the dog's facing, feet to feet.
+    fn live_place_player_before_dog(world: &mut PlayWorld, dog: &qa_core::identity::ActorId, dist: f32) {
+        let feet = live_dog_feet(world, dog);
+        let yaw = live_dog_yaw(world, dog).to_radians();
+        live_place_player(
+            world,
+            vec3(
+                feet.x + yaw.cos() as f32 * dist,
+                feet.y + yaw.sin() as f32 * dist,
+                feet.z,
+            ),
+        );
+    }
+
+    /// Wound something through the real `T_Damage` (weapons stand-in
+    /// until the weapons slice fires it).
+    fn live_damage(
+        world: &mut PlayWorld,
+        targ: &qa_core::identity::ActorId,
+        attacker: Option<&qa_core::identity::ActorId>,
+        damage: f64,
+    ) {
+        use super::super::simulation::native_q1_monsters::q1_t_damage;
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let (simulation, movers, triggers) = world.server_mut().simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors.borrow_mut(),
+            simulation,
+            movers,
+            triggers,
+            targ,
+            attacker,
+            attacker,
+            damage,
+        );
+    }
+
+    /// Fire one `use` at an actor (trigger stand-in).
+    fn live_fire_use(
+        world: &mut PlayWorld,
+        target: &qa_core::identity::ActorId,
+        activator: &qa_core::identity::ActorId,
+    ) {
+        use super::super::simulation::native_q1_triggers::q1_fire_use;
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let (simulation, movers, triggers) = world.server_mut().simulation_movers_and_triggers_mut();
+        q1_fire_use(
+            &mut behaviors.borrow_mut(),
+            simulation,
+            movers,
+            triggers,
+            target,
+            Some(activator),
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0141_dog_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        assert_eq!(dogs.len(), 8, "e1m1 spawns eight dogs");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, 8);
+        for dog in &dogs {
+            let monster = borrowed.monsters.get(dog).expect("dog record");
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::DogStand, _)),
+                "dog stands, got {:?}",
+                monster.think
+            );
+            assert_eq!(monster.flags & 512, 512, "dropped dog stands on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert!(monster.pausetime > 9999999.0, "targetless dogs stand down");
+        }
+        // Pass cost on a live map (8 standing dogs, relink included).
+        drop(borrowed);
+        let start = std::time::Instant::now();
+        for _ in 0..120 {
+            world.step_monsters();
+        }
+        let per_pass = start.elapsed().as_secs_f64() * 1000.0 / 120.0;
+        eprintln!("live: step_monsters on e1m1 = {per_pass:.3} ms/pass (8 dogs)");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0134_dog_sight_hunts() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_place_player_before_dog(&mut world, &dogs[0], 200.0);
+        let mut woke = false;
+        for _ in 0..180 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&dogs[0])
+                .and_then(|monster| monster.enemy.clone())
+                == Some(player.clone())
+            {
+                woke = true;
+                break;
+            }
+        }
+        assert!(woke, "the dog sights the player at 200 units");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+        assert!(
+            matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::DogRun, _)),
+            "sighted dogs hunt, got {:?}",
+            monster.think
+        );
+        assert!(monster.attack_finished > live_now(&world), "HuntTarget holds missiles");
+        assert_eq!(borrowed.sight_entity.as_ref(), Some(&dogs[0]));
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "dog/dsight.wav"),
+            "sight barks"
+        );
+        assert_eq!(
+            borrowed
+                .monsters
+                .get(&dogs[1])
+                .and_then(|monster| monster.enemy.clone()),
+            None,
+            "far dogs stay asleep"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0141_dog_bite_wounds() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_player_before_dog(&mut world, &dogs[0], 50.0);
+        let mut bit = false;
+        for _ in 0..300 {
+            live_tick(&mut world);
+            if live_player_health(&world) < 100.0 {
+                bit = true;
+                break;
+            }
+        }
+        assert!(bit, "the dog closes 50 units and bites");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "dog/dattack1.wav"),
+            "the bite stroke sounds"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0141_dog_leaps_and_lands() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink, Q1MonsterTouch};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_player_before_dog(&mut world, &dogs[0], 120.0);
+        let mut leapt = false;
+        let mut landed = false;
+        for _ in 0..600 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::DogLeap, _))
+                || monster.touch == Q1MonsterTouch::JumpTouch
+            {
+                leapt = true;
+            }
+            // Landing runs the dog on; a second leap windup (grounded
+            // leap frame, touch not yet set) does not count.
+            if leapt
+                && matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::DogRun, _) | Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, _)
+                )
+                && monster.flags & 512 == 512
+                && monster.touch == Q1MonsterTouch::None
+            {
+                landed = true;
+                break;
+            }
+        }
+        assert!(leapt, "the dog leaps at jump distance");
+        assert!(landed, "the leap lands back into the hunt");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+        assert_eq!(monster.flags & 512, 512, "the leap lands");
+        assert_eq!(monster.touch, Q1MonsterTouch::None, "landing clears the touch");
+        assert!(
+            matches!(
+                monster.think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::DogRun, _) | Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, _)
+            ),
+            "landed dogs run on, got {:?}",
+            monster.think
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0141_dog_pain_then_dies() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &dogs[0], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::DogPain, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::DogPainB, 0)
+                ),
+                "wounds run pain, got {:?}",
+                monster.think
+            );
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "dog/dpain1.wav"));
+        }
+        live_damage(&mut world, &dogs[0], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert!(monster.dead);
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::DogDie, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::DogDieB, 0)
+                ),
+                "death runs die, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "dog/ddeath.wav"));
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0131_dog_gib_bursts_and_settles() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        let before = world
+            .server()
+            .simulation()
+            .body_state(&dogs[0])
+            .expect("dog body")
+            .origin;
+        live_damage(&mut world, &dogs[0], Some(&player), 1000.0);
+        // The head drops 24 units the instant it bursts.
+        let burst = world
+            .server()
+            .simulation()
+            .body_state(&dogs[0])
+            .expect("dog body")
+            .origin;
+        assert_eq!(burst.z, before.z - 24.0);
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().gibs.len(), 4, "three chunks plus the head");
+        assert!(
+            behaviors.borrow().pending_gibs.is_empty(),
+            "the pass spawns queued chunks"
+        );
+        drop(behaviors);
+        // Chunks toss (origins move under gravity), then remove on
+        // schedule; the head stays down.
+        live_advance(&mut world, 25.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.gibs.len(), 1, "chunks removed, head kept");
+        assert!(borrowed.gibs.contains_key(&dogs[0]));
+        assert_eq!(borrowed.gibs.get(&dogs[0]).expect("head").remove_at, None);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0136_dog_infighting() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &dogs[1], Some(&dogs[0]), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors
+                    .borrow()
+                    .monsters
+                    .get(&dogs[1])
+                    .and_then(|monster| monster.enemy.clone()),
+                None,
+                "same-class dogs stay friendly"
+            );
+        }
+        live_damage(&mut world, &dogs[1], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors
+                    .borrow()
+                    .monsters
+                    .get(&dogs[1])
+                    .and_then(|monster| monster.enemy.clone()),
+                Some(player),
+                "wounds turn dogs on outsiders"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0137_dog_ignores_hidden_player() {
+        use super::super::simulation::native_q1_monsters::{
+            Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_NOTARGET, Q1_IT_INVISIBILITY,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_items |= Q1_IT_INVISIBILITY;
+        }
+        live_place_player_before_dog(&mut world, &dogs[0], 200.0);
+        live_advance(&mut world, 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert_eq!(monster.enemy, None, "invisible players never wake dogs");
+            assert!(matches!(
+                monster.think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::DogStand, _)
+            ));
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items &= !Q1_IT_INVISIBILITY;
+            borrowed.player_flags |= Q1_FLAG_NOTARGET;
+        }
+        live_advance(&mut world, 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                borrowed
+                    .monsters
+                    .get(&dogs[0])
+                    .and_then(|monster| monster.enemy.clone()),
+                None,
+                "notarget players never wake dogs"
+            );
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_flags &= !Q1_FLAG_NOTARGET;
+        }
+        live_advance(&mut world, 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let player = world.player_actor().cloned().expect("player");
+            assert_eq!(
+                behaviors
+                    .borrow()
+                    .monsters
+                    .get(&dogs[0])
+                    .and_then(|monster| monster.enemy.clone()),
+                Some(player),
+                "visible players wake dogs"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0133_dog_use_wakes() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_fire_use(&mut world, &dogs[0], &player);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert_eq!(monster.enemy.as_ref(), Some(&player));
+            assert_eq!(monster.think, Q1MonsterThink::FoundTarget);
+        }
+        live_advance(&mut world, 0.5);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::DogRun, _)),
+                "used dogs hunt, got {:?}",
+                monster.think
+            );
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "dog/dsight.wav"));
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0132_kill_counting() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().total_monsters, 8);
+            assert_eq!(behaviors.borrow().killed_monsters, 0);
+        }
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &dogs[0], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().killed_monsters, 1);
+        }
+        live_damage(&mut world, &dogs[1], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().killed_monsters, 2);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0134_dog_patrol_walks_corners() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e2m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        let patrol = dogs.iter().find(|dog| {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed
+                .monsters
+                .get(dog)
+                .is_some_and(|monster| monster.movetarget.is_some())
+        });
+        let Some(patrol) = patrol.cloned() else {
+            panic!("e2m1 should route a dog through corners");
+        };
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&patrol).expect("dog record");
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::DogWalk, _)),
+                "targeted dogs walk out, got {:?}",
+                monster.think
+            );
+        }
+        let start = live_dog_feet(&world, &patrol);
+        let first = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                .expect("first corner")
+        };
+        let mut advanced = false;
+        for _ in 0..900 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                != Some(first.clone())
+            {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(advanced, "the patrol reaches its corner and turns onward");
+        let end = live_dog_feet(&world, &patrol);
+        let moved = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        assert!(moved > 10.0, "the patrol travels, moved {moved}");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0134_dog_sight_wakes_pack() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        // The two mid-map dogs den together (~210 units apart).
+        let Some((first, second)) = live_den_pair(&world) else {
+            panic!("e1m1 should den two dogs together");
+        };
+        let player = world.player_actor().cloned().expect("player");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_ne!(
+                behaviors.borrow().monsters.get(&second).expect("packmate").spawnflags & 3,
+                0,
+                "the den pair starts ambush-flagged"
+            );
+        }
+        // Ambush dogs ignore the shared sighting and wait for a real
+        // look: wound the denmate twice, the packmate sleeps through.
+        for _ in 0..2 {
+            live_damage(&mut world, &first, Some(&player), 1.0);
+            for _ in 0..30 {
+                live_tick(&mut world);
+            }
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors
+                    .borrow()
+                    .monsters
+                    .get(&second)
+                    .and_then(|monster| monster.enemy.clone()),
+                None,
+                "ambush dogs ignore the shared sighting"
+            );
+        }
+        // The wake phase needs the denmate back at the den: the ignore
+        // phase above let it run off hunting, out of the packmate's
+        // sight, so a fresh world dens the pair together again. The
+        // ambush bits clear before the first wound, arming the
+        // shortcut branch below.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let Some((first, second)) = live_den_pair(&world) else {
+            panic!("e1m1 should den two dogs together");
+        };
+        let player = world.player_actor().cloned().expect("player");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors
+                .borrow_mut()
+                .monsters
+                .get_mut(&second)
+                .expect("packmate")
+                .spawnflags &= !3;
+        }
+        // Stock publishes the 0.1 s sighting once, for a new attacker
+        // only, so the single wound must land inside the packmate's
+        // next think: wait until its 0.1 s grid comes due, then wound
+        // (the denmate never leaves the den).
+        for _ in 0..30 {
+            let due = {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let nextthink = behaviors.borrow().monsters.get(&second).expect("packmate").nextthink;
+                nextthink - live_now(&world) <= 0.09
+            };
+            if due {
+                break;
+            }
+            live_tick(&mut world);
+        }
+        live_damage(&mut world, &first, Some(&player), 1.0);
+        let mut woke = false;
+        for _ in 0..12 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&second)
+                .and_then(|monster| monster.enemy.clone())
+                == Some(player.clone())
+            {
+                woke = true;
+                break;
+            }
+        }
+        assert!(woke, "a sighted packmate wakes its den");
     }
 }
