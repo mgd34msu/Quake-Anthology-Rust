@@ -370,7 +370,6 @@ impl<Content: SoundContent> AudioBridge<Content> {
     /// the bank sexed fallback with the default model; per-actor models
     /// from userinfo belong to a follow-up slice.
     fn sound(&mut self, path: &str, family: SoundFamily) -> Option<SoundAsset> {
-        let key = format!("{family:?}:{path}");
         let registered = if path.starts_with('*') && family == SoundFamily::Q2 {
             self.bank.register_sexed_sound(path, "male")
         } else {
@@ -379,13 +378,14 @@ impl<Content: SoundContent> AudioBridge<Content> {
         match registered {
             Ok(Some(asset)) => Some(asset),
             Ok(None) => {
-                if self.warned.insert(key) {
+                // Cache hits return above without formatting a warn key.
+                if self.warned.insert(format!("{family:?}:{path}")) {
                     eprintln!("windowed audio: sound unavailable: {path}");
                 }
                 None
             }
             Err(error) => {
-                if self.warned.insert(key) {
+                if self.warned.insert(format!("{family:?}:{path}")) {
                     eprintln!("windowed audio: cannot decode {path} ({error})");
                 }
                 None

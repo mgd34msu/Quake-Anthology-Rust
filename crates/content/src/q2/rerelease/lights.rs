@@ -18,13 +18,13 @@ use super::types::{q2_is_n64, Q2RereleaseEvent, Q2RereleaseHooks};
 /// ED_LoadColor accepts packed integers, float RGBA, or byte RGBA.
 pub fn q2_rerelease_color(value: &str) -> i32 {
     if !value.contains(' ') {
-        return native_atoi(value).unwrap_or_else(|_| panic!("Native numbers require byte characters"));
+        return native_atoi(value);
     }
     let tokens: Vec<&str> = value.split_whitespace().collect();
     let mut components = [0.0, 0.0, 0.0, 1.0];
     for (index, component) in components.iter_mut().enumerate() {
         if let Some(token) = tokens.get(index) {
-            *component = native_atof(token).unwrap_or_else(|_| panic!("Native numbers require byte characters"));
+            *component = native_atof(token);
         }
     }
     let multiplier = if components.iter().any(|component| *component > 1.0) {

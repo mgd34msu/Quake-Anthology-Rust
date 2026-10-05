@@ -26,9 +26,7 @@ pub fn qc_console_call(
                 let text = argv.get(*index).map(String::as_str).unwrap_or("");
                 match arg_type {
                     ModConsoleArgType::String => Ok(ModCallbackValue::String(text.to_string())),
-                    ModConsoleArgType::Float => native_atof(text).map(ModCallbackValue::Float).map_err(|error| {
-                        GuestError::invalid(format!("Mod console argument is not source text: {error}"))
-                    }),
+                    ModConsoleArgType::Float => Ok(ModCallbackValue::Float(native_atof(text))),
                 }
             }
             ModConsoleValue::ArgumentsText => Ok(ModCallbackValue::String(args_text.to_string())),
@@ -108,9 +106,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_byte_argument_text() {
+    fn maps_high_argument_text_to_low_bytes() {
         let argv = vec!["give".to_string(), "x".to_string(), "hĀllo".to_string()];
-        assert!(qc_console_call(&command(), &argv, "").is_err());
+        let call = qc_console_call(&command(), &argv, "").unwrap();
+        assert_eq!(call.arguments[1], ModCallbackValue::Float(0.0));
     }
 
     #[test]

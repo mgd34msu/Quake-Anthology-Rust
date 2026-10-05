@@ -206,9 +206,22 @@ impl SharedSceneQueries {
         self.spatial.link(body, collision);
     }
 
+    /// Link a body snapshot known to be absent, skipping the unlink
+    /// scan. The caller must link every actor at most once after a
+    /// clear; a per-step clear plus one fresh link per body keeps the
+    /// rebuild linear.
+    pub fn link_fresh(&mut self, body: &LinkedBody, collision: &ActorCollision) {
+        self.spatial.link_fresh(body, collision);
+    }
+
     /// Unlink an actor.
     pub fn unlink(&mut self, actor: &ActorId) {
         self.spatial.unlink(actor);
+    }
+
+    /// Remove every linked actor.
+    pub fn clear_actors(&mut self) {
+        self.spatial.clear();
     }
 
     /// Fetch a linked actor with current state and collision.
@@ -670,11 +683,19 @@ impl SharedSceneQueries {
                 CollisionShape::Model(model) => {
                     #[allow(clippy::cast_possible_wrap)]
                     let model = model as i32;
+                    // Stock Quake I never rotates brush clips
+                    // (`SV_ClipMoveToEntity` reads no angles), so a
+                    // door's movedir yaw must not tilt its hull.
+                    let angles = if matches!(query.policy, TracePolicy::Q1 { .. }) {
+                        vec3(0.0, 0.0, 0.0)
+                    } else {
+                        actor.body.state.angles
+                    };
                     let model_query = TraceQuery {
                         target: QueryTarget::Model {
                             model,
                             origin: actor.body.state.origin,
-                            angles: actor.body.state.angles,
+                            angles,
                         },
                         ..moving_query.clone()
                     };
@@ -1166,6 +1187,252 @@ mod tests {
         let blocked = shared.trace(&passing).unwrap();
         assert!(blocked.fraction < geometry.fraction);
         assert_eq!(blocked.hit, TraceHit::Actor { actor: blocker.clone() });
+    }
+
+    #[test]
+    fn shared_q1_owner_pass_rules() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        // Owner parked off the trace path; only its identity matters.
+        let player = test_actor(1);
+        let (mut linked, collision) = body(
+            player.clone(),
+            Bounds {
+                min: vec3(-16.0, -16.0, -24.0),
+                max: vec3(16.0, 16.0, 32.0),
+            },
+        );
+        linked.state.origin = vec3(0.0, -100.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-16.0, -116.0, -24.0),
+            max: vec3(16.0, -84.0, 32.0),
+        };
+        shared.link(&linked, &collision);
+        // Missile on the trace path owned by the player.
+        let missile = test_actor(2);
+        let (linked, mut collision) = body(
+            missile.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        collision.owner = Some(player.clone());
+        shared.link(&linked, &collision);
+        // WinQuake world.c:851-852: a mover never clips against its
+        // own missiles.
+        let firing = TraceQuery {
+            pass_actor: Some(player.clone()),
+            ..q1_query()
+        };
+        assert_eq!(shared.trace(&firing).unwrap(), geometry);
+        // Without a pass actor the missile blocks like any body.
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert!(hit.fraction < geometry.fraction);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: missile.clone() });
+    }
+
+    #[test]
+    fn shared_q1_missile_passes_owner() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        // Owner on the trace path.
+        let owner = test_actor(1);
+        let (linked, collision) = body(
+            owner.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        // Missile parked off the path, owned by the blocker.
+        let missile = test_actor(2);
+        let (mut linked, mut collision) = body(
+            missile.clone(),
+            Bounds {
+                min: vec3(-2.0, -2.0, -2.0),
+                max: vec3(2.0, 2.0, 2.0),
+            },
+        );
+        linked.state.origin = vec3(0.0, 100.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-2.0, 98.0, -2.0),
+            max: vec3(2.0, 102.0, 2.0),
+        };
+        collision.owner = Some(owner.clone());
+        shared.link(&linked, &collision);
+        // WinQuake world.c:853-854: a missile never clips against its
+        // owner.
+        let flying = TraceQuery {
+            pass_actor: Some(missile.clone()),
+            ..q1_query()
+        };
+        assert_eq!(shared.trace(&flying).unwrap(), geometry);
+        // Without a pass actor the owner blocks like any body.
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert!(hit.fraction < geometry.fraction);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: owner.clone() });
+    }
+
+    #[test]
+    fn shared_q1_missile_expands_monsters() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        let near = Bounds {
+            min: vec3(-30.0, 0.5, -8.0),
+            max: vec3(-8.0, 2.0, 8.0),
+        };
+        let monster = test_actor(1);
+        let (linked, mut collision) = body(monster.clone(), near);
+        collision.monster = true;
+        shared.link(&linked, &collision);
+        let crate_actor = test_actor(2);
+        let (linked, collision) = body(crate_actor.clone(), near);
+        shared.link(&linked, &collision);
+        // A point sweep passes beside both bodies under Normal.
+        assert_eq!(shared.trace(&q1_query()).unwrap(), geometry);
+        // WinQuake world.c:940-947, 857-860: missiles clip monsters
+        // with a ±15 box, and only monsters.
+        let missile = TraceQuery {
+            policy: TracePolicy::Q1 {
+                move_rule: Q1MoveRule::Missile,
+                hull: None,
+            },
+            ..q1_query()
+        };
+        let hit = shared.trace(&missile).unwrap();
+        assert!(hit.fraction < geometry.fraction);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: monster.clone() });
+        shared.unlink(&monster);
+        assert_eq!(shared.trace(&missile).unwrap(), geometry);
+    }
+
+    #[test]
+    fn shared_q1_nomonsters_skips_boxes() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        let monster = test_actor(1);
+        let (linked, mut collision) = body(
+            monster.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        collision.monster = true;
+        shared.link(&linked, &collision);
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert!(hit.fraction < geometry.fraction);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: monster.clone() });
+        // WinQuake world.c:832-833: NoMonsters skips non-BSP bodies.
+        let ghosts = TraceQuery {
+            policy: TracePolicy::Q1 {
+                move_rule: Q1MoveRule::NoMonsters,
+                hull: None,
+            },
+            ..q1_query()
+        };
+        assert_eq!(shared.trace(&ghosts).unwrap(), geometry);
+    }
+
+    #[test]
+    fn shared_q1_startsolid_merge() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        // Body around the sweep start.
+        let pocket = test_actor(1);
+        let (linked, collision) = body(
+            pocket.clone(),
+            Bounds {
+                min: vec3(-60.0, -8.0, -8.0),
+                max: vec3(-40.0, 8.0, 8.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        // WinQuake world.c:861-864: a startsolid actor hit is taken.
+        // Leaving solid is not a hit, so the fraction stays 1.0.
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert!(hit.start_solid);
+        assert_eq!(hit.fraction, 1.0);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: pocket.clone() });
+        // A nearer actor hit later in link order keeps the startsolid
+        // flag already on the trace (world.c:865-869).
+        let snag = test_actor(2);
+        let (linked, collision) = body(
+            snag.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        let caught = shared.trace(&q1_query()).unwrap();
+        assert!(caught.start_solid);
+        assert!(caught.fraction < geometry.fraction);
+        assert_eq!(caught.hit, TraceHit::Actor { actor: snag.clone() });
+    }
+
+    #[test]
+    fn shared_clear_and_fresh_relink() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let actor = test_actor(1);
+        let (linked, collision) = body(
+            actor.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        let world = Bounds {
+            min: vec3(-64.0, -64.0, -64.0),
+            max: vec3(64.0, 64.0, 64.0),
+        };
+        assert_eq!(shared.query_actors(&world, QueryRole::Solid).len(), 1);
+        shared.clear_actors();
+        assert!(shared.query_actors(&world, QueryRole::Both).is_empty());
+        assert!(shared.linked_actor(&actor).is_none());
+        shared.link_fresh(&linked, &collision);
+        assert_eq!(shared.query_actors(&world, QueryRole::Solid).len(), 1);
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert_eq!(hit.hit, TraceHit::Actor { actor });
+    }
+
+    #[test]
+    fn shared_q1_model_trace_ignores_angles() {
+        let bounds = Bounds {
+            min: vec3(-16.0, -16.0, -24.0),
+            max: vec3(16.0, 16.0, 32.0),
+        };
+        // Brush body carrying spawn angles (a door's movedir yaw),
+        // shifted so its hull wins over the world wall on fraction.
+        let mut tilted = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let door = test_actor(1);
+        let (mut linked, mut collision) = body(door.clone(), bounds);
+        linked.state.origin = vec3(-10.0, 0.0, 0.0);
+        linked.state.angles = vec3(0.0, 90.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-26.0, -16.0, -24.0),
+            max: vec3(6.0, 16.0, 32.0),
+        };
+        collision.shape = CollisionShape::Model(0);
+        tilted.link(&linked, &collision);
+        let tilted_hit = tilted.trace(&q1_query()).unwrap();
+        // Same body with zero angles traces identically.
+        let mut straight = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let (mut linked, mut collision) = body(door.clone(), bounds);
+        linked.state.origin = vec3(-10.0, 0.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-26.0, -16.0, -24.0),
+            max: vec3(6.0, 16.0, 32.0),
+        };
+        collision.shape = CollisionShape::Model(0);
+        straight.link(&linked, &collision);
+        let straight_hit = straight.trace(&q1_query()).unwrap();
+        assert_eq!(tilted_hit, straight_hit);
+        assert!(straight_hit.fraction < 1.0);
+        assert_eq!(straight_hit.hit, TraceHit::Actor { actor: door });
     }
 
     #[test]

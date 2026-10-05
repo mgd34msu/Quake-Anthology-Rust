@@ -4,9 +4,7 @@
 //! `CommandDialect` reuses `qa_core::cmd::Dialect`; text helpers reuse
 //! `qa_core::cmd`.
 
-use qa_core::cmd::{
-    ascii_fold, command_separator_offset, source_command_text, tokenize_command, CmdError, Dialect, TextMode,
-};
+use qa_core::cmd::{ascii_fold, command_separator_offset, tokenize_command, CmdError, Dialect, TextMode};
 use thiserror::Error;
 
 /// Startup command failure.
@@ -42,7 +40,6 @@ pub struct StartupCommand {
 }
 
 fn operand(value: &str) -> Result<String, StartupCommandsError> {
-    source_command_text(value)?;
     if value.contains(['"', '\r', '\n', '\0']) {
         return Err(StartupCommandsError::BadOperand);
     }
@@ -71,7 +68,6 @@ pub fn read_startup_command(argv: &[String], index: usize) -> Result<StartupComm
         text.push_str(&operand(next)?);
         end += 1;
     }
-    source_command_text(&text)?;
     // The Rust separator offset is in bytes and the donor offset is in
     // UTF-16 units, but both equal the text length exactly when no
     // separator is present, so the comparison is equivalent.

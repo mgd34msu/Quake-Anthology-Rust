@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use crate::cmd::EngineText;
+
 /// Error for conversions outside the defined signed 32-bit range.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NumericError {
@@ -14,9 +16,6 @@ pub enum NumericError {
     /// The profile needs a native arithmetic backend this build does not have.
     #[error("Numeric profile {0} requires its own arithmetic backend")]
     UnsupportedProfile(String),
-    /// Native number text must be byte characters.
-    #[error("Native numbers require byte characters")]
-    NonByteText,
 }
 
 /// C-style signed 32-bit wraparound (`value | 0`).
@@ -316,13 +315,6 @@ impl NumericOps {
     }
 }
 
-fn validate_byte_text(text: &str) -> Result<(), NumericError> {
-    if text.chars().any(|c| c as u32 > 255) {
-        return Err(NumericError::NonByteText);
-    }
-    Ok(())
-}
-
 fn is_space(byte: u8) -> bool {
     byte == 32 || (9..=13).contains(&byte)
 }
@@ -330,9 +322,13 @@ fn is_space(byte: u8) -> bool {
 /// Parse a source byte string with the observed i386 glibc `atoi` profile:
 /// skips whitespace, reads an optional sign and decimal digits, saturates
 /// at the `i32` limits on overflow, stops at the first NUL or non-digit.
-pub fn native_atoi(text: &str) -> Result<i32, NumericError> {
-    validate_byte_text(text)?;
-    let bytes: Vec<u8> = text.chars().map(|c| c as u8).collect();
+pub fn native_atoi(text: &str) -> i32 {
+    native_atoi_bytes(EngineText::from(text).as_bytes())
+}
+
+/// Parse engine bytes with the observed i386 glibc `atoi` profile.
+#[must_use]
+pub fn native_atoi_bytes(bytes: &[u8]) -> i32 {
     let mut offset = 0;
     while offset < bytes.len() && is_space(bytes[offset]) {
         offset += 1;
@@ -362,16 +358,16 @@ pub fn native_atoi(text: &str) -> Result<i32, NumericError> {
         offset += 1;
     }
     if magnitude == 0 {
-        return Ok(0);
+        return 0;
     }
     if negative {
-        Ok(if magnitude == 2_147_483_648 {
+        if magnitude == 2_147_483_648 {
             i32::MIN
         } else {
             -(magnitude as i32)
-        })
+        }
     } else {
-        Ok(magnitude as i32)
+        magnitude as i32
     }
 }
 
@@ -746,9 +742,13 @@ fn parse_hex(bytes: &[u8], offset: usize, negative: bool) -> Option<f64> {
 /// profile: skips whitespace, reads an optional sign, `inf`/`nan` words
 /// (with optional payload), hexadecimal floats, or a decimal mantissa with
 /// an optional exponent. Returns `0` when no digits follow.
-pub fn native_atof(text: &str) -> Result<f64, NumericError> {
-    validate_byte_text(text)?;
-    let bytes: Vec<u8> = text.chars().map(|c| c as u8).collect();
+pub fn native_atof(text: &str) -> f64 {
+    native_atof_bytes(EngineText::from(text).as_bytes())
+}
+
+/// Parse engine bytes with the observed glibc `atof` profile.
+#[must_use]
+pub fn native_atof_bytes(bytes: &[u8]) -> f64 {
     let mut offset = 0;
     while offset < bytes.len() && is_space(bytes[offset]) {
         offset += 1;
@@ -759,14 +759,14 @@ pub fn native_atof(text: &str) -> Result<f64, NumericError> {
         negative = bytes[offset] == b'-';
         offset += 1;
     }
-    if matches_ascii_word(&bytes, offset, b"inf") {
-        return Ok(if negative { f64::NEG_INFINITY } else { f64::INFINITY });
+    if matches_ascii_word(bytes, offset, b"inf") {
+        return if negative { f64::NEG_INFINITY } else { f64::INFINITY };
     }
-    if matches_ascii_word(&bytes, offset, b"nan") {
-        return Ok(nan_with_payload(negative, parse_nan_payload(&bytes, offset + 3)));
+    if matches_ascii_word(bytes, offset, b"nan") {
+        return nan_with_payload(negative, parse_nan_payload(bytes, offset + 3));
     }
-    if let Some(value) = parse_hex(&bytes, offset, negative) {
-        return Ok(value);
+    if let Some(value) = parse_hex(bytes, offset, negative) {
+        return value;
     }
     let mut cursor = offset;
     let mut saw_digit = false;
@@ -782,7 +782,7 @@ pub fn native_atof(text: &str) -> Result<f64, NumericError> {
         }
     }
     if !saw_digit {
-        return Ok(0.0);
+        return 0.0;
     }
     if matches!(bytes.get(cursor), Some(b'e') | Some(b'E')) {
         let mut exponent_digits = cursor + 1;
@@ -797,7 +797,7 @@ pub fn native_atof(text: &str) -> Result<f64, NumericError> {
         }
     }
     let slice: String = bytes[signed_start..cursor].iter().map(|b| *b as char).collect();
-    Ok(slice.parse::<f64>().unwrap_or(0.0))
+    slice.parse::<f64>().unwrap_or(0.0)
 }
 
 #[cfg(test)]
@@ -866,32 +866,44 @@ mod tests {
 
     #[test]
     fn native_atoi_matches_glibc_profile() {
-        assert_eq!(native_atoi("  -42x"), Ok(-42));
-        assert_eq!(native_atoi("+17"), Ok(17));
-        assert_eq!(native_atoi("9999999999"), Ok(2_147_483_647));
-        assert_eq!(native_atoi("-9999999999"), Ok(i32::MIN));
-        assert_eq!(native_atoi("12\x1c"), Ok(12));
-        assert_eq!(native_atoi(""), Ok(0));
-        assert_eq!(native_atoi("--5"), Ok(0));
-        assert!(native_atoi("€.5").is_err());
+        assert_eq!(native_atoi("  -42x"), -42);
+        assert_eq!(native_atoi("+17"), 17);
+        assert_eq!(native_atoi("9999999999"), 2_147_483_647);
+        assert_eq!(native_atoi("-9999999999"), i32::MIN);
+        assert_eq!(native_atoi("12\x1c"), 12);
+        assert_eq!(native_atoi(""), 0);
+        assert_eq!(native_atoi("--5"), 0);
+        assert_eq!(native_atoi("€.5"), 0);
     }
 
     #[test]
     fn native_atof_matches_glibc_profile() {
-        assert_eq!(native_atof("  -1.5"), Ok(-1.5));
-        assert_eq!(native_atof("1e3"), Ok(1000.0));
-        assert_eq!(native_atof("INF"), Ok(f64::INFINITY));
-        assert_eq!(native_atof("-infinity-and-more"), Ok(f64::NEG_INFINITY));
-        assert!(native_atof("nan").unwrap().is_nan());
-        assert!(native_atof("NAN(0x10)").unwrap().is_nan());
-        assert_eq!(native_atof("0x1p4"), Ok(16.0));
-        assert_eq!(native_atof("0x1.8p1"), Ok(3.0));
-        assert_eq!(native_atof("no-digits"), Ok(0.0));
-        assert_eq!(native_atof("-"), Ok(0.0));
-        assert_eq!(native_atof("2.5trailing"), Ok(2.5));
-        assert_eq!(native_atof("0x0.0000000000000000000000001p-126"), Ok(2f64.powi(-226)));
-        assert_eq!(native_atof("0x1p-1100"), Ok(0.0));
-        assert_eq!(native_atof("0x1p-1074"), Ok(5e-324));
-        assert_eq!(native_atof("0x1p1024"), Ok(f64::INFINITY));
+        assert_eq!(native_atof("  -1.5"), -1.5);
+        assert_eq!(native_atof("1e3"), 1000.0);
+        assert_eq!(native_atof("INF"), f64::INFINITY);
+        assert_eq!(native_atof("-infinity-and-more"), f64::NEG_INFINITY);
+        assert!(native_atof("nan").is_nan());
+        assert!(native_atof("NAN(0x10)").is_nan());
+        assert_eq!(native_atof("0x1p4"), 16.0);
+        assert_eq!(native_atof("0x1.8p1"), 3.0);
+        assert_eq!(native_atof("no-digits"), 0.0);
+        assert_eq!(native_atof("-"), 0.0);
+        assert_eq!(native_atof("2.5trailing"), 2.5);
+        assert_eq!(native_atof("0x0.0000000000000000000000001p-126"), 2f64.powi(-226));
+        assert_eq!(native_atof("0x1p-1100"), 0.0);
+        assert_eq!(native_atof("0x1p-1074"), 5e-324);
+        assert_eq!(native_atof("0x1p1024"), f64::INFINITY);
+    }
+
+    #[test]
+    fn native_parsers_read_high_bit_bytes() {
+        assert_eq!(native_atoi_bytes(b"\x8012"), 0);
+        assert_eq!(native_atoi_bytes(b"12\xff"), 12);
+        assert_eq!(native_atoi_bytes(b"12\x005"), 12);
+        assert_eq!(native_atoi("\u{80}12"), 0);
+        assert_eq!(native_atoi("12\u{ff}"), 12);
+        assert_eq!(native_atof_bytes(b"2.5\x80"), 2.5);
+        assert_eq!(native_atof_bytes(b"\xff"), 0.0);
+        assert_eq!(native_atof("2.5\u{80}"), 2.5);
     }
 }
