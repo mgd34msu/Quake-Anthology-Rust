@@ -253,6 +253,13 @@ pub fn fire_bullets(
         if trace.fraction == 1.0 {
             continue;
         }
+        // Stock `TraceAttack` draws two `crandom()` values for the blood
+        // velocity of every hitting pellet (`progs106/weapons.qc:207`,
+        // rerelease `quakec/weapons.qc:221-224`, `qw-qc/weapons.qc:264`).
+        // The draws advance the shared stream even where the velocity
+        // itself is visual-only.
+        let _blood_right = game.host.random();
+        let _blood_up = game.host.random();
         let trigger = trace.actor.as_ref().is_some_and(|actor| {
             game.entity_ref(actor)
                 .is_some_and(|entity| entity.solid == Q1Solid::Trigger)
@@ -1113,5 +1120,51 @@ mod tests {
         // Stock `W_Attack` refires lightning every 0.1s, including
         // sustained fire (`weapons.qc:937`).
         assert!((second - first - 0.1).abs() < 0.01, "sustained refire {second}");
+    }
+
+    #[test]
+    fn hitting_pellets_consume_trace_attack_draws() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::super::types::{Q1Trace, Q1TraceRequest};
+
+        let (mut host, _) = mock_host();
+        let draws = Rc::new(RefCell::new(0));
+        let counted = Rc::clone(&draws);
+        host.random = Box::new(move || {
+            *counted.borrow_mut() += 1;
+            0.5
+        });
+        host.trace = Box::new(|request: &Q1TraceRequest| Q1Trace {
+            fraction: 0.5,
+            end: request.end,
+            normal: qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            actor: None,
+            start_solid: false,
+            all_solid: false,
+            sky: false,
+            in_open: true,
+            in_water: false,
+        });
+        let mut game = Q1EntityServices::new(host, options()).expect("game");
+        let shooter = game.create("player", None, None).expect("shooter");
+        let owned = game
+            .entity_ref(&shooter)
+            .map(|entity| entity.actor.clone())
+            .expect("owned");
+        fire_bullets(
+            &mut game,
+            &owned,
+            qa_core::math::Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            qa_core::math::Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            3,
+            0.1,
+            0.1,
+            None,
+        );
+        // Two spread draws plus two `TraceAttack` blood draws per
+        // hitting pellet (`progs106/weapons.qc:207,249-253`).
+        assert_eq!(*draws.borrow(), 12);
     }
 }

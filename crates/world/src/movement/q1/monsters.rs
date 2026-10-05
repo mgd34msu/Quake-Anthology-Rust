@@ -2,9 +2,14 @@
 //!
 //! Donor provenance: `src/movement/q1/monsters.ts` (from WinQuake
 //! `sv_move.c` and `PF_changeyaw`/`PF_walkmove` in `pr_cmds.c`).
+//!
+//! qsrc functionality reference: `quake/WinQuake/mathlib.c:155`
+//! (`anglemod`), `quake/WinQuake/pr_cmds.c:1418-1446`
+//! (`PF_changeyaw`), `quake/WinQuake/sv_move.c:290-291`
+//! (`SV_NewChaseDir` turnaround).
 
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{Bounds, Vec3};
+use qa_core::math::{angle_mod, Bounds, Vec3};
 use qa_core::numeric::NumericOps;
 
 use super::super::types::{MovementError, TraceHit};
@@ -97,21 +102,13 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         &mut self.services
     }
 
-    fn angle_mod(&self, angle: f64) -> f64 {
-        let n = self.services.numeric();
-        n.mul(
-            360.0 / 65536.0,
-            f64::from(n.to_int32(n.mul(angle, 65536.0 / 360.0)).unwrap_or(0) & 65535),
-        )
-    }
-
     /// Turn toward the ideal yaw at yaw speed.
     pub fn change_yaw(&mut self, actor: &OwnedActor) {
         let Some(state) = self.services.read(actor.id()) else {
             return;
         };
         let n = self.services.numeric();
-        let current = self.angle_mod(f64::from(state.angles.y));
+        let current = angle_mod(f64::from(state.angles.y));
         let ideal = state.ideal_yaw;
         if current == ideal {
             return;
@@ -131,7 +128,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         };
         let angles = self.math.vec(
             f64::from(state.angles.x),
-            self.angle_mod(n.add(current, step)),
+            angle_mod(n.add(current, step)),
             f64::from(state.angles.z),
         );
         self.services.write(actor, Q1MonsterMoveState { angles, ..state });
@@ -421,9 +418,8 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
             return Ok(());
         };
         let n = self.services.numeric();
-        let old_direction =
-            self.angle_mod(n.mul(f64::from(n.to_int32(n.div(state.ideal_yaw, 45.0)).unwrap_or(0)), 45.0));
-        let turnaround = self.angle_mod(n.sub(old_direction, 180.0));
+        let old_direction = angle_mod(n.mul(f64::from(n.to_int32(n.div(state.ideal_yaw, 45.0)).unwrap_or(0)), 45.0));
+        let turnaround = angle_mod(n.sub(old_direction, 180.0));
         let dx = n.sub(f64::from(enemy.origin.x), f64::from(state.origin.x));
         let dy = n.sub(f64::from(enemy.origin.y), f64::from(state.origin.y));
         let mut first = if dx > 10.0 {

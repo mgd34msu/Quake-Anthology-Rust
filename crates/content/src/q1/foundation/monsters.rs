@@ -10,6 +10,12 @@
 //! `throw_gib`/`throw_head` are defined here (donor
 //! `src/content/q1/base/projectiles.ts`) so the foundation does not
 //! grow a second copy; the base projectile module re-exports them.
+//!
+//! qsrc functionality reference: `quake/progs106/subs.qc:297-301`
+//! (`SUB_AttackFinished` skips the cooldown on `skill == 3`),
+//! `quake-rerelease-qc/quakec/subs.qc:310-316` (rerelease always
+//! sets it), `quake/progs106/fight.qc:275` (grunt
+//! `SUB_AttackFinished(1 + random())`).
 
 use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::{Bounds, Vec3};
@@ -35,6 +41,20 @@ const DOG_RUN: [f64; 12] = [16.0, 32.0, 32.0, 20.0, 64.0, 32.0, 16.0, 32.0, 32.0
 
 fn stationary(count: usize) -> Vec<f64> {
     vec![0.0; count]
+}
+
+/// Delay the next missile attack (`SUB_AttackFinished`).
+///
+/// Classic Quake leaves `attack_finished` unchanged on Nightmare
+/// (`quake/progs106/subs.qc:297-301`); the rerelease always sets it
+/// (`quake-rerelease-qc/quakec/subs.qc:310-316`). Every monster,
+/// including the grunt (`quake/progs106/fight.qc:275`), routes its
+/// cooldown through this helper.
+pub fn sub_attack_finished(game: &Q1EntityServices, monster: &mut Q1Monster, seconds: f64) {
+    monster.refired = false;
+    if game.options().edition == super::types::Q1Edition::Rerelease || game.options().skill != 3 {
+        monster.attack_finished = game.time + seconds;
+    }
 }
 
 fn set_sequence(monster: &mut Q1Monster, mode: Q1MonsterMode, first_frame: i32, sequence: Vec<f64>) {
@@ -337,8 +357,8 @@ fn try_attack(game: &mut Q1EntityServices, id: &ActorId, monster: &mut Q1Monster
         return Ok(false);
     }
     set_sequence(monster, Q1MonsterMode::Attack, 81, stationary(9));
-    monster.attack_finished = game.time + 1.0 + game.host.random();
-    monster.refired = false;
+    let cooldown = 1.0 + game.host.random();
+    sub_attack_finished(game, monster, cooldown);
     game.host.random();
     Ok(true)
 }
@@ -1268,17 +1288,75 @@ mod tests {
     }
 
     #[test]
-    fn path_end_time_rounds_like_fround() {
-        assert_eq!(path_end_time(1.5), f64::from((f64::from(1.5f32) + 999999.0) as f32));
-        assert!(path_end_time(0.0) > 999998.0);
+    fn path_end_time_matches_qc_pausetime() {
+        // Stock `t_movetarget` parks pathless monsters with
+        // `pausetime = time + 999999` (`progs106/ai.qc:126`).
+        assert_eq!(path_end_time(1.5), 1_000_000.5);
+        assert_eq!(path_end_time(0.0), 999_999.0);
     }
 
     #[test]
-    fn sequences_match_donor_tables() {
-        assert_eq!(ARMY_WALK.len(), 24);
+    fn sequences_match_qc_frame_tables() {
+        // Grunt run distances are the `ai_run` arguments of
+        // `army_run1..8` (`progs106/soldier.qc:85-95`).
         assert_eq!(ARMY_RUN, [11.0, 15.0, 10.0, 10.0, 8.0, 15.0, 10.0, 8.0]);
-        assert_eq!(DOG_RUN.len(), 12);
-        assert_eq!(DOG_RUN[0..4].to_vec(), vec![16.0, 32.0, 32.0, 20.0]);
+        // Rottweiler run distances are the `ai_run` arguments of
+        // `dog_run1..12` (`progs106/dog.qc:129-140`).
+        assert_eq!(
+            DOG_RUN,
+            [16.0, 32.0, 32.0, 20.0, 64.0, 32.0, 16.0, 32.0, 32.0, 20.0, 64.0, 32.0]
+        );
+        // Grunt walk is `army_walk1..24` (`progs106/soldier.qc:57-83`).
+        assert_eq!(ARMY_WALK.len(), 24);
+    }
+
+    #[test]
+    fn sub_attack_finished_skips_classic_nightmare_cooldown() {
+        fn monster() -> Q1Monster {
+            Q1Monster {
+                species: Q1MonsterSpecies::Army,
+                mode: Q1MonsterMode::Stand,
+                frame_index: 0,
+                sequence: Vec::new(),
+                first_frame: 0,
+                enemy: None,
+                old_enemy: None,
+                path: String::new(),
+                pause_until: 0.0,
+                attack_finished: 7.0,
+                pain_finished: 0.0,
+                search_until: 0.0,
+                death_drop: false,
+                refired: true,
+            }
+        }
+
+        // Classic Nightmare leaves the cooldown unchanged
+        // (`progs106/subs.qc:297-301`).
+        let (host, _) = mock_host();
+        let mut nightmare = options();
+        nightmare.skill = 3;
+        let classic = Q1EntityServices::new(host, nightmare).expect("game");
+        let mut grunt = monster();
+        sub_attack_finished(&classic, &mut grunt, 1.5);
+        assert_eq!(grunt.attack_finished, 7.0);
+        assert!(!grunt.refired);
+
+        // The rerelease always sets it (`quakec/subs.qc:310-316`).
+        let (host, _) = mock_host();
+        let mut rerelease = options();
+        rerelease.edition = Q1Edition::Rerelease;
+        rerelease.skill = 3;
+        let rerelease_game = Q1EntityServices::new(host, rerelease).expect("game");
+        let mut grunt = monster();
+        sub_attack_finished(&rerelease_game, &mut grunt, 1.5);
+        assert_eq!(grunt.attack_finished, 1.5);
+
+        // Classic below Nightmare sets it.
+        let (easy, _) = game();
+        let mut grunt = monster();
+        sub_attack_finished(&easy, &mut grunt, 1.5);
+        assert_eq!(grunt.attack_finished, 1.5);
     }
 
     #[test]

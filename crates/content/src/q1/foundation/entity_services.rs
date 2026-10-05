@@ -37,9 +37,9 @@ use super::extensions::{
 };
 use super::gameplay::{
     apply_source_damage_modifier, q1_water_transition, AttackCause, BodyPatch, BodyState, CombatState, CombatTraits,
-    DamageDelivery, DamageOutcome, DamagePreparation, DamageRequest, DeathReaction, PainReaction, Q1CombatArithmetic,
-    Q1CombatContext, Q1DamageSourceEffects, Q1LethalHealth, Q1LethalReaction, Q1ThinkFrame, TouchContact,
-    TransitionIntent,
+    DamageDelivery, DamageOutcome, DamagePreparation, DamageReaction, DamageRequest, DeathReaction, PainReaction,
+    Q1CombatArithmetic, Q1CombatContext, Q1DamageSourceEffects, Q1LethalHealth, Q1LethalReaction, Q1ThinkFrame,
+    TouchContact, TransitionIntent,
 };
 use super::host::{
     DamageAdjust, Q1Contents, Q1CutsceneControl, Q1FoundationHost, Q1ReleaseHook, Q1SourceTarget, Q1TrajectoryUpdate,
@@ -48,7 +48,7 @@ use super::host::{
 use super::precache::Q1PrecacheRegistry;
 use super::shambler_damage::foreign_shambler_damage;
 use super::types::{
-    dot, length, vadd, vectors, vscale, vsub, Q1AutoSwitch, Q1Basis, Q1Effect, Q1Event, Q1FoundationOptions,
+    dot, length, vadd, vectors, vscale, vsub, Q1AutoSwitch, Q1Basis, Q1Edition, Q1Effect, Q1Event, Q1FoundationOptions,
     Q1MessageArg, Q1MoveType, Q1Powerup, Q1Presentation, Q1Solid, Q1SoundChannel, Q1TraceRequest, Q1Weapon, POINT,
     WEAPONS, ZERO,
 };
@@ -157,6 +157,11 @@ pub struct Q1EntityServices {
     pub precaches: Q1PrecacheRegistry,
     base_team_health: bool,
     mg3_nightmare_pain: bool,
+    /// Rerelease pentagram-sound throttle by damage-running context
+    /// (`self.invincible_sound`, `quakec/combat.qc:205-213`). Written
+    /// only on invulnerability-absorbed hits, so a map lookup here is
+    /// off every hot path.
+    protection_sounds: HashMap<ActorId, f64>,
     path_touches: Vec<(String, Q1PathTouchHandler)>,
     source_damage_effects: Vec<(String, Q1DamageSourceEffects)>,
     /// Active pickup rules.
@@ -258,6 +263,7 @@ impl Q1EntityServices {
             precaches: Q1PrecacheRegistry::new(),
             base_team_health: false,
             mg3_nightmare_pain: false,
+            protection_sounds: HashMap::new(),
             path_touches: Vec::new(),
             source_damage_effects: Vec::new(),
             pickup_rules: None,
@@ -1502,6 +1508,13 @@ impl Q1EntityServices {
     }
 
     /// Damage a target through the shared combat authority.
+    ///
+    /// Rerelease-only `T_Damage` branches
+    /// (`quake-rerelease-qc/quakec/combat.qc:152-161,205-213`, absent
+    /// from `progs106`): the Shub crash fix ignores sub-telefrag
+    /// damage on `monster_oldone`, and pentagram-absorbed hits play
+    /// `items/protect3.wav` at most every 2s per damage-running
+    /// context (`self.invincible_sound`).
     pub fn damage(
         &mut self,
         target: &ActorId,
@@ -1546,6 +1559,17 @@ impl Q1EntityServices {
             normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             delivery: params.delivery,
         };
+        if self.options().edition == Q1Edition::Rerelease
+            && amount < 9999.0
+            && self
+                .entity_ref(target)
+                .is_some_and(|entity| entity.classname == "monster_oldone")
+        {
+            // Shub crash fix (`quakec/combat.qc:159-161`): only
+            // telefrag-class damage may kill Shub. `monster_oldone`
+            // appears only in id1 maps, so the edition gate is exact.
+            return DamageOutcome::StaleTarget { request };
+        }
         request = apply_source_damage_modifier(
             request,
             self.host.source_damage_modifier.as_ref(),
@@ -1553,7 +1577,30 @@ impl Q1EntityServices {
         );
         let mut applied = request.clone();
         applied.knockback = request.amount;
-        self.host.combat.apply(&applied)
+        let outcome = self.host.combat.apply(&applied);
+        if self.options().edition == Q1Edition::Rerelease
+            && matches!(
+                outcome,
+                DamageOutcome::Committed {
+                    ref decision,
+                    ..
+                } if decision.applied_damage == 0.0 && decision.reaction == DamageReaction::None
+            )
+            && self.host.combat.read(target).is_some_and(|combat| combat.invulnerable)
+        {
+            // Pentagram absorb (`quakec/combat.qc:205-213`): `self` is
+            // the damage-running context (the attacker on weapon-fire
+            // paths), not the victim. Rogue keys the throttle by the
+            // victim instead (`quakec_rogue/combat.qc:231-234`); the
+            // shared path keeps the base key.
+            let context = attacker.unwrap_or(target).clone();
+            if self.protection_sounds.get(&context).copied().unwrap_or(0.0) < self.time {
+                let until = self.time + 2.0;
+                self.protection_sounds.insert(context, until);
+                let _ = self.sound(target, "items/protect3.wav", Q1SoundChannel::Item, 1.0, 1.0);
+            }
+        }
+        outcome
     }
 
     /// Read a player powerup expiry in seconds.
@@ -3275,6 +3322,7 @@ mod tests {
     struct RecordingCombat {
         inner: super::super::host::mock::MockCombat,
         applied: Rc<RefCell<Vec<DamageRequest>>>,
+        absorb: bool,
     }
 
     impl super::super::host::Q1GameplayAuthority for RecordingCombat {
@@ -3312,18 +3360,39 @@ mod tests {
 
         fn apply(&mut self, request: &DamageRequest) -> DamageOutcome {
             self.applied.borrow_mut().push(request.clone());
+            if self.absorb {
+                return DamageOutcome::Committed {
+                    decision: super::super::gameplay::DamageDecision {
+                        request: request.clone(),
+                        mutations: Vec::new(),
+                        applied_damage: 0.0,
+                        reaction: DamageReaction::None,
+                        feedback: None,
+                    },
+                    survived: true,
+                };
+            }
             self.inner.apply(request)
         }
     }
 
-    fn combat_game() -> (Q1EntityServices, Rc<RefCell<Vec<DamageRequest>>>) {
-        let (mut host, _) = mock_host();
+    type AppliedLog = Rc<RefCell<Vec<DamageRequest>>>;
+    type EventLog = Rc<RefCell<super::super::host::mock::MockEvents>>;
+
+    fn combat_game() -> (Q1EntityServices, AppliedLog) {
+        let (game, applied, _) = combat_game_with(options(), false);
+        (game, applied)
+    }
+
+    fn combat_game_with(options: Q1FoundationOptions, absorb: bool) -> (Q1EntityServices, AppliedLog, EventLog) {
+        let (mut host, events) = mock_host();
         let applied = Rc::new(RefCell::new(Vec::new()));
         host.combat = Box::new(RecordingCombat {
             inner: super::super::host::mock::MockCombat::default(),
             applied: Rc::clone(&applied),
+            absorb,
         });
-        (Q1EntityServices::new(host, options()).expect("game"), applied)
+        (Q1EntityServices::new(host, options).expect("game"), applied, events)
     }
 
     fn place(game: &mut Q1EntityServices, id: &ActorId, x: f32) {
@@ -3687,5 +3756,104 @@ mod tests {
                 .and_then(|entity| entity.monster.as_ref().map(|monster| monster.pain_finished)),
             Some(15.0)
         );
+    }
+
+    #[test]
+    fn rerelease_shub_gate_ignores_sub_telefrag_damage() {
+        use super::super::types::Q1Edition;
+
+        let mut rerelease = options();
+        rerelease.edition = Q1Edition::Rerelease;
+        let (mut game, applied, _) = combat_game_with(rerelease, false);
+        let shub = game.create("monster_oldone", None, None).expect("shub");
+        game.set_damageable(&shub, true).expect("damageable");
+        let params = Q1DamageParams::default();
+
+        // Stock Shub crash fix (`quakec/combat.qc:159-161`).
+        let outcome = game.damage(&shub, None, None, 5000.0, &params);
+        assert!(matches!(outcome, DamageOutcome::StaleTarget { .. }));
+        assert!(applied.borrow().is_empty());
+
+        let outcome = game.damage(&shub, None, None, 9999.0, &params);
+        assert!(matches!(outcome, DamageOutcome::StaleTarget { .. }));
+        assert_eq!(applied.borrow().len(), 1);
+
+        // Classic has no gate (`progs106`).
+        let (mut game, applied, _) = combat_game_with(options(), false);
+        let shub = game.create("monster_oldone", None, None).expect("shub");
+        game.set_damageable(&shub, true).expect("damageable");
+        game.damage(&shub, None, None, 5000.0, &params);
+        assert_eq!(applied.borrow().len(), 1);
+    }
+
+    #[test]
+    fn rerelease_pentagram_absorb_plays_protect3_every_two_seconds() {
+        use super::super::types::{Q1Edition, Q1SoundChannel};
+
+        fn shielded(game: &mut Q1EntityServices, target: &ActorId) {
+            let owned = game
+                .entity_ref(target)
+                .map(|entity| entity.actor.clone())
+                .expect("owned");
+            let combat = game.host.combat.read(target).expect("combat");
+            game.host
+                .combat
+                .set_traits(
+                    &owned,
+                    CombatTraits {
+                        can_take_damage: combat.can_take_damage,
+                        mass: combat.mass,
+                        invulnerable: true,
+                        team: combat.team,
+                        no_knockback: combat.no_knockback,
+                    },
+                )
+                .expect("traits");
+        }
+
+        let mut rerelease = options();
+        rerelease.edition = Q1Edition::Rerelease;
+        let (mut game, _, events) = combat_game_with(rerelease, true);
+        let target = game.create("player", None, None).expect("target");
+        game.set_damageable(&target, true).expect("damageable");
+        shielded(&mut game, &target);
+        let attacker = game.create("monster_army", None, None).expect("attacker");
+        let params = Q1DamageParams::default();
+
+        let protect_sounds = || {
+            events
+                .borrow()
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Q1Event::Sound { path, channel, .. }
+                            if path == "items/protect3.wav" && *channel == Q1SoundChannel::Item
+                    )
+                })
+                .count()
+        };
+
+        // Stock pentagram absorb (`quakec/combat.qc:205-213`).
+        game.time = 10.0;
+        game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
+        assert_eq!(protect_sounds(), 1);
+        game.time = 11.0;
+        game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
+        assert_eq!(protect_sounds(), 1);
+        game.time = 12.5;
+        game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
+        assert_eq!(protect_sounds(), 2);
+
+        // Classic has no sound (`progs106`).
+        let (mut game, _, events) = combat_game_with(options(), true);
+        let target = game.create("player", None, None).expect("target");
+        game.set_damageable(&target, true).expect("damageable");
+        shielded(&mut game, &target);
+        let attacker = game.create("monster_army", None, None).expect("attacker");
+        game.time = 10.0;
+        game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
+        assert!(events.borrow().events.is_empty());
     }
 }

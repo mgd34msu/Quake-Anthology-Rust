@@ -949,10 +949,7 @@ impl<'g> BaseMonster<'g> {
 
     /// Delay the next missile attack (`attackFinished`).
     pub fn attack_finished(&mut self, seconds: f64) {
-        self.monster.refired = false;
-        if self.game.options().edition == Q1Edition::Rerelease || self.game.options().skill != 3 {
-            self.monster.attack_finished = self.game.time + seconds;
-        }
+        crate::q1::foundation::monsters::sub_attack_finished(self.game, &mut self.monster, seconds);
     }
 
     fn clear_shot(&mut self) -> Result<bool, Q1Error> {

@@ -1,9 +1,12 @@
 //! Rogue dragon (`src/content/q1/missionpacks/monsters/dragon.ts`).
+//!
+//! qsrc functionality reference: `quake/WinQuake/mathlib.c:155`
+//! (`anglemod`, 16-bit fixed-point form).
 
 use std::sync::Arc;
 
 use qa_core::identity::{same_actor, ActorId};
-use qa_core::math::Vec3;
+use qa_core::math::{angle_mod, Vec3};
 
 use crate::q1::base::animation::MonsterAi;
 use crate::q1::base::projectiles::throw_gib;
@@ -231,11 +234,10 @@ fn dragon_move(monster: &mut MissionMonster, distance: f64) {
     let mut yaw = f64::from(original.y);
     let mut roll = f64::from(original.z);
     let offset = yaw - f64::from(desired.y);
-    let anglemod = |value: f64| (value % 360.0 + 360.0) % 360.0;
     if offset != 0.0 {
         let offset = 180.0 - yaw;
-        let mut left = anglemod(f64::from(desired.y) + offset) - 180.0;
-        let mut right = 180.0 - anglemod(f64::from(desired.y) + offset);
+        let mut left = angle_mod(f64::from(desired.y) + offset) - 180.0;
+        let mut right = 180.0 - angle_mod(f64::from(desired.y) + offset);
         if left < 0.0 {
             left = 360.0;
         } else if right < 0.0 {
