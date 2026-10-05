@@ -1,6 +1,9 @@
 //! Sector membership ported from `src/world/spatial/index.ts` (Quake
 //! `sv_world.c`, Quake III `sv_world.c`). One membership owner; queries
-//! observe the most recent explicit link snapshot.
+//! observe the most recent explicit link snapshot. Each area node carries
+//! separate solid and trigger lists like `areanode_t` (`solid_edicts`,
+//! `trigger_edicts`); visits are deterministic in sector order, never in
+//! hash order.
 
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3};
@@ -143,14 +146,16 @@ struct Split {
 #[derive(Debug)]
 struct Sector {
     split: Option<Split>,
-    members: Vec<SpatialActor>,
+    solid_members: Vec<SpatialActor>,
+    trigger_members: Vec<SpatialActor>,
 }
 
 fn make_sector(bounds: &Bounds, depth: u32) -> Sector {
     if depth == 4 {
         return Sector {
             split: None,
-            members: Vec::new(),
+            solid_members: Vec::new(),
+            trigger_members: Vec::new(),
         };
     }
     let axis = if bounds.max.x - bounds.min.x > bounds.max.y - bounds.min.y {
@@ -194,7 +199,8 @@ fn make_sector(bounds: &Bounds, depth: u32) -> Sector {
                 depth + 1,
             )),
         }),
-        members: Vec::new(),
+        solid_members: Vec::new(),
+        trigger_members: Vec::new(),
     }
 }
 
@@ -217,7 +223,9 @@ impl SpatialIndex {
         }
     }
 
-    /// Link a body snapshot. Q3 members prepend; Q1/Q2 members append.
+    /// Link a body snapshot into the node's solid or trigger list.
+    /// Q3 members prepend; Q1/Q2 members append. Relinking moves the
+    /// actor when its role changed.
     pub fn link(&mut self, body: &LinkedBody, collision: &ActorCollision) {
         self.unlink(&body.actor);
         self.link_fresh(body, collision);
@@ -246,10 +254,14 @@ impl SpatialIndex {
                 break;
             }
         }
+        let members = match collision.role {
+            CollisionRole::Solid => &mut sector.solid_members,
+            CollisionRole::Trigger => &mut sector.trigger_members,
+        };
         if collision.family == CollisionFamily::Q3 {
-            sector.members.insert(0, actor);
+            members.insert(0, actor);
         } else {
-            sector.members.push(actor);
+            members.push(actor);
         }
     }
 
@@ -264,12 +276,14 @@ impl SpatialIndex {
         get_from(&self.root, actor)
     }
 
-    /// Visit intersecting actors in sector order.
+    /// Visit intersecting actors in sector order: solids then triggers
+    /// at each node, front child then back. Within a list, Q1/Q2 visit
+    /// in link order and Q3 in reverse link order.
     pub fn visit(&self, bounds: &Bounds, visit: &mut dyn FnMut(&SpatialActor) -> Visit) {
         walk(&self.root, bounds, visit);
     }
 
-    /// Collect intersecting actors by role.
+    /// Collect intersecting actors by role, in visit order.
     #[must_use]
     pub fn query(&self, bounds: &Bounds, role: QueryRole) -> Vec<SpatialActor> {
         let mut result = Vec::new();
@@ -304,13 +318,11 @@ impl AxisGet for Vec3 {
 }
 
 fn unlink_from(sector: &mut Sector, actor: &ActorId) {
-    if let Some(index) = sector
-        .members
-        .iter()
-        .position(|member| same_slot(&member.body.actor, actor))
-    {
-        sector.members.remove(index);
-        return;
+    for members in [&mut sector.solid_members, &mut sector.trigger_members] {
+        if let Some(index) = members.iter().position(|member| same_slot(&member.body.actor, actor)) {
+            members.remove(index);
+            return;
+        }
     }
     if let Some(split) = sector.split.as_mut() {
         unlink_from(&mut split.front, actor);
@@ -320,8 +332,9 @@ fn unlink_from(sector: &mut Sector, actor: &ActorId) {
 
 fn get_from(sector: &Sector, actor: &ActorId) -> Option<SpatialActor> {
     if let Some(member) = sector
-        .members
+        .solid_members
         .iter()
+        .chain(sector.trigger_members.iter())
         .find(|member| same_slot(&member.body.actor, actor))
     {
         return Some(member.clone());
@@ -330,15 +343,25 @@ fn get_from(sector: &Sector, actor: &ActorId) -> Option<SpatialActor> {
     get_from(&split.front, actor).or_else(|| get_from(&split.back, actor))
 }
 
-fn walk(sector: &Sector, bounds: &Bounds, visit: &mut dyn FnMut(&SpatialActor) -> Visit) -> bool {
-    for member in &sector.members {
+fn walk_list(members: &[SpatialActor], bounds: &Bounds, visit: &mut dyn FnMut(&SpatialActor) -> Visit) -> Option<bool> {
+    for member in members {
         if bounds_intersect(&member.body.absolute_bounds, bounds) {
             match visit(member) {
-                Visit::Stop => return false,
-                Visit::StopSector => return true,
+                Visit::Stop => return Some(false),
+                Visit::StopSector => return Some(true),
                 Visit::Continue => {}
             }
         }
+    }
+    None
+}
+
+fn walk(sector: &Sector, bounds: &Bounds, visit: &mut dyn FnMut(&SpatialActor) -> Visit) -> bool {
+    if let Some(done) = walk_list(&sector.solid_members, bounds, visit) {
+        return done;
+    }
+    if let Some(done) = walk_list(&sector.trigger_members, bounds, visit) {
+        return done;
     }
     if let Some(split) = sector.split.as_ref() {
         if bounds.max.get(split.axis) > split.distance && !walk(&split.front, bounds, visit) {
@@ -352,7 +375,8 @@ fn walk(sector: &Sector, bounds: &Bounds, visit: &mut dyn FnMut(&SpatialActor) -
 }
 
 fn clear_sector(sector: &mut Sector) {
-    sector.members.clear();
+    sector.solid_members.clear();
+    sector.trigger_members.clear();
     if let Some(split) = sector.split.as_mut() {
         clear_sector(&mut split.front);
         clear_sector(&mut split.back);
@@ -496,6 +520,51 @@ mod tests {
         for (body, _) in &entries {
             assert!(index.get(&body.actor).is_some());
         }
+    }
+
+    #[test]
+    fn both_lists_visit_solids_first_in_link_order() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let mut registry = ActorRegistry::new(owner, 16).unwrap();
+        let mut index = SpatialIndex::new(&world_bounds());
+        // Interleave roles at one spot so every member lands in one node.
+        let (trigger_first, trigger_first_collision) =
+            linked_at(&mut registry, 0.0, CollisionFamily::Q1, CollisionRole::Trigger);
+        let (solid_first, solid_first_collision) =
+            linked_at(&mut registry, 0.0, CollisionFamily::Q1, CollisionRole::Solid);
+        let (trigger_second, trigger_second_collision) =
+            linked_at(&mut registry, 0.0, CollisionFamily::Q1, CollisionRole::Trigger);
+        let (solid_second, solid_second_collision) =
+            linked_at(&mut registry, 0.0, CollisionFamily::Q1, CollisionRole::Solid);
+        for (body, collision) in [
+            (&trigger_first, &trigger_first_collision),
+            (&solid_first, &solid_first_collision),
+            (&trigger_second, &trigger_second_collision),
+            (&solid_second, &solid_second_collision),
+        ] {
+            index.link(body, collision);
+        }
+        let both: Vec<ActorId> = index
+            .query(&world_bounds(), QueryRole::Both)
+            .iter()
+            .map(|actor| actor.body.actor.clone())
+            .collect();
+        assert_eq!(
+            both,
+            vec![
+                solid_first.actor.clone(),
+                solid_second.actor.clone(),
+                trigger_first.actor.clone(),
+                trigger_second.actor.clone(),
+            ]
+        );
+        // Relinking under a new role moves the actor without duplicating it.
+        index.link(&solid_first, &trigger_first_collision);
+        assert_eq!(index.query(&world_bounds(), QueryRole::Solid).len(), 1);
+        assert_eq!(index.query(&world_bounds(), QueryRole::Trigger).len(), 3);
+        assert_eq!(index.query(&world_bounds(), QueryRole::Both).len(), 4);
+        let moved = index.get(&solid_first.actor).expect("relinked actor");
+        assert_eq!(moved.collision.role, CollisionRole::Trigger);
     }
 
     #[test]
