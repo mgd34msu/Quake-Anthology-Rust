@@ -699,9 +699,12 @@ pub fn q1_native_touch(
     q1_door_fire(behaviors, simulation, movers, &master);
 }
 
-/// Native mover-think dispatch for Q1 doors: top arrival rests toggle
-/// doors and returns negative-wait doors at once (stock's overdue wait
-/// think), the top wait think closes the door, and bottom arrival rests.
+/// Native mover-think dispatch for Q1 doors: top arrival always rests
+/// (toggle doors wait for a trigger; negative-wait key doors never
+/// return — stock `door_hit_top` arms `nextthink = ltime + wait`, a past
+/// instant the pusher never fires — and positive waits were armed by the
+/// engine step), the top wait think closes the door, and bottom arrival
+/// rests.
 /// A think firing mid-travel without arrival re-arms the arrival think:
 /// float dust between the armed arrival instant and the recomputed
 /// remaining distance would otherwise consume the think and strand the
@@ -717,17 +720,19 @@ pub fn q1_native_mover_think(
     let Some(door) = behaviors.doors.get(actor) else {
         return;
     };
-    let wait = door.wait;
     let toggle = door.toggle;
     match (phase, arrived) {
-        // `door_hit_top`: toggle doors rest; negative-wait (key) doors
-        // close at once; positive waits were armed by the engine step.
-        (MoverPhase::AtPos2, true) => {
-            if toggle || wait >= 0.0 {
-                return;
-            }
-            q1_door_go_down(simulation, movers, actor);
-        }
+        // `door_hit_top` (`progs106/doors.qc:48-56`): arrival at the top
+        // never closes at once. Toggle doors return and wait for a
+        // trigger; key doors (`wait -1 = never return`, `doors.qc:401`)
+        // arm `nextthink = ltime - 1`, a past instant the pusher never
+        // fires (`sv_phys.c:732` requires `thinktime > oldltime`), so
+        // they rest at the top too; positive waits were armed by the
+        // engine step and close through the wait think below.
+        (MoverPhase::AtPos2, true) => {}
+        // Top wait think: close, unless this is a toggle door (the
+        // engine arms wait thinks for any positive wait; stock toggle
+        // doors never schedule one).
         // Top wait think: close, unless this is a toggle door (the
         // engine arms wait thinks for any positive wait; stock toggle
         // doors never schedule one).
@@ -1110,6 +1115,50 @@ mod tests {
         assert_eq!(shared.borrow().player_keys, 0);
         assert!(!server.triggers_mut().is_trigger(&door));
         assert_ne!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::AtPos1);
+    }
+
+    #[test]
+    fn key_door_stays_open_through_live_ticks() {
+        // Stock key doors are `wait -1 = never return`
+        // (`progs106/doors.qc:401,408`): `door_hit_top` arms `nextthink =
+        // ltime - 1`, a past instant the pusher never fires
+        // (`WinQuake/sv_phys.c:732`), so arrival at the top rests and live
+        // ticks never close the door.
+        let mut server = test_server();
+        register_q1_spawns(server.spawns_mut());
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        let models = vec![door_model()];
+        let fields = door_fields(&[
+            ("angles", "0 90 0"),
+            ("speed", "4000"),
+            ("spawnflags", "16"),
+            ("model", "*0"),
+        ]);
+        let pending = {
+            let actor = server.spawn_entity(&fields).unwrap();
+            build_q1_door(&mut server, &mut shared.borrow_mut(), &actor, &fields, &models).unwrap()
+        };
+        link_q1_doors(&mut server, &mut shared.borrow_mut(), vec![pending]).unwrap();
+        let door = shared.borrow().doors.keys().next().unwrap().clone();
+        assert_eq!(shared.borrow().doors.get(&door).unwrap().wait, -1.0);
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 64.0));
+        shared.borrow_mut().set_player(Some(player.id().clone()));
+        shared.borrow_mut().player_keys = IT_KEY1;
+        install_q1_native(&mut server, Rc::clone(&shared));
+        // Touch with the key carried consumes the key and opens the door.
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert_eq!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::ToPos2);
+        // Travel (56u at 4000u/s) plus margin: arrival rests at the top.
+        for _ in 0..10 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        assert_eq!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::AtPos2);
+        // Thirty more ticks (1.5s, past any positive wait): still open,
+        // with no creep back toward the bottom.
+        for _ in 0..30 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        assert_eq!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::AtPos2);
     }
 
     #[test]
