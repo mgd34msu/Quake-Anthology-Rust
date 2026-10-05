@@ -12,10 +12,11 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId, SavedActorId};
 use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::time::{ClockProfile, FrameContext, SourceTime};
 
-use crate::body::{BodyState, LinkedBody};
+use crate::body::{translated_body_bounds, BodyState, LinkedBody};
 use crate::client::ClientCommand;
 use crate::inventory::InventoryEntry;
-use crate::movers::{step_mover, MoverPhase, MoverState, MoverTable};
+use crate::movement::q1::types::{Q1_MOVE_NONE, Q1_MOVE_PUSH, Q1_MOVE_WALK};
+use crate::movers::{push_transaction, step_mover, MoverPhase, MoverState, MoverTable, PushCandidate, PusherOutcome};
 use crate::registry::ActorRegistry;
 use crate::session::{SaveImage, SimEvent, Simulation};
 use crate::spatial::{ActorCollision, CollisionFamily, CollisionRole, CollisionShape, SpatialIndex};
@@ -159,6 +160,12 @@ pub type NativeTouchHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &m
 /// plats via the mover table, exactly like the guest hook.
 pub type NativeMoverThinkHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &ActorId, MoverPhase, bool)>;
 
+/// Native mover-blocked handler: runs when a pusher transaction meets a
+/// solid obstacle, after the obstacle and pusher roll back but before the
+/// carried entities do (stock `blocked`). Gamecode damages the obstacle
+/// and reverses or stops the pusher via the mover table.
+pub type NativeMoverBlockedHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &ActorId, &ActorId)>;
+
 /// Server tick event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
@@ -223,11 +230,24 @@ pub struct Server<L: ServerLogic> {
     bots: Option<Box<dyn BotCommandSource>>,
     native_touch: Option<NativeTouchHandler>,
     native_mover_think: Option<NativeMoverThinkHandler>,
+    native_mover_blocked: Option<NativeMoverBlockedHandler>,
     game_provider: ProviderId,
     default_bounds: Bounds,
     body_scratch: Vec<ActorId>,
     spatial_scratch: SpatialIndex,
     closed: bool,
+}
+
+/// Strict AABB overlap for pusher transactions: touching faces do not
+/// overlap, so riders resting exactly on a pusher carry instead of
+/// blocking.
+fn bounds_overlap_strict(left: &Bounds, right: &Bounds) -> bool {
+    left.min.x < right.max.x
+        && left.min.y < right.max.y
+        && left.min.z < right.max.z
+        && left.max.x > right.min.x
+        && left.max.y > right.min.y
+        && left.max.z > right.min.z
 }
 
 impl<L: ServerLogic> Server<L> {
@@ -254,6 +274,7 @@ impl<L: ServerLogic> Server<L> {
             bots: None,
             native_touch: None,
             native_mover_think: None,
+            native_mover_blocked: None,
             game_provider,
             default_bounds,
             body_scratch: Vec::new(),
@@ -356,6 +377,12 @@ impl<L: ServerLogic> Server<L> {
     /// source: checkpoints do not carry it.
     pub fn set_native_mover_think(&mut self, handler: Option<NativeMoverThinkHandler>) {
         self.native_mover_think = handler;
+    }
+
+    /// Attach a native mover-blocked handler. Runtime-only like the bot
+    /// source: checkpoints do not carry it.
+    pub fn set_native_mover_blocked(&mut self, handler: Option<NativeMoverBlockedHandler>) {
+        self.native_mover_blocked = handler;
     }
 
     /// Spawn a map entity through the registered spawn function.
@@ -480,7 +507,6 @@ impl<L: ServerLogic> Server<L> {
     fn step_movers(&mut self, events: &mut Vec<ServerEvent>) -> Result<(), WorldError> {
         let mut actors = std::mem::take(&mut self.body_scratch);
         self.simulation.body_actors_into(&mut actors);
-        actors.retain(|actor| self.movers.get(actor).is_some());
         let elapsed = self.simulation.frame().elapsed.as_seconds_f64();
         let outcome = self.step_movers_inner(events, &actors, elapsed);
         self.body_scratch = actors;
@@ -490,16 +516,18 @@ impl<L: ServerLogic> Server<L> {
     fn step_movers_inner(
         &mut self,
         events: &mut Vec<ServerEvent>,
-        actors: &[ActorId],
+        bodies: &[ActorId],
         elapsed: f64,
     ) -> Result<(), WorldError> {
-        for actor in actors {
-            let Some(origin) = self.simulation.body_state(actor).map(|state| state.origin) else {
+        for actor in bodies {
+            let Some(body) = self.simulation.body_state(actor) else {
                 continue;
             };
+            let origin = body.origin;
             let Some(mover) = self.movers.get_mut(actor) else {
                 continue;
             };
+            let saved_mover = mover.clone();
             let step = step_mover(mover, origin, elapsed);
             let phase = mover.phase;
             let next = Vec3 {
@@ -507,7 +535,93 @@ impl<L: ServerLogic> Server<L> {
                 y: origin.y + step.displacement.y,
                 z: origin.z + step.displacement.z,
             };
-            self.simulation.set_body_origin(actor, next)?;
+            let mut suppressed = false;
+            if step.displacement.x == 0.0 && step.displacement.y == 0.0 && step.displacement.z == 0.0 {
+                self.simulation.set_body_origin(actor, next)?;
+            } else {
+                // Pusher transaction (`SV_PushMove`): the pusher moves
+                // first, riders and overlaps are carried, and a solid
+                // obstacle runs the blocked path before carried positions
+                // roll back.
+                self.simulation.set_body_origin(actor, next)?;
+                let mut moved_body = body.clone();
+                moved_body.origin = next;
+                let pusher_bounds = translated_body_bounds(&moved_body);
+                let mut candidates = Vec::new();
+                let mut saved_origins = Vec::new();
+                for candidate in bodies {
+                    let Some(candidate_body) = self.simulation.body_state(candidate) else {
+                        continue;
+                    };
+                    // Movers read as PUSH (skipped, including the pusher
+                    // itself) and trigger volumes as NONE (stock fields
+                    // are `MOVETYPE_NONE`); engine bodies carry no
+                    // movetype, so everything else pushes as WALK.
+                    let move_type = if self.movers.get(candidate).is_some() {
+                        Q1_MOVE_PUSH
+                    } else if self.triggers.is_trigger(candidate) {
+                        Q1_MOVE_NONE
+                    } else {
+                        Q1_MOVE_WALK
+                    };
+                    candidates.push(PushCandidate {
+                        actor: candidate.clone(),
+                        rider: candidate_body.ground.as_ref() == Some(actor),
+                        overlaps: bounds_overlap_strict(&translated_body_bounds(&candidate_body), &pusher_bounds),
+                        move_type,
+                        point_sized: candidate_body.bounds.min.x == candidate_body.bounds.max.x,
+                        soft_solid: false,
+                    });
+                    saved_origins.push((candidate.clone(), candidate_body.origin));
+                }
+                let displacement = step.displacement;
+                let simulation = &mut self.simulation;
+                let mut push = |candidate: &ActorId| -> bool {
+                    let Some(candidate_body) = simulation.body_state(candidate) else {
+                        return true;
+                    };
+                    let moved = Vec3 {
+                        x: candidate_body.origin.x + displacement.x,
+                        y: candidate_body.origin.y + displacement.y,
+                        z: candidate_body.origin.z + displacement.z,
+                    };
+                    if simulation.set_body_origin(candidate, moved).is_err() {
+                        return true;
+                    }
+                    let mut probe = candidate_body.clone();
+                    probe.origin = moved;
+                    !bounds_overlap_strict(&translated_body_bounds(&probe), &pusher_bounds)
+                };
+                let mut obstacle: Option<ActorId> = None;
+                let mut blocked = |candidate: &ActorId| {
+                    obstacle = Some(candidate.clone());
+                };
+                let (outcome, moved) = push_transaction(&candidates, &mut push, &mut blocked);
+                if outcome == PusherOutcome::Blocked {
+                    // Stock restores the obstacle and the pusher before
+                    // the blocked hook runs, then rolls the carried
+                    // entities back; think and arrival stay suppressed.
+                    if let Some(stuck) = &obstacle {
+                        if let Some((_, before)) = saved_origins.iter().find(|(id, _)| id == stuck) {
+                            let _ignored = self.simulation.set_body_origin(stuck, *before);
+                        }
+                    }
+                    let _ignored = self.simulation.set_body_origin(actor, origin);
+                    self.movers.insert(actor.clone(), saved_mover);
+                    if let (Some(stuck), Some(handler)) = (&obstacle, self.native_mover_blocked.as_mut()) {
+                        handler(&mut self.simulation, &mut self.movers, actor, stuck);
+                    }
+                    for moved_actor in &moved {
+                        if let Some((_, before)) = saved_origins.iter().find(|(id, _)| id == moved_actor) {
+                            let _ignored = self.simulation.set_body_origin(moved_actor, *before);
+                        }
+                    }
+                    suppressed = true;
+                }
+            }
+            if suppressed {
+                continue;
+            }
             let saved = SavedActorId::from(actor);
             if step.think_due {
                 self.logic
@@ -1046,6 +1160,237 @@ mod tests {
         assert_eq!(
             server.movers_mut().get(door.id()).map(|state| state.phase),
             Some(MoverPhase::AtPos2)
+        );
+    }
+
+    fn blocked_hook_fired(server: &mut Server<NullLogic>) -> std::rc::Rc<std::cell::RefCell<Vec<(ActorId, ActorId)>>> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let fired: Rc<RefCell<Vec<(ActorId, ActorId)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&fired);
+        server.set_native_mover_blocked(Some(Box::new(
+            move |_simulation, _movers, pusher: &ActorId, obstacle: &ActorId| {
+                seen.borrow_mut().push((pusher.clone(), obstacle.clone()));
+            },
+        )));
+        fired
+    }
+
+    fn travelling_door(server: &mut Server<NullLogic>, door: &OwnedActor, pos2: Vec3, speed: f64) {
+        use crate::movers::{use_mover, MoverKind};
+
+        let mut state = MoverState::new(MoverKind::Door, vec3(0.0, 0.0, 0.0), pos2, speed, 3.0);
+        use_mover(&mut state, vec3(0.0, 0.0, 0.0));
+        server.movers_mut().insert(door.id().clone(), state);
+    }
+
+    #[test]
+    fn blocked_arrival_rolls_back_and_fires_blocked_hook() {
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        // Solid obstacle overlapping the door's start and end: carried
+        // along, still inside, so the transaction blocks.
+        let player = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:player",
+                Some(q1_body(vec3(0.0, 0.0, 10.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        travelling_door(&mut server, &door, vec3(0.0, 0.0, 20.0), 400.0);
+        assert_eq!(
+            server.movers_mut().get(door.id()).map(|state| state.next_think_seconds),
+            Some(0.05)
+        );
+        let fired = blocked_hook_fired(&mut server);
+        let tick = server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert_eq!(fired.borrow().as_slice(), &[(door.id().clone(), player.id().clone())]);
+        // Obstacle, pusher, and mover time all roll back; the arrival
+        // think and arrival event stay suppressed.
+        assert_eq!(
+            server.simulation().body_state(player.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+        assert_eq!(
+            server.simulation().body_state(door.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 0.0))
+        );
+        let rolled_back = server.movers_mut().get(door.id()).cloned().unwrap();
+        assert_eq!(rolled_back.phase, MoverPhase::ToPos2);
+        assert_eq!(rolled_back.local_time_seconds, 0.0);
+        assert_eq!(rolled_back.next_think_seconds, 0.05);
+        assert!(!tick
+            .events
+            .iter()
+            .any(|event| matches!(event, ServerEvent::MoverThink { .. } | ServerEvent::MoverArrived { .. })));
+    }
+
+    #[test]
+    fn rider_above_the_pusher_carries_along() {
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        // Grounded on the door but clear of its travel bounds: carried by
+        // the rider rule, not by overlap.
+        let mut rider_body = q1_body(vec3(0.0, 0.0, 42.0));
+        rider_body.ground = Some(door.id().clone());
+        let rider = server
+            .simulation_mut()
+            .spawn(provider, "q1:player", Some(rider_body), None, Vec::new())
+            .unwrap();
+        travelling_door(&mut server, &door, vec3(0.0, 0.0, 100.0), 200.0);
+        let fired = blocked_hook_fired(&mut server);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(fired.borrow().is_empty());
+        assert_eq!(
+            server.simulation().body_state(door.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+        let carried = server.simulation().body_state(rider.id()).unwrap();
+        assert_eq!(carried.origin, vec3(0.0, 0.0, 52.0));
+        assert_eq!(carried.ground, Some(door.id().clone()));
+    }
+
+    #[test]
+    fn trigger_volumes_skip_the_transaction() {
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let field = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:field",
+                Some(q1_body(vec3(0.0, 0.0, 10.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        server.mark_trigger(field.id()).unwrap();
+        travelling_door(&mut server, &door, vec3(0.0, 0.0, 100.0), 200.0);
+        let fired = blocked_hook_fired(&mut server);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(fired.borrow().is_empty());
+        assert_eq!(
+            server.simulation().body_state(field.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+        assert_eq!(
+            server.simulation().body_state(door.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn movers_skip_other_movers() {
+        use crate::movers::MoverKind;
+
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let peer = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:peer",
+                Some(q1_body(vec3(0.0, 0.0, 10.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        server.movers_mut().insert(
+            peer.id().clone(),
+            MoverState::new(MoverKind::Door, vec3(0.0, 0.0, 10.0), vec3(0.0, 0.0, 10.0), 100.0, 3.0),
+        );
+        travelling_door(&mut server, &door, vec3(0.0, 0.0, 100.0), 200.0);
+        let fired = blocked_hook_fired(&mut server);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(fired.borrow().is_empty());
+        assert_eq!(
+            server.simulation().body_state(peer.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+        assert_eq!(
+            server.simulation().body_state(door.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn point_sized_obstacles_never_block() {
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut point_body = q1_body(vec3(0.0, 0.0, 10.0));
+        point_body.bounds = Bounds {
+            min: vec3(0.0, -16.0, -16.0),
+            max: vec3(0.0, 16.0, 16.0),
+        };
+        let point = server
+            .simulation_mut()
+            .spawn(provider, "q1:spark", Some(point_body), None, Vec::new())
+            .unwrap();
+        travelling_door(&mut server, &door, vec3(0.0, 0.0, 100.0), 200.0);
+        let fired = blocked_hook_fired(&mut server);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(fired.borrow().is_empty());
+        assert_eq!(
+            server.simulation().body_state(door.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0))
+        );
+        assert_eq!(
+            server.simulation().body_state(point.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 20.0))
         );
     }
 }

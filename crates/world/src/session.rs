@@ -389,6 +389,33 @@ impl Simulation {
         Ok(())
     }
 
+    /// Read an actor's combat state, if it has one.
+    #[must_use]
+    pub fn combat_state(&self, actor: &ActorId) -> Option<&CombatState> {
+        self.combats.get(actor)
+    }
+
+    /// Deal Quake I crush damage: the Q1 health take applies to the
+    /// target's combat state (default 100 health when absent, like
+    /// `hurt`), immune targets keep their health, and every take emits a
+    /// damage event. Returns the committed health. Damage never removes
+    /// actors, so pusher transactions stay total.
+    pub fn damage_q1(&mut self, target: &ActorId, amount: f64) -> f64 {
+        let combat = self.combats.get(target).cloned().unwrap_or_default();
+        if !combat.can_take_damage {
+            return combat.health;
+        }
+        let health = q1_health_take(combat.health, amount);
+        let reaction = if health <= 0.0 { Reaction::Death } else { Reaction::Pain };
+        self.combats.insert(target.clone(), CombatState { health, ..combat });
+        self.push_event(SimEventPayload::Damage {
+            target: SavedActorId::from(target),
+            amount,
+            reaction,
+        });
+        health
+    }
+
     /// Resolve a live actor by registry slot.
     #[must_use]
     pub fn actor_by_slot(&self, slot: u32) -> Option<OwnedActor> {
