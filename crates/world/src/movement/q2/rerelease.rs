@@ -301,32 +301,37 @@ impl Q2SweepBody for RereleaseSweepBody<'_> {
         Some(self.duplicate_threshold)
     }
     fn recover_duplicate(&mut self, normal: SrcVec3) {
-        let Some(target) = self.recover_target.as_mut() else {
-            return;
-        };
+        // Donor `duplicatePlane.recover`: nudge x/y by the plane normal,
+        // fix stuck in place, and let the sweep continue from there.
         if self.working_is_pml {
             // Player move: the working origin aliases pml; fix it in place.
-            for axis in AXES {
-                self.origin[axis] = f64::from(
-                    self.n
-                        .store(self.n.add(self.origin[axis], self.n.mul(normal[axis], self.fix_nudge))),
+            for axis in AXES[..2].iter() {
+                self.origin[*axis] = f64::from(
+                    self.n.store(
+                        self.n
+                            .add(self.origin[*axis], self.n.mul(normal[*axis], self.fix_nudge)),
+                    ),
                 );
             }
             let mut fixed = self.origin;
             fix_stuck_object(self.n, self.math, &mut fixed, self.mins, self.maxs, self.trace);
             self.origin = fixed;
-            *target = fixed;
-        } else {
-            for axis in AXES {
-                target[axis] = f64::from(
-                    self.n
-                        .store(self.n.add(target[axis], self.n.mul(normal[axis], self.fix_nudge))),
-                );
-            }
-            let mut fixed = *target;
-            fix_stuck_object(self.n, self.math, &mut fixed, self.mins, self.maxs, self.trace);
-            *target = fixed;
+            return;
         }
+        // Temporary probe: recovery addresses pml, which the post-sweep
+        // restore carries back (donor keeps the same source alias).
+        let Some(target) = self.recover_target.as_mut() else {
+            return;
+        };
+        for axis in AXES[..2].iter() {
+            target[*axis] = f64::from(
+                self.n
+                    .store(self.n.add(target[*axis], self.n.mul(normal[*axis], self.fix_nudge))),
+            );
+        }
+        let mut fixed = *target;
+        fix_stuck_object(self.n, self.math, &mut fixed, self.mins, self.maxs, self.trace);
+        *target = fixed;
     }
 }
 
@@ -573,7 +578,10 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             maxs,
             trace: &mut auto,
             touch,
-            recover_target: Some(runner.context.pml_origin),
+            // The main sweep has no separate recovery target: duplicate-
+            // plane fixes land on the working origin and the sweep
+            // continues from there (donor `PM_StepSlideMove_Generic`).
+            recover_target: None,
             working_is_pml: true,
             n,
             math,
@@ -582,12 +590,8 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             fix_nudge,
         };
         let stop = sweep_q2_body(&mut body, n, frametime);
-        let mut origin = body.origin;
+        runner.context.pml_origin = body.origin;
         let mut velocity = body.velocity;
-        if let Some(fixed) = body.recover_target {
-            origin = fixed;
-        }
-        runner.context.pml_origin = origin;
         if stop != SweepStop::Solid && has_time {
             velocity = primal;
         }
@@ -1931,5 +1935,23 @@ mod tests {
             1.0,
         );
         assert!(pm.s.velocity[1] > 0.0);
+    }
+
+    #[test]
+    fn walk_advances_origin_in_open_space() {
+        let mut pm = fixture();
+        let mut context = Q2RereleaseMovementContext::new();
+        pmove_rerelease(
+            &mut pm,
+            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
+            &PM_CONFIG_DEFAULT,
+            &mut context,
+            false,
+            1.0,
+        );
+        // Open traces, forward command: velocity without displacement
+        // means the sweep result was discarded (stale recovery restore).
+        assert_ne!(pm.s.origin, [0.0, 0.0, 100.0], "origin never moved");
+        assert_eq!(context.pml_origin, pm.s.origin);
     }
 }

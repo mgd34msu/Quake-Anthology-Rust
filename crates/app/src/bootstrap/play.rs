@@ -17,12 +17,22 @@
 //! and III arrive as new arms on these same enums, extending the existing
 //! trace and movement cores rather than forking them.
 
+use qa_bots::q2_collision::{q2_collision_geometry, Q2Collision};
+use qa_bots::scene::{
+    scene_expect, TraceDetail as SceneTraceDetail, TraceHit as SceneTraceHit, WorldKind as SceneWorldKind,
+};
+use qa_bots::scene::{
+    PointContentsQuery as ScenePointContentsQuery, PointContentsResult as ScenePointContentsResult,
+    QueryTarget as SceneQueryTarget, TracePolicy as SceneTracePolicy, TraceQuery as SceneTraceQuery,
+    TraceShape as SceneTraceShape,
+};
 use qa_content::bsp::{read_q1_bsp, ClipChild as BspClipChild, NodeChild, Plane as BspPlaneData, Q1BspOptions};
+use qa_content::bsp2::{read_q2_bsp, to_q2_world_geometry};
 use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
-use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
+use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE, Q2_DONOR_PROFILE};
 use qa_core::time::FrameContext as ClockFrame;
 use qa_world::body::BodyState;
 use qa_world::collision::q1::{CONTENTS_EMPTY, CONTENTS_SOLID};
@@ -37,10 +47,18 @@ use qa_world::movement::q1::types::{
     Q1MovementProfile, Q1MovementServices, Q1MovementState, Q1State, Q1Trace, Q1TraceQuery, Q1WeaponStepInput,
     Q1WeaponStepResult, QwMovementInput, QwMovementProfile, QwMovementState, Q1_MOVE_WALK,
 };
+use qa_world::movement::q2::dimensions::Q2_PLAYER_BOUNDS;
+use qa_world::movement::q2::rerelease::Q2RereleaseMovementContext;
+use qa_world::movement::q2::types::{
+    Q2ContentsQuery, Q2MovementInput, Q2MovementProfile, Q2MovementServices, Q2MovementState, Q2RereleaseMovementInput,
+    Q2RereleaseMovementProfile, Q2RereleaseMovementState, Q2State, Q2Surface, Q2TouchContact, Q2Trace, Q2TracePlane,
+    Q2TraceQuery,
+};
+use qa_world::movement::q2::{move_q2_classic, move_q2_rerelease};
 use qa_world::movement::types::{
     ActorAnimationState, AnimationState, ArsenalState, MovementContinuation, MovementEnvironment, MovementExecution,
-    MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, QwUserCommand, TraceContact, TraceHit,
-    TraceShape, UserCommand as WorldUserCommand, WeaponState,
+    MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, Q2RereleaseUserCommand, Q2UserCommand,
+    QwUserCommand, TraceContact, TraceHit, TraceShape, UserCommand as WorldUserCommand, WeaponState,
 };
 use qa_world::movement::Q1MovementParameters;
 use qa_world::session::Simulation;
@@ -507,6 +525,541 @@ impl Q1MovementServices for Q1PlayerServices<'_> {
     }
 }
 
+/// Quake II eye height above the feet origin, matching the spawn
+/// selection and the rerelease movement state seed.
+const Q2_VIEW_HEIGHT: f32 = 22.0;
+
+/// Build Quake II map collision from BSP bytes: parse, decode (merging
+/// leaf contents), and convert into the shared collision core.
+fn build_q2_collision(bytes: &[u8], map: &str) -> Result<Q2Collision, String> {
+    let parsed = read_q2_bsp(bytes, map).map_err(|error| error.to_string())?;
+    let decoded = to_q2_world_geometry(parsed, None).map_err(|error| error.to_string())?;
+    Ok(Q2Collision::new(q2_collision_geometry(&decoded)))
+}
+
+/// Quake II movement services over map collision plus the live server
+/// bodies: world traces run the shared collision core, entity traces
+/// sweep every non-trigger body but the mover.
+pub struct Q2PlayerServices<'s> {
+    ops: NumericOps,
+    collision: &'s Q2Collision,
+    simulation: &'s Simulation,
+    triggers: &'s TriggerTable,
+    ignore: ActorId,
+}
+
+impl<'s> Q2PlayerServices<'s> {
+    /// Borrow the collision world, the server simulation and trigger
+    /// table, ignoring the moving actor's own body in entity traces.
+    #[must_use]
+    pub fn new(
+        collision: &'s Q2Collision,
+        simulation: &'s Simulation,
+        triggers: &'s TriggerTable,
+        ignore: &ActorId,
+    ) -> Self {
+        Self {
+            ops: NumericOps::select(Q2_DONOR_PROFILE).expect("Q2 donor numeric profile"),
+            collision,
+            simulation,
+            triggers,
+            ignore: ignore.clone(),
+        }
+    }
+
+    /// Trace the query against the world brushes and server bodies,
+    /// returning the nearest hit.
+    fn trace_combined(&self, query: &Q2TraceQuery) -> Q2Trace {
+        let shape = if query.point {
+            SceneTraceShape::Point
+        } else {
+            SceneTraceShape::Box {
+                bounds: Bounds {
+                    min: vec3(query.mins[0] as f32, query.mins[1] as f32, query.mins[2] as f32),
+                    max: vec3(query.maxs[0] as f32, query.maxs[1] as f32, query.maxs[2] as f32),
+                },
+            }
+        };
+        let world = scene_expect(
+            self.collision.trace(&SceneTraceQuery {
+                start: query.start,
+                end: query.end,
+                shape,
+                target: SceneQueryTarget::World,
+                policy: SceneTracePolicy::Q2 {
+                    contents_mask: query.mask,
+                    leaf_contents: match query.leaf {
+                        qa_world::collision::LeafContents::Stored => qa_bots::scene::LeafContents::Stored,
+                        qa_world::collision::LeafContents::Merged => qa_bots::scene::LeafContents::Merged,
+                    },
+                },
+                numeric: Q2_DONOR_PROFILE,
+                pass_actor: Some(self.ignore.clone()),
+            }),
+            SceneWorldKind::Q2Bsp,
+            "trace",
+        );
+        let mut best = q2_trace_from_scene(&world);
+        if !query.world_only {
+            let trace_bounds = Bounds {
+                min: vec3(query.mins[0] as f32, query.mins[1] as f32, query.mins[2] as f32),
+                max: vec3(query.maxs[0] as f32, query.maxs[1] as f32, query.maxs[2] as f32),
+            };
+            for actor in self.simulation.body_actors() {
+                if actor == self.ignore || self.triggers.is_trigger(&actor) {
+                    continue;
+                }
+                let Some(body) = self.simulation.body_state(&actor) else {
+                    continue;
+                };
+                let entity = trace_entity_box(
+                    body.origin,
+                    &body.bounds,
+                    &trace_bounds,
+                    query.start,
+                    query.end,
+                    &self.ops,
+                );
+                if entity.fraction < best.fraction {
+                    best = q2_trace_from_entity(&entity, actor);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// Convert a scene trace to a Quake II movement trace result. Surface
+/// value and material default: the collision geometry stores only the
+/// surface name and flags.
+fn q2_trace_from_scene(trace: &qa_bots::scene::TraceResult) -> Q2Trace {
+    let SceneTraceDetail::Q2 {
+        contents,
+        surface,
+        source_plane,
+        secondary,
+    } = &trace.detail
+    else {
+        panic!("Quake II collision returned non-Quake-II trace detail");
+    };
+    Q2Trace {
+        fraction: trace.fraction,
+        end: trace.end,
+        start_solid: trace.start_solid,
+        all_solid: trace.all_solid,
+        contact: match &trace.contact {
+            qa_bots::scene::TraceContact::None => TraceContact::None,
+            qa_bots::scene::TraceContact::Plane { plane } => TraceContact::Plane(*plane),
+        },
+        hit: q2_hit_from_scene(&trace.hit),
+        contents: *contents,
+        surface: surface.as_ref().map(|surface| Q2Surface {
+            name: surface.name.clone(),
+            flags: surface.flags,
+            value: 0,
+            material: String::new(),
+        }),
+        source_plane: Q2TracePlane {
+            normal: source_plane.normal,
+            dist: f64::from(source_plane.distance),
+            plane_type: source_plane.plane_type,
+            signbits: source_plane.signbits,
+        },
+        secondary: secondary.as_ref().map(|impact| {
+            (
+                Q2TracePlane {
+                    normal: impact.plane.normal,
+                    dist: f64::from(impact.plane.distance),
+                    plane_type: impact.plane.plane_type,
+                    signbits: impact.plane.signbits,
+                },
+                impact.surface.as_ref().map(|surface| Q2Surface {
+                    name: surface.name.clone(),
+                    flags: surface.flags,
+                    value: 0,
+                    material: String::new(),
+                }),
+            )
+        }),
+    }
+}
+
+/// Convert a scene hit record to a movement hit record.
+fn q2_hit_from_scene(hit: &SceneTraceHit) -> TraceHit {
+    match hit {
+        SceneTraceHit::None => TraceHit::None,
+        SceneTraceHit::World { model } => TraceHit::World { model: *model as u32 },
+        SceneTraceHit::Actor { actor } => TraceHit::Actor { actor: actor.clone() },
+    }
+}
+
+/// Convert a swept server body to a Quake II movement trace result.
+/// Box bodies carry no brush surface, so surface detail stays empty.
+fn q2_trace_from_entity(trace: &HullTrace, actor: ActorId) -> Q2Trace {
+    Q2Trace {
+        fraction: trace.fraction,
+        end: trace.end,
+        start_solid: trace.start_solid,
+        all_solid: trace.all_solid,
+        contact: if trace.fraction < 1.0 {
+            TraceContact::Plane(trace.plane)
+        } else {
+            TraceContact::None
+        },
+        hit: TraceHit::Actor { actor },
+        contents: 0,
+        surface: None,
+        source_plane: Q2TracePlane {
+            normal: trace.plane.normal,
+            dist: f64::from(trace.plane.distance),
+            plane_type: 0,
+            signbits: 0,
+        },
+        secondary: None,
+    }
+}
+
+impl Q2MovementServices for Q2PlayerServices<'_> {
+    fn numeric(&self) -> NumericOps {
+        self.ops
+    }
+
+    fn trace(&mut self, query: Q2TraceQuery) -> Q2Trace {
+        self.trace_combined(&query)
+    }
+
+    fn point_contents(&mut self, query: Q2ContentsQuery) -> (i32, i32) {
+        let result = scene_expect(
+            self.collision.point_contents(&ScenePointContentsQuery {
+                point: query.point,
+                target: SceneQueryTarget::World,
+                policy: SceneTracePolicy::Q2 {
+                    contents_mask: -1,
+                    leaf_contents: match query.leaf {
+                        qa_world::collision::LeafContents::Stored => qa_bots::scene::LeafContents::Stored,
+                        qa_world::collision::LeafContents::Merged => qa_bots::scene::LeafContents::Merged,
+                    },
+                },
+                numeric: Q2_DONOR_PROFILE,
+                pass_actor: Some(self.ignore.clone()),
+            }),
+            SceneWorldKind::Q2Bsp,
+            "contents",
+        );
+        match result {
+            ScenePointContentsResult::Q2 { stored, merged } => (stored, merged),
+            _ => panic!("Quake II collision returned non-Quake-II contents"),
+        }
+    }
+
+    fn touch(&mut self, _contact: Q2TouchContact, state: Q2State) -> MovementContinuation<Q2State> {
+        MovementContinuation::Continue(state)
+    }
+}
+
+/// Classic Quake II movement profile: no strafe-jump hack, zero air
+/// acceleration override, snapped spawn (donor `movementProfile`).
+#[must_use]
+pub fn q2_profile(provider: ProviderId) -> Q2MovementProfile {
+    Q2MovementProfile {
+        id: provider,
+        clock: qa_core::time::ClockProfile::Q2Classic,
+        numeric: Q2_DONOR_PROFILE,
+        strafejump_hack: false,
+        air_accelerate: 0.0,
+        snap_initial: true,
+    }
+}
+
+/// Rerelease Quake II movement profile: 25ms frames, zero air
+/// acceleration override, no N64 physics (donor `movementProfile`).
+#[must_use]
+pub fn q2_rerelease_profile(provider: ProviderId) -> Q2RereleaseMovementProfile {
+    Q2RereleaseMovementProfile {
+        id: provider,
+        clock: qa_core::time::ClockProfile::Q2Rerelease {
+            frame_milliseconds: 25.0,
+        },
+        numeric: Q2_DONOR_PROFILE,
+        air_accelerate: 0.0,
+        n64_physics: false,
+    }
+}
+
+/// Fresh Quake II arsenal: no weapon yet, no ammo. Weapon grants arrive
+/// with the spawn loadout in the weapons phase.
+#[must_use]
+pub fn q2_empty_arsenal(provider: ProviderId) -> ArsenalState {
+    ArsenalState {
+        provider,
+        active_weapon: None,
+        state: WeaponState::Q2 {
+            gun_frame: 0,
+            state: 0,
+            pending_weapon: None,
+            machinegun_shots: 0,
+            grenade_time: qa_core::time::SourceTime::Seconds(0.0),
+            grenade_blew_up: false,
+        },
+        ammo: Vec::new(),
+    }
+}
+
+/// Resting Quake II animation: standing, no duck or run.
+#[must_use]
+pub fn q2_rest_animation(provider: ProviderId) -> ActorAnimationState {
+    ActorAnimationState {
+        provider,
+        state: AnimationState::Q2 {
+            frame: 0,
+            end_frame: 0,
+            priority: 0,
+            duck: false,
+            run: false,
+        },
+    }
+}
+
+/// Movement profile matching the admitted Quake II provider.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Q2BodyProfile {
+    /// Classic profile.
+    Classic(Q2MovementProfile),
+    /// Rerelease profile.
+    Rerelease(Q2RereleaseMovementProfile),
+}
+
+/// Origin of either Quake II movement state (classic stores eighths).
+fn q2_state_origin(state: &Q2State) -> Vec3 {
+    match state {
+        Q2State::Classic(state) => vec3(
+            state.origin_eighths[0] as f32 / 8.0,
+            state.origin_eighths[1] as f32 / 8.0,
+            state.origin_eighths[2] as f32 / 8.0,
+        ),
+        Q2State::Rerelease(state) => state.origin,
+    }
+}
+
+/// One admitted Quake II player body: the sim actor plus its
+/// authoritative movement state, view angles, and command sequence.
+/// State and profile always match the admitted provider (classic or
+/// rerelease); the step dispatch treats any skew as a contract error.
+pub struct Q2PlayerBody {
+    /// Sim actor id.
+    pub actor: ActorId,
+    owned: OwnedActor,
+    /// Authoritative movement state.
+    pub state: Q2State,
+    /// View angles in degrees.
+    pub view_angles: Vec3,
+    sequence: i32,
+    arsenal: ArsenalState,
+    animation: ActorAnimationState,
+    profile: Q2BodyProfile,
+    rerelease: Q2RereleaseMovementContext,
+}
+
+impl Q2PlayerBody {
+    /// Admit a player: spawn a body at the feet origin and seed
+    /// movement state with the spawn angles for the resolved provider.
+    /// Non-Quake-II dialects are contract errors, never silent classic.
+    pub fn admit(
+        simulation: &mut Simulation,
+        provider: ProviderId,
+        feet: Vec3,
+        angles: Vec3,
+        dialect: Dialect,
+    ) -> Result<Self, String> {
+        let body = BodyState {
+            origin: feet,
+            angles,
+            velocity: vec3(0.0, 0.0, 0.0),
+            bounds: Q2_PLAYER_BOUNDS,
+            ground: None,
+        };
+        let owned = simulation
+            .spawn(provider.clone(), "player", Some(body), None, Vec::new())
+            .map_err(|error| error.to_string())?;
+        let actor = owned.id().clone();
+        let zero = vec3(0.0, 0.0, 0.0);
+        let (state, profile) = match dialect {
+            Dialect::Q2Classic => (
+                Q2State::Classic(Q2MovementState {
+                    move_type: 0,
+                    origin_eighths: [
+                        (f64::from(feet.x) * 8.0) as i32,
+                        (f64::from(feet.y) * 8.0) as i32,
+                        (f64::from(feet.z) * 8.0) as i32,
+                    ],
+                    velocity_eighths: [0, 0, 0],
+                    flags: 0,
+                    time_eight_milliseconds: 0,
+                    gravity: 800.0,
+                    delta_angle_shorts: [0, 0, 0],
+                }),
+                Q2BodyProfile::Classic(q2_profile(provider.clone())),
+            ),
+            Dialect::Q2Rerelease => (
+                Q2State::Rerelease(Q2RereleaseMovementState {
+                    move_type: 0,
+                    origin: feet,
+                    velocity: zero,
+                    flags: 0,
+                    time_milliseconds: 0,
+                    gravity: 800.0,
+                    delta_angles: zero,
+                    view_height: f64::from(Q2_VIEW_HEIGHT),
+                }),
+                Q2BodyProfile::Rerelease(q2_rerelease_profile(provider.clone())),
+            ),
+            other => {
+                return Err(format!(
+                    "Q2 player body needs a Quake II movement dialect, got {other:?}"
+                ));
+            }
+        };
+        Ok(Self {
+            actor,
+            owned,
+            state,
+            view_angles: angles,
+            sequence: 0,
+            arsenal: q2_empty_arsenal(provider.clone()),
+            animation: q2_rest_animation(provider),
+            profile,
+            rerelease: Q2RereleaseMovementContext::new(),
+        })
+    }
+
+    /// Eye origin: feet plus the Quake II view height.
+    #[must_use]
+    pub fn eye(&self) -> Vec3 {
+        let origin = q2_state_origin(&self.state);
+        vec3(origin.x, origin.y, origin.z + Q2_VIEW_HEIGHT)
+    }
+
+    /// Run one authoritative movement step for a user command, then
+    /// commit the resulting origin back to the sim body. The command
+    /// must match the admitted provider; mismatches are contract
+    /// errors, never silent drops.
+    pub fn step(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        collision: &Q2Collision,
+        command: WorldUserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        self.sequence += 1;
+        match command {
+            WorldUserCommand::Q2Classic(command) => self.step_classic(simulation, triggers, collision, command, frame),
+            WorldUserCommand::Q2Rerelease(command) => {
+                self.step_rerelease(simulation, triggers, collision, command, frame)
+            }
+            other => Err(format!(
+                "Q2 player body needs a Quake II user command, got {:?}",
+                other.dialect()
+            )),
+        }
+    }
+
+    /// Shared command fields; Quake II states carry no health, so the
+    /// environment stays at its default.
+    fn fields(&self, frame: &ClockFrame) -> MovementInputFields {
+        MovementInputFields {
+            actor: self.owned.clone(),
+            command_sequence: self.sequence,
+            frame: *frame,
+            shape: TraceShape::Box(Q2_PLAYER_BOUNDS),
+            current_bounds: None,
+            environment: MovementEnvironment::default(),
+            arsenal: self.arsenal.clone(),
+            animation: self.animation.clone(),
+            execution: MovementExecution::Authoritative,
+        }
+    }
+
+    /// Commit a stepped origin back to the sim body.
+    fn commit_origin(&self, simulation: &mut Simulation, origin: Vec3) -> Result<(), String> {
+        simulation
+            .set_body_origin(&self.actor, origin)
+            .map_err(|error| error.to_string())
+    }
+
+    /// One classic step; rerelease-admitted bodies reject classic
+    /// commands instead of stepping the wrong core.
+    fn step_classic(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        collision: &Q2Collision,
+        command: Q2UserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        let (Q2State::Classic(state), Q2BodyProfile::Classic(profile)) = (&self.state, &self.profile) else {
+            return Err("Classic command reached a rerelease-admitted body".to_string());
+        };
+        let input = Q2MovementInput {
+            fields: self.fields(frame),
+            command,
+            state: *state,
+            profile: profile.clone(),
+        };
+        let result = {
+            let mut services = Q2PlayerServices::new(collision, simulation, triggers, &self.actor);
+            move_q2_classic(input, &mut services).map_err(|error| error.to_string())?
+        };
+        match result {
+            MovementOutcome::Active { fields, state } => {
+                self.view_angles = fields.view_angles;
+                self.state = Q2State::Classic(state);
+                let origin = q2_state_origin(&self.state);
+                self.commit_origin(simulation, origin)
+            }
+            MovementOutcome::ActorRemoved { .. } => Err("Q2 player body was removed mid-step".to_string()),
+        }
+    }
+
+    /// One rerelease step; classic-admitted bodies reject rerelease
+    /// commands instead of stepping the wrong core.
+    fn step_rerelease(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        collision: &Q2Collision,
+        command: Q2RereleaseUserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        let (Q2State::Rerelease(state), Q2BodyProfile::Rerelease(profile)) = (&self.state, &self.profile) else {
+            return Err("Rerelease command reached a classic-admitted body".to_string());
+        };
+        let input = Q2RereleaseMovementInput {
+            fields: self.fields(frame),
+            command,
+            state: *state,
+            profile: profile.clone(),
+            view_offset: vec3(0.0, 0.0, Q2_VIEW_HEIGHT),
+            snap_initial: true,
+        };
+        let result = {
+            let mut services = Q2PlayerServices::new(collision, simulation, triggers, &self.actor);
+            move_q2_rerelease(input, &mut services, &mut self.rerelease).map_err(|error| error.to_string())?
+        };
+        match result {
+            qa_world::movement::q2::types::Q2RereleaseMovementResult::Active { fields, state, .. } => {
+                self.view_angles = fields.view_angles;
+                self.state = Q2State::Rerelease(state);
+                let origin = q2_state_origin(&self.state);
+                self.commit_origin(simulation, origin)
+            }
+            qa_world::movement::q2::types::Q2RereleaseMovementResult::ActorRemoved { .. } => {
+                Err("Q2 player body was removed mid-step".to_string())
+            }
+        }
+    }
+}
+
 /// Movement profile matching the admitted Quake I provider.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Q1BodyProfile {
@@ -865,25 +1418,32 @@ pub fn provider_for_product(family: GameFamily, campaign: &str) -> ProviderId {
 }
 
 /// Admitted player body for any family: one enum, one step dispatch.
-/// Quake I is live; Quake II and III arrive as new arms on this same
+/// Quake I and II are live; Quake III arrives as a new arm on this same
 /// enum, extending the existing trace and movement cores.
 pub enum PlayerBody {
     /// Quake I player.
     Q1(Q1PlayerBody),
+    /// Quake II player.
+    Q2(Q2PlayerBody),
 }
 
 /// Map collision for any family, matching [`PlayerBody`].
 pub enum PlayerClip {
     /// Quake I clip hulls.
     Q1(Q1ClipWorld),
+    /// Quake II collision (boxed: the shape store dwarfs the hulls).
+    Q2(Box<Q2Collision>),
 }
 
 /// Admit a player for a catalog family and resolved movement provider,
 /// or `None` when the family has no body wired yet (the camera falls
 /// back to the static spawn, exactly the pre-play behavior, until its
 /// arm lands). A provider outside the family's own is a contract error.
-/// The movement content edition seeds the Quake I profile (gib bounce);
-/// Quake II/III physics ride the dialect and ignore it.
+/// Cross-family movement (donor presets like `q2-q1-q3`) also returns
+/// `None` until every body can step against every map clip; erroring
+/// here would refuse to load the map at all. The movement content
+/// edition seeds the Quake I profile (gib bounce); Quake II/III physics
+/// ride the dialect and ignore it.
 pub fn admit_player(
     simulation: &mut Simulation,
     family: GameFamily,
@@ -893,6 +1453,14 @@ pub fn admit_player(
     dialect: Dialect,
     movement_edition: &str,
 ) -> Result<Option<PlayerBody>, String> {
+    let matched = match family {
+        GameFamily::Q1 => dialect.is_q1(),
+        GameFamily::Q2 => dialect.is_q2(),
+        GameFamily::Q3 => matches!(dialect, Dialect::Q3),
+    };
+    if !matched {
+        return Ok(None);
+    }
     match family {
         GameFamily::Q1 => Ok(Some(PlayerBody::Q1(Q1PlayerBody::admit(
             simulation,
@@ -902,7 +1470,10 @@ pub fn admit_player(
             dialect,
             q1_edition_for_movement(movement_edition),
         )?))),
-        GameFamily::Q2 | GameFamily::Q3 => Ok(None),
+        GameFamily::Q2 => Ok(Some(PlayerBody::Q2(Q2PlayerBody::admit(
+            simulation, provider, feet, angles, dialect,
+        )?))),
+        GameFamily::Q3 => Ok(None),
     }
 }
 
@@ -911,7 +1482,8 @@ pub fn admit_player(
 pub fn build_clip(bytes: &[u8], map: &str, family: GameFamily) -> Result<Option<PlayerClip>, String> {
     match family {
         GameFamily::Q1 => Ok(Some(PlayerClip::Q1(build_q1_clip_world(bytes, map)?))),
-        GameFamily::Q2 | GameFamily::Q3 => Ok(None),
+        GameFamily::Q2 => Ok(Some(PlayerClip::Q2(Box::new(build_q2_collision(bytes, map)?)))),
+        GameFamily::Q3 => Ok(None),
     }
 }
 
@@ -921,6 +1493,7 @@ impl PlayerBody {
     pub fn eye(&self) -> (Vec3, Vec3) {
         match self {
             PlayerBody::Q1(player) => (player.eye(), player.view_angles),
+            PlayerBody::Q2(player) => (player.eye(), player.view_angles),
         }
     }
 
@@ -931,6 +1504,7 @@ impl PlayerBody {
     pub fn actor(&self) -> &ActorId {
         match self {
             PlayerBody::Q1(player) => &player.actor,
+            PlayerBody::Q2(player) => &player.actor,
         }
     }
 
@@ -947,6 +1521,8 @@ impl PlayerBody {
         let frame = simulation.frame();
         match (self, clip) {
             (PlayerBody::Q1(player), PlayerClip::Q1(clip)) => player.step(simulation, triggers, clip, command, &frame),
+            (PlayerBody::Q2(player), PlayerClip::Q2(clip)) => player.step(simulation, triggers, clip, command, &frame),
+            _ => Err("Player body and clip belong to different families".to_string()),
         }
     }
 }
@@ -1037,6 +1613,73 @@ mod tests {
             up_move: 0.0,
             buttons: 0,
             impulse: 0,
+        }
+    }
+
+    fn base1_bsp_bytes() -> Option<Vec<u8>> {
+        let root = steel_corpus_root();
+        if !root.join("q2").is_dir() {
+            eprintln!("skipped: Steel corpus root {} has no Q2 data", root.display());
+            return None;
+        }
+        let catalog = qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()?;
+        let mounts =
+            super::super::windowed_scene::open_product_mounts(&catalog, "q2-classic-baseq2", "maps/base1.bsp").ok()?;
+        mounts
+            .read(qa_content::mounts::ResourceRef::Path("maps/base1.bsp"))
+            .ok()
+    }
+
+    fn q2_server() -> qa_world::server::Server<qa_guest::server::GuestServerLogic> {
+        let options = ApplicationOptions {
+            product: "q2-classic-baseq2".to_string(),
+            map: "maps/base1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = StartupConfig::from_options(&options).unwrap();
+        open_server(&config).unwrap()
+    }
+
+    fn q2_provider() -> ProviderId {
+        ProviderId::new("q2", "baseq2")
+    }
+
+    fn q2_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
+        let records = super::super::play_world::decode_map_entities(bytes, "maps/base1.bsp", BspKind::Q2).unwrap();
+        let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q2).expect("base1 spawn");
+        let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q2_VIEW_HEIGHT);
+        (feet, spawn.angles)
+    }
+
+    fn angle_shorts(angles: Vec3) -> [i32; 3] {
+        [
+            (f64::from(angles.x) * 65536.0 / 360.0) as i32,
+            (f64::from(angles.y) * 65536.0 / 360.0) as i32,
+            (f64::from(angles.z) * 65536.0 / 360.0) as i32,
+        ]
+    }
+
+    fn q2_classic_forward_command(angles: Vec3) -> Q2UserCommand {
+        Q2UserCommand {
+            milliseconds: 16,
+            angle_shorts: angle_shorts(angles),
+            forward_move: 200.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0,
+            impulse: 0,
+            light_level: 0,
+        }
+    }
+
+    fn q2_rerelease_forward_command(angles: Vec3) -> Q2RereleaseUserCommand {
+        Q2RereleaseUserCommand {
+            milliseconds: 16,
+            angles,
+            forward_move: 200.0,
+            side_move: 0.0,
+            buttons: 0,
+            server_frame: 0,
         }
     }
 
@@ -1417,6 +2060,117 @@ mod tests {
         );
         let body = server.simulation().body_state(&player.actor).expect("player body");
         assert_eq!(body.origin, moved);
+    }
+
+    #[test]
+    fn q2_classic_player_walks_forward_on_base1() {
+        let Some(bytes) = base1_bsp_bytes() else {
+            return;
+        };
+        let collision = build_q2_collision(&bytes, "maps/base1.bsp").unwrap();
+        let (feet, angles) = q2_spawn_feet_and_angles(&bytes);
+        let mut server = q2_server();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q2PlayerBody::admit(simulation, q2_provider(), feet, angles, Dialect::Q2Classic).unwrap()
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            let command = WorldUserCommand::Q2Classic(q2_classic_forward_command(angles));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &collision,
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = q2_state_origin(&player.state);
+        let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(
+            horizontal > 10.0,
+            "Q2 classic player did not advance: {moved:?} from {feet:?}"
+        );
+        assert!(
+            moved.z >= feet.z - 72.0 && moved.z <= feet.z + 8.0,
+            "Q2 classic player left the floor: {moved:?} from {feet:?}"
+        );
+        let body = server.simulation().body_state(&player.actor).expect("player body");
+        assert_eq!(body.origin, moved);
+    }
+
+    #[test]
+    fn q2_rerelease_player_walks_forward_on_base1() {
+        let Some(bytes) = base1_bsp_bytes() else {
+            return;
+        };
+        let collision = build_q2_collision(&bytes, "maps/base1.bsp").unwrap();
+        let (feet, angles) = q2_spawn_feet_and_angles(&bytes);
+        let mut server = q2_server();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q2PlayerBody::admit(simulation, q2_provider(), feet, angles, Dialect::Q2Rerelease).unwrap()
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            let command = WorldUserCommand::Q2Rerelease(q2_rerelease_forward_command(angles));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &collision,
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = q2_state_origin(&player.state);
+        let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(
+            horizontal > 10.0,
+            "Q2 rerelease player did not advance: {moved:?} from {feet:?}"
+        );
+        assert!(
+            moved.z >= feet.z - 72.0 && moved.z <= feet.z + 8.0,
+            "Q2 rerelease player left the floor: {moved:?} from {feet:?}"
+        );
+        let body = server.simulation().body_state(&player.actor).expect("player body");
+        assert_eq!(body.origin, moved);
+    }
+
+    #[test]
+    fn q2_provider_mismatches_are_contract_errors() {
+        let mut server = q2_server();
+        let feet = vec3(0.0, 0.0, 32.0);
+        let angles = vec3(0.0, 180.0, 0.0);
+        assert!(Q2PlayerBody::admit(server.simulation_mut(), q2_provider(), feet, angles, Dialect::Q3).is_err());
+        let Some(bytes) = base1_bsp_bytes() else {
+            return;
+        };
+        let collision = build_q2_collision(&bytes, "maps/base1.bsp").unwrap();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q2PlayerBody::admit(simulation, q2_provider(), feet, angles, Dialect::Q2Classic).unwrap()
+        };
+        let frame = command_frame(0, 1.0 / 60.0, 1.0 / 60.0);
+        let (simulation, triggers) = server.simulation_and_triggers();
+        assert!(player
+            .step(
+                simulation,
+                triggers,
+                &collision,
+                WorldUserCommand::Q2Rerelease(q2_rerelease_forward_command(angles)),
+                &frame,
+            )
+            .is_err());
     }
 
     #[test]

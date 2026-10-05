@@ -276,7 +276,11 @@ fn map_content_id(options: &ApplicationOptions) -> &str {
 /// Quake II entity strings share the Quake brace syntax, so they parse
 /// with the Quake reader, matching the donor (`native-q2-map.ts` parses
 /// `world.entities` with `parseQ1Entities`).
-fn decode_map_entities(bytes: &[u8], map: &str, kind: BspKind) -> Result<Vec<Vec<(String, String)>>, PlayWorldError> {
+pub(crate) fn decode_map_entities(
+    bytes: &[u8],
+    map: &str,
+    kind: BspKind,
+) -> Result<Vec<Vec<(String, String)>>, PlayWorldError> {
     match kind {
         BspKind::Q1 => {
             let parsed =

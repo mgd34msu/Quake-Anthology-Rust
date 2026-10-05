@@ -301,6 +301,131 @@ fn no_plane() -> BspPlane {
     }
 }
 
+/// Collision geometry from a decoded Quake II map: models, nodes, planes,
+/// leaves with merged contents, brushes, texture flags, areas, and
+/// visibility copied into the collision record shapes.
+#[must_use]
+pub fn q2_collision_geometry(decoded: &qa_content::bsp2::Q2DecodedMap<'_>) -> Q2CollisionGeometry {
+    use qa_content::bsp::NodeChild;
+
+    fn child(child: &NodeChild) -> Q2BspChild {
+        match child {
+            NodeChild::Node(index) => Q2BspChild::Node(*index as usize),
+            NodeChild::Leaf(index) => Q2BspChild::Leaf(*index as usize),
+        }
+    }
+
+    fn range(range: &qa_content::bsp::IndexRange) -> Q2IndexRange {
+        Q2IndexRange {
+            first: range.first as usize,
+            count: range.count as usize,
+        }
+    }
+
+    fn point(values: &[f32; 3]) -> Vec3 {
+        Vec3 {
+            x: values[0],
+            y: values[1],
+            z: values[2],
+        }
+    }
+
+    let map = &decoded.map;
+    Q2CollisionGeometry {
+        models: map
+            .models
+            .iter()
+            .map(|model| Q2CollisionModel {
+                bounds: Bounds {
+                    min: point(&model.bounds.min),
+                    max: point(&model.bounds.max),
+                },
+                headnode: model.headnode,
+            })
+            .collect(),
+        nodes: map
+            .nodes
+            .iter()
+            .map(|node| Q2CollisionNode {
+                plane: node.plane as usize,
+                children: [child(&node.children[0]), child(&node.children[1])],
+            })
+            .collect(),
+        planes: map
+            .planes
+            .iter()
+            .map(|plane| BspPlane {
+                normal: point(&plane.normal),
+                distance: plane.distance,
+                plane_type: plane.plane_type,
+                signbits: i32::from(plane.signbits),
+            })
+            .collect(),
+        leaves: decoded
+            .leaves
+            .iter()
+            .map(|leaf| Q2CollisionLeaf {
+                cluster: leaf.cluster,
+                area: leaf.area as i32,
+                contents: leaf.contents,
+                merged_contents: leaf.merged_contents,
+                brushes: range(&leaf.brushes),
+            })
+            .collect(),
+        brushes: map
+            .brushes
+            .iter()
+            .map(|brush| Q2CollisionBrush {
+                contents: brush.contents,
+                sides: range(&brush.sides),
+            })
+            .collect(),
+        brush_sides: map
+            .brush_sides
+            .iter()
+            .map(|side| Q2CollisionBrushSide {
+                plane: side.plane as usize,
+                texture_info: side.texture_info,
+            })
+            .collect(),
+        texture_info: map
+            .texture_info
+            .iter()
+            .map(|texture| Q2SurfaceInfo {
+                name: texture.name.clone(),
+                flags: texture.flags,
+            })
+            .collect(),
+        leaf_brushes: map.leaf_brushes.iter().map(|index| *index as usize).collect(),
+        areas: map
+            .areas
+            .iter()
+            .map(|area| Q2CollisionArea {
+                portals: range(&area.portals),
+            })
+            .collect(),
+        area_portals: map
+            .area_portals
+            .iter()
+            .map(|portal| Q2CollisionAreaPortal {
+                portal: portal.portal as i32,
+                other_area: portal.other_area as usize,
+            })
+            .collect(),
+        visibility: map.visibility.as_ref().map(|visibility| Q2CollisionVisibility {
+            clusters: visibility
+                .clusters
+                .iter()
+                .map(|cluster| Q2VisibilityCluster {
+                    pvs_offset: cluster.pvs_offset,
+                    phs_offset: cluster.phs_offset,
+                })
+                .collect(),
+            compressed: visibility.compressed.to_vec(),
+        }),
+    }
+}
+
 /// Scene adapter over Quake II collision geometry.
 pub struct Q2Collision {
     geometry: Q2CollisionGeometry,
@@ -1113,6 +1238,97 @@ mod tests {
     use super::*;
     use qa_core::math::vec3;
     use qa_core::numeric::Q3_BINARY32_PROFILE;
+
+    fn decoded_fixture() -> qa_content::bsp2::Q2DecodedMap<'static> {
+        use qa_content::bsp::{IndexRange, Node, NodeChild, Plane};
+        use qa_content::bsp2::{Q2Bsp, Q2DecodedMap, Q2Format, Q2Leaf, Q2WorldModel};
+        use qa_content::common::Bounds as ContentBounds;
+
+        let map = Q2Bsp {
+            source: "fixture".to_string(),
+            format: Q2Format::Ibsp38,
+            version: 38,
+            lumps: Vec::new(),
+            entities: String::new(),
+            entity_bytes: b"",
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                distance: 64.0,
+                plane_type: 2,
+                signbits: 0,
+            }],
+            vertices: Vec::new(),
+            edges: Vec::new(),
+            surface_edges: Vec::new(),
+            nodes: vec![Node {
+                plane: 0,
+                children: [NodeChild::Leaf(0), NodeChild::Leaf(0)],
+                bounds: ContentBounds {
+                    min: [-64.0, -64.0, -64.0],
+                    max: [64.0, 64.0, 64.0],
+                },
+                faces: IndexRange { first: 0, count: 0 },
+            }],
+            leaves: Vec::new(),
+            leaf_faces: Vec::new(),
+            leaf_brushes: Vec::new(),
+            texture_info: Vec::new(),
+            faces: Vec::new(),
+            brushes: Vec::new(),
+            brush_sides: Vec::new(),
+            models: vec![Q2WorldModel {
+                bounds: ContentBounds {
+                    min: [-64.0, -64.0, -64.0],
+                    max: [64.0, 64.0, 64.0],
+                },
+                origin: [0.0, 0.0, 0.0],
+                headnode: 0,
+                faces: IndexRange { first: 0, count: 0 },
+            }],
+            areas: Vec::new(),
+            area_portals: Vec::new(),
+            visibility: None,
+            lighting: b"",
+            pop: b"",
+            bspx: None,
+            diagnostics: Vec::new(),
+        };
+        Q2DecodedMap {
+            map,
+            leaves: vec![Q2Leaf {
+                contents: 1,
+                merged_contents: 3,
+                cluster: 0,
+                area: 0,
+                bounds: ContentBounds {
+                    min: [-64.0, -64.0, -64.0],
+                    max: [64.0, 64.0, 64.0],
+                },
+                faces: IndexRange { first: 0, count: 0 },
+                brushes: IndexRange { first: 0, count: 0 },
+            }],
+            faces: Vec::new(),
+            texture_info: Vec::new(),
+            models: Vec::new(),
+            decoupled_lightmaps: None,
+            lightgrid: None,
+            face_normals: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn loader_copies_decoded_records_into_collision_shapes() {
+        let geometry = q2_collision_geometry(&decoded_fixture());
+        assert_eq!(geometry.models.len(), 1);
+        assert_eq!(geometry.models[0].headnode, 0);
+        assert_eq!(geometry.nodes[0].plane, 0);
+        assert_eq!(geometry.nodes[0].children, [Q2BspChild::Leaf(0), Q2BspChild::Leaf(0)]);
+        assert_eq!(geometry.planes[0].distance, 64.0);
+        assert_eq!(geometry.leaves[0].contents, 1);
+        assert_eq!(geometry.leaves[0].merged_contents, 3);
+        assert!(geometry.visibility.is_none());
+    }
 
     use crate::scene::{LeafContents, TraceShape as SceneShape};
 
