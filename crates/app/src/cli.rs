@@ -1738,10 +1738,46 @@ mod tests {
 
     #[test]
     fn dedicated_run_reports_stats() {
-        let (code, stdout, _) = run_text(&["--dedicated", "--movement", "q3", "--frames", "4"]);
+        // The success case needs a real Q1 corpus; skip loudly without one.
+        let Ok(corpus) = std::env::var("QA_MUSE_Q1_CORPUS_PATH") else {
+            eprintln!(
+                "SKIP dedicated_run_reports_stats: set QA_MUSE_Q1_CORPUS_PATH to a corpus root with q1-classic-id1"
+            );
+            return;
+        };
+        let (code, stdout, _) = run_text(&[
+            "--dedicated",
+            "--content-root",
+            corpus.as_str(),
+            "--game",
+            "q1-classic-id1",
+            "--map",
+            "start",
+            "--frames",
+            "4",
+        ]);
         assert_eq!(code, 0);
         assert!(stdout.contains("4 host frames"), "{stdout}");
         assert!(stdout.contains("server ticks"), "{stdout}");
+    }
+
+    #[test]
+    fn dedicated_without_content_refuses_at_cli() {
+        let root = std::env::temp_dir().join(format!("qa-muse-no-content-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("empty root");
+        let (code, _, stderr) = run_text(&[
+            "--dedicated",
+            "--content-root",
+            root.to_str().expect("utf8 root"),
+            "--game",
+            "q1-classic-id1",
+            "--map",
+            "start",
+            "--frames",
+            "4",
+        ]);
+        assert_eq!(code, 1);
+        assert!(stderr.contains("refuse to host a stub map"), "{stderr}");
     }
 
     #[test]
