@@ -1116,8 +1116,12 @@ fn validate_q2_bsp(map: &Q2Bsp<'_>) -> Result<(), BinaryError> {
         if face.edges.count < 3 {
             return Err(fail("Face has fewer than three edges".to_string()));
         }
+        // qsrc: lightofs -1 means unlit (rerelease decoupled-lightmap maps
+        // set every face to -1); only non-negative offsets index the lump.
         if face.lighting_offset < -1
-            || (!map.lighting.is_empty() && face.lighting_offset as usize >= map.lighting.len())
+            || (face.lighting_offset >= 0
+                && !map.lighting.is_empty()
+                && face.lighting_offset as usize >= map.lighting.len())
         {
             return Err(fail("Invalid face lighting offset".to_string()));
         }
@@ -1486,14 +1490,19 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with_lighting(&[])
+    }
+
+    fn fixture_with_lighting(lighting: &[u8]) -> Fixture {
         // Minimal valid map: 1 plane, 4 vertices, 4 edges, 4 surface edges,
         // 1 node, 2 leaves (solid + empty), 1 texture, 1 face, 1 model,
-        // 1 brush + 1 side, 1 area + 1 portal, empty visibility/lighting.
+        // 1 brush + 1 side, 1 area + 1 portal, empty visibility.
         let mut lumps: Vec<Vec<u8>> = Vec::new();
         for _ in 0..LUMP_COUNT {
             lumps.push(Vec::new());
         }
         lumps[LUMP_ENTITIES] = b"{\"classname\" \"worldspawn\"}\n".to_vec();
+        lumps[LUMP_LIGHTING] = lighting.to_vec();
         let mut writer = BinaryWriter::new(20);
         for value in [0.0f32, 0.0, 1.0, 8.0] {
             writer.f32(value).unwrap();
@@ -1614,6 +1623,17 @@ mod tests {
             file.bytes(lump).unwrap();
         }
         Fixture { bytes: file.finish() }
+    }
+
+    #[test]
+    fn q2_unlit_face_with_lighting_present() {
+        // Rerelease decoupled-lightmap maps set every face lightofs to -1
+        // while shipping a lighting lump: -1 must not index the lump.
+        let fixture = fixture_with_lighting(&[0u8; 64]);
+        let map = read_q2_bsp(&fixture.bytes, "<test>").unwrap();
+        assert_eq!(map.faces.len(), 1);
+        assert_eq!(map.faces[0].lighting_offset, -1);
+        assert_eq!(map.lighting.len(), 64);
     }
 
     #[test]
