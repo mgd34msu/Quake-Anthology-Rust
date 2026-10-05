@@ -52,6 +52,9 @@ use qa_platform::sdl_render_context::SdlWorkerRenderContext;
 use qa_world::session::SessionSeat;
 
 use super::audio_bridge::{AudioBridge, MountsSoundContent};
+use super::frame_time::{
+    nq_frame_due, qw_fps, qw_frame_due, source_frame_milliseconds, FrameTimeControls, FrameTimeHost,
+};
 use super::input::{dialect_family, seat_sample, user_command, LocalPlayer, NullRegistry};
 use super::play_world::{load_play_world, PlayWorld};
 use super::renderer::{
@@ -1211,40 +1214,6 @@ fn count_non_black(pixels: &[u8]) -> usize {
         .count()
 }
 
-/// NetQuake host-frame gate: run the frame unless it arrived too
-/// early (`Host_FilterTime`, `quake/WinQuake/host.c:501-522`).
-///
-/// Local definition: the coordinator-owned
-/// `bootstrap::frame_time` helpers were not yet landed, so the live
-/// loop carries the gate until that swap (same signatures).
-#[must_use]
-pub fn nq_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, timedemo: bool) -> bool {
-    timedemo || realtime_seconds - old_realtime_seconds >= 1.0 / 72.0
-}
-
-/// QuakeWorld host-frame gate (`Host_Frame`,
-/// `quake/QW/client/cl_main.c:1313-1328`), including the old-beats-new
-/// clock reset.
-#[must_use]
-pub fn qw_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, fps: f64, timedemo: bool) -> bool {
-    let old = if old_realtime_seconds > realtime_seconds {
-        0.0
-    } else {
-        old_realtime_seconds
-    };
-    timedemo || realtime_seconds - old >= 1.0 / fps
-}
-
-/// QuakeWorld fps rule (`quake/QW/client/cl_main.c:1317-1320`).
-#[must_use]
-pub fn qw_fps(maxfps: f64, rate: f64) -> f64 {
-    if maxfps != 0.0 {
-        maxfps.clamp(30.0, 72.0)
-    } else {
-        (rate / 80.0).clamp(30.0, 72.0)
-    }
-}
-
 /// Stock host-frame clock (`realtime`/`oldrealtime`) for the windowed
 /// play loop. `realtime` advances every display frame; `oldrealtime`
 /// updates to `realtime` after a run frame, exactly like
@@ -1253,6 +1222,14 @@ pub fn qw_fps(maxfps: f64, rate: f64) -> f64 {
 pub struct HostFrameGate {
     realtime_s: f64,
     oldrealtime_s: f64,
+    /// Raw seconds since the last run frame, stashed when [`sim_due`]
+    /// passes: stock `host_frametime` before the engine clamp
+    /// (`host.c` for NetQuake, `cl_main.c:1325` for QuakeWorld).
+    ///
+    /// [`sim_due`]: HostFrameGate::sim_due
+    due_frame_s: f64,
+    /// NetQuake `host_framerate` override in seconds (stock default 0).
+    pub nq_host_framerate: f64,
     /// QuakeWorld `cl_maxfps` (stock default 0).
     pub qw_maxfps: f64,
     /// QuakeWorld `rate` (stock default 2500).
@@ -1268,6 +1245,8 @@ impl HostFrameGate {
         Self {
             realtime_s: 0.0,
             oldrealtime_s: 0.0,
+            due_frame_s: 0.0,
+            nq_host_framerate: 0.0,
             qw_maxfps: 0.0,
             qw_rate: 2500.0,
             timedemo: false,
@@ -1298,9 +1277,32 @@ impl HostFrameGate {
             _ => true,
         };
         if due {
+            self.due_frame_s = self.realtime_s - self.oldrealtime_s;
             self.oldrealtime_s = self.realtime_s;
         }
         due
+    }
+
+    /// Stock host-frametime for a due Q1 sim frame, in milliseconds:
+    /// the raw `realtime - oldrealtime` span through the engine clamp
+    /// (`host.c` for NetQuake, `cl_main.c:1325-1328` for QuakeWorld),
+    /// via the shared [`source_frame_milliseconds`] transform. Call
+    /// only after [`sim_due`](Self::sim_due) passes.
+    pub fn sim_frame_ms(&self, dialect: Dialect) -> f64 {
+        let raw_ms = self.due_frame_s * 1000.0;
+        let controls = FrameTimeControls {
+            timescale: 1.0,
+            fixedtime: 0.0,
+            host_framerate: self.nq_host_framerate,
+            camera_mode: 0.0,
+            maxfps: self.qw_maxfps,
+            rate: self.qw_rate,
+        };
+        let host = FrameTimeHost {
+            dedicated: false,
+            local_server: true,
+        };
+        source_frame_milliseconds(dialect, raw_ms, &controls, &host).unwrap_or(raw_ms)
     }
 }
 
@@ -1551,6 +1553,16 @@ impl WindowedStartupBackend {
         if !self.host_gate.sim_due(world.dialect()) {
             return;
         }
+        // Stock host-frametime: the span since the last run frame
+        // through the engine clamp, so a display hitch never feeds a
+        // multi-second step into Q1 physics. Non-Q1 dialects keep the
+        // raw display elapsed.
+        let dialect = world.dialect();
+        let sim_ms = if dialect == Dialect::Q1Netquake || dialect == Dialect::Q1Quakeworld {
+            self.host_gate.sim_frame_ms(dialect)
+        } else {
+            elapsed_ms
+        };
         let command = if self.world.as_ref().is_some_and(PlayWorld::has_player) {
             self.sample_player_command()
         } else {
@@ -1561,7 +1573,7 @@ impl WindowedStartupBackend {
         };
         // Tick first: the player step below reads the fresh clock frame
         // for its step length, so a tickless step would stand still.
-        if let Err(error) = world.server_mut().tick_wall_milliseconds(elapsed_ms) {
+        if let Err(error) = world.server_mut().tick_wall_milliseconds(sim_ms) {
             eprintln!("windowed: server tick failed ({error})");
         }
         if let Some(command) = command {
@@ -3219,36 +3231,6 @@ mod tests {
     }
 
     #[test]
-    fn netquake_gate_skips_sub_72hz_frames() {
-        // Stock `Host_FilterTime` (`host.c:505`): skip when the frame
-        // arrives less than 1/72s after the last run frame.
-        assert!(!nq_frame_due(0.010, 0.0, false));
-        assert!(nq_frame_due(1.0 / 72.0, 0.0, false));
-        assert!(nq_frame_due(0.100, 0.0, false));
-        assert!(nq_frame_due(0.001, 0.0, true));
-    }
-
-    #[test]
-    fn quakeworld_gate_follows_fps_with_clock_reset() {
-        // Stock `Host_Frame` (`cl_main.c:1314-1323`).
-        assert!(!qw_frame_due(0.010, 0.0, 72.0, false));
-        assert!(qw_frame_due(1.0 / 72.0, 0.0, 72.0, false));
-        assert!(qw_frame_due(0.001, 0.0, 72.0, true));
-        // A backwards clock resets instead of stalling (`cl_main.c:1314-1315`).
-        assert!(qw_frame_due(1.0, 5.0, 72.0, false));
-    }
-
-    #[test]
-    fn quakeworld_fps_matches_stock_rule() {
-        // Stock fps selection (`cl_main.c:1317-1320`).
-        assert_eq!(qw_fps(60.0, 2500.0), 60.0);
-        assert_eq!(qw_fps(100.0, 2500.0), 72.0);
-        assert_eq!(qw_fps(10.0, 2500.0), 30.0);
-        assert_eq!(qw_fps(0.0, 2500.0), 31.25);
-        assert_eq!(qw_fps(0.0, 100.0), 30.0);
-    }
-
-    #[test]
     fn host_gate_skips_early_sim_frames_per_dialect() {
         use qa_core::cmd::Dialect;
 
@@ -3282,5 +3264,36 @@ mod tests {
         let mut gate = HostFrameGate::new();
         gate.advance(0.001);
         assert!(gate.sim_due(Dialect::Q2Classic));
+    }
+
+    #[test]
+    fn host_gate_clamps_hitch_frametimes_per_dialect() {
+        use qa_core::cmd::Dialect;
+
+        // A 5s display hitch must not reach Q1 physics: NetQuake caps
+        // at 100ms (`host.c`), QuakeWorld at 200ms (`cl_main.c:1328`).
+        let mut gate = HostFrameGate::new();
+        gate.advance(5.0);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), 100.0);
+
+        let mut gate = HostFrameGate::new();
+        gate.advance(5.0);
+        assert!(gate.sim_due(Dialect::Q1Quakeworld));
+        assert_eq!(gate.sim_frame_ms(Dialect::Q1Quakeworld), 200.0);
+
+        // NetQuake floors tiny spans at 1ms (`host.c`).
+        let mut gate = HostFrameGate::new();
+        gate.timedemo = true;
+        gate.advance(0.0001);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), 1.0);
+
+        // NetQuake `host_framerate` overrides the measured span.
+        let mut gate = HostFrameGate::new();
+        gate.nq_host_framerate = 0.05;
+        gate.advance(5.0);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), 50.0);
     }
 }
