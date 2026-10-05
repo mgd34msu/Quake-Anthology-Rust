@@ -303,7 +303,7 @@ mod tests {
             inventory: source.clone(),
             r#match: source.clone(),
             transition: source.clone(),
-            execution: vec![ExecutionModule::Typescript {
+            execution: vec![ExecutionModule::Builtin {
                 owner: source.clone(),
                 implementation: ProviderId::new("q1", "official"),
                 role: ModuleRole::ServerGame,

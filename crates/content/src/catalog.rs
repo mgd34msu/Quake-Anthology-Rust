@@ -977,7 +977,7 @@ pub fn source_program_implementation(product: &ProductExpectation) -> ProviderId
 
 fn execution_owner<Artifact>(module: &ExecutionModule<Artifact>) -> &ProviderReference {
     match module {
-        ExecutionModule::Typescript { owner, .. }
+        ExecutionModule::Builtin { owner, .. }
         | ExecutionModule::Quakec { owner, .. }
         | ExecutionModule::Qvm { owner, .. }
         | ExecutionModule::Native { owner, .. } => owner,
@@ -986,7 +986,7 @@ fn execution_owner<Artifact>(module: &ExecutionModule<Artifact>) -> &ProviderRef
 
 fn execution_role<Artifact>(module: &ExecutionModule<Artifact>) -> ModuleRole {
     match module {
-        ExecutionModule::Typescript { role, .. }
+        ExecutionModule::Builtin { role, .. }
         | ExecutionModule::Qvm { role, .. }
         | ExecutionModule::Native { role, .. } => *role,
         ExecutionModule::Quakec { .. } => ModuleRole::ServerGame,
@@ -1007,7 +1007,7 @@ pub fn selected_source_program<Artifact>(
             && execution_owner(module).content == entities.content
     });
     let replacement = match module {
-        Some(ExecutionModule::Typescript { implementation, .. }) => Some(implementation),
+        Some(ExecutionModule::Builtin { implementation, .. }) => Some(implementation),
         _ => None,
     };
     match replacement {
@@ -3912,7 +3912,7 @@ fn required_content(launch: &SelectedLaunch) -> Vec<ContentId> {
         .execution
         .iter()
         .map(|module| match module {
-            ExecutionModule::Typescript { owner, .. }
+            ExecutionModule::Builtin { owner, .. }
             | ExecutionModule::Quakec { owner, .. }
             | ExecutionModule::Qvm { owner, .. }
             | ExecutionModule::Native { owner, .. } => owner,
@@ -3931,7 +3931,7 @@ fn required_content(launch: &SelectedLaunch) -> Vec<ContentId> {
     }
     contents.extend(references.into_iter().map(|reference| reference.content.clone()));
     contents.extend(launch.execution.iter().filter_map(|module| match module {
-        ExecutionModule::Typescript { .. } => None,
+        ExecutionModule::Builtin { .. } => None,
         ExecutionModule::Quakec { artifact, .. }
         | ExecutionModule::Qvm { artifact, .. }
         | ExecutionModule::Native { artifact, .. } => Some(artifact.content.clone()),
@@ -4040,7 +4040,7 @@ pub fn prepare_launch_mount_plan(
     let mut execution_roles: HashSet<String> = HashSet::new();
     for module in &selected.execution {
         let (owner, role) = match module {
-            ExecutionModule::Typescript { owner, role, .. }
+            ExecutionModule::Builtin { owner, role, .. }
             | ExecutionModule::Qvm { owner, role, .. }
             | ExecutionModule::Native { owner, role, .. } => (owner, *role),
             // The donor quakec module carries a constant `server-game` role.
@@ -4068,7 +4068,7 @@ pub fn prepare_launch_mount_plan(
     let mut artifacts: Vec<(String, HashSet<ContentId>)> = Vec::new();
     for module in &selected.execution {
         let artifact = match module {
-            ExecutionModule::Typescript { .. } => continue,
+            ExecutionModule::Builtin { .. } => continue,
             ExecutionModule::Quakec { artifact, .. }
             | ExecutionModule::Qvm { artifact, .. }
             | ExecutionModule::Native { artifact, .. } => artifact,
@@ -4179,12 +4179,12 @@ pub fn resolve_launch(
     let mut execution: Vec<ResolvedExecutionModule> = Vec::new();
     for module in &selected.execution {
         match module {
-            ExecutionModule::Typescript {
+            ExecutionModule::Builtin {
                 owner,
                 implementation,
                 role,
                 api,
-            } => execution.push(ExecutionModule::Typescript {
+            } => execution.push(ExecutionModule::Builtin {
                 owner: owner.clone(),
                 implementation: implementation.clone(),
                 role: *role,
@@ -5323,7 +5323,7 @@ mod tests {
             selected_source_program(&empty, &entities).unwrap(),
             Some("baseq2".to_string())
         );
-        let replacement: ExecutionModule<ResourceRequest> = ExecutionModule::Typescript {
+        let replacement: ExecutionModule<ResourceRequest> = ExecutionModule::Builtin {
             owner: entities.clone(),
             implementation: provider_id("q2:source/classic/xatrix"),
             role: ModuleRole::ServerGame,
@@ -5333,7 +5333,7 @@ mod tests {
             selected_source_program(&[replacement], &entities).unwrap(),
             Some("xatrix".to_string())
         );
-        let unknown: ExecutionModule<ResourceRequest> = ExecutionModule::Typescript {
+        let unknown: ExecutionModule<ResourceRequest> = ExecutionModule::Builtin {
             owner: entities.clone(),
             implementation: provider_id("q2:source/classic/nope"),
             role: ModuleRole::ServerGame,
@@ -6600,7 +6600,7 @@ mod tests {
         let content = seam_content();
         let mut preset = seam_preset(&content);
         let owner = seam_reference("q1", "official", &content);
-        let module = |implementation: &str| ExecutionModule::Typescript {
+        let module = |implementation: &str| ExecutionModule::Builtin {
             owner: owner.clone(),
             implementation: ProviderId::new("ts", implementation),
             role: ModuleRole::ServerGame,
@@ -6639,7 +6639,7 @@ mod tests {
             let mut preset = seam_preset(&content);
             let owner = seam_reference("q1", "official", &content);
             preset.execution = vec![
-                ExecutionModule::Typescript {
+                ExecutionModule::Builtin {
                     owner: owner.clone(),
                     implementation: ProviderId::new("ts", "game"),
                     role: ModuleRole::ServerGame,
@@ -6707,7 +6707,7 @@ mod tests {
             assert_eq!(recipe.map.geometry_content, content);
             assert_eq!(recipe.map.geometry.requested_path, "maps/test.bsp");
             assert_eq!(recipe.execution.len(), 4);
-            assert!(matches!(recipe.execution[0], ExecutionModule::Typescript { .. }));
+            assert!(matches!(recipe.execution[0], ExecutionModule::Builtin { .. }));
             assert!(
                 matches!(recipe.execution[1], ExecutionModule::Qvm { api: Q3ApiIdentity::Qagame(v), .. } if v == server)
             );

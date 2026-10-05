@@ -463,8 +463,8 @@ fn write_value_layout(layout: &GuestValueLayout) -> SaveJson {
 /// Saved guest callback reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuestCallbackRef {
-    /// TypeScript provider callback.
-    Typescript {
+    /// Built-in provider callback.
+    Builtin {
         /// Provider.
         provider: String,
         /// Callback.
@@ -500,7 +500,7 @@ fn read_callback_ref(reader: SaveReader) -> Result<GuestCallbackRef, GuestError>
         .field("kind")
         .choice_str(&["typescript", "quakec", "qvm", "native-guest"])?;
     match kind.as_str() {
-        "typescript" => Ok(GuestCallbackRef::Typescript {
+        "typescript" => Ok(GuestCallbackRef::Builtin {
             provider: namespaced(reader.field("provider"))?,
             callback: namespaced(reader.field("callback"))?,
         }),
@@ -522,7 +522,7 @@ fn read_callback_ref(reader: SaveReader) -> Result<GuestCallbackRef, GuestError>
 
 fn write_callback_ref(reference: &GuestCallbackRef) -> SaveJson {
     match reference {
-        GuestCallbackRef::Typescript { provider, callback } => obj(vec![
+        GuestCallbackRef::Builtin { provider, callback } => obj(vec![
             ("kind", str("typescript")),
             ("provider", str(provider)),
             ("callback", str(callback)),
@@ -626,8 +626,8 @@ fn write_private(state: &GuestPrivateState) -> SaveJson {
 /// Guest checkpoint: one of four guest kinds plus shared module state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GuestCheckpoint {
-    /// TypeScript guest with retained host state.
-    Typescript {
+    /// Built-in guest with retained host state.
+    Builtin {
         /// Module.
         module: ModuleIdentity,
         /// Random states.
@@ -738,7 +738,7 @@ pub fn read_guest(reader: SaveReader) -> Result<GuestCheckpoint, GuestError> {
         .field("kind")
         .choice_str(&["typescript", "quakec", "qvm", "native-guest"])?;
     match kind.as_str() {
-        "typescript" => Ok(GuestCheckpoint::Typescript {
+        "typescript" => Ok(GuestCheckpoint::Builtin {
             module,
             random,
             callbacks,
@@ -842,7 +842,7 @@ type GuestHeader<'a> = (
 pub fn write_guest(checkpoint: &GuestCheckpoint) -> SaveJson {
     #[allow(clippy::cast_possible_wrap)]
     let (kind, module, random, callbacks, rest): GuestHeader<'_> = match checkpoint {
-        GuestCheckpoint::Typescript {
+        GuestCheckpoint::Builtin {
             module,
             random,
             callbacks,
@@ -1002,7 +1002,7 @@ mod tests {
             bytes: vec![1, 2, 3],
         };
         let checkpoints = vec![
-            GuestCheckpoint::Typescript {
+            GuestCheckpoint::Builtin {
                 module: module(),
                 random: vec![SaveRandomState::Q3Lcg { seed: 1, draws: 2 }],
                 callbacks: Vec::new(),

@@ -629,7 +629,7 @@ mod tests {
         bad.api = GameApi::Q2RereleaseGame;
         assert!(prepare_classic_guest(&bad, &mounts).is_err());
         let mut bad = classic_execution();
-        bad.implementation = ExecutionImplementation::Typescript {
+        bad.implementation = ExecutionImplementation::Builtin {
             implementation: "x".to_string(),
         };
         assert!(prepare_classic_guest(&bad, &mounts).is_err());

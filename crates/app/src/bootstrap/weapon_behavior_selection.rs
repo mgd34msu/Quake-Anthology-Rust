@@ -529,7 +529,7 @@ where
 /// has no shared projectile behavior hook.
 fn native_server_game_present<Artifact>(execution: &[ExecutionModule<Artifact>]) -> bool {
     execution.iter().any(|module| match module {
-        ExecutionModule::Typescript { .. } => false,
+        ExecutionModule::Builtin { .. } => false,
         ExecutionModule::Quakec { .. } => true,
         ExecutionModule::Qvm { role, .. } | ExecutionModule::Native { role, .. } => *role == ModuleRole::ServerGame,
     })
@@ -1327,7 +1327,7 @@ mod tests {
 
     #[test]
     fn native_server_game_detection_matches_donor() {
-        let typescript_server: ExecutionModule<ResourceRequest> = ExecutionModule::Typescript {
+        let typescript_server: ExecutionModule<ResourceRequest> = ExecutionModule::Builtin {
             owner: provider_ref(),
             implementation: ProviderId::new("engine", "typescript"),
             role: ModuleRole::ServerGame,

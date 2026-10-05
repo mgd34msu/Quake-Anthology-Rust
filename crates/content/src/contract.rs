@@ -872,8 +872,8 @@ pub type NativeModuleProfile = NativeAbi;
 /// Execution module; execution form chooses no engine behavior.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionModule<Artifact> {
-    /// TypeScript implementation.
-    Typescript {
+    /// Built-in implementation.
+    Builtin {
         /// Owning provider.
         owner: ProviderReference,
         /// Implementation provider.

@@ -462,7 +462,7 @@ fn typescript_execution(
         GameFamily::Q2 => SourceModuleApi::Q2ClassicGame,
         GameFamily::Q3 => SourceModuleApi::Q3Qagame(8),
     };
-    ExecutionModule::Typescript {
+    ExecutionModule::Builtin {
         owner: provider.clone(),
         implementation,
         role: ModuleRole::ServerGame,
@@ -1715,7 +1715,7 @@ impl<'a, P: ApplicationContentPreparer> LoadedApplicationContent<'a, P> {
         if !self.recipe.weapon_behaviors.is_empty()
             && self.recipe.execution.iter().any(|module| match module {
                 ExecutionModule::Quakec { .. } => true,
-                ExecutionModule::Typescript { .. } => false,
+                ExecutionModule::Builtin { .. } => false,
                 ExecutionModule::Native { role, .. } | ExecutionModule::Qvm { role, .. } => {
                     *role == ModuleRole::ServerGame
                 }
@@ -1963,14 +1963,14 @@ fn module_kind(module: &ResolvedExecutionModule) -> &'static str {
         ExecutionModule::Qvm { .. } => "qvm",
         ExecutionModule::Quakec { .. } => "quakec",
         ExecutionModule::Native { .. } => "native",
-        ExecutionModule::Typescript { .. } => "typescript",
+        ExecutionModule::Builtin { .. } => "typescript",
     }
 }
 
 fn module_role(module: &ResolvedExecutionModule) -> ModuleRole {
     match module {
         ExecutionModule::Quakec { .. } => ModuleRole::ServerGame,
-        ExecutionModule::Typescript { role, .. }
+        ExecutionModule::Builtin { role, .. }
         | ExecutionModule::Native { role, .. }
         | ExecutionModule::Qvm { role, .. } => *role,
     }
@@ -1978,7 +1978,7 @@ fn module_role(module: &ResolvedExecutionModule) -> ModuleRole {
 
 fn module_owner(module: &ResolvedExecutionModule) -> &ProviderReference {
     match module {
-        ExecutionModule::Typescript { owner, .. }
+        ExecutionModule::Builtin { owner, .. }
         | ExecutionModule::Native { owner, .. }
         | ExecutionModule::Qvm { owner, .. }
         | ExecutionModule::Quakec { owner, .. } => owner,
@@ -1990,7 +1990,7 @@ fn module_artifact_path(module: &ResolvedExecutionModule) -> &str {
         ExecutionModule::Qvm { artifact, .. }
         | ExecutionModule::Native { artifact, .. }
         | ExecutionModule::Quakec { artifact, .. } => artifact.requested_path.as_str(),
-        ExecutionModule::Typescript { .. } => "",
+        ExecutionModule::Builtin { .. } => "",
     }
 }
 
@@ -2205,7 +2205,7 @@ where
                     return Err(ContentError::NativeQ2Rejected);
                 }
             }
-            ExecutionModule::Typescript { .. } => {}
+            ExecutionModule::Builtin { .. } => {}
             module => {
                 return Err(ContentError::UnsupportedModule(format!(
                     "Application cannot execute {} {} module {} ({}): this executor is not joined to the shared simulation. Select a supported TypeScript execution module.",
@@ -2611,7 +2611,7 @@ mod tests {
         assert_eq!(preset.map.geometry.content.as_str(), "q2-classic-baseq2");
         assert_eq!(preset.map.entities.provider, ProviderId::new("q2", "official"));
         assert_eq!(preset.execution.len(), 1);
-        assert!(matches!(preset.execution[0], ExecutionModule::Typescript { .. }));
+        assert!(matches!(preset.execution[0], ExecutionModule::Builtin { .. }));
         assert_eq!(preset.timing.len(), 3);
         assert_eq!(preset.weapons.len(), 1);
         assert!(matches!(preset.campaign, CampaignSelection::Campaign { .. }));
@@ -2918,7 +2918,7 @@ mod tests {
     }
 
     fn typescript_execution(owner: &ProviderReference) -> ResolvedExecutionModule {
-        ExecutionModule::Typescript {
+        ExecutionModule::Builtin {
             owner: owner.clone(),
             implementation: ProviderId::new("q1", "official"),
             role: ModuleRole::ServerGame,

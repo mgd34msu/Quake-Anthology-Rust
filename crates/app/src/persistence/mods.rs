@@ -350,7 +350,7 @@ mod tests {
                     modules: vec![module()],
                     providers: vec![("q2:mod".to_string(), "q2:mod-state".to_string(), 1)],
                 },
-                guests: vec![GuestCheckpoint::Typescript {
+                guests: vec![GuestCheckpoint::Builtin {
                     module: module(),
                     random: Vec::new(),
                     callbacks: Vec::new(),

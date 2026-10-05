@@ -950,8 +950,8 @@ pub struct ResolvedExecutionModule {
 /// Execution implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionImplementation {
-    /// TypeScript implementation.
-    Typescript {
+    /// Built-in implementation.
+    Builtin {
         /// Implementation.
         implementation: String,
     },
@@ -978,7 +978,7 @@ pub enum ExecutionImplementation {
 #[must_use]
 pub fn module_artifact(module: &ResolvedExecutionModule) -> Option<&ResolvedResourceReference> {
     match &module.implementation {
-        ExecutionImplementation::Typescript { .. } => None,
+        ExecutionImplementation::Builtin { .. } => None,
         ExecutionImplementation::Quakec { artifact }
         | ExecutionImplementation::Qvm { artifact }
         | ExecutionImplementation::Native { artifact, .. } => Some(artifact),
@@ -994,7 +994,7 @@ pub fn map_module_artifact<E>(
 ) -> Result<ResolvedExecutionModule, E> {
     let mut mapped = module.clone();
     match &mut mapped.implementation {
-        ExecutionImplementation::Typescript { .. } => {}
+        ExecutionImplementation::Builtin { .. } => {}
         ExecutionImplementation::Quakec { artifact }
         | ExecutionImplementation::Qvm { artifact }
         | ExecutionImplementation::Native { artifact, .. } => {
@@ -1045,7 +1045,7 @@ fn read_execution(reader: SaveReader) -> Result<ResolvedExecutionModule, Persist
             owner,
             role,
             api,
-            implementation: ExecutionImplementation::Typescript { implementation },
+            implementation: ExecutionImplementation::Builtin { implementation },
         });
     }
     let artifact = read_resource(reader.field("artifact"))?;
@@ -1111,7 +1111,7 @@ fn write_execution(module: &ResolvedExecutionModule) -> SaveJson {
         ("role", str(&module.role)),
     ];
     match &module.implementation {
-        ExecutionImplementation::Typescript { implementation } => {
+        ExecutionImplementation::Builtin { implementation } => {
             members.push(("kind", str("typescript")));
             members.push(("implementation", str(implementation)));
         }
@@ -1801,7 +1801,7 @@ mod tests {
                 owner: provider_ref("q3:game"),
                 role: "server-game".to_string(),
                 api: GameApi::Q3Qagame { version: 8 },
-                implementation: ExecutionImplementation::Typescript {
+                implementation: ExecutionImplementation::Builtin {
                     implementation: "q3:game-impl".to_string(),
                 },
             }],
@@ -1971,7 +1971,7 @@ mod tests {
             owner: provider_ref("q3:mod"),
             role: "game".to_string(),
             api: GameApi::Q1Netquake,
-            implementation: ExecutionImplementation::Typescript {
+            implementation: ExecutionImplementation::Builtin {
                 implementation: "mod.js".to_string(),
             },
         };

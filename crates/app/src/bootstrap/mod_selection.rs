@@ -305,9 +305,9 @@ pub fn apply_application_mods(
         .iter()
         .any(|choice| matches!(choice.implementation, ModChoiceImplementation::WeaponBehavior { .. }))
         && recipe.execution.iter().any(|module| {
-            !matches!(module, qa_content::contract::ExecutionModule::Typescript { .. })
+            !matches!(module, qa_content::contract::ExecutionModule::Builtin { .. })
                 && match module {
-                    qa_content::contract::ExecutionModule::Typescript { role, .. }
+                    qa_content::contract::ExecutionModule::Builtin { role, .. }
                     | qa_content::contract::ExecutionModule::Qvm { role, .. }
                     | qa_content::contract::ExecutionModule::Native { role, .. } => {
                         *role == qa_content::contract::ModuleRole::ServerGame

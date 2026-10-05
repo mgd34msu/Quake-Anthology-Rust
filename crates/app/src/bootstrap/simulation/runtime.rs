@@ -8636,7 +8636,7 @@ impl qa_world::actor_execution::QvmActorExecution for QvmExecutionHandle {
             ExecutionImplementation::Native { artifact, .. } | ExecutionImplementation::Quakec { artifact } => {
                 artifact.requested_path.clone()
             }
-            ExecutionImplementation::Typescript { implementation } => implementation.clone(),
+            ExecutionImplementation::Builtin { implementation } => implementation.clone(),
         }
     }
 }
@@ -10151,8 +10151,8 @@ fn saved_recipe_matches(saved: &super::save::SimSavedRecipe, recipe: &Executable
         .zip(recipe.execution.iter())
         .all(|(saved, module)| {
             let (kind, owner, role) = match module {
-                ExecutionModule::Typescript { owner, role, .. } => {
-                    (super::save::SimExecutionKind::Typescript, owner, *role)
+                ExecutionModule::Builtin { owner, role, .. } => {
+                    (super::save::SimExecutionKind::Builtin, owner, *role)
                 }
                 ExecutionModule::Quakec { owner, .. } => {
                     (super::save::SimExecutionKind::Quakec, owner, ModuleRole::ServerGame)

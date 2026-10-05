@@ -138,8 +138,8 @@ pub enum SimExecutionKind {
     Quakec,
     /// QVM artifact.
     Qvm,
-    /// TypeScript source.
-    Typescript,
+    /// Built-in source.
+    Builtin,
 }
 
 /// Mirror of one saved guest checkpoint with its host module.
@@ -799,13 +799,13 @@ pub fn validate_simulation_save(
         .iter()
         .find(|module| module.role == "server-game");
     let bots = saved_bot_checkpoint(image, decode_bots)?;
-    if bots.is_some() && !matches!(execution, Some(execution) if execution.kind == SimExecutionKind::Typescript) {
+    if bots.is_some() && !matches!(execution, Some(execution) if execution.kind == SimExecutionKind::Builtin) {
         return Err(SimulationSaveError::invalid(
             "Saved bot services have no supported source owner",
         ));
     }
     if let Some(execution) = execution {
-        if bots.is_some() && execution.kind == SimExecutionKind::Typescript && execution.api_kind != "q3-qagame" {
+        if bots.is_some() && execution.kind == SimExecutionKind::Builtin && execution.api_kind != "q3-qagame" {
             simulation_provider_checkpoint(image, "world:source-cvars")?;
         }
     }
@@ -815,7 +815,7 @@ pub fn validate_simulation_save(
         .any(|record| record.schema == "world:source-cvars")
     {
         let owned = matches!(execution, Some(execution)
-        if execution.kind == SimExecutionKind::Typescript
+        if execution.kind == SimExecutionKind::Builtin
             && matches!(
                 execution.api_kind.as_str(),
                 "q1-netquake" | "q1-quakeworld" | "q2-classic-game" | "q2-rerelease-game"
@@ -829,7 +829,7 @@ pub fn validate_simulation_save(
     }
     if guest.is_none() {
         if let Some(execution) = execution {
-            if execution.kind == SimExecutionKind::Typescript {
+            if execution.kind == SimExecutionKind::Builtin {
                 match execution.api_kind.as_str() {
                     "q1-netquake" | "q1-quakeworld" => {
                         simulation_provider_checkpoint(image, "q1:foundation")?;
@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn provider_checkpoint_matches_contract() {
         let image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![provider("world:simulation", &simulation_doc(arr(vec![])))],
         );
         let record = simulation_provider_checkpoint(&image, "world:simulation").expect("record");
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn source_cvars_absent_without_providers() {
         let image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
                 provider("world:source-slots", &obj(vec![])),
@@ -1327,7 +1327,7 @@ mod tests {
     #[test]
     fn bots_absent_without_provider() {
         let image = image(
-            execution(SimExecutionKind::Typescript, "q3-qagame", 8),
+            execution(SimExecutionKind::Builtin, "q3-qagame", 8),
             vec![
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
                 provider("world:source-slots", &obj(vec![])),
@@ -1345,7 +1345,7 @@ mod tests {
             ("actor", write_saved_actor(actor)),
         ])]);
         let image = image(
-            execution(SimExecutionKind::Typescript, "q3-qagame", 8),
+            execution(SimExecutionKind::Builtin, "q3-qagame", 8),
             vec![
                 provider("world:simulation", &simulation_doc(players)),
                 provider("world:source-slots", &obj(vec![])),
@@ -1382,7 +1382,7 @@ mod tests {
     #[test]
     fn validate_accepts_typescript_q1() {
         let image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
                 provider("world:source-slots", &obj(vec![])),
@@ -1396,7 +1396,7 @@ mod tests {
     #[test]
     fn validate_rejects_duplicate_providers() {
         let image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn validate_rejects_clock_mismatch() {
         let mut image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![
                 provider("world:simulation", &simulation_doc(arr(vec![]))),
                 provider("world:source-slots", &obj(vec![])),
@@ -1429,7 +1429,7 @@ mod tests {
             obj(vec![("clientSlot", int(2))]),
         ]);
         let image = image(
-            execution(SimExecutionKind::Typescript, "q1-netquake", 6),
+            execution(SimExecutionKind::Builtin, "q1-netquake", 6),
             vec![
                 provider("world:simulation", &simulation_doc(players)),
                 provider("world:source-slots", &obj(vec![])),
