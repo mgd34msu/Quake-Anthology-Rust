@@ -467,7 +467,7 @@ fn valid_charset_size(width: u32, height: u32, pixels: &[u8]) -> bool {
 /// Installed candidates in donor order: the preferred product first, then
 /// catalog order (donor `startup.ts` picks `options.product` or the first
 /// installed product).
-fn installed_candidates(catalog: &InstalledCatalog, preferred: Option<&str>) -> Vec<String> {
+pub(crate) fn installed_candidates(catalog: &InstalledCatalog, preferred: Option<&str>) -> Vec<String> {
     let mut order = Vec::new();
     if let Some(want) = preferred {
         if catalog.products.iter().any(|product| {
@@ -491,7 +491,7 @@ fn installed_candidates(catalog: &InstalledCatalog, preferred: Option<&str>) -> 
 }
 
 /// Open one product's mounts for a charset read.
-fn open_charset_mounts(catalog: &InstalledCatalog, content: &str) -> Option<MountedContent> {
+pub(crate) fn open_charset_mounts(catalog: &InstalledCatalog, content: &str) -> Option<MountedContent> {
     let mounts = catalog.mounts_for(content).ok()?;
     let plan = ResolvedMountPlan {
         id: create_mount_plan_id("windowed-menu-font", "charset").ok()?,

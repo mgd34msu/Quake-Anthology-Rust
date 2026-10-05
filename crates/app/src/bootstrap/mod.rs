@@ -62,6 +62,7 @@ pub mod match_modes;
 pub mod match_preflight;
 pub mod media;
 pub mod menu_art;
+pub mod menu_audio;
 pub mod menu_font;
 pub mod mod_presentation;
 pub mod mod_presentations;

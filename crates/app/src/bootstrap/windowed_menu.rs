@@ -29,6 +29,7 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use qa_client::audio::engine::UnifiedAudio;
 use qa_client::render::scene::resources::SceneImageRegistry;
 use qa_client::render::types::AlphaTest;
 use qa_client::render::types::BatchLighting;
@@ -214,6 +215,7 @@ pub(crate) struct WindowedMenu {
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
     model: Rc<RefCell<StartupSelectionModel>>,
+    menu_audio: Option<super::menu_audio::MenuAudio>,
 }
 
 impl WindowedMenu {
@@ -291,13 +293,19 @@ impl WindowedMenu {
         };
         let clock_ms = Rc::new(Cell::new(0));
         let now = Rc::clone(&clock_ms);
+        // Donor `startup.ts`: the menu clicks through the frontend audio.
+        // Without menu mounts or click sounds the sink stays unset and the
+        // menu stays silent.
+        let preferred_product = model.options().ok().map(|options| options.product);
+        let menu_audio =
+            super::menu_audio::MenuAudio::open(model.catalog(), preferred_product.as_deref(), seat.clone());
         let shared = Rc::new(RefCell::new(model));
         let launch_play = launch.clone();
         let launch_preset = launch.clone();
         let launch_load = launch.clone();
         let menu = StartupMenu::new(StartupMenuOptions {
             lobby: None,
-            sound: None,
+            sound: menu_audio.as_ref().map(|audio| audio.sink()),
             llm: None,
             clipboard: None,
             seat: seat.clone(),
@@ -394,7 +402,17 @@ impl WindowedMenu {
             uploaded: false,
             clock_ms,
             model: shared,
+            menu_audio,
         })
+    }
+
+    /// Drain queued menu clicks into the windowed engine (once per frame,
+    /// after draw). No menu audio keeps the menu silent.
+    pub(crate) fn drain_menu_audio(&mut self, audio: &mut Option<UnifiedAudio>) {
+        let (Some(menu_audio), Some(engine)) = (self.menu_audio.as_mut(), audio.as_mut()) else {
+            return;
+        };
+        menu_audio.drain(engine);
     }
 
     /// Borrow the ported startup menu.

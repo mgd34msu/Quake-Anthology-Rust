@@ -1813,6 +1813,9 @@ impl StartupBackend for WindowedStartupBackend {
             self.input_seat.as_ref(),
             self.world.as_ref(),
         );
+        if let Some(menu) = self.menu.as_mut() {
+            menu.drain_menu_audio(&mut self.audio);
+        }
         refresh_windowed_audio(&mut self.audio, ctx.elapsed_ms);
         let samples = self.timer.take_frame();
         self.totals.add_frame(&samples);
