@@ -50,7 +50,7 @@ use crate::render::types::{
 use crate::render::{RenderError, SceneLight};
 use crate::view::{
     bounds_in_frustum, camera_frustum, far_clip, local_point, model_scale, portal_clip_plane, world_point,
-    world_vector, ModelTransform, SceneCamera,
+    world_vector, ModelTransform, SceneCamera, ViewProjector,
 };
 
 use super::geometry::{geometry_bounds, prepare_brush_face, BrushFace, BrushMapData, BrushTextureInfo};
@@ -2336,12 +2336,14 @@ impl WorldScene {
     /// surface batches. Shared by the cached and uncached model paths so
     /// both assemble identical operations.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn prepare_model_surface(
         &mut self,
         index: usize,
         input: &mut WorldViewInput,
         data: &DrawContextData,
         model: Option<&ModelTransform>,
+        projector: &ViewProjector,
         kind: WorldKind,
         frustum: &[Plane],
         incoming: u32,
@@ -2377,7 +2379,7 @@ impl WorldScene {
             };
             (order, (mask, lights.to_vec()))
         };
-        self.surface_operations(index, input, data, model, lighting, order)
+        self.surface_operations(index, input, data, model, projector, lighting, order)
     }
 
     /// Whether one surface's prepared batches are retained across frames.
@@ -2416,6 +2418,7 @@ impl WorldScene {
             u32::MAX >> (32 - lights.len())
         };
         let frustum = camera_frustum(&camera);
+        let projector = ViewProjector::new(&camera, model_param.as_ref());
         let last = model.first + model.count;
         // Source admissions bypass the scene cache: the admission tracks
         // its own one-view surface set.
@@ -2449,6 +2452,7 @@ impl WorldScene {
                     input,
                     &data,
                     model_param.as_ref(),
+                    &projector,
                     kind,
                     &frustum,
                     incoming,
@@ -2471,6 +2475,7 @@ impl WorldScene {
                 input,
                 &data,
                 model_param.as_ref(),
+                &projector,
                 kind,
                 &frustum,
                 incoming,
@@ -2501,6 +2506,7 @@ impl WorldScene {
         index: usize,
         input: &mut WorldViewInput,
         data: &DrawContextData,
+        projector: &ViewProjector,
         kind: WorldKind,
         frustum: &[Plane],
         dlight_mask: Option<u32>,
@@ -2555,7 +2561,7 @@ impl WorldScene {
                 (order, (0, Vec::new()))
             }
         };
-        self.surface_operations(index, input, data, None, lighting, order)
+        self.surface_operations(index, input, data, None, projector, lighting, order)
     }
 
     /// Prepare world-model operations for a view.
@@ -2571,6 +2577,8 @@ impl WorldScene {
         // its own one-view surface set.
         let use_cache = input.source.is_none();
         let kind = self.map.kind;
+        let camera = input.camera;
+        let projector = ViewProjector::new(&camera, None);
         if use_cache
             && self
                 .world_cache
@@ -2578,7 +2586,6 @@ impl WorldScene {
         {
             let order = self.world_cache.world_order().unwrap_or(&[]).to_vec();
             let white = self.shaders.textures().white().image.ordinal;
-            let camera = input.camera;
             let data = material_context_data(&camera, None, input, white)?;
             let lights = input.visibility.q3_lights.clone();
             let frustum = camera_frustum(&camera);
@@ -2597,7 +2604,8 @@ impl WorldScene {
                 } else {
                     None
                 };
-                let fresh = self.prepare_world_surface(index, input, &data, kind, &frustum, mask, &lights)?;
+                let fresh =
+                    self.prepare_world_surface(index, input, &data, &projector, kind, &frustum, mask, &lights)?;
                 if is_static {
                     self.world_cache.store_world_surface(index, fresh.clone());
                 }
@@ -2633,7 +2641,6 @@ impl WorldScene {
             indexes = orders.into_iter().map(|(index, _)| index).collect();
         }
         let white = self.shaders.textures().white().image.ordinal;
-        let camera = input.camera;
         let data = material_context_data(&camera, None, input, white)?;
         let lights = input.visibility.q3_lights.clone();
         let frustum = camera_frustum(&camera);
@@ -2650,7 +2657,7 @@ impl WorldScene {
             } else {
                 None
             };
-            let fresh = self.prepare_world_surface(index, input, &data, kind, &frustum, mask, &lights)?;
+            let fresh = self.prepare_world_surface(index, input, &data, &projector, kind, &frustum, mask, &lights)?;
             if use_cache && self.cached_surface(index)? {
                 retained[index] = Some(fresh.clone());
             }
@@ -3360,14 +3367,14 @@ impl WorldScene {
         input: &WorldViewInput,
         data: &DrawContextData,
         model: Option<&ModelTransform>,
+        projector: &ViewProjector,
         lighting: (u32, Vec<DynamicLight>),
         order: Option<SourceSurfaceOrder>,
     ) -> Result<Vec<SceneOperation>, RenderError> {
         // Gather per-branch inputs under short borrows: cloning the whole
         // surface here (geometry, patch grid, shader, names) cost a full
         // surface copy per surface per frame.
-        let project =
-            |point: Vec3| crate::view::project_point(&input.camera, model, point).unwrap_or(vec4(0.0, 0.0, 0.0, 1.0));
+        let project = |point: Vec3| projector.project_or_zero(point);
         let project_ref: &dyn Fn(Vec3) -> Vec4 = &project;
         let resolved = self.remap(index)?;
         let time_offset = resolved.as_ref().map(|(_, offset)| *offset).unwrap_or(0.0);
