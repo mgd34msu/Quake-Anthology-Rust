@@ -2212,6 +2212,553 @@ mod tests {
         }
     }
 
+    /// Q1-0252 (+ Q1-0223, Q1-0165, Q1-0166): e1m1 `trigger_teleport`
+    /// moves the live player to its `info_teleport_destination`
+    /// (`triggers.qc:368-423`): the arrival origin lifts 27 units, the
+    /// mangle snaps facing, velocity runs 300 along it, both fog
+    /// flashes queue, the `teledeath` volume spawns — and a second body
+    /// standing at the arrival takes the stock 50000 telefrag.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0252_teleport_moves_player_fogs_and_telefrags() {
+        use qa_core::identity::ProviderId;
+        use qa_core::math::angle_vectors;
+        use qa_world::body::BodyState;
+        use qa_world::combat::CombatState;
+
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let feeders = live_triggers_by_target(&world, "t6");
+        assert_eq!(feeders.len(), 1, "e1m1 fires t6 from one teleporter");
+        let teleporter = feeders[0].clone();
+        let (destination, mangle) = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let matches = borrowed.by_targetname.get("t6").cloned().unwrap_or_default();
+            assert_eq!(matches.len(), 1, "t6 names one destination");
+            let record = borrowed
+                .teleport_destinations
+                .get(&matches[0])
+                .cloned()
+                .expect("t6 record");
+            (record.origin, record.mangle)
+        };
+        // Map truth plus the stock 27-unit lift (`triggers.qc:425`).
+        assert_eq!(destination, vec3(-32.0, 1800.0, -56.0 + 27.0));
+        assert_eq!(mangle, vec3(0.0, 0.0, 0.0), "t6 has no angle key");
+        // A second living body stands at the arrival: the telefrag
+        // victim. Plain sim spawn plus stock 100 health.
+        let player = world.player_actor().cloned().expect("player");
+        let victim_bounds = world
+            .server()
+            .simulation()
+            .body_state(&player)
+            .expect("player body")
+            .bounds;
+        let victim = world
+            .server_mut()
+            .simulation_mut()
+            .spawn(
+                ProviderId::new("game", "q1"),
+                "q1:proof-victim",
+                Some(BodyState {
+                    origin: destination,
+                    angles: vec3(0.0, 0.0, 0.0),
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    bounds: victim_bounds,
+                    ground: None,
+                }),
+                None,
+                Vec::new(),
+            )
+            .expect("victim spawns")
+            .id()
+            .clone();
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_combat(&victim, CombatState::default())
+            .unwrap();
+        // Touch: the player departs for the arrival in one live tick.
+        let departure = live_volume_center(&world, &teleporter);
+        live_place_player(&mut world, departure);
+        live_tick(&mut world);
+        let tick_now = live_now(&world);
+        let forward = angle_vectors(mangle).forward;
+        let arrived = vec3(
+            destination.x + forward.x * 32.0,
+            destination.y + forward.y * 32.0,
+            destination.z + forward.z * 32.0,
+        );
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        assert_eq!(body.origin, destination, "teleport moved the player to the arrival");
+        assert_eq!(
+            body.velocity,
+            vec3(forward.x * 300.0, forward.y * 300.0, forward.z * 300.0),
+            "teleport snapped velocity to 300 along the mangle"
+        );
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                borrowed.teleport_fogs,
+                vec![departure, arrived],
+                "both fog flashes queued"
+            );
+            let force = borrowed.player_forces.last().expect("teleport queued a force");
+            assert_eq!(force.actor, player);
+            assert_eq!(force.origin, Some(destination));
+            assert_eq!(force.angles, Some(mangle));
+            assert_eq!(force.velocity, Some(body.velocity));
+            assert_eq!(force.teleport_time_seconds, Some(tick_now + 0.7));
+        }
+        // The victim dies on the next sweep through the live teledeath
+        // volume (the owner stays immune); the volume removes itself
+        // after its stock 0.2 s.
+        let center = live_player_spawn_eye(&world);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        assert_eq!(
+            world
+                .server()
+                .simulation()
+                .combat_state(&victim)
+                .map(|combat| combat.health),
+            Some(-99.0),
+            "teledeath dealt its stock 50000, floored at the Q1 -99"
+        );
+        assert_eq!(
+            live_player_health(&world),
+            100.0,
+            "teleport owner immune to its teledeath"
+        );
+        live_advance(&mut world, 0.5);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                behaviors
+                    .borrow()
+                    .triggers
+                    .iter()
+                    .all(|(_, trigger)| !matches!(trigger.kind, Q1TriggerKind::Teledeath { .. })),
+                "teledeath removed itself after 0.2 s"
+            );
+        }
+    }
+
+    /// Q1-0110: e1m1 `item_health` heals a live wounded player
+    /// (`items.qc:150-204`): +25 to a 50-health player, the receipt
+    /// prints, the box hides and unmarks, and single player arms no
+    /// respawn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0110_health_pickup_heals() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let health = live_item_by_origin(&world, vec3(1376.0, 808.0, -432.0));
+        live_set_player_health(&mut world, 50.0);
+        let center = live_volume_center(&world, &health);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), 75.0, "normal health heals 25");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.items.get(&health).is_some_and(|item| item.taken));
+            assert!(
+                borrowed
+                    .sprints
+                    .iter()
+                    .any(|print| print.text == "You receive 25 health"),
+                "pickup printed the stock receipt"
+            );
+            assert!(borrowed.thinks.is_empty(), "single player arms no respawn");
+        }
+        assert!(
+            !world.server_mut().triggers_mut().is_trigger(&health),
+            "taken box unmarked"
+        );
+    }
+
+    /// Q1-0111: e1m1 megahealth pickup rots (`items.qc:206-233`): +100
+    /// over the cap to 200, one point per second back to 100, the
+    /// superhealth bit clears, and the taken box stays hidden in
+    /// single player (respawn is deathmatch-only).
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0111_megahealth_pickup_rots() {
+        use super::super::simulation::native_q1_spawns::IT_SUPERHEALTH;
+        use super::super::simulation::native_q1_triggers::Q1ThinkKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let mega = live_item_by_origin(&world, vec3(944.0, 1008.0, -272.0));
+        let center = live_volume_center(&world, &mega);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let tick_now = live_now(&world);
+        assert_eq!(live_player_health(&world), 200.0, "megahealth adds 100 over the cap");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_ne!(borrowed.player_items & IT_SUPERHEALTH, 0);
+            let rot = borrowed
+                .thinks
+                .iter()
+                .find(|think| matches!(think.kind, Q1ThinkKind::MegaRot { .. }))
+                .expect("megahealth armed its rot");
+            assert_eq!(rot.due_seconds, tick_now + 5.0, "first rot 5 s out");
+        }
+        live_advance(&mut world, 6.0);
+        assert_eq!(live_player_health(&world), 199.0, "rot ticks one point per second");
+        // Rot re-arms one second out per point; frame granularity lags
+        // each re-arm, so soak on state, not on the nominal 100 s.
+        for _ in 0..40 {
+            if live_player_health(&world) == 100.0 {
+                break;
+            }
+            live_advance(&mut world, 5.0);
+        }
+        assert_eq!(live_player_health(&world), 100.0, "rot stops at the health cap");
+        live_advance(&mut world, 2.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_items & IT_SUPERHEALTH, 0, "superhealth bit cleared");
+            assert!(borrowed.items.get(&mega).is_some_and(|item| item.taken));
+            assert!(
+                borrowed
+                    .thinks
+                    .iter()
+                    .all(|think| !matches!(think.kind, Q1ThinkKind::Regen)),
+                "single player never respawns the box"
+            );
+        }
+    }
+
+    /// Q1-0101: e1m1 `item_armor1` pickup (`items.qc:238-285`): green
+    /// armor grants 100 points at 0.3 absorption, sets `IT_ARMOR1`,
+    /// prints, hides, and arms no single-player respawn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0101_armor1_pickup() {
+        use qa_world::combat::RegularArmor;
+
+        use super::super::simulation::native_q1_spawns::IT_ARMOR1;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let armor = live_item_by_origin(&world, vec3(688.0, 480.0, 80.0));
+        let center = live_volume_center(&world, &armor);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let player = world.player_actor().cloned().expect("player");
+        match &world
+            .server()
+            .simulation()
+            .combat_state(&player)
+            .expect("player combat")
+            .armor
+            .regular
+        {
+            RegularArmor::Q1 { points, absorption, .. } => {
+                assert_eq!((*points, *absorption), (100.0, 0.3));
+            }
+            other => panic!("green armor grants Q1 armor, found {other:?}"),
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_ne!(borrowed.player_items & IT_ARMOR1, 0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got armor"));
+            assert!(borrowed.items.get(&armor).is_some_and(|item| item.taken));
+        }
+    }
+
+    /// Q1-0102: e1m1 `item_armor2` pickup: yellow armor grants 150
+    /// points at 0.6 absorption and sets `IT_ARMOR2`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0102_armor2_pickup() {
+        use qa_world::combat::RegularArmor;
+
+        use super::super::simulation::native_q1_spawns::IT_ARMOR2;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let armor = live_item_by_origin(&world, vec3(1312.0, 1048.0, -432.0));
+        let center = live_volume_center(&world, &armor);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let player = world.player_actor().cloned().expect("player");
+        match &world
+            .server()
+            .simulation()
+            .combat_state(&player)
+            .expect("player combat")
+            .armor
+            .regular
+        {
+            RegularArmor::Q1 { points, absorption, .. } => {
+                assert_eq!((*points, *absorption), (150.0, 0.6));
+            }
+            other => panic!("yellow armor grants Q1 armor, found {other:?}"),
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_ne!(behaviors.borrow().player_items & IT_ARMOR2, 0);
+        }
+    }
+
+    /// Q1-0103: e2m1 `item_armorInv` pickup: red armor grants 200
+    /// points at 0.8 absorption and sets `IT_ARMOR3`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0103_armorinv_pickup() {
+        use qa_world::combat::RegularArmor;
+
+        use super::super::simulation::native_q1_spawns::IT_ARMOR3;
+
+        let Some(mut world) = live_q1_world("maps/e2m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let armor = live_item_by_origin(&world, vec3(1256.0, 664.0, -32.0));
+        let center = live_volume_center(&world, &armor);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let player = world.player_actor().cloned().expect("player");
+        match &world
+            .server()
+            .simulation()
+            .combat_state(&player)
+            .expect("player combat")
+            .armor
+            .regular
+        {
+            RegularArmor::Q1 { points, absorption, .. } => {
+                assert_eq!((*points, *absorption), (200.0, 0.8));
+            }
+            other => panic!("red armor grants Q1 armor, found {other:?}"),
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_ne!(behaviors.borrow().player_items & IT_ARMOR3, 0);
+        }
+    }
+
+    /// Q1-0115: e1m1 `item_shells` pickup (`items.qc:597-681`): a small
+    /// box adds 20 shells, prints the receipt, and hides.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0115_shells_pickup() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let shells = live_item_by_origin(&world, vec3(296.0, 2136.0, -192.0));
+        let center = live_volume_center(&world, &shells);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got the shells"));
+            assert!(borrowed.items.get(&shells).is_some_and(|item| item.taken));
+        }
+    }
+
+    /// Q1-0117: e1m1 `item_spikes` pickup: a small box adds 25 nails.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0117_spikes_pickup() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let spikes = live_item_by_origin(&world, vec3(272.0, 2352.0, 64.0));
+        let center = live_volume_center(&world, &spikes);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Nails), 25.0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got the nails"));
+        }
+    }
+
+    /// Q1-0114: e1m3 `item_rockets` pickup: a small box adds 5 rockets
+    /// (every e1m1 rockets box is deathmatch-only).
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0114_rockets_pickup() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let rockets = live_item_by_origin(&world, vec3(-352.0, -1128.0, 48.0));
+        let center = live_volume_center(&world, &rockets);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Rockets), 5.0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got the rockets"));
+        }
+    }
+
+    /// Q1-0109: e2m6 `item_cells` pickup: a small box adds 6 cells.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0109_cells_pickup() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+
+        let Some(mut world) = live_q1_world("maps/e2m6.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let cells = live_item_by_origin(&world, vec3(1832.0, 608.0, -616.0));
+        let center = live_volume_center(&world, &cells);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Cells), 6.0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got the cells"));
+        }
+    }
+
+    /// Q1-0100: deathmatch item respawn (`items.qc:6-12`): a taken e1m1
+    /// health box regenerates 20 s out and picks up again, an ammo box
+    /// regenerates 30 s out, and a megahealth box rots to the cap,
+    /// clears its bit, then regenerates — all through live ticks.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0100_deathmatch_respawn() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+        use super::super::simulation::native_q1_spawns::IT_SUPERHEALTH;
+        use super::super::simulation::native_q1_triggers::Q1ThinkKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let away = live_player_spawn_eye(&world);
+        // Health: take, regen 20 s out, take again.
+        let health = live_item_by_origin(&world, vec3(1376.0, 808.0, -432.0));
+        live_set_player_health(&mut world, 50.0);
+        let center = live_volume_center(&world, &health);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let taken_now = live_now(&world);
+        assert_eq!(live_player_health(&world), 75.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.items.get(&health).is_some_and(|item| item.taken));
+            let regen = borrowed
+                .thinks
+                .iter()
+                .find(|think| think.actor == health && matches!(think.kind, Q1ThinkKind::Regen))
+                .expect("deathmatch armed the health regen");
+            assert_eq!(regen.due_seconds, taken_now + 20.0, "health respawns 20 s out");
+        }
+        live_place_player(&mut world, away);
+        live_advance(&mut world, 21.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                behaviors.borrow().items.get(&health).is_some_and(|item| !item.taken),
+                "health box regenerated"
+            );
+        }
+        assert!(
+            world.server_mut().triggers_mut().is_trigger(&health),
+            "regen re-marked the touch"
+        );
+        live_set_player_health(&mut world, 50.0);
+        let center = live_volume_center(&world, &health);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), 75.0, "regenerated box picks up again");
+        // Ammo: take, regen 30 s out.
+        let shells = live_item_by_origin(&world, vec3(296.0, 2136.0, -192.0));
+        let center = live_volume_center(&world, &shells);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let taken_now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            let regen = borrowed
+                .thinks
+                .iter()
+                .find(|think| think.actor == shells && matches!(think.kind, Q1ThinkKind::Regen))
+                .expect("deathmatch armed the ammo regen");
+            assert_eq!(regen.due_seconds, taken_now + 30.0, "ammo respawns 30 s out");
+        }
+        live_place_player(&mut world, away);
+        live_advance(&mut world, 31.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                behaviors.borrow().items.get(&shells).is_some_and(|item| !item.taken),
+                "ammo box regenerated"
+            );
+        }
+        // Megahealth: take, rot to the cap, clear the bit, regen.
+        let mega = live_item_by_origin(&world, vec3(944.0, 1008.0, -272.0));
+        live_set_player_health(&mut world, 100.0);
+        let center = live_volume_center(&world, &mega);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), 200.0);
+        live_place_player(&mut world, away);
+        for _ in 0..40 {
+            if live_player_health(&world) == 100.0 {
+                break;
+            }
+            live_advance(&mut world, 5.0);
+        }
+        assert_eq!(live_player_health(&world), 100.0, "megahealth rotted to the cap");
+        live_advance(&mut world, 2.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().player_items & IT_SUPERHEALTH, 0);
+        }
+        live_advance(&mut world, 21.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                behaviors.borrow().items.get(&mega).is_some_and(|item| !item.taken),
+                "megahealth box regenerated after the rot"
+            );
+        }
+    }
+
     /// Assert one Steel map presents draw batches at its spawn camera.
     /// Returns `None` when the corpus or map is unavailable (skip).
     fn steel_presentation_batches(product: &str, map: &str) -> Option<usize> {
