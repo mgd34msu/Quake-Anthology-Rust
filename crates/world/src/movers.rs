@@ -14,6 +14,8 @@ use qa_core::math::{vec3, Vec3};
 pub enum MoverKind {
     /// Door swinging between closed and open.
     Door,
+    /// Button dipping in and returning (`func_button`).
+    Button,
     /// Plat rising and falling.
     Plat,
     /// Generic velocity-driven pusher.

@@ -48,6 +48,10 @@ use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
+use super::simulation::native_q1_triggers::{
+    build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_light, q1_note_targetname,
+    q1_note_use_point, q1_note_worldspawn, q1_registered_version, register_q1_trigger_spawns,
+};
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
@@ -247,6 +251,11 @@ impl PlayWorld {
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
+        // Mirror the view angles into gamecode before stepping so the
+        // angle-gated trigger facing check reads live facing.
+        if let Some(behaviors) = self.q1_behaviors.as_ref() {
+            behaviors.borrow_mut().player_angles = player.eye().1;
+        }
         let behaviors = self.q1_behaviors.clone();
         let borrowed = behaviors.as_ref().map(|behaviors| behaviors.borrow());
         let links = borrowed.as_ref().map(|behaviors| Q1SceneLinks {
@@ -424,13 +433,15 @@ fn register_map_classname(server: &mut Server<GuestServerLogic>, classname: &str
     );
 }
 
-/// Native Q1 spawn context: brush-model bounds for door sizing plus the
-/// live behavior set the door spawns populate.
+/// Native Q1 spawn context: brush-model bounds for door/trigger
+/// sizing plus the live behavior set the native spawns populate.
 pub struct Q1SpawnContext {
     /// Brush-model bounds by model index (`*N`).
     pub models: Vec<qa_core::math::Bounds>,
     /// Live native behaviors, shared with the server hooks.
     pub behaviors: Rc<RefCell<Q1NativeBehaviors>>,
+    /// Whether the mounts hold the registered version (shareware gates).
+    pub registered: bool,
 }
 
 /// Context for spawning one map's records.
@@ -450,10 +461,11 @@ pub struct MapSpawnContext {
 /// spawn are collected as skips instead of aborting the load. Q1 maps
 /// additionally run the native spawn path: the stock pre-spawn filter
 /// (inhibition, light/static removal), native spawn functions, door
-/// sizing/linking, and the native hook install.
+/// sizing/linking, trigger/button sizing, the targetname index, and the
+/// native hook install.
 ///
-/// Door-build failures release the spawned actor and record a skip;
-/// door-link failures record a skip; neither aborts the load.
+/// Door/trigger/button-build failures release the spawned actor and
+/// record a skip; door-link failures record a skip; none aborts the load.
 pub fn spawn_map_entities(
     server: &mut Server<GuestServerLogic>,
     entities: &[Vec<(String, String)>],
@@ -461,8 +473,10 @@ pub fn spawn_map_entities(
     context: &MapSpawnContext,
 ) -> MapSpawnSummary {
     let mut summary = MapSpawnSummary::default();
-    if context.q1.is_some() {
+    if let Some(q1) = context.q1.as_ref() {
         register_q1_spawns(server.spawns_mut());
+        register_q1_trigger_spawns(server.spawns_mut());
+        q1.behaviors.borrow_mut().registered = q1.registered;
     }
     let mut classnames = BTreeSet::new();
     for properties in entities {
@@ -513,10 +527,15 @@ pub fn spawn_map_entities(
             if classname == "func_door" {
                 match server.spawn_entity(&fields) {
                     Ok(actor) => {
-                        let models = &q1.models;
-                        match build_q1_door(server, &mut q1.behaviors.borrow_mut(), &actor, &fields, models) {
+                        let built = {
+                            let models = &q1.models;
+                            let mut behaviors = q1.behaviors.borrow_mut();
+                            build_q1_door(server, &mut behaviors, &actor, &fields, models)
+                        };
+                        match built {
                             Ok(pending) => {
                                 pending_doors.push(pending);
+                                q1_note_targetname(&mut q1.behaviors.borrow_mut(), &fields, actor.id());
                                 summary.spawned += 1;
                             }
                             Err(error) => {
@@ -537,11 +556,75 @@ pub fn spawn_map_entities(
                 }
                 continue;
             }
+            if q1_is_brush_trigger(&classname) || classname == "func_button" {
+                let build = if classname == "func_button" {
+                    "button"
+                } else {
+                    "trigger"
+                };
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let built = {
+                            let models = &q1.models;
+                            let mut behaviors = q1.behaviors.borrow_mut();
+                            if classname == "func_button" {
+                                build_q1_button(server, &mut behaviors, &actor, &fields, models)
+                            } else {
+                                build_q1_trigger(server, &mut behaviors, &actor, &fields, models)
+                            }
+                        };
+                        match built {
+                            Ok(()) => {
+                                q1_note_targetname(&mut q1.behaviors.borrow_mut(), &fields, actor.id());
+                                summary.spawned += 1;
+                            }
+                            Err(error) => {
+                                let _ignored = server.simulation_mut().release(&actor);
+                                summary.skipped.push(SkippedEntity {
+                                    index,
+                                    classname,
+                                    reason: format!("{source}: {build} build failed: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
+            if q1_is_use_point(&classname) {
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let mut behaviors = q1.behaviors.borrow_mut();
+                        q1_note_use_point(&mut behaviors, actor.id(), &fields);
+                        q1_note_targetname(&mut behaviors, &fields, actor.id());
+                        summary.spawned += 1;
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
         }
         match server.spawn_entity(&fields) {
             Ok(actor) => {
                 if let Some(q1) = context.q1.as_ref() {
-                    q1_note_solid(&classname, actor.id(), &mut q1.behaviors.borrow_mut());
+                    let mut behaviors = q1.behaviors.borrow_mut();
+                    q1_note_solid(&classname, actor.id(), &mut behaviors);
+                    q1_note_targetname(&mut behaviors, &fields, actor.id());
+                    if classname == "light" {
+                        q1_note_light(&mut behaviors, actor.id(), &fields);
+                    }
+                    if classname == "worldspawn" {
+                        q1_note_worldspawn(&mut behaviors, &fields);
+                    }
                 }
                 summary.spawned += 1;
             }
@@ -647,6 +730,7 @@ pub fn load_play_world(
         q1: (kind == BspKind::Q1).then(|| Q1SpawnContext {
             models: q1_models,
             behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
+            registered: q1_registered_version(&mounts),
         }),
     };
     let summary = spawn_map_entities(&mut server, &entities, &options.map, &context);
@@ -694,6 +778,12 @@ pub fn load_play_world(
         // Stock players spawn `SOLID_SLIDEBOX`; the scene links the
         // mover like every other solid and skips it via passentity.
         behaviors.solids.insert(PlayerBody::actor(player).clone());
+        // Stock players always carry health (`PutClientInServer`); the
+        // touch gates (door fields, hurt, push) read it.
+        let _ignored = server
+            .simulation_mut()
+            .set_combat(PlayerBody::actor(player), qa_world::combat::CombatState::default());
+        behaviors.player_angles = player.eye().1;
     }
     // The presentation consumes its mounts, so audio keeps a second open over
     // the same product: without retained mounts no bank can open `sound/*`
@@ -776,6 +866,7 @@ mod tests {
                     max: vec3(64.0, 64.0, 128.0),
                 }],
                 behaviors: Rc::clone(&behaviors),
+                registered: true,
             }),
         };
         (context, behaviors)

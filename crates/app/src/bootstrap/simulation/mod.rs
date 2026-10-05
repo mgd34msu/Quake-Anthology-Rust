@@ -43,6 +43,7 @@ pub mod native_mod_presentation;
 pub mod native_primary_weapons;
 pub mod native_q1_pusher;
 pub mod native_q1_spawns;
+pub mod native_q1_triggers;
 pub mod native_q2_map;
 pub mod native_q2_rerelease_save;
 pub mod native_q2_travel;

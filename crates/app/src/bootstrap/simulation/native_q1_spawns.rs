@@ -3,8 +3,10 @@
 //! Stock spawn functions for the entities the walking skeleton simulates
 //! for real — worldspawn, player starts, lights, func_door — wired to the
 //! reachable [`Server`](qa_world::server::Server) through the native
-//! touch/mover-think hooks. Generic `map:{classname}` spawns still cover
-//! every other classname until their native behavior lands.
+//! touch/mover-think hooks. Triggers, buttons, target firing, and toggle
+//! lights live in [`super::native_q1_triggers`]; generic `map:{classname}`
+//! spawns still cover every other classname until their native behavior
+//! lands.
 //!
 //! qsrc: `progs106/doors.qc` (func_door spawn, LinkDoors, spawn_field,
 //! door_touch, door_trigger_touch, door_fire, door_go_up, door_go_down,
@@ -15,9 +17,8 @@
 //! inhibition), `progs106/defs.qc:305` (key item bits).
 //!
 //! Skeleton scope notes (each lands with its system, not here):
-//! sounds have no sim audio path yet, `SUB_UseTargets` needs the target
-//! system, door messages need centerprint, door blocking needs the
-//! pusher transaction, and shootable doors need damage routing.
+//! sounds have no sim audio path yet, and shootable doors need damage
+//! routing.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,11 @@ use qa_world::session::Simulation;
 use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};
 use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
+
+use super::native_q1_triggers::{
+    q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
+    Q1Light, Q1PendingThink, Q1PlayerForce, Q1ThinkKind, Q1Trigger, Q1UseSource,
+};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -193,7 +199,7 @@ pub fn q1_movedir(angles: Vec3) -> Vec3 {
 
 /// Parse one optional QC float field: missing or unparseable reads as
 /// zero (stock `atof`), and zero selects the stock default.
-fn q1_field_or(fields: &SpawnFields, key: &str, default: f64) -> f64 {
+pub(crate) fn q1_field_or(fields: &SpawnFields, key: &str, default: f64) -> f64 {
     let parsed = fields
         .extra
         .get(key)
@@ -296,7 +302,7 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
 }
 
 /// Parse the `*N` brush-model index from a `model` field.
-fn q1_model_index(fields: &SpawnFields) -> Option<usize> {
+pub(crate) fn q1_model_index(fields: &SpawnFields) -> Option<usize> {
     fields.extra.get("model")?.strip_prefix('*')?.parse::<usize>().ok()
 }
 
@@ -317,6 +323,9 @@ pub struct Q1Door {
     pub toggle: bool,
     /// Master-clock seconds until which `door_touch` stays throttled.
     pub touch_throttle_until: f64,
+    /// Firing inputs: the touch message plus `target`/`killtarget` fired
+    /// when travel starts (`door_go_up`, `doors.qc:99`).
+    pub use_source: Q1UseSource,
 }
 
 /// Door trigger-field gamecode state.
@@ -334,11 +343,12 @@ pub struct Q1DoorField {
 pub struct Q1NativeBehaviors {
     /// Door actors by id.
     pub doors: HashMap<ActorId, Q1Door>,
-    /// Brush-model index by door actor, for inline-hull clips.
+    /// Brush-model index by door/button actor, for inline-hull clips.
     pub brush_models: HashMap<ActorId, u32>,
     /// Box-solid actors (`SOLID_SLIDEBOX` monsters, the admitted
-    /// player). Doors ride `brush_models`; everything else the stock
-    /// spawn functions leave `SOLID_NOT` stays out of the scene.
+    /// player, shootable trigger boxes). Doors and buttons ride
+    /// `brush_models`; everything else the stock spawn functions leave
+    /// `SOLID_NOT` stays out of the scene.
     pub solids: HashSet<ActorId>,
     /// Trigger-field actors by id.
     pub fields: HashMap<ActorId, Q1DoorField>,
@@ -347,6 +357,41 @@ pub struct Q1NativeBehaviors {
     pub player: Option<ActorId>,
     /// Key item bits the player carries.
     pub player_keys: u32,
+    /// Trigger actors by id (multiples, relays, counters, hurt, push,
+    /// setskill, registered gates).
+    pub triggers: HashMap<ActorId, Q1Trigger>,
+    /// Button actors by id.
+    pub buttons: HashMap<ActorId, Q1Button>,
+    /// Toggle-light actors by id.
+    pub lights: HashMap<ActorId, Q1Light>,
+    /// Spawn-order actor lists by targetname (stock `find` order).
+    /// Lookups run only at spawn and at target-firing time (event
+    /// rate), never per frame.
+    pub by_targetname: HashMap<String, Vec<ActorId>>,
+    /// Scheduled native thinks, in schedule order.
+    pub thinks: Vec<Q1PendingThink>,
+    /// Delayed `SUB_UseTargets` payloads, in schedule order.
+    pub delayed_uses: Vec<Q1DelayedUse>,
+    /// Queued centerprints for the HUD slice to drain.
+    pub centerprints: Vec<Q1Centerprint>,
+    /// Queued player impulses for the movement step to mirror.
+    pub player_forces: Vec<Q1PlayerForce>,
+    /// Current toggle-light style values (`a` off, `m` on).
+    pub light_styles: HashMap<u32, char>,
+    /// Secrets in the map (`total_secrets`).
+    pub total_secrets: u32,
+    /// Secrets found (`found_secrets`).
+    pub found_secrets: u32,
+    /// Whether the mounts hold the registered version (`gfx/pop.lmp`).
+    pub registered: bool,
+    /// Worldspawn `worldtype` (0 medieval, 1 runic, 2 base).
+    pub worldtype: u8,
+    /// Pending skill value from `trigger_setskill` (the map transition
+    /// consumes it; `None` until touched).
+    pub skill_override: Option<String>,
+    /// Last movement view angles, mirrored each player step for the
+    /// angle-gated trigger facing check.
+    pub player_angles: Vec3,
 }
 
 impl Q1NativeBehaviors {
@@ -359,6 +404,63 @@ impl Q1NativeBehaviors {
     /// Adopt the admitted player as the door opener.
     pub fn set_player(&mut self, player: Option<ActorId>) {
         self.player = player;
+    }
+
+    /// Schedule a native think, replacing the actor's pending think
+    /// (stock has one `think`/`nextthink` slot per entity).
+    pub fn schedule_think(&mut self, actor: &ActorId, kind: Q1ThinkKind, due_seconds: f64) {
+        self.thinks.retain(|think| think.actor != *actor);
+        self.thinks.push(Q1PendingThink {
+            actor: actor.clone(),
+            kind,
+            due_seconds,
+        });
+    }
+}
+
+/// Stock health read: combat health, or 0 for field-less entities
+/// (stock `health` defaults to 0; only combat holders are alive).
+pub(crate) fn q1_health_of(simulation: &Simulation, actor: &ActorId) -> f64 {
+    simulation.combat_state(actor).map_or(0.0, |combat| combat.health)
+}
+
+/// Stock `takedamage` read: set only on combat holders that take damage
+/// (the player after combat grant, shootables, monsters later).
+pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bool {
+    simulation
+        .combat_state(actor)
+        .is_some_and(|combat| combat.can_take_damage)
+}
+
+/// Remove an actor stock `remove()` style: unmark its trigger volume,
+/// drop every gamecode record (doors, fields, triggers, buttons,
+/// lights, movers, solidity), and release the actor. Stale targetname
+/// index entries stay (bounded by the map's entity count); firing
+/// tolerates them because every dispatch misses released actors.
+///
+/// `q1_remove` never fails: double removals and missing records are
+/// normal (killtarget victims, chained removes), so errors sink.
+pub(crate) fn q1_remove(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+) {
+    triggers.unmark(actor);
+    behaviors.doors.remove(actor);
+    behaviors.brush_models.remove(actor);
+    behaviors.solids.remove(actor);
+    behaviors.fields.remove(actor);
+    behaviors.triggers.remove(actor);
+    behaviors.buttons.remove(actor);
+    behaviors.lights.remove(actor);
+    movers.remove(actor);
+    if behaviors.player.as_ref() == Some(actor) {
+        behaviors.player = None;
+    }
+    if let Some(owned) = simulation.registry().resolve_owned(actor) {
+        let _ignored = simulation.release(&owned);
     }
 }
 
@@ -422,6 +524,7 @@ pub fn build_q1_door<L: ServerLogic>(
             dmg: params.dmg,
             toggle: params.toggle,
             touch_throttle_until: 0.0,
+            use_source: Q1UseSource::from_fields(fields),
         },
     );
     behaviors.brush_models.insert(actor.id().clone(), model);
@@ -549,7 +652,7 @@ pub fn link_q1_doors<L: ServerLogic>(
 /// Redirect a travelling mover toward the other endpoint, re-arming the
 /// arrival think (stock `SUB_CalcMove` reversal; the engine's
 /// [`use_mover`] leaves travelling movers untouched).
-fn q1_redirect_mover(state: &mut MoverState, origin: Vec3, to_pos2: bool) {
+pub(crate) fn q1_redirect_mover(state: &mut MoverState, origin: Vec3, to_pos2: bool) {
     state.phase = if to_pos2 {
         MoverPhase::ToPos2
     } else {
@@ -574,17 +677,41 @@ fn q1_redirect_mover(state: &mut MoverState, origin: Vec3, to_pos2: bool) {
 /// Current body origin for a mover, defaulting to position 1 when the
 /// body is unreadable (movers always have bodies; the fallback keeps a
 /// corrupt table from panicking the tick).
-fn q1_mover_origin(simulation: &Simulation, movers: &MoverTable, actor: &ActorId) -> Vec3 {
+pub(crate) fn q1_mover_origin(simulation: &Simulation, movers: &MoverTable, actor: &ActorId) -> Vec3 {
     simulation
         .body_state(actor)
         .map(|state| state.origin)
         .unwrap_or_else(|| movers.get(actor).map_or(vec3(0.0, 0.0, 0.0), |state| state.pos1))
 }
 
+/// Resume interrupted travel by re-arming the arrival think from the
+/// live origin. The re-arm clamps to a future instant so a dust-exact
+/// arrival (remaining distance zero) still schedules its completion
+/// think — which arrives on the next step — instead of arming at local
+/// time and freezing the mover with no future think.
+pub(crate) fn q1_rearm_travel(simulation: &Simulation, movers: &mut MoverTable, actor: &ActorId) {
+    let origin = q1_mover_origin(simulation, movers, actor);
+    if let Some(state) = movers.get_mut(actor) {
+        let target = state.target();
+        let delta = vec3(target.x - origin.x, target.y - origin.y, target.z - origin.z);
+        let distance = f64::from(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
+        if state.speed > 0.0 {
+            state.next_think_seconds = state.local_time_seconds + (distance / state.speed).max(1e-9);
+        }
+    }
+}
+
 /// Open one door (`door_go_up`, `doors.qc:77`): already-open doors reset
-/// their wait, otherwise travel starts and targets fire (target firing
-/// needs the target system).
-fn q1_door_go_up(behaviors: &Q1NativeBehaviors, simulation: &Simulation, movers: &mut MoverTable, actor: &ActorId) {
+/// their wait, otherwise travel starts and the door's own targets fire
+/// (`SUB_UseTargets`, `doors.qc:99`).
+pub(crate) fn q1_door_go_up(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+    activator: Option<&ActorId>,
+) {
     let Some(state) = movers.get_mut(actor) else {
         return;
     };
@@ -607,10 +734,14 @@ fn q1_door_go_up(behaviors: &Q1NativeBehaviors, simulation: &Simulation, movers:
             use_mover(state, origin);
         }
     }
+    let source = behaviors.doors.get(actor).map(|door| door.use_source.clone());
+    if let Some(source) = source {
+        q1_use_targets(behaviors, simulation, movers, triggers, &source, activator);
+    }
 }
 
 /// Close one door (`door_go_down`, `doors.qc:64`).
-fn q1_door_go_down(simulation: &Simulation, movers: &mut MoverTable, actor: &ActorId) {
+pub(crate) fn q1_door_go_down(simulation: &Simulation, movers: &mut MoverTable, actor: &ActorId) {
     let Some(state) = movers.get(actor) else {
         return;
     };
@@ -629,13 +760,24 @@ fn q1_door_go_down(simulation: &Simulation, movers: &mut MoverTable, actor: &Act
 }
 
 /// Fire a master door and its linked peers (`door_fire`, `doors.qc:104`):
-/// toggle doors open at the top travel down instead.
-fn q1_door_fire(behaviors: &Q1NativeBehaviors, simulation: &Simulation, movers: &mut MoverTable, master: &ActorId) {
+/// the master message clears ("no more message"), and toggle doors open
+/// at the top travel down instead.
+pub(crate) fn q1_door_fire(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    master: &ActorId,
+    activator: Option<&ActorId>,
+) {
     let Some(door) = behaviors.doors.get(master) else {
         return;
     };
     let peers = door.peers.clone();
     let toggle = door.toggle;
+    if let Some(door) = behaviors.doors.get_mut(master) {
+        door.use_source.message = None;
+    }
     if toggle
         && matches!(
             movers.get(master).map(|state| state.phase),
@@ -648,13 +790,32 @@ fn q1_door_fire(behaviors: &Q1NativeBehaviors, simulation: &Simulation, movers: 
         return;
     }
     for peer in &peers {
-        q1_door_go_up(behaviors, simulation, movers, peer);
+        let peer = peer.clone();
+        q1_door_go_up(behaviors, simulation, movers, triggers, &peer, activator);
+    }
+}
+
+/// Key-denial centerprint by key and world (`door_touch`,
+/// `doors.qc:209-246`): silver/gold key, runekey, or keycard for
+/// medieval/runic/base worlds. Other worldtypes print nothing, like the
+/// stock `if` chain with no `else`.
+fn q1_key_deny_text(items: u32, worldtype: u8) -> Option<&'static str> {
+    let silver = items == IT_KEY1;
+    match (silver, worldtype) {
+        (true, 2) => Some("You need the silver keycard"),
+        (true, 1) => Some("You need the silver runekey"),
+        (true, 0) => Some("You need the silver key"),
+        (false, 2) => Some("You need the gold keycard"),
+        (false, 1) => Some("You need the gold runekey"),
+        (false, 0) => Some("You need the gold key"),
+        _ => None,
     }
 }
 
 /// Native touch dispatch for Q1 doors: trigger fields fire
-/// (`door_trigger_touch`, `doors.qc:160`) and door solids handle key
-/// doors (`door_touch`, `doors.qc:196`). Non-player touches are ignored.
+/// (`door_trigger_touch`, `doors.qc:160`) and door solids print
+/// messages and handle key doors (`door_touch`, `doors.qc:196`).
+/// Non-player touches are ignored.
 pub fn q1_native_touch(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -670,7 +831,11 @@ pub fn q1_native_touch(
     }
     let now = simulation.frame().time.as_seconds_f64();
     if let Some(field) = behaviors.fields.get(&contact.trigger).cloned() {
-        // `door_trigger_touch`: 1s refire, then fire the master.
+        // `door_trigger_touch`: the dead don't fire, 1s refire, then
+        // fire the master with the toucher held as activator.
+        if q1_health_of(simulation, &contact.other) <= 0.0 {
+            return;
+        }
         let throttled = behaviors
             .fields
             .get(&contact.trigger)
@@ -681,14 +846,22 @@ pub fn q1_native_touch(
         if let Some(field) = behaviors.fields.get_mut(&contact.trigger) {
             field.throttle_until = now + 1.0;
         }
-        q1_door_fire(behaviors, simulation, movers, &field.master);
+        q1_door_fire(
+            behaviors,
+            simulation,
+            movers,
+            triggers,
+            &field.master,
+            Some(&contact.other),
+        );
         return;
     }
     if !behaviors.doors.contains_key(&contact.trigger) {
         return;
     }
-    // `door_touch`: 2s master throttle, then key handling. Messages and
-    // sounds need the centerprint/audio paths.
+    // `door_touch`: 2s master throttle, then the owner message, then key
+    // handling. Stock plays `misc/talk.wav` with the message and the
+    // key-denial `noise3`; the audio slice owns playback.
     let master = behaviors.doors.get(&contact.trigger).map(|door| door.master.clone());
     let Some(master) = master else {
         return;
@@ -703,11 +876,28 @@ pub fn q1_native_touch(
     if let Some(door) = behaviors.doors.get_mut(&master) {
         door.touch_throttle_until = now + 2.0;
     }
+    if let Some(text) = behaviors
+        .doors
+        .get(&master)
+        .and_then(|door| door.use_source.message.clone())
+        .filter(|text| !text.is_empty())
+    {
+        behaviors.centerprints.push(Q1Centerprint {
+            target: contact.other.clone(),
+            text,
+        });
+    }
     let items = behaviors.doors.get(&contact.trigger).map_or(0, |door| door.items);
     if items == 0 {
         return;
     }
     if behaviors.player_keys & items != items {
+        if let Some(text) = q1_key_deny_text(items, behaviors.worldtype) {
+            behaviors.centerprints.push(Q1Centerprint {
+                target: contact.other.clone(),
+                text: text.to_string(),
+            });
+        }
         return;
     }
     behaviors.player_keys &= !items;
@@ -722,15 +912,17 @@ pub fn q1_native_touch(
     if let Some(next) = next {
         triggers.unmark(&next);
     }
-    q1_door_fire(behaviors, simulation, movers, &master);
+    q1_door_fire(behaviors, simulation, movers, triggers, &master, Some(&contact.other));
 }
 
-/// Native mover-think dispatch for Q1 doors: top arrival always rests
-/// (toggle doors wait for a trigger; negative-wait key doors never
-/// return — stock `door_hit_top` arms `nextthink = ltime + wait`, a past
-/// instant the pusher never fires — and positive waits were armed by the
-/// engine step), the top wait think closes the door, and bottom arrival
-/// rests.
+/// Native mover-think dispatch for Q1 doors and buttons: doors rest
+/// at the top on arrival (toggle doors wait for a trigger; negative-wait
+/// key doors never return — stock `door_hit_top` arms `nextthink = ltime
+/// + wait`, a past instant the pusher never fires — and positive waits
+/// were armed by the engine step), the top wait think closes the door,
+/// and bottom arrival rests. Buttons dispatch to `button_wait` /
+/// `button_return`.
+///
 /// A think firing mid-travel without arrival re-arms the arrival think:
 /// float dust between the armed arrival instant and the recomputed
 /// remaining distance would otherwise consume the think and strand the
@@ -739,10 +931,15 @@ pub fn q1_native_mover_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
     movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
     actor: &ActorId,
     phase: MoverPhase,
     arrived: bool,
 ) {
+    if behaviors.buttons.contains_key(actor) {
+        q1_button_mover_think(behaviors, simulation, movers, triggers, actor, phase, arrived);
+        return;
+    }
     let Some(door) = behaviors.doors.get(actor) else {
         return;
     };
@@ -759,9 +956,6 @@ pub fn q1_native_mover_think(
         // Top wait think: close, unless this is a toggle door (the
         // engine arms wait thinks for any positive wait; stock toggle
         // doors never schedule one).
-        // Top wait think: close, unless this is a toggle door (the
-        // engine arms wait thinks for any positive wait; stock toggle
-        // doors never schedule one).
         (MoverPhase::AtPos2, false) => {
             if toggle {
                 return;
@@ -770,20 +964,8 @@ pub fn q1_native_mover_think(
         }
         // Mid-travel think without arrival: resume the interrupted
         // travel by re-arming the arrival think from the live origin.
-        // The re-arm clamps to a future instant so a dust-exact arrival
-        // (remaining distance zero) still schedules its completion
-        // think — which arrives on the next step — instead of arming at
-        // local time and freezing the mover with no future think.
         (MoverPhase::ToPos1 | MoverPhase::ToPos2, _) => {
-            let origin = q1_mover_origin(simulation, movers, actor);
-            if let Some(state) = movers.get_mut(actor) {
-                let target = state.target();
-                let delta = vec3(target.x - origin.x, target.y - origin.y, target.z - origin.z);
-                let distance = f64::from(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
-                if state.speed > 0.0 {
-                    state.next_think_seconds = state.local_time_seconds + (distance / state.speed).max(1e-9);
-                }
-            }
+            q1_rearm_travel(simulation, movers, actor);
         }
         _ => {}
     }
@@ -791,12 +973,16 @@ pub fn q1_native_mover_think(
 
 /// Native mover-blocked dispatch for Q1 doors (`door_blocked`,
 /// `doors.qc:32`): crush damage first, then reverse unless the wait is
-/// negative (negative-wait doors keep squashing). Armor and knockback
-/// need the combat path; only health applies yet.
+/// negative (negative-wait doors keep squashing). Blocked reversals
+/// fire targets with no activator (stock leaves the activator global
+/// stale; messages need a player activator, so they skip). Buttons do
+/// nothing when blocked (`button_blocked`, `buttons.qc:31`). Armor and
+/// knockback need the combat path; only health applies yet.
 pub fn q1_native_mover_blocked(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
     movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
     pusher: &ActorId,
     obstacle: &ActorId,
 ) {
@@ -809,7 +995,7 @@ pub fn q1_native_mover_blocked(
         return;
     }
     match movers.get(pusher).map(|state| state.phase) {
-        Some(MoverPhase::ToPos1) => q1_door_go_up(behaviors, simulation, movers, pusher),
+        Some(MoverPhase::ToPos1) => q1_door_go_up(behaviors, simulation, movers, triggers, pusher, None),
         Some(MoverPhase::ToPos2) => q1_door_go_down(simulation, movers, pusher),
         _ => {}
     }
@@ -820,21 +1006,37 @@ pub fn q1_native_mover_blocked(
 pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<RefCell<Q1NativeBehaviors>>) {
     let touch_behaviors = Rc::clone(&behaviors);
     server.set_native_touch(Some(Box::new(move |simulation, movers, triggers, contact| {
-        q1_native_touch(&mut touch_behaviors.borrow_mut(), simulation, movers, triggers, contact);
+        let mut behaviors = touch_behaviors.borrow_mut();
+        q1_native_touch(&mut behaviors, simulation, movers, triggers, contact);
+        q1_trigger_touch(&mut behaviors, simulation, movers, triggers, contact);
     })));
     let think_behaviors = Rc::clone(&behaviors);
-    server.set_native_mover_think(Some(Box::new(move |simulation, movers, actor, phase, arrived| {
-        q1_native_mover_think(
-            &mut think_behaviors.borrow_mut(),
+    server.set_native_mover_think(Some(Box::new(
+        move |simulation, movers, triggers, actor, phase, arrived| {
+            q1_native_mover_think(
+                &mut think_behaviors.borrow_mut(),
+                simulation,
+                movers,
+                triggers,
+                actor,
+                phase,
+                arrived,
+            );
+        },
+    )));
+    let blocked_behaviors = Rc::clone(&behaviors);
+    server.set_native_mover_blocked(Some(Box::new(move |simulation, movers, triggers, pusher, obstacle| {
+        q1_native_mover_blocked(
+            &mut blocked_behaviors.borrow_mut(),
             simulation,
             movers,
-            actor,
-            phase,
-            arrived,
+            triggers,
+            pusher,
+            obstacle,
         );
     })));
-    server.set_native_mover_blocked(Some(Box::new(move |simulation, movers, pusher, obstacle| {
-        q1_native_mover_blocked(&mut behaviors.borrow_mut(), simulation, movers, pusher, obstacle);
+    server.set_native_think(Some(Box::new(move |simulation, movers, triggers| {
+        q1_trigger_think(&mut behaviors.borrow_mut(), simulation, movers, triggers);
     })));
 }
 
@@ -876,7 +1078,7 @@ mod tests {
     }
 
     fn spawn_player(server: &mut Server<qa_guest::server::GuestServerLogic>, origin: Vec3) -> OwnedActor {
-        server
+        let player = server
             .simulation_mut()
             .spawn(
                 qa_core::identity::ProviderId::new("q1", "test"),
@@ -894,7 +1096,14 @@ mod tests {
                 None,
                 Vec::new(),
             )
-            .unwrap()
+            .unwrap();
+        // Stock players always carry health (`PutClientInServer`); the
+        // door-field touch refuses the dead, so the test player does too.
+        server
+            .simulation_mut()
+            .set_combat(player.id(), qa_world::combat::CombatState::default())
+            .unwrap();
+        player
     }
 
     #[test]
@@ -974,8 +1183,15 @@ mod tests {
             let mover = server.movers_mut().get_mut(pending.actor.id()).unwrap();
             mover.phase = MoverPhase::ToPos1;
         }
-        let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-        q1_native_mover_blocked(&mut behaviors, simulation, movers, pending.actor.id(), player.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_native_mover_blocked(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            pending.actor.id(),
+            player.id(),
+        );
         assert_eq!(
             server
                 .simulation()
@@ -1001,8 +1217,15 @@ mod tests {
             let mover = server.movers_mut().get_mut(pending.actor.id()).unwrap();
             mover.phase = MoverPhase::ToPos1;
         }
-        let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-        q1_native_mover_blocked(&mut behaviors, simulation, movers, pending.actor.id(), player.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_native_mover_blocked(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            pending.actor.id(),
+            player.id(),
+        );
         assert_eq!(
             server
                 .simulation()
@@ -1361,14 +1584,30 @@ mod tests {
         server.movers_mut().get_mut(&door).unwrap().phase = MoverPhase::AtPos2;
         server.simulation_mut().set_body_origin(&door, open_origin).unwrap();
         {
-            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-            q1_native_mover_think(&mut behaviors, simulation, movers, &door, MoverPhase::AtPos2, true);
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            q1_native_mover_think(
+                &mut behaviors,
+                simulation,
+                movers,
+                triggers,
+                &door,
+                MoverPhase::AtPos2,
+                true,
+            );
         }
         assert_eq!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::AtPos2);
         // A stray wait think never closes a toggle door either.
         {
-            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-            q1_native_mover_think(&mut behaviors, simulation, movers, &door, MoverPhase::AtPos2, false);
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            q1_native_mover_think(
+                &mut behaviors,
+                simulation,
+                movers,
+                triggers,
+                &door,
+                MoverPhase::AtPos2,
+                false,
+            );
         }
         assert_eq!(server.movers_mut().get(&door).unwrap().phase, MoverPhase::AtPos2);
         // Firing again travels down.

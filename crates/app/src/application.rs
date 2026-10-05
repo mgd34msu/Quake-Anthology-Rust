@@ -36,6 +36,7 @@ use qa_world::server::Server;
 
 use crate::bootstrap::play_world::{load_selected_map, spawn_map_entities, MapSpawnContext, Q1SpawnContext};
 use crate::bootstrap::simulation::native_q1_spawns::Q1NativeBehaviors;
+use crate::bootstrap::simulation::native_q1_triggers::q1_registered_version;
 use crate::bootstrap::windowed_scene::open_product_mounts;
 use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
 use crate::console::queue::ConsoleQueue;
@@ -210,6 +211,7 @@ fn open_dedicated_map(
         q1: Some(Q1SpawnContext {
             models: selected.q1_models,
             behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
+            registered: q1_registered_version(&mounts),
         }),
     };
     let summary = spawn_map_entities(server, &selected.entities, &config.map, &context);

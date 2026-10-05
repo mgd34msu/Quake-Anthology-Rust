@@ -379,6 +379,60 @@ impl Simulation {
         Ok(())
     }
 
+    /// Rewrite a body's velocity (teleport and push gamecode).
+    pub fn set_body_velocity(&mut self, actor: &ActorId, velocity: Vec3) -> Result<(), WorldError> {
+        self.assert_open()?;
+        let Some(owned) = self.registry.resolve_owned(actor) else {
+            return Err(WorldError::StaleActor);
+        };
+        let Some(mut state) = self.bodies.read(&self.registry, actor) else {
+            return Err(WorldError::BodyMissing);
+        };
+        state.velocity = velocity;
+        self.bodies.write(&self.registry, &owned, state)?;
+        Ok(())
+    }
+
+    /// Rewrite a body's angles (teleport gamecode snaps facing).
+    pub fn set_body_angles(&mut self, actor: &ActorId, angles: Vec3) -> Result<(), WorldError> {
+        self.assert_open()?;
+        let Some(owned) = self.registry.resolve_owned(actor) else {
+            return Err(WorldError::StaleActor);
+        };
+        let Some(mut state) = self.bodies.read(&self.registry, actor) else {
+            return Err(WorldError::BodyMissing);
+        };
+        state.angles = angles;
+        self.bodies.write(&self.registry, &owned, state)?;
+        Ok(())
+    }
+
+    /// Clear a body's ground link (teleport gamecode drops `FL_ONGROUND`).
+    pub fn clear_body_ground(&mut self, actor: &ActorId) -> Result<(), WorldError> {
+        self.assert_open()?;
+        let Some(owned) = self.registry.resolve_owned(actor) else {
+            return Err(WorldError::StaleActor);
+        };
+        let Some(mut state) = self.bodies.read(&self.registry, actor) else {
+            return Err(WorldError::BodyMissing);
+        };
+        state.ground = None;
+        self.bodies.write(&self.registry, &owned, state)?;
+        Ok(())
+    }
+
+    /// Grant or replace an actor's combat state after spawn (player
+    /// health, shootable trigger/button health). Spawn-time combat still
+    /// arrives through [`Simulation::spawn`].
+    pub fn set_combat(&mut self, actor: &ActorId, combat: CombatState) -> Result<(), WorldError> {
+        self.assert_open()?;
+        if self.registry.resolve_owned(actor).is_none() {
+            return Err(WorldError::StaleActor);
+        }
+        self.combats.insert(actor.clone(), combat);
+        Ok(())
+    }
+
     /// Capture a body's spatial snapshot (server trigger pass).
     pub fn link_body(&mut self, actor: &ActorId) -> Result<(), WorldError> {
         self.assert_open()?;
