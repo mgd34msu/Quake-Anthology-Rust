@@ -15,12 +15,15 @@
 //! Quake II damage blend): fills over a 1x1 uploaded white image grouped
 //! into emit-order runs with the textured donor backdrop quad (the panel
 //! is a flat fill and the skin leaves panel/focus art unset, exactly the
-//! donor theme), then one textured batch binding the console charset
-//! atlas from [`super::windowed_menu_text`] so every glyph draws with
-//! real UVs. The atlas loads the real `conchars` through installed
-//! content mounts when game data is present and falls back to the
-//! synthetic atlas otherwise, so the menu entry is always available,
-//! with or without game content.
+//! donor theme), then textured glyph batches binding the menu font
+//! atlases from [`super::windowed_menu_text`] so every glyph draws with
+//! real UVs. Menu text follows the donor cascade through
+//! [`load_menu_typography`](super::menu_font::load_menu_typography):
+//! rerelease TrueType body/title atlases, else the Q3 proportional atlas,
+//! else the classic console charset (the real `conchars` through installed
+//! content mounts when game data is present, the synthetic atlas
+//! otherwise), so the menu entry is always available, with or without
+//! game content.
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -53,6 +56,10 @@ use qa_client::render::types::TextureFilter;
 use qa_client::render::types::TextureSampling;
 use qa_client::render::types::ViewClear;
 use qa_client::render::types::ViewTarget;
+use qa_client::text::atlas::FontImageServices;
+use qa_client::text::atlas::TextAtlas;
+use qa_client::text::atlas::TextFontRegistry;
+use qa_client::text::atlas::TextFontRequest;
 use qa_client::text::atlas::TextFontSelection;
 use qa_client::text::draw2d::Draw2D;
 use qa_client::text::draw2d::ImagePicture;
@@ -81,6 +88,15 @@ use qa_client::ui::types::TextAlign;
 use qa_client::ui::types::UiDrawCommand;
 use qa_client::ui::types::UiDrawContext;
 use qa_client::ClientError;
+use qa_content::contract::ContentMount;
+use qa_content::contract::GameFamily;
+use qa_content::images::expand_indexed_image;
+use qa_content::images::indexed_render_image;
+use qa_content::images::IndexedImage;
+use qa_content::images::Palette;
+use qa_content::images::PaletteLayer;
+use qa_content::images::PaletteTransparency;
+use qa_content::mounts::MountedContent;
 use qa_core::identity::ClientId;
 use qa_core::identity::IdentityOwner;
 use qa_core::identity::SeatId;
@@ -88,6 +104,15 @@ use qa_core::math::vec2;
 use qa_core::math::vec4;
 use qa_core::math::Vec4;
 
+use super::menu_font::load_menu_typography;
+use super::menu_font::open_typography_mounts;
+use super::menu_font::MenuCharsetImages;
+use super::menu_font::MenuFontError;
+use super::menu_font::MenuTexture;
+use super::menu_font::MenuTypography;
+use super::menu_font::MountedMenuFonts;
+use super::menu_font::OpenedTypographyMounts;
+use super::menu_font::TypographyMounts;
 use super::startup_menu::menu_font_slot;
 use super::startup_menu::StartupMenu;
 use super::startup_menu::StartupMenuOptions;
@@ -95,11 +120,14 @@ use super::startup_menu::MENU_TITLE_FONT_SLOT;
 use super::startup_saves::StartupSaveList;
 use super::startup_selection::StartupSelectionModel;
 use super::windowed_menu_text::conchars_rgba;
+use super::windowed_menu_text::decode_menu_texture;
+use super::windowed_menu_text::font_upload_linear;
 use super::windowed_menu_text::font_upload_sized;
 use super::windowed_menu_text::glyph_batches;
 use super::windowed_menu_text::menu_font_selection;
 use super::windowed_menu_text::menu_font_selection_for;
 use super::windowed_menu_text::resolve_menu_charset;
+use super::windowed_menu_text::FontAtlasImage;
 use super::windowed_menu_text::GlyphQuad;
 use super::windowed_menu_text::CONCHARS_HEIGHT;
 use super::windowed_menu_text::CONCHARS_WIDTH;
@@ -140,6 +168,10 @@ const ART_FOCUS_TAG: u32 = u32::MAX;
 const MENU_WHITE_ORDINAL: u32 = 0x7FFF_FF01;
 /// Ordinal for the menu font atlas, uploaded beside the white image.
 const MENU_FONT_ORDINAL: u32 = 0x7FFF_FF02;
+/// First ordinal for proportional/TrueType atlas uploads (below the white
+/// and classic ordinals so a long fallback chain cannot reach the art
+/// ordinals).
+const MENU_EXTRA_FONT_ORDINAL_BASE: u32 = 0x7FFF_FE00;
 /// First ordinal for the four uploaded menu art images.
 const MENU_ART_ORDINAL_BASE: u32 = 0x7FFF_FF10;
 
@@ -151,17 +183,33 @@ struct MenuArtUpload {
     level: ImageLevel,
 }
 
+/// One proportional/TrueType atlas upload behind the menu fonts.
+struct ExtraFontAtlas {
+    /// Headless picture handle carried by laid-out glyphs.
+    handle: u32,
+    /// Backend image handle.
+    image: RendererImage,
+    /// Atlas width in pixels.
+    width: u32,
+    /// Atlas height in pixels.
+    height: u32,
+    /// Top-down RGBA texels.
+    pixels: Vec<u8>,
+}
+
 /// Menu overlay over the ported startup menu (donor frontend menu).
 pub(crate) struct WindowedMenu {
     menu: StartupMenu,
     seat: SeatId,
     client: ClientId,
     font: TextFontSelection,
+    title_font: TextFontSelection,
     white: RendererImage,
     font_image: RendererImage,
     font_width: u32,
     font_height: u32,
     font_pixels: Vec<u8>,
+    extra_fonts: Vec<ExtraFontAtlas>,
     art: [MenuArtUpload; 4],
     uploaded: bool,
     clock_ms: Rc<Cell<i64>>,
@@ -181,7 +229,7 @@ impl WindowedMenu {
         quit: Rc<Cell<bool>>,
         launch: super::windowed_menu_launch::MenuLaunchQueue,
     ) -> Result<Self, String> {
-        let (font, font_width, font_height, font_pixels) = {
+        let (classic_selection, font_width, font_height, font_pixels) = {
             let preferred = model.options().ok().map(|options| options.product);
             match resolve_menu_charset(model.catalog(), preferred.as_deref()) {
                 Some(charset) => {
@@ -195,6 +243,31 @@ impl WindowedMenu {
                     CONCHARS_HEIGHT,
                     conchars_rgba(),
                 ),
+            }
+        };
+        // Donor `startup.ts`: the menu binds the typography body/title
+        // selections. A typography failure (installed product but missing
+        // font assets) keeps the classic charset so the menu still opens.
+        let (font, title_font, stored_atlases) = {
+            let store = Rc::new(RefCell::new(SharedFontStore::new()));
+            let mut images = WindowedMenuImages(Rc::clone(&store));
+            let mut fonts = WindowedMenuFonts(Rc::clone(&store));
+            let mut mounts = WindowedMenuMounts(Rc::clone(&store));
+            match load_menu_typography(
+                model.catalog(),
+                classic_selection.classic().clone(),
+                &mut images,
+                &mut fonts,
+                &mut mounts,
+            ) {
+                Ok(typography) => {
+                    let MenuTypography {
+                        body, title, closer, ..
+                    } = typography;
+                    closer();
+                    (body, title, store.borrow().atlases.clone())
+                }
+                Err(_) => (classic_selection.clone(), classic_selection, Vec::new()),
             }
         };
         let levels = [
@@ -231,7 +304,7 @@ impl WindowedMenu {
             model: Rc::clone(&shared),
             art,
             font: font.clone(),
-            title_font: font.clone(),
+            title_font: title_font.clone(),
             now: Rc::new(move || now.get()),
             play: Rc::new(move || launch_play.push(super::startup::StartupAction::Play)),
             play_preset: Some(Rc::new(move |id, skill, arena_map| {
@@ -286,16 +359,37 @@ impl WindowedMenu {
                 level,
             }
         });
+        let extra_fonts = stored_atlases
+            .into_iter()
+            .enumerate()
+            .map(|(index, atlas)| ExtraFontAtlas {
+                handle: atlas.handle,
+                image: RendererImage {
+                    owner: owner.clone(),
+                    ordinal: MENU_EXTRA_FONT_ORDINAL_BASE + index as u32,
+                    source: ImageSource::Generated {
+                        name: format!("windowed-menu-font:{}", atlas.name),
+                    },
+                    width: atlas.width,
+                    height: atlas.height,
+                },
+                width: atlas.width,
+                height: atlas.height,
+                pixels: atlas.pixels,
+            })
+            .collect();
         Ok(Self {
             menu,
             seat,
             client,
             font,
+            title_font,
             white,
             font_image,
             font_width,
             font_height,
             font_pixels,
+            extra_fonts,
             art: art_uploads,
             uploaded: false,
             clock_ms,
@@ -319,6 +413,27 @@ impl WindowedMenu {
     #[cfg(test)]
     pub(crate) fn font_atlas_pixels(&self) -> &[u8] {
         &self.font_pixels
+    }
+
+    /// Body font selection.
+    #[cfg(test)]
+    pub(crate) fn body_font(&self) -> &TextFontSelection {
+        &self.font
+    }
+
+    /// Title font selection.
+    #[cfg(test)]
+    pub(crate) fn title_font_selection(&self) -> &TextFontSelection {
+        &self.title_font
+    }
+
+    /// Extra atlas uploads as `(handle, width, height)` in upload order.
+    #[cfg(test)]
+    pub(crate) fn extra_font_atlases(&self) -> Vec<(u32, u32, u32)> {
+        self.extra_fonts
+            .iter()
+            .map(|extra| (extra.handle, extra.width, extra.height))
+            .collect()
     }
 
     /// Shared selection model behind the menu.
@@ -352,8 +467,9 @@ impl WindowedMenu {
     /// Ordered view for the menu plus the image uploads the backend must
     /// apply before executing it. Returns `None` when the live dimensions
     /// cannot host the menu, in which case the frame degrades to clear
-    /// plus swap. The white and font-atlas uploads are emitted exactly
-    /// once; later frames carry no image operations.
+    /// plus swap. The white and font-atlas uploads (classic plus any
+    /// proportional/TrueType atlases) are emitted exactly once; later
+    /// frames carry no image operations.
     pub(crate) fn frame_view(
         &mut self,
         width: i32,
@@ -398,15 +514,22 @@ impl WindowedMenu {
             },
             time_ms: time_ms as i64,
         };
-        let mut capture = MenuCaptureServices::new(self.font.clone(), self.font.clone());
+        let mut handles = Vec::with_capacity(1 + self.extra_fonts.len());
+        handles.push(FONT_PICTURE_HANDLE);
+        handles.extend(self.extra_fonts.iter().map(|extra| extra.handle));
+        let mut capture = MenuCaptureServices::new(self.font.clone(), self.title_font.clone(), handles);
         let _ignored = self.menu.draw(&context, &mut capture);
         let mut batches = menu_batches(&capture.runs, width as f32, height as f32, &self.white, &self.art);
-        batches.extend(glyph_batches(
-            &capture.glyphs,
-            width as f32,
-            height as f32,
-            &self.font_image,
-        ));
+        let mut fonts = Vec::with_capacity(1 + self.extra_fonts.len());
+        fonts.push(FontAtlasImage {
+            handle: FONT_PICTURE_HANDLE,
+            image: self.font_image.clone(),
+        });
+        fonts.extend(self.extra_fonts.iter().map(|extra| FontAtlasImage {
+            handle: extra.handle,
+            image: extra.image.clone(),
+        }));
+        batches.extend(glyph_batches(&capture.glyphs, width as f32, height as f32, &fonts));
         let operations = if batches.is_empty() {
             Vec::new()
         } else {
@@ -446,6 +569,11 @@ impl WindowedMenu {
                 self.font_height,
                 self.font_pixels.clone(),
             ));
+            uploads.extend(
+                self.extra_fonts
+                    .iter()
+                    .map(|extra| font_upload_linear(&extra.image, extra.width, extra.height, extra.pixels.clone())),
+            );
             uploads.extend(self.art.iter().map(art_upload));
         }
         Some((view, uploads))
@@ -463,6 +591,13 @@ impl WindowedMenu {
                     image: self.font_image.clone(),
                 },
             ];
+            release.extend(
+                self.extra_fonts
+                    .iter()
+                    .map(|extra| ImageResourceOperation::ReleaseImage {
+                        image: extra.image.clone(),
+                    }),
+            );
             release.extend(self.art.iter().map(|upload| ImageResourceOperation::ReleaseImage {
                 image: upload.image.clone(),
             }));
@@ -529,6 +664,239 @@ fn white_upload(white: &RendererImage) -> ImageResourceOperation {
             repeat: true,
             filter: TextureFilter::Nearest,
         },
+    }
+}
+
+/// One proportional/TrueType atlas stored during typography load.
+#[derive(Debug, Clone)]
+struct StoredFontAtlas {
+    /// Headless picture handle carried by laid-out glyphs.
+    handle: u32,
+    /// Atlas name for the upload label.
+    name: String,
+    /// Atlas width in pixels.
+    width: u32,
+    /// Atlas height in pixels.
+    height: u32,
+    /// Top-down RGBA texels.
+    pixels: Vec<u8>,
+}
+
+/// Shared typography load state behind the three `menu_font` hosts:
+/// the typography product mounts plus every atlas registered while
+/// `load_menu_typography` runs.
+struct SharedFontStore {
+    /// Typography product mounts, refreshed by each mount open.
+    mounts: Vec<ContentMount>,
+    /// Stored atlases in registration order.
+    atlases: Vec<StoredFontAtlas>,
+    /// Next picture handle (the classic charset keeps
+    /// [`FONT_PICTURE_HANDLE`]).
+    next_handle: u32,
+}
+
+impl SharedFontStore {
+    /// Empty store over no mounts.
+    fn new() -> Self {
+        Self {
+            mounts: Vec::new(),
+            atlases: Vec::new(),
+            next_handle: FONT_PICTURE_HANDLE + 1,
+        }
+    }
+
+    /// Store one atlas, returning its picture handle.
+    fn store(&mut self, name: &str, width: u32, height: u32, pixels: Vec<u8>) -> u32 {
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        self.atlases.push(StoredFontAtlas {
+            handle,
+            name: name.to_string(),
+            width,
+            height,
+            pixels,
+        });
+        handle
+    }
+
+    /// Forget one stored atlas.
+    fn release(&mut self, image: u32) {
+        self.atlases.retain(|atlas| atlas.handle != image);
+    }
+
+    /// Reopen the typography product mounts for one read.
+    fn mounted(&self) -> Result<MountedContent, MenuFontError> {
+        open_typography_mounts(self.mounts.clone())
+    }
+}
+
+/// `MenuCharsetImages` over installed content mounts: texture reads decode
+/// through the mount plan and register into the shared atlas store.
+struct WindowedMenuImages(Rc<RefCell<SharedFontStore>>);
+
+/// Static texture name for one font texture path.
+fn menu_texture_name(path: &str) -> &'static str {
+    match path {
+        "menu/art/font1_prop.tga" => "font1_prop",
+        _ => "menu-font",
+    }
+}
+
+impl MenuCharsetImages for WindowedMenuImages {
+    fn load_texture(
+        &mut self,
+        path: &str,
+        _family: GameFamily,
+        palette: Option<&[u8]>,
+    ) -> Result<Option<MenuTexture>, MenuFontError> {
+        let mounted = self.0.borrow().mounted()?;
+        let asset = mounted.open(path, |_| true)?;
+        let Some(asset) = asset else {
+            return Ok(None);
+        };
+        let Some(decoded) = decode_menu_texture(&asset.bytes, path, palette) else {
+            return Err(MenuFontError::Font(format!(
+                "Menu font texture {path} is missing or malformed"
+            )));
+        };
+        let picture = ImagePicture {
+            image: 0,
+            width: decoded.width,
+            height: decoded.height,
+        };
+        let handle = self
+            .0
+            .borrow_mut()
+            .store(path, decoded.width, decoded.height, decoded.pixels);
+        Ok(Some(MenuTexture {
+            name: menu_texture_name(path),
+            picture: ImagePicture {
+                image: handle,
+                ..picture
+            },
+        }))
+    }
+
+    fn register_indexed(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        palette: Vec<u8>,
+    ) -> Result<u32, MenuFontError> {
+        // Donor Q1 `loadMenuFont` branch: indexed texels through the
+        // palette with index 0 transparent.
+        let render = indexed_render_image(
+            vec![IndexedImage {
+                width,
+                height,
+                indices: pixels,
+            }],
+            Palette {
+                colors: palette,
+                source: name.to_string(),
+            },
+            PaletteTransparency::Index(0),
+            None,
+            None,
+        )
+        .map_err(|error| MenuFontError::Font(error.to_string()))?;
+        let level = expand_indexed_image(&render, 0, PaletteLayer::Combined)
+            .map_err(|error| MenuFontError::Font(error.to_string()))?;
+        Ok(self.0.borrow_mut().store(name, level.width, level.height, level.pixels))
+    }
+
+    fn release(&mut self, image: u32) {
+        self.0.borrow_mut().release(image);
+    }
+}
+
+/// `FontImageServices` over reopened typography mounts plus the shared
+/// atlas store.
+struct HostFontServices<'a> {
+    /// Reopened typography mounts for font file reads.
+    mounted: &'a MountedContent,
+    /// Shared atlas store for registrations.
+    store: &'a mut SharedFontStore,
+}
+
+impl FontImageServices for HostFontServices<'_> {
+    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        self.mounted
+            .open(path, |_| true)
+            .ok()
+            .flatten()
+            .map(|asset| asset.bytes)
+    }
+
+    fn register_image(&mut self, name: &str, width: u32, height: u32, rgba: Vec<u8>) -> u32 {
+        self.store.store(name, width, height, rgba)
+    }
+
+    fn release_image(&mut self, image: u32) {
+        self.store.release(image);
+    }
+}
+
+/// `MountedMenuFonts` over installed content mounts: each call runs one
+/// [`TextFontRegistry`] over the typography mounts and the shared atlas
+/// store (donor `createMountedTextFonts`).
+struct WindowedMenuFonts(Rc<RefCell<SharedFontStore>>);
+
+impl WindowedMenuFonts {
+    /// Run one font-registry call over reopened typography mounts.
+    fn with_registry<T>(
+        &mut self,
+        run: impl FnOnce(&mut TextFontRegistry<'_>) -> Result<T, MenuFontError>,
+    ) -> Result<T, MenuFontError> {
+        let mounted = self.0.borrow().mounted()?;
+        let mut store = self.0.borrow_mut();
+        let mut services = HostFontServices {
+            mounted: &mounted,
+            store: &mut store,
+        };
+        let mut registry = TextFontRegistry::new(&mut services);
+        run(&mut registry)
+    }
+}
+
+impl MountedMenuFonts for WindowedMenuFonts {
+    fn select_kfont(&mut self, path: &str, classic: TextAtlas) -> Result<TextFontSelection, MenuFontError> {
+        self.with_registry(
+            |registry| Ok(registry.select(&TextFontRequest::Kfont { path: path.to_string() }, &classic)?),
+        )
+    }
+
+    fn load_true_type(
+        &mut self,
+        path: &str,
+        size: u32,
+        codepoints: &[u32],
+    ) -> Result<Option<TextAtlas>, MenuFontError> {
+        self.with_registry(|registry| Ok(registry.load_truetype(path, size, codepoints)?))
+    }
+
+    fn load_true_type_pages(
+        &mut self,
+        path: &str,
+        size: u32,
+        codepoints: &[u32],
+    ) -> Result<Vec<TextAtlas>, MenuFontError> {
+        self.with_registry(|registry| Ok(registry.load_truetype_pages(path, size, codepoints)?))
+    }
+
+    fn close(&mut self) {}
+}
+
+/// `TypographyMounts` over installed content mounts: opens the plan and
+/// remembers it so texture and font reads can reopen it.
+struct WindowedMenuMounts(Rc<RefCell<SharedFontStore>>);
+
+impl TypographyMounts for WindowedMenuMounts {
+    fn open(&mut self, mounts: Vec<ContentMount>) -> Result<OpenedTypographyMounts, MenuFontError> {
+        self.0.borrow_mut().mounts = mounts.clone();
+        Ok((open_typography_mounts(mounts)?, Box::new(|| {})))
     }
 }
 
@@ -661,17 +1029,21 @@ struct MenuCaptureServices {
     color: Vec4,
     body_font: TextFontSelection,
     title_font: TextFontSelection,
+    fonts: Vec<u32>,
 }
 
 impl MenuCaptureServices {
-    /// Capture over the menu body and title fonts.
-    fn new(body_font: TextFontSelection, title_font: TextFontSelection) -> Self {
+    /// Capture over the menu body and title fonts. `fonts` lists every
+    /// font picture handle (classic charset plus proportional/TrueType
+    /// atlases); stretch quads over those handles become glyph quads.
+    fn new(body_font: TextFontSelection, title_font: TextFontSelection, fonts: Vec<u32>) -> Self {
         Self {
             runs: Vec::new(),
             glyphs: Vec::new(),
             color: vec4(1.0, 1.0, 1.0, 1.0),
             body_font,
             title_font,
+            fonts,
         }
     }
 
@@ -690,11 +1062,11 @@ impl MenuCaptureServices {
     }
 
     /// Record one glyph quad, skipping empty and fully transparent rects.
-    fn push_glyph(&mut self, rect: Rect, uv: TextureRect, color: Vec4) {
+    fn push_glyph(&mut self, font: u32, rect: Rect, uv: TextureRect, color: Vec4) {
         if rect.width <= 0.0 || rect.height <= 0.0 || color.w <= 0.0 {
             return;
         }
-        self.glyphs.push(GlyphQuad { rect, uv, color });
+        self.glyphs.push(GlyphQuad { font, rect, uv, color });
     }
 }
 
@@ -717,7 +1089,10 @@ impl UiRenderServices for MenuCaptureServices {
         {
             // Donor `UiTextRenderer.draw`: one layout supplies measurement
             // and draw positions, then each visible glyph stretches its
-            // atlas cell through the 2D context.
+            // atlas cell through the 2D context. The layout already
+            // resolves Atlas selections per codepoint (proportional or
+            // TrueType cell, else a fallback, else the classic cell), so
+            // body and title text share this path for both font kinds.
             let selection = if menu_font_slot(font) == MENU_TITLE_FONT_SLOT {
                 &self.title_font
             } else {
@@ -779,8 +1154,8 @@ impl UiRenderServices for MenuCaptureServices {
         match command {
             UiEmitCommand::SetColor(color) => self.color = color,
             UiEmitCommand::StretchPic { rect, uv, image } => {
-                if image.image == FONT_PICTURE_HANDLE {
-                    self.push_glyph(rect, uv, self.color);
+                if self.fonts.contains(&image.image) {
+                    self.push_glyph(image.image, rect, uv, self.color);
                 } else {
                     self.push(tag_art_slot(image.image), rect, uv, self.color);
                 }
@@ -895,36 +1270,41 @@ mod tests {
     use super::*;
     use crate::options::ApplicationOptions;
 
+    fn base_product() -> CatalogProduct {
+        CatalogProduct {
+            id: ContentId("q2-classic-baseq2".to_string()),
+            expectation: ProductExpectation {
+                id: "q2-classic-baseq2".to_string(),
+                family: GameFamily::Q2,
+                edition: "classic".to_string(),
+                campaign: "baseq2".to_string(),
+                title: "Quake II".to_string(),
+                content_directory: "baseq2".to_string(),
+                base_product: None,
+                required_content_archives: Vec::new(),
+                required_programs: Vec::new(),
+                map_witness: None,
+                unresolved_reason: None,
+            },
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root: None,
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
     fn catalog() -> InstalledCatalog {
-        InstalledCatalog::new(
-            "/tmp/qa-windowed-menu-test".to_string(),
-            vec![CatalogProduct {
-                id: ContentId("q2-classic-baseq2".to_string()),
-                expectation: ProductExpectation {
-                    id: "q2-classic-baseq2".to_string(),
-                    family: GameFamily::Q2,
-                    edition: "classic".to_string(),
-                    campaign: "baseq2".to_string(),
-                    title: "Quake II".to_string(),
-                    content_directory: "baseq2".to_string(),
-                    base_product: None,
-                    required_content_archives: Vec::new(),
-                    required_programs: Vec::new(),
-                    map_witness: None,
-                    unresolved_reason: None,
-                },
-                availability: ProductAvailability::Installed,
-                archives: Vec::new(),
-                loose_root: None,
-                user_content: None,
-                maps: Vec::new(),
-                diagnostics: Vec::new(),
-            }],
-            Vec::new(),
-            0,
-            None,
-        )
-        .unwrap()
+        catalog_with(Vec::new())
+    }
+
+    /// Test catalog with the default product plus extras (the selection
+    /// model requires `q2-classic-baseq2`).
+    fn catalog_with(extra: Vec<CatalogProduct>) -> InstalledCatalog {
+        let mut products = vec![base_product()];
+        products.extend(extra);
+        InstalledCatalog::new("/tmp/qa-windowed-menu-test".to_string(), products, Vec::new(), 0, None).unwrap()
     }
 
     fn menu() -> WindowedMenu {
@@ -1123,6 +1503,369 @@ mod tests {
             menu.font_atlas_pixels(),
             super::super::windowed_menu_text::conchars_rgba().as_slice()
         );
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("qa-menu-typo-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    fn loose_product(id: &str, family: GameFamily, edition: &str, loose_root: Option<String>) -> CatalogProduct {
+        CatalogProduct {
+            id: ContentId(id.to_string()),
+            expectation: ProductExpectation {
+                id: id.to_string(),
+                family,
+                edition: edition.to_string(),
+                campaign: "test".to_string(),
+                title: "Test".to_string(),
+                content_directory: "test".to_string(),
+                base_product: None,
+                required_content_archives: Vec::new(),
+                required_programs: Vec::new(),
+                map_witness: None,
+                unresolved_reason: None,
+            },
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root,
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn open_menu(catalog: InstalledCatalog) -> WindowedMenu {
+        let authority = IdentityOwner::create("windowed-menu-typo-test").unwrap();
+        let model = StartupSelectionModel::new(
+            catalog,
+            ApplicationOptions::default(),
+            Box::new(WindowedPresetCollaborators),
+        )
+        .unwrap();
+        WindowedMenu::open(
+            model,
+            authority.seat(0),
+            authority.client(0, 0),
+            ResourceOwner::new(7, authority.session().clone(), 0),
+            Rc::new(Cell::new(false)),
+            super::super::windowed_menu_launch::MenuLaunchQueue::new(),
+        )
+        .unwrap()
+    }
+
+    fn font_batch_ordinals(view: &ClientRenderView) -> Vec<u32> {
+        batches_of(view)
+            .iter()
+            .filter_map(|batch| match &batch.texture {
+                TextureBinding::BindImage(image)
+                    if image.ordinal == MENU_FONT_ORDINAL
+                        || (image.ordinal >= MENU_EXTRA_FONT_ORDINAL_BASE && image.ordinal < MENU_WHITE_ORDINAL) =>
+                {
+                    Some(image.ordinal)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn menu_loads_q3_proportional_typography() {
+        use qa_content::images::encode_tga;
+        use qa_content::images::ImageLevel as ContentLevel;
+        let dir = scratch_dir("q3");
+        // Real `font1_prop.tga` dims: the prop metrics address rows of a
+        // 256 by 256 atlas.
+        let bytes = encode_tga(&ContentLevel {
+            width: 256,
+            height: 256,
+            pixels: vec![255u8; 256 * 256 * 4],
+        });
+        std::fs::create_dir_all(dir.join("menu/art")).expect("art dir");
+        std::fs::write(dir.join("menu/art/font1_prop.tga"), &bytes).expect("prop font");
+        let catalog = catalog_with(vec![loose_product(
+            "q3-test-base",
+            GameFamily::Q3,
+            "classic",
+            Some(dir.to_string_lossy().into_owned()),
+        )]);
+        let mut menu = open_menu(catalog);
+        for selection in [menu.body_font(), menu.title_font_selection()] {
+            let TextFontSelection::Atlas { font, fallbacks, .. } = selection else {
+                panic!("Q3 menu text must use the proportional atlas");
+            };
+            assert_eq!(font.name, "Q3 proportional");
+            assert_eq!(font.line_height, 27);
+            assert!(fallbacks.is_empty());
+        }
+        assert_eq!(menu.extra_font_atlases(), vec![(FONT_PICTURE_HANDLE + 1, 256, 256)]);
+        let (view, uploads) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
+        // White, classic, proportional, plus the four art uploads.
+        assert_eq!(uploads.len(), 7);
+        let ImageResourceOperation::CreateImage { sampling, .. } = &uploads[2] else {
+            panic!("proportional upload must create its atlas image");
+        };
+        assert_eq!(sampling.filter, TextureFilter::Linear);
+        let batches = batches_of(&view);
+        assert!(batches.len() >= 3, "fills plus proportional text batches");
+        let ordinals = font_batch_ordinals(&view);
+        assert!(
+            ordinals.contains(&MENU_EXTRA_FONT_ORDINAL_BASE),
+            "text binds the proportional upload, got {ordinals:?}"
+        );
+        for batch in batches {
+            let TextureBinding::BindImage(image) = &batch.texture else {
+                continue;
+            };
+            if image.ordinal != MENU_EXTRA_FONT_ORDINAL_BASE {
+                continue;
+            }
+            let BatchVertices::Single(vertices) = &batch.vertices else {
+                panic!("proportional batch must be single-textured");
+            };
+            assert!(!vertices.is_empty() && vertices.len() % 4 == 0);
+            for quad in vertices.as_chunks::<4>().0 {
+                let (s, t) = (quad[0].tex_coord.x, quad[0].tex_coord.y);
+                let (s2, t2) = (quad[2].tex_coord.x, quad[2].tex_coord.y);
+                assert!(s2 > s && t2 > t, "proportional UVs span a glyph cell");
+                assert!(
+                    (0.0..=1.0).contains(&s)
+                        && (0.0..=1.0).contains(&t)
+                        && (0.0..=1.0).contains(&s2)
+                        && (0.0..=1.0).contains(&t2),
+                    "proportional UVs stay in the atlas"
+                );
+            }
+        }
+        assert_eq!(menu.release_images().len(), 7);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn menu_falls_back_to_classic_when_proportional_font_missing() {
+        let dir = scratch_dir("q3-missing");
+        let catalog = catalog_with(vec![loose_product(
+            "q3-test-base",
+            GameFamily::Q3,
+            "classic",
+            Some(dir.to_string_lossy().into_owned()),
+        )]);
+        let mut menu = open_menu(catalog);
+        assert!(matches!(menu.body_font(), TextFontSelection::Classic { .. }));
+        assert!(matches!(menu.title_font_selection(), TextFontSelection::Classic { .. }));
+        assert!(menu.extra_font_atlases().is_empty());
+        let (view, uploads) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
+        assert_eq!(uploads.len(), 6);
+        assert_eq!(batches_of(&view).len(), 3);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    fn put_u16(out: &mut Vec<u8>, value: u16) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn put_i16(out: &mut Vec<u8>, value: i16) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn put_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn assemble_font(tables: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut font = Vec::new();
+        put_u32(&mut font, 0x0001_0000);
+        put_u16(&mut font, tables.len() as u16);
+        put_u16(&mut font, 0);
+        put_u16(&mut font, 0);
+        put_u16(&mut font, 0);
+        let mut offset = 12 + tables.len() * 16;
+        for (tag, data) in tables {
+            let bytes = tag.as_bytes();
+            font.extend_from_slice(&[bytes[0], bytes[1], bytes[2], bytes[3]]);
+            put_u32(&mut font, 0);
+            put_u32(&mut font, offset as u32);
+            put_u32(&mut font, data.len() as u32);
+            offset += data.len();
+            while !offset.is_multiple_of(4) {
+                offset += 1;
+            }
+        }
+        for (_, data) in tables {
+            font.extend_from_slice(data);
+            while !font.len().is_multiple_of(4) {
+                font.push(0);
+            }
+        }
+        font
+    }
+
+    /// Minimal TrueType fixture with outlines for `?` and `H` (same shape
+    /// as the client atlas fixture: 1000 units per em, one rectangular
+    /// glyph shared by both codepoints).
+    fn fixture_ttf() -> Vec<u8> {
+        let mut head = Vec::new();
+        put_u32(&mut head, 0x0001_0000);
+        put_u32(&mut head, 0);
+        put_u32(&mut head, 0);
+        put_u32(&mut head, 0x5f0f_3cf5);
+        put_u16(&mut head, 0);
+        put_u16(&mut head, 1000);
+        head.extend_from_slice(&[0u8; 16]);
+        for _ in 0..4 {
+            put_i16(&mut head, 0);
+        }
+        put_u16(&mut head, 0);
+        put_u16(&mut head, 0);
+        put_i16(&mut head, 0);
+        put_i16(&mut head, 1);
+        put_i16(&mut head, 0);
+        let mut hhea = Vec::new();
+        put_u32(&mut hhea, 0x0001_0000);
+        put_i16(&mut hhea, 800);
+        put_i16(&mut hhea, -200);
+        put_i16(&mut hhea, 0);
+        put_u16(&mut hhea, 600);
+        for _ in 0..6 {
+            put_i16(&mut hhea, 0);
+        }
+        hhea.extend_from_slice(&[0u8; 8]);
+        put_i16(&mut hhea, 0);
+        put_u16(&mut hhea, 2);
+        let mut maxp = Vec::new();
+        put_u32(&mut maxp, 0x0001_0000);
+        put_u16(&mut maxp, 2);
+        let mut hmtx = Vec::new();
+        for _ in 0..2 {
+            put_u16(&mut hmtx, 600);
+            put_i16(&mut hmtx, 0);
+        }
+        let mut subtable = Vec::new();
+        put_u16(&mut subtable, 4);
+        put_u16(&mut subtable, 40);
+        put_u16(&mut subtable, 0);
+        put_u16(&mut subtable, 6);
+        put_u16(&mut subtable, 4);
+        put_u16(&mut subtable, 1);
+        put_u16(&mut subtable, 2);
+        for end in [63u16, 72, 0xffff] {
+            put_u16(&mut subtable, end);
+        }
+        put_u16(&mut subtable, 0);
+        for start in [63u16, 72, 0xffff] {
+            put_u16(&mut subtable, start);
+        }
+        put_i16(&mut subtable, -62);
+        put_i16(&mut subtable, -71);
+        put_i16(&mut subtable, 1);
+        for _ in 0..3 {
+            put_u16(&mut subtable, 0);
+        }
+        let mut cmap = Vec::new();
+        put_u16(&mut cmap, 0);
+        put_u16(&mut cmap, 1);
+        put_u16(&mut cmap, 3);
+        put_u16(&mut cmap, 1);
+        put_u32(&mut cmap, 12);
+        cmap.extend_from_slice(&subtable);
+        let mut glyph = Vec::new();
+        put_i16(&mut glyph, 1);
+        put_i16(&mut glyph, 0);
+        put_i16(&mut glyph, 0);
+        put_i16(&mut glyph, 500);
+        put_i16(&mut glyph, 700);
+        put_u16(&mut glyph, 3);
+        put_u16(&mut glyph, 0);
+        glyph.extend_from_slice(&[1, 1, 1, 1]);
+        for delta in [0i16, 500, 0, -500] {
+            put_i16(&mut glyph, delta);
+        }
+        for delta in [0i16, 0, 700, 0] {
+            put_i16(&mut glyph, delta);
+        }
+        let mut loca = Vec::new();
+        put_u32(&mut loca, 0);
+        put_u32(&mut loca, 0);
+        put_u32(&mut loca, glyph.len() as u32);
+        assemble_font(&[
+            ("head", head),
+            ("hhea", hhea),
+            ("maxp", maxp),
+            ("hmtx", hmtx),
+            ("cmap", cmap),
+            ("loca", loca),
+            ("glyf", glyph),
+        ])
+    }
+
+    #[test]
+    fn menu_loads_rerelease_truetype_typography() {
+        let dir = scratch_dir("rerelease");
+        let ttf = fixture_ttf();
+        std::fs::create_dir_all(dir.join("fonts")).expect("fonts dir");
+        std::fs::write(dir.join("fonts/Montserrat-Regular.ttf"), &ttf).expect("body font");
+        std::fs::write(dir.join("fonts/NotoSans-Bold.ttf"), &ttf).expect("title font");
+        let catalog = catalog_with(vec![loose_product(
+            "q2-rerelease-test",
+            GameFamily::Q2,
+            "rerelease",
+            Some(dir.to_string_lossy().into_owned()),
+        )]);
+        let mut menu = open_menu(catalog);
+        // Separate body (48 px) and title (72 px) rasterizations over
+        // separate uploads.
+        let TextFontSelection::Atlas { font: body, .. } = menu.body_font() else {
+            panic!("rerelease body text must use a TrueType atlas");
+        };
+        let TextFontSelection::Atlas { font: title, .. } = menu.title_font_selection() else {
+            panic!("rerelease title text must use a TrueType atlas");
+        };
+        assert!(body.glyphs.contains_key(&72));
+        assert!(title.glyphs.contains_key(&72));
+        assert_ne!(body.picture.image, title.picture.image);
+        assert_ne!((body.picture.width, body.picture.height), (0, 0));
+        let atlases = menu.extra_font_atlases();
+        assert_eq!(atlases.len(), 2, "body plus title uploads, got {atlases:?}");
+        assert_eq!(atlases[0].0, body.picture.image);
+        assert_eq!(atlases[1].0, title.picture.image);
+        let (view, uploads) = menu.frame_view(640, 480, None, 0.0).expect("menu view");
+        assert_eq!(uploads.len(), 8);
+        let batches = batches_of(&view);
+        assert!(batches.len() >= 3, "fills plus TrueType text batches");
+        // The fixture only covers `?` and `H`, so every other glyph falls
+        // back to the classic charset: both uploads bind.
+        let ordinals = font_batch_ordinals(&view);
+        assert!(
+            ordinals.contains(&MENU_FONT_ORDINAL),
+            "classic fallback binds, got {ordinals:?}"
+        );
+        let BatchVertices::Single(text) = &batches.last().expect("text batch").vertices else {
+            panic!("expected single-textured text vertices");
+        };
+        assert!(!text.is_empty() && text.len() % 4 == 0, "text draws whole glyph quads");
+        assert_eq!(menu.release_images().len(), 8);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn menu_font_host_registers_indexed_charsets() {
+        let store = Rc::new(RefCell::new(SharedFontStore::new()));
+        let mut images = WindowedMenuImages(Rc::clone(&store));
+        let mut palette = vec![0u8; 768];
+        palette[3..6].copy_from_slice(&[255, 255, 255]);
+        let handle = images
+            .register_indexed("conchars", 16, 16, vec![1u8; 16 * 16], palette)
+            .expect("register");
+        assert_eq!(handle, FONT_PICTURE_HANDLE + 1);
+        let stored = store.borrow().atlases.clone();
+        assert_eq!(stored.len(), 1);
+        assert_eq!((stored[0].width, stored[0].height), (16, 16));
+        assert_eq!(stored[0].pixels.len(), 16 * 16 * 4);
+        assert_eq!(&stored[0].pixels[0..4], &[255, 255, 255, 255]);
+        images.release(handle);
+        assert!(store.borrow().atlases.is_empty());
     }
 
     #[test]

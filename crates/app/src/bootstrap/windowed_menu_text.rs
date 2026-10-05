@@ -12,12 +12,20 @@
 //! [`conchars_rgba`] atlas: white 8 by 8 glyphs on transparent cells,
 //! tinted per run through vertex colors.
 //!
+//! Donor provenance for proportional text: `src/app/bootstrap/menu-font.ts`
+//! (`loadMenuTypography`: rerelease TrueType body/title atlases, else the
+//! Q3 `menu/art/font1_prop.tga` proportional atlas, else the classic
+//! charset). Glyphs laid out from those atlases carry per-codepoint
+//! x/y/width/height/advance cells plus the atlas picture handle in
+//! [`GlyphQuad::font`]; [`glyph_batches`] groups consecutive same-atlas
+//! quads into emit-order runs so each run binds its own upload.
+//!
 //! Diagnosis (blank menu labels): the menu capture drew every text run as
 //! one measured solid bar and dropped UVs at emit time, so no per-glyph
 //! pictures ever reached the GL batches. The faithful shape kept here is
 //! layout then per-glyph quads: the resolved (or synthetic) atlas texels
 //! upload once beside the 1x1 white image, and [`glyph_batches`] turns
-//! captured glyph quads into one textured overlay batch over that upload.
+//! captured glyph quads into textured overlay batches over those uploads.
 
 use qa_client::render::types::AlphaTest;
 use qa_client::render::types::BatchLighting;
@@ -705,12 +713,26 @@ pub fn resolve_menu_charset(catalog: &InstalledCatalog, preferred: Option<&str>)
 /// One captured glyph quad: destination pixels, atlas UVs, and run color.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GlyphQuad {
+    /// Picture handle of the atlas this glyph was laid out from
+    /// ([`FONT_PICTURE_HANDLE`] for the classic charset, higher handles
+    /// for proportional/TrueType atlases from `load_menu_typography`).
+    pub font: u32,
     /// Destination rectangle in drawable pixels.
     pub rect: Rect,
     /// Atlas source coordinates.
     pub uv: TextureRect,
     /// Glyph color.
     pub color: Vec4,
+}
+
+/// One uploaded menu font atlas: the headless picture handle carried by
+/// laid-out glyphs plus the backend image it binds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FontAtlasImage {
+    /// Picture handle (`ImagePicture.image`).
+    pub handle: u32,
+    /// Uploaded backend image.
+    pub image: RendererImage,
 }
 
 /// Inset glyph UVs by half a texel so edge-exact samples stay inside the
@@ -747,52 +769,71 @@ fn inset_glyph_uv(uv: TextureRect, atlas_width: u32, atlas_height: u32) -> Textu
 
 /// Textured overlay batches for captured glyph quads in NDC space (the same
 /// depth-always blended overlay as the flat menu batch, bound to the font
-/// atlas instead of the 1x1 white image).
-pub(crate) fn glyph_batches(glyphs: &[GlyphQuad], width: f32, height: f32, font: &RendererImage) -> Vec<DrawBatch> {
-    let mut vertices = Vec::with_capacity(glyphs.len() * 4);
-    let mut indices = Vec::with_capacity(glyphs.len() * 6);
-    for quad in glyphs {
-        let base = vertices.len() as u32;
-        let uv = inset_glyph_uv(quad.uv, font.width, font.height);
-        let left = 2.0 * quad.rect.x / width - 1.0;
-        let right = 2.0 * (quad.rect.x + quad.rect.width) / width - 1.0;
-        let top = 1.0 - 2.0 * quad.rect.y / height;
-        let bottom = 1.0 - 2.0 * (quad.rect.y + quad.rect.height) / height;
-        for (x, y, s, t) in [
-            (left, top, uv.s, uv.t),
-            (right, top, uv.s2, uv.t),
-            (right, bottom, uv.s2, uv.t2),
-            (left, bottom, uv.s, uv.t2),
-        ] {
-            vertices.push(RenderVertex {
-                position: vec4(x, y, 0.0, 1.0),
-                tex_coord: vec2(s, t),
-                color: quad.color,
-            });
+/// atlases instead of the 1x1 white image). Consecutive quads over one
+/// atlas group into emit-order runs so painter order survives batching;
+/// quads whose handle has no upload are skipped.
+pub(crate) fn glyph_batches(glyphs: &[GlyphQuad], width: f32, height: f32, fonts: &[FontAtlasImage]) -> Vec<DrawBatch> {
+    let mut batches = Vec::new();
+    let mut run: Vec<&GlyphQuad> = Vec::new();
+    let flush = |run: &mut Vec<&GlyphQuad>, batches: &mut Vec<DrawBatch>| {
+        if run.is_empty() {
+            return;
         }
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        let handle = run[0].font;
+        let Some(font) = fonts.iter().find(|font| font.handle == handle) else {
+            run.clear();
+            return;
+        };
+        let mut vertices = Vec::with_capacity(run.len() * 4);
+        let mut indices = Vec::with_capacity(run.len() * 6);
+        for quad in run.drain(..) {
+            let base = vertices.len() as u32;
+            let uv = inset_glyph_uv(quad.uv, font.image.width, font.image.height);
+            let left = 2.0 * quad.rect.x / width - 1.0;
+            let right = 2.0 * (quad.rect.x + quad.rect.width) / width - 1.0;
+            let top = 1.0 - 2.0 * quad.rect.y / height;
+            let bottom = 1.0 - 2.0 * (quad.rect.y + quad.rect.height) / height;
+            for (x, y, s, t) in [
+                (left, top, uv.s, uv.t),
+                (right, top, uv.s2, uv.t),
+                (right, bottom, uv.s2, uv.t2),
+                (left, bottom, uv.s, uv.t2),
+            ] {
+                vertices.push(RenderVertex {
+                    position: vec4(x, y, 0.0, 1.0),
+                    tex_coord: vec2(s, t),
+                    color: quad.color,
+                });
+            }
+            indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        batches.push(DrawBatch {
+            fog: None,
+            luminance_alpha: false,
+            indices,
+            texture: TextureBinding::BindImage(font.image.clone()),
+            state: RenderState {
+                blend: (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
+                depth_test: DepthTest::Always,
+                depth_write: false,
+                alpha_test: AlphaTest::None,
+                cull: CullFace::None,
+                depth_range: [0.0, 1.0],
+                polygon_offset: None,
+            },
+            lighting: BatchLighting::Vertex,
+            primitive: BatchPrimitive::Triangles,
+            vertices: BatchVertices::Single(vertices),
+        });
+    };
+    for quad in glyphs {
+        if run.last().is_some_and(|open: &&GlyphQuad| open.font != quad.font) {
+            flush(&mut run, &mut batches);
+        }
+        run.push(quad);
     }
-    if vertices.is_empty() {
-        return Vec::new();
-    }
-    vec![DrawBatch {
-        fog: None,
-        luminance_alpha: false,
-        indices,
-        texture: TextureBinding::BindImage(font.clone()),
-        state: RenderState {
-            blend: (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha),
-            depth_test: DepthTest::Always,
-            depth_write: false,
-            alpha_test: AlphaTest::None,
-            cull: CullFace::None,
-            depth_range: [0.0, 1.0],
-            polygon_offset: None,
-        },
-        lighting: BatchLighting::Vertex,
-        primitive: BatchPrimitive::Triangles,
-        vertices: BatchVertices::Single(vertices),
-    }]
+    flush(&mut run, &mut batches);
+    batches
 }
 
 /// Upload operation for one atlas size (real charsets may be 256 by 256;
@@ -803,17 +844,66 @@ pub(crate) fn font_upload_sized(
     height: u32,
     pixels: Vec<u8>,
 ) -> ImageResourceOperation {
+    font_upload_with_filter(font, width, height, pixels, TextureFilter::Nearest)
+}
+
+/// Upload operation for one proportional/TrueType atlas (donor mounted
+/// fonts sample clamp with linear filtering, unlike the nearest-sampled
+/// console charset).
+pub(crate) fn font_upload_linear(
+    font: &RendererImage,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+) -> ImageResourceOperation {
+    font_upload_with_filter(font, width, height, pixels, TextureFilter::Linear)
+}
+
+/// Upload operation for one atlas with an explicit filter.
+fn font_upload_with_filter(
+    font: &RendererImage,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    filter: TextureFilter,
+) -> ImageResourceOperation {
     ImageResourceOperation::CreateImage {
         image: font.clone(),
         content: RenderImage::Rgba8 {
             levels: vec![ImageLevel { width, height, pixels }],
             border_color: vec4(0.0, 0.0, 0.0, 0.0),
         },
-        sampling: TextureSampling {
-            repeat: false,
-            filter: TextureFilter::Nearest,
-        },
+        sampling: TextureSampling { repeat: false, filter },
     }
+}
+
+/// One decoded proportional-font texture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecodedMenuTexture {
+    /// Atlas width in pixels.
+    pub width: u32,
+    /// Atlas height in pixels.
+    pub height: u32,
+    /// Top-down RGBA texels (`width * height * 4`).
+    pub pixels: Vec<u8>,
+}
+
+/// Decode one menu font texture by suffix: TGA/PNG/JPEG/BMP/GIF through
+/// the Q3 candidate decoder, PCX through the embedded (or provided)
+/// palette with the Q2 index-255 halo rule. Returns `None` when the
+/// bytes do not decode.
+#[must_use]
+pub(crate) fn decode_menu_texture(bytes: &[u8], path: &str, palette: Option<&[u8]>) -> Option<DecodedMenuTexture> {
+    if path.rsplit('.').next().unwrap_or("").eq_ignore_ascii_case("pcx") {
+        let decoded = decode_pcx(bytes, path).ok()?;
+        let colors = decoded.palette.or_else(|| palette.map(<[u8]>::to_vec))?;
+        let width = u32::try_from(decoded.width).ok()?;
+        let height = u32::try_from(decoded.height).ok()?;
+        let pixels = expand_q2_pcx(width, height, &decoded.indices, &colors)?;
+        return Some(DecodedMenuTexture { width, height, pixels });
+    }
+    let (width, height, pixels) = decode_q3_candidate(bytes, path)?;
+    Some(DecodedMenuTexture { width, height, pixels })
 }
 
 #[cfg(test)]
@@ -922,11 +1012,20 @@ mod tests {
         }
     }
 
+    fn font_atlases(font: &RendererImage) -> Vec<FontAtlasImage> {
+        vec![FontAtlasImage {
+            handle: FONT_PICTURE_HANDLE,
+            image: font.clone(),
+        }]
+    }
+
     #[test]
     fn glyph_batches_carry_uvs_in_flat_batch_space() {
         let font = font_image();
-        assert!(glyph_batches(&[], 640.0, 480.0, &font).is_empty());
+        let fonts = font_atlases(&font);
+        assert!(glyph_batches(&[], 640.0, 480.0, &fonts).is_empty());
         let quad = GlyphQuad {
+            font: FONT_PICTURE_HANDLE,
             rect: Rect {
                 x: 0.0,
                 y: 0.0,
@@ -941,7 +1040,7 @@ mod tests {
             },
             color: vec4(1.0, 0.73, 0.35, 1.0),
         };
-        let batches = glyph_batches(&[quad], 640.0, 480.0, &font);
+        let batches = glyph_batches(&[quad], 640.0, 480.0, &fonts);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].texture, TextureBinding::BindImage(font));
         assert_eq!(batches[0].lighting, BatchLighting::Vertex);
@@ -974,7 +1073,9 @@ mod tests {
     #[test]
     fn glyph_uvs_inset_half_texel_inside_cell() {
         let font = font_image();
+        let fonts = font_atlases(&font);
         let quad = GlyphQuad {
+            font: FONT_PICTURE_HANDLE,
             rect: Rect {
                 x: 276.5,
                 y: 155.0,
@@ -989,7 +1090,7 @@ mod tests {
             },
             color: vec4(1.0, 1.0, 1.0, 1.0),
         };
-        let batches = glyph_batches(&[quad], 960.0, 600.0, &font);
+        let batches = glyph_batches(&[quad], 960.0, 600.0, &fonts);
         let BatchVertices::Single(vertices) = &batches[0].vertices else {
             panic!("glyph batch must be single-textured");
         };
@@ -1002,6 +1103,145 @@ mod tests {
             assert!(s > 40.0 && s < 48.0, "s stays in the cell, got {s}");
             assert!(t > 48.0 && t < 56.0, "t stays in the cell, got {t}");
         }
+    }
+
+    fn atlas_quad(handle: u32, x: f32) -> GlyphQuad {
+        GlyphQuad {
+            font: handle,
+            rect: Rect {
+                x,
+                y: 0.0,
+                width: 8.0,
+                height: 8.0,
+            },
+            uv: TextureRect {
+                s: 0.0,
+                t: 0.0,
+                s2: 0.0625,
+                t2: 0.0625,
+            },
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+        }
+    }
+
+    fn sized_font_image(ordinal: u32, width: u32, height: u32) -> RendererImage {
+        let authority = IdentityOwner::create("windowed-menu-atlas-test").unwrap();
+        RendererImage {
+            owner: qa_client::render::types::ResourceOwner::new(7, authority.session().clone(), 0),
+            ordinal,
+            source: qa_client::render::types::ImageSource::Generated {
+                name: format!("windowed-menu-atlas-test:{ordinal}"),
+            },
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn glyph_batches_group_consecutive_atlas_runs_in_emit_order() {
+        let classic = sized_font_image(0x7FFF_FF02, 128, 128);
+        let prop = sized_font_image(0x7FFF_FE00, 256, 256);
+        let fonts = vec![
+            FontAtlasImage {
+                handle: FONT_PICTURE_HANDLE,
+                image: classic.clone(),
+            },
+            FontAtlasImage {
+                handle: FONT_PICTURE_HANDLE + 1,
+                image: prop.clone(),
+            },
+        ];
+        // Proportional glyph, two classic fallback glyphs, then another
+        // proportional glyph: three runs, each binding its own upload.
+        let quads = vec![
+            atlas_quad(FONT_PICTURE_HANDLE + 1, 0.0),
+            atlas_quad(FONT_PICTURE_HANDLE, 8.0),
+            atlas_quad(FONT_PICTURE_HANDLE, 16.0),
+            atlas_quad(FONT_PICTURE_HANDLE + 1, 24.0),
+        ];
+        let batches = glyph_batches(&quads, 640.0, 480.0, &fonts);
+        assert_eq!(batches.len(), 3);
+        let bound: Vec<u32> = batches
+            .iter()
+            .map(|batch| match &batch.texture {
+                TextureBinding::BindImage(image) => image.ordinal,
+                _ => panic!("glyph batch must bind an atlas image"),
+            })
+            .collect();
+        assert_eq!(bound, vec![prop.ordinal, classic.ordinal, prop.ordinal]);
+        let counts: Vec<usize> = batches
+            .iter()
+            .map(|batch| match &batch.vertices {
+                BatchVertices::Single(vertices) => vertices.len() / 4,
+                _ => panic!("glyph batch must be single-textured"),
+            })
+            .collect();
+        assert_eq!(counts, vec![1, 2, 1]);
+        // The proportional UV inset uses the 256-wide upload, not the
+        // 128-wide classic atlas.
+        let BatchVertices::Single(vertices) = &batches[0].vertices else {
+            panic!("glyph batch must be single-textured");
+        };
+        let half = 0.5 / 256.0;
+        assert!((vertices[0].tex_coord.x - half).abs() < 1e-6);
+    }
+
+    #[test]
+    fn glyph_batches_skip_handles_without_an_upload() {
+        let font = font_image();
+        let fonts = font_atlases(&font);
+        let quads = vec![atlas_quad(FONT_PICTURE_HANDLE + 9, 0.0)];
+        assert!(glyph_batches(&quads, 640.0, 480.0, &fonts).is_empty());
+    }
+
+    #[test]
+    fn linear_upload_samples_like_donor_mounted_fonts() {
+        let font = sized_font_image(0x7FFF_FE00, 256, 48);
+        let upload = font_upload_linear(&font, 256, 48, vec![3u8; 256 * 48 * 4]);
+        let ImageResourceOperation::CreateImage {
+            image,
+            content,
+            sampling,
+        } = upload
+        else {
+            panic!("proportional upload must create the atlas image");
+        };
+        assert_eq!(image, font);
+        assert!(!sampling.repeat);
+        assert_eq!(sampling.filter, TextureFilter::Linear);
+        let RenderImage::Rgba8 { levels, .. } = content else {
+            panic!("proportional atlas must be RGBA");
+        };
+        assert_eq!((levels[0].width, levels[0].height), (256, 48));
+    }
+
+    #[test]
+    fn decode_menu_texture_covers_tga_and_pcx() {
+        use qa_content::images::encode_pcx;
+        use qa_content::images::encode_tga;
+        use qa_content::images::ImageLevel as ContentLevel;
+        let tga = encode_tga(&ContentLevel {
+            width: 16,
+            height: 16,
+            pixels: vec![9u8; 16 * 16 * 4],
+        });
+        let decoded = decode_menu_texture(&tga, "menu/art/font1_prop.tga", None).expect("tga decodes");
+        assert_eq!((decoded.width, decoded.height), (16, 16));
+        assert_eq!(decoded.pixels, vec![9u8; 16 * 16 * 4]);
+        let palette = vec![7u8; 768];
+        let pcx = encode_pcx(
+            &IndexedImage {
+                width: 16,
+                height: 16,
+                indices: vec![1u8; 16 * 16],
+            },
+            &palette,
+        )
+        .expect("pcx");
+        let decoded = decode_menu_texture(&pcx, "pics/conchars.pcx", None).expect("pcx decodes");
+        assert_eq!((decoded.width, decoded.height), (16, 16));
+        assert_eq!(&decoded.pixels[0..4], &[7, 7, 7, 255]);
+        assert!(decode_menu_texture(&[0u8; 8], "menu/art/font1_prop.tga", None).is_none());
     }
 
     #[test]
