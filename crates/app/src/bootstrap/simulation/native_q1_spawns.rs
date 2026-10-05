@@ -1261,6 +1261,7 @@ pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<R
         q1_native_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_trigger_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_item_touch(&mut behaviors, simulation, movers, triggers, contact);
+        super::native_q1_monsters::q1_monster_touch(&mut behaviors, simulation, movers, triggers, contact);
     })));
     let think_behaviors = Rc::clone(&behaviors);
     server.set_native_mover_think(Some(Box::new(

@@ -41,12 +41,12 @@ use thiserror::Error;
 
 use super::audio_bridge::{map_speakers, MapSpeaker};
 use super::play::{
-    admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
-    provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
+    admit_player, build_clip, eye_height_for_family, link_q1_scene, movement_content_edition,
+    movement_dialect_for_selection, provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
 };
 use super::simulation::native_q1_items::{build_q1_item, q1_is_item, register_q1_item_spawns};
 use super::simulation::native_q1_monsters::{
-    build_q1_monster, build_q1_movetarget, q1_is_monster, q1_is_movetarget, register_q1_monster_spawns,
+    build_q1_monster, build_q1_movetarget, q1_is_monster, q1_is_movetarget, q1_monster_pass, register_q1_monster_spawns,
 };
 use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
@@ -274,6 +274,31 @@ impl PlayWorld {
                 map: self.map.clone(),
                 reason,
             })
+    }
+
+    /// Run one monster think pass for native Q1 maps: relink the
+    /// collision scene, then think, move, and toss every monster and
+    /// gib. Non-Q1 maps (or missing scenes) keep the static behavior.
+    /// The pass is infallible by design: failed traces block, failed
+    /// spawns drop, and moves touch on the next tick's sweep.
+    pub fn step_monsters(&mut self) {
+        let Some(behaviors) = self.q1_behaviors.clone() else {
+            return;
+        };
+        let Self { server, clip, .. } = self;
+        let Some(PlayerClip::Q1(scene)) = clip.as_mut() else {
+            return;
+        };
+        {
+            let borrowed = behaviors.borrow();
+            let links = Q1SceneLinks {
+                door_models: &borrowed.brush_models,
+                solids: &borrowed.solids,
+            };
+            let (simulation, triggers) = server.simulation_and_triggers();
+            link_q1_scene(scene, simulation, triggers, Some(&links));
+        }
+        q1_monster_pass(server, &mut behaviors.borrow_mut(), scene);
     }
 
     /// Content product the map bytes came from.
