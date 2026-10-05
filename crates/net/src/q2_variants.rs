@@ -2649,11 +2649,6 @@ const RR_KICK_ANGLE_SCALE: f64 = 1024.0;
 const RR_GUNANGLE_SCALE: f64 = 4096.0;
 const RR_ENCODE_LOOP_NONE: u8 = 192;
 
-/// JavaScript `Math.round` (half up) for wire floats.
-fn js_round(value: f32) -> f32 {
-    (value + 0.5).floor()
-}
-
 /// Clamp to the `i16` range.
 fn clamp_int16(value: i32) -> i16 {
     value.clamp(-32768, 32767) as i16
@@ -2677,8 +2672,11 @@ fn width_of(value: u32, uint16_safe: bool) -> u8 {
 }
 
 /// Convert a float pmove component to eighths (`pmFloatToShort`).
+///
+/// `COORD2SHORT` truncates toward zero (`(int)((x) * 8.0f)`); rounding
+/// here would shift fractional components by one eighth.
 fn pm_float_to_short(value: f32) -> i16 {
-    clamp_int16(js_round(value * 8.0) as i32)
+    clamp_int16((value * 8.0) as i32)
 }
 
 /// Encode entity alpha (`encodeAlpha`).
@@ -7420,6 +7418,32 @@ mod tests {
         assert_eq!(decoded.stats[0], 100);
         assert_eq!(decoded.stats[40], -5);
         assert_close(decoded.damage_blend[2], 153.0 / 255.0);
+    }
+
+    #[test]
+    fn pmove_float_shadows_truncate() {
+        // `COORD2SHORT` truncates toward zero: 2.5 eighths land on 2 rather
+        // than 3, and -2.6 eighths land on -2 rather than -3.
+        assert_eq!(pm_float_to_short(0.3125), 2);
+        assert_eq!(pm_float_to_short(-0.3125), -2);
+        assert_eq!(pm_float_to_short(0.325), 2);
+        assert_eq!(pm_float_to_short(-0.325), -2);
+        assert_eq!(pm_float_to_short(100.5), 804);
+        assert_eq!(pm_float_to_short(-20.5), -164);
+        assert_eq!(pm_float_to_short(5000.0), 32767);
+        assert_eq!(pm_float_to_short(-5000.0), -32768);
+
+        let mut to = PlayerState::default();
+        to.pmove.origin_f = [0.3125, -0.325, 100.5];
+        to.pmove.velocity_f = [0.325, -0.3125, -20.5];
+        let mut out = writer();
+        RereleaseCodec::write_player_state_delta(&mut out, &PlayerState::default(), &to).unwrap();
+        let mut reader = MsgReader::new(out.bytes());
+        assert_eq!(reader.byte().unwrap(), protocol::Svc::Playerinfo as u8);
+        let decoded = RereleaseCodec::read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(decoded.pmove.origin, [2, -2, 804]);
+        assert_eq!(decoded.pmove.velocity, [2, -2, -164]);
     }
 
     #[test]
