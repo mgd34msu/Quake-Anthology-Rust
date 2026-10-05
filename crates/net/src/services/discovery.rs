@@ -922,7 +922,7 @@ pub fn decode_q3_server_status(bytes: &[u8]) -> Result<Q3ServerStatus, Q3NetErro
         rules.insert(fields[index].to_owned(), fields[index + 1].to_owned());
         index += 2;
     }
-    if command == "inforesponse" && native_atoi(&q3_info_value(info, "protocol")?)? != Q3_MASTER_PROTOCOL {
+    if command == "inforesponse" && native_atoi(&q3_info_value(info, "protocol")?) != Q3_MASTER_PROTOCOL {
         return Err(Q3NetError::Range("Server uses another Q3 wire version"));
     }
     let mut player_details = Vec::new();
@@ -935,8 +935,8 @@ pub fn decode_q3_server_status(bytes: &[u8]) -> Result<Q3ServerStatus, Q3NetErro
             if argv.len() >= 3 {
                 player_details.push(PlayerDetail {
                     name: argv[2].clone(),
-                    score: i64::from(native_atoi(&argv[0])?),
-                    ping: i64::from(native_atoi(&argv[1])?),
+                    score: i64::from(native_atoi(&argv[0])),
+                    ping: i64::from(native_atoi(&argv[1])),
                 });
             }
         }
@@ -944,7 +944,7 @@ pub fn decode_q3_server_status(bytes: &[u8]) -> Result<Q3ServerStatus, Q3NetErro
     let players = if command == "statusresponse" {
         player_details.len() as i64
     } else {
-        i64::from(native_atoi(&q3_info_value(info, "clients")?)?)
+        i64::from(native_atoi(&q3_info_value(info, "clients")?))
     };
     let mut name = q3_info_value(info, "hostname")?;
     if name.is_empty() {
@@ -956,7 +956,7 @@ pub fn decode_q3_server_status(bytes: &[u8]) -> Result<Q3ServerStatus, Q3NetErro
             name,
             map: q3_info_value(info, "mapname")?,
             players,
-            max_players: i64::from(native_atoi(&q3_info_value(info, "sv_maxclients")?)?),
+            max_players: i64::from(native_atoi(&q3_info_value(info, "sv_maxclients")?)),
             rules,
             player_details,
             wire: WireSelection::Source {

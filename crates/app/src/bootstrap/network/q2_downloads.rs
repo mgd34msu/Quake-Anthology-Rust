@@ -288,9 +288,6 @@ impl Q2PeerDownload {
         offset_text: Option<&str>,
     ) -> Result<Option<Q2ServerEvent>, Q2NetError> {
         let offset = native_atoi(offset_text.unwrap_or("0"));
-        let Ok(offset) = offset else {
-            return Ok(Some(refused_download()));
-        };
         if offset < 0 || !downloads.allowed(name) {
             return Ok(Some(refused_download()));
         }

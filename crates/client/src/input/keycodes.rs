@@ -165,9 +165,7 @@ pub fn string_to_keynum(value: Option<&str>) -> i32 {
     let Some(value) = value else {
         return -1;
     };
-    let Ok(text) = source_command_text(value) else {
-        return -1;
-    };
+    let text = source_command_text(value);
     if text.is_empty() {
         return -1;
     }

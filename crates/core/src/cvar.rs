@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crate::cmd::{ascii_fold, source_command_text, Dialect};
+use crate::cmd::{ascii_fold, source_command_text, Dialect, EngineText};
 use crate::identity::SessionId;
 use crate::numeric::{native_atof, native_atoi};
 
@@ -106,29 +106,36 @@ const Q2_NO_ARCHIVE: u32 =
     q2_flags::NO_SET | q2_flags::CHEAT | q2_flags::PRIVATE | q2_flags::READ_ONLY | q2_flags::NO_ARCHIVE;
 const MAX_CVARS: usize = 1024;
 
+/// Engine length of cleaned display text, measured through the byte
+/// model so high bytes count once (see [`EngineText`]).
+fn engine_len(text: &str) -> usize {
+    EngineText::from(text).len()
+}
+
 /// Quake `Q_atof`: sign, `0x` hex, `'c'` character constant, or decimal
 /// with an optional point. Stops at the first unrecognized byte.
 #[must_use]
 pub fn quake_atof(text: &str) -> f64 {
-    let chars: Vec<char> = text.chars().collect();
-    let at = |index: usize| chars.get(index).copied().unwrap_or('\0');
+    let engine = EngineText::from(text);
+    let bytes = engine.as_bytes();
+    let at = |index: usize| bytes.get(index).copied().unwrap_or(0);
     let mut offset = 0;
     let mut sign = 1.0;
-    if at(offset) == '-' {
+    if at(offset) == b'-' {
         sign = -1.0;
         offset += 1;
     }
-    if at(offset) == '0' && matches!(at(offset + 1), 'x' | 'X') {
+    if at(offset) == b'0' && matches!(at(offset + 1), b'x' | b'X') {
         offset += 2;
         let mut value = 0.0;
-        while offset < chars.len() {
-            let digit = chars[offset];
+        while offset < bytes.len() {
+            let digit = bytes[offset];
             let digit = if digit.is_ascii_digit() {
-                digit as i32 - 48
-            } else if ('a'..='f').contains(&digit) {
-                digit as i32 - 87
-            } else if ('A'..='F').contains(&digit) {
-                digit as i32 - 55
+                i32::from(digit) - 48
+            } else if (b'a'..=b'f').contains(&digit) {
+                i32::from(digit) - 87
+            } else if (b'A'..=b'F').contains(&digit) {
+                i32::from(digit) - 55
             } else {
                 -1
             };
@@ -140,19 +147,15 @@ pub fn quake_atof(text: &str) -> f64 {
         }
         return value * sign;
     }
-    if at(offset) == '\'' {
-        let code = if offset + 1 < chars.len() {
-            chars[offset + 1] as u32
-        } else {
-            0
-        };
+    if at(offset) == b'\'' {
+        let code = if offset + 1 < bytes.len() { bytes[offset + 1] } else { 0 };
         return sign * f64::from(code);
     }
     let mut value = 0.0;
     let mut decimal: i64 = -1;
     let mut total: i64 = 0;
-    while offset < chars.len() {
-        let byte = chars[offset] as u32;
+    while offset < bytes.len() {
+        let byte = u32::from(bytes[offset]);
         offset += 1;
         if byte == 46 {
             decimal = total;
@@ -217,9 +220,9 @@ pub fn set_info_value(
     options: InfoOptions,
     print: &mut dyn FnMut(&str),
 ) -> Result<String, CvarError> {
-    let info = source_command_text(input)?;
-    let key = source_command_text(key_input)?;
-    let value = source_command_text(value_input)?;
+    let info = source_command_text(input);
+    let key = source_command_text(key_input);
+    let value = source_command_text(value_input);
     let q3 = options.dialect == Dialect::Q3;
     let qw = options.dialect == Dialect::Q1Quakeworld;
     if info.chars().count() >= options.maximum_length {
@@ -851,15 +854,15 @@ impl CvarRegistry {
         let numeric = if self.dialect.is_q1() {
             quake_atof(value) as f32
         } else {
-            native_atof(value).unwrap_or(0.0) as f32
+            native_atof(value) as f32
         };
-        (numeric, native_atoi(value).unwrap_or(0))
+        (numeric, native_atoi(value))
     }
 
     /// Find a variable snapshot by name, projecting aliases.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<CvarSnapshot> {
-        let key = self.key(&source_command_text(name).ok()?);
+        let key = self.key(&source_command_text(name));
         if let Some(alias) = self.aliases.get(&key) {
             let target = self.key(&alias.target);
             return self
@@ -889,9 +892,10 @@ impl CvarRegistry {
     /// Canonical variable behind a name (the name itself when unaliased).
     #[must_use]
     pub fn canonical_name(&self, name: &str) -> String {
-        source_command_text(name)
-            .ok()
-            .and_then(|clean| self.aliases.get(&self.key(&clean)).map(|alias| alias.target.clone()))
+        let clean = source_command_text(name);
+        self.aliases
+            .get(&self.key(&clean))
+            .map(|alias| alias.target.clone())
             .unwrap_or_else(|| name.to_string())
     }
 
@@ -948,7 +952,8 @@ impl CvarRegistry {
     #[must_use]
     pub fn is_console_created(&self, name: &str) -> bool {
         let canonical = self.canonical_name(name);
-        source_command_text(&canonical).is_ok_and(|text| self.console_variables.contains(&self.key(&text)))
+        self.console_variables
+            .contains(&self.key(&source_command_text(&canonical)))
     }
 
     /// Snapshots newest-first, optionally filtered by flag mask; alias
@@ -977,7 +982,7 @@ impl CvarRegistry {
 
     /// Complete a partial name against registered variables.
     pub fn complete(&self, partial_input: &str) -> Result<Option<String>, CvarError> {
-        let partial = source_command_text(partial_input)?;
+        let partial = source_command_text(partial_input);
         if partial.is_empty() {
             return Ok(None);
         }
@@ -1039,7 +1044,7 @@ impl CvarRegistry {
     }
 
     fn valid_info(text: &str) -> bool {
-        !text.chars().any(|c| c == '\\' || c == '"' || c == ';')
+        !text.bytes().any(|byte| byte == b'\\' || byte == b'"' || byte == b';')
     }
 
     /// Register a variable. Re-registration merges flags per dialect and
@@ -1050,13 +1055,13 @@ impl CvarRegistry {
         default_input: &str,
         flag_input: u32,
     ) -> Result<Option<CvarSnapshot>, CvarError> {
-        let mut name = source_command_text(name_input)?;
+        let mut name = source_command_text(name_input);
         // A donor declaration of an alias must not replace the canonical default or policy.
         if self.aliases.contains_key(&self.key(&name)) {
             self.reject_alias_info_flags(&name.clone(), flag_input)?;
             return Ok(self.get(&name));
         }
-        let default_value = source_command_text(default_input)?;
+        let default_value = source_command_text(default_input);
         if !self.valid_bound_value(&name.clone(), &default_value) {
             return Ok(self.get(&name));
         }
@@ -1170,10 +1175,10 @@ impl CvarRegistry {
 
     /// Set a variable. Q3/Q2 create unknown variables; Q1 reports them.
     pub fn set(&mut self, name_input: &str, value_input: &str, force: bool) -> Result<Option<CvarSnapshot>, CvarError> {
-        let mut name = source_command_text(name_input)?;
+        let mut name = source_command_text(name_input);
         if self.aliases.contains_key(&self.key(&name)) {
             let target = self.canonical_name(&name);
-            let clean = source_command_text(value_input)?;
+            let clean = source_command_text(value_input);
             let Some(converted) = self.alias_write(&name.clone(), &clean) else {
                 return Ok(None);
             };
@@ -1186,7 +1191,7 @@ impl CvarRegistry {
             self.print(&format!("invalid cvar name string: {name}\n"));
             name = "BADNAME".to_string();
         }
-        let value = source_command_text(value_input)?;
+        let value = source_command_text(value_input);
         let key = self.key(&name);
         if !self.valid_bound_value(&name.clone(), &value) {
             return Ok(None);
@@ -1308,10 +1313,10 @@ impl CvarRegistry {
     /// Console `set`: like [`CvarRegistry::set`], but a Q2 write of the
     /// current value clears the latch instead.
     pub fn set_console(&mut self, name: &str, value: &str) -> Result<Option<CvarSnapshot>, CvarError> {
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             let target = self.canonical_name(&clean_name);
-            let clean = source_command_text(value)?;
+            let clean = source_command_text(value);
             let Some(converted) = self.alias_write(&clean_name.clone(), &clean) else {
                 return Ok(None);
             };
@@ -1358,7 +1363,7 @@ impl CvarRegistry {
                 }
             }
         };
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             if kind != SetCommandKind::Archive {
                 let notice = format!("Cvar alias {clean_name} requires an explicit protocol info-key mapping\n");
@@ -1366,13 +1371,13 @@ impl CvarRegistry {
                 return Ok(());
             }
             let target = self.canonical_name(&clean_name);
-            let clean_value = source_command_text(value)?;
+            let clean_value = source_command_text(value);
             if let Some(converted) = self.alias_write(&clean_name.clone(), &clean_value) {
                 self.set_command_flags(&target, &converted, kind)?;
             }
             return Ok(());
         }
-        let clean_value = source_command_text(value)?;
+        let clean_value = source_command_text(value);
         if !self.valid_bound_value(&clean_name.clone(), &clean_value) {
             return Ok(());
         }
@@ -1381,7 +1386,7 @@ impl CvarRegistry {
         if kind != SetCommandKind::Archive
             && (!Self::valid_info(&clean_name)
                 || !Self::valid_info(&clean_value)
-                || (q2 && (clean_name.len() >= 64 || clean_value.len() >= 64)))
+                || (q2 && (engine_len(&clean_name) >= 64 || engine_len(&clean_value) >= 64)))
         {
             self.print("invalid info cvar name or value\n");
             return Ok(());
@@ -1409,7 +1414,7 @@ impl CvarRegistry {
             let retained_bad = self
                 .variables
                 .get(&key)
-                .is_some_and(|state| !Self::valid_info(&state.value) || (q2 && state.value.len() >= 64));
+                .is_some_and(|state| !Self::valid_info(&state.value) || (q2 && engine_len(&state.value) >= 64));
             if kind != SetCommandKind::Archive && retained_bad {
                 self.print("invalid retained info cvar value\n");
                 return Ok(());
@@ -1457,11 +1462,11 @@ impl CvarRegistry {
         if !self.dialect.is_q2() {
             return Err(CvarError::Domain("Cvar_FullSet belongs to Quake II".to_string()));
         }
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             self.reject_alias_info_flags(&clean_name.clone(), flag_word)?;
             let target = self.canonical_name(&clean_name);
-            let clean_value = source_command_text(value)?;
+            let clean_value = source_command_text(value);
             let Some(converted) = self.alias_write(&clean_name.clone(), &clean_value) else {
                 return Ok(None);
             };
@@ -1471,7 +1476,7 @@ impl CvarRegistry {
             return Ok(self.get(&clean_name));
         }
         let key = self.key(&clean_name);
-        let clean_value = source_command_text(value)?;
+        let clean_value = source_command_text(value);
         if !self.valid_bound_value(&clean_name.clone(), &clean_value) {
             return Ok(self.variables.get(&key).map(CvarState::snapshot));
         }
@@ -1507,10 +1512,10 @@ impl CvarRegistry {
 
     /// Defer a value on a registered variable without changing flags.
     pub fn stage(&mut self, name: &str, input: &str) -> Result<CvarSnapshot, CvarError> {
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             let target = self.canonical_name(&clean_name);
-            let clean = source_command_text(input)?;
+            let clean = source_command_text(input);
             if let Some(converted) = self.alias_write(&clean_name.clone(), &clean) {
                 self.stage(&target, &converted)?;
             }
@@ -1519,7 +1524,7 @@ impl CvarRegistry {
                 .ok_or_else(|| CvarError::Domain(format!("Cannot stage an unregistered cvar {name}")));
         }
         let key = self.key(&clean_name);
-        let value = source_command_text(input)?;
+        let value = source_command_text(input);
         let Some(state) = self.variables.get(&key).map(CvarState::snapshot) else {
             return Err(CvarError::Domain(format!("Cannot stage an unregistered cvar {name}")));
         };
@@ -1550,9 +1555,10 @@ impl CvarRegistry {
 
     /// Apply latched values (all, or one name).
     pub fn apply_latched(&mut self, name: Option<&str>) -> Result<Vec<CvarSnapshot>, CvarError> {
-        let filter = name
-            .map(|text| source_command_text(text).map(|clean| self.key(&self.canonical_name(&clean))))
-            .transpose()?;
+        let filter = name.map(|text| {
+            let clean = source_command_text(text);
+            self.key(&self.canonical_name(&clean))
+        });
         let mut changed = Vec::new();
         let order: Vec<String> = self.order.iter().rev().cloned().collect();
         for key in order {
@@ -1730,7 +1736,7 @@ impl CvarRegistry {
 
     /// OR flags into a variable.
     pub fn add_flags(&mut self, name: &str, flag_mask: u32) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean)) {
             self.reject_alias_info_flags(&clean.clone(), flag_mask)?;
         }
@@ -1743,7 +1749,7 @@ impl CvarRegistry {
 
     /// Clear a variable's modified bit.
     pub fn clear_modified(&mut self, name: &str) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         let key = self.key(&self.canonical_name(&clean));
         if let Some(state) = self.variables.get_mut(&key) {
             state.modified = false;
@@ -1824,8 +1830,8 @@ impl CvarRegistry {
     pub fn write_variables(&mut self, include: &dyn Fn(&str) -> bool, write: &mut dyn FnMut(&str)) {
         for command in self.archive_commands(include) {
             let line = format!("{command}\n");
-            if !self.dialect.is_q1() && line.len() >= 1024 {
-                self.print(&format!("Com_sprintf: overflow of {} in 1024\n", line.len()));
+            if !self.dialect.is_q1() && engine_len(&line) >= 1024 {
+                self.print(&format!("Com_sprintf: overflow of {} in 1024\n", engine_len(&line)));
             }
             if self.dialect.is_q1() {
                 write(&line);
@@ -1911,8 +1917,8 @@ impl CvarRegistry {
 
     /// Register a name alias projecting a canonical variable.
     pub fn register_alias(&mut self, alias: CvarAlias) -> Result<(), CvarError> {
-        let clean_name = source_command_text(&alias.name)?;
-        let clean_target = source_command_text(&alias.target)?;
+        let clean_name = source_command_text(&alias.name);
+        let clean_target = source_command_text(&alias.target);
         let key = self.key(&clean_name);
         let target = self.key(&clean_target);
         if key == target || self.aliases.contains_key(&target) {
@@ -1944,7 +1950,7 @@ impl CvarRegistry {
     /// Bind a live value binding to a canonical variable; returns a token
     /// that releases exactly this binding.
     pub fn bind_value(&mut self, name: &str, binding: Box<dyn CvarValueBinding>) -> Result<BindingToken, CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean)) {
             return Err(CvarError::Domain(format!(
                 "Bind the canonical cvar {} instead of alias {name}",
@@ -1983,7 +1989,7 @@ impl CvarRegistry {
 
     /// Attach help text to a registered variable or alias.
     pub fn document(&mut self, name: &str, documentation: CvarDocumentation) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.get(&clean).is_none() {
             return Err(CvarError::Domain(format!("Cannot document unregistered cvar {name}")));
         }
@@ -1994,7 +2000,7 @@ impl CvarRegistry {
     /// Help text for a variable: its own document, else the alias document.
     #[must_use]
     pub fn documentation(&self, name: &str) -> Option<CvarDocumentation> {
-        let clean = source_command_text(name).ok()?;
+        let clean = source_command_text(name);
         self.get(&clean)?;
         let key = self.key(&clean);
         self.documents
@@ -2015,7 +2021,7 @@ impl CvarRegistry {
         if self.dialect != Dialect::Q3 {
             return Err(CvarError::Domain("VM cvar handles belong to Quake III".to_string()));
         }
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if let Some(alias) = self.aliases.get(&self.key(&clean)) {
             if matches!(alias.conversion, CvarAliasConversion::Converted { .. }) {
                 self.reject_alias_info_flags(&clean.clone(), flag_word)?;
@@ -2328,7 +2334,7 @@ impl VmCvar for RegistryVmCvar {
             return Ok(());
         }
         self.count = i64::from(source.modification_count);
-        if source.value.len() > 255 {
+        if engine_len(&source.value) > 255 {
             return Err(CvarError::Domain(
                 "Cvar_Update: value exceeds MAX_CVAR_VALUE_STRING".to_string(),
             ));
@@ -2613,6 +2619,97 @@ mod tests {
         assert_eq!(quake_atof("3.5"), 3.5);
         assert_eq!(quake_atof("12abc"), 12.0);
         assert_eq!(quake_atof(""), 0.0);
+    }
+
+    #[test]
+    fn quake_atof_reads_single_bytes() {
+        assert_eq!(quake_atof("'ÿ"), 255.0);
+        assert_eq!(quake_atof("'€"), 172.0);
+        assert_eq!(quake_atof("12ÿ"), 12.0);
+        assert_eq!(quake_atof("ÿ12"), 0.0);
+        assert_eq!(quake_atof("0xÿ"), 0.0);
+    }
+
+    #[test]
+    fn q2_info_limits_count_engine_bytes() {
+        let mut registry = CvarRegistry::new(Dialect::Q2Classic);
+        // 40 engine bytes, 80 UTF-8 bytes: under the 64 limit.
+        registry
+            .set_command_flags("skin", &"ÿ".repeat(40), SetCommandKind::Userinfo)
+            .unwrap();
+        assert_eq!(registry.variable_string("skin"), "ÿ".repeat(40));
+        assert!(registry.take_notifications().is_empty());
+        // 64 engine bytes is rejected before the write, keeping the old value.
+        registry
+            .set_command_flags("skin", &"ÿ".repeat(64), SetCommandKind::Userinfo)
+            .unwrap();
+        let notes = registry.take_notifications();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("invalid info cvar name or value"));
+        assert_eq!(registry.variable_string("skin"), "ÿ".repeat(40));
+        // 64 engine bytes on a new variable is rejected outright.
+        registry
+            .set_command_flags("fresh", &"ÿ".repeat(64), SetCommandKind::Userinfo)
+            .unwrap();
+        let notes = registry.take_notifications();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("invalid info cvar name or value"));
+        assert!(registry.get("fresh").is_none());
+    }
+
+    #[test]
+    fn archive_overflow_detection_counts_engine_bytes() {
+        let mut registry = CvarRegistry::new(Dialect::Q2Classic);
+        registry.register("v", &"ÿ".repeat(900), q2_flags::ARCHIVE).unwrap();
+        let _ = registry.take_notifications();
+        // 909 engine bytes but 1809 UTF-8 bytes: no overflow, no cut.
+        let mut written = Vec::new();
+        registry.write_variables(&|_| true, &mut |line| written.push(line.to_string()));
+        assert!(registry.take_notifications().is_empty());
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].chars().count(), 909);
+        assert!(written[0].contains(&"ÿ".repeat(900)));
+    }
+
+    #[test]
+    fn vm_update_limit_counts_engine_bytes() {
+        let registry = Rc::new(RefCell::new(CvarRegistry::new(Dialect::Q3)));
+        let mut vm = RegistryVmCvar::registered(Rc::clone(&registry), "g_name", "x", flags::NONE).unwrap();
+        // 200 engine bytes, 400 UTF-8 bytes: under the 256 limit.
+        registry.borrow_mut().set("g_name", &"ÿ".repeat(200), true).unwrap();
+        vm.update().unwrap();
+        assert_eq!(vm.value(), "ÿ".repeat(200));
+        // 256 engine bytes exceeds MAX_CVAR_VALUE_STRING.
+        registry.borrow_mut().set("g_name", &"ÿ".repeat(256), true).unwrap();
+        assert!(vm.update().is_err());
+    }
+
+    #[test]
+    fn info_string_limits_count_engine_bytes() {
+        let options = InfoOptions {
+            dialect: Dialect::Q2Classic,
+            maximum_length: 512,
+            target: InfoTarget::ClientUserinfo,
+            server_high_characters: false,
+        };
+        // 40 engine bytes, 80 UTF-8 bytes: under the 64 limit.
+        let mut printed = Vec::new();
+        let out = set_info_value("", "name", &"ÿ".repeat(40), options, &mut |text| {
+            printed.push(text.to_string());
+        })
+        .unwrap();
+        assert!(printed.is_empty());
+        assert_eq!(out.chars().count(), 6);
+        assert!(out.contains("name"));
+        // 64 engine bytes is rejected.
+        let mut printed = Vec::new();
+        let out = set_info_value("", "name", &"ÿ".repeat(64), options, &mut |text| {
+            printed.push(text.to_string());
+        })
+        .unwrap();
+        assert_eq!(printed.len(), 1);
+        assert!(printed[0].contains("must be < 64 characters"));
+        assert_eq!(out, "");
     }
 
     #[test]

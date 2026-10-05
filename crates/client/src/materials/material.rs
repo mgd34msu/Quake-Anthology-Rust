@@ -711,7 +711,7 @@ pub fn normalize_image_name(name: &str) -> String {
 
 /// `Math.fround(nativeAtof(value))`.
 fn source_atof(value: &str) -> f32 {
-    native_atof(value).unwrap_or(0.0) as f32
+    native_atof(value) as f32
 }
 
 /// A script token with source position.
@@ -1174,7 +1174,7 @@ impl ShaderParser {
             "lightingspecular" => Ok(Some(AlphaGen::LightingSpecular)),
             "oneminusvertex" => Ok(Some(AlphaGen::OneMinusVertex)),
             "const" => {
-                let alpha = native_atof(&self.source_line_value().unwrap_or_default()).unwrap_or(0.0);
+                let alpha = native_atof(&self.source_line_value().unwrap_or_default());
                 let integer = (255.0 * alpha).trunc() as i64;
                 if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&integer) {
                     return Err(ParseFail {

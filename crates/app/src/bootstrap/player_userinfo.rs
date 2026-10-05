@@ -155,7 +155,7 @@ pub fn player_userinfo(cvars: &mut CvarRegistry) -> Result<String, CvarError> {
     } else {
         "color"
     };
-    let color = native_atoi(&cvars.variable_string(color_name)).unwrap_or(0);
+    let color = native_atoi(&cvars.variable_string(color_name));
     let name_source = if cvars.get("name").is_none() {
         "_cl_name"
     } else {

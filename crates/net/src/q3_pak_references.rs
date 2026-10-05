@@ -108,7 +108,7 @@ impl ServerPakSet {
             .into_iter()
             .take(MAX_SEARCH_PATHS)
             .map(|arg| native_atoi(&arg))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect();
         Ok(self.sums.len())
     }
 

@@ -147,7 +147,7 @@ impl<'a> AasReachabilityContext<'a> {
                     "AAS_Reachability_Teleport would read an uninitialized model suffix".to_string(),
                 ));
             }
-            let model_number = native_atoi(&epair_text(&model_buffer[1..]))?;
+            let model_number = native_atoi(&epair_text(&model_buffer[1..]));
             let (model_bounds, model_origin) = self.host_model_bounds(model_number, ZERO)?;
             if !self.bsp_entities.value(entity, "target", &mut target_buffer)? {
                 self.print(
@@ -304,7 +304,7 @@ impl<'a> AasReachabilityContext<'a> {
                 self.print(3, "func_plat without model\n");
                 continue;
             }
-            let model_number = native_atoi(epair_text(&model_buffer).get(1..).unwrap_or(""))?;
+            let model_number = native_atoi(epair_text(&model_buffer).get(1..).unwrap_or(""));
             if model_number <= 0 {
                 self.print(3, "func_plat with invalid model number\n");
                 continue;
@@ -588,7 +588,7 @@ impl<'a> AasReachabilityContext<'a> {
                 self.print(3, "func_bobbing without model\n");
                 continue;
             }
-            let model_number = native_atoi(epair_text(&model_buffer).get(1..).unwrap_or(""))?;
+            let model_number = native_atoi(epair_text(&model_buffer).get(1..).unwrap_or(""));
             if model_number <= 0 {
                 self.print(3, "func_bobbing with invalid model number\n");
                 continue;

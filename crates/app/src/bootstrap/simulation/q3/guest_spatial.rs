@@ -300,7 +300,7 @@ impl ServerSpatialHost for Q3GuestSpatial {
         if !name.starts_with('*') {
             panic!("SV_SetBrushModel: {name} is not a brush model");
         }
-        let index = native_atoi(&name[1..]).unwrap_or_else(|_| panic!("SV_SetBrushModel: {name} is not a brush model"));
+        let index = native_atoi(&name[1..]);
         let bounds = self.scene.model_bounds(index);
         let mut entity = self.records.entity(slot);
         entity.r.model = QvmEntityCollisionModel::Inline { index };

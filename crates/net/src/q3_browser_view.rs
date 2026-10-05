@@ -480,7 +480,7 @@ where
             .filter(|name| !name.is_empty());
         let row_name = (!row.name.is_empty()).then_some(row.name.as_str());
         let base = status_name.or(row_name).unwrap_or(&fallback);
-        Ok(utf16_slice(&source_command_text(base)?, 31))
+        Ok(utf16_slice(&source_command_text(base), 31))
     }
 
     /// Build an info string (`info`).
@@ -561,7 +561,7 @@ where
             (
                 "mapname".to_owned(),
                 utf16_slice(
-                    &source_command_text(status.as_ref().map(|status| status.map.as_str()).unwrap_or(""))?,
+                    &source_command_text(status.as_ref().map(|status| status.map.as_str()).unwrap_or("")),
                     31,
                 ),
             ),
@@ -578,10 +578,10 @@ where
                     .to_string(),
             ),
             ("ping".to_owned(), row.ping.to_string()),
-            ("minping".to_owned(), native_atoi(rule("minping"))?.to_string()),
-            ("maxping".to_owned(), native_atoi(rule("maxping"))?.to_string()),
-            ("game".to_owned(), utf16_slice(&source_command_text(rule("game"))?, 31)),
-            ("gametype".to_owned(), native_atoi(rule("gametype"))?.to_string()),
+            ("minping".to_owned(), native_atoi(rule("minping")).to_string()),
+            ("maxping".to_owned(), native_atoi(rule("maxping")).to_string()),
+            ("game".to_owned(), utf16_slice(&source_command_text(rule("game")), 31)),
+            ("gametype".to_owned(), native_atoi(rule("gametype")).to_string()),
             (
                 "nettype".to_owned(),
                 if row.address.is_none() {
@@ -597,7 +597,7 @@ where
                     .map(|address| address_key(address, true))
                     .unwrap_or_else(|| "bot".to_owned()),
             ),
-            ("punkbuster".to_owned(), native_atoi(rule("punkbuster"))?.to_string()),
+            ("punkbuster".to_owned(), native_atoi(rule("punkbuster")).to_string()),
         ])?;
         if let Some(write) = write {
             write(&text);
@@ -685,7 +685,7 @@ where
                             .and_then(|status| status.rules.get("gametype"))
                             .map(String::as_str)
                             .unwrap_or(""),
-                    )?)
+                    ))
                 } else if key == 4 {
                     i64::from(row.ping)
                 } else {
@@ -728,7 +728,7 @@ where
         {
             return Ok(0);
         }
-        let row_name = utf16_slice(&source_command_text(name)?, 31);
+        let row_name = utf16_slice(&source_command_text(name), 31);
         let count = self.lists[list].count;
         let row = slot_at_mut(&mut self.lists[list].rows, count)?;
         row.address = Some(resolved.clone());
