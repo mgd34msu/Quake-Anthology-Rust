@@ -49,7 +49,7 @@ use qa_content::contract::{
     ResourceResolution as ContractResolution, WeaponBehaviorCallback, WeaponBehaviorDefinition,
 };
 use qa_content::mods::ModsError;
-use qa_content::mounts::{open_mount_plan, MountedContent, OpenMountOptions};
+use qa_content::mounts::{archive_digest_or_compute, open_mount_plan, MountError, MountedContent, OpenMountOptions};
 use qa_content::q1::mods_callbacks::read_mod_callbacks;
 use qa_content::value::{SaveJson, SaveReader};
 use qa_core::identity::ProviderId;
@@ -456,7 +456,7 @@ impl WeaponBehaviorHost<CliQvmArtifact, CliQvmProfile> for CliWeaponBehaviorHost
             role: "server-game".to_owned(),
             api: GameApi::Q2RereleaseGame,
             implementation: ExecutionImplementation::Native {
-                artifact: recipe_resource(artifact),
+                artifact: recipe_resource(artifact).map_err(catalog_invalid)?,
                 profile: CheckpointNativeCallAbi::WindowsX8664,
             },
         };
@@ -1385,8 +1385,8 @@ fn save_json_to_json(value: &SaveJson) -> Result<Json, String> {
 }
 
 /// Recipe resource reference for a contract resource reference.
-fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceReference {
-    RecipeResourceReference {
+fn recipe_resource(reference: &ResolvedResourceReference) -> Result<RecipeResourceReference, MountError> {
+    Ok(RecipeResourceReference {
         id: reference.id.as_str().to_owned(),
         requested_path: reference.requested_path.clone(),
         provenance: match &reference.provenance {
@@ -1403,7 +1403,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceRefer
                     },
                     format: archive_format_name(&mount.format).to_owned(),
                     archive_path: mount.archive_path.clone(),
-                    archive_digest: mount.archive_digest.as_str().to_owned(),
+                    archive_digest: archive_digest_or_compute(mount)?.as_str().to_owned(),
                 }),
                 member_path: member_path.clone(),
                 member_index: *member_index,
@@ -1420,7 +1420,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceRefer
                 member_path: member_path.clone(),
             },
         },
-        digest: reference.digest.as_str().to_owned(),
+        identity: reference.identity.canonical(),
         byte_length: reference.byte_length,
         resolution: match &reference.resolution {
             ContractResolution::DefaultOrder { plan, rank } => RecipeResolution::DefaultOrder {
@@ -1442,7 +1442,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceRefer
                 target_path: target_path.clone(),
             },
         },
-    }
+    })
 }
 
 /// Recipe archive format name for a contract archive format.
@@ -1624,6 +1624,7 @@ fn list_content(corpus_root: &str, stdout: &mut dyn Write) {
 mod tests {
     use super::*;
     use crate::options::ApplicationOptions;
+    use qa_content::contract::ResourceIdentity;
     use qa_guest::qc::program::load_qc_program;
 
     #[test]
@@ -2146,7 +2147,7 @@ mod tests {
                 },
                 member_path: "maps/e1m1.bsp".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),
@@ -2250,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rerelease_guest_checks_artifact_digest() {
+    fn prepare_rerelease_guest_checks_artifact_identity() {
         use qa_content::contract::{LooseMount, MountId, MountIdentity, MountPlanId, ResourceId};
         let artifact = ResolvedResourceReference {
             id: ResourceId("resource:game_x64.dll".to_owned()),
@@ -2266,7 +2267,7 @@ mod tests {
                 },
                 member_path: "game_x64.dll".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:4:0").unwrap(),
             byte_length: 4,
             resolution: ContractResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),
@@ -2277,9 +2278,9 @@ mod tests {
         let mut host = CliWeaponBehaviorHost::default();
         let error = host
             .prepare_rerelease_guest(&test_provider("q2-rerelease"), &artifact, b"fake", &mounts)
-            .expect_err("digest mismatch is rejected");
+            .expect_err("identity mismatch is rejected");
         let message = error.to_string();
-        assert!(message.contains("digest"), "{message}");
+        assert!(message.contains("differ"), "{message}");
         assert!(!message.contains("unported"), "{message}");
     }
 }

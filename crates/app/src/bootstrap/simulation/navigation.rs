@@ -113,7 +113,7 @@ use qa_bots::aas_prediction_stop::aas_prediction_stop;
 use qa_bots::behavior::prediction::{project_bot_movement, BotMovementProjection};
 use qa_bots::behavior::{BotMovementPrediction, BotMovementStop, BotTravelPredictionResult};
 use qa_bots::construct::{NavigationConnection, NavigationConstruction};
-use qa_bots::content::{ContentDigest, ContentId as BotsContentId, NavigationResources, OpenedResource};
+use qa_bots::content::{ContentId as BotsContentId, NavigationResources, OpenedResource};
 use qa_bots::entity_binding::source_mover_bounds_match;
 use qa_bots::error::BotsError;
 use qa_bots::load::{load_prepared_navigation, preload_navigation, PreloadOptions};
@@ -401,6 +401,16 @@ impl std::fmt::Debug for ApplicationBotNavigation {
 }
 
 #[cfg(test)]
+fn test_map_identity() -> qa_content::contract::ResourceIdentity {
+    qa_content::contract::ResourceIdentity {
+        mount_generation: 0,
+        member_index: 0,
+        byte_length: 0,
+        crc: 0,
+    }
+}
+
+#[cfg(test)]
 impl ApplicationBotNavigation {
     /// Build a distinct harness identity bound to `simulation`.
     ///
@@ -451,7 +461,7 @@ impl ApplicationBotNavigation {
         let map = NavigationMapIdentity {
             name: recipe.map.geometry.requested_path.clone(),
             format: WorldKind::Q3Bsp,
-            digest: ContentDigest::new("sha256:test"),
+            identity: test_map_identity(),
         };
         let graph = NavigationGraph {
             map: map.clone(),
@@ -547,7 +557,7 @@ pub fn create_application_bot_navigation<C: ApplicationNavigationContent>(
     let map = NavigationMapIdentity {
         name: recipe.map.geometry.requested_path.clone(),
         format: geometry.kind(),
-        digest: ContentDigest::new(&recipe.map.geometry.digest.to_string()),
+        identity: recipe.map.geometry.identity,
     };
     let resources = ApplicationNavigationResources {
         mounted: options.content.geometry_resources()?,
@@ -634,7 +644,7 @@ impl NavigationResources for ApplicationNavigationResources {
                 provenance: BotsProvenance {
                     mount_content: BotsContentId::new(&mount_content),
                 },
-                digest: ContentDigest::new(&opened.reference.digest.to_string()),
+                identity: opened.reference.identity,
                 byte_length: opened.reference.byte_length as usize,
             },
             bytes: opened.bytes,
@@ -2016,7 +2026,7 @@ mod tests {
             map: NavigationMapIdentity {
                 name: "maps/test.bsp".to_string(),
                 format: WorldKind::Q3Bsp,
-                digest: ContentDigest::new("sha256:test"),
+                identity: test_map_identity(),
             },
             enabled: Vec::new(),
             blocked: Vec::new(),

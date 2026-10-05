@@ -1,17 +1,27 @@
 //! Self-contained hashes for content digests and Quake III checksums.
 //!
-//! Donor: `crates/net/src/common/hash.rs` (`Sha256`, `sha256_hex`,
-//! `hex_lower`, `md4`, `md4_block_checksum`, `md4_block_checksum_key`),
-//! itself ported from Node's `crypto` (`createHash`) and
-//! `src/core/md4.ts` (RSA Data Security, Inc. MD4 as used by id
-//! Software's `code/qcommon/md4.c`).
+//! Canonical workspace hashes (`Sha256`, `sha256_hex`, `hex_lower`, `md4`,
+//! `md4_block_checksum`, `md4_block_checksum_key`), ported from Node's
+//! `crypto` (`createHash`) and `src/core/md4.ts` (RSA Data Security, Inc.
+//! MD4 as used by id Software's `code/qcommon/md4.c`).
 //!
 //! `qa-content` cannot depend on `qa-net` (content sits below networking in
 //! the layering: mounts resolve bytes that netcode later verifies), so the
-//! hashes mount and archive handling needs are duplicated here instead of
-//! shared. The credential helpers from the donor (`password_verifier`,
-//! `timing_safe_equal`, `hex_decode`) are intentionally not copied: no
-//! content reader authenticates anything.
+//! implementations live here and `qa-net` re-exports them. The credential
+//! helpers (`password_verifier`, `timing_safe_equal`, `hex_decode`) stay in
+//! `qa-net`: no content reader authenticates anything.
+//!
+//! Archive content hashes resolve through the on-disk digest store
+//! ([`stored_file_digest`]/[`record_file_digest`]), keyed by filesystem
+//! identity, so forcing a lazy digest re-hashes only files the store has
+//! never seen. The store keeps no in-memory mirror: every lookup reads
+//! the file, and forcing sites are rare by design (download verification,
+//! save provenance, pure-server checks).
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::archive::FileIdentity;
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
@@ -308,6 +318,171 @@ pub fn md4_block_checksum_key(bytes: &[u8], key: u32) -> u32 {
     md4_block_checksum(&keyed)
 }
 
+/// Maximum entries kept in the on-disk digest store.
+const FILE_DIGEST_LIMIT: usize = 4096;
+
+/// Location of the on-disk digest store.
+///
+/// `QA_DIGEST_CACHE` overrides it (`off` or empty disables persistence);
+/// otherwise the store lives under the user cache directory.
+fn digest_store_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("QA_DIGEST_CACHE") {
+        if path.is_empty() || path == "off" {
+            return None;
+        }
+        return Some(PathBuf::from(path));
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    Some(base.join("qa-muse").join("archive-digests.tsv"))
+}
+
+/// Escape a store path so one entry fits on one tab-separated line.
+fn escape_store_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Unescape a store path, rejecting malformed escapes.
+fn unescape_store_path(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            '\\' => out.push('\\'),
+            't' => out.push('\t'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Parse one store line into (path, identity, hex digest).
+fn parse_store_line(line: &str) -> Option<(String, FileIdentity, String)> {
+    let mut parts = line.split('\t');
+    let path = unescape_store_path(parts.next()?)?;
+    let number = |part: Option<&str>| part?.parse::<i64>().ok();
+    let unumber = |part: Option<&str>| part?.parse::<u64>().ok();
+    let identity = FileIdentity {
+        device: unumber(parts.next())?,
+        inode: unumber(parts.next())?,
+        size: unumber(parts.next())?,
+        modified_secs: number(parts.next())?,
+        modified_nanos: number(parts.next())?,
+        changed_secs: number(parts.next())?,
+        changed_nanos: number(parts.next())?,
+    };
+    let digest = parts.next()?;
+    if parts.next().is_some()
+        || digest.len() != 7 + 64
+        || !digest.starts_with("sha256:")
+        || !digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some((path, identity, digest.to_string()))
+}
+
+/// Read the store file into entries, newest load wins per path.
+fn load_store_entries(path: &Path) -> HashMap<String, (FileIdentity, String)> {
+    let mut entries = HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return entries;
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    if lines.len() > FILE_DIGEST_LIMIT {
+        lines = lines[lines.len() - FILE_DIGEST_LIMIT..].to_vec();
+    }
+    for line in lines {
+        if let Some((path, identity, digest)) = parse_store_line(line) {
+            entries.insert(path, (identity, digest));
+        }
+    }
+    entries
+}
+
+/// Write entries back atomically; failures drop persistence silently.
+fn save_store_entries(path: &Path, entries: &HashMap<String, (FileIdentity, String)>) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let mut text = String::new();
+    let mut paths: Vec<&String> = entries.keys().collect();
+    paths.sort();
+    for path in paths {
+        let Some((identity, digest)) = entries.get(path) else {
+            continue;
+        };
+        text.push_str(&escape_store_path(path));
+        for value in [identity.device, identity.inode, identity.size] {
+            text.push('\t');
+            text.push_str(&value.to_string());
+        }
+        for value in [
+            identity.modified_secs,
+            identity.modified_nanos,
+            identity.changed_secs,
+            identity.changed_nanos,
+        ] {
+            text.push('\t');
+            text.push_str(&value.to_string());
+        }
+        text.push('\t');
+        text.push_str(digest);
+        text.push('\n');
+    }
+    let tmp = parent.join(format!(".archive-digests-{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, text).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
+}
+
+/// Look up a persisted `sha256:...` digest for `path` with `identity.
+///
+/// Reads the store file on every call; misses and failures return `None`.
+#[must_use]
+pub fn stored_file_digest(path: &str, identity: &FileIdentity) -> Option<String> {
+    let store = digest_store_path()?;
+    let (stored, digest) = load_store_entries(&store).remove(path)?;
+    (stored == *identity).then_some(digest)
+}
+
+/// Record a freshly hashed `sha256:...` digest; failures are silent.
+pub fn record_file_digest(path: &str, identity: &FileIdentity, digest: &str) {
+    let Some(store) = digest_store_path() else {
+        return;
+    };
+    let mut entries = load_store_entries(&store);
+    while entries.len() >= FILE_DIGEST_LIMIT {
+        let Some(victim) = entries.keys().next().cloned() else {
+            break;
+        };
+        entries.remove(&victim);
+    }
+    entries.insert(path.to_string(), (*identity, digest.to_string()));
+    save_store_entries(&store, &entries);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +525,30 @@ mod tests {
             hex_lower(&md4(b"abcdefghijklmnopqrstuvwxyz")),
             "d79e1c308aa5bbcdeea8ed63df412da9"
         );
+    }
+
+    #[test]
+    fn store_lines_round_trip_and_reject_garbage() {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let line = format!("{}\t1\t2\t3\t4\t5\t6\t7\t{digest}", escape_store_path("we\trd/x"));
+        let (path, identity, parsed) = parse_store_line(&line).unwrap();
+        assert_eq!(path, "we\trd/x");
+        assert_eq!(parsed, digest);
+        assert_eq!(
+            identity,
+            FileIdentity {
+                device: 1,
+                inode: 2,
+                size: 3,
+                modified_secs: 4,
+                modified_nanos: 5,
+                changed_secs: 6,
+                changed_nanos: 7,
+            }
+        );
+        assert!(parse_store_line("bad\tline").is_none());
+        assert!(parse_store_line("p\t1\t2\t3\t4\t5\t6\t7\tsha256:zzz").is_none());
+        assert!(parse_store_line("p\t1\t2\t3\t4\t5\t6\t7\tsha256:zz").is_none());
     }
 
     #[test]

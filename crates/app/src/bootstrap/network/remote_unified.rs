@@ -1757,7 +1757,7 @@ mod tests {
         let key = UnifiedResourceKey {
             content: qa_content::contract::ContentId("q3:classic:base:1".to_string()),
             path: geometry.requested_path.clone(),
-            digest: geometry.digest.clone(),
+            identity: geometry.identity.clone(),
             byte_length: geometry.byte_length,
         };
         presentation.declare(3, std::slice::from_ref(&key)).unwrap();
@@ -1772,7 +1772,7 @@ mod tests {
         let key = UnifiedResourceKey {
             content: qa_content::contract::ContentId("q3:classic:base:1".to_string()),
             path: "maps/missing.bsp".to_string(),
-            digest: "sha256:0".to_string(),
+            identity: "identity:0:0:8:0".to_string(),
             byte_length: 8,
         };
         assert!(presentation.declare(3, &[key]).is_err());

@@ -751,7 +751,7 @@ where
 mod tests {
     use super::*;
     use qa_content::contract::{
-        ContentDigest, ContentId, MountId, MountIdentity, ResourceId, ResourceProvenance, ResourceResolution,
+        ContentId, MountId, MountIdentity, ResourceId, ResourceIdentity, ResourceProvenance, ResourceResolution,
     };
     use qa_core::identity::IdentityOwner;
 
@@ -771,7 +771,7 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:00".to_string()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:cinematic".to_string()),

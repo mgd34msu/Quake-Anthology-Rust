@@ -48,7 +48,8 @@ use qa_content::contract::{
 };
 use qa_content::hash::hex_lower;
 use qa_content::mounts::{
-    open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy, Q3Restriction, ResourceRef,
+    forced_archive_digests, open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy,
+    Q3Restriction, ResourceRef,
 };
 use qa_content::paths::{find_content_path, PathComparison};
 use qa_content::user_data::{default_user_content_root, user_product_directory};
@@ -1531,13 +1532,8 @@ impl ContentScope for ContentScopeRef<'_> {
                 }
             }
         }
-        let digests: HashSet<&qa_content::contract::ContentDigest> = ordered
-            .iter()
-            .filter_map(|mount| match mount {
-                ContentMount::Archive(archive) => Some(&archive.archive_digest),
-                ContentMount::Loose(_) => None,
-            })
-            .collect();
+        let forced = forced_archive_digests(&ordered)?;
+        let digests: HashSet<&qa_content::contract::ContentDigest> = forced.iter().collect();
         let pure = match self.pure {
             None => None,
             Some(policy) => {
@@ -2444,7 +2440,7 @@ mod tests {
     use super::*;
     use qa_content::catalog::{BehaviorMounts, ProductAvailability, QvmCompatRole};
     use qa_content::contract::{
-        ContentDigest, LooseMount, MountId, MountIdentity, QvmAbiProfile, ResolvedResourceReference,
+        ContentDigest, LooseMount, MountId, MountIdentity, QvmAbiProfile, ResolvedResourceReference, ResourceIdentity,
         ResourceProvenance, ResourceResolution,
     };
     use std::fs;
@@ -2841,7 +2837,7 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:00".to_string()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:scripted".to_string()),

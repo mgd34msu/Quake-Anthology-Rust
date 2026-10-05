@@ -20,6 +20,7 @@ edition = "2021"
 license = "GPL-2.0-or-later"
 
 [workspace.dependencies]
+crc32fast = "1"
 flate2 = "1"
 thiserror = "2"
 qa-core = { path = "crates/core" }

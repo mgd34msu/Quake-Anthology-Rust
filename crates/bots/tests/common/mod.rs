@@ -1,7 +1,6 @@
 //! Shared synthetic fixtures for navigation integration tests.
 #![allow(dead_code)]
 
-use qa_bots::content::ContentDigest;
 use qa_bots::movement_contract::{MovementKind, MovementProfile};
 use qa_bots::scene::{
     BodyShape, BspEdge, BspFace, BspPlane, DecodedWorld, IndexRange, LeafQueryResult, PointContentsQuery,
@@ -14,6 +13,7 @@ use qa_bots::types::{
     NavigationProfile, NavigationRoutePrediction, NavigationWorld, TravelMode, TraversalAdmission, TraversalRequest,
 };
 use qa_bots::{aas::*, graph};
+use qa_content::contract::ResourceIdentity;
 use qa_core::identity::{ActorId, IdentityOwner, ProviderId};
 use qa_core::math::{vec3, Bounds, Plane, Vec3};
 use qa_core::numeric::Q3_BINARY32_PROFILE;
@@ -86,7 +86,7 @@ pub fn test_map() -> NavigationMapIdentity {
     NavigationMapIdentity {
         name: "test".to_string(),
         format: WorldKind::Q3Bsp,
-        digest: ContentDigest::new("test"),
+        identity: ResourceIdentity::parse("identity:0:0:4:0").unwrap(),
     }
 }
 

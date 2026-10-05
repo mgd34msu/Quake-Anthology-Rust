@@ -140,7 +140,7 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: create_test_digest(),
+            identity: create_test_identity(byte_length),
             byte_length,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:0".to_string()),
@@ -149,8 +149,13 @@ mod tests {
         }
     }
 
-    fn create_test_digest() -> crate::contract::ContentDigest {
-        crate::contract::create_content_digest(&"ab".repeat(32)).unwrap()
+    fn create_test_identity(byte_length: u64) -> crate::contract::ResourceIdentity {
+        crate::contract::ResourceIdentity {
+            mount_generation: 0,
+            member_index: 0,
+            byte_length,
+            crc: 0,
+        }
     }
 
     #[test]

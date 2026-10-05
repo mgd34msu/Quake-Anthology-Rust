@@ -15,7 +15,7 @@ use super::types::{at, EntityTransform, SceneEntity, SceneModel, ScenePose};
 /// Grip definition against a reference entity's source bytes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GripDefinition {
-    /// Digest the reference entity must match.
+    /// Fingerprint the reference entity must match.
     pub digest: u64,
     /// Grip anchor.
     pub anchor: GripAnchor,

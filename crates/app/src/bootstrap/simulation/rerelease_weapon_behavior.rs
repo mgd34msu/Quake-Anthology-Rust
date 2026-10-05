@@ -45,6 +45,7 @@ use qa_content::contract::{
     same_weapon_behavior, ContentDigest, ModuleIdentity as ContentModuleIdentity, NativeAbi,
     NativeCallAbi as ContentAbi, ProjectileRole, WeaponBehaviorCallback, WeaponBehaviorDefinition,
 };
+use qa_content::hash::sha256_hex;
 use qa_content::paths::normalize_resource_path;
 use qa_content::q2::foundation::host::{Q2FoundationHost, Q2PresentationEvent};
 use qa_content::q2::support::contracts::{BodyState as EngineBodyState, WeaponBehaviorLaunch, WeaponTrajectoryUpdate};
@@ -639,16 +640,15 @@ impl RereleaseWeaponBehaviorSource {
             capture_cvars,
             restore_cvars,
         } = options;
-        let (requested_path, digest) = match &prepared.execution.implementation {
-            ExecutionImplementation::Native { artifact, .. } => {
-                (artifact.requested_path.clone(), artifact.digest.clone())
-            }
+        let requested_path = match &prepared.execution.implementation {
+            ExecutionImplementation::Native { artifact, .. } => artifact.requested_path.clone(),
             _ => {
                 return Err(RereleaseWeaponError::invalid(
                     "native trajectory behavior requires a native executable profile",
                 ));
             }
         };
+        let digest = format!("sha256:{}", sha256_hex(&prepared.bytes));
         check_declaration(&declaration, &requested_path, &digest)?;
         let module_identity = native_module_identity_parts(&prepared.execution, prepared.primary.as_ref());
         let role = projectile_role(&declaration.role)?;
@@ -1898,7 +1898,8 @@ mod tests {
         DeclRegistrationLayout,
     };
     use qa_compat::q2::rerelease::navigation::{GoalStatus, NavRuntime, NavigationServices};
-    use qa_content::contract::{ArmorState, InventoryEntry};
+    use qa_content::archive::crc32;
+    use qa_content::contract::{ArmorState, InventoryEntry, ResourceIdentity};
     use qa_content::hash::sha256_hex;
     use qa_content::q2::foundation::host::{
         Q2FoundationHost, Q2LandmarkCarry, Q2Motion, Q2PlayerViewState, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
@@ -2472,9 +2473,16 @@ mod tests {
         let bytes = minimal_pe(0x8664, 0x20b, &["GetGameAPI", "GetCGameAPI"]);
         artifacts.insert("q2game.dll".to_string(), bytes);
         let mut execution = rerelease_execution();
-        let digest = format!("sha256:{}", sha256_hex(&artifacts["q2game.dll"]));
+        let image = &artifacts["q2game.dll"];
+        let digest = format!("sha256:{}", sha256_hex(image));
         if let ExecutionImplementation::Native { artifact, .. } = &mut execution.implementation {
-            artifact.digest = digest.clone();
+            artifact.identity = ResourceIdentity {
+                mount_generation: 0,
+                member_index: 0,
+                byte_length: image.len() as u64,
+                crc: crc32(image),
+            }
+            .canonical();
         }
         let mounts = FakeMounts::new(artifacts, None);
         let guest =

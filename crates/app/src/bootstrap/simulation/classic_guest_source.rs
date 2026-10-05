@@ -27,6 +27,8 @@ use qa_compat::q2::native_primary::{NativePrimaryDeclaration, PrimaryEdition};
 use qa_compat::q2::native_primary_validation::{
     validate_native_primary, PeSection as ValidationSection, SyntheticPeImage,
 };
+use qa_content::archive::crc32;
+use qa_content::contract::ResourceIdentity;
 use qa_content::hash::sha256_hex;
 use qa_content::mounts::MountError;
 use qa_core::identity::ProviderId;
@@ -130,15 +132,15 @@ fn compat_execution(
     }
 }
 
-fn verify_digest(digest: &str, bytes: &[u8]) -> ClassicGuestSourceResult<()> {
-    let Some(hex) = digest.strip_prefix("sha256:") else {
+fn verify_identity(identity: &str, bytes: &[u8]) -> ClassicGuestSourceResult<()> {
+    let Some(expected) = ResourceIdentity::parse(identity) else {
         return Err(ClassicGuestSourceError::invalid(
-            "Classic native artifact digest is not a sha256 reference",
+            "Classic native artifact identity is not canonical",
         ));
     };
-    if sha256_hex(bytes) != hex {
+    if expected.byte_length != bytes.len() as u64 || expected.crc != crc32(bytes) {
         return Err(ClassicGuestSourceError::invalid(
-            "Classic native artifact digest differs from the selected module",
+            "Classic native artifact bytes differ from the selected module",
         ));
     }
     Ok(())
@@ -176,7 +178,8 @@ pub fn prepare_classic_guest(
         return Err(invalid());
     }
     let bytes = mounts.read_artifact(&artifact.requested_path)?;
-    verify_digest(&artifact.digest, &bytes)?;
+    verify_identity(&artifact.identity, &bytes)?;
+    let digest = format!("sha256:{}", sha256_hex(&bytes));
     let pe = parse_pe(&bytes)?;
     if pe.abi != NativeAbi::WindowsI386 {
         return Err(ClassicGuestSourceError::invalid(
@@ -185,13 +188,7 @@ pub fn prepare_classic_guest(
     }
     let primary = read_native_compatibility(
         &CompatMounts(mounts),
-        &compat_execution(
-            execution,
-            &artifact.requested_path,
-            &artifact.digest,
-            3,
-            NativeAbi::WindowsI386,
-        ),
+        &compat_execution(execution, &artifact.requested_path, &digest, 3, NativeAbi::WindowsI386),
     );
     if let Some(primary) = &primary {
         validate_native_primary(&primary.profile, &synthetic_image(&pe, 4))
@@ -613,7 +610,14 @@ mod tests {
         artifacts.insert("gamex86.dll".to_string(), bytes);
         let mut execution = classic_execution();
         if let ExecutionImplementation::Native { artifact, .. } = &mut execution.implementation {
-            artifact.digest = format!("sha256:{}", sha256_hex(&artifacts["gamex86.dll"]));
+            let image = &artifacts["gamex86.dll"];
+            artifact.identity = ResourceIdentity {
+                mount_generation: 0,
+                member_index: 0,
+                byte_length: image.len() as u64,
+                crc: crc32(image),
+            }
+            .canonical();
         }
         let mounts = FakeMounts::new(artifacts, None);
         prepare_classic_guest(&execution, &mounts).expect("prepared")

@@ -338,7 +338,7 @@ impl NavigationRuntimeCheckpoint {
                 SaveValue::map(vec![
                     ("name", SaveValue::Str(self.map.name.clone())),
                     ("format", SaveValue::Str(self.map.format.as_str().to_string())),
-                    ("digest", SaveValue::Str(self.map.digest.text.clone())),
+                    ("identity", SaveValue::Str(self.map.identity.canonical())),
                 ]),
             ),
             (
@@ -1341,7 +1341,7 @@ impl<'w> NavigationRuntime<'w> {
     /// Whether an admitted route is still valid.
     pub fn route_still_valid(&mut self, route: &NavigationRoute) -> bool {
         self.refresh();
-        if route.map.digest != self.graph.map.digest || route.generation != self.generation {
+        if route.map.identity != self.graph.map.identity || route.generation != self.generation {
             return false;
         }
         route.edges.iter().all(|edge| self.edge_allowed(edge, None))
@@ -1394,7 +1394,8 @@ impl<'w> NavigationRuntime<'w> {
         let map = reader.field("map")?;
         map.field("name")?.literal_str(&self.graph.map.name)?;
         map.field("format")?.literal_str(self.graph.map.format.as_str())?;
-        map.field("digest")?.literal_str(&self.graph.map.digest.text)?;
+        map.field("identity")?
+            .literal_str(&self.graph.map.identity.canonical())?;
         let mut enabled = HashMap::new();
         reader.field("enabled")?.list(|entry| {
             let raw = entry.field("id")?.integer(0)?;

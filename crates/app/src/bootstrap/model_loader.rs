@@ -336,7 +336,7 @@ pub fn load_application_model<M: ModelMounts, T: ModelTextureLoader>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qa_content::contract::{ContentDigest, ResourceId, ResourceProvenance};
+    use qa_content::contract::{ResourceId, ResourceIdentity, ResourceProvenance};
     use std::collections::HashMap;
 
     struct FakeMounts {
@@ -375,7 +375,7 @@ mod tests {
                 },
                 member_path: path.to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: qa_content::contract::MountPlanId("mount-plan:test:1".to_owned()),
@@ -391,10 +391,7 @@ mod tests {
             mounts: FakeMounts { files: HashMap::new() },
             textures: FakeTextures { loads: Vec::new() },
         };
-        let asset = OpenedResource {
-            reference: resource("progs/bogus.mdl"),
-            bytes: b"NOPE".to_vec(),
-        };
+        let asset = OpenedResource::new(resource("progs/bogus.mdl"), b"NOPE".to_vec());
         let err = load_application_model(&mut provider, &asset, true).expect_err("magic");
         assert!(err.to_string().contains("Unknown Q1/Q2 model magic"));
     }
@@ -457,10 +454,7 @@ mod tests {
             mounts: FakeMounts { files: HashMap::new() },
             textures: FakeTextures { loads: Vec::new() },
         };
-        let asset = OpenedResource {
-            reference: resource("progs/soldier.mdl"),
-            bytes: mdl_fixture(),
-        };
+        let asset = OpenedResource::new(resource("progs/soldier.mdl"), mdl_fixture());
         let loaded = load_application_model(&mut provider, &asset, true).expect("load");
         assert!(matches!(loaded.model, LoadedModel::Q1Mdl(_)));
         let variants = loaded.variants.expect("variants");
@@ -477,10 +471,7 @@ mod tests {
             mounts: FakeMounts { files: HashMap::new() },
             textures: FakeTextures { loads: Vec::new() },
         };
-        let asset = OpenedResource {
-            reference: resource("progs/soldier.mdl"),
-            bytes: mdl_fixture(),
-        };
+        let asset = OpenedResource::new(resource("progs/soldier.mdl"), mdl_fixture());
         let loaded = load_application_model(&mut provider, &asset, true).expect("load");
         assert!(loaded.variants.is_none());
     }

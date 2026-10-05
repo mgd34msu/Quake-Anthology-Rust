@@ -26967,7 +26967,7 @@ impl SharedSimulation {
                     .primary
                     .declaration
                     .as_ref()
-                    .map(|declaration| declaration.digest.as_str().to_string()),
+                    .map(|declaration| declaration.identity.clone()),
                 _ => None,
             }
         };
@@ -46418,10 +46418,10 @@ mod tests {
 
     fn seam_recipe() -> ExecutableRecipe {
         use qa_content::contract::{
-            CampaignSelection, CharacterSelection, ContentDigest, ContentId, DopplerSelection, EnemySelection,
-            EnvironmentSelection, EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection,
-            LooseMount, MountId, MountIdentity, MountPlanId, PresentationSelection, ProviderReference, RecipeId,
-            ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceProvenance,
+            CampaignSelection, CharacterSelection, ContentId, DopplerSelection, EnemySelection, EnvironmentSelection,
+            EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection, LooseMount, MountId,
+            MountIdentity, MountPlanId, PresentationSelection, ProviderReference, RecipeId, ResolvedMap,
+            ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceIdentity, ResourceProvenance,
             ResourceResolution,
         };
         let source = ProviderReference {
@@ -46450,7 +46450,7 @@ mod tests {
                         },
                         member_path: "maps/test.bsp".to_string(),
                     },
-                    digest: ContentDigest("sha256:00".to_string()),
+                    identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
                     byte_length: 0,
                     resolution: ResourceResolution::DefaultOrder {
                         plan: MountPlanId("mountplan:test:1".to_string()),
@@ -47094,10 +47094,10 @@ mod tests {
 
     fn gu1_recipe() -> ExecutableRecipe {
         use qa_content::contract::{
-            CampaignSelection, CharacterSelection, ContentDigest, DopplerSelection, EnemySelection,
-            EnvironmentSelection, EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection,
-            LooseMount, MountId, MountIdentity, MountPlanId, PresentationSelection, ProviderTiming, RecipeId,
-            ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceProvenance,
+            CampaignSelection, CharacterSelection, DopplerSelection, EnemySelection, EnvironmentSelection,
+            EquipmentSelection, FrameOrdering, GrappleSelection, HandGrenadeSelection, LooseMount, MountId,
+            MountIdentity, MountPlanId, PresentationSelection, ProviderTiming, RecipeId, ResolvedMap,
+            ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceIdentity, ResourceProvenance,
             ResourceResolution,
         };
         use qa_core::numeric::Q2_DONOR_PROFILE;
@@ -47121,7 +47121,7 @@ mod tests {
                 },
                 member_path: "maps/e1m1.bsp".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),

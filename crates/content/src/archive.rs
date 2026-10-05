@@ -7,9 +7,11 @@
 //! [`OpenArchive`]; entry lookup, directory parsing, and range checks keep
 //! donor semantics and messages.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -311,6 +313,8 @@ pub struct MemorySource {
     bytes: Vec<u8>,
     source: String,
     closed: Cell<bool>,
+    #[cfg(test)]
+    reads: Cell<u64>,
 }
 
 impl MemorySource {
@@ -321,6 +325,8 @@ impl MemorySource {
             bytes: bytes.to_vec(),
             source: source.to_string(),
             closed: Cell::new(false),
+            #[cfg(test)]
+            reads: Cell::new(0),
         }
     }
 
@@ -344,13 +350,26 @@ impl MemorySource {
 
     /// Read a checked range.
     pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
+        Ok(self.slice(offset, length)?.to_vec())
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        self.reads.get()
+    }
+
+    /// Borrow a checked range without copying.
+    pub fn slice(&self, offset: u64, length: u64) -> Result<&[u8], ArchiveError> {
         if self.closed.get() {
             return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
         }
         check_range(&self.source, self.byte_length(), offset, length)?;
         let offset = offset as usize;
         let length = length as usize;
-        Ok(self.bytes[offset..offset + length].to_vec())
+        Ok(&self.bytes[offset..offset + length])
     }
 
     /// Release the retained bytes.
@@ -359,29 +378,82 @@ impl MemorySource {
     }
 }
 
+/// Filesystem identity of a retained file: the stat tuple that detects
+/// replacement, truncation, or rewrite without reading any bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    /// Filesystem device number (zero off unix).
+    pub device: u64,
+    /// Inode number (zero off unix).
+    pub inode: u64,
+    /// Byte length.
+    pub size: u64,
+    /// Last-modification time, seconds and nanoseconds.
+    pub modified_secs: i64,
+    /// Last-modification time, nanosecond part.
+    pub modified_nanos: i64,
+    /// Last-status-change time, seconds and nanoseconds (zero off unix).
+    pub changed_secs: i64,
+    /// Last-status-change time, nanosecond part.
+    pub changed_nanos: i64,
+}
+
+#[cfg(unix)]
+#[must_use]
+fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    FileIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+        size: meta.len(),
+        modified_secs: meta.mtime(),
+        modified_nanos: meta.mtime_nsec(),
+        changed_secs: meta.ctime(),
+        changed_nanos: meta.ctime_nsec(),
+    }
+}
+
+#[cfg(not(unix))]
+#[must_use]
+fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
+    let (modified_secs, modified_nanos) = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| (elapsed.as_secs() as i64, elapsed.subsec_nanos() as i64))
+        .unwrap_or((0, 0));
+    FileIdentity {
+        device: 0,
+        inode: 0,
+        size: meta.len(),
+        modified_secs,
+        modified_nanos,
+        changed_secs: 0,
+        changed_nanos: 0,
+    }
+}
+
+/// Filesystem identity of the file at `path`.
+pub fn file_identity_at(path: &Path) -> Result<FileIdentity, ArchiveError> {
+    let meta = std::fs::metadata(path).map_err(|error| io_error(path, error))?;
+    Ok(file_identity(&meta))
+}
+
 /// Retained file descriptor (`FileSource`).
 ///
 /// A retained descriptor keeps path replacements from changing an open
-/// archive; size and timestamps are verified around every read.
+/// archive. Size and timestamps are recorded at open and checked by
+/// [`FileSource::verify_identity`] at mount and map-load boundaries;
+/// reads themselves do no metadata checks.
 #[derive(Debug)]
 pub struct FileSource {
     source: String,
     byte_length: u64,
     file: RefCell<File>,
-    modified: std::time::SystemTime,
-    changed: Option<(i64, i64)>,
+    identity: FileIdentity,
     closed: Cell<bool>,
-}
-
-#[cfg(unix)]
-fn file_changed(meta: &std::fs::Metadata) -> Option<(i64, i64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.ctime(), meta.ctime_nsec()))
-}
-
-#[cfg(not(unix))]
-fn file_changed(_meta: &std::fs::Metadata) -> Option<(i64, i64)> {
-    None
+    #[cfg(test)]
+    reads: Cell<u64>,
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> ArchiveError {
@@ -405,15 +477,15 @@ impl FileSource {
                 "expected a regular file with a safe byte length",
             ));
         }
-        let modified = meta.modified().map_err(|error| io_error(path, error))?;
-        let changed = file_changed(&meta);
+        let identity = file_identity(&meta);
         Ok(Self {
             source,
             byte_length,
             file: RefCell::new(file),
-            modified,
-            changed,
+            identity,
             closed: Cell::new(false),
+            #[cfg(test)]
+            reads: Cell::new(0),
         })
     }
 
@@ -435,45 +507,67 @@ impl FileSource {
         self.closed.get()
     }
 
-    fn verify_unchanged(&self, offset: u64) -> Result<(), ArchiveError> {
+    /// Filesystem identity recorded when the source was opened.
+    #[must_use]
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    /// Check the retained descriptor against its recorded identity.
+    ///
+    /// Callers run this at mount and map-load boundaries instead of on
+    /// every read.
+    pub fn verify_identity(&self) -> Result<(), ArchiveError> {
+        if self.closed.get() {
+            return Err(ArchiveError::archive(&self.source, 0, "archive is closed"));
+        }
         let meta = self.file.borrow().metadata().map_err(|error| ArchiveError::Io {
             path: self.source.clone(),
             message: error.to_string(),
         })?;
-        let modified = meta.modified().map_err(|error| ArchiveError::Io {
-            path: self.source.clone(),
-            message: error.to_string(),
-        })?;
-        if meta.len() != self.byte_length || modified != self.modified || file_changed(&meta) != self.changed {
+        if file_identity(&meta) != self.identity {
             return Err(ArchiveError::archive(
                 &self.source,
-                offset,
+                0,
                 "source changed after it was opened",
             ));
         }
         Ok(())
     }
 
-    /// Read a checked range through the retained descriptor.
-    pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
-        if self.closed.get() {
-            return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
-        }
-        check_range(&self.source, self.byte_length, offset, length)?;
-        self.verify_unchanged(offset)?;
-        let offset_usize = usize::try_from(offset)
-            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
-        let length_usize = usize::try_from(length)
-            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
-        let mut bytes = vec![0u8; length_usize];
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset_usize as u64))
-            .map_err(|error| ArchiveError::Io {
-                path: self.source.clone(),
-                message: error.to_string(),
-            })?;
+    #[cfg(unix)]
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<(), ArchiveError> {
+        use std::os::unix::fs::FileExt;
+        let file = self.file.borrow();
         let mut total = 0;
-        while total < length_usize {
+        while total < bytes.len() {
+            let count = file
+                .read_at(&mut bytes[total..], offset + total as u64)
+                .map_err(|error| ArchiveError::Io {
+                    path: self.source.clone(),
+                    message: error.to_string(),
+                })?;
+            if count == 0 {
+                return Err(ArchiveError::archive(
+                    &self.source,
+                    offset,
+                    format!("short read: expected {}, got {total}", bytes.len()),
+                ));
+            }
+            total += count;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<(), ArchiveError> {
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(offset)).map_err(|error| ArchiveError::Io {
+            path: self.source.clone(),
+            message: error.to_string(),
+        })?;
+        let mut total = 0;
+        while total < bytes.len() {
             let count = file.read(&mut bytes[total..]).map_err(|error| ArchiveError::Io {
                 path: self.source.clone(),
                 message: error.to_string(),
@@ -482,14 +576,36 @@ impl FileSource {
                 return Err(ArchiveError::archive(
                     &self.source,
                     offset,
-                    format!("short read: expected {length}, got {total}"),
+                    format!("short read: expected {}, got {total}", bytes.len()),
                 ));
             }
             total += count;
         }
-        drop(file);
-        self.verify_unchanged(offset)?;
+        Ok(())
+    }
+
+    /// Read a checked range through the retained descriptor.
+    ///
+    /// The read is positioned (no shared file offset) and performs no
+    /// metadata checks; use [`FileSource::verify_identity`] at boundaries.
+    pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
+        if self.closed.get() {
+            return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
+        }
+        check_range(&self.source, self.byte_length, offset, length)?;
+        let length_usize = usize::try_from(length)
+            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
+        let mut bytes = vec![0u8; length_usize];
+        self.read_into(offset, &mut bytes)?;
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
         Ok(bytes)
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        self.reads.get()
     }
 
     /// Release the retained descriptor.
@@ -540,6 +656,36 @@ impl ArchiveSource {
         match self {
             ArchiveSource::Memory(source) => source.read(offset, length),
             ArchiveSource::File(source) => source.read(offset, length),
+        }
+    }
+
+    /// Check a file source against its recorded identity.
+    ///
+    /// Memory sources are immutable and always pass. Callers run this at
+    /// mount and map-load boundaries instead of on every read.
+    pub fn verify_identity(&self) -> Result<(), ArchiveError> {
+        match self {
+            ArchiveSource::Memory(_) => Ok(()),
+            ArchiveSource::File(source) => source.verify_identity(),
+        }
+    }
+
+    /// Borrow a checked range from a memory source.
+    ///
+    /// File sources have no borrowed form and report `None`.
+    fn memory_slice(&self, offset: u64, length: u64) -> Option<Result<&[u8], ArchiveError>> {
+        match self {
+            ArchiveSource::Memory(source) => Some(source.slice(offset, length)),
+            ArchiveSource::File(_) => None,
+        }
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        match self {
+            ArchiveSource::Memory(source) => source.test_reads(),
+            ArchiveSource::File(source) => source.test_reads(),
         }
     }
 
@@ -874,52 +1020,53 @@ pub fn zip_data_offset(
     Ok(data_offset)
 }
 
-/// IEEE CRC-32 (donor `Bun.hash.crc32`; same bit loop as `images::png`).
+/// IEEE CRC-32 (donor `Bun.hash.crc32`).
 #[must_use]
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc: u32 = 0xffff_ffff;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            if crc & 1 == 0 {
-                crc >>= 1;
-            } else {
-                crc = (crc >> 1) ^ 0xedb8_8320;
-            }
-        }
-    }
-    crc ^ 0xffff_ffff
+pub fn crc32(bytes: &[u8]) -> u32 {
+    crc32fast::hash(bytes)
 }
 
 fn inflate_raw_capped(compressed: &[u8], cap: u64) -> Result<Vec<u8>, String> {
     let cap = usize::try_from(cap).map_err(|_| "output exceeds addressable memory".to_string())?;
-    let mut output = vec![0u8; cap.saturating_add(1)];
+    let mut output: Vec<u8> = Vec::with_capacity(cap.saturating_add(1));
     let mut decoder = Decompress::new(false);
-    decoder
-        .decompress(compressed, &mut output, FlushDecompress::Finish)
-        .map_err(|error| error.to_string())?;
+    // Expose the spare capacity as the output buffer instead of zero-filling
+    // it. `decompress` writes at most `output.len()` bytes starting at index
+    // 0, so bytes `[0..total_out)` are initialized afterwards and the length
+    // is reset to exactly that prefix before any other use.
+    unsafe {
+        output.set_len(output.capacity());
+    }
+    let status = decoder.decompress(compressed, &mut output, FlushDecompress::Finish);
     let length = usize::try_from(decoder.total_out()).map_err(|_| "output exceeds addressable memory".to_string())?;
+    debug_assert!(length <= output.len());
+    unsafe {
+        output.set_len(length.min(output.len()));
+    }
+    status.map_err(|error| error.to_string())?;
     if length > cap {
         return Err(format!("output exceeds {cap}-byte limit"));
     }
-    output.truncate(length);
     Ok(output)
 }
 
 /// Decode an entry payload, checking size and CRC-32 (`decodeZipEntry`).
 ///
-/// DEFLATE output is capped at the entry byte length (minimum one), matching
-/// the donor `maxOutputLength` cap.
-pub fn decode_zip_entry(
-    compressed: &[u8],
+/// Stored entries borrow the input slice; DEFLATE entries inflate into an
+/// owned buffer capped at the entry byte length (minimum one), matching the
+/// donor `maxOutputLength` cap.
+pub fn decode_zip_entry_cow<'a>(
+    compressed: &'a [u8],
     source: &str,
     data_offset: u64,
     entry: &ZipEntry,
-) -> Result<Vec<u8>, ArchiveError> {
-    let output = match entry.compression_method {
-        ZipCompression::Store => compressed.to_vec(),
-        ZipCompression::Deflate => inflate_raw_capped(compressed, entry.byte_length.max(1))
-            .map_err(|message| ArchiveError::archive(source, data_offset, format!("DEFLATE failed: {message}")))?,
+) -> Result<Cow<'a, [u8]>, ArchiveError> {
+    let output: Cow<'a, [u8]> = match entry.compression_method {
+        ZipCompression::Store => Cow::Borrowed(compressed),
+        ZipCompression::Deflate => Cow::Owned(
+            inflate_raw_capped(compressed, entry.byte_length.max(1))
+                .map_err(|message| ArchiveError::archive(source, data_offset, format!("DEFLATE failed: {message}")))?,
+        ),
     };
     if output.len() as u64 != entry.byte_length {
         return Err(ArchiveError::archive(
@@ -932,6 +1079,16 @@ pub fn decode_zip_entry(
         return Err(ArchiveError::archive(source, data_offset, "entry CRC32 mismatch"));
     }
     Ok(output)
+}
+
+/// Decode an entry payload into an owned buffer, checking size and CRC-32.
+pub fn decode_zip_entry(
+    compressed: &[u8],
+    source: &str,
+    data_offset: u64,
+    entry: &ZipEntry,
+) -> Result<Vec<u8>, ArchiveError> {
+    decode_zip_entry_cow(compressed, source, data_offset, entry).map(Cow::into_owned)
 }
 
 /// Open loose file confined to its root (`LooseEntryHandle`).
@@ -1006,6 +1163,7 @@ pub struct OpenArchive {
     storage: ArchiveSource,
     central_offset: u64,
     entry_indexes: RefCell<HashMap<ArchivePathComparison, HashMap<String, Vec<usize>>>>,
+    zip_data_offsets: RefCell<HashMap<usize, (u64, u64)>>,
 }
 
 impl OpenArchive {
@@ -1069,31 +1227,78 @@ impl OpenArchive {
         Ok(entry)
     }
 
+    /// Resolve a ZIP member payload offset, validating its local header.
+    ///
+    /// Each entry's local header is parsed once; later reads reuse the
+    /// cached payload offset when the directory entry still agrees with it.
+    fn zip_data_offset(&self, entry: &ZipEntry) -> Result<u64, ArchiveError> {
+        if let Some((local_header_offset, data_offset)) = self.zip_data_offsets.borrow().get(&entry.ordinal).copied() {
+            if local_header_offset == entry.local_header_offset {
+                return Ok(data_offset);
+            }
+        }
+        let header = read_zip_local_header(&self.storage.read(entry.local_header_offset, 30)?, &self.source, entry)?;
+        let variable = self
+            .storage
+            .read(entry.local_header_offset + 30, header.byte_length as u64)?;
+        let offset = zip_data_offset(&variable, header.name_length, &self.source, self.central_offset, entry)?;
+        self.zip_data_offsets
+            .borrow_mut()
+            .insert(entry.ordinal, (entry.local_header_offset, offset));
+        Ok(offset)
+    }
+
     /// Read and decode an entry payload.
     pub fn read_entry(&self, requested: EntryRef<'_>) -> Result<Vec<u8>, ArchiveError> {
+        self.read_entry_cow(requested).map(Cow::into_owned)
+    }
+
+    /// Read and decode an entry payload, borrowing stored bytes.
+    ///
+    /// Stored entries over a memory source borrow the retained bytes;
+    /// everything else decodes into an owned buffer.
+    pub fn read_entry_cow(&self, requested: EntryRef<'_>) -> Result<Cow<'_, [u8]>, ArchiveError> {
         let entry = self.select(requested)?;
         match entry {
-            ArchiveEntry::Pak(entry) => self.storage.read(entry.data_offset, entry.byte_length),
+            ArchiveEntry::Pak(entry) => match self.storage.memory_slice(entry.data_offset, entry.byte_length) {
+                Some(slice) => Ok(Cow::Borrowed(slice?)),
+                None => Ok(Cow::Owned(self.storage.read(entry.data_offset, entry.byte_length)?)),
+            },
             ArchiveEntry::Zip(entry) => {
-                let header =
-                    read_zip_local_header(&self.storage.read(entry.local_header_offset, 30)?, &self.source, entry)?;
-                let variable = self
-                    .storage
-                    .read(entry.local_header_offset + 30, header.byte_length as u64)?;
-                let offset = zip_data_offset(&variable, header.name_length, &self.source, self.central_offset, entry)?;
-                decode_zip_entry(
+                let offset = self.zip_data_offset(entry)?;
+                if entry.compression_method == ZipCompression::Store {
+                    if let Some(slice) = self.storage.memory_slice(offset, entry.compressed_size) {
+                        return decode_zip_entry_cow(slice?, &self.source, offset, entry);
+                    }
+                }
+                Ok(Cow::Owned(decode_zip_entry(
                     &self.storage.read(offset, entry.compressed_size)?,
                     &self.source,
                     offset,
                     entry,
-                )
+                )?))
             }
         }
+    }
+
+    /// Check the retained storage against its recorded identity.
+    ///
+    /// Callers run this at mount and map-load boundaries instead of on
+    /// every read.
+    pub fn verify_storage(&self) -> Result<(), ArchiveError> {
+        self.storage.verify_identity()
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    pub fn test_storage_reads(&self) -> u64 {
+        self.storage.test_reads()
     }
 
     /// Drop lookup indexes and release the retained source.
     pub fn close(&self) {
         self.entry_indexes.borrow_mut().clear();
+        self.zip_data_offsets.borrow_mut().clear();
         self.storage.close();
     }
 }
@@ -1174,6 +1379,7 @@ pub fn open_archive_source(storage: ArchiveSource, format: Option<ArchiveFormat>
             storage,
             central_offset,
             entry_indexes: RefCell::new(HashMap::new()),
+            zip_data_offsets: RefCell::new(HashMap::new()),
         }),
         Err(error) => {
             storage.close();
@@ -1429,6 +1635,81 @@ mod tests {
     }
 
     #[test]
+    fn zip_member_reread_uses_one_positioned_read() {
+        let bytes = zip_fixture(&[
+            ZipPiece {
+                name: "a.txt",
+                data: b"stored-payload".to_vec(),
+                method: 0,
+            },
+            ZipPiece {
+                name: "b.txt",
+                data: b"deflated-payload ".repeat(20),
+                method: 8,
+            },
+        ]);
+        let root = scratch_dir("zip-reread");
+        let path = root.join("mod.pk3");
+        std::fs::write(&path, &bytes).unwrap();
+        let archive = open_archive(&path, None).unwrap();
+        // Parsing reads the header, the tail, and the central directory once.
+        assert_eq!(archive.test_storage_reads(), 3);
+        // The first member read validates the local header (2 reads) and the payload.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(0)).unwrap(),
+            b"stored-payload".to_vec()
+        );
+        assert_eq!(archive.test_storage_reads(), 6);
+        // The second read of the same member is one positioned payload read.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(0)).unwrap(),
+            b"stored-payload".to_vec()
+        );
+        assert_eq!(archive.test_storage_reads(), 7);
+        // A different member still validates its own local header once.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(1)).unwrap(),
+            b"deflated-payload ".repeat(20)
+        );
+        assert_eq!(archive.test_storage_reads(), 10);
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(1)).unwrap(),
+            b"deflated-payload ".repeat(20)
+        );
+        assert_eq!(archive.test_storage_reads(), 11);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn stored_memory_entries_borrow_without_copying() {
+        let raw = b"borrowed-payload".to_vec();
+        let bytes = zip_fixture(&[
+            ZipPiece {
+                name: "a.txt",
+                data: raw.clone(),
+                method: 0,
+            },
+            ZipPiece {
+                name: "b.txt",
+                data: b"deflated ".repeat(20),
+                method: 8,
+            },
+        ]);
+        let archive = decode_archive(&bytes, None, "x.zip").unwrap();
+        let stored = archive.read_entry_cow(EntryRef::Ordinal(0)).unwrap();
+        assert!(matches!(stored, Cow::Borrowed(_)));
+        assert_eq!(stored.as_ref(), raw.as_slice());
+        let deflated = archive.read_entry_cow(EntryRef::Ordinal(1)).unwrap();
+        assert!(matches!(deflated, Cow::Owned(_)));
+        // PAK members borrow as well.
+        let pak = decode_archive(&pak_fixture(), None, "x.pak").unwrap();
+        assert!(matches!(
+            pak.read_entry_cow(EntryRef::Ordinal(0)).unwrap(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
     fn zip_entry_decoding_validates_size_crc_and_cap() {
         let raw = b"payload-bytes ".repeat(20);
         let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
@@ -1534,8 +1815,11 @@ mod tests {
         std::fs::write(&path, b"version-one").unwrap();
         let source = FileSource::new(&path).unwrap();
         assert_eq!(source.read(0, 11).unwrap(), b"version-one".to_vec());
+        assert!(source.verify_identity().is_ok());
         std::fs::write(&path, b"version-two-much-longer").unwrap();
-        let error = source.read(0, 11).unwrap_err();
+        // Reads stay cheap; the boundary check reports the change.
+        assert_eq!(source.read(0, 11).unwrap(), b"version-two".to_vec());
+        let error = source.verify_identity().unwrap_err();
         assert!(
             error.to_string().contains("source changed after it was opened"),
             "{error}"
@@ -1543,6 +1827,7 @@ mod tests {
         source.close();
         assert!(source.is_closed());
         assert!(source.read(0, 1).is_err());
+        assert!(source.verify_identity().is_err());
         assert!(FileSource::new(&root).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }

@@ -3748,7 +3748,7 @@ pub fn discover_gameplay_mods(
             let program = gameplay_mod_program(&declaration);
             let program_file = mounted.open(&program.path, |_| true)?;
             match program_file {
-                Some(program_file) if program_file.reference.digest == program.digest => {}
+                Some(program_file) if program_file.content_digest() == &program.digest => {}
                 _ => {
                     return Err(ModsError::Invalid(
                         "Executable differs from its callback declaration".to_string(),
@@ -3763,7 +3763,7 @@ pub fn discover_gameplay_mods(
                 requires,
                 conflicts,
                 declaration,
-                declaration_digest: file.reference.digest.clone(),
+                declaration_digest: file.content_digest().clone(),
             }))
         })();
         match loaded {

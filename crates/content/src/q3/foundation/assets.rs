@@ -353,7 +353,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::contract::{
-        ContentDigest, ContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceProvenance,
+        ContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceIdentity, ResourceProvenance,
         ResourceResolution,
     };
 
@@ -374,7 +374,12 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:00".to_string()),
+            identity: ResourceIdentity {
+                mount_generation: 0,
+                member_index: 0,
+                byte_length: len as u64,
+                crc: 0,
+            },
             byte_length: len as u64,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:p".to_string()),
@@ -389,10 +394,10 @@ mod tests {
 
     impl Q3CharacterResources for FakeResources {
         fn open(&self, path: &str) -> Result<Option<OpenedResource>, AssetsError> {
-            Ok(self.files.get(path).map(|bytes| OpenedResource {
-                reference: dummy_reference(path, bytes.len()),
-                bytes: bytes.clone(),
-            }))
+            Ok(self
+                .files
+                .get(path)
+                .map(|bytes| OpenedResource::new(dummy_reference(path, bytes.len()), bytes.clone())))
         }
     }
 

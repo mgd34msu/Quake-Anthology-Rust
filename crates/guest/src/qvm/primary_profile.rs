@@ -34,8 +34,8 @@ pub struct ResolvedResourceReference {
     pub id: String,
     /// Requested path.
     pub requested_path: String,
-    /// Content digest.
-    pub digest: String,
+    /// Canonical value identity.
+    pub identity: String,
     /// Byte length.
     pub byte_length: usize,
 }
@@ -703,7 +703,7 @@ mod tests {
         let declaration = ResolvedResourceReference {
             id: "test:primary".to_string(),
             requested_path: "primary.json".to_string(),
-            digest: "sha256:primary".to_string(),
+            identity: "identity:0:0:0:0".to_string(),
             byte_length: 0,
         };
         let error = read_qvm_primary_profile(&ProfileReader::new(&root), &artifact(), None, &items, declaration)

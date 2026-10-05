@@ -136,10 +136,14 @@ impl NativeRenderBackend for NativeCpuBackend {
                 self.renderer.select_draw_buffer(*buffer, *clear);
             }
             RenderCommand::View(view) => {
-                self.execute_view(view, timer);
+                self.execute_serial_view_timed(view, timer);
             }
             RenderCommand::Draw | RenderCommand::SwapBuffers => {}
         }
+    }
+
+    fn execute_serial_view_timed(&mut self, view: &ClientRenderView, timer: &mut StageTimer) {
+        self.execute_view(view, timer);
     }
 
     fn execute_worker(
