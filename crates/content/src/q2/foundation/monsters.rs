@@ -3339,8 +3339,10 @@ mod tests {
         let mut entity = Q2Entity::new(owned, spawn);
         entity.frame = 1;
         game.entities.insert(actor.clone(), entity);
-        let mut state = MonsterState::default();
-        state.current_move = definition.moves[0].clone();
+        let state = MonsterState {
+            current_move: definition.moves[0].clone(),
+            ..MonsterState::default()
+        };
         game.monsters.states.insert(actor.clone(), state);
         game.monsters.actor_definitions.insert(actor.clone(), definition);
         actor
@@ -3389,7 +3391,6 @@ mod tests {
         context.dispatch("bogus");
         context.set_move("bogus", true);
         assert_eq!(context.state().current_move.name, "stand");
-        drop(context);
         let diagnostics = diagnostics.borrow();
         assert!(
             diagnostics
@@ -3416,7 +3417,6 @@ mod tests {
         let actor = admit_test_actor(&mut game, Rc::new(definition));
         let mut context = MonsterContext::new(actor, &mut game);
         move_frame(&mut context);
-        drop(context);
         let diagnostics = diagnostics.borrow();
         assert!(
             diagnostics
