@@ -951,7 +951,7 @@ mod tests {
     use std::rc::Rc;
 
     use qa_content::contract::{
-        ContentDigest, LooseMount, MountId, MountIdentity, MountPlanId, ResourceProvenance, ResourceResolution,
+        LooseMount, MountId, MountIdentity, MountPlanId, ResourceIdentity, ResourceProvenance, ResourceResolution,
     };
     use qa_content::q2::foundation::host::Q2SoundEvent;
     use qa_content::q2::foundation::weapons::types::Q2WeaponEvent;
@@ -998,7 +998,12 @@ mod tests {
                     },
                     member_path: path.to_string(),
                 },
-                digest: ContentDigest("sha256:00".to_string()),
+                identity: ResourceIdentity {
+                    mount_generation: 1,
+                    member_index: 0,
+                    byte_length: 8,
+                    crc: 0,
+                },
                 byte_length: 8,
                 resolution: ResourceResolution::DefaultOrder {
                     plan: MountPlanId("mount-plan:q1:1".to_string()),

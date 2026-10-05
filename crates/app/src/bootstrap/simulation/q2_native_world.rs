@@ -8,6 +8,7 @@ use qa_compat::q2::compatibility::{CompatibilityMounts, CompatibilityResource};
 use qa_compat::q2::native_primary::{
     builtin_native_primary, NativePrimaryDeclaration, NativePrimaryProfile, PrimaryEdition,
 };
+use qa_content::hash::sha256_hex;
 use qa_content::mounts::{MountedContent, ResourceRef};
 use qa_core::identity::ProviderId;
 use qa_guest::core::contracts::{ContentDigest, ModuleIdentity};
@@ -81,7 +82,9 @@ fn content_digest(digest: &str) -> ContentDigest {
 
 fn native_artifact(execution: &ResolvedExecutionModule) -> (String, String) {
     match &execution.implementation {
-        ExecutionImplementation::Native { artifact, .. } => (artifact.requested_path.clone(), artifact.digest.clone()),
+        ExecutionImplementation::Native { artifact, .. } => {
+            (artifact.requested_path.clone(), artifact.identity.clone())
+        }
         _ => (String::new(), String::new()),
     }
 }
@@ -95,14 +98,14 @@ pub fn native_module_identity_parts(
     execution: &ResolvedExecutionModule,
     primary: Option<&NativePrimaryDeclaration>,
 ) -> ModuleIdentity {
-    let (requested_path, digest) = native_artifact(execution);
+    let (requested_path, identity) = native_artifact(execution);
     ModuleIdentity::new(
         provider_id(&execution.owner.provider),
         &requested_path,
-        content_digest(&digest),
+        content_digest(&identity),
         &match primary {
-            None => digest.clone(),
-            Some(primary) => format!("{digest}/{}", primary.declaration),
+            None => identity.clone(),
+            Some(primary) => format!("{identity}/{}", primary.declaration),
         },
     )
 }
@@ -130,14 +133,14 @@ pub fn prepared_native_primary(prepared: &PreparedQ2NativeGuest) -> Option<Nativ
         PreparedQ2NativeGuest::Classic(prepared) => match &prepared.primary {
             Some(primary) => Some(primary.profile.clone()),
             None => {
-                let (_, digest) = native_artifact(&prepared.execution);
+                let digest = format!("sha256:{}", sha256_hex(&prepared.bytes));
                 builtin_native_primary(&digest, PrimaryEdition::Classic)
             }
         },
         PreparedQ2NativeGuest::Rerelease(prepared) => match &prepared.primary {
             Some(primary) => Some(primary.profile.clone()),
             None => {
-                let (_, digest) = native_artifact(&prepared.execution);
+                let digest = format!("sha256:{}", sha256_hex(&prepared.bytes));
                 builtin_native_primary(&digest, PrimaryEdition::Rerelease)
             }
         },
@@ -180,7 +183,7 @@ pub(crate) mod fixtures {
         api: GameApi,
         profile: NativeCallAbi,
         requested_path: &str,
-        digest: &str,
+        identity: &str,
     ) -> ResolvedExecutionModule {
         ResolvedExecutionModule {
             owner: qa_world::save::shared::ProviderRef {
@@ -204,7 +207,7 @@ pub(crate) mod fixtures {
                         }),
                         member_path: requested_path.to_string(),
                     },
-                    digest: digest.to_string(),
+                    identity: identity.to_string(),
                     byte_length: 0,
                     resolution: ResourceResolution::Link {
                         plan: "p".to_string(),
@@ -225,7 +228,7 @@ pub(crate) mod fixtures {
                 call: NativeCall::Cdecl,
             },
             "gamex86.dll",
-            "sha256:abc",
+            "identity:1:2:3:4",
         )
     }
 
@@ -235,7 +238,7 @@ pub(crate) mod fixtures {
             GameApi::Q2RereleaseGame,
             NativeCallAbi::WindowsX8664,
             "q2game.dll",
-            "sha256:def",
+            "identity:5:6:7:8",
         )
     }
 
@@ -348,7 +351,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_uses_artifact_digest_as_revision_without_primary() {
+    fn identity_uses_artifact_identity_as_revision_without_primary() {
         let prepared = PreparedQ2NativeGuest::Classic(PreparedClassicGuest {
             edition: PrimaryEdition::Classic,
             primary: None,
@@ -357,8 +360,8 @@ mod tests {
         });
         let module = native_module_identity(&prepared);
         assert_eq!(module.artifact_path, "gamex86.dll");
-        assert_eq!(module.digest, ContentDigest::new("sha256", "abc"));
-        assert_eq!(module.revision, "sha256:abc");
+        assert_eq!(module.digest, ContentDigest::new("identity", "1:2:3:4"));
+        assert_eq!(module.revision, "identity:1:2:3:4");
         assert_eq!(module.id, ProviderId::new("q2", "test"));
     }
 
@@ -375,23 +378,20 @@ mod tests {
             bytes: Vec::new(),
         });
         let module = native_module_identity(&prepared);
-        assert_eq!(module.revision, "sha256:abc/native-compatibility.json");
+        assert_eq!(module.revision, "identity:1:2:3:4/native-compatibility.json");
         assert_eq!(prepared_native_primary(&prepared), Some(profile));
     }
 
     #[test]
-    fn builtin_primary_resolves_for_known_digest() {
-        let mut execution = classic_execution();
-        if let ExecutionImplementation::Native { artifact, .. } = &mut execution.implementation {
-            artifact.digest = CLASSIC_DIGEST.to_string();
-        }
+    fn builtin_primary_rejects_unknown_bytes() {
+        let execution = classic_execution();
         let prepared = PreparedQ2NativeGuest::Classic(PreparedClassicGuest {
             edition: PrimaryEdition::Classic,
             primary: None,
             execution,
             bytes: Vec::new(),
         });
-        assert!(prepared_native_primary(&prepared).is_some());
+        assert!(prepared_native_primary(&prepared).is_none());
         assert!(
             prepared_native_primary(&PreparedQ2NativeGuest::Rerelease(PreparedRereleaseGuest {
                 edition: PrimaryEdition::Rerelease,

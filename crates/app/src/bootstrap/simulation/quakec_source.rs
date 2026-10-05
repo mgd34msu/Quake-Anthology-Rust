@@ -2316,7 +2316,7 @@ mod tests {
         }
     }
 
-    fn recipe_reference(requested_path: &str, digest: &str) -> crate::persistence::recipe::ResolvedResourceReference {
+    fn recipe_reference(requested_path: &str, identity: &str) -> crate::persistence::recipe::ResolvedResourceReference {
         crate::persistence::recipe::ResolvedResourceReference {
             id: format!("test:{requested_path}"),
             requested_path: requested_path.to_string(),
@@ -2331,7 +2331,7 @@ mod tests {
                 }),
                 member_path: requested_path.to_string(),
             },
-            digest: digest.to_string(),
+            identity: identity.to_string(),
             byte_length: 0,
             resolution: crate::persistence::recipe::ResourceResolution::DefaultOrder {
                 plan: "test:plan".to_string(),
@@ -2341,8 +2341,8 @@ mod tests {
     }
 
     fn surface_recipe(prepared: &PreparedQuakeCSource) -> ExecutableRecipe {
-        let digest = prepared.execution.artifact.digest.as_str().to_string();
-        let geometry = recipe_reference("maps/test.bsp", &digest);
+        let identity = prepared.execution.artifact.identity.canonical();
+        let geometry = recipe_reference("maps/test.bsp", &identity);
         ExecutableRecipe {
             mods: Vec::new(),
             weapon_behaviors: Vec::new(),
@@ -2383,7 +2383,7 @@ mod tests {
                 role: "game".to_string(),
                 api: GameApi::Q1Netquake,
                 implementation: ExecutionImplementation::Quakec {
-                    artifact: recipe_reference("progs.dat", &digest),
+                    artifact: recipe_reference("progs.dat", &identity),
                 },
             }],
             mounts: crate::persistence::recipe::ResolvedMountPlan {
@@ -4568,6 +4568,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
             QuakeCSourceKind::Netquake
         };
         let weapons = native_weapons(&prepared.program);
+        let wanted = prepared.execution.artifact.identity.canonical();
         if !options.recipe.execution.iter().any(|entry| {
             matches!(
                 entry.implementation,
@@ -4579,7 +4580,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                     prepared.execution.owner.provider.name
                 )
                 && entry.owner.content == prepared.execution.owner.content
-                && matches!(&entry.implementation, crate::persistence::recipe::ExecutionImplementation::Quakec { artifact } if artifact.digest.as_str() == prepared.execution.artifact.digest.as_str())
+                && matches!(&entry.implementation, crate::persistence::recipe::ExecutionImplementation::Quakec { artifact } if artifact.identity == wanted)
         }) {
             return Err(QuakeCSourceError::Invalid(
                 "QC source differs from selected execution".to_string(),
@@ -6323,13 +6324,13 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
     /// Owning module identity (`module`).
     fn module(&self) -> ModuleIdentity {
         let execution = &self.prepared.execution;
-        let digest = execution.artifact.digest.as_str();
-        let (algorithm, value) = digest.split_once(':').unwrap_or(("", digest));
+        let identity = execution.artifact.identity.canonical();
+        let (algorithm, value) = identity.split_once(':').unwrap_or(("", identity.as_str()));
         ModuleIdentity {
             id: execution.owner.provider.clone(),
             artifact_path: execution.artifact.requested_path.clone(),
             digest: qa_guest::core::contracts::ContentDigest::new(algorithm, value),
-            revision: digest.to_string(),
+            revision: identity,
         }
     }
 
@@ -6666,13 +6667,13 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
         let mut precached = Vec::with_capacity(shared.precached.len());
         for (key, entry) in shared.precached.iter() {
             let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
-            let (id, digest) = if key.starts_with("model:") && self.map_model_index(name).map_err(fate)?.is_some() {
+            let (id, identity) = if key.starts_with("model:") && self.map_model_index(name).map_err(fate)?.is_some() {
                 let geometry = &shared.options.recipe.map.geometry;
-                (geometry.id.clone(), geometry.digest.clone())
+                (geometry.id.clone(), geometry.identity.clone())
             } else if let Some(resource) = self.prepared.resources.get(name) {
                 (
                     resource.resource.id.as_str().to_string(),
-                    resource.resource.digest.as_str().to_string(),
+                    resource.resource.identity.canonical(),
                 )
             } else {
                 return Err(QuakeCSourceError::Invalid(format!(
@@ -6683,7 +6684,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                 ("key", str(key)),
                 ("index", int(i64::from(entry.index))),
                 ("id", str(&id)),
-                ("digest", str(&digest)),
+                ("identity", str(&identity)),
             ]));
         }
         members.push(("precached", arr(precached)));
@@ -7190,31 +7191,31 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                 i32::try_from(entry.field("index").integer(1)?)
                     .map_err(|_| value_error(entry.fail("precache index exceeds i32")))?,
                 entry.field("id").string()?,
-                entry.field("digest").string()?,
+                entry.field("identity").string()?,
                 map_index,
             ))
         })?;
         {
             let mut shared = self.shared.borrow_mut();
             shared.precached.clear();
-            for (key, index, id, digest, map_index) in precached {
+            for (key, index, id, identity, map_index) in precached {
                 let name = key
                     .split_once(':')
                     .map_or_else(|| key.clone(), |(_, name)| name.to_string());
-                let (expected_id, expected_digest) = if map_index.is_some() {
+                let (expected_id, expected_identity) = if map_index.is_some() {
                     let geometry = &shared.options.recipe.map.geometry;
-                    (geometry.id.clone(), geometry.digest.clone())
+                    (geometry.id.clone(), geometry.identity.clone())
                 } else if let Some(resource) = self.prepared.resources.get(name.as_str()) {
                     (
                         resource.resource.id.as_str().to_string(),
-                        resource.resource.digest.as_str().to_string(),
+                        resource.resource.identity.canonical(),
                     )
                 } else {
                     (String::new(), String::new())
                 };
                 if key.split_once(':').is_none_or(|(kind, _)| kind.is_empty())
                     || expected_id != id
-                    || expected_digest != digest
+                    || expected_identity != identity
                     || shared.precached.contains_key(&key)
                 {
                     return Err(QuakeCSourceError::Invalid(

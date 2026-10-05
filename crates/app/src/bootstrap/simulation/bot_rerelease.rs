@@ -726,7 +726,7 @@ fn encode_path(path: &NavPathT) -> SaveJson {
         ),
         ("cost", num(path.cost)),
         ("generation", int(path.generation)),
-        ("mapDigest", str(&path.map_digest)),
+        ("mapIdentity", str(&path.map_identity)),
     ])
 }
 
@@ -755,7 +755,7 @@ fn decode_path(value: &SaveJson) -> Result<NavPathT, String> {
             .collect::<Result<Vec<_>, _>>()?,
         cost: read_behavior_num(value, "cost")?,
         generation: read_behavior_int(value, "generation")?,
-        map_digest: read_behavior_str(value, "mapDigest")?,
+        map_identity: read_behavior_str(value, "mapIdentity")?,
     })
 }
 
@@ -3414,7 +3414,7 @@ mod tests {
             ],
             cost: 1.5,
             generation: 9,
-            map_digest: "abc".to_string(),
+            map_identity: "identity:0:0:0:0".to_string(),
         };
         set_path(
             &mut image,

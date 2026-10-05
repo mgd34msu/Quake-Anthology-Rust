@@ -1976,8 +1976,8 @@ mod tests {
     #[test]
     fn sound_flushes_on_drain_after_registration() {
         use qa_content::contract::{
-            ContentDigest, ContentId as ContractContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId,
-            ResourceProvenance, ResourceResolution,
+            ContentId as ContractContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId,
+            ResourceIdentity, ResourceProvenance, ResourceResolution,
         };
         let (mut presentation, state) = harness();
         admit(&mut presentation);
@@ -1999,7 +1999,7 @@ mod tests {
                     },
                     member_path: "weapons/shotgun.wav".to_string(),
                 },
-                digest: ContentDigest("sha256:test".to_string()),
+                identity: ResourceIdentity::parse("identity:0:0:8:0").unwrap(),
                 byte_length: 8,
                 resolution: ResourceResolution::DefaultOrder {
                     plan: MountPlanId("plan".to_string()),

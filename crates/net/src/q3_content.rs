@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use qa_content::contract::{ArchiveMount, MountId, ResolvedResourceReference, ResourceProvenance};
-use qa_content::mounts::PureMountPolicy;
+use qa_content::mounts::{archive_digest_or_compute, MountError, PureMountPolicy};
 use thiserror::Error;
 
 use crate::q3_net::{q3_archive_checksums, Q3ArchiveHandle, Q3NetError};
@@ -37,6 +37,9 @@ pub enum Q3ContentError {
     /// No installed archives match the server pure list.
     #[error("No installed Q3 archives match the server pure list")]
     NoMatchingArchives,
+    /// Underlying mount failure.
+    #[error("{0}")]
+    Mount(#[from] MountError),
 }
 
 /// Mounted pak (`Q3MountedPak`).
@@ -151,7 +154,7 @@ impl Q3ContentReferences {
         for path in reorder_pure_paks(&paths, server_checksums) {
             if let PureSearchPath::Pak { value, checksum } = path {
                 if accepted.contains_key(&checksum) {
-                    archives.push(value.mount.archive_digest.clone());
+                    archives.push(archive_digest_or_compute(&value.mount)?);
                 }
             }
         }
@@ -172,11 +175,16 @@ mod tests {
     use super::*;
     use crate::q3_net::{Q3ArchiveEntry, Q3ArchiveHandle};
     use qa_content::contract::{
-        ArchiveFormat, ContentDigest, ContentId, LooseMount, MountIdentity, MountPlanId, ResourceId, ResourceResolution,
+        ArchiveFormat, ContentDigest, ContentId, LazyArchiveDigest, LooseMount, MountIdentity, MountPlanId, ResourceId,
+        ResourceIdentity, ResourceResolution,
     };
 
     fn digest(byte: u8) -> ContentDigest {
         ContentDigest(format!("sha256:{}", format!("{byte:02x}").repeat(32)))
+    }
+
+    fn identity(byte: u8) -> ResourceIdentity {
+        ResourceIdentity::parse(&format!("identity:0:{byte}:8:{byte}")).unwrap()
     }
 
     fn mount(id: &str, generation: u64, digest: ContentDigest) -> ArchiveMount {
@@ -188,7 +196,7 @@ mod tests {
             },
             format: ArchiveFormat::Pk3,
             archive_path: format!("baseq3/{id}.pk3"),
-            archive_digest: digest,
+            archive_digest: LazyArchiveDigest::computed(digest),
         }
     }
 
@@ -207,7 +215,7 @@ mod tests {
                 },
                 member_path: path.to_owned(),
             },
-            digest: digest(0),
+            identity: identity(0),
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:catalog:0".to_string()),
@@ -225,7 +233,7 @@ mod tests {
                 member_path: path.to_owned(),
                 member_index: 0,
             },
-            digest: digest(0),
+            identity: identity(0),
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:catalog:0".to_string()),

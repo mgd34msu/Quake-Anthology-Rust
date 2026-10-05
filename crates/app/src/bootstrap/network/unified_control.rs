@@ -13,7 +13,7 @@
 //! [`super::unified_components`]; movement commands reuse
 //! [`UserCommand`](qa_net::common::commands::UserCommand).
 
-use qa_content::contract::{ContentId, PresentationOwner, MAX_SAFE_INTEGER};
+use qa_content::contract::{ContentId, PresentationOwner, ResourceIdentity, MAX_SAFE_INTEGER};
 use qa_net::common::commands::UserCommand;
 use qa_world::save::shared::{read_content_id, read_digest};
 use qa_world::save::value::{
@@ -497,10 +497,14 @@ fn read_key(reader: SaveReader) -> Result<UnifiedResourceKey, WorldError> {
     if !valid_resource_member(&path) {
         return Err(reader.fail("invalid resource member"));
     }
+    let identity_field = reader.field("identity");
+    let identity = ResourceIdentity::parse(&identity_field.string()?)
+        .map(|parsed| parsed.canonical())
+        .ok_or_else(|| identity_field.fail("expected a resource identity"))?;
     Ok(UnifiedResourceKey {
         content: ContentId(read_content_id(reader.field("content"))?),
         path,
-        digest: read_digest(reader.field("digest"))?,
+        identity,
         byte_length: bounded(reader.field("byteLength"), 0, i64::from(i32::MAX)).and_then(|length| {
             u64::try_from(length).map_err(|_| reader.field("byteLength").fail("resource length exceeds its range"))
         })?,
@@ -511,7 +515,7 @@ fn write_key(key: &UnifiedResourceKey) -> SaveJson {
     obj(vec![
         ("content", json_str(key.content.as_str())),
         ("path", json_str(&key.path)),
-        ("digest", json_str(&key.digest)),
+        ("identity", json_str(&key.identity)),
         ("byteLength", int(key.byte_length as i64)),
     ])
 }
@@ -890,7 +894,7 @@ mod tests {
         let key = || UnifiedResourceKey {
             content: ContentId("q1:classic:base:1".to_string()),
             path: "maps/e1m1.bsp".to_string(),
-            digest: digest.clone(),
+            identity: "identity:0:0:8:0".to_string(),
             byte_length: 8,
         };
         let controls = vec![

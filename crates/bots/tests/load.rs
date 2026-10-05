@@ -6,11 +6,10 @@ mod common;
 use common::{linked_aas, q3_world, test_map, test_profile, FixtureWorld};
 use qa_bots::aas_write::write_aas;
 use qa_bots::construct::NavigationConstruction;
-use qa_bots::content::{
-    ContentDigest, ContentId, NavigationResources, OpenedResource, ResourceProvenance, ResourceReference,
-};
+use qa_bots::content::{ContentId, NavigationResources, OpenedResource, ResourceProvenance, ResourceReference};
 use qa_bots::load::{load_navigation, preload_navigation, NavigationLoadOptions, PreloadOptions};
 use qa_bots::md4::block_checksum;
+use qa_content::contract::ResourceIdentity;
 
 const MAP_BYTES: &[u8] = b"fixture bsp bytes";
 
@@ -21,7 +20,7 @@ fn reference(path: &str, content: &str, bytes: &[u8]) -> OpenedResource {
             provenance: ResourceProvenance {
                 mount_content: ContentId::new(content),
             },
-            digest: ContentDigest::new("sha256:fixture"),
+            identity: ResourceIdentity::parse("identity:0:0:16:0").unwrap(),
             byte_length: bytes.len(),
         },
         bytes: bytes.to_vec(),

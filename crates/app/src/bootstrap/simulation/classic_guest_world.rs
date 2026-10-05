@@ -30,6 +30,7 @@ use qa_compat::q2::classic::pmove::EquipmentMovement;
 use qa_compat::q2::classic::world_profile::classic_primary_world_profile;
 use qa_compat::q2::native_input::{InputIdentity, InputServices, NativeInputBinding};
 use qa_compat::q2::native_primary::NativePrimaryProfile;
+use qa_content::hash::sha256_hex;
 use qa_core::identity::ActorId;
 use qa_guest::core::contracts::{ContentDigest, GuestAddress, ModuleIdentity};
 use qa_guest::core::memory::SparseGuestMemory;
@@ -216,7 +217,7 @@ impl ClassicGuestWorld {
                 _ => None,
             });
         let artifact_digest = match &options.prepared.execution.implementation {
-            ExecutionImplementation::Native { artifact, .. } => Some(artifact.digest.clone()),
+            ExecutionImplementation::Native { .. } => Some(format!("sha256:{}", sha256_hex(&options.prepared.bytes))),
             _ => None,
         };
         // The services profile is the digest-keyed builtin projection; the

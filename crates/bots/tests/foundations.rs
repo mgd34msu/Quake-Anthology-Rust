@@ -5,7 +5,7 @@
 mod common;
 
 use common::{q1_world, q2_world, q3_world, test_body, test_profile, FloorScene};
-use qa_bots::content::{ContentDigest, ContentId};
+use qa_bots::content::ContentId;
 use qa_bots::entities::parse_entities;
 use qa_bots::helpers::{distance, midpoint, translated, validate_profile};
 use qa_bots::md4::{block_checksum, md4};
@@ -17,6 +17,7 @@ use qa_bots::scene::{
 };
 use qa_bots::types::TravelMode;
 use qa_bots::BotsError;
+use qa_content::contract::ResourceIdentity;
 use qa_core::math::{vec3, Bounds};
 use qa_core::numeric::Q3_BINARY32_PROFILE;
 
@@ -100,7 +101,10 @@ fn decoded_worlds_report_kind_and_entities() {
 #[test]
 fn content_identities_roundtrip() {
     assert_eq!(ContentId::new("a").text, "a");
-    assert_eq!(ContentDigest::new("sha256:x").text, "sha256:x");
+    assert_eq!(
+        ResourceIdentity::parse("identity:0:0:0:0").unwrap().canonical(),
+        "identity:0:0:0:0"
+    );
 }
 
 #[test]

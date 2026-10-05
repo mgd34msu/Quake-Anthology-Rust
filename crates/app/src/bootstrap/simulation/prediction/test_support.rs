@@ -6,10 +6,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use qa_content::contract::{
-    CampaignSelection, CharacterSelection, ContentDigest, ContentId, DopplerSelection, EnemySelection,
-    EnvironmentSelection, EquipmentSelection, ExecutableRecipe, FrameOrdering, GrappleSelection, HandGrenadeSelection,
-    LooseMount, MountId, MountIdentity, MountPlanId, PresentationSelection, ProviderReference, RecipeId, ResolvedMap,
-    ResolvedMountPlan, ResolvedResourceReference, ResourceId, ResourceProvenance, ResourceResolution,
+    CampaignSelection, CharacterSelection, ContentId, DopplerSelection, EnemySelection, EnvironmentSelection,
+    EquipmentSelection, ExecutableRecipe, FrameOrdering, GrappleSelection, HandGrenadeSelection, LooseMount, MountId,
+    MountIdentity, MountPlanId, PresentationSelection, ProviderReference, RecipeId, ResolvedMap, ResolvedMountPlan,
+    ResolvedResourceReference, ResourceId, ResourceIdentity, ResourceProvenance, ResourceResolution,
 };
 use qa_core::identity::{IdentityOwner, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Plane, Vec3};
@@ -136,7 +136,12 @@ pub fn test_recipe() -> ExecutableRecipe {
                     },
                     member_path: "maps/test.bsp".to_string(),
                 },
-                digest: ContentDigest("sha256:00".to_string()),
+                identity: ResourceIdentity {
+                    mount_generation: 1,
+                    member_index: 0,
+                    byte_length: 0,
+                    crc: 0,
+                },
                 byte_length: 0,
                 resolution: ResourceResolution::DefaultOrder {
                     plan: MountPlanId("mountplan:test:1".to_string()),

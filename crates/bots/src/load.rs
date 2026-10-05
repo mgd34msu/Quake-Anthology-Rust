@@ -131,7 +131,7 @@ pub fn load_prepared_navigation<'a>(
 ) -> Result<LoadedNavigation<'a>, BotsError> {
     let (map, geometry, profile, world) = (options.map, options.geometry, options.profile, options.world);
     if map.format != geometry.kind()
-        || map.digest != prepared.map.digest
+        || map.identity != prepared.map.identity
         || map.name != prepared.map.name
         || map.format != prepared.map.format
     {

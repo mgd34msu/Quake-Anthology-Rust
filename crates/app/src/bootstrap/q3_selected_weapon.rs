@@ -501,7 +501,7 @@ impl SelectedQ3WeaponPresenter {
 mod tests {
     use super::*;
     use qa_content::contract::{
-        ContentDigest, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceProvenance,
+        LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceIdentity, ResourceProvenance,
         ResourceResolution,
     };
     use qa_content::md3::Md3Model;
@@ -539,7 +539,7 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:00".to_string()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 1,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:weapon".to_string()),

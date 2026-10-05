@@ -585,7 +585,12 @@ mod tests {
                         },
                         member_path: "maps/q3dm1.bsp".to_string(),
                     },
-                    digest: qa_content::contract::ContentDigest("sha256:test".to_string()),
+                    identity: qa_content::contract::ResourceIdentity {
+                        mount_generation: 1,
+                        member_index: 0,
+                        byte_length: 128,
+                        crc: 0,
+                    },
                     byte_length: 128,
                     resolution: qa_content::contract::ResourceResolution::DefaultOrder {
                         plan: create_mount_plan_id("test", "1").unwrap(),

@@ -43,13 +43,13 @@ use qa_bots::scene::{
 };
 use qa_bots::NavigationResources;
 use qa_bots::{
-    load_prepared_navigation, preload_navigation, ContentDigest, ContentId, MovementKind, MovementProfile,
-    NavigationConstruction, NavigationEdge, NavigationGraph, NavigationMapIdentity, NavigationProfile, NavigationRoute,
+    load_prepared_navigation, preload_navigation, ContentId, MovementKind, MovementProfile, NavigationConstruction,
+    NavigationEdge, NavigationGraph, NavigationMapIdentity, NavigationProfile, NavigationRoute,
     NavigationRoutePrediction, NavigationRouteQuery, NavigationRouteResult, NavigationRuntime, NavigationWorld,
     OpenedResource, PreloadOptions, PreparedNavigation, ResourceReference, TravelMode, TraversalAdmission,
     TraversalRequest,
 };
-use qa_content::contract::{ContentId as ContentIdentity, ResolvedResourceReference};
+use qa_content::contract::{ContentId as ContentIdentity, ResolvedResourceReference, ResourceIdentity};
 use qa_content::mounts::MountedContent;
 use qa_content::q1::addons::monsters::ai::path::{
     register_mg3_monster_navigation, Mg3MonsterNavigationHost, Mg3NavigationEdge, Mg3NavigationRoute,
@@ -111,7 +111,7 @@ pub fn preload_monster_navigation(bundle: &MonsterNavigationPreload) -> Option<A
     let map = NavigationMapIdentity {
         name: bundle.geometry.requested_path.clone(),
         format: bundle.world_kind,
-        digest: ContentDigest::new(&bundle.geometry.digest.to_string()),
+        identity: bundle.geometry.identity,
     };
     let navigation_content = ContentId::new(&bundle.navigation_content.to_string());
     let prepared = preload_navigation(&PreloadOptions {
@@ -146,7 +146,7 @@ impl NavigationResources for MonsterNavigationResources<'_> {
                 provenance: qa_bots::ResourceProvenance {
                     mount_content: ContentId::new(&mount_content),
                 },
-                digest: ContentDigest::new(&opened.reference.digest.to_string()),
+                identity: opened.reference.identity,
                 byte_length: opened.reference.byte_length as usize,
             },
             bytes: opened.bytes,
@@ -270,7 +270,7 @@ impl<S: Q1MonsterMoveServices + 'static> Mg3MonsterNavigationHost for Mg3Monster
         let runtime = NavigationRuntime::new(graph, world).expect("build MG3 navigation runtime");
         Some(Box::new(MonsterNavigationRuntime {
             runtime: RefCell::new(runtime),
-            map_digest: self.prepared.map.digest.text.clone(),
+            map_identity: self.prepared.map.identity.canonical(),
             pass_actor: Some(actor.id().clone()),
         }))
     }
@@ -689,8 +689,8 @@ fn mg3_mode(mode: TravelMode) -> Mg3TravelMode {
 struct MonsterNavigationRuntime<'w> {
     /// Navigation runtime.
     runtime: RefCell<NavigationRuntime<'w>>,
-    /// Route map digest.
-    map_digest: String,
+    /// Route map identity.
+    map_identity: String,
     /// Self collision exclusion.
     pass_actor: Option<ActorId>,
 }
@@ -704,8 +704,8 @@ impl Mg3NavigationRuntime for MonsterNavigationRuntime<'_> {
         self.pass_actor.clone()
     }
 
-    fn map_digest(&self) -> &str {
-        &self.map_digest
+    fn map_identity(&self) -> &str {
+        &self.map_identity
     }
 
     fn node_known(&self, id: i32) -> bool {
@@ -742,11 +742,14 @@ impl Mg3NavigationRuntime for MonsterNavigationRuntime<'_> {
         else {
             return false;
         };
+        let Some(identity) = ResourceIdentity::parse(&route.map_identity) else {
+            return false;
+        };
         runtime.route_still_valid(&NavigationRoute {
             map: NavigationMapIdentity {
                 name: String::new(),
                 format: WorldKind::Q1Bsp,
-                digest: ContentDigest::new(&route.map_digest),
+                identity,
             },
             nodes: route.nodes.clone(),
             edges,
@@ -772,7 +775,7 @@ impl Mg3NavigationRuntime for MonsterNavigationRuntime<'_> {
         };
         match self.runtime.borrow_mut().route(&query) {
             Ok(NavigationRouteResult::Route { route }) => Some(Mg3NavigationRoute {
-                map_digest: route.map.digest.text.clone(),
+                map_identity: route.map.identity.canonical(),
                 nodes: route.nodes.clone(),
                 edges: route
                     .edges

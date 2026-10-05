@@ -13,11 +13,11 @@
 //! [`super::unified_frame_values`]; identity uses
 //! [`UnifiedIdentityDecoder`].
 
-use qa_content::contract::ContentId;
+use qa_content::contract::{ContentId, ResourceIdentity};
 use qa_world::save::records::{read_inventory_entry as read_world_inventory_entry, write_inventory_entry};
 use qa_world::save::shared::{
-    read_character, read_content_id, read_digest, read_frame, read_provider_ref, read_time, write_character,
-    write_frame, write_provider_ref, write_time,
+    read_character, read_content_id, read_frame, read_provider_ref, read_time, write_character, write_frame,
+    write_provider_ref, write_time,
 };
 use qa_world::save::value::{
     arr, boolean, decode_checkpoint_value, encode_checkpoint_value, int, namespaced, num, obj, str as json_str,
@@ -82,8 +82,8 @@ pub struct UnifiedResourceKey {
     pub content: ContentId,
     /// Resource path.
     pub path: String,
-    /// Byte digest.
-    pub digest: String,
+    /// Canonical value identity.
+    pub identity: String,
     /// Byte length.
     pub byte_length: u64,
 }
@@ -106,7 +106,7 @@ fn resource_key(resource: &ResolvedResourceReference) -> UnifiedResourceKey {
     UnifiedResourceKey {
         content: ContentId(mount_identity(provenance_mount(&resource.provenance)).content.clone()),
         path: resource.requested_path.clone(),
-        digest: resource.digest.clone(),
+        identity: resource.identity.clone(),
         byte_length: resource.byte_length,
     }
 }
@@ -129,10 +129,14 @@ fn read_key(reader: SaveReader) -> Result<UnifiedResourceKey, WorldError> {
     if !valid_resource_path(&path) {
         return Err(reader.fail("invalid relative resource path"));
     }
+    let identity_field = reader.field("identity");
+    let identity = ResourceIdentity::parse(&identity_field.string()?)
+        .map(|parsed| parsed.canonical())
+        .ok_or_else(|| identity_field.fail("expected a resource identity"))?;
     Ok(UnifiedResourceKey {
         content: ContentId(read_content_id(reader.field("content"))?),
         path,
-        digest: read_digest(reader.field("digest"))?,
+        identity,
         byte_length: u64::try_from(reader.field("byteLength").integer(0)?)
             .map_err(|_| reader.field("byteLength").fail("resource length exceeds its range"))?,
     })
@@ -142,7 +146,7 @@ fn write_key(key: &UnifiedResourceKey) -> SaveJson {
     obj(vec![
         ("content", json_str(key.content.as_str())),
         ("path", json_str(&key.path)),
-        ("digest", json_str(&key.digest)),
+        ("identity", json_str(&key.identity)),
         ("byteLength", int(key.byte_length as i64)),
     ])
 }
@@ -1173,7 +1177,7 @@ pub(crate) mod tests {
         let mut loaded = ledger();
         let mut other_resource = base.resource.clone();
         other_resource.requested_path = "maps/q3dm2.bsp".to_string();
-        other_resource.digest = format!("sha256:{}", "5".repeat(64));
+        other_resource.identity = "identity:9:9:9:9".to_string();
         loaded.world = Some(super::super::unified_types::UnifiedSceneWorld {
             resource: other_resource,
             geometry: "world".to_string(),
