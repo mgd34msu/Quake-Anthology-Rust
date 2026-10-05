@@ -55,6 +55,7 @@ pub mod image_settings;
 pub mod input;
 pub mod input_devices;
 pub mod keys;
+pub mod live_proof;
 pub mod loading;
 pub mod local_lobby;
 pub mod local_seat_change;

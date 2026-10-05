@@ -14,8 +14,9 @@
 //! at an ancestor `target/` directory. When the corpus is absent the
 //! corpus-backed tests skip instead of failing.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use qa_app::bootstrap::live_proof::{require_live_corpus, require_live_window, CORPUS_WITNESSES};
 use qa_app::bootstrap::play_world::load_play_world;
 use qa_app::bootstrap::startup::StartupEntry;
 use qa_app::bootstrap::windowed::{drive_windowed_application, open_windowed_application};
@@ -32,21 +33,6 @@ use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, Scen
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::identity::IdentityOwner;
 use qa_core::math::{angles_to_axis, vec2, vec3, vec4};
-
-/// Witness files proving a Steel corpus root holds all three families.
-const CORPUS_WITNESSES: [&str; 3] = ["q1/id1/pak0.pak", "q2/baseq2/pak0.pak", "q3a/baseq3/pak0.pk3"];
-
-/// Locate the Steel corpus root without hardcoding any absolute path.
-///
-/// Walks up from this crate's manifest directory and returns the first
-/// ancestor `target/` directory holding every witness file.
-fn find_steel_corpus() -> Option<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .ancestors()
-        .map(|dir| dir.join("target"))
-        .find(|root| CORPUS_WITNESSES.iter().all(|witness| root.join(witness).is_file()))
-}
 
 /// Windowed camera over a live drawable size at an eye origin (mirrors the
 /// production `windowed_camera_for`: 90-degree horizontal field of view,
@@ -203,9 +189,9 @@ fn legacy_entity_tint_is_bytes_not_unit_floats() {
 }
 
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn q1_e1m1_spawn_view_batches_are_opaque_and_lit() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let stats = prepare_spawn_view(&corpus, "q1-classic-id1", "maps/e1m1.bsp");
@@ -216,9 +202,9 @@ fn q1_e1m1_spawn_view_batches_are_opaque_and_lit() {
 }
 
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn q2_base1_spawn_view_batches_are_opaque_and_lit() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let stats = prepare_spawn_view(&corpus, "q2-classic-baseq2", "maps/base1.bsp");
@@ -235,9 +221,9 @@ fn q2_base1_spawn_view_batches_are_opaque_and_lit() {
 /// Thresholds sit far below the measured lit fractions (~99% non-black,
 /// mean brightness 17+) yet far above the old black frames (0-5%).
 #[test]
+#[ignore = "live proof: needs Steel corpus/display"]
 fn windowed_captures_show_map_imagery_per_family() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     for (product, map) in [
@@ -279,7 +265,12 @@ fn windowed_captures_show_map_imagery_per_family() {
                 assert_eq!(frames, 3);
                 assert!(composed.app.is_closed());
             }
-            Err(error) => assert!(!error.is_empty(), "honest open failure: {product} {map}"),
+            Err(error) => {
+                require_live_window(
+                    &format!("windowed open for {product} {map}"),
+                    Result::<(), String>::Err(error),
+                );
+            }
         }
     }
 }

@@ -14,8 +14,9 @@
 //! requires `WU21_CAPTURE_OUT` (raw RGBA output path).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use qa_app::bootstrap::live_proof::{require_live_corpus, CORPUS_WITNESSES};
 use qa_app::bootstrap::play_world::load_play_world;
 use qa_app::bootstrap::startup::StartupEntry;
 use qa_app::bootstrap::windowed::{drive_windowed_application, open_windowed_application};
@@ -47,18 +48,6 @@ use qa_content::contract::{create_mount_plan_id, ResolvedMountPlan};
 use qa_content::mounts::{open_mount_plan, MountedContent, OpenMountOptions};
 use qa_core::identity::IdentityOwner;
 use qa_core::math::{angles_to_axis, vec3};
-
-/// Witness files proving a Steel corpus root holds all three families.
-const CORPUS_WITNESSES: [&str; 3] = ["q1/id1/pak0.pak", "q2/baseq2/pak0.pak", "q3a/baseq3/pak0.pk3"];
-
-/// Locate the Steel corpus root without hardcoding any absolute path.
-fn find_steel_corpus() -> Option<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .ancestors()
-        .map(|dir| dir.join("target"))
-        .find(|root| CORPUS_WITNESSES.iter().all(|witness| root.join(witness).is_file()))
-}
 
 /// Open one installed product's mounts once (mirrors the production
 /// `open_product_mounts`, which is crate-private).
@@ -247,9 +236,9 @@ textures/sfx/video
 /// Corpus `.shader` scripts are discovered top-level and sorted, and parse
 /// without fatal errors.
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn corpus_scripts_discover_and_parse() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let mounts = open_product_mounts(&corpus, "q3-baseq3");
@@ -309,9 +298,9 @@ fn corpus_scripts_discover_and_parse() {
 /// Loading scripts into a registry applies authored multi-stage materials
 /// (blend/glow/anim) instead of implicit single-stage fallbacks.
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn registry_applies_authored_blend_stages() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let mounts = open_product_mounts(&corpus, "q3-baseq3");
@@ -375,9 +364,9 @@ fn registry_applies_authored_blend_stages() {
 /// The q3dm1 spawn view draws authored blend batches (glass/energy), not
 /// only opaque implicit batches.
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn q3dm1_spawn_view_applies_authored_blend_stages() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let options = ApplicationOptions {
@@ -440,9 +429,9 @@ fn q3dm1_spawn_view_applies_authored_blend_stages() {
 /// `plasma_glass` (authored, image-less) resolves to its glow stage image
 /// through the loader instead of falling back to the missing handle.
 #[test]
+#[ignore = "live proof: needs Steel corpus"]
 fn md3_plasma_glass_binds_stage_image_not_missing() {
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let mounts = open_product_mounts(&corpus, "q3-baseq3");
@@ -479,13 +468,13 @@ fn md3_plasma_glass_binds_stage_image_not_missing() {
 /// Writes raw 320x240 RGBA to `WU21_CAPTURE_OUT`; skipped unless set.
 /// Run under `xvfb-run` like every windowed test.
 #[test]
+#[ignore = "live proof: needs Steel corpus/display"]
 fn capture_q3dm1_spawn_for_before_after_diff() {
     let Ok(out) = std::env::var("WU21_CAPTURE_OUT") else {
         eprintln!("skipped: WU21_CAPTURE_OUT is unset");
         return;
     };
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let options = ApplicationOptions {

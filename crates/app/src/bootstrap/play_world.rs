@@ -722,24 +722,14 @@ mod tests {
     use qa_content::catalog::DiscoverContentOptions;
 
     use super::*;
-
-    fn steel_corpus_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
-    }
+    use crate::bootstrap::live_proof::{require_live_corpus_any, require_live_data};
 
     fn steel_catalog() -> Option<InstalledCatalog> {
-        let root = steel_corpus_root();
-        if !root.join("q1").is_dir() && !root.join("q2").is_dir() && !root.join("q3a").is_dir() {
-            eprintln!("skipped: Steel corpus root {} has no game data", root.display());
-            return None;
-        }
-        match qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root.clone())) {
-            Ok(catalog) => Some(catalog),
-            Err(error) => {
-                eprintln!("skipped: Steel catalog discovery failed at {}: {error}", root.display());
-                None
-            }
-        }
+        let root = require_live_corpus_any("Steel game data", &["q1", "q2", "q3a"])?;
+        require_live_data(
+            "Steel installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )
     }
 
     fn test_config(options: &ApplicationOptions) -> StartupConfig {
@@ -930,9 +920,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_maps_spawn_more_than_stub() {
         let Some(catalog) = steel_catalog() else {
-            eprintln!("skipped: Steel corpus root has no game data");
             return;
         };
         let mut loaded = 0;
@@ -950,7 +940,7 @@ mod tests {
             let world = match load_play_world(&config, &catalog, &options, test_owner()) {
                 Ok(world) => world,
                 Err(error) => {
-                    eprintln!("skipped: {product} {map}: {error}");
+                    require_live_data::<()>(&format!("{product} {map} load ({error})"), None);
                     continue;
                 }
             };
@@ -976,11 +966,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_world_admits_player_and_eye_follows_steps() {
         use qa_world::movement::types::{Q1UserCommand, UserCommand};
 
         let Some(catalog) = steel_catalog() else {
-            eprintln!("skipped: Steel corpus root has no game data");
             return;
         };
         let options = ApplicationOptions {
@@ -992,7 +982,7 @@ mod tests {
         let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
-                eprintln!("skipped: q1-classic-id1 maps/start.bsp: {error}");
+                require_live_data::<()>(&format!("q1-classic-id1 maps/start.bsp load ({error})"), None);
                 return;
             }
         };
@@ -1036,7 +1026,7 @@ mod tests {
         let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
-                eprintln!("skipped: {product} {map}: {error}");
+                require_live_data::<()>(&format!("{product} {map} load ({error})"), None);
                 return None;
             }
         };
@@ -1101,20 +1091,20 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_q3_presentation_prepares_draw_batches() {
-        if steel_presentation_batches("q3-baseq3", "maps/q3dm1.bsp").is_none() {
-            eprintln!("skipped: Steel corpus root has no game data");
-        }
+        // Asserts internally; `None` means the helper already skipped.
+        steel_presentation_batches("q3-baseq3", "maps/q3dm1.bsp");
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_q3_entities_submit_model_batches() {
         use qa_client::render::types::SourceTime;
         use qa_client::view::perspective_projection;
         use qa_core::math::{angles_to_axis, normalize3, sub3, vector_to_angles};
 
         let Some(catalog) = steel_catalog() else {
-            eprintln!("skipped: Steel corpus root has no game data");
             return;
         };
         let options = ApplicationOptions {
@@ -1126,7 +1116,7 @@ mod tests {
         let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
-                eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");
+                require_live_data::<()>(&format!("q3-baseq3 maps/q3dm1.bsp load ({error})"), None);
                 return;
             }
         };
@@ -1156,13 +1146,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_q3_entity_batches_bind_loaded_skins() {
         use qa_client::render::types::{ImageSource, SourceTime, TextureBinding};
         use qa_client::view::perspective_projection;
         use qa_core::math::{add3, angles_to_axis, normalize3, sub3, vec3, vector_to_angles};
 
         let Some(catalog) = steel_catalog() else {
-            eprintln!("skipped: Steel corpus root has no game data");
             return;
         };
         let options = ApplicationOptions {
@@ -1174,7 +1164,7 @@ mod tests {
         let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
             Ok(world) => world,
             Err(error) => {
-                eprintln!("skipped: q3-baseq3 maps/q3dm1.bsp: {error}");
+                require_live_data::<()>(&format!("q3-baseq3 maps/q3dm1.bsp load ({error})"), None);
                 return;
             }
         };
@@ -1230,16 +1220,16 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_q1_presentation_prepares_draw_batches() {
-        if steel_presentation_batches("q1-classic-id1", "maps/e1m1.bsp").is_none() {
-            eprintln!("skipped: Steel corpus root has no game data");
-        }
+        // Asserts internally; `None` means the helper already skipped.
+        steel_presentation_batches("q1-classic-id1", "maps/e1m1.bsp");
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_steel_q2_presentation_prepares_draw_batches() {
-        if steel_presentation_batches("q2-classic-baseq2", "maps/base1.bsp").is_none() {
-            eprintln!("skipped: Steel corpus root has no game data");
-        }
+        // Asserts internally; `None` means the helper already skipped.
+        steel_presentation_batches("q2-classic-baseq2", "maps/base1.bsp");
     }
 }

@@ -1286,6 +1286,7 @@ mod tests {
     use super::super::windowed::open_windowed_application;
     use super::super::windowed_preset::WindowedPresetCollaborators;
     use super::*;
+    use crate::bootstrap::live_proof::require_live_window;
     use crate::options::ApplicationOptions;
 
     fn base_product() -> CatalogProduct {
@@ -1959,13 +1960,7 @@ mod tests {
 
     fn capture_entry(entry: StartupEntry) -> Option<(Vec<u8>, bool)> {
         let options = live_options();
-        let mut composed = match open_windowed_application(&options, entry) {
-            Ok(composed) => composed,
-            Err(error) => {
-                assert!(!error.is_empty(), "honest open failure");
-                return None;
-            }
-        };
+        let mut composed = require_live_window("windowed menu open", open_windowed_application(&options, entry))?;
         composed.app.step().expect("menu step works");
         let pixels = composed.app.capture_next_frame().expect("capture works");
         let active = composed.app.active_game();
@@ -1974,6 +1969,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs a display"]
     fn live_menu_entry_presents_menu_ui() {
         let _gl_guard = super::super::windowed::WINDOWED_GL_TEST_LOCK.lock().unwrap();
         let Some((menu_pixels, menu_active)) = capture_entry(StartupEntry::Menu) else {

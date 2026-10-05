@@ -1944,33 +1944,32 @@ impl PlayerBody {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use qa_content::catalog::DiscoverContentOptions;
     use qa_content::BspKind;
     use qa_core::time::{FramePhase, SourceTime};
     use qa_world::movement::types::Q3UserCommand;
 
     use super::*;
+    use crate::bootstrap::live_proof::{require_live_corpus, require_live_data};
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
 
-    fn steel_corpus_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
-    }
-
     fn start_bsp_bytes() -> Option<Vec<u8>> {
-        let root = steel_corpus_root();
-        if !root.join("q1").is_dir() {
-            eprintln!("skipped: Steel corpus root {} has no Q1 data", root.display());
-            return None;
-        }
-        let catalog = qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()?;
-        let mounts =
-            super::super::windowed_scene::open_product_mounts(&catalog, "q1-classic-id1", "maps/start.bsp").ok()?;
-        mounts
-            .read(qa_content::mounts::ResourceRef::Path("maps/start.bsp"))
-            .ok()
+        let root = require_live_corpus("Q1 Steel data", &["q1"])?;
+        let catalog = require_live_data(
+            "Q1 installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )?;
+        let mounts = require_live_data(
+            "q1-classic-id1 mounts for maps/start.bsp",
+            super::super::windowed_scene::open_product_mounts(&catalog, "q1-classic-id1", "maps/start.bsp").ok(),
+        )?;
+        require_live_data(
+            "maps/start.bsp bytes",
+            mounts
+                .read(qa_content::mounts::ResourceRef::Path("maps/start.bsp"))
+                .ok(),
+        )
     }
 
     fn q1_server() -> qa_world::server::Server<qa_guest::server::GuestServerLogic> {
@@ -2033,17 +2032,21 @@ mod tests {
     }
 
     fn base1_bsp_bytes() -> Option<Vec<u8>> {
-        let root = steel_corpus_root();
-        if !root.join("q2").is_dir() {
-            eprintln!("skipped: Steel corpus root {} has no Q2 data", root.display());
-            return None;
-        }
-        let catalog = qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()?;
-        let mounts =
-            super::super::windowed_scene::open_product_mounts(&catalog, "q2-classic-baseq2", "maps/base1.bsp").ok()?;
-        mounts
-            .read(qa_content::mounts::ResourceRef::Path("maps/base1.bsp"))
-            .ok()
+        let root = require_live_corpus("Q2 Steel data", &["q2"])?;
+        let catalog = require_live_data(
+            "Q2 installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )?;
+        let mounts = require_live_data(
+            "q2-classic-baseq2 mounts for maps/base1.bsp",
+            super::super::windowed_scene::open_product_mounts(&catalog, "q2-classic-baseq2", "maps/base1.bsp").ok(),
+        )?;
+        require_live_data(
+            "maps/base1.bsp bytes",
+            mounts
+                .read(qa_content::mounts::ResourceRef::Path("maps/base1.bsp"))
+                .ok(),
+        )
     }
 
     fn q2_server() -> qa_world::server::Server<qa_guest::server::GuestServerLogic> {
@@ -2195,6 +2198,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn start_spawn_is_empty_and_floor_is_solid() {
         let Some(bytes) = start_bsp_bytes() else {
             return;
@@ -2213,6 +2217,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q1_player_walks_forward_on_start() {
         let Some(bytes) = start_bsp_bytes() else {
             return;
@@ -2267,6 +2272,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q1_player_stops_at_entity_blocker() {
         let Some(bytes) = start_bsp_bytes() else {
             return;
@@ -2339,6 +2345,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q1_player_settles_without_drift() {
         let Some(bytes) = start_bsp_bytes() else {
             return;
@@ -2431,6 +2438,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn qw_player_walks_forward_on_start() {
         let Some(bytes) = start_bsp_bytes() else {
             return;
@@ -2481,6 +2489,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q2_classic_player_walks_forward_on_base1() {
         let Some(bytes) = base1_bsp_bytes() else {
             return;
@@ -2523,6 +2532,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q2_rerelease_player_walks_forward_on_base1() {
         let Some(bytes) = base1_bsp_bytes() else {
             return;
@@ -2565,6 +2575,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q2_provider_mismatches_are_contract_errors() {
         let mut server = q2_server();
         let feet = vec3(0.0, 0.0, 32.0);
@@ -2592,16 +2603,21 @@ mod tests {
     }
 
     fn q3dm1_bsp_bytes() -> Option<Vec<u8>> {
-        let root = steel_corpus_root();
-        if !root.join("q3a").is_dir() {
-            eprintln!("skipped: Steel corpus root {} has no Q3 data", root.display());
-            return None;
-        }
-        let catalog = qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()?;
-        let mounts = super::super::windowed_scene::open_product_mounts(&catalog, "q3-baseq3", "maps/q3dm1.bsp").ok()?;
-        mounts
-            .read(qa_content::mounts::ResourceRef::Path("maps/q3dm1.bsp"))
-            .ok()
+        let root = require_live_corpus("Q3 Steel data", &["q3a"])?;
+        let catalog = require_live_data(
+            "Q3 installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )?;
+        let mounts = require_live_data(
+            "q3-baseq3 mounts for maps/q3dm1.bsp",
+            super::super::windowed_scene::open_product_mounts(&catalog, "q3-baseq3", "maps/q3dm1.bsp").ok(),
+        )?;
+        require_live_data(
+            "maps/q3dm1.bsp bytes",
+            mounts
+                .read(qa_content::mounts::ResourceRef::Path("maps/q3dm1.bsp"))
+                .ok(),
+        )
     }
 
     fn q3_server() -> qa_world::server::Server<qa_guest::server::GuestServerLogic> {
@@ -2640,6 +2656,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q3_player_walks_forward_on_q3dm1() {
         let Some(bytes) = q3dm1_bsp_bytes() else {
             return;
@@ -2681,6 +2698,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn q3_provider_mismatches_are_contract_errors() {
         let mut server = q3_server();
         let feet = vec3(0.0, 0.0, 32.0);
@@ -2708,6 +2726,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn provider_mismatches_are_contract_errors() {
         let mut server = q1_server();
         let feet = vec3(0.0, 0.0, 32.0);

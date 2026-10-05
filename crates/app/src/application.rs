@@ -608,13 +608,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn dedicated_q1_hosts_real_map_without_stubs() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-        if !root.join("q1").is_dir() {
-            eprintln!("skipped: no Steel Q1 corpus at {}", root.display());
+        let Some(corpus) = crate::bootstrap::live_proof::require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
-        }
-        let root = root.to_string_lossy().into_owned();
+        };
+        let root = corpus.to_string_lossy().into_owned();
         let application = Application::open(
             &config(&[
                 "--dedicated",

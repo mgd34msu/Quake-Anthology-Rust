@@ -2232,6 +2232,7 @@ mod tests {
 
     use super::super::startup_selection::StartupSelectionCollaborators;
     use super::*;
+    use crate::bootstrap::live_proof::{require_live_corpus, require_live_window};
     use crate::options::GameFamily as OptionsFamily;
     use crate::options::Network;
 
@@ -2972,6 +2973,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_start_player_walks_under_host_gate() {
         // Live Xvfb proof that the Q1 walking skeleton moves and collides
         // through the real gated loop: open start.bsp in a real window,
@@ -2985,22 +2987,19 @@ mod tests {
         // corpus; without a display the honest open failure is required
         // (same contract as the smoke tests).
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let corpus = steel_corpus_root();
-        if !corpus.join("q1").is_dir() {
-            eprintln!("skipped: Steel corpus root {} has no Q1 data", corpus.display());
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
-        }
+        };
         let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
         options.product = "q1-classic-id1".to_string();
         options.map = "maps/start.bsp".to_string();
         options.frame_limit = None;
-        let mut composed = match open_windowed_application(&options, StartupEntry::Run) {
-            Ok(composed) => composed,
-            Err(error) => {
-                assert!(!error.is_empty(), "honest open failure");
-                eprintln!("skipped: windowed Q1 open failed without a display ({error})");
-                return;
-            }
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
         };
         let (start_eye, start_angles) = composed
             .app

@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use qa_app::bootstrap::live_proof::{require_live_corpus, CORPUS_WITNESSES};
 use qa_app::bootstrap::startup::StartupEntry;
 use qa_app::bootstrap::windowed::drive_windowed_application;
 use qa_app::bootstrap::windowed::open_windowed_application;
@@ -42,18 +43,6 @@ const SDL_ESCAPE: (i32, i32) = (41, 27);
 const PAD_UP: u8 = 11;
 const PAD_DOWN: u8 = 12;
 const PAD_A: u8 = 0;
-
-/// Witness files proving a Steel corpus root holds all three families.
-const CORPUS_WITNESSES: [&str; 3] = ["q1/id1/pak0.pak", "q2/baseq2/pak0.pak", "q3a/baseq3/pak0.pk3"];
-
-/// Locate the Steel corpus root without hardcoding any absolute path.
-fn find_steel_corpus() -> Option<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .ancestors()
-        .map(|dir| dir.join("target"))
-        .find(|root| CORPUS_WITNESSES.iter().all(|witness| root.join(witness).is_file()))
-}
 
 /// Windowed options over the ancestor `target/` directory (the menu mounts
 /// no content, so any readable corpus root works).
@@ -214,6 +203,7 @@ fn frame_diff(before: &[u8], after: &[u8]) -> f64 {
 }
 
 #[test]
+#[ignore = "live proof: needs Steel corpus/display"]
 fn startup_menu_navigates_activates_launches_and_quits() {
     // Phase A: keyboard/gamepad navigation, activation, screenshots, quit.
     let menu_pixels = {
@@ -339,8 +329,7 @@ fn startup_menu_navigates_activates_launches_and_quits() {
     };
 
     // Phase B: Play launches into a game view (needs the Steel corpus).
-    let Some(corpus) = find_steel_corpus() else {
-        eprintln!("skipped: Steel corpus not found above {}", env!("CARGO_MANIFEST_DIR"));
+    let Some(corpus) = require_live_corpus("Steel corpus", &CORPUS_WITNESSES) else {
         return;
     };
     let mut options = menu_options();
