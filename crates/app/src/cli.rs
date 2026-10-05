@@ -19,8 +19,9 @@
 //! the simulation rerelease guest source.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use qa_client::render::NullRenderer;
 
@@ -162,8 +163,34 @@ fn use_game_composition(options: &crate::options::ApplicationOptions) -> bool {
     !options.dedicated
 }
 
+/// Read console lines from `reader` on a worker thread, delivering
+/// newline-stripped lines until EOF, a read error, or receiver drop.
+fn spawn_stdin_lines(reader: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = line.strip_suffix('\n').unwrap_or(&line);
+                    let text = text.strip_suffix('\r').unwrap_or(text);
+                    if sender.send(text.to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    receiver
+}
+
 /// Run the dedicated server: no window, no local seats, no player. This
-/// is the only headless mode; everything else opens the game.
+/// is the only headless mode; everything else opens the game. Standard
+/// input feeds the live console line by line; console output prints to
+/// standard output as frames drain it.
 fn run_dedicated(options: &crate::options::ApplicationOptions, stdout: &mut dyn Write) -> Result<(), AppError> {
     if options.frame_timings {
         return Err(AppError::ConflictingOptions(
@@ -172,7 +199,21 @@ fn run_dedicated(options: &crate::options::ApplicationOptions, stdout: &mut dyn 
     }
     let config = StartupConfig::from_options(options)?;
     let mut application = Application::open(&config, NullRenderer::new())?;
-    let stats = application.run()?;
+    let stdin = spawn_stdin_lines(std::io::stdin());
+    let mut printed = 0usize;
+    let stats = application.run_with_feed(&mut |app| {
+        for line in stdin.try_iter() {
+            app.submit_console(&format!("{line}\n"))?;
+        }
+        for text in &app.console_log()[printed..] {
+            let _ = stdout.write_all(text.as_bytes());
+        }
+        printed = app.console_log().len();
+        Ok(())
+    })?;
+    for text in &application.console_log()[printed..] {
+        let _ = stdout.write_all(text.as_bytes());
+    }
     let _ = writeln!(
         stdout,
         "Ran {} host frames, {} server ticks, {} entities ({} render frames)",
@@ -1626,6 +1667,19 @@ mod tests {
     use crate::options::ApplicationOptions;
     use qa_content::contract::ResourceIdentity;
     use qa_guest::qc::program::load_qc_program;
+
+    #[test]
+    fn stdin_lines_split_and_strip() {
+        let receiver = spawn_stdin_lines(std::io::Cursor::new("say hi\r\nwait\npartial"));
+        let mut lines = Vec::new();
+        while let Ok(line) = receiver.recv() {
+            lines.push(line);
+        }
+        assert_eq!(
+            lines,
+            vec!["say hi".to_string(), "wait".to_string(), "partial".to_string()]
+        );
+    }
 
     #[test]
     fn game_routing_covers_dedicated_and_frame_limits() {

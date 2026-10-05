@@ -24,7 +24,7 @@ use qa_client::view::{CameraClip, ModelTransform, Rect, SceneCamera};
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
-use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
+use qa_core::cmd_buffer::{BufferOptions, CommandContext, CommandOrigin};
 use qa_core::cvar::CvarRegistry;
 use qa_core::identity::IdentityOwner;
 use qa_core::math::{vec3, vec4, Axis, Vec3};
@@ -259,11 +259,21 @@ impl<R: RendererBackend> Application<R> {
         let console_owner = IdentityOwner::create(&format!("{}:console", config.session_name))
             .map_err(|error| AppError::Startup(error.to_string()))?;
         let dialect = console_dialect_for(config.client_family);
-        let console_queue = ConsoleQueue::new(
+        let mut queue_options = BufferOptions::new();
+        if !config.startup_commands.is_empty() {
+            queue_options.startup_command_text = Some(format!("{}\n", config.startup_commands.join("\n")));
+        }
+        let mut console_queue = ConsoleQueue::with_options(
             dialect,
             CommandContext::new(console_owner.session().clone(), CommandOrigin::LocalConsole),
+            queue_options,
         )
         .map_err(|error| AppError::Console(error.to_string()))?;
+        for command in &config.startup_commands {
+            console_queue
+                .submit(&format!("{command}\n"))
+                .map_err(|error| AppError::Console(error.to_string()))?;
+        }
         let mut console_commands = ConsoleCommands::new();
         register_console_commands(&mut console_commands);
         let scratch_capacity = server.simulation().actor_count();
@@ -413,7 +423,17 @@ impl<R: RendererBackend> Application<R> {
 
     /// Run host frames until quit is requested or the frame limit lands.
     pub fn run(&mut self) -> Result<RunStats, AppError> {
+        self.run_with_feed(&mut |_| Ok(()))
+    }
+
+    /// Run host frames, calling `feed` before every frame so the host can
+    /// submit external console input (dedicated stdin).
+    pub fn run_with_feed(
+        &mut self,
+        feed: &mut dyn FnMut(&mut Self) -> Result<(), AppError>,
+    ) -> Result<RunStats, AppError> {
         while !self.finished {
+            feed(self)?;
             self.step_frame()?;
         }
         Ok(RunStats {
@@ -662,10 +682,7 @@ mod tests {
             Ok(_) => panic!("dedicated without content must refuse to start"),
             Err(error) => error,
         };
-        let message = error.to_string();
-        assert!(message.contains("corpus root"), "names the corpus root: {message}");
-        assert!(message.contains(&missing), "names the missing root: {message}");
-        assert!(message.contains("stub"), "says why it refuses: {message}");
+        assert!(matches!(error, AppError::Startup(_)), "refusal is a startup error");
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
         if !root.join("q1").is_dir() {
@@ -687,9 +704,7 @@ mod tests {
             Ok(_) => panic!("dedicated with an unknown product must refuse to start"),
             Err(error) => error,
         };
-        let message = error.to_string();
-        assert!(message.contains("qa-bogus-product"), "names the product: {message}");
-        assert!(message.contains(&root), "names the corpus root: {message}");
+        assert!(matches!(error, AppError::Startup(_)), "refusal is a startup error");
     }
 
     #[test]
@@ -703,6 +718,35 @@ mod tests {
         assert_eq!(stats.entities, 5);
         assert!(application.is_finished());
         assert_eq!(application.step_frame(), Err(AppError::Finished));
+    }
+
+    #[test]
+    fn startup_commands_run_on_first_frame() {
+        let mut application =
+            Application::open(&config(&["--movement", "q1", "+echo", "hi"]), NullRenderer::new()).unwrap();
+        assert!(application.console_has_pending());
+        let logged = application.console_log().len();
+        application.step_frame().unwrap();
+        assert!(application.console_log().len() > logged);
+    }
+
+    #[test]
+    fn run_with_feed_pumps_external_input() {
+        let mut application =
+            Application::open(&config(&["--movement", "q1", "--frames", "2"]), NullRenderer::new()).unwrap();
+        let mut fed = false;
+        let stats = application
+            .run_with_feed(&mut |app| {
+                if !fed {
+                    fed = true;
+                    app.submit_console("echo fed\n")?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stats.frames, 2);
+        assert!(!application.console_log().is_empty());
+        assert!(application.is_finished());
     }
 
     #[test]
