@@ -3,34 +3,36 @@
 //! Stock `use`/`touch`/`think` gamecode for the trigger family —
 //! `trigger_multiple`, `trigger_once`, `trigger_secret`, `trigger_relay`,
 //! `trigger_counter`, `trigger_hurt`, `trigger_push`, `trigger_setskill`,
-//! `trigger_onlyregistered` — plus `func_button` and targeted `light`
-//! entities, all driven from [`Q1NativeBehaviors`] through the native
-//! touch/think/mover hooks. Teleporters (`trigger_teleport`,
-//! `info_teleport_destination`) land with the movement handoff; monster
-//! jump pads wait for monsters; `trigger_changelevel` waits for the
-//! app-level map transition; every one of those stays a generic inert
-//! spawn until then.
+//! `trigger_onlyregistered`, `trigger_teleport` — plus `func_button`,
+//! targeted `light` entities, and `info_teleport_destination` records,
+//! all driven from [`Q1NativeBehaviors`] through the native
+//! touch/think/mover hooks. Monster jump pads wait for monsters;
+//! `trigger_changelevel` waits for the app-level map transition; those
+//! stay generic inert spawns until then.
 //!
 //! qsrc: `progs106/triggers.qc` (multi 16-166, relay 179, secret 196,
-//! counter 222-270, hurt 538-570, push 572-610, setskill 475-494,
-//! onlyregistered 502-536), `progs106/buttons.qc` (wait 6, done 16,
-//! return 21, blocked 31, fire 36, use 48, touch 54, killed 62,
+//! counter 222-270, teleport 279-470, setskill 475-494, onlyregistered
+//! 502-536, hurt 538-570, push 572-610), `progs106/buttons.qc` (wait 6,
+//! done 16, return 21, blocked 31, fire 36, use 48, touch 54, killed 62,
 //! `func_button` 86), `progs106/subs.qc:32` (`InitTrigger`),
 //! `progs106/subs.qc:210` (`SUB_UseTargets`), `progs106/misc.qc:19-57`
 //! (light use), `WinQuake/pr_edict.c:693` (`ED_NewString` escapes),
 //! `WinQuake/common.c:1021` (registered `gfx/pop.lmp` check).
 //!
-//! Skeleton scope notes: trigger/talk/button noises have no sim audio
-//! path yet (the parsed noise rides the state for the audio slice);
-//! centerprints queue in [`Q1NativeBehaviors::centerprints`] for the HUD
-//! slice to drain; shootable triggers and buttons record health but
-//! `th_die` needs damage routing; `trigger_push` skips the grenade
-//! branch (no grenades yet); telefrag volumes arrive with teleporters.
+//! Skeleton scope notes: trigger/talk/button/teleport noises have no sim
+//! audio path yet (the parsed noise rides the state for the audio
+//! slice); centerprints queue in [`Q1NativeBehaviors::centerprints`] for
+//! the HUD slice to drain and teleport fogs in
+//! [`Q1NativeBehaviors::teleport_fogs`] for the presentation slice;
+//! shootable triggers and buttons record health but `th_die` needs
+//! damage routing; `trigger_push` skips the grenade branch (no grenades
+//! yet); the telefrag invincibility branch waits for powerups.
 //!
 //! [`Q1NativeBehaviors`]: super::native_q1_spawns::Q1NativeBehaviors
 
-use qa_core::identity::ActorId;
+use qa_core::identity::{ActorId, ProviderId};
 use qa_core::math::{angle_vectors, vec3, Bounds, Vec3};
+use qa_world::body::BodyState;
 use qa_world::combat::CombatState;
 use qa_world::movers::{use_mover, MoverKind, MoverPhase, MoverState, MoverTable};
 use qa_world::server::{Server, ServerLogic};
@@ -53,6 +55,8 @@ const TRIGGER_NOMESSAGE: i32 = 1;
 /// `trigger_push` PUSH_ONCE spawnflag (`triggers.qc:572`): remove after
 /// one push.
 const TRIGGER_PUSH_ONCE: i32 = 1;
+/// `trigger_teleport` PLAYER_ONLY spawnflag (`triggers.qc:279`).
+const TELEPORT_PLAYER_ONLY: i32 = 1;
 /// Targeted-light START_OFF spawnflag (`misc.qc:19`): spawn dark.
 const LIGHT_START_OFF: i32 = 1;
 /// Toggle-light style floor (`misc.qc:49`): only `style >= 32` arms `use`.
@@ -263,6 +267,23 @@ pub enum Q1TriggerKind {
         /// `attack_finished` gate, `triggers.qc:505`).
         attack_until: f64,
     },
+    /// `trigger_teleport`: moves the toucher to its destination.
+    Teleport {
+        /// Whether only the player teleports.
+        player_only: bool,
+        /// Whether the teleporter has a targetname (fires open a 0.2s
+        /// gate instead of always teleporting).
+        targeted: bool,
+        /// Master-clock instant until which a targeted teleporter stays
+        /// open after firing (`nextthink`, `triggers.qc:404`).
+        armed_until: f64,
+    },
+    /// Stock `teledeath` volume (`triggers.qc:343`): telefrags overlaps
+    /// for 0.2s, then removes itself.
+    Teledeath {
+        /// Teleported owner, immune to its own death volume.
+        owner: ActorId,
+    },
 }
 
 /// Live Q1 trigger gamecode state (the QC fields the touch/use/think
@@ -305,7 +326,7 @@ pub struct Q1Light {
 
 /// One scheduled native think: stock `think`/`nextthink` collapsed onto
 /// gamecode-owned state (one slot per actor, like the QC fields).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Q1ThinkKind {
     /// `SUB_Remove` (`subs.qc:5`).
     Remove,
@@ -313,6 +334,15 @@ pub enum Q1ThinkKind {
     MultiWait,
     /// `hurt_on` (`triggers.qc:538`): re-solidify a hurt trigger.
     HurtOn,
+    /// `SUB_regen` (`items.qc:6`): restore a taken item.
+    Regen,
+    /// `item_megahealth_rot` (`items.qc:206`): rot one superhealth
+    /// point off the owner, then re-arm until the owner drops to the
+    /// health cap.
+    MegaRot {
+        /// Pickup owner whose health rots.
+        owner: ActorId,
+    },
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -366,6 +396,20 @@ pub struct Q1PlayerForce {
     pub angles: Option<Vec3>,
     /// Forced velocity, if the impulse sets it.
     pub velocity: Option<Vec3>,
+    /// Forced teleport time, if the impulse teleports (players pause
+    /// view blending until it lapses).
+    pub teleport_time_seconds: Option<f64>,
+}
+
+/// Live `info_teleport_destination` record (`triggers.qc:425`): the
+/// spawn angles become the arrival facing (`mangle`) and the origin
+/// lifts 27 units.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1TeleportDestination {
+    /// Arrival origin (spawn origin plus 27 up).
+    pub origin: Vec3,
+    /// Arrival facing (spawn angles).
+    pub mangle: Vec3,
 }
 
 /// Register the native Q1 trigger, button, use-only, and inert-change
@@ -384,6 +428,7 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
         "trigger_push",
         "trigger_setskill",
         "trigger_onlyregistered",
+        "trigger_teleport",
         "func_button",
     ] {
         let definition = format!("q1:{classname}");
@@ -399,7 +444,12 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
             }),
         );
     }
-    for classname in ["trigger_relay", "trigger_counter", "trigger_changelevel"] {
+    for classname in [
+        "trigger_relay",
+        "trigger_counter",
+        "trigger_changelevel",
+        "info_teleport_destination",
+    ] {
         let definition = format!("q1:{classname}");
         registry.register(
             classname,
@@ -428,6 +478,7 @@ pub fn q1_is_brush_trigger(classname: &str) -> bool {
             | "trigger_push"
             | "trigger_setskill"
             | "trigger_onlyregistered"
+            | "trigger_teleport"
     )
 }
 
@@ -540,7 +591,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
                 source,
                 noise,
             };
-            behaviors.triggers.insert(actor.id().clone(), trigger);
+            behaviors.triggers.insert(actor.id(), trigger);
             if max_health != 0.0 {
                 // Shootable multiples go `SOLID_BBOX` with `takedamage`
                 // (`triggers.qc:132-142`); the touch stays null, so the
@@ -553,14 +604,14 @@ pub fn build_q1_trigger<L: ServerLogic>(
                         ..CombatState::default()
                     },
                 )?;
-                behaviors.solids.insert(actor.id().clone());
+                behaviors.solids.insert(actor.id());
             } else if fields.spawnflags & TRIGGER_NOTOUCH == 0 {
                 server.mark_trigger(actor.id())?;
             }
         }
         "trigger_hurt" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::Hurt {
                         dmg: q1_field_or(fields, "dmg", 5.0),
@@ -573,7 +624,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_push" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::Push {
                         movedir: q1_trigger_movedir(fields),
@@ -588,7 +639,7 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_setskill" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::SetSkill,
                     source,
@@ -599,9 +650,32 @@ pub fn build_q1_trigger<L: ServerLogic>(
         }
         "trigger_onlyregistered" => {
             behaviors.triggers.insert(
-                actor.id().clone(),
+                actor.id(),
                 Q1Trigger {
                     kind: Q1TriggerKind::OnlyRegistered { attack_until: 0.0 },
+                    source,
+                    noise: None,
+                },
+            );
+            server.mark_trigger(actor.id())?;
+        }
+        "trigger_teleport" => {
+            // Stock errors the load without a target
+            // (`trigger_teleport`, `triggers.qc:448-470`); the loader
+            // skips the record instead of aborting the map.
+            if source.target.is_none() {
+                return Err(WorldError::BadSpawnFields(
+                    "trigger_teleport without target".to_string(),
+                ));
+            }
+            behaviors.triggers.insert(
+                actor.id(),
+                Q1Trigger {
+                    kind: Q1TriggerKind::Teleport {
+                        player_only: fields.spawnflags & TELEPORT_PLAYER_ONLY != 0,
+                        targeted: fields.targetname.as_deref().is_some_and(|name| !name.is_empty()),
+                        armed_until: 0.0,
+                    },
                     source,
                     noise: None,
                 },
@@ -697,7 +771,7 @@ pub fn build_q1_button<L: ServerLogic>(
         actor.id().clone(),
         MoverState::new(MoverKind::Button, params.pos1, params.pos2, params.speed, params.wait),
     );
-    behaviors.brush_models.insert(actor.id().clone(), model);
+    behaviors.brush_models.insert(actor.id(), model);
     if params.health != 0.0 {
         server.simulation_mut().set_combat(
             actor.id(),
@@ -711,7 +785,7 @@ pub fn build_q1_button<L: ServerLogic>(
         server.mark_trigger(actor.id())?;
     }
     behaviors.buttons.insert(
-        actor.id().clone(),
+        actor.id(),
         Q1Button {
             source: Q1UseSource::from_fields(fields),
             enemy: None,
@@ -743,7 +817,7 @@ pub fn q1_note_use_point(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, fie
         Q1TriggerKind::Relay
     };
     behaviors.triggers.insert(
-        actor.clone(),
+        actor,
         Q1Trigger {
             kind,
             source: Q1UseSource::from_fields(fields),
@@ -771,7 +845,31 @@ pub fn q1_note_light(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, fields:
     behaviors
         .light_styles
         .insert(style, if start_off { LIGHTSTYLE_OFF } else { LIGHTSTYLE_ON });
-    behaviors.lights.insert(actor.clone(), Q1Light { style, start_off });
+    behaviors.lights.insert(actor, Q1Light { style, start_off });
+}
+
+/// Record an `info_teleport_destination` (`triggers.qc:425-435`):
+/// the spawn angles become the arrival facing, the origin lifts 27
+/// units, and a missing targetname fails the record (stock errors the
+/// load; the loader skips the record instead).
+pub fn q1_note_teleport_destination(
+    behaviors: &mut Q1NativeBehaviors,
+    actor: &ActorId,
+    fields: &SpawnFields,
+) -> Result<(), WorldError> {
+    if fields.targetname.as_deref().is_none_or(|name| name.is_empty()) {
+        return Err(WorldError::BadSpawnFields(
+            "info_teleport_destination without targetname".to_string(),
+        ));
+    }
+    behaviors.teleport_destinations.insert(
+        actor,
+        Q1TeleportDestination {
+            origin: vec3(fields.origin.x, fields.origin.y, fields.origin.z + 27.0),
+            mangle: fields.angles,
+        },
+    );
+    Ok(())
 }
 
 /// Record the worldspawn `worldtype` (0 medieval, 1 runic, 2 base):
@@ -876,9 +974,10 @@ pub fn q1_use_targets(
 /// (`door_use`, `doors.qc:146`), buttons (`button_use`,
 /// `buttons.qc:48`), multiples (`multi_use`, `triggers.qc:75`),
 /// relays (`SUB_UseTargets`), counters (`counter_use`,
-/// `triggers.qc:222`), and toggle lights (`light_use`, `misc.qc:21`).
-/// Anything else is `SUB_Null`, including hurt/push/setskill/gate
-/// triggers (no `use` function) and teleport destinations.
+/// `triggers.qc:222`), teleports (`teleport_use`, `triggers.qc:436`),
+/// and toggle lights (`light_use`, `misc.qc:21`). Anything else is
+/// `SUB_Null`, including hurt/push/setskill/gate/teledeath triggers
+/// (no `use` function) and teleport destinations.
 pub fn q1_fire_use(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -935,10 +1034,22 @@ pub fn q1_fire_use(
             Q1TriggerKind::Counter { .. } => {
                 q1_counter_use(behaviors, simulation, movers, triggers, actor, activator);
             }
+            Q1TriggerKind::Teleport { .. } => {
+                // `teleport_use` (`triggers.qc:436-441`): open a 0.2s
+                // gate. `force_retouch` is inherent: the sweep tests
+                // every overlap each frame.
+                let now = simulation.frame().time.as_seconds_f64();
+                if let Some(trigger) = behaviors.triggers.get_mut(actor) {
+                    if let Q1TriggerKind::Teleport { armed_until, .. } = &mut trigger.kind {
+                        *armed_until = now + 0.2;
+                    }
+                }
+            }
             Q1TriggerKind::Hurt { .. }
             | Q1TriggerKind::Push { .. }
             | Q1TriggerKind::SetSkill
-            | Q1TriggerKind::OnlyRegistered { .. } => {}
+            | Q1TriggerKind::OnlyRegistered { .. }
+            | Q1TriggerKind::Teledeath { .. } => {}
         }
         return;
     }
@@ -1091,8 +1202,11 @@ fn q1_counter_use(
 /// (`trigger_push_touch`, `triggers.qc:574`), setskill gates on the
 /// player (`trigger_skill_touch`, `triggers.qc:475`), the registered
 /// gate throttles 2s (`trigger_onlyregistered_touch`,
-/// `triggers.qc:502`), and buttons gate on the player (`button_touch`,
-/// `buttons.qc:54`). Relays and counters are use-only and never marked.
+/// `triggers.qc:502`), teleports move living solids to their
+/// destination (`teleport_touch`, `triggers.qc:368`), teledeaths
+/// telefrag non-owners (`tdeath_touch`, `triggers.qc:323`), and buttons
+/// gate on the player (`button_touch`, `buttons.qc:54`). Relays and
+/// counters are use-only and never marked.
 pub fn q1_trigger_touch(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1159,6 +1273,7 @@ pub fn q1_trigger_touch(
                 origin: None,
                 angles: None,
                 velocity: Some(velocity),
+                teleport_time_seconds: None,
             });
             // Stock plays `ambience/windfly.wav` for players (throttled
             // 1.5s); the audio slice owns playback.
@@ -1215,28 +1330,220 @@ pub fn q1_trigger_touch(
                 // Stock plays `misc/talk.wav` here; the audio slice owns it.
             }
         }
+        Q1TriggerKind::Teleport { .. } => {
+            q1_teleport_touch(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                &contact.trigger,
+                &contact.other,
+            );
+        }
+        Q1TriggerKind::Teledeath { owner } => {
+            // `tdeath_touch` (`triggers.qc:323`): the owner is immune;
+            // anything else with nonzero health takes 50000. The
+            // invincible-victim branch (owner explodes itself, frag
+            // credit flips) waits for powerups: nothing here carries
+            // `invincible_finished` yet.
+            if contact.other == owner {
+                return;
+            }
+            if q1_health_of(simulation, &contact.other) != 0.0 {
+                simulation.damage_q1(&contact.other, 50_000.0);
+            }
+        }
     }
 }
 
-/// Native think dispatch for Q1 triggers: fire due scheduled thinks
-/// (removals, multiple re-arms, hurt re-solidifies) and due delayed
-/// uses, each in schedule order. Runs after the mover pass and before
-/// the trigger sweep, so removals apply before touches.
+/// Run `teleport_touch` (`triggers.qc:368-423`): targeted teleporters
+/// stay shut until fired, `PLAYER_ONLY` admits just the player, and only
+/// living slidebox solids teleport. Firing runs `SUB_UseTargets` with
+/// the toucher as activator, queues both fog flashes, spawns the
+/// telefrag volume, and moves the toucher; players also snap velocity
+/// to 300 along the arrival facing and pause view blending 0.7s.
+///
+/// Two stock edges degrade instead of crashing the server: a dangling
+/// target (stock `objerror`s, `triggers.qc:397`) no-ops, and a toucher
+/// the firing killed (stock's `!other.health` path, `triggers.qc:409`)
+/// moves its origin only, keeping its velocity — stock's degraded
+/// velocity line adds two scaled copies of the same forward vector and
+/// drops a component, so there is no coherent value to copy.
+fn q1_teleport_touch(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+    other: &ActorId,
+) {
+    let now = simulation.frame().time.as_seconds_f64();
+    let Some(trigger) = behaviors.triggers.get(actor).cloned() else {
+        return;
+    };
+    let Q1TriggerKind::Teleport {
+        player_only,
+        targeted,
+        armed_until,
+    } = &trigger.kind
+    else {
+        return;
+    };
+    // Stock compares `nextthink < time` (`triggers.qc:375`): a targeted
+    // teleporter is open at exact gate expiry, shut before ever firing.
+    if *targeted && *armed_until < now {
+        return;
+    }
+    let is_player = Some(other) == behaviors.player.as_ref();
+    if *player_only && !is_player {
+        return;
+    }
+    if q1_health_of(simulation, other) <= 0.0 || !behaviors.solids.contains(other) {
+        return;
+    }
+    // First targetname match in spawn order, like stock `find` — and it
+    // must carry a destination record (a same-named relay is not one).
+    let destination = trigger.source.target.as_deref().and_then(|target| {
+        behaviors
+            .by_targetname
+            .get(target)
+            .into_iter()
+            .flat_map(|matches| matches.iter())
+            .find_map(|id| behaviors.teleport_destinations.get(id).cloned())
+    });
+    let Some(destination) = destination else {
+        return;
+    };
+    q1_use_targets(behaviors, simulation, movers, triggers, &trigger.source, Some(other));
+    if let Some(from) = simulation.body_state(other).map(|body| body.origin) {
+        behaviors.teleport_fogs.push(from);
+    }
+    let forward = angle_vectors(destination.mangle).forward;
+    behaviors.teleport_fogs.push(vec3(
+        destination.origin.x + forward.x * 32.0,
+        destination.origin.y + forward.y * 32.0,
+        destination.origin.z + forward.z * 32.0,
+    ));
+    q1_spawn_teledeath(behaviors, simulation, triggers, &destination.origin, other);
+    if q1_health_of(simulation, other) <= 0.0 {
+        let _ignored = simulation.set_body_origin(other, destination.origin);
+        return;
+    }
+    let _ignored = simulation.set_body_origin(other, destination.origin);
+    let _ignored = simulation.set_body_angles(other, destination.mangle);
+    // Stock's final flags line parses as `(flags - flags) & FL_ONGROUND`
+    // (`triggers.qc:422`), so every stock teleport clears all flags; the
+    // sim models only the ground link, cleared here for everyone.
+    let _ignored = simulation.clear_body_ground(other);
+    if is_player {
+        // `fixangle` snaps immediately; the force's angles carry the snap
+        // and `teleport_time` pauses view blending (`client.qc`).
+        let velocity = vec3(forward.x * 300.0, forward.y * 300.0, forward.z * 300.0);
+        let _ignored = simulation.set_body_velocity(other, velocity);
+        behaviors.player_forces.push(Q1PlayerForce {
+            actor: other.clone(),
+            origin: Some(destination.origin),
+            angles: Some(destination.mangle),
+            velocity: Some(velocity),
+            teleport_time_seconds: Some(now + 0.7),
+        });
+    } else {
+        behaviors.player_forces.push(Q1PlayerForce {
+            actor: other.clone(),
+            origin: Some(destination.origin),
+            angles: Some(destination.mangle),
+            velocity: None,
+            teleport_time_seconds: None,
+        });
+    }
+}
+
+/// Spawn the stock `teledeath` volume (`spawn_tdeath`,
+/// `triggers.qc:343-366`): the owner's bounds expanded one unit, at the
+/// arrival origin, marked as a trigger, removing itself after 0.2s.
+/// `force_retouch` is inherent: the sweep tests every overlap each
+/// frame. A full registry skips the volume (stock overflows edicts
+/// fatally instead); a bodyless owner sizes from zero bounds.
+fn q1_spawn_teledeath(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    triggers: &mut TriggerTable,
+    origin: &Vec3,
+    owner: &ActorId,
+) {
+    let now = simulation.frame().time.as_seconds_f64();
+    let bounds = simulation.body_state(owner).map_or(
+        Bounds {
+            min: vec3(0.0, 0.0, 0.0),
+            max: vec3(0.0, 0.0, 0.0),
+        },
+        |body| body.bounds,
+    );
+    let spawned = simulation.spawn(
+        ProviderId::new("game", "q1"),
+        "q1:teledeath",
+        Some(BodyState {
+            origin: *origin,
+            angles: vec3(0.0, 0.0, 0.0),
+            velocity: vec3(0.0, 0.0, 0.0),
+            bounds: Bounds {
+                min: vec3(bounds.min.x - 1.0, bounds.min.y - 1.0, bounds.min.z - 1.0),
+                max: vec3(bounds.max.x + 1.0, bounds.max.y + 1.0, bounds.max.z + 1.0),
+            },
+            ground: None,
+        }),
+        None,
+        Vec::new(),
+    );
+    let Ok(death) = spawned else {
+        return;
+    };
+    behaviors.triggers.insert(
+        death.id(),
+        Q1Trigger {
+            kind: Q1TriggerKind::Teledeath { owner: owner.clone() },
+            source: Q1UseSource::default(),
+            noise: None,
+        },
+    );
+    let _ignored = triggers.mark(simulation.registry(), death.id());
+    behaviors.schedule_think(death.id(), Q1ThinkKind::Remove, now + 0.2);
+}
+
+/// Native think dispatch for Q1 triggers and items: clear last tick's
+/// teleport fogs, then fire due scheduled thinks (removals, multiple
+/// re-arms, hurt re-solidifies, item regens, megahealth rots) and due
+/// delayed uses, each in schedule order. Runs after the mover pass and
+/// before the trigger sweep, so removals apply before touches and fresh
+/// touches queue fresh fogs.
 pub fn q1_trigger_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
     movers: &mut MoverTable,
     triggers: &mut TriggerTable,
 ) {
+    // The think pass runs before the trigger sweep, so last tick's fogs
+    // clear here and this tick's touches queue fresh ones; the
+    // presentation slice publishes them as `TE_TELEPORT` temp entities.
+    // Print queues are NOT cleared here: mover thinks queue before this
+    // pass, so clearing would wipe same-tick prints. The HUD slice
+    // drains prints per frame once it lands.
+    behaviors.teleport_fogs.clear();
     let now = simulation.frame().time.as_seconds_f64();
     let pending = std::mem::take(&mut behaviors.thinks);
     let (due, later): (Vec<Q1PendingThink>, Vec<Q1PendingThink>) =
         pending.into_iter().partition(|think| think.due_seconds <= now);
     behaviors.thinks = later;
     for think in &due {
-        match think.kind {
+        match &think.kind {
             Q1ThinkKind::Remove => {
                 q1_remove(behaviors, simulation, movers, triggers, &think.actor);
+            }
+            Q1ThinkKind::Regen => {
+                super::native_q1_items::q1_item_regen(behaviors, simulation, triggers, &think.actor);
+            }
+            Q1ThinkKind::MegaRot { owner } => {
+                super::native_q1_items::q1_item_mega_rot(behaviors, simulation, &think.actor, owner);
             }
             Q1ThinkKind::MultiWait => {
                 // `multi_wait` restores shootable multiples; touch
@@ -1430,6 +1737,14 @@ mod tests {
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         origin: Vec3,
     ) -> qa_core::identity::OwnedActor {
+        spawn_player_on(server, origin, None)
+    }
+
+    fn spawn_player_on(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        origin: Vec3,
+        ground: Option<ActorId>,
+    ) -> qa_core::identity::OwnedActor {
         let player = server
             .simulation_mut()
             .spawn(
@@ -1443,7 +1758,7 @@ mod tests {
                         min: vec3(-16.0, -16.0, -24.0),
                         max: vec3(16.0, 16.0, 32.0),
                     },
-                    ground: None,
+                    ground,
                 }),
                 None,
                 Vec::new(),
@@ -1454,6 +1769,22 @@ mod tests {
             .set_combat(player.id(), CombatState::default())
             .unwrap();
         player
+    }
+
+    fn spawn_destination(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> qa_core::identity::OwnedActor {
+        let actor = server.spawn_entity(fields).unwrap();
+        q1_note_teleport_destination(behaviors, actor.id(), fields).unwrap();
+        super::q1_note_targetname(behaviors, fields, actor.id());
+        actor
+    }
+
+    fn admit_player(behaviors: &mut Q1NativeBehaviors, player: &qa_core::identity::OwnedActor) {
+        behaviors.set_player(Some(player.id().clone()));
+        behaviors.solids.insert(player.id());
     }
 
     fn touch(
@@ -2372,5 +2703,373 @@ mod tests {
         let fields = trigger_fields("func_button", &[]);
         let actor = server.spawn_entity(&fields).unwrap();
         assert!(build_q1_button(&mut server, &mut behaviors, &actor, &fields, &[trigger_model()]).is_err());
+    }
+
+    #[test]
+    fn teleport_destination_records_mangle_and_lifted_origin() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = trigger_fields(
+            "info_teleport_destination",
+            &[("targetname", "d1"), ("origin", "100 200 300"), ("angle", "90")],
+        );
+        let destination = spawn_destination(&mut server, &mut behaviors, &fields);
+        assert!(server.simulation().body_state(destination.id()).is_none());
+        let record = behaviors.teleport_destinations.get(destination.id()).unwrap();
+        assert_eq!(record.origin, vec3(100.0, 200.0, 327.0));
+        assert_eq!(record.mangle, fields.angles);
+        let anonymous = trigger_fields("info_teleport_destination", &[("origin", "0 0 0")]);
+        let actor = server.spawn_entity(&anonymous).unwrap();
+        assert!(q1_note_teleport_destination(&mut behaviors, actor.id(), &anonymous).is_err());
+        assert!(!behaviors.teleport_destinations.contains_key(actor.id()));
+    }
+
+    #[test]
+    fn trigger_teleport_requires_target() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "d1")]);
+        let teleporter = server.spawn_entity(&fields).unwrap();
+        build_q1_trigger(&mut server, &mut behaviors, &teleporter, &fields, &[trigger_model()]).unwrap();
+        assert!(server.triggers_mut().is_trigger(teleporter.id()));
+        assert!(matches!(
+            behaviors.triggers.get(teleporter.id()).map(|trigger| &trigger.kind),
+            Some(Q1TriggerKind::Teleport {
+                player_only: false,
+                targeted: false,
+                ..
+            })
+        ));
+        let fields = trigger_fields("trigger_teleport", &[("model", "*0")]);
+        let actor = server.spawn_entity(&fields).unwrap();
+        assert!(build_q1_trigger(&mut server, &mut behaviors, &actor, &fields, &[trigger_model()]).is_err());
+        assert!(!behaviors.triggers.contains_key(actor.id()));
+    }
+
+    #[test]
+    fn player_teleport_moves_fires_fogs_and_teledeath() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let destination = spawn_destination(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields(
+                "info_teleport_destination",
+                &[("targetname", "d1"), ("origin", "100 200 300"), ("angle", "90")],
+            ),
+        );
+        // Same-named relay after the destination: `find` order keeps the
+        // destination first, and `SUB_UseTargets` still fires the relay.
+        spawn_use_point(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_relay", &[("targetname", "d1"), ("message", "ported")]),
+        );
+        let teleporter = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "d1")]),
+        );
+        let floor = server
+            .simulation_mut()
+            .spawn(
+                qa_core::identity::ProviderId::new("q1", "test"),
+                "q1:test_floor",
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let player = spawn_player_on(&mut server, vec3(32.0, 32.0, 32.0), Some(floor.id().clone()));
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, teleporter.id(), player.id());
+
+        let record = behaviors.teleport_destinations.get(destination.id()).unwrap().clone();
+        let body = server.simulation().body_state(player.id()).unwrap();
+        assert_eq!(body.origin, record.origin);
+        assert_eq!(body.angles, record.mangle);
+        assert!(body.ground.is_none());
+        let forward = angle_vectors(record.mangle).forward;
+        assert_eq!(
+            body.velocity,
+            vec3(forward.x * 300.0, forward.y * 300.0, forward.z * 300.0)
+        );
+        assert_eq!(behaviors.player_forces.len(), 1);
+        let force = &behaviors.player_forces[0];
+        assert_eq!(force.actor, *player.id());
+        assert_eq!(force.origin, Some(record.origin));
+        assert_eq!(force.angles, Some(record.mangle));
+        assert_eq!(force.velocity, Some(body.velocity));
+        assert!((force.teleport_time_seconds.unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(behaviors.centerprints.len(), 1);
+        assert_eq!(behaviors.centerprints[0].text, "ported");
+        assert_eq!(behaviors.teleport_fogs.len(), 2);
+        assert_eq!(behaviors.teleport_fogs[0], vec3(32.0, 32.0, 32.0));
+        assert_eq!(
+            behaviors.teleport_fogs[1],
+            vec3(
+                record.origin.x + forward.x * 32.0,
+                record.origin.y + forward.y * 32.0,
+                record.origin.z + forward.z * 32.0
+            )
+        );
+        let deaths: Vec<ActorId> = behaviors
+            .triggers
+            .iter()
+            .filter_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::Teledeath { owner } if owner == player.id() => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deaths.len(), 1);
+        assert!(server.triggers_mut().is_trigger(&deaths[0]));
+        let death_body = server.simulation().body_state(&deaths[0]).unwrap();
+        assert_eq!(death_body.origin, record.origin);
+        assert_eq!(death_body.bounds.min, vec3(-17.0, -17.0, -25.0));
+        assert_eq!(death_body.bounds.max, vec3(17.0, 17.0, 33.0));
+        assert!(behaviors.thinks.iter().any(|think| think.actor == deaths[0]
+            && think.kind == Q1ThinkKind::Remove
+            && (think.due_seconds - 0.2).abs() < 1e-9));
+    }
+
+    #[test]
+    fn targeted_teleport_gates_until_used_through_live_ticks() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        spawn_destination(
+            &mut server,
+            &mut shared.borrow_mut(),
+            &trigger_fields(
+                "info_teleport_destination",
+                &[("targetname", "d1"), ("origin", "500 0 0")],
+            ),
+        );
+        let teleporter = spawn_brush_trigger(
+            &mut server,
+            &mut shared.borrow_mut(),
+            &trigger_fields(
+                "trigger_teleport",
+                &[("model", "*0"), ("target", "d1"), ("targetname", "t1")],
+            ),
+        );
+        // Player far from the volume: ticks advance the clock without the
+        // sweep touching.
+        let player = spawn_player(&mut server, vec3(4000.0, 4000.0, 4000.0));
+        admit_player(&mut shared.borrow_mut(), &player);
+        super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        // Never fired: shut.
+        touch_via(&mut server, &shared, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(4000.0, 4000.0, 4000.0)
+        );
+        // Fired: open; the touch teleports.
+        fire_use_via(&mut server, &shared, teleporter.id(), Some(player.id()));
+        touch_via(&mut server, &shared, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(500.0, 0.0, 27.0)
+        );
+        // One teleport queues two fogs; the next tick's think clears them.
+        assert_eq!(shared.borrow().teleport_fogs.len(), 2);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(shared.borrow().teleport_fogs.is_empty());
+        // Back across, then let the gate lapse: shut again.
+        server
+            .simulation_mut()
+            .set_body_origin(player.id(), vec3(4000.0, 4000.0, 4000.0))
+            .unwrap();
+        for _ in 0..6 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        touch_via(&mut server, &shared, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(4000.0, 4000.0, 4000.0)
+        );
+    }
+
+    fn touch_via(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        shared: &Rc<RefCell<Q1NativeBehaviors>>,
+        trigger: &ActorId,
+        other: &ActorId,
+    ) {
+        let contact = TouchContact {
+            trigger: trigger.clone(),
+            other: other.clone(),
+        };
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_trigger_touch(&mut shared.borrow_mut(), simulation, movers, triggers, &contact);
+    }
+
+    fn fire_use_via(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        shared: &Rc<RefCell<Q1NativeBehaviors>>,
+        actor: &ActorId,
+        activator: Option<&ActorId>,
+    ) {
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_fire_use(&mut shared.borrow_mut(), simulation, movers, triggers, actor, activator);
+    }
+
+    #[test]
+    fn player_only_teleport_rejects_monsters() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        spawn_destination(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields(
+                "info_teleport_destination",
+                &[("targetname", "d1"), ("origin", "100 0 0")],
+            ),
+        );
+        let gated = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields(
+                "trigger_teleport",
+                &[("model", "*0"), ("target", "d1"), ("spawnflags", "1")],
+            ),
+        );
+        let open = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "d1")]),
+        );
+        // Solid, living, but never admitted: a monster stand-in.
+        let monster = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        behaviors.solids.insert(monster.id());
+        server
+            .simulation_mut()
+            .set_body_velocity(monster.id(), vec3(10.0, 20.0, 30.0))
+            .unwrap();
+        touch(&mut server, &mut behaviors, gated.id(), monster.id());
+        assert_eq!(
+            server.simulation().body_state(monster.id()).unwrap().origin,
+            vec3(32.0, 32.0, 32.0)
+        );
+        assert!(behaviors.player_forces.is_empty());
+        touch(&mut server, &mut behaviors, open.id(), monster.id());
+        let body = server.simulation().body_state(monster.id()).unwrap();
+        assert_eq!(body.origin, vec3(100.0, 0.0, 27.0));
+        assert_eq!(body.velocity, vec3(10.0, 20.0, 30.0));
+        assert_eq!(behaviors.player_forces.len(), 1);
+        assert_eq!(behaviors.player_forces[0].velocity, None);
+        assert_eq!(behaviors.player_forces[0].teleport_time_seconds, None);
+    }
+
+    #[test]
+    fn teleport_rejects_dead_nonsolid_and_dangling() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        spawn_destination(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields(
+                "info_teleport_destination",
+                &[("targetname", "d1"), ("origin", "100 0 0")],
+            ),
+        );
+        let teleporter = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "d1")]),
+        );
+        let dangling = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "nowhere")]),
+        );
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        behaviors.set_player(Some(player.id().clone()));
+        // Nonsolid: admitted but never linked (no `SOLID_SLIDEBOX`).
+        touch(&mut server, &mut behaviors, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(32.0, 32.0, 32.0)
+        );
+        behaviors.solids.insert(player.id());
+        // Dead: health zero.
+        server
+            .simulation_mut()
+            .set_combat(
+                player.id(),
+                CombatState {
+                    health: 0.0,
+                    ..CombatState::default()
+                },
+            )
+            .unwrap();
+        touch(&mut server, &mut behaviors, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(32.0, 32.0, 32.0)
+        );
+        // Living solid, but the target dangles: full no-op, no firing.
+        server
+            .simulation_mut()
+            .set_combat(player.id(), CombatState::default())
+            .unwrap();
+        touch(&mut server, &mut behaviors, dangling.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(32.0, 32.0, 32.0)
+        );
+        assert!(behaviors.teleport_fogs.is_empty());
+        assert!(behaviors.player_forces.is_empty());
+    }
+
+    #[test]
+    fn teledeath_telefrags_victim_spares_owner_then_removes() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        spawn_destination(
+            &mut server,
+            &mut shared.borrow_mut(),
+            &trigger_fields(
+                "info_teleport_destination",
+                &[("targetname", "d1"), ("origin", "100 0 0")],
+            ),
+        );
+        let teleporter = spawn_brush_trigger(
+            &mut server,
+            &mut shared.borrow_mut(),
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "d1")]),
+        );
+        let player = spawn_player(&mut server, vec3(4000.0, 4000.0, 4000.0));
+        admit_player(&mut shared.borrow_mut(), &player);
+        let victim = spawn_player(&mut server, vec3(100.0, 0.0, 27.0));
+        shared.borrow_mut().solids.insert(victim.id());
+        super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
+        touch_via(&mut server, &shared, teleporter.id(), player.id());
+        let death = shared
+            .borrow()
+            .triggers
+            .iter()
+            .find_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::Teledeath { .. } => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        // Owner immune, victim telefragged.
+        touch_via(&mut server, &shared, &death, player.id());
+        assert_eq!(server.simulation().combat_state(player.id()).unwrap().health, 100.0);
+        touch_via(&mut server, &shared, &death, victim.id());
+        assert!(server.simulation().combat_state(victim.id()).unwrap().health <= 0.0);
+        for _ in 0..6 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        assert!(simulation_actor_gone(&server, &death));
+        assert!(!shared.borrow().triggers.contains_key(&death));
     }
 }

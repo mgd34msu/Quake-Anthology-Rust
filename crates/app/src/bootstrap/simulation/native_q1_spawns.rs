@@ -4,9 +4,9 @@
 //! for real — worldspawn, player starts, lights, func_door — wired to the
 //! reachable [`Server`](qa_world::server::Server) through the native
 //! touch/mover-think hooks. Triggers, buttons, target firing, and toggle
-//! lights live in [`super::native_q1_triggers`]; generic `map:{classname}`
-//! spawns still cover every other classname until their native behavior
-//! lands.
+//! lights live in [`super::native_q1_triggers`], items in
+//! [`super::native_q1_items`]; generic `map:{classname}` spawns still
+//! cover every other classname until their native behavior lands.
 //!
 //! qsrc: `progs106/doors.qc` (func_door spawn, LinkDoors, spawn_field,
 //! door_touch, door_trigger_touch, door_fire, door_go_up, door_go_down,
@@ -21,7 +21,7 @@
 //! routing.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_core::identity::{ActorId, OwnedActor};
@@ -33,9 +33,10 @@ use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};
 use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
+use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
-    Q1Light, Q1PendingThink, Q1PlayerForce, Q1ThinkKind, Q1Trigger, Q1UseSource,
+    Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
@@ -62,6 +63,14 @@ const DOOR_TOGGLE: i32 = 32;
 const IT_KEY1: u32 = 131_072;
 /// Key item bits (`defs.qc:305-306`).
 const IT_KEY2: u32 = 262_144;
+/// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
+pub const IT_SUPERHEALTH: u32 = 65_536;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR1: u32 = 8_192;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR2: u32 = 16_384;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR3: u32 = 32_768;
 
 /// Door trigger-field expansion in map units (`spawn_field`,
 /// `doors.qc:273`: `setsize (trigger, t1 - '60 60 8', t2 + '60 60 8')`).
@@ -127,7 +136,7 @@ pub fn q1_pre_spawn(classname: &str, fields: &SpawnFields, skill: u8, deathmatch
 /// map triggers stay `SOLID_NOT` and never link.
 pub fn q1_note_solid(classname: &str, actor: &ActorId, behaviors: &mut Q1NativeBehaviors) {
     if classname.starts_with("monster_") {
-        behaviors.solids.insert(actor.clone());
+        behaviors.solids.insert(actor);
     }
 }
 
@@ -337,33 +346,223 @@ pub struct Q1DoorField {
     pub throttle_until: f64,
 }
 
+/// Dense per-actor component table, the stock edict array in miniature:
+/// slots index by [`ActorId::slot`], and a slot is live only when its
+/// stored id equals the query id (slot reuse bumps the generation, so a
+/// stale id never reads a recycled slot). Touch/think dispatch looks up
+/// by slot with no hashing; iteration walks slots in spawn order.
+///
+/// Unlike [`HashMap::insert`], `insert` borrows the id: callers already
+/// hold `&ActorId` and the table clones once per spawn (event rate).
+#[derive(Debug, Clone)]
+pub struct Q1EdictTable<T> {
+    /// One entry per registry slot ever touched (`None` vacant).
+    slots: Vec<Option<(ActorId, T)>>,
+    /// Live entry count.
+    live: usize,
+}
+
+impl<T> Default for Q1EdictTable<T> {
+    fn default() -> Self {
+        Self {
+            slots: Vec::new(),
+            live: 0,
+        }
+    }
+}
+
+impl<T> std::ops::Index<&ActorId> for Q1EdictTable<T> {
+    type Output = T;
+
+    fn index(&self, id: &ActorId) -> &Self::Output {
+        self.get(id).expect("live edict-table entry")
+    }
+}
+
+impl<T> Q1EdictTable<T> {
+    /// Empty table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Live entry count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.live
+    }
+
+    /// Whether the table holds no live entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.live == 0
+    }
+
+    /// Read one live entry (`None` for vacant or recycled slots).
+    #[must_use]
+    pub fn get(&self, id: &ActorId) -> Option<&T> {
+        self.slots
+            .get(id.slot() as usize)
+            .and_then(Option::as_ref)
+            .filter(|(slot_id, _)| slot_id == id)
+            .map(|(_, value)| value)
+    }
+
+    /// Read one live entry mutably.
+    pub fn get_mut(&mut self, id: &ActorId) -> Option<&mut T> {
+        self.slots
+            .get_mut(id.slot() as usize)
+            .and_then(Option::as_mut)
+            .filter(|(slot_id, _)| slot_id == id)
+            .map(|(_, value)| value)
+    }
+
+    /// Whether a live entry exists for `id`.
+    #[must_use]
+    pub fn contains_key(&self, id: &ActorId) -> bool {
+        self.get(id).is_some()
+    }
+
+    /// Store `value` for `id`, replacing any live or stale entry.
+    pub fn insert(&mut self, id: &ActorId, value: T) {
+        let slot = id.slot() as usize;
+        if slot >= self.slots.len() {
+            self.slots.resize_with(slot + 1, || None);
+        }
+        let occupied = self.slots[slot].is_some();
+        self.slots[slot] = Some((id.clone(), value));
+        if !occupied {
+            self.live += 1;
+        }
+    }
+
+    /// Drop the live entry for `id`, if any.
+    pub fn remove(&mut self, id: &ActorId) -> Option<T> {
+        let slot = self.slots.get_mut(id.slot() as usize)?;
+        let live = slot.as_ref().is_some_and(|(slot_id, _)| slot_id == id);
+        if !live {
+            return None;
+        }
+        self.live -= 1;
+        slot.take().map(|(_, value)| value)
+    }
+
+    /// Live entries in slot (spawn) order.
+    pub fn iter(&self) -> impl Iterator<Item = (&ActorId, &T)> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.as_ref().map(|(id, value)| (id, value)))
+    }
+
+    /// Live ids in slot (spawn) order.
+    pub fn keys(&self) -> impl Iterator<Item = &ActorId> {
+        self.iter().map(|(id, _)| id)
+    }
+
+    /// Live values in slot (spawn) order.
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.iter().map(|(_, value)| value)
+    }
+
+    /// Live values mutably, in slot (spawn) order.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.slots
+            .iter_mut()
+            .filter_map(|slot| slot.as_mut().map(|(_, value)| value))
+    }
+}
+
+/// Dense per-actor membership set over the same slot scheme as
+/// [`Q1EdictTable`]: one id per touched slot, live only on full-id
+/// equality.
+#[derive(Debug, Default)]
+pub struct Q1EdictSet {
+    /// One entry per registry slot ever touched (`None` vacant).
+    slots: Vec<Option<ActorId>>,
+}
+
+impl Q1EdictSet {
+    /// Empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether `id` is a live member.
+    #[must_use]
+    pub fn contains(&self, id: &ActorId) -> bool {
+        self.slots.get(id.slot() as usize).and_then(Option::as_ref) == Some(id)
+    }
+
+    /// Add `id`, replacing any stale entry.
+    pub fn insert(&mut self, id: &ActorId) {
+        let slot = id.slot() as usize;
+        if slot >= self.slots.len() {
+            self.slots.resize_with(slot + 1, || None);
+        }
+        self.slots[slot] = Some(id.clone());
+    }
+
+    /// Drop `id`, reporting whether it was a live member.
+    pub fn remove(&mut self, id: &ActorId) -> bool {
+        let Some(slot) = self.slots.get_mut(id.slot() as usize) else {
+            return false;
+        };
+        if slot.as_ref() != Some(id) {
+            return false;
+        }
+        slot.take();
+        true
+    }
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
 pub struct Q1NativeBehaviors {
     /// Door actors by id.
-    pub doors: HashMap<ActorId, Q1Door>,
+    pub doors: Q1EdictTable<Q1Door>,
     /// Brush-model index by door/button actor, for inline-hull clips.
-    pub brush_models: HashMap<ActorId, u32>,
+    pub brush_models: Q1EdictTable<u32>,
     /// Box-solid actors (`SOLID_SLIDEBOX` monsters, the admitted
     /// player, shootable trigger boxes). Doors and buttons ride
     /// `brush_models`; everything else the stock spawn functions leave
     /// `SOLID_NOT` stays out of the scene.
-    pub solids: HashSet<ActorId>,
+    pub solids: Q1EdictSet,
     /// Trigger-field actors by id.
-    pub fields: HashMap<ActorId, Q1DoorField>,
+    pub fields: Q1EdictTable<Q1DoorField>,
     /// Admitted player opener (`None` on dedicated servers: with no
     /// player, doors stay shut).
     pub player: Option<ActorId>,
     /// Key item bits the player carries.
     pub player_keys: u32,
     /// Trigger actors by id (multiples, relays, counters, hurt, push,
-    /// setskill, registered gates).
-    pub triggers: HashMap<ActorId, Q1Trigger>,
+    /// setskill, registered gates, teleports, teledeaths).
+    pub triggers: Q1EdictTable<Q1Trigger>,
+    /// Teleport destination records by id (`info_teleport_destination`).
+    pub teleport_destinations: Q1EdictTable<Q1TeleportDestination>,
+    /// Teleport fog positions for the presentation slice to drain (stock
+    /// `TE_TELEPORT` temp entities; two per teleport: departure and
+    /// arrival). The think pass clears the queue every tick, so until
+    /// the presentation slice drains it the queue holds at most one
+    /// frame of fogs instead of growing for the session.
+    pub teleport_fogs: Vec<Vec3>,
     /// Button actors by id.
-    pub buttons: HashMap<ActorId, Q1Button>,
+    pub buttons: Q1EdictTable<Q1Button>,
     /// Toggle-light actors by id.
-    pub lights: HashMap<ActorId, Q1Light>,
+    pub lights: Q1EdictTable<Q1Light>,
+    /// Item actors by id.
+    pub items: Q1EdictTable<Q1Item>,
+    /// Item bits the player carries (`defs.qc:296-306`).
+    pub player_items: u32,
+    /// Player ammo counts (stock starts 25 shells with the shotgun;
+    /// the spawn loadout lands with the weapons slice).
+    pub player_ammo: Q1Ammo,
+    /// Player health cap (`max_health`, 100 from `PutClientInServer`).
+    pub player_max_health: f64,
+    /// Deathmatch rules (respawns; `GameMode` has no DM2, so this is
+    /// always DM1 where stock branches on it).
+    pub deathmatch: bool,
     /// Spawn-order actor lists by targetname (stock `find` order).
     /// Lookups run only at spawn and at target-firing time (event
     /// rate), never per frame.
@@ -374,6 +573,8 @@ pub struct Q1NativeBehaviors {
     pub delayed_uses: Vec<Q1DelayedUse>,
     /// Queued centerprints for the HUD slice to drain.
     pub centerprints: Vec<Q1Centerprint>,
+    /// Queued console prints (`sprint`) for the HUD slice to drain.
+    pub sprints: Vec<Q1Sprint>,
     /// Queued player impulses for the movement step to mirror.
     pub player_forces: Vec<Q1PlayerForce>,
     /// Current toggle-light style values (`a` off, `m` on).
@@ -395,10 +596,13 @@ pub struct Q1NativeBehaviors {
 }
 
 impl Q1NativeBehaviors {
-    /// Empty behavior set.
+    /// Empty behavior set (`max_health` 100, like `PutClientInServer`).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            player_max_health: 100.0,
+            ..Self::default()
+        }
     }
 
     /// Adopt the admitted player as the door opener.
@@ -433,8 +637,9 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 }
 
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
-/// drop every gamecode record (doors, fields, triggers, buttons,
-/// lights, movers, solidity), and release the actor. Stale targetname
+/// drop every gamecode record (doors, fields, triggers, teleport
+/// destinations, buttons, lights, items, movers, solidity), and release
+/// the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -453,8 +658,10 @@ pub(crate) fn q1_remove(
     behaviors.solids.remove(actor);
     behaviors.fields.remove(actor);
     behaviors.triggers.remove(actor);
+    behaviors.teleport_destinations.remove(actor);
     behaviors.buttons.remove(actor);
     behaviors.lights.remove(actor);
+    behaviors.items.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;
@@ -515,7 +722,7 @@ pub fn build_q1_door<L: ServerLogic>(
     server.movers_mut().insert(actor.id().clone(), mover);
     server.mark_trigger(actor.id())?;
     behaviors.doors.insert(
-        actor.id().clone(),
+        actor.id(),
         Q1Door {
             master: actor.id().clone(),
             peers: vec![actor.id().clone()],
@@ -527,7 +734,7 @@ pub fn build_q1_door<L: ServerLogic>(
             use_source: Q1UseSource::from_fields(fields),
         },
     );
-    behaviors.brush_models.insert(actor.id().clone(), model);
+    behaviors.brush_models.insert(actor.id(), model);
     Ok(Q1PendingDoor {
         actor: actor.clone(),
         params,
@@ -639,7 +846,7 @@ pub fn link_q1_doors<L: ServerLogic>(
         server.simulation_mut().set_body_bounds(field.id(), field_bounds)?;
         server.mark_trigger(field.id())?;
         behaviors.fields.insert(
-            field.id().clone(),
+            field.id(),
             Q1DoorField {
                 master: master.clone(),
                 throttle_until: 0.0,
@@ -1009,6 +1216,7 @@ pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<R
         let mut behaviors = touch_behaviors.borrow_mut();
         q1_native_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_trigger_touch(&mut behaviors, simulation, movers, triggers, contact);
+        q1_item_touch(&mut behaviors, simulation, movers, triggers, contact);
     })));
     let think_behaviors = Rc::clone(&behaviors);
     server.set_native_mover_think(Some(Box::new(
@@ -1624,5 +1832,68 @@ mod tests {
         for field in behaviors.fields.values_mut() {
             field.throttle_until = 0.0;
         }
+    }
+
+    #[test]
+    fn edict_table_is_slot_dense_and_generation_guarded() {
+        let mut server = test_server();
+        let owner = qa_core::identity::ProviderId::new("q1", "test");
+        let first = server
+            .simulation_mut()
+            .spawn(owner.clone(), "q1:edict_a", None, None, Vec::new())
+            .unwrap();
+        let second = server
+            .simulation_mut()
+            .spawn(owner, "q1:edict_b", None, None, Vec::new())
+            .unwrap();
+        let mut table = Q1EdictTable::new();
+        assert!(table.is_empty());
+        table.insert(first.id(), "a");
+        table.insert(second.id(), "b");
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.get(first.id()), Some(&"a"));
+        assert_eq!(table[second.id()], "b");
+        let order: Vec<u32> = table.keys().map(|id| id.slot()).collect();
+        assert_eq!(order, [first.id().slot(), second.id().slot()]);
+        assert!(table.get_mut(first.id()).is_some());
+        assert!(table.contains_key(second.id()));
+        // Replacing the same id keeps the count; removing drops it.
+        table.insert(first.id(), "a2");
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.remove(first.id()), Some("a2"));
+        assert_eq!(table.remove(first.id()), None);
+        assert_eq!(table.len(), 1);
+        // A recycled slot never reads the previous generation: release
+        // without a table remove (production always pairs them via
+        // `q1_remove`), respawn into the freed slot, and the stale id
+        // misses while the fresh id overwrites without double-counting.
+        let stale = first.id().clone();
+        server.simulation_mut().release(&first).unwrap();
+        let recycled = server
+            .simulation_mut()
+            .spawn(
+                qa_core::identity::ProviderId::new("q1", "test"),
+                "q1:edict_c",
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(recycled.id().slot(), stale.slot());
+        assert_ne!(recycled.id().generation(), stale.generation());
+        table.insert(&stale, "stale");
+        assert_eq!(table.get(recycled.id()), None);
+        assert!(!table.contains_key(recycled.id()));
+        table.insert(recycled.id(), "fresh");
+        assert_eq!(table.get(recycled.id()), Some(&"fresh"));
+        assert_eq!(table.get(&stale), None);
+        assert_eq!(table.len(), 2);
+        let mut set = Q1EdictSet::new();
+        set.insert(second.id());
+        assert!(set.contains(second.id()));
+        assert!(!set.contains(recycled.id()));
+        assert!(set.remove(second.id()));
+        assert!(!set.remove(second.id()));
+        assert!(!set.contains(second.id()));
     }
 }
