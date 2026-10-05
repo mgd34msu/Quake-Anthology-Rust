@@ -34,6 +34,7 @@ use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
+use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Sound};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -593,6 +594,35 @@ pub struct Q1NativeBehaviors {
     /// Last movement view angles, mirrored each player step for the
     /// angle-gated trigger facing check.
     pub player_angles: Vec3,
+    /// Stock player entity flags (`FL_GODMODE`/`FL_NOTARGET`; the cheat
+    /// slice owns them, monster sight reads them).
+    pub player_flags: i32,
+    /// Monster actors by id.
+    pub monsters: Q1EdictTable<Q1Monster>,
+    /// Patrol-corner actors by id (`path_corner`).
+    pub movetargets: Q1EdictTable<Q1MoveTarget>,
+    /// Live gib actors by id (chunks and heads).
+    pub gibs: Q1EdictTable<Q1Gib>,
+    /// Queued `ThrowGib` spawns for the monster pass to link.
+    pub pending_gibs: Vec<Q1PendingGib>,
+    /// Queued monster sounds for the audio slice to drain.
+    pub sounds: Vec<Q1Sound>,
+    /// Monsters in the map (`total_monsters`).
+    pub total_monsters: u32,
+    /// Monsters killed (`killed_monsters`).
+    pub killed_monsters: u32,
+    /// Stock skill level (nightmare pain holds, refire counts).
+    pub skill: u8,
+    /// Cooperative rules (monster target re-selection).
+    pub coop: bool,
+    /// Latest monster to sight a player (`sight_entity`).
+    pub sight_entity: Option<ActorId>,
+    /// Master-clock instant of that sighting (`sight_entity_time`).
+    pub sight_entity_time: f64,
+    /// Gamecode random seed (stock never seeds, so runs repeat).
+    pub monster_rand: u64,
+    /// Last damage attacker (`damage_attacker`, `combat.qc:112`).
+    pub damage_attacker: Option<ActorId>,
 }
 
 impl Q1NativeBehaviors {
@@ -638,8 +668,8 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
-/// destinations, buttons, lights, items, movers, solidity), and release
-/// the actor. Stale targetname
+/// destinations, buttons, lights, items, monsters, movetargets, gibs,
+/// movers, solidity), and release the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -662,6 +692,9 @@ pub(crate) fn q1_remove(
     behaviors.buttons.remove(actor);
     behaviors.lights.remove(actor);
     behaviors.items.remove(actor);
+    behaviors.monsters.remove(actor);
+    behaviors.movetargets.remove(actor);
+    behaviors.gibs.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;
@@ -1197,7 +1230,18 @@ pub fn q1_native_mover_blocked(
         return;
     };
     let (dmg, wait) = (door.dmg, door.wait);
-    simulation.damage_q1(obstacle, f64::from(dmg));
+    // `door_blocked` crushes through `T_Damage` (`doors.qc`), so
+    // monsters in the way feel pain and die like the player.
+    super::native_q1_monsters::q1_t_damage(
+        behaviors,
+        simulation,
+        movers,
+        triggers,
+        obstacle,
+        Some(pusher),
+        Some(pusher),
+        f64::from(dmg),
+    );
     if wait < 0.0 {
         return;
     }
@@ -1217,6 +1261,7 @@ pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<R
         q1_native_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_trigger_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_item_touch(&mut behaviors, simulation, movers, triggers, contact);
+        super::native_q1_monsters::q1_monster_touch(&mut behaviors, simulation, movers, triggers, contact);
     })));
     let think_behaviors = Rc::clone(&behaviors);
     server.set_native_mover_think(Some(Box::new(
