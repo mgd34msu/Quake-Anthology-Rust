@@ -5,9 +5,28 @@
 //! a 1024-entry ring; [`SourceDebugGraph::bars`] projects the newest samples
 //! right-to-left onto one-pixel-wide bars over a dark background bar.
 
+use qa_core::cvar::{CvarError, CvarRegistry};
 use qa_core::math::Vec4;
 
 use super::types::Rect;
+
+/// Register the `cl_scrn.c` graph cvars. Quake II only; no-op elsewhere.
+pub fn register_debug_graph_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
+    if !cvars.dialect().is_q2() {
+        return Ok(());
+    }
+    for (name, value) in [
+        ("netgraph", "0"),
+        ("timegraph", "0"),
+        ("debuggraph", "0"),
+        ("graphheight", "32"),
+        ("graphscale", "1"),
+        ("graphshift", "0"),
+    ] {
+        cvars.register(name, value, 0)?;
+    }
+    Ok(())
+}
 
 /// Ring capacity: the donor masks indices with `1023`.
 pub const DEBUG_GRAPH_CAPACITY: usize = 1024;

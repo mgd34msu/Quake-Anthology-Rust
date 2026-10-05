@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use qa_client::audio::output::DEFAULT_AUDIO_OUTPUT_FORMAT;
 use qa_client::audio::ChannelPool;
 use qa_client::prediction::CommandRing;
 use qa_client::render::{FrameStats as RenderFrameStats, ModelPose, RenderView, RendererBackend, SceneEntity};
@@ -39,6 +40,7 @@ use crate::bootstrap::simulation::native_q1_spawns::Q1NativeBehaviors;
 use crate::bootstrap::simulation::native_q1_triggers::q1_registered_version;
 use crate::bootstrap::windowed_scene::open_product_mounts;
 use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
+use crate::console::live::{open_seat_userinfo, register_live_cvars, LiveCvarParams, SeatUserinfo};
 use crate::console::queue::ConsoleQueue;
 use crate::error::AppError;
 use crate::options::GameMode;
@@ -117,6 +119,7 @@ pub struct Application<R: RendererBackend> {
     console_queue: ConsoleQueue,
     console_commands: ConsoleCommands,
     console_cvars: CvarRegistry,
+    seat_userinfo: SeatUserinfo,
     console_log: Vec<String>,
     console_forwarded: Vec<String>,
     map_name: String,
@@ -276,6 +279,27 @@ impl<R: RendererBackend> Application<R> {
         }
         let mut console_commands = ConsoleCommands::new();
         register_console_commands(&mut console_commands);
+        let mut console_cvars = CvarRegistry::new(dialect);
+        let live_params = LiveCvarParams {
+            skill: config.skill,
+            mode: config.mode,
+            map: config.map.clone(),
+            product: config.product.clone(),
+            dedicated: config.dedicated,
+            network: config.network.clone(),
+            max_clients: config.seats.max(8),
+            gamma: 1.0,
+            output_format: DEFAULT_AUDIO_OUTPUT_FORMAT,
+            model: "male".to_string(),
+        };
+        register_live_cvars(&mut console_cvars, &live_params).map_err(|error| AppError::Console(error.to_string()))?;
+        let seat_userinfo = open_seat_userinfo(
+            dialect,
+            console_owner.session(),
+            config.seats as usize,
+            &live_params.model,
+        )
+        .map_err(|error| AppError::Console(error.to_string()))?;
         let scratch_capacity = server.simulation().actor_count();
         Ok(Self {
             server,
@@ -296,7 +320,8 @@ impl<R: RendererBackend> Application<R> {
             console_owner,
             console_queue,
             console_commands,
-            console_cvars: CvarRegistry::new(dialect),
+            console_cvars,
+            seat_userinfo,
             console_log: Vec::new(),
             console_forwarded: Vec::new(),
             map_name: config.map.clone(),
@@ -419,6 +444,12 @@ impl<R: RendererBackend> Application<R> {
     #[must_use]
     pub fn console_cvar(&self, name: &str) -> String {
         self.console_cvars.variable_string(name)
+    }
+
+    /// Per-seat userinfo registries.
+    #[must_use]
+    pub fn seat_userinfo(&self) -> &SeatUserinfo {
+        &self.seat_userinfo
     }
 
     /// Run host frames until quit is requested or the frame limit lands.

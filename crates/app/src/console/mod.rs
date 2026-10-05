@@ -20,6 +20,7 @@ pub mod dedicated;
 pub mod discovery;
 pub mod draw;
 pub mod field;
+pub mod live;
 pub mod llm;
 pub mod llm_batch;
 pub mod log;

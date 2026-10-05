@@ -19,12 +19,16 @@ pub fn register_quake_world_engine_cvars(cvars: &mut CvarRegistry) -> Result<(),
         ("password", ""),
         ("spectator_password", ""),
         ("sv_highchars", "1"),
+        ("cl_warncmd", "0"),
     ] {
         if cvars.get(name).is_none() {
             cvars.register(name, value, 0)?;
         }
     }
     cvars.register("maxspectators", "8", flags::SERVER_INFO)?;
+    if cvars.get("rate").is_none() {
+        cvars.register("rate", "2500", flags::ARCHIVE | flags::SERVER_INFO)?;
+    }
     Ok(())
 }
 

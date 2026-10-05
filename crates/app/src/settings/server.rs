@@ -1383,6 +1383,8 @@ pub fn register_q2_server_cvars(cvars: &mut CvarRegistry, match_provider: &str) 
     }
     cvars.register("sv_gravity", "800", 0)?;
     cvars.register("sv_airaccelerate", "0", 0)?;
+    cvars.register("developer", "0", 0)?;
+    cvars.register("hostname", "noname", q2_flags::SERVER_INFO | q2_flags::ARCHIVE)?;
     cvars.register("dmflags", "0", q2_flags::SERVER_INFO)?;
     cvars.register("timelimit", "0", q2_flags::SERVER_INFO)?;
     cvars.register("fraglimit", "0", q2_flags::SERVER_INFO)?;
