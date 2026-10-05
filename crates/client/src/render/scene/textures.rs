@@ -165,7 +165,7 @@ fn wire(message: String) -> RenderError {
 fn rgba_content(image: RgbaLevel, mipmap: bool) -> RenderImage {
     RenderImage::Rgba8 {
         levels: if mipmap {
-            mip_chain(&image)
+            mip_chain(image)
         } else {
             vec![ImageLevel {
                 width: image.width,
@@ -178,48 +178,57 @@ fn rgba_content(image: RgbaLevel, mipmap: bool) -> RenderImage {
 }
 
 /// Box-filter mip chain down to 1x1.
-fn mip_chain(base: &RgbaLevel) -> Vec<ImageLevel> {
+fn mip_chain(base: RgbaLevel) -> Vec<ImageLevel> {
     let mut levels = vec![ImageLevel {
         width: base.width,
         height: base.height,
-        pixels: base.pixels.clone(),
+        pixels: base.pixels,
     }];
-    let (mut width, mut height, mut pixels) = (base.width, base.height, base.pixels.clone());
-    while width > 1 || height > 1 {
-        let next_width = (width / 2).max(1);
-        let next_height = (height / 2).max(1);
-        let mut next = vec![0u8; (next_width * next_height * 4) as usize];
-        for y in 0..next_height {
-            for x in 0..next_width {
-                let mut sum = [0u32; 4];
-                let mut count = 0;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let sx = (x * 2 + dx).min(width - 1);
-                        let sy = (y * 2 + dy).min(height - 1);
-                        let offset = ((sy * width + sx) * 4) as usize;
-                        for channel in 0..4 {
-                            sum[channel] += u32::from(pixels[offset + channel]);
-                        }
-                        count += 1;
-                    }
-                }
-                let offset = ((y * next_width + x) * 4) as usize;
-                for channel in 0..4 {
-                    next[offset + channel] = (sum[channel] / count) as u8;
-                }
+    loop {
+        let (next_width, next_height, next) = {
+            let prior = levels.last().expect("mip chain keeps its base level");
+            if prior.width <= 1 && prior.height <= 1 {
+                break;
             }
-        }
+            downsample_level(prior)
+        };
         levels.push(ImageLevel {
             width: next_width,
             height: next_height,
-            pixels: next.clone(),
+            pixels: next,
         });
-        width = next_width;
-        height = next_height;
-        pixels = next;
     }
     levels
+}
+
+/// One box-filter downsample step of a mip level.
+fn downsample_level(prior: &ImageLevel) -> (u32, u32, Vec<u8>) {
+    let (width, height, pixels) = (prior.width, prior.height, &prior.pixels);
+    let next_width = (width / 2).max(1);
+    let next_height = (height / 2).max(1);
+    let mut next = vec![0u8; (next_width * next_height * 4) as usize];
+    for y in 0..next_height {
+        for x in 0..next_width {
+            let mut sum = [0u32; 4];
+            let mut count = 0;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let sx = (x * 2 + dx).min(width - 1);
+                    let sy = (y * 2 + dy).min(height - 1);
+                    let offset = ((sy * width + sx) * 4) as usize;
+                    for channel in 0..4 {
+                        sum[channel] += u32::from(pixels[offset + channel]);
+                    }
+                    count += 1;
+                }
+            }
+            let offset = ((y * next_width + x) * 4) as usize;
+            for channel in 0..4 {
+                next[offset + channel] = (sum[channel] / count) as u8;
+            }
+        }
+    }
+    (next_width, next_height, next)
 }
 
 fn indexed_content(
@@ -428,7 +437,7 @@ impl SceneTextureLoader {
             }
         }
         let missing_content = RenderImage::Rgba8 {
-            levels: mip_chain(&RgbaLevel {
+            levels: mip_chain(RgbaLevel {
                 width: 16,
                 height: 16,
                 pixels,
