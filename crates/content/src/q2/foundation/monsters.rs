@@ -15,8 +15,9 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{add3, dot3, length3, scale3, sub3, vec3, Vec3};
 
 use self::types::{
-    MonsterAction, MonsterAi, MonsterAttackState, MonsterContext, MonsterHandler, NextFrame, PlatformPhase,
-    Q2MonsterDefinition, Q2MonsterHintHooks, Q2MonsterHooks, Q2MonsterSourceCombatHooks, SourceCombatMode,
+    MonsterAction, MonsterAi, MonsterAttackState, MonsterContext, MonsterDefinitionError, MonsterHandler, NextFrame,
+    PlatformPhase, Q2MonsterDefinition, Q2MonsterHintHooks, Q2MonsterHooks, Q2MonsterSourceCombatHooks,
+    SourceCombatMode,
 };
 use super::host::{Q2Edition, Q2GameServices};
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
@@ -838,11 +839,15 @@ fn move_frame(context: &mut MonsterContext) {
     };
     match &frame.ai {
         MonsterAi::Source(name) => {
+            // Unvalidated data (stale saves, foreign definitions) can name
+            // AI the definition does not provide; report and treat the
+            // frame as AI-less instead of panicking the tick.
             let handler = context.definition().ai.get(name).cloned();
-            let Some(handler) = handler else {
-                panic!("Missing Q2 source AI {name}");
-            };
-            handler(context, distance);
+            if let Some(handler) = handler {
+                handler(context, distance);
+            } else {
+                context.game.host.diagnostic(&format!("Missing Q2 source AI {name}"));
+            }
         }
         ai => ai::run_ai(context, ai, distance),
     }
@@ -2362,34 +2367,29 @@ pub fn monster_definition(classname: &str, game: &Q2GameServices) -> Option<Rc<Q
     built_in_monster(classname, game)
 }
 
-/// Register a monster definition (`register`).
-pub fn register_monster(
-    game: &mut Q2GameServices,
-    definition: Q2MonsterDefinition,
-    edition: Option<crate::q2::foundation::host::Q2Edition>,
-) {
-    if let Some(edition) = edition {
-        if game
-            .monsters
-            .edition_definitions
-            .get(&edition)
-            .is_some_and(|definitions| definitions.contains_key(&definition.classname))
-        {
-            panic!("Duplicate Q2 monster definition {}", definition.classname);
-        }
-    } else if game.monsters.definitions.contains_key(&definition.classname) {
-        panic!("Duplicate Q2 monster definition {}", definition.classname);
-    }
+/// Validate the callback and AI names a monster definition uses.
+///
+/// Every `Source` AI and every named frame/end callback must resolve to
+/// the definition's own tables (or the shared callback table), so the
+/// per-frame runners never face an unknown name.
+pub fn validate_monster_definition(definition: &Q2MonsterDefinition) -> Result<(), MonsterDefinitionError> {
     for movement in &definition.moves {
         for frame in &movement.frames {
             if let MonsterAi::Source(name) = &frame.ai {
                 if !definition.ai.contains_key(name) {
-                    panic!("Missing Q2 source AI {name}");
+                    return Err(MonsterDefinitionError::UnknownAi {
+                        classname: definition.classname.clone(),
+                        movement: movement.name.clone(),
+                        ai: name.clone(),
+                    });
                 }
             }
         }
         if movement.frames.len() < (movement.last_frame - movement.first_frame + 1) as usize {
-            panic!("Q2 move {} has an incomplete frame table", movement.name);
+            return Err(MonsterDefinitionError::IncompleteFrames {
+                classname: definition.classname.clone(),
+                movement: movement.name.clone(),
+            });
         }
         let mut callbacks: Vec<Option<String>> = vec![movement.end.clone()];
         for frame in &movement.frames {
@@ -2401,10 +2401,43 @@ pub fn register_monster(
         }
         for callback in callbacks.into_iter().flatten() {
             if !definition.callbacks.contains_key(&callback) && shared_callback(&callback).is_none() {
-                panic!("Q2 move {} references missing callback {callback}", movement.name);
+                return Err(MonsterDefinitionError::UnknownCallback {
+                    classname: definition.classname.clone(),
+                    movement: movement.name.clone(),
+                    callback,
+                });
             }
         }
     }
+    Ok(())
+}
+
+/// Register a monster definition (`register`).
+///
+/// Invalid definitions are rejected with [`MonsterDefinitionError`];
+/// callers report the error and skip the definition.
+pub fn register_monster(
+    game: &mut Q2GameServices,
+    definition: Q2MonsterDefinition,
+    edition: Option<crate::q2::foundation::host::Q2Edition>,
+) -> Result<(), MonsterDefinitionError> {
+    if let Some(edition) = edition {
+        if game
+            .monsters
+            .edition_definitions
+            .get(&edition)
+            .is_some_and(|definitions| definitions.contains_key(&definition.classname))
+        {
+            return Err(MonsterDefinitionError::Duplicate {
+                classname: definition.classname.clone(),
+            });
+        }
+    } else if game.monsters.definitions.contains_key(&definition.classname) {
+        return Err(MonsterDefinitionError::Duplicate {
+            classname: definition.classname.clone(),
+        });
+    }
+    validate_monster_definition(&definition)?;
     if let Some(edition) = edition {
         game.monsters
             .edition_definitions
@@ -2416,6 +2449,7 @@ pub fn register_monster(
             .definitions
             .insert(definition.classname.clone(), Rc::new(definition));
     }
+    Ok(())
 }
 
 /// Infantry idle (`idle` in `builtIn`).
@@ -2880,5 +2914,515 @@ pub fn set_monster_route(game: &mut Q2GameServices, actor: ActorId, goal: Option
         let origin = context.game.body_of(actor).origin;
         let yaw = f64::from(ai::vector_angles(sub3(target.origin, origin)).y);
         context.state_mut().ideal_yaw = yaw;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId, SavedActorId};
+    use qa_core::math::{vec3, Bounds, Vec3};
+
+    use super::super::host::{
+        Q2Edition, Q2Entity, Q2FoundationHost, Q2GameOptions, Q2GameServices, Q2LandmarkCarry, Q2Mode, Q2Motion,
+        Q2PlayerViewState, Q2PresentationEvent, Q2Solid, Q2SpawnFields, Q2TraceRequest,
+    };
+    use super::types::{
+        monster_frame, MonsterAction, MonsterAi, MonsterContext, MonsterDefinitionError, MonsterHandler, MonsterMove,
+        MonsterState, Q2MonsterDefinition,
+    };
+    use super::{move_frame, register_monster, validate_monster_definition};
+    use crate::contract::{ArmorState, InventoryEntry, ItemId, PoweredProtectionState, RegularArmorState};
+    use crate::q2::support::contracts::{
+        ActorObservation, BodyAttachment, BodyState, CombatState, CombatTraitChanges, DamageOutcome, DamageRequest,
+        DeathReaction, LinkedBody, PowerArmorCells, TraceResult, TransitionIntent,
+    };
+    use crate::q2::support::tables::{
+        Q2ActorRegistry, Q2BodyTable, Q2CallbackTable, Q2CombatAuthority, Q2InventoryTable,
+    };
+
+    struct StubActors {
+        live: bool,
+    }
+
+    impl Q2ActorRegistry for StubActors {
+        fn allocate(&mut self, _owner: &ProviderId, _definition: &str) -> OwnedActor {
+            unimplemented!("test host")
+        }
+
+        fn allocate_at_source(&mut self, _owner: &ProviderId, _source_slot: u32, _definition: &str) -> OwnedActor {
+            unimplemented!("test host")
+        }
+
+        fn source_of(&self, _actor: &ActorId) -> Option<(ProviderId, u32)> {
+            unimplemented!("test host")
+        }
+
+        fn release(&mut self, _actor: &OwnedActor) {
+            unimplemented!("test host")
+        }
+
+        fn is_live(&self, _actor: &ActorId) -> bool {
+            self.live
+        }
+
+        fn resolve_owned(&self, _actor: &ActorId) -> Option<OwnedActor> {
+            unimplemented!("test host")
+        }
+
+        fn observations(&self) -> Vec<ActorObservation> {
+            unimplemented!("test host")
+        }
+
+        fn resolve_saved(&self, _saved: SavedActorId) -> Option<OwnedActor> {
+            unimplemented!("test host")
+        }
+
+        fn reference_saved(&self, _saved: SavedActorId) -> ActorId {
+            unimplemented!("test host")
+        }
+
+        fn assert_owned(&self, _actor: &OwnedActor) {
+            unimplemented!("test host")
+        }
+    }
+
+    struct StubBodies;
+
+    impl Q2BodyTable for StubBodies {
+        fn create(&mut self, _actor: &OwnedActor, _initial: &BodyState) {
+            unimplemented!("test host")
+        }
+
+        fn read(&self, _actor: &ActorId) -> Option<BodyState> {
+            unimplemented!("test host")
+        }
+
+        fn write(&mut self, _actor: &OwnedActor, _state: &BodyState) {
+            unimplemented!("test host")
+        }
+
+        fn attach(&mut self, _actor: &OwnedActor, _attachment: &BodyAttachment) {
+            unimplemented!("test host")
+        }
+
+        fn detach(&mut self, _actor: &OwnedActor) {
+            unimplemented!("test host")
+        }
+
+        fn attachment(&self, _actor: &ActorId) -> Option<BodyAttachment> {
+            unimplemented!("test host")
+        }
+
+        fn linked(&self, _actor: &ActorId) -> Option<LinkedBody> {
+            unimplemented!("test host")
+        }
+
+        fn link(&mut self, _actor: &OwnedActor, _origin: Option<Vec3>) {
+            unimplemented!("test host")
+        }
+
+        fn unlink(&mut self, _actor: &OwnedActor) {
+            unimplemented!("test host")
+        }
+    }
+
+    struct StubCallbacks;
+
+    impl Q2CallbackTable for StubCallbacks {
+        fn bind(&mut self, _actor: &OwnedActor) {
+            unimplemented!("test host")
+        }
+
+        fn unbind(&mut self, _actor: &ActorId) {
+            unimplemented!("test host")
+        }
+
+        fn is_bound(&self, _actor: &ActorId) -> bool {
+            unimplemented!("test host")
+        }
+
+        fn forward_use(&mut self, _actor: &OwnedActor, _other: Option<&ActorId>, _activator: Option<&ActorId>) {
+            unimplemented!("test host")
+        }
+    }
+
+    struct StubCombat;
+
+    impl Q2CombatAuthority for StubCombat {
+        fn create(&mut self, _actor: &OwnedActor, _initial: &CombatState) {
+            unimplemented!("test host")
+        }
+
+        fn read(&self, _actor: &ActorId) -> Option<CombatState> {
+            unimplemented!("test host")
+        }
+
+        fn set_health(&mut self, _actor: &OwnedActor, _health: f64) {
+            unimplemented!("test host")
+        }
+
+        fn set_armor(&mut self, _actor: &OwnedActor, _armor: &ArmorState) {
+            unimplemented!("test host")
+        }
+
+        fn set_regular_points(&mut self, _actor: &OwnedActor, _points: f64, _initial: Option<&RegularArmorState>) {
+            unimplemented!("test host")
+        }
+
+        fn set_regular_armor(&mut self, _actor: &OwnedActor, _regular: &RegularArmorState) {
+            unimplemented!("test host")
+        }
+
+        fn set_powered_protection(&mut self, _actor: &OwnedActor, _powered: &PoweredProtectionState) {
+            unimplemented!("test host")
+        }
+
+        fn set_traits(&mut self, _actor: &OwnedActor, _changes: &CombatTraitChanges) {
+            unimplemented!("test host")
+        }
+
+        fn bind_power_armor_cells(&mut self, _actor: &OwnedActor, _cells: Box<dyn PowerArmorCells>) {
+            unimplemented!("test host")
+        }
+
+        fn apply(&mut self, _input: &DamageRequest) -> DamageOutcome {
+            unimplemented!("test host")
+        }
+    }
+
+    struct StubInventory;
+
+    impl Q2InventoryTable for StubInventory {
+        fn create(&mut self, _actor: &OwnedActor, _entries: &[InventoryEntry]) {
+            unimplemented!("test host")
+        }
+
+        fn entries(&self, _actor: &ActorId) -> Vec<InventoryEntry> {
+            unimplemented!("test host")
+        }
+
+        fn has(&self, _actor: &ActorId) -> bool {
+            unimplemented!("test host")
+        }
+
+        fn count(&self, _actor: &ActorId, _item: &ItemId) -> f64 {
+            unimplemented!("test host")
+        }
+
+        fn consume(&mut self, _actor: &OwnedActor, _item: &ItemId, _count: f64) -> bool {
+            unimplemented!("test host")
+        }
+
+        fn give(&mut self, _actor: &OwnedActor, _item: &ItemId, _count: f64) -> f64 {
+            unimplemented!("test host")
+        }
+
+        fn configure(&mut self, _actor: &OwnedActor, _entry: &InventoryEntry) {
+            unimplemented!("test host")
+        }
+
+        fn adjust_source_counter(&mut self, _actor: &OwnedActor, _item: &ItemId, _delta: f64) -> f64 {
+            unimplemented!("test host")
+        }
+    }
+
+    struct StubHost {
+        diagnostics: Rc<RefCell<Vec<String>>>,
+        actors: StubActors,
+        bodies: StubBodies,
+        callbacks: StubCallbacks,
+        combat: StubCombat,
+        inventory: StubInventory,
+    }
+
+    impl Q2FoundationHost for StubHost {
+        fn actors(&mut self) -> &mut dyn Q2ActorRegistry {
+            &mut self.actors
+        }
+
+        fn bodies(&mut self) -> &mut dyn Q2BodyTable {
+            &mut self.bodies
+        }
+
+        fn callbacks(&mut self) -> &mut dyn Q2CallbackTable {
+            &mut self.callbacks
+        }
+
+        fn combat(&mut self) -> &mut dyn Q2CombatAuthority {
+            &mut self.combat
+        }
+
+        fn inventory(&mut self) -> &mut dyn Q2InventoryTable {
+            &mut self.inventory
+        }
+
+        fn now(&self) -> f64 {
+            0.0
+        }
+
+        fn frame_seconds(&self) -> f64 {
+            0.1
+        }
+
+        fn gravity(&self) -> f64 {
+            800.0
+        }
+
+        fn random(&mut self) -> f64 {
+            0.5
+        }
+
+        fn schedule(&mut self, _actor: &OwnedActor, _due_seconds: Option<f64>) {}
+
+        fn touch_triggers(&mut self, _actor: &OwnedActor) {}
+
+        fn trace(&mut self, _request: &Q2TraceRequest) -> TraceResult {
+            unimplemented!("test host")
+        }
+
+        fn point_contents(&mut self, _point: Vec3) -> i32 {
+            0
+        }
+
+        fn in_pvs(&mut self, _first: Vec3, _second: Vec3) -> bool {
+            false
+        }
+
+        fn in_phs(&mut self, _first: Vec3, _second: Vec3) -> bool {
+            false
+        }
+
+        fn areas_connected(&mut self, _first: Vec3, _second: Vec3) -> bool {
+            false
+        }
+
+        fn nearby(&mut self, _origin: Vec3, _radius: f64) -> Vec<ActorId> {
+            Vec::new()
+        }
+
+        fn players(&mut self) -> Vec<ActorId> {
+            Vec::new()
+        }
+
+        fn world_actor(&mut self) -> ActorId {
+            unimplemented!("test host")
+        }
+
+        fn is_player(&mut self, _actor: &ActorId) -> bool {
+            false
+        }
+
+        fn is_monster(&mut self, _actor: &ActorId) -> bool {
+            true
+        }
+
+        fn inline_model_bounds(&mut self, _model: i32) -> Bounds {
+            unimplemented!("test host")
+        }
+
+        fn set_solid(&mut self, _actor: &OwnedActor, _solid: Q2Solid, _model: Option<i32>) {}
+
+        fn set_motion(&mut self, _motion: &Q2Motion) {}
+
+        fn set_area_portal(&mut self, _portal: i32, _open: bool) {}
+
+        fn emit(&mut self, _event: Q2PresentationEvent) {}
+
+        fn player_view_state(&mut self, _player: &ActorId) -> Option<Q2PlayerViewState> {
+            None
+        }
+
+        fn key_consumed(&mut self, _player: &ActorId) {}
+
+        fn prepare_level_change(&mut self, _map: &str, _landmark: Option<&Q2LandmarkCarry>, _server_flags: i32) {}
+
+        fn transition(&mut self, _intent: TransitionIntent) {}
+
+        fn diagnostic(&mut self, message: &str) {
+            self.diagnostics.borrow_mut().push(message.to_string());
+        }
+    }
+
+    fn test_options() -> Q2GameOptions {
+        Q2GameOptions {
+            edition: Q2Edition::Classic,
+            map_name: "base1".to_string(),
+            skill: 1,
+            mode: Q2Mode::Singleplayer,
+            deathmatch_flags: 0,
+            max_clients: 1,
+            provider: ProviderId::new("q2", "baseq2"),
+            damage_powerup_owner: None,
+            source_damage_modifier: None,
+            campaign: ProviderId::new("q2", "campaign"),
+            combat_provider: ProviderId::new("q2", "combat"),
+            inventory_provider: ProviderId::new("q2", "inventory"),
+            movement_provider: ProviderId::new("q2", "movement"),
+        }
+    }
+
+    fn test_game(diagnostics: Rc<RefCell<Vec<String>>>) -> Q2GameServices {
+        Q2GameServices::new(
+            Box::new(StubHost {
+                diagnostics,
+                actors: StubActors { live: true },
+                bodies: StubBodies,
+                callbacks: StubCallbacks,
+                combat: StubCombat,
+                inventory: StubInventory,
+            }),
+            test_options(),
+            Vec::new(),
+        )
+    }
+
+    fn test_die(_context: &mut MonsterContext, _reaction: &DeathReaction) {}
+
+    fn test_ai(_context: &mut MonsterContext, _distance: f64) {}
+
+    fn test_definition() -> Q2MonsterDefinition {
+        let movement = MonsterMove {
+            name: "stand".to_string(),
+            first_frame: 1,
+            last_frame: 1,
+            end: None,
+            sidestep_scale: 0.0,
+            frames: vec![monster_frame(
+                MonsterAi::Source("test_ai".to_string()),
+                0.0,
+                Vec::new(),
+                -1,
+            )],
+        };
+        let mut definition = Q2MonsterDefinition::new(
+            "monster_test",
+            "test",
+            "models/test/tris.md2",
+            100.0,
+            0.0,
+            100.0,
+            Bounds {
+                min: vec3(-16.0, -16.0, -24.0),
+                max: vec3(16.0, 16.0, 32.0),
+            },
+            1.0,
+            "stand",
+            vec![movement],
+            MonsterHandler::SetMove("stand".to_string()),
+            MonsterHandler::SetMove("stand".to_string()),
+            MonsterHandler::SetMove("stand".to_string()),
+            MonsterHandler::SetMove("stand".to_string()),
+            test_die,
+        );
+        definition
+            .callbacks
+            .insert("known".to_string(), MonsterHandler::SetMove("stand".to_string()));
+        definition.ai.insert("test_ai".to_string(), test_ai);
+        definition
+    }
+
+    fn admit_test_actor(game: &mut Q2GameServices, definition: Rc<Q2MonsterDefinition>) -> ActorId {
+        let owner = IdentityOwner::create("q2-monster-test").expect("owner");
+        let owned = owner
+            .owned_actor(&owner.actor(7, 1), ProviderId::new("q2", "test"))
+            .expect("owned");
+        let actor = owned.id().clone();
+        let spawn = Q2SpawnFields {
+            ordinal: 0,
+            classname: "monster_test".to_string(),
+            values: BTreeMap::new(),
+        };
+        let mut entity = Q2Entity::new(owned, spawn);
+        entity.frame = 1;
+        game.entities.insert(actor.clone(), entity);
+        let mut state = MonsterState::default();
+        state.current_move = definition.moves[0].clone();
+        game.monsters.states.insert(actor.clone(), state);
+        game.monsters.actor_definitions.insert(actor.clone(), definition);
+        actor
+    }
+
+    #[test]
+    fn unknown_names_rejected_at_definition_build() {
+        let mut bad_ai = test_definition();
+        bad_ai.ai.clear();
+        let error = validate_monster_definition(&bad_ai).unwrap_err();
+        assert!(matches!(error, MonsterDefinitionError::UnknownAi { .. }), "{error}");
+
+        let mut bad_callback = test_definition();
+        bad_callback.moves[0].frames[0]
+            .actions
+            .push(MonsterAction::Name("bogus".to_string()));
+        let error = validate_monster_definition(&bad_callback).unwrap_err();
+        assert!(
+            matches!(error, MonsterDefinitionError::UnknownCallback { .. }),
+            "{error}"
+        );
+
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let mut game = test_game(Rc::clone(&diagnostics));
+        assert!(register_monster(&mut game, bad_ai, None).is_err());
+        assert!(register_monster(&mut game, bad_callback, None).is_err());
+        assert!(game.monsters.definitions.is_empty());
+
+        assert!(register_monster(&mut game, test_definition(), None).is_ok());
+        assert!(game.monsters.definitions.contains_key("monster_test"));
+    }
+
+    #[test]
+    fn validated_definition_ticks_without_panic() {
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let mut game = test_game(Rc::clone(&diagnostics));
+        register_monster(&mut game, test_definition(), None).expect("register");
+        let definition = game.monsters.definitions["monster_test"].clone();
+        let actor = admit_test_actor(&mut game, definition);
+        let mut context = MonsterContext::new(actor, &mut game);
+        move_frame(&mut context);
+        assert!((context.state().next_move_time - 0.1).abs() < 1e-12);
+        assert_eq!(context.entity().frame, 1);
+        context.dispatch("known");
+        assert_eq!(context.state().current_move.name, "stand");
+        context.dispatch("bogus");
+        context.set_move("bogus", true);
+        assert_eq!(context.state().current_move.name, "stand");
+        drop(context);
+        let diagnostics = diagnostics.borrow();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("unknown source callback bogus")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("unknown source animation bogus")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn missing_ai_reports_diagnostic_without_panic() {
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let mut game = test_game(Rc::clone(&diagnostics));
+        // Bypass registration the way stale save data does: the definition
+        // names source AI it does not provide.
+        let mut definition = test_definition();
+        definition.ai.clear();
+        let actor = admit_test_actor(&mut game, Rc::new(definition));
+        let mut context = MonsterContext::new(actor, &mut game);
+        move_frame(&mut context);
+        drop(context);
+        let diagnostics = diagnostics.borrow();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("Missing Q2 source AI test_ai")),
+            "{diagnostics:?}"
+        );
     }
 }

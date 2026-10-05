@@ -220,10 +220,14 @@ pub fn register_q2_mission_pack_monsters(
         .collect();
     for definition in definitions {
         if edition == Q2Edition::Classic {
-            register_monster(game, definition.clone(), Some(Q2Edition::Classic));
+            if let Err(error) = register_monster(game, definition.clone(), Some(Q2Edition::Classic)) {
+                game.host.diagnostic(&error.to_string());
+            }
         }
         if Q2_ORIGINAL_MISSION_PACK_FALLBACKS.contains(&definition.classname.as_str()) {
-            register_monster(game, definition, None);
+            if let Err(error) = register_monster(game, definition, None) {
+                game.host.diagnostic(&error.to_string());
+            }
         }
     }
     if rogue {

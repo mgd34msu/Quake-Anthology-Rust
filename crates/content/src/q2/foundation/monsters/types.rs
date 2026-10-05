@@ -526,6 +526,66 @@ impl Q2MonsterDefinition {
     }
 }
 
+/// Monster definition validation failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonsterDefinitionError {
+    /// A frame references source AI missing from the definition.
+    UnknownAi {
+        /// Definition classname.
+        classname: String,
+        /// Move name.
+        movement: String,
+        /// Missing AI name.
+        ai: String,
+    },
+    /// A move references a callback missing from the definition.
+    UnknownCallback {
+        /// Definition classname.
+        classname: String,
+        /// Move name.
+        movement: String,
+        /// Missing callback name.
+        callback: String,
+    },
+    /// A move's frame table is shorter than its frame range.
+    IncompleteFrames {
+        /// Definition classname.
+        classname: String,
+        /// Move name.
+        movement: String,
+    },
+    /// A definition with this classname is already registered.
+    Duplicate {
+        /// Definition classname.
+        classname: String,
+    },
+}
+
+impl std::fmt::Display for MonsterDefinitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MonsterDefinitionError::UnknownAi {
+                classname,
+                movement,
+                ai,
+            } => write!(f, "{classname} move {movement} references missing source AI {ai}"),
+            MonsterDefinitionError::UnknownCallback {
+                classname,
+                movement,
+                callback,
+            } => write!(f, "{classname} move {movement} references missing callback {callback}"),
+            MonsterDefinitionError::IncompleteFrames { classname, movement } => {
+                write!(f, "{classname} move {movement} has an incomplete frame table")
+            }
+            MonsterDefinitionError::Duplicate { classname } => {
+                write!(f, "duplicate Q2 monster definition {classname}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MonsterDefinitionError {}
+
 /// Monster state (`MonsterState`, alternate-fly fields flattened).
 #[derive(Debug, Clone)]
 pub struct MonsterState {
@@ -978,15 +1038,18 @@ impl<'a> MonsterContext<'a> {
     }
 
     /// Set the current move (`setMove`).
+    ///
+    /// Unknown moves (stale saves, foreign data) report a diagnostic and
+    /// keep the current move; the tick path never panics.
     pub fn set_move(&mut self, name: &str, immediate: bool) {
         let definition = self.definition();
         let classname = self.entity().classname.clone();
-        let movement = definition
-            .moves
-            .iter()
-            .find(|movement| movement.name == name)
-            .unwrap_or_else(|| panic!("{classname}: unknown source animation {name}"))
-            .clone();
+        let Some(movement) = definition.moves.iter().find(|movement| movement.name == name).cloned() else {
+            self.game
+                .host
+                .diagnostic(&format!("{classname}: unknown source animation {name}"));
+            return;
+        };
         let rerelease = self.game.options.edition == crate::q2::foundation::host::Q2Edition::Rerelease;
         let state = self.state_mut();
         if rerelease && !immediate {
@@ -1113,6 +1176,9 @@ impl<'a> MonsterContext<'a> {
     }
 
     /// Dispatch a named callback (`dispatch`).
+    ///
+    /// Unknown callbacks (stale saves, foreign data) report a diagnostic
+    /// and do nothing; the tick path never panics.
     pub fn dispatch(&mut self, callback: &str) {
         if callback == "$sight" {
             let handler = self.definition().sight.clone();
@@ -1129,7 +1195,10 @@ impl<'a> MonsterContext<'a> {
             .cloned()
             .or_else(|| super::shared_callback(callback));
         let Some(handler) = handler else {
-            panic!("{classname}: unknown source callback {callback}");
+            self.game
+                .host
+                .diagnostic(&format!("{classname}: unknown source callback {callback}"));
+            return;
         };
         handler.dispatch(self);
     }
