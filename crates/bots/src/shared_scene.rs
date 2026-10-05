@@ -499,6 +499,19 @@ impl SharedSceneQueries {
                 Some(read) => read(actor),
             },
         };
+        // WinQuake world.c:843-844 reads `passedict->v.size` for the
+        // points rule; unknown pass actors keep the rule off like a
+        // NULL `passedict`.
+        let pass_size_x = query.pass_actor.as_ref().and_then(|actor| {
+            if let Some(source) = &self.actor_states {
+                if let Some(state) = source.read(actor) {
+                    return Some(state.bounds.max.x - state.bounds.min.x);
+                }
+            }
+            pass.as_ref()
+                .map(|linked| linked.body.state.bounds.max.x - linked.body.state.bounds.min.x)
+        });
+        let pass_has_size = pass_size_x.is_some_and(|size| size != 0.0);
         let mut envelope = swept_query_bounds(query);
         if matches!(
             query.policy,
@@ -537,6 +550,15 @@ impl SharedSceneQueries {
                 continue;
             }
             if excluded.iter().any(|actor| same_actor(actor, &id)) {
+                continue;
+            }
+            // WinQuake world.c:843-844: points never interact. A sized
+            // mover passes through zero-size touch entities (nails and
+            // spikes); a point-sized mover still collides with them.
+            if pass_has_size
+                && matches!(query.policy, TracePolicy::Q1 { .. })
+                && linked.body.state.bounds.max.x - linked.body.state.bounds.min.x == 0.0
+            {
                 continue;
             }
             if let Some(pass_actor) = &query.pass_actor {
@@ -1066,6 +1088,84 @@ mod tests {
         shared.unlink(&actor);
         assert!(shared.linked_actor(&actor).is_none());
         assert_eq!(shared.trace(&q1_query()).unwrap(), geometry);
+    }
+
+    #[test]
+    fn shared_q1_points_never_interact() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let geometry = shared.geometry_trace(&q1_query()).unwrap();
+        // Sized player linked on the trace line; only its size matters.
+        let player = test_actor(1);
+        let (linked, collision) = body(
+            player.clone(),
+            Bounds {
+                min: vec3(-16.0, -16.0, -24.0),
+                max: vec3(16.0, 16.0, 32.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        // Zero-size nail sitting on the trace path.
+        let nail = test_actor(2);
+        let (mut linked, collision) = body(
+            nail.clone(),
+            Bounds {
+                min: vec3(0.0, 0.0, 0.0),
+                max: vec3(0.0, 0.0, 0.0),
+            },
+        );
+        linked.state.origin = vec3(-20.0, 0.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(-20.0, 0.0, 0.0),
+            max: vec3(-20.0, 0.0, 0.0),
+        };
+        shared.link(&linked, &collision);
+        // The point trace still uses the pass entity's size, not the
+        // query shape: the sized player passes through the nail.
+        let passing = TraceQuery {
+            pass_actor: Some(player.clone()),
+            ..q1_query()
+        };
+        let through = shared.trace(&passing).unwrap();
+        assert_eq!(through, geometry);
+        assert_eq!(through.hit, TraceHit::World { model: 0 });
+        // Point-sized speck parked off the trace path.
+        let speck = test_actor(3);
+        let (mut linked, collision) = body(
+            speck.clone(),
+            Bounds {
+                min: vec3(0.0, 0.0, 0.0),
+                max: vec3(0.0, 0.0, 0.0),
+            },
+        );
+        linked.state.origin = vec3(0.0, 100.0, 0.0);
+        linked.absolute_bounds = Bounds {
+            min: vec3(0.0, 100.0, 0.0),
+            max: vec3(0.0, 100.0, 0.0),
+        };
+        shared.link(&linked, &collision);
+        let blocker = test_actor(4);
+        let (linked, collision) = body(
+            blocker.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        // A point-sized mover still collides with sized bodies: the
+        // rule needs a sized passer.
+        let probing = TraceQuery {
+            pass_actor: Some(speck.clone()),
+            ..q1_query()
+        };
+        let hit = shared.trace(&probing).unwrap();
+        assert!(hit.fraction < geometry.fraction);
+        assert_eq!(hit.hit, TraceHit::Actor { actor: blocker.clone() });
+        // A sized candidate still blocks a sized mover: the rule needs
+        // a zero-size touch entity.
+        let blocked = shared.trace(&passing).unwrap();
+        assert!(blocked.fraction < geometry.fraction);
+        assert_eq!(blocked.hit, TraceHit::Actor { actor: blocker.clone() });
     }
 
     #[test]
