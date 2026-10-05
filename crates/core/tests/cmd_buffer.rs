@@ -919,3 +919,47 @@ fn stuffcmds_inserts_startup_and_command_line_text() {
     buffer.execute(&mut cvars, &mut services).unwrap();
     assert_eq!(*seen.borrow(), vec!["cli".to_string()]);
 }
+
+#[test]
+fn high_bytes_count_once_against_buffer_limits() {
+    let owner = owner();
+    let (mut buffer, _, _) = buffer_for(Dialect::Q2Classic, seat_context(&owner, 0));
+    let wide = "ÿ".repeat(5000);
+    buffer.append(&wide, None, None).unwrap();
+    // 5000 engine bytes queue even though the UTF-8 display text is
+    // 10000 bytes: the 8192 limit measures engine bytes.
+    assert_eq!(buffer.pending_text(), wide);
+    buffer.insert(&"a".repeat(3000), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 8000);
+    assert!(matches!(
+        buffer.insert(&"b".repeat(200), None, None),
+        Err(BufferError::InsertOverflow)
+    ));
+
+    let (mut buffer, _, _) = buffer_for(Dialect::Q3, seat_context(&owner, 0));
+    let wide = "ÿ".repeat(9000);
+    buffer.append(&wide, None, None).unwrap();
+    // 9000 engine bytes sit under the 16384 limit; the 18000 display
+    // bytes would have overflowed a UTF-8 length check.
+    assert_eq!(buffer.pending_text(), wide);
+    buffer.insert(&"a".repeat(7000), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 16001);
+    buffer.insert(&"b".repeat(500), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 16001);
+}
+
+#[test]
+fn q3_long_line_cuts_at_engine_bytes() {
+    let owner = owner();
+    let (mut buffer, mut cvars, mut services) = buffer_for(Dialect::Q3, seat_context(&owner, 0));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    buffer
+        .register("record", Some(record_handler(seen.clone())), None, &cvars)
+        .unwrap();
+    // `;` sits at engine offset 1025, so Quake III cuts the line at
+    // 1023 engine bytes: `record ` plus 1016 wide bytes.
+    let line = format!("record {}ZY;record done", "ÿ".repeat(1016));
+    buffer.insert(&line, None, None).unwrap();
+    buffer.execute(&mut cvars, &mut services).unwrap();
+    assert_eq!(*seen.borrow(), vec!["ÿ".repeat(1016), "done".to_string()]);
+}
