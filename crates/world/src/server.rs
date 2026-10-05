@@ -147,6 +147,18 @@ pub struct NullLogic;
 
 impl ServerLogic for NullLogic {}
 
+/// Native touch handler: natively simulated games react to trigger
+/// touches without a guest game module. Runs after
+/// [`ServerLogic::touch`] for every sweep contact; gamecode state (door
+/// sets, throttles) lives behind the closure.
+pub type NativeTouchHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &mut TriggerTable, &TouchContact)>;
+
+/// Native mover-think handler: runs after [`ServerLogic::mover_think`]
+/// when a mover crosses its local think time. `arrived` mirrors the
+/// engine think (true on endpoint arrival); gamecode returns doors and
+/// plats via the mover table, exactly like the guest hook.
+pub type NativeMoverThinkHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &ActorId, MoverPhase, bool)>;
+
 /// Server tick event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
@@ -209,6 +221,8 @@ pub struct Server<L: ServerLogic> {
     spawns: SpawnRegistry,
     queue: Vec<(u32, ClientCommand)>,
     bots: Option<Box<dyn BotCommandSource>>,
+    native_touch: Option<NativeTouchHandler>,
+    native_mover_think: Option<NativeMoverThinkHandler>,
     game_provider: ProviderId,
     default_bounds: Bounds,
     body_scratch: Vec<ActorId>,
@@ -238,6 +252,8 @@ impl<L: ServerLogic> Server<L> {
             spawns: SpawnRegistry::new(),
             queue: Vec::new(),
             bots: None,
+            native_touch: None,
+            native_mover_think: None,
             game_provider,
             default_bounds,
             body_scratch: Vec::new(),
@@ -261,6 +277,12 @@ impl<L: ServerLogic> Server<L> {
     /// movement services that trace bodies while skipping triggers.
     pub fn simulation_and_triggers(&mut self) -> (&mut Simulation, &TriggerTable) {
         (&mut self.simulation, &self.triggers)
+    }
+
+    /// Borrow the simulation, mover table, and trigger table mutably
+    /// together, for native touch/mover-think dispatch.
+    pub fn simulation_movers_and_triggers_mut(&mut self) -> (&mut Simulation, &mut MoverTable, &mut TriggerTable) {
+        (&mut self.simulation, &mut self.movers, &mut self.triggers)
     }
 
     /// Borrow the game logic.
@@ -290,6 +312,12 @@ impl<L: ServerLogic> Server<L> {
         &mut self.triggers
     }
 
+    /// Mark a live body actor as a trigger volume for the sweep.
+    pub fn mark_trigger(&mut self, actor: &ActorId) -> Result<(), WorldError> {
+        let (simulation, triggers) = (&self.simulation, &mut self.triggers);
+        triggers.mark(simulation.registry(), actor)
+    }
+
     /// Borrow the mover table mutably.
     pub fn movers_mut(&mut self) -> &mut MoverTable {
         &mut self.movers
@@ -316,6 +344,18 @@ impl<L: ServerLogic> Server<L> {
     #[must_use]
     pub fn has_bot_source(&self) -> bool {
         self.bots.is_some()
+    }
+
+    /// Attach a native touch handler, polled for every sweep contact.
+    /// Runtime-only like the bot source: checkpoints do not carry it.
+    pub fn set_native_touch(&mut self, handler: Option<NativeTouchHandler>) {
+        self.native_touch = handler;
+    }
+
+    /// Attach a native mover-think handler. Runtime-only like the bot
+    /// source: checkpoints do not carry it.
+    pub fn set_native_mover_think(&mut self, handler: Option<NativeMoverThinkHandler>) {
+        self.native_mover_think = handler;
     }
 
     /// Spawn a map entity through the registered spawn function.
@@ -472,6 +512,9 @@ impl<L: ServerLogic> Server<L> {
             if step.think_due {
                 self.logic
                     .mover_think(&mut self.simulation, &mut self.movers, actor, phase, step.arrived);
+                if let Some(handler) = self.native_mover_think.as_mut() {
+                    handler(&mut self.simulation, &mut self.movers, actor, phase, step.arrived);
+                }
                 events.push(ServerEvent::MoverThink { actor: saved });
             }
             if step.arrived {
@@ -545,6 +588,9 @@ impl<L: ServerLogic> Server<L> {
         }
         for contact in contacts {
             self.logic.touch(&mut self.simulation, &contact);
+            if let Some(handler) = self.native_touch.as_mut() {
+                handler(&mut self.simulation, &mut self.movers, &mut self.triggers, &contact);
+            }
             events.push(ServerEvent::Touch(contact));
         }
         Ok(())
@@ -892,5 +938,114 @@ mod tests {
         assert_eq!(state.origin, vec3(1.0, 2.0, 3.0));
         let missing = SpawnFields::parse(&[("classname", "q3:nope")]).unwrap();
         assert!(server.spawn_entity(&missing).is_err());
+    }
+
+    fn q1_body(origin: Vec3) -> BodyState {
+        BodyState {
+            origin,
+            angles: vec3(0.0, 0.0, 0.0),
+            velocity: vec3(0.0, 0.0, 0.0),
+            bounds: bounds(16.0),
+            ground: None,
+        }
+    }
+
+    fn q1_server() -> Server<NullLogic> {
+        let primary = ProviderId::new("q1", "game");
+        let profile = ClockProfile::Q1Netquake {
+            minimum_frame_seconds: 0.001,
+            maximum_frame_seconds: 0.1,
+            fixed_frame_seconds: None,
+        };
+        let plan = plan_for_profile(&profile).unwrap();
+        let simulation = Simulation::new("test", primary.clone(), profile, SourceTime::Seconds(0.0), 8).unwrap();
+        Server::new(simulation, NullLogic, plan, primary, bounds(16.0), bounds(1024.0))
+    }
+
+    #[test]
+    fn native_touch_hook_sees_sweep_contacts() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let trigger = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:field",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let mover = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:player",
+                Some(q1_body(vec3(8.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        server.mark_trigger(trigger.id()).unwrap();
+        let fired: Rc<RefCell<Vec<(ActorId, ActorId)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&fired);
+        server.set_native_touch(Some(Box::new(
+            move |_simulation, _movers, _triggers, contact: &TouchContact| {
+                seen.borrow_mut().push((contact.trigger.clone(), contact.other.clone()));
+            },
+        )));
+        let tick = server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert_eq!(fired.borrow().len(), 1);
+        assert_eq!(fired.borrow()[0].0, *trigger.id());
+        assert_eq!(fired.borrow()[0].1, *mover.id());
+        assert!(tick.events.iter().any(|event| matches!(event, ServerEvent::Touch(_))));
+    }
+
+    #[test]
+    fn native_mover_think_hook_sees_arrival() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::movers::{use_mover, MoverKind};
+
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let door = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:door",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut state = MoverState::new(
+            MoverKind::Door,
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 100.0),
+            10_000.0,
+            3.0,
+        );
+        use_mover(&mut state, vec3(0.0, 0.0, 0.0));
+        server.movers_mut().insert(door.id().clone(), state);
+        let fired: Rc<RefCell<Vec<(MoverPhase, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&fired);
+        let door_id = door.id().clone();
+        server.set_native_mover_think(Some(Box::new(
+            move |_simulation, _movers, actor: &ActorId, phase: MoverPhase, arrived: bool| {
+                assert_eq!(actor, &door_id);
+                seen.borrow_mut().push((phase, arrived));
+            },
+        )));
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert_eq!(fired.borrow().as_slice(), &[(MoverPhase::AtPos2, true)]);
+        assert_eq!(
+            server.movers_mut().get(door.id()).map(|state| state.phase),
+            Some(MoverPhase::AtPos2)
+        );
     }
 }

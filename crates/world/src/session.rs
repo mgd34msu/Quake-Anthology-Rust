@@ -365,6 +365,20 @@ impl Simulation {
         Ok(())
     }
 
+    /// Resize a body's local bounds (map spawn sizing brush models).
+    pub fn set_body_bounds(&mut self, actor: &ActorId, bounds: Bounds) -> Result<(), WorldError> {
+        self.assert_open()?;
+        let Some(owned) = self.registry.resolve_owned(actor) else {
+            return Err(WorldError::StaleActor);
+        };
+        let Some(mut state) = self.bodies.read(&self.registry, actor) else {
+            return Err(WorldError::BodyMissing);
+        };
+        state.bounds = bounds;
+        self.bodies.write(&self.registry, &owned, state)?;
+        Ok(())
+    }
+
     /// Capture a body's spatial snapshot (server trigger pass).
     pub fn link_body(&mut self, actor: &ActorId) -> Result<(), WorldError> {
         self.assert_open()?;
