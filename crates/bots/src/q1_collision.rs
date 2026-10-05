@@ -369,8 +369,17 @@ fn dimensions(bounds: &DBounds) -> DVec3 {
     sub(bounds.max, bounds.min)
 }
 
-fn equal(a: DVec3, b: DVec3) -> bool {
-    a.x == b.x && a.y == b.y && a.z == b.z
+/// Stock hull choice (`SV_HullForEntity`, WinQuake `world.c`): the
+/// clipping hull follows the mover's X extent, never an exact bounds
+/// match. Plain `f32`, like the donor's floats.
+fn hull_for_size(size_x: f32) -> i32 {
+    if size_x < 3.0 {
+        0
+    } else if size_x <= 32.0 {
+        1
+    } else {
+        2
+    }
 }
 
 impl Q1Collision {
@@ -510,14 +519,8 @@ impl Q1Collision {
         if let TracePolicy::Q1 { hull, .. } = &query.policy {
             if let Some(forced) = hull {
                 hull_index = Some(*forced);
-            } else if let TraceShape::Box { .. } = &query.shape {
-                let size = dimensions(&to_dbounds(&bounds));
-                if let Some(index) = HULL_BOUNDS
-                    .iter()
-                    .position(|candidate| equal(dimensions(&to_dbounds(candidate)), size))
-                {
-                    hull_index = Some(index as i32);
-                }
+            } else if let TraceShape::Box { bounds } = &query.shape {
+                hull_index = Some(hull_for_size(bounds.max.x - bounds.min.x));
             }
         }
         if let Some(index) = hull_index {
@@ -1504,11 +1507,14 @@ mod tests {
                 max: vec3(4.0, 4.0, 4.0),
             },
         };
+        // Stock hull choice: X extent 8 rides hull 1 with the hull
+        // offset (`clip_mins - mins`), not the derived cells. The test
+        // hull is unexpanded, so the offset lands the contact at -12.
         let hit = collision
             .trace(&query(vec3(-50.0, 0.0, 0.0), vec3(50.0, 0.0, 0.0), small))
             .expect("trace");
-        assert_eq!(hit.fraction, 0.4596875);
-        assert_eq!(hit.end.x, -4.03125);
+        assert_eq!(hit.fraction, 0.37968748807907104);
+        assert_eq!(hit.end.x, -12.03125);
         match &hit.detail {
             TraceDetail::Q1 { contents, .. } => assert_eq!(*contents, Some(-2)),
             _ => panic!("q1 detail"),
@@ -1520,6 +1526,34 @@ mod tests {
                 clip_only: ClipOnlySource::DerivedNativeClipspace,
             }
         );
+    }
+
+    #[test]
+    fn q1_hull_selection_follows_stock_size_rule() {
+        assert_eq!(hull_for_size(0.0), 0);
+        assert_eq!(hull_for_size(2.99), 0);
+        assert_eq!(hull_for_size(3.0), 1);
+        assert_eq!(hull_for_size(32.0), 1);
+        assert_eq!(hull_for_size(32.01), 2);
+        assert_eq!(hull_for_size(64.0), 2);
+        // End to end: a shambler-wide box rides hull 2 with the hull 2
+        // clip offset (zero here: the test box matches hull 2's clip
+        // bounds in X), so it contacts the shared test plane dead on.
+        let collision = Q1Collision::new(geometry());
+        let hit = collision
+            .trace(&query(
+                vec3(-50.0, 0.0, 0.0),
+                vec3(50.0, 0.0, 0.0),
+                SceneShape::Box {
+                    bounds: Bounds {
+                        min: vec3(-32.0, -32.0, -24.0),
+                        max: vec3(32.0, 32.0, 64.0),
+                    },
+                },
+            ))
+            .expect("trace");
+        assert_eq!(hit.fraction, 0.4996874928474426);
+        assert_eq!(hit.end.x, -0.03125);
     }
 
     #[test]
