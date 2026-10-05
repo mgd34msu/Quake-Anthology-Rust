@@ -1211,6 +1211,105 @@ fn count_non_black(pixels: &[u8]) -> usize {
         .count()
 }
 
+/// NetQuake host-frame gate: run the frame unless it arrived too
+/// early (`Host_FilterTime`, `quake/WinQuake/host.c:501-522`).
+///
+/// Local definition: the coordinator-owned
+/// `bootstrap::frame_time` helpers were not yet landed, so the live
+/// loop carries the gate until that swap (same signatures).
+#[must_use]
+pub fn nq_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, timedemo: bool) -> bool {
+    timedemo || realtime_seconds - old_realtime_seconds >= 1.0 / 72.0
+}
+
+/// QuakeWorld host-frame gate (`Host_Frame`,
+/// `quake/QW/client/cl_main.c:1313-1328`), including the old-beats-new
+/// clock reset.
+#[must_use]
+pub fn qw_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, fps: f64, timedemo: bool) -> bool {
+    let old = if old_realtime_seconds > realtime_seconds {
+        0.0
+    } else {
+        old_realtime_seconds
+    };
+    timedemo || realtime_seconds - old >= 1.0 / fps
+}
+
+/// QuakeWorld fps rule (`quake/QW/client/cl_main.c:1317-1320`).
+#[must_use]
+pub fn qw_fps(maxfps: f64, rate: f64) -> f64 {
+    if maxfps != 0.0 {
+        maxfps.clamp(30.0, 72.0)
+    } else {
+        (rate / 80.0).clamp(30.0, 72.0)
+    }
+}
+
+/// Stock host-frame clock (`realtime`/`oldrealtime`) for the windowed
+/// play loop. `realtime` advances every display frame; `oldrealtime`
+/// updates to `realtime` after a run frame, exactly like
+/// `Host_FilterTime`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostFrameGate {
+    realtime_s: f64,
+    oldrealtime_s: f64,
+    /// QuakeWorld `cl_maxfps` (stock default 0).
+    pub qw_maxfps: f64,
+    /// QuakeWorld `rate` (stock default 2500).
+    pub qw_rate: f64,
+    /// Timedemo exemption (`cls.timedemo`).
+    pub timedemo: bool,
+}
+
+impl HostFrameGate {
+    /// Fresh gate at the stock cvar defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            realtime_s: 0.0,
+            oldrealtime_s: 0.0,
+            qw_maxfps: 0.0,
+            qw_rate: 2500.0,
+            timedemo: false,
+        }
+    }
+
+    /// Advance the wall clock by one display frame.
+    pub fn advance(&mut self, elapsed_s: f64) {
+        self.realtime_s += elapsed_s;
+    }
+
+    /// Whether the simulation runs this frame, updating `oldrealtime`
+    /// on run frames. Non-Q1 dialects always run.
+    pub fn sim_due(&mut self, dialect: Dialect) -> bool {
+        let due = match dialect {
+            Dialect::Q1Quakeworld => {
+                if self.oldrealtime_s > self.realtime_s {
+                    self.oldrealtime_s = 0.0;
+                }
+                qw_frame_due(
+                    self.realtime_s,
+                    self.oldrealtime_s,
+                    qw_fps(self.qw_maxfps, self.qw_rate),
+                    self.timedemo,
+                )
+            }
+            Dialect::Q1Netquake => nq_frame_due(self.realtime_s, self.oldrealtime_s, self.timedemo),
+            _ => true,
+        };
+        if due {
+            self.oldrealtime_s = self.realtime_s;
+        }
+        due
+    }
+}
+
+impl Default for HostFrameGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Production [`StartupBackend`] presenting frames on a native window.
 pub struct WindowedStartupBackend {
     width: u32,
@@ -1241,6 +1340,7 @@ pub struct WindowedStartupBackend {
     menu: Option<WindowedMenu>,
     timer: StageTimer,
     totals: StageTotals,
+    host_gate: HostFrameGate,
 }
 
 impl WindowedStartupBackend {
@@ -1285,6 +1385,7 @@ impl WindowedStartupBackend {
             menu: None,
             timer: StageTimer::new(false),
             totals: StageTotals::new(),
+            host_gate: HostFrameGate::new(),
         }
     }
 
@@ -1441,7 +1542,13 @@ impl WindowedStartupBackend {
         if self.menu.is_some() {
             return;
         }
-        if self.world.is_none() {
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        // Stock host-frame gate: skip simulation frames that arrive
+        // too early for the launched game's rate (NetQuake 72Hz,
+        // QuakeWorld fps rule).
+        if !self.host_gate.sim_due(world.dialect()) {
             return;
         }
         let command = if self.world.as_ref().is_some_and(PlayWorld::has_player) {
@@ -1800,6 +1907,7 @@ impl StartupBackend for WindowedStartupBackend {
 
     fn frame(&mut self, ctx: &mut StartupFrame<'_>) -> Result<(), String> {
         self.timer.section("scene");
+        self.host_gate.advance(ctx.elapsed_ms / 1000.0);
         self.drain_menu_launch();
         self.step_play(ctx.elapsed_ms);
         let (commands, image_operations) = self.frame_commands();
@@ -3108,5 +3216,71 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn netquake_gate_skips_sub_72hz_frames() {
+        // Stock `Host_FilterTime` (`host.c:505`): skip when the frame
+        // arrives less than 1/72s after the last run frame.
+        assert!(!nq_frame_due(0.010, 0.0, false));
+        assert!(nq_frame_due(1.0 / 72.0, 0.0, false));
+        assert!(nq_frame_due(0.100, 0.0, false));
+        assert!(nq_frame_due(0.001, 0.0, true));
+    }
+
+    #[test]
+    fn quakeworld_gate_follows_fps_with_clock_reset() {
+        // Stock `Host_Frame` (`cl_main.c:1314-1323`).
+        assert!(!qw_frame_due(0.010, 0.0, 72.0, false));
+        assert!(qw_frame_due(1.0 / 72.0, 0.0, 72.0, false));
+        assert!(qw_frame_due(0.001, 0.0, 72.0, true));
+        // A backwards clock resets instead of stalling (`cl_main.c:1314-1315`).
+        assert!(qw_frame_due(1.0, 5.0, 72.0, false));
+    }
+
+    #[test]
+    fn quakeworld_fps_matches_stock_rule() {
+        // Stock fps selection (`cl_main.c:1317-1320`).
+        assert_eq!(qw_fps(60.0, 2500.0), 60.0);
+        assert_eq!(qw_fps(100.0, 2500.0), 72.0);
+        assert_eq!(qw_fps(10.0, 2500.0), 30.0);
+        assert_eq!(qw_fps(0.0, 2500.0), 31.25);
+        assert_eq!(qw_fps(0.0, 100.0), 30.0);
+    }
+
+    #[test]
+    fn host_gate_skips_early_sim_frames_per_dialect() {
+        use qa_core::cmd::Dialect;
+
+        let mut gate = HostFrameGate::new();
+        // First display frame at 120Hz: too early for NetQuake, and
+        // the skip leaves oldrealtime behind.
+        gate.advance(1.0 / 120.0);
+        assert!(!gate.sim_due(Dialect::Q1Netquake));
+        assert_eq!(gate.oldrealtime_s, 0.0);
+        // After a full 72Hz period the sim runs and oldrealtime
+        // catches up exactly (`host.c:508-509`).
+        gate.advance(1.0 / 120.0);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        assert_eq!(gate.oldrealtime_s, gate.realtime_s);
+
+        // QuakeWorld at stock defaults paces at 31.25Hz.
+        let mut gate = HostFrameGate::new();
+        gate.advance(0.020);
+        assert!(!gate.sim_due(Dialect::Q1Quakeworld));
+        gate.advance(0.020);
+        assert!(gate.sim_due(Dialect::Q1Quakeworld));
+
+        // Timedemo runs every frame.
+        let mut gate = HostFrameGate::new();
+        gate.timedemo = true;
+        gate.advance(0.001);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        assert!(gate.sim_due(Dialect::Q1Quakeworld));
+
+        // Other dialects always run.
+        let mut gate = HostFrameGate::new();
+        gate.advance(0.001);
+        assert!(gate.sim_due(Dialect::Q2Classic));
     }
 }

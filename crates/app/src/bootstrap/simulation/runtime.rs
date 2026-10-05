@@ -10151,9 +10151,7 @@ fn saved_recipe_matches(saved: &super::save::SimSavedRecipe, recipe: &Executable
         .zip(recipe.execution.iter())
         .all(|(saved, module)| {
             let (kind, owner, role) = match module {
-                ExecutionModule::Builtin { owner, role, .. } => {
-                    (super::save::SimExecutionKind::Builtin, owner, *role)
-                }
+                ExecutionModule::Builtin { owner, role, .. } => (super::save::SimExecutionKind::Builtin, owner, *role),
                 ExecutionModule::Quakec { owner, .. } => {
                     (super::save::SimExecutionKind::Quakec, owner, ModuleRole::ServerGame)
                 }
