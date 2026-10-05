@@ -188,15 +188,16 @@ impl Input<'_> {
 }
 
 struct Entropy {
-    value: u32,
+    value: u64,
     remaining: i32,
     printed_end: bool,
 }
 
 impl Entropy {
     fn fill(&mut self, input: &mut Input<'_>, required: i32) -> Result<(), ContentError> {
-        while self.remaining < 25 {
-            let mut next = 0u32;
+        // 64-bit bit buffer (BIT_BUF_SIZE 64), refilled one byte at a time.
+        while self.remaining < 57 {
+            let mut next = 0u64;
             if input.unread_marker != 0 {
                 if self.remaining >= required {
                     break;
@@ -208,7 +209,7 @@ impl Entropy {
                     self.printed_end = true;
                 }
             } else {
-                next = u32::from(input.byte()?);
+                next = u64::from(input.byte()?);
                 if next == 255 {
                     let mut following = input.byte()?;
                     while following == 255 {
@@ -231,7 +232,7 @@ impl Entropy {
             self.fill(input, count as i32)?;
         }
         self.remaining -= count as i32;
-        Ok((self.value >> ((self.remaining & 31) as u32)) & ((1u32 << count) - 1))
+        Ok(((self.value >> ((self.remaining & 63) as u32)) as u32) & ((1u32 << count) - 1))
     }
 
     fn signed(&mut self, input: &mut Input<'_>, count: u32) -> Result<i32, ContentError> {
