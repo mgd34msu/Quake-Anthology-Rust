@@ -24,5 +24,4 @@ pub mod textures;
 pub mod view;
 pub mod visibility;
 pub mod world;
-pub mod world_cache;
 pub mod world_text;
