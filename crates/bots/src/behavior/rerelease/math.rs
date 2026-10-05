@@ -104,10 +104,17 @@ pub fn bvec_normalized(v: Vec3) -> Vec3 {
     }
 }
 
-/// Wrap an angle into `[0, 360)`.
+/// Wrap an angle into `[0, 360)` with the rerelease `fmod` form.
 #[must_use]
 pub fn angle_mod(a: f32) -> f32 {
-    a.rem_euclid(360.0)
+    // Rerelease `anglemod` (q_std.h): `fmod(a, 360)`, plus 360 when
+    // negative. Kept local until `qa_core::math` gains a rerelease form.
+    let wrapped = a % 360.0;
+    if wrapped < 0.0 {
+        360.0 + wrapped
+    } else {
+        wrapped
+    }
 }
 
 /// Shortest signed rotation from `from` to `to`, in `(-180, 180]`.
@@ -163,4 +170,18 @@ pub fn angle_between(pitch: f32, yaw: f32, dir: Vec3) -> f32 {
     let (forward, _, _) = angle_vectors(pitch, yaw, 0.0);
     let d = bvec_normalized(dir);
     bvec_dot(forward, d).clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::angle_mod;
+
+    /// Rerelease `anglemod` is the `fmod` form: fractional inputs survive.
+    #[test]
+    fn rerelease_angle_mod_uses_fmod() {
+        assert_eq!(angle_mod(720.5), 0.5);
+        assert_eq!(angle_mod(-90.0), 270.0);
+        assert_eq!(angle_mod(360.0), 0.0);
+        assert_eq!(angle_mod(0.0), 0.0);
+    }
 }

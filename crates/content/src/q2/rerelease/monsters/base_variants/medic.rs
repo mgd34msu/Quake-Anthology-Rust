@@ -159,9 +159,16 @@ pub fn rerelease_medic_reinforcements(fields: &BTreeMap<String, String>) -> Vec<
         .collect()
 }
 
-/// Angle mod (`anglemod`).
+/// Angle mod (`anglemod`, rerelease `fmod` form).
 fn medic_angle_mod(angle: f64) -> f64 {
-    ((angle * 65536.0 / 360.0).trunc() as i32 & 65535) as f64 * 360.0 / 65536.0
+    // Rerelease `anglemod` (q_std.h): `fmod(a, 360)`, plus 360 when
+    // negative. Kept local until `qa_core::math` gains a rerelease form.
+    let wrapped = angle % 360.0;
+    if wrapped < 0.0 {
+        360.0 + wrapped
+    } else {
+        wrapped
+    }
 }
 
 /// Spawn grow laser think (`spawnGrowLaserThink`).
@@ -1423,4 +1430,18 @@ pub fn create_rerelease_medic_definitions() -> Vec<Q2MonsterDefinition> {
     commander.mass = 600.0;
     commander.yaw_speed = Some(40.0);
     vec![definition, commander]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::medic_angle_mod;
+
+    /// Rerelease `anglemod` is the `fmod` form: fractional inputs survive.
+    #[test]
+    fn rerelease_angle_mod_uses_fmod() {
+        assert_eq!(medic_angle_mod(720.5), 0.5);
+        assert_eq!(medic_angle_mod(-90.0), 270.0);
+        assert_eq!(medic_angle_mod(360.0), 0.0);
+        assert_eq!(medic_angle_mod(0.0), 0.0);
+    }
 }

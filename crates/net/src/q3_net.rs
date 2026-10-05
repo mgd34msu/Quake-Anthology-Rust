@@ -684,6 +684,28 @@ fn set_entity_int(state: &mut Q3EntityState, kind: EntityFieldKind, value: i32) 
     }
 }
 
+/// Store a numerically converted float entity field.
+///
+/// The 13-bit compact branch of `MSG_ReadDeltaEntity` assigns the decoded
+/// integer with a numeric conversion (`*(float *)toF = trunc`, msg.c),
+/// while every other branch moves raw bits and keeps using
+/// [`set_entity_int`].
+fn set_entity_float(state: &mut Q3EntityState, kind: EntityFieldKind, value: f32) {
+    match kind {
+        EntityFieldKind::PosBase(axis) => state.pos.base[axis] = value,
+        EntityFieldKind::PosDelta(axis) => state.pos.delta[axis] = value,
+        EntityFieldKind::AposBase(axis) => state.apos.base[axis] = value,
+        EntityFieldKind::AposDelta(axis) => state.apos.delta[axis] = value,
+        EntityFieldKind::Origin(axis) => state.origin[axis] = value,
+        EntityFieldKind::Origin2(axis) => state.origin2[axis] = value,
+        EntityFieldKind::Angles(axis) => state.angles[axis] = value,
+        EntityFieldKind::Angles2(axis) => state.angles2[axis] = value,
+        // The delta tables only route `bits == 0` fields here, and those are
+        // all float kinds; keep the setter total with a numeric conversion.
+        _ => set_entity_int(state, kind, value as i32),
+    }
+}
+
 /// One delta-coded player field.
 #[derive(Debug, Clone, Copy)]
 struct PlayerField {
@@ -876,6 +898,24 @@ fn set_player_int(state: &mut Q3PlayerState, kind: PlayerFieldKind, value: i32) 
         PlayerFieldKind::Velocity(axis) => state.velocity[axis] = f32::from_bits(value as u32),
         PlayerFieldKind::Viewangles(axis) => state.viewangles[axis] = f32::from_bits(value as u32),
         PlayerFieldKind::GrapplePoint(axis) => state.grapple_point[axis] = f32::from_bits(value as u32),
+    }
+}
+
+/// Store a numerically converted float player field.
+///
+/// The 13-bit compact branch of `MSG_ReadDeltaPlayerstate` assigns the
+/// decoded integer with a numeric conversion (`*(float *)toF = trunc`,
+/// msg.c), while every other branch moves raw bits and keeps using
+/// [`set_player_int`].
+fn set_player_float(state: &mut Q3PlayerState, kind: PlayerFieldKind, value: f32) {
+    match kind {
+        PlayerFieldKind::Origin(axis) => state.origin[axis] = value,
+        PlayerFieldKind::Velocity(axis) => state.velocity[axis] = value,
+        PlayerFieldKind::Viewangles(axis) => state.viewangles[axis] = value,
+        PlayerFieldKind::GrapplePoint(axis) => state.grapple_point[axis] = value,
+        // The delta tables only route `bits == 0` fields here, and those are
+        // all float kinds; keep the setter total with a numeric conversion.
+        _ => set_player_int(state, kind, value as i32),
     }
 }
 
@@ -1100,7 +1140,7 @@ fn read_entity_field<'d, 'x>(
     } else if reader.read_bits(1)? == 0 {
         let value = reader.read_bits(FLOAT_INT_BITS)? - FLOAT_INT_BIAS;
         text = Some(value.to_string());
-        set_entity_int(state, field.kind, value);
+        set_entity_float(state, field.kind, value as f32);
     } else {
         let bits = reader.read_bits(32)? as u32;
         if diagnostics.is_some() {
@@ -1286,7 +1326,7 @@ fn read_player_field<'d, 'x>(
     } else if reader.read_bits(1)? == 0 {
         let value = reader.read_bits(FLOAT_INT_BITS)? - FLOAT_INT_BIAS;
         text = Some(value.to_string());
-        set_player_int(state, field.kind, value);
+        set_player_float(state, field.kind, value as f32);
     } else {
         let bits = reader.read_bits(32)? as u32;
         if diagnostics.is_some() {
@@ -7975,6 +8015,202 @@ mod tests {
         let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
         write_delta_player_state(&mut writer, Some(&from), &small).unwrap();
         assert_eq!(hex(writer.to_bytes()), "ff5542b5f541e503");
+    }
+
+    /// Compact-branch integers decode with a numeric conversion per float field.
+    ///
+    /// Mirrors `MSG_ReadDeltaEntity` (msg.c: float branch stores
+    /// `*(float *)toF = trunc`): raw 13-bit payloads must land as integral
+    /// floats, never as reinterpreted bits.
+    #[test]
+    fn delta_entity_compact_float_is_numeric() {
+        let fields: Vec<EntityField> = ENTITY_FIELDS.iter().copied().filter(|field| field.bits == 0).collect();
+        assert_eq!(fields.len(), 24);
+        for field in &fields {
+            for value in [-FLOAT_INT_BIAS, -2048, -1, 0, 1, 2048, FLOAT_INT_BIAS - 1] {
+                let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+                writer.write_bits(1, 1).unwrap();
+                writer.write_bits(1, 1).unwrap();
+                writer.write_bits(0, 1).unwrap();
+                writer.write_bits(value + FLOAT_INT_BIAS, FLOAT_INT_BITS).unwrap();
+                let bytes = writer.to_bytes().to_vec();
+                let mut reader = Q3MsgReader::new(&bytes, MessageMode::Bitstream).unwrap();
+                let from = Q3EntityState::default();
+                let mut state = Q3EntityState::default();
+                read_entity_field(&mut reader, *field, &from, &mut state, None).unwrap();
+                assert_eq!(
+                    entity_float(&state, field.kind).to_bits(),
+                    (value as f32).to_bits(),
+                    "field {} value {value}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// Every entity float field round-trips through both float branches.
+    ///
+    /// Covers integral, negative, fractional, zero, negative-zero, and
+    /// compact-range-boundary values. A zero float encodes as the zero bit
+    /// and decodes as positive zero.
+    #[test]
+    fn delta_entity_float_round_trip_all_fields() {
+        let fields: Vec<EntityField> = ENTITY_FIELDS.iter().copied().filter(|field| field.bits == 0).collect();
+        assert_eq!(fields.len(), 24);
+        let values = [
+            3.0f32, -5.0, 0.5, -123.75, 0.0, -0.0, 4095.0, 4096.0, -4096.0, -4097.0, 1e10, -0.5,
+        ];
+        for field in &fields {
+            for value in values {
+                let from = Q3EntityState {
+                    number: 5,
+                    ..Default::default()
+                };
+                let mut to = from.clone();
+                set_entity_float(&mut to, field.kind, value);
+                let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+                write_delta_entity(&mut writer, Some(&from), Some(&to), true).unwrap();
+                let bytes = writer.to_bytes().to_vec();
+                let mut reader = Q3MsgReader::new(&bytes, MessageMode::Bitstream).unwrap();
+                let number = reader.read_bits(ENTITY_NUMBER_BITS).unwrap();
+                let decoded = read_delta_entity(&mut reader, &from, number, None).unwrap();
+                let expected = if value == 0.0 { 0.0f32 } else { value };
+                assert_eq!(
+                    entity_float(&decoded, field.kind).to_bits(),
+                    expected.to_bits(),
+                    "field {} value {value}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// Compact-branch integers decode with a numeric conversion per player field.
+    ///
+    /// Mirrors `MSG_ReadDeltaPlayerstate` (msg.c: float branch stores
+    /// `*(float *)toF = trunc`). Player floats have no zero bit, so zero
+    /// itself travels through the compact branch.
+    #[test]
+    fn delta_player_compact_float_is_numeric() {
+        let fields: Vec<PlayerField> = PLAYER_FIELDS.iter().copied().filter(|field| field.bits == 0).collect();
+        assert_eq!(fields.len(), 12);
+        for field in &fields {
+            for value in [-FLOAT_INT_BIAS, -2048, -1, 0, 1, 2048, FLOAT_INT_BIAS - 1] {
+                let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+                writer.write_bits(1, 1).unwrap();
+                writer.write_bits(0, 1).unwrap();
+                writer.write_bits(value + FLOAT_INT_BIAS, FLOAT_INT_BITS).unwrap();
+                let bytes = writer.to_bytes().to_vec();
+                let mut reader = Q3MsgReader::new(&bytes, MessageMode::Bitstream).unwrap();
+                let from = Q3PlayerState::new(Q3Product::Base);
+                let mut state = Q3PlayerState::new(Q3Product::Base);
+                read_player_field(&mut reader, *field, &from, &mut state, None).unwrap();
+                assert_eq!(
+                    player_float(&state, field.kind).to_bits(),
+                    (value as f32).to_bits(),
+                    "field {} value {value}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// Every player float field round-trips through both float branches.
+    #[test]
+    fn delta_player_float_round_trip_all_fields() {
+        let fields: Vec<PlayerField> = PLAYER_FIELDS.iter().copied().filter(|field| field.bits == 0).collect();
+        assert_eq!(fields.len(), 12);
+        let values = [
+            3.0f32, -5.0, 0.5, -123.75, 0.0, -0.0, 4095.0, 4096.0, -4096.0, -4097.0, 1e10, -0.5,
+        ];
+        for field in &fields {
+            for value in values {
+                let from = Q3PlayerState::new(Q3Product::Base);
+                let mut to = from.clone();
+                set_player_float(&mut to, field.kind, value);
+                let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+                write_delta_player_state(&mut writer, Some(&from), &to).unwrap();
+                let bytes = writer.to_bytes().to_vec();
+                let mut reader = Q3MsgReader::new(&bytes, MessageMode::Bitstream).unwrap();
+                let decoded = read_delta_player_state(&mut reader, Some(&from), Q3Product::Base, None).unwrap();
+                // Negative zero travels the compact branch as integer zero and
+                // decodes as positive zero.
+                let expected = if value == 0.0 { 0.0f32 } else { value };
+                assert_eq!(
+                    player_float(&decoded, field.kind).to_bits(),
+                    expected.to_bits(),
+                    "field {} value {value}",
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// Synthetic dm_68-framed replay keeps entity origins sane.
+    ///
+    /// No retail dm_68 is loadable in the test environment, so this replay is
+    /// built from synthetic dm_68-framed bytes: real delta-entity payloads
+    /// (integral, negative, and fractional origins) framed with the demo
+    /// sequence/length records. Decoded origins must match exactly and stay
+    /// finite within world magnitude; the compact-branch bug decoded
+    /// integral origins as denormals instead.
+    #[test]
+    fn demo_framed_entity_origins_are_sane() {
+        let origins = [
+            [100.0f32, -50.0, 12.0],
+            [0.0, 0.0, 0.0],
+            [-4096.0, 4095.0, 3.5],
+            [9000.0, -9000.0, 0.25],
+        ];
+        let mut messages = Vec::new();
+        for (index, origin) in origins.iter().enumerate() {
+            let number = index as i32 + 1;
+            let from = Q3EntityState {
+                number,
+                ..Default::default()
+            };
+            let to = Q3EntityState {
+                number,
+                origin: *origin,
+                ..Default::default()
+            };
+            let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+            write_delta_entity(&mut writer, Some(&from), Some(&to), true).unwrap();
+            messages.push(DemoMessage {
+                sequence: index as i32,
+                payload: writer.to_bytes().to_vec(),
+            });
+        }
+        let bytes = encode_demo(&messages).unwrap();
+        let mut reader = DemoReader::new(&bytes);
+        for (index, expected) in origins.iter().enumerate() {
+            let mut sequence = -1;
+            let record = reader.next(&mut |value| sequence = value).unwrap();
+            let DemoRecord::Message(message) = record else {
+                panic!("expected demo message {index}");
+            };
+            assert_eq!(sequence, index as i32);
+            assert_eq!(message.sequence, index as i32);
+            let number = index as i32 + 1;
+            let from = Q3EntityState {
+                number,
+                ..Default::default()
+            };
+            let mut payload = Q3MsgReader::new(&message.payload, MessageMode::Bitstream).unwrap();
+            let decoded_number = payload.read_bits(ENTITY_NUMBER_BITS).unwrap();
+            let decoded = read_delta_entity(&mut payload, &from, decoded_number, None).unwrap();
+            assert_eq!(decoded.origin, *expected, "message {index}");
+            for axis in 0..3 {
+                assert!(decoded.origin[axis].is_finite(), "message {index}");
+                assert!(decoded.origin[axis].abs() <= 100_000.0, "message {index}");
+            }
+        }
+        let mut sequence = -1;
+        assert!(matches!(
+            reader.next(&mut |value| sequence = value).unwrap(),
+            DemoRecord::End(_)
+        ));
+        assert_eq!(sequence, -1);
     }
 
     fn encode_context<'a>(

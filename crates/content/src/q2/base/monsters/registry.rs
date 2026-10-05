@@ -69,7 +69,9 @@ pub fn register_q2_classic_base_monsters(game: &mut Q2GameServices) {
         if let Some(callbacks) = definition.source_callbacks.clone() {
             game.source_callbacks.register(&callbacks);
         }
-        register_monster(game, definition, None);
+        if let Err(error) = register_monster(game, definition, None) {
+            game.host.diagnostic(&error.to_string());
+        }
     }
     register_spawn_module(game, boss3_stand_module());
 }

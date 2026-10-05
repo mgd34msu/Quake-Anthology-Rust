@@ -51,7 +51,9 @@ fn register_rerelease_definition(game: &mut Q2GameServices, definition: Q2Monste
     if let Some(callbacks) = definition.source_callbacks.clone() {
         game.source_callbacks.register(&callbacks);
     }
-    register_monster(game, definition, Some(Q2Edition::Rerelease));
+    if let Err(error) = register_monster(game, definition, Some(Q2Edition::Rerelease)) {
+        game.host.diagnostic(&error.to_string());
+    }
 }
 
 /// Register a spawn module and its callbacks.
