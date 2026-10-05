@@ -975,9 +975,10 @@ pub fn q1_use_targets(
 /// `buttons.qc:48`), multiples (`multi_use`, `triggers.qc:75`),
 /// relays (`SUB_UseTargets`), counters (`counter_use`,
 /// `triggers.qc:222`), teleports (`teleport_use`, `triggers.qc:436`),
-/// and toggle lights (`light_use`, `misc.qc:21`). Anything else is
-/// `SUB_Null`, including hurt/push/setskill/gate/teledeath triggers
-/// (no `use` function) and teleport destinations.
+/// toggle lights (`light_use`, `misc.qc:21`), and monsters
+/// (`monster_use`, `monsters.qc:21`). Anything else is `SUB_Null`,
+/// including hurt/push/setskill/gate/teledeath triggers (no `use`
+/// function) and teleport destinations.
 pub fn q1_fire_use(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1063,6 +1064,9 @@ pub fn q1_fire_use(
             behaviors.light_styles.insert(light.style, LIGHTSTYLE_OFF);
             light.start_off = true;
         }
+    }
+    if behaviors.monsters.contains_key(actor) {
+        super::native_q1_monsters::q1_monster_use(behaviors, simulation, actor, activator);
     }
 }
 
@@ -1255,7 +1259,18 @@ pub fn q1_trigger_touch(
                 return;
             }
             triggers.unmark(&contact.trigger);
-            simulation.damage_q1(&contact.other, dmg);
+            // `hurt_touch` wounds through `T_Damage` (`triggers.qc:544`),
+            // so monsters feel pain and die here too.
+            super::native_q1_monsters::q1_t_damage(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                &contact.other,
+                Some(&contact.trigger),
+                Some(&contact.trigger),
+                dmg,
+            );
             let now = simulation.frame().time.as_seconds_f64();
             behaviors.schedule_think(&contact.trigger, Q1ThinkKind::HurtOn, now + 1.0);
         }
@@ -1342,15 +1357,38 @@ pub fn q1_trigger_touch(
         }
         Q1TriggerKind::Teledeath { owner } => {
             // `tdeath_touch` (`triggers.qc:323`): the owner is immune;
-            // anything else with nonzero health takes 50000. The
-            // invincible-victim branch (owner explodes itself, frag
-            // credit flips) waits for powerups: nothing here carries
+            // anything else with nonzero health takes 50000 through
+            // `T_Damage`. A monster arriving on a player explodes
+            // itself instead. The invincible-victim rename
+            // (`teledeath2`) waits for powerups: nothing here carries
             // `invincible_finished` yet.
             if contact.other == owner {
                 return;
             }
+            if Some(&contact.other) == behaviors.player.as_ref() && Some(&owner) != behaviors.player.as_ref() {
+                super::native_q1_monsters::q1_t_damage(
+                    behaviors,
+                    simulation,
+                    movers,
+                    triggers,
+                    &owner,
+                    Some(&contact.trigger),
+                    Some(&contact.trigger),
+                    50_000.0,
+                );
+                return;
+            }
             if q1_health_of(simulation, &contact.other) != 0.0 {
-                simulation.damage_q1(&contact.other, 50_000.0);
+                super::native_q1_monsters::q1_t_damage(
+                    behaviors,
+                    simulation,
+                    movers,
+                    triggers,
+                    &contact.other,
+                    Some(&contact.trigger),
+                    Some(&contact.trigger),
+                    50_000.0,
+                );
             }
         }
     }

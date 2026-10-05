@@ -45,6 +45,9 @@ use super::play::{
     provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
 };
 use super::simulation::native_q1_items::{build_q1_item, q1_is_item, register_q1_item_spawns};
+use super::simulation::native_q1_monsters::{
+    build_q1_monster, build_q1_movetarget, q1_is_monster, q1_is_movetarget, register_q1_monster_spawns,
+};
 use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
@@ -452,6 +455,8 @@ pub struct MapSpawnContext {
     pub skill: u8,
     /// Deathmatch mode for Q1 spawnflags inhibition.
     pub deathmatch: bool,
+    /// Cooperative rules for Q1 monster target re-selection.
+    pub coop: bool,
     /// Native Q1 spawn path (`None` for other families).
     pub q1: Option<Q1SpawnContext>,
 }
@@ -479,8 +484,11 @@ pub fn spawn_map_entities(
         register_q1_spawns(server.spawns_mut());
         register_q1_trigger_spawns(server.spawns_mut());
         register_q1_item_spawns(server.spawns_mut());
+        register_q1_monster_spawns(server.spawns_mut());
         q1.behaviors.borrow_mut().registered = q1.registered;
         q1.behaviors.borrow_mut().deathmatch = context.deathmatch;
+        q1.behaviors.borrow_mut().skill = context.skill;
+        q1.behaviors.borrow_mut().coop = context.coop;
     }
     let mut classnames = BTreeSet::new();
     for properties in entities {
@@ -643,6 +651,42 @@ pub fn spawn_map_entities(
                 }
                 continue;
             }
+            if q1_is_monster(&classname) || q1_is_movetarget(&classname) {
+                let build = if q1_is_monster(&classname) {
+                    "monster"
+                } else {
+                    "movetarget"
+                };
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let built = if q1_is_monster(&classname) {
+                            build_q1_monster(server, &mut q1.behaviors.borrow_mut(), &actor, &fields)
+                        } else {
+                            build_q1_movetarget(server, &mut q1.behaviors.borrow_mut(), &actor, &fields)
+                        };
+                        match built {
+                            Ok(()) => {
+                                q1_note_targetname(&mut q1.behaviors.borrow_mut(), &fields, actor.id());
+                                summary.spawned += 1;
+                            }
+                            Err(error) => {
+                                let _ignored = server.simulation_mut().release(&actor);
+                                summary.skipped.push(SkippedEntity {
+                                    index,
+                                    classname,
+                                    reason: format!("{source}: {build} build failed: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
         }
         match server.spawn_entity(&fields) {
             Ok(actor) => {
@@ -769,6 +813,7 @@ pub fn load_play_world(
     let context = MapSpawnContext {
         skill: options.skill,
         deathmatch: options.mode == GameMode::Deathmatch,
+        coop: options.mode == GameMode::Coop,
         q1: (kind == BspKind::Q1).then(|| Q1SpawnContext {
             models: q1_models,
             behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
@@ -893,6 +938,7 @@ mod tests {
         MapSpawnContext {
             skill: 1,
             deathmatch: false,
+            coop: false,
             q1: None,
         }
     }
@@ -902,6 +948,7 @@ mod tests {
         let context = MapSpawnContext {
             skill: 1,
             deathmatch: false,
+            coop: false,
             q1: Some(Q1SpawnContext {
                 models: vec![qa_core::math::Bounds {
                     min: vec3(0.0, 0.0, 0.0),

@@ -208,6 +208,7 @@ fn open_dedicated_map(
     let context = MapSpawnContext {
         skill: config.skill,
         deathmatch: config.mode == GameMode::Deathmatch,
+        coop: config.mode == GameMode::Coop,
         q1: Some(Q1SpawnContext {
             models: selected.q1_models,
             behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
