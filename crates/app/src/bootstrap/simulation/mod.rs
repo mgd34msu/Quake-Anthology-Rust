@@ -42,6 +42,7 @@ pub mod native_mod_host;
 pub mod native_mod_presentation;
 pub mod native_primary_weapons;
 pub mod native_q1_items;
+pub mod native_q1_monsters;
 pub mod native_q1_pusher;
 pub mod native_q1_spawns;
 pub mod native_q1_triggers;

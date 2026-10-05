@@ -134,7 +134,7 @@ pub struct Q1SceneLinks<'b> {
 /// solid boxes; marked triggers link as trigger volumes. Anything
 /// gamecode left `SOLID_NOT` stays out. The trigger set is built once,
 /// so classification stays linear.
-fn link_q1_scene(
+pub(crate) fn link_q1_scene(
     scene: &mut SharedSceneQueries,
     simulation: &Simulation,
     triggers: &TriggerTable,
@@ -363,7 +363,7 @@ impl<'s> Q1PlayerServices<'s> {
 }
 
 /// Convert a shared-scene trace to a movement trace result.
-fn q1_trace_from_scene(trace: &SceneTraceResult) -> Q1Trace {
+pub(crate) fn q1_trace_from_scene(trace: &SceneTraceResult) -> Q1Trace {
     let (in_open, in_water, source_plane) = match &trace.detail {
         SceneTraceDetail::Q1 {
             in_open,
@@ -400,7 +400,7 @@ fn q1_trace_from_scene(trace: &SceneTraceResult) -> Q1Trace {
 /// A failed scene trace becomes a blocking trace at the start point
 /// instead of an error: callers are infallible movement services, and
 /// stopping beats falling through the world.
-fn q1_blocked_trace(query: &Q1TraceQuery) -> Q1Trace {
+pub(crate) fn q1_blocked_trace(query: &Q1TraceQuery) -> Q1Trace {
     Q1Trace {
         fraction: 0.0,
         end: query.start,
@@ -626,7 +626,7 @@ fn q2_trace_from_scene(trace: &qa_bots::scene::TraceResult) -> Q2Trace {
 
 /// Convert a scene hit record to a movement hit record, shared by the
 /// Quake II and III arms (the mapping is family-agnostic).
-fn hit_from_scene(hit: &SceneTraceHit) -> TraceHit {
+pub(crate) fn hit_from_scene(hit: &SceneTraceHit) -> TraceHit {
     match hit {
         SceneTraceHit::None => TraceHit::None,
         SceneTraceHit::World { model } => TraceHit::World { model: *model as u32 },

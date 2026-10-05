@@ -1688,6 +1688,7 @@ impl WindowedStartupBackend {
                 eprintln!("windowed: player step failed ({error})");
             }
         }
+        world.step_monsters();
     }
 
     /// Sample the live seat and build one world user command, or `None`
