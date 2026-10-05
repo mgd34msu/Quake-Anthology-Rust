@@ -762,6 +762,71 @@ mod tests {
         }
     }
 
+    fn q1_context() -> (MapSpawnContext, Rc<RefCell<Q1NativeBehaviors>>) {
+        let behaviors = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        let context = MapSpawnContext {
+            skill: 1,
+            deathmatch: false,
+            q1: Some(Q1SpawnContext {
+                models: vec![qa_core::math::Bounds {
+                    min: vec3(0.0, 0.0, 0.0),
+                    max: vec3(64.0, 64.0, 128.0),
+                }],
+                behaviors: Rc::clone(&behaviors),
+            }),
+        };
+        (context, behaviors)
+    }
+
+    fn record(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn q1_context_runs_native_spawns_with_generic_fallback() {
+        let options = ApplicationOptions::default();
+        let config = test_config(&options);
+        let mut server = open_server(&config).unwrap();
+        let (context, behaviors) = q1_context();
+        let entities = vec![
+            record(&[("classname", "worldspawn")]),
+            record(&[("classname", "info_player_start"), ("origin", "0 0 32")]),
+            record(&[("classname", "light"), ("origin", "0 0 64")]),
+            record(&[
+                ("classname", "light"),
+                ("origin", "0 0 72"),
+                ("targetname", "t1"),
+                ("style", "32"),
+            ]),
+            record(&[("classname", "light_torch_small_walltorch"), ("origin", "0 0 80")]),
+            record(&[("classname", "func_door"), ("origin", "0 0 0"), ("model", "*0")]),
+            record(&[("classname", "func_door"), ("origin", "512 0 0")]),
+            record(&[
+                ("classname", "monster_ogre"),
+                ("origin", "256 0 32"),
+                ("spawnflags", "512"),
+            ]),
+            record(&[("classname", "monster_ogre"), ("origin", "288 0 32")]),
+        ];
+        let summary = spawn_map_entities(&mut server, &entities, "maps/test.bsp", &context);
+        // Native: worldspawn, start, targeted light, modelled door;
+        // generic: the uninhibited ogre.
+        assert_eq!(summary.spawned, 5);
+        // Inert light, torch static, unmodelled door, inhibited ogre.
+        assert_eq!(summary.skipped.len(), 4);
+        assert!(summary
+            .skipped
+            .iter()
+            .any(|skipped| skipped.reason.contains("door build failed")));
+        // The failed door actor was released: 5 spawns plus 1 field.
+        assert_eq!(server.simulation().actor_count(), 6);
+        assert_eq!(behaviors.borrow().doors.len(), 1);
+        assert_eq!(behaviors.borrow().fields.len(), 1);
+    }
+
     #[test]
     fn map_content_prefers_map_game() {
         let options = ApplicationOptions::default();

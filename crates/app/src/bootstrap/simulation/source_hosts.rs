@@ -20,7 +20,7 @@ use qa_content::monsters::MonsterTargetObservation;
 use qa_content::q1::foundation::gameplay::SourceDamageModifier;
 use qa_content::q1::foundation::host::{
     Q1ActorCallbackTable, Q1CancelThinkHook, Q1ChangeYawHook, Q1CheckBottomHook, Q1CheckClientHook, Q1ClassnameHook,
-    Q1Contents, Q1ContentsHook, Q1ControlPlayerHook, Q1EmitHook, Q1FoundationHost, Q1GameplayAuthority,
+    Q1Contents, Q1ContentsHook, Q1ControlPlayerHook, Q1EmitHook, Q1FoundationHost, Q1GameplayAuthority, Q1IsBotHook,
     Q1MonsterTargetHook, Q1MoveToGoalHook, Q1OriginalPickupPort, Q1PlayersHook, Q1PowerupExpiresHook, Q1PowerupHook,
     Q1PunchAngles, Q1RandomHook, Q1RegisterEntity, Q1ScheduleThinkHook, Q1SessionActorRegistry, Q1SetGravityHook,
     Q1SharedBodyTable, Q1SharedInventoryTable, Q1SourceDamageMultiplierHook, Q1SourceTargetHook, Q1StepPusherHook,
@@ -187,6 +187,8 @@ pub struct Q1ActorHostBindings {
     pub powerup_expires: Option<Q1PowerupExpiresHook>,
     /// Source damage multiplier hook.
     pub source_damage_multiplier: Option<Q1SourceDamageMultiplierHook>,
+    /// Bot marker hook.
+    pub is_bot: Option<Q1IsBotHook>,
 }
 
 /// Build a Q1 foundation host whose world queries read the shared scene.
@@ -314,6 +316,7 @@ pub fn create_q1_actor_host(bindings: Q1ActorHostBindings, world: ActorHostWorld
         source_target: bindings.source_target,
         powerup_expires: bindings.powerup_expires,
         source_damage_multiplier: bindings.source_damage_multiplier,
+        is_bot: bindings.is_bot,
     }
 }
 

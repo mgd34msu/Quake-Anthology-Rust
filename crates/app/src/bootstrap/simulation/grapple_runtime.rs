@@ -2203,6 +2203,7 @@ pub mod fakes {
             source_target: None,
             powerup_expires: None,
             source_damage_multiplier: None,
+            is_bot: None,
         };
         let mut game = Q1EntityServices::new(host, test_q1_options()).expect("game");
         register_threewave_grapple(&mut game, Box::new(FakeThreewaveHost)).expect("grapple");

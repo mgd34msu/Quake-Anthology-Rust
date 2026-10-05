@@ -1536,9 +1536,7 @@ impl WindowedStartupBackend {
         if register_frame_time_cvars(&mut cvars).is_err() {
             return;
         }
-        if dialect == Dialect::Q1Quakeworld
-            && cvars.get("rate").is_none()
-            && cvars.register("rate", "2500", 0).is_err()
+        if dialect == Dialect::Q1Quakeworld && cvars.get("rate").is_none() && cvars.register("rate", "2500", 0).is_err()
         {
             return;
         }

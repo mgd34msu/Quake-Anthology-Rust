@@ -1054,6 +1054,7 @@ pub fn test_q1_game_with_options(options: Q1FoundationOptions) -> (Q1EntityServi
         source_target: None,
         powerup_expires: None,
         source_damage_multiplier: None,
+        is_bot: None,
     };
     let game = Q1EntityServices::new(host, options).expect("test game");
     let handles = Q1Handles {

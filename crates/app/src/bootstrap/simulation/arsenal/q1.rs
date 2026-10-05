@@ -1192,6 +1192,7 @@ mod tests {
             source_target: None,
             powerup_expires: None,
             source_damage_multiplier: None,
+            is_bot: None,
         }
     }
 

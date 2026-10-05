@@ -369,6 +369,8 @@ pub type Q1SourceTargetHook = Box<dyn FnMut(&ActorId) -> Q1SourceTarget>;
 pub type Q1PowerupExpiresHook = Box<dyn FnMut(&ActorId, Q1Powerup) -> f64>;
 /// Source damage multiplier hook.
 pub type Q1SourceDamageMultiplierHook = Box<dyn FnMut(&ActorId) -> f64>;
+/// Bot marker hook (donor `flags & FL_ISBOT`).
+pub type Q1IsBotHook = Box<dyn FnMut(&ActorId) -> bool>;
 /// Foreign-damage adjustment hook.
 pub type Q1DamageAdjustHook = Box<dyn Fn(&DamageRequest) -> Option<DamageAdjust>>;
 
@@ -446,6 +448,9 @@ pub struct Q1FoundationHost {
     pub powerup_expires: Option<Q1PowerupExpiresHook>,
     /// Source damage multiplier hook.
     pub source_damage_multiplier: Option<Q1SourceDamageMultiplierHook>,
+    /// Bot marker hook. Addons that admit bots install this so the
+    /// rerelease coop guard can read it; `None` means no bots.
+    pub is_bot: Option<Q1IsBotHook>,
 }
 
 impl std::fmt::Debug for Q1FoundationHost {
@@ -1002,6 +1007,7 @@ pub(crate) mod mock {
             source_target: None,
             powerup_expires: None,
             source_damage_multiplier: None,
+            is_bot: None,
         };
         (host, events)
     }

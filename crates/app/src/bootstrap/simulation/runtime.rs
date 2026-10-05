@@ -34581,6 +34581,7 @@ impl SharedSimulation {
             source_target: Some(source_target),
             powerup_expires: None,
             source_damage_multiplier: None,
+            is_bot: None,
         };
         let world = c11_actor_host_world(self, numeric);
         let _ = tables;

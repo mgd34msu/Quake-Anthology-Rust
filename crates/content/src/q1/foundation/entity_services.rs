@@ -1509,7 +1509,10 @@ impl Q1EntityServices {
 
     /// Damage a target through the shared combat authority.
     ///
-    /// The Shub crash fix is rerelease-only
+    /// The coop bot guard is rerelease-only
+    /// (`quake-rerelease-qc/quakec/combat.qc:151-157`, `FL_ISBOT`
+    /// absent from `progs106`): in coop, a bot player never damages
+    /// a human player. The Shub crash fix is rerelease-only
     /// (`quake-rerelease-qc/quakec/combat.qc:152-161`, absent from
     /// `progs106`): sub-telefrag damage on `monster_oldone` is
     /// ignored. Pentagram-absorbed hits are stock
@@ -1560,6 +1563,29 @@ impl Q1EntityServices {
             normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             delivery: params.delivery,
         };
+        let bot_veto = match attacker.filter(|attacker| *attacker != target) {
+            Some(attacker) => match self.host.is_bot.as_mut() {
+                Some(is_bot) => is_bot(attacker) && !is_bot(target),
+                None => false,
+            },
+            None => false,
+        };
+        if self.options().edition == Q1Edition::Rerelease
+            && self.options().coop
+            && bot_veto
+            && self
+                .entity_ref(target)
+                .is_some_and(|entity| entity.classname == "player")
+            && attacker.is_some_and(|attacker| {
+                self.entity_ref(attacker)
+                    .is_some_and(|entity| entity.classname == "player")
+            })
+        {
+            // Coop bot guard (`quakec/combat.qc:151-157`): in coop,
+            // bot players never damage human teammates. Donor order
+            // runs this before the Shub fix.
+            return DamageOutcome::StaleTarget { request };
+        }
         if self.options().edition == Q1Edition::Rerelease
             && amount < 9999.0
             && self
@@ -3882,6 +3908,58 @@ mod tests {
         let shub = game.create("monster_oldone", None, None).expect("shub");
         game.set_damageable(&shub, true).expect("damageable");
         game.damage(&shub, None, None, 5000.0, &params);
+        assert_eq!(applied.borrow().len(), 1);
+    }
+
+    #[test]
+    fn rerelease_coop_bots_cannot_hurt_human_players() {
+        use super::super::types::Q1Edition;
+
+        fn coop_game(edition: Q1Edition, coop: bool) -> (Q1EntityServices, AppliedLog, ActorId, ActorId, ActorId) {
+            let mut config = options();
+            config.edition = edition;
+            config.coop = coop;
+            let (mut game, applied, _) = combat_game_with(config, false);
+            let bot = game.create("player", None, None).expect("bot");
+            let human = game.create("player", None, None).expect("human");
+            game.set_damageable(&bot, true).expect("damageable");
+            game.set_damageable(&human, true).expect("damageable");
+            let ogre = game.create("monster_ogre", None, None).expect("ogre");
+            game.set_damageable(&ogre, true).expect("damageable");
+            let bot_id = bot.clone();
+            game.host.is_bot = Some(Box::new(move |actor| *actor == bot_id));
+            (game, applied, bot, human, ogre)
+        }
+
+        let params = Q1DamageParams::default();
+        let (mut game, applied, bot, human, ogre) = coop_game(Q1Edition::Rerelease, true);
+
+        // Bot harms human teammate: vetoed (`quakec/combat.qc:151-157`).
+        let outcome = game.damage(&human, None, Some(&bot), 50.0, &params);
+        assert!(matches!(outcome, DamageOutcome::StaleTarget { .. }));
+        assert!(applied.borrow().is_empty());
+
+        // Self-damage is excluded both ways, and proves both players
+        // are damageable: the veto above is bot-specific.
+        game.damage(&human, None, Some(&human), 50.0, &params);
+        assert_eq!(applied.borrow().len(), 1);
+        game.damage(&bot, None, Some(&bot), 50.0, &params);
+        assert_eq!(applied.borrow().len(), 2);
+
+        // Non-player targets and human attackers are unaffected.
+        game.damage(&ogre, None, Some(&bot), 50.0, &params);
+        assert_eq!(applied.borrow().len(), 3);
+        game.damage(&bot, None, Some(&human), 50.0, &params);
+        assert_eq!(applied.borrow().len(), 4);
+
+        // The coop flag matters: rerelease without coop flows.
+        let (mut game, applied, bot, human, _) = coop_game(Q1Edition::Rerelease, false);
+        game.damage(&human, None, Some(&bot), 50.0, &params);
+        assert_eq!(applied.borrow().len(), 1);
+
+        // The edition gate matters: classic coop flows.
+        let (mut game, applied, bot, human, _) = coop_game(Q1Edition::Classic, true);
+        game.damage(&human, None, Some(&bot), 50.0, &params);
         assert_eq!(applied.borrow().len(), 1);
     }
 

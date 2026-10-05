@@ -167,11 +167,11 @@ impl ConsoleCommandServices for AppConsoleServices<'_> {
     }
 }
 
-/// Dedicated map spawn: the real map with native spawns when the
-/// product is an installed Q1 product (no player, no stubs), else the
-/// stub map. Unknown products and unavailable catalogs fall back to the
-/// stub with a warning, preserving content-less runs; a known Q1 product
-/// with an unreadable map fails honestly.
+/// Dedicated map spawn: the real map with native spawns for an
+/// installed Q1 product (no player, no stubs). Anything else is a hard
+/// error naming the corpus root and the missing content: like the
+/// originals (`Host_Error`/`Sys_Error` on a missing pak), a dedicated
+/// server refuses to start rather than hosting a stub map.
 fn open_dedicated_map(
     server: &mut Server<GuestServerLogic>,
     config: &StartupConfig,
@@ -179,22 +179,26 @@ fn open_dedicated_map(
     let catalog = match discover_installed_content(&DiscoverContentOptions::new(PathBuf::from(&config.corpus_root))) {
         Ok(catalog) => catalog,
         Err(error) => {
-            eprintln!("dedicated: catalog unavailable ({error}); hosting stub map");
-            let stub = load_stub_map(&config.map);
-            return spawn_stub_map(server, &stub);
+            return Err(AppError::Startup(format!(
+                "dedicated: no Quake content under corpus root '{}': {error}; dedicated servers refuse to host a stub map",
+                config.corpus_root
+            )));
         }
     };
-    let q1 = match catalog.require(&config.product) {
-        Ok(product) => product.expectation.family == GameFamily::Q1,
+    let product = match catalog.require(&config.product) {
+        Ok(product) => product,
         Err(_) => {
-            eprintln!("dedicated: unknown product {}; hosting stub map", config.product);
-            let stub = load_stub_map(&config.map);
-            return spawn_stub_map(server, &stub);
+            return Err(AppError::Startup(format!(
+                "dedicated: product '{}' is not installed under corpus root '{}'; dedicated servers refuse to host a stub map",
+                config.product, config.corpus_root
+            )));
         }
     };
-    if !q1 {
-        let stub = load_stub_map(&config.map);
-        return spawn_stub_map(server, &stub);
+    if product.expectation.family != GameFamily::Q1 {
+        return Err(AppError::Startup(format!(
+            "dedicated: product '{}' is {:?}, not Q1; this build hosts dedicated Q1 maps only",
+            config.product, product.expectation.family
+        )));
     }
     let mounts = open_product_mounts(&catalog, &config.product, &config.map)
         .map_err(|error| AppError::Startup(error.to_string()))?;
@@ -604,15 +608,93 @@ mod tests {
     }
 
     #[test]
+    fn dedicated_q1_hosts_real_map_without_stubs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        if !root.join("q1").is_dir() {
+            eprintln!("skipped: no Steel Q1 corpus at {}", root.display());
+            return;
+        }
+        let root = root.to_string_lossy().into_owned();
+        let application = Application::open(
+            &config(&[
+                "--dedicated",
+                "--game",
+                "q1-classic-id1",
+                "--map",
+                "start",
+                "--content-root",
+                &root,
+                "--frames",
+                "5",
+            ]),
+            NullRenderer::new(),
+        )
+        .unwrap();
+        // Stock-exact start.bsp census: 80 spawns plus 2 door fields,
+        // 5 native door movers, no player, no stubs.
+        assert_eq!(application.server().simulation().actor_count(), 82);
+        let mut application = application;
+        assert_eq!(application.server_mut().movers_mut().checkpoint().len(), 5);
+        assert!(application.seats().is_empty());
+        let stats = application.run().unwrap();
+        assert_eq!(stats.frames, 5);
+        assert_eq!(stats.entities, 82);
+    }
+
+    #[test]
     fn seats_bind_to_player_actors() {
         let application = Application::open(&config(&["--movement", "q1"]), NullRenderer::new()).unwrap();
         assert_eq!(application.seats().len(), 1);
         assert_ne!(application.seats()[0].slot, UNBOUND_SEAT);
+    }
 
-        let application =
-            Application::open(&config(&["--dedicated", "--movement", "q1"]), NullRenderer::new()).unwrap();
-        assert!(application.seats().is_empty());
-        assert!(!application.is_finished());
+    #[test]
+    fn dedicated_without_content_is_a_hard_error() {
+        let missing = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/qa-absent-corpus-root");
+        let missing = missing.to_string_lossy().into_owned();
+        let error = match Application::open(
+            &config(&[
+                "--dedicated",
+                "--game",
+                "q1-classic-id1",
+                "--map",
+                "start",
+                "--content-root",
+                &missing,
+            ]),
+            NullRenderer::new(),
+        ) {
+            Ok(_) => panic!("dedicated without content must refuse to start"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("corpus root"), "names the corpus root: {message}");
+        assert!(message.contains(&missing), "names the missing root: {message}");
+        assert!(message.contains("stub"), "says why it refuses: {message}");
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        if !root.join("q1").is_dir() {
+            return;
+        }
+        let root = root.to_string_lossy().into_owned();
+        let error = match Application::open(
+            &config(&[
+                "--dedicated",
+                "--game",
+                "qa-bogus-product",
+                "--map",
+                "start",
+                "--content-root",
+                &root,
+            ]),
+            NullRenderer::new(),
+        ) {
+            Ok(_) => panic!("dedicated with an unknown product must refuse to start"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("qa-bogus-product"), "names the product: {message}");
+        assert!(message.contains(&root), "names the corpus root: {message}");
     }
 
     #[test]
