@@ -451,7 +451,7 @@ where
 
 /// Clamp a rate string into bytes per second (donor `rate`).
 fn qw_rate(value: &str) -> Result<f64, NumericError> {
-    Ok(f64::from(native_atoi(value)?.clamp(500, 10_000)))
+    Ok(f64::from(native_atoi(value).clamp(500, 10_000)))
 }
 
 /// Signon host adapter (donor `bind` callbacks).
@@ -548,8 +548,7 @@ where
             Some(value) => qw_rate(value).map_err(|error| (false, error.to_string()))?,
             None => 2500.0,
         };
-        let message_level = native_atoi(info.get("msg").map(String::as_str).unwrap_or("0"))
-            .map_err(|error| (false, error.to_string()))?;
+        let message_level = native_atoi(info.get("msg").map(String::as_str).unwrap_or("0"));
         let channel = QuakeWorldChannel::new(
             qa_net::q1_net::QuakeWorldSide::Server,
             u32::from(request.qport),
@@ -1432,7 +1431,7 @@ where
     ) -> Result<bool, String> {
         if name == "msg" {
             if args.len() == 1 {
-                let level = native_atoi(&args[0]).map_err(|error| error.to_string())?;
+                let level = native_atoi(&args[0]);
                 ops.borrow_mut().push(QwPhaseOp::SetPeerMsg { id, level });
                 ops.borrow_mut().push(QwPhaseOp::Print {
                     id,
@@ -1686,7 +1685,7 @@ where
         };
         if let Some(level) = info.get("msg") {
             if !level.is_empty() {
-                peer.message_level = native_atoi(level)?;
+                peer.message_level = native_atoi(level);
             }
         }
         if let Some(rate) = info.get("rate") {

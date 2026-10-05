@@ -716,7 +716,7 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
             81,
             Rc::new(|machine: &mut QcMachine| {
                 let text = machine.arg_string(0)?;
-                let value = qa_core::numeric::native_atof(&text).map_err(|error| machine.fail(error.to_string()))?;
+                let value = qa_core::numeric::native_atof(&text);
                 machine.return_float(value as f32)
             }),
         );

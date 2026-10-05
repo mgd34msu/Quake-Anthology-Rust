@@ -851,9 +851,9 @@ impl CvarRegistry {
         let numeric = if self.dialect.is_q1() {
             quake_atof(value) as f32
         } else {
-            native_atof(value).unwrap_or(0.0) as f32
+            native_atof(value) as f32
         };
-        (numeric, native_atoi(value).unwrap_or(0))
+        (numeric, native_atoi(value))
     }
 
     /// Find a variable snapshot by name, projecting aliases.

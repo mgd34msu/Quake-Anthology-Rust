@@ -1853,7 +1853,7 @@ impl CommandBuffer {
                 inv.buffer.wait_dialect = Some(inv.dialect);
                 inv.buffer.wait_source = Some(inv.source.clone());
                 inv.buffer.wait_frames = if inv.dialect == Dialect::Q3 && inv.argv.len() == 2 {
-                    native_atoi(inv.argv.get(1).map_or("", String::as_str)).unwrap_or(0)
+                    native_atoi(inv.argv.get(1).map_or("", String::as_str))
                 } else {
                     1
                 };
@@ -2250,10 +2250,7 @@ impl CommandBuffer {
             ));
             return;
         }
-        let amount = inv
-            .argv
-            .get(2)
-            .map_or(1.0, |text| native_atof(text).unwrap_or(f64::NAN) as f32);
+        let amount = inv.argv.get(2).map_or(1.0, |text| native_atof(text) as f32);
         let value = variable.numeric_value + if name == "dec" { -amount } else { amount };
         let text = if value == variable.numeric_value {
             variable.value.clone()

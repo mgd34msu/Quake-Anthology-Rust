@@ -2905,7 +2905,7 @@ pub fn verify_q3_pure_command(server: &Q3PureServer, argv: &[String]) -> Result<
     if !server.enabled {
         return Ok(Q3PureResult::Ignored(Q3PureIgnore::Disabled));
     }
-    if native_atoi(argv.get(1).map(String::as_str).unwrap_or(""))? < server.checksum_feed_server_id {
+    if native_atoi(argv.get(1).map(String::as_str).unwrap_or("")) < server.checksum_feed_server_id {
         return Ok(Q3PureResult::Ignored(Q3PureIgnore::Outdated));
     }
     let rejected = || Q3PureResult::Rejected("Unpure client detected. Invalid .PK3 files referenced!".to_string());
@@ -2918,16 +2918,16 @@ pub fn verify_q3_pure_command(server: &Q3PureServer, argv: &[String]) -> Result<
     let cgame = argv.get(2).cloned().unwrap_or_default();
     let ui = argv.get(3).cloned().unwrap_or_default();
     if cgame.starts_with('@')
-        || native_atoi(&cgame)? != cgame_checksum
+        || native_atoi(&cgame) != cgame_checksum
         || ui.starts_with('@')
-        || native_atoi(&ui)? != ui_checksum
+        || native_atoi(&ui) != ui_checksum
         || !argv.get(4).cloned().unwrap_or_default().starts_with('@')
     {
         return Ok(rejected());
     }
     let mut checksums = Vec::new();
     for arg in &argv[5..] {
-        checksums.push(native_atoi(arg)?);
+        checksums.push(native_atoi(arg));
     }
     let reference_count = checksums.len() - 1;
     let mut unique = HashSet::new();
@@ -5703,7 +5703,7 @@ impl Q3ServerCommandExecutor {
             name = argv.first().cloned().unwrap_or_default();
         }
         if name == "cs" {
-            let index = native_atoi(argv.get(1).map(String::as_str).unwrap_or(""))?;
+            let index = native_atoi(argv.get(1).map(String::as_str).unwrap_or(""));
             let value = argv.get(2..).unwrap_or(&[]).join(" ");
             if index < 0 || index as usize >= MAX_CONFIGSTRINGS {
                 return Err(Q3NetError::drop("drop", "configstring > MAX_CONFIGSTRINGS"));
@@ -6022,7 +6022,7 @@ impl<'a> Q3ClientAdmission<'a> {
             match packet.command.to_lowercase().as_str() {
                 "challengeresponse" => {
                     if self.phase == Q3ClientAdmissionPhase::Connecting {
-                        self.challenge = native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""))?;
+                        self.challenge = native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""));
                         self.phase = Q3ClientAdmissionPhase::Challenging;
                         self.connect_packet_count = 0;
                         self.connect_time = -99999;
@@ -6255,7 +6255,7 @@ impl<'a> Q3ServerAdmission<'a> {
         {
             return Ok(());
         }
-        let number = native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""))?;
+        let number = native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""));
         let Some(index) = self.challenges.iter().position(|value| value.challenge == number) else {
             return Ok(());
         };
@@ -6294,12 +6294,12 @@ impl<'a> Q3ServerAdmission<'a> {
             .chars()
             .take(1023)
             .collect();
-        if native_atoi(&q3_info_value(&userinfo, "protocol")?)? != 68 {
+        if native_atoi(&q3_info_value(&userinfo, "protocol")?) != 68 {
             self.reply(from, "print\nServer uses protocol version 68.\n")?;
             return Ok(());
         }
-        let qport = native_atoi(&q3_info_value(&userinfo, "qport")?)?;
-        let challenge_number = native_atoi(&q3_info_value(&userinfo, "challenge")?)?;
+        let qport = native_atoi(&q3_info_value(&userinfo, "qport")?);
+        let challenge_number = native_atoi(&q3_info_value(&userinfo, "challenge")?);
         if !(0..=65535).contains(&qport) {
             self.reply(from, "print\nInvalid qport.\n")?;
             return Ok(());
@@ -6749,7 +6749,7 @@ fn apply_q3_system_info(
     let mut index = if info.starts_with('\\') { 1 } else { 0 };
     while index + 1 < fields.len() {
         if fields[index].to_lowercase() == "sv_serverid" {
-            *server_id = native_atoi(fields[index + 1])?;
+            *server_id = native_atoi(fields[index + 1]);
             break;
         }
         index += 2;

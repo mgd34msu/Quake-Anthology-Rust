@@ -914,7 +914,7 @@ where
             return Ok(true);
         }
         if name == "nextdl" {
-            let block = native_atoi(argv.get(1).map(String::as_str).unwrap_or(""))?;
+            let block = native_atoi(argv.get(1).map(String::as_str).unwrap_or(""));
             let time = self.shared.host.borrow().time();
             // Acknowledge runs drop callbacks (peer borrows), so grab the
             // download pointer and release the borrow first. The peer

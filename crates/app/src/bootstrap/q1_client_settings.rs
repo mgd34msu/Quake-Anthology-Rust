@@ -52,7 +52,7 @@ fn color_component(args: &[String], index: usize) -> i32 {
     } else {
         text
     };
-    (native_atoi(text).unwrap_or(0) & 15).min(13)
+    (native_atoi(text) & 15).min(13)
 }
 
 /// Register the size/name/color view commands (donor `registerQ1ViewCommands`).

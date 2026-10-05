@@ -113,10 +113,7 @@ pub fn give_q1(
         .first()
         .map(|arg| arg.to_lowercase())
         .ok_or_else(|| q1_error("Usage: give <all|weapons|ammo|health|armor|keys|item> [amount]"))?;
-    let amount = args
-        .get(1)
-        .map(|arg| native_atoi(arg).map_err(|error| q1_error(error.to_string())))
-        .transpose()?;
+    let amount = args.get(1).map(|arg| native_atoi(arg));
     let all = input == "all";
     let weapons = roster(game);
     if all || input == "health" || input == "h" {

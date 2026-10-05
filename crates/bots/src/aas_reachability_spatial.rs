@@ -47,7 +47,7 @@ fn decimal_integer(text: &str) -> Result<i32, BotsError> {
             ));
         }
     }
-    Ok(native_atoi(text)?)
+    Ok(native_atoi(text))
 }
 
 fn scan_float(text: &[u8], start: usize) -> Result<Option<(f64, usize)>, BotsError> {
@@ -127,7 +127,7 @@ fn scan_float(text: &[u8], start: usize) -> Result<Option<(f64, usize)>, BotsErr
         }
     }
     let slice: String = text[beginning..cursor].iter().map(|b| char::from(*b)).collect();
-    Ok(Some((native_atof(&slice)?, cursor)))
+    Ok(Some((native_atof(&slice), cursor)))
 }
 
 /// BSP entity records with source epair accessors.
@@ -198,7 +198,7 @@ impl AasReachabilityEntities {
     pub fn float(&self, entity: i32, key: &str) -> Result<(bool, f32), BotsError> {
         match self.text(entity, key) {
             None => Ok((false, 0.0)),
-            Some(text) => Ok((true, native_atof(&text)? as f32)),
+            Some(text) => Ok((true, native_atof(&text) as f32)),
         }
     }
 
@@ -780,7 +780,7 @@ impl<'a> AasReachabilityContext<'a> {
         let model_number = if model_name.is_empty() {
             0
         } else {
-            native_atoi(model_name.get(1..).unwrap_or(""))?
+            native_atoi(model_name.get(1..).unwrap_or(""))
         };
         let (model_bounds, model_origin) = self.host_model_bounds(model_number, ZERO)?;
         let bounds = Bounds {
