@@ -5,9 +5,10 @@
 //! binding or documentation surface, so the validator and documentation are ported as explicit
 //! module items with the donor's exact texts; registration installs the variable.
 
+use qa_core::cmd::Dialect;
 use qa_core::cvar::{flags, CvarError, CvarRegistry};
 
-use super::audio::output_settings::{is_js_trim, js_number};
+use super::shared_setting_cvars::validate_finite_number;
 
 /// `r_shadows` documentation summary.
 pub const R_SHADOWS_DOC_SUMMARY: &str =
@@ -19,8 +20,8 @@ pub const R_SHADOWS_DOC_EXAMPLES: [&str; 2] = ["r_shadows 1", "r_shadows 0"];
 
 /// Validate an `r_shadows` value (`None` accepts; donor text otherwise).
 #[must_use]
-pub fn validate_r_shadows(text: &str) -> Option<String> {
-    if !text.trim_matches(is_js_trim).is_empty() && js_number(text).is_finite() {
+pub fn validate_r_shadows(text: &str, dialect: Dialect) -> Option<String> {
+    if validate_finite_number(text, dialect).is_none() {
         None
     } else {
         Some("Shadows require a finite number".to_string())
@@ -41,30 +42,28 @@ mod tests {
 
     #[test]
     fn accepts_finite_numbers() {
-        for text in ["0", "1", "0.5", "-2", " 1 ", "0x10", "+0x10", "0b101", "0o17", "1e3"] {
-            assert_eq!(validate_r_shadows(text), None, "{text}");
+        // The dialect `atof` consumes a numeric prefix, so trailing junk
+        // parses (value 1 for "1x", -16 for "-0x10", 0 for "0x").
+        for text in [
+            "0", "1", "0.5", "-2", " 1 ", "0x10", "+0x10", "0b101", "0o17", "1e3", "1x", "-0x10", "0x",
+            "1.2.3",
+        ] {
+            for dialect in [Dialect::Q1Netquake, Dialect::Q2Classic, Dialect::Q3] {
+                assert_eq!(validate_r_shadows(text, dialect), None, "{text}");
+            }
         }
     }
 
     #[test]
     fn rejects_non_finite_text() {
-        for text in [
-            "",
-            "   ",
-            "abc",
-            "NaN",
-            "Infinity",
-            "-Infinity",
-            "1x",
-            "-0x10",
-            "0x",
-            "1.2.3",
-        ] {
-            assert_eq!(
-                validate_r_shadows(text),
-                Some("Shadows require a finite number".to_string()),
-                "{text}"
-            );
+        for text in ["", "   ", "abc", "NaN", "Infinity", "-Infinity", ".", "+", "-"] {
+            for dialect in [Dialect::Q1Netquake, Dialect::Q2Classic, Dialect::Q3] {
+                assert_eq!(
+                    validate_r_shadows(text, dialect),
+                    Some("Shadows require a finite number".to_string()),
+                    "{text}"
+                );
+            }
         }
     }
 

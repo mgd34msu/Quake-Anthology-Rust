@@ -11,11 +11,9 @@
 //! insertions, nested execution, and waits, so alternating seats keep their
 //! own source identity.
 //!
-//! Script reads resolve through [`BufferServices`]. A read that is not ready
-//! yet parks the drain (`Pending`) and resumes in order once the host
-//! supplies the text with [`CommandBuffer::resolve_pending_script`]; that is
-//! the synchronous form of the donor's asynchronous host queue, with the
-//! same per-frame ordering and no threads involved.
+//! Script reads resolve synchronously through [`BufferServices`], like
+//! `COM_LoadHunkFile` followed by `Cbuf_InsertText`: the host returns the
+//! text, `None` for a missing file, or an error, and the drain never parks.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -265,11 +263,9 @@ pub struct ScriptCompletion {
 /// Host answer to a script read request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptRead {
-    /// The read settled immediately (`None` means missing).
+    /// Script text (`None` means missing).
     Ready(Option<String>),
-    /// The read is not ready; the drain parks until the host resolves it.
-    Pending,
-    /// The read failed immediately.
+    /// The read failed.
     Failed(String),
 }
 
@@ -461,6 +457,7 @@ fn positive_limit(value: Option<usize>, fallback: usize, label: &str) -> Result<
 #[derive(Clone)]
 struct RegisteredEntry {
     name: String,
+    folded: String,
     handler: Option<CommandHandler>,
     documentation: Option<CommandDocumentation>,
     builtin: bool,
@@ -477,6 +474,7 @@ type ScriptListener = Box<dyn FnMut(&ScriptCompletion)>;
 #[derive(Debug, Clone)]
 struct AliasEntry {
     name: String,
+    folded: String,
     value: String,
     text_mode: TextMode,
     dialect: Dialect,
@@ -503,22 +501,6 @@ struct ExecutionFrame {
     dialect: Dialect,
     source: CommandContext,
     text_mode: TextMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PendingState {
-    Waiting,
-    Ready(Option<String>),
-    Failed(String),
-}
-
-#[derive(Debug, Clone)]
-struct PendingScript {
-    name: String,
-    source: CommandContext,
-    dialect: Dialect,
-    text_mode: TextMode,
-    state: PendingState,
 }
 
 /// One live command invocation.
@@ -590,10 +572,9 @@ impl<'b, 'c, 's> Invocation<'b, 'c, 's> {
     /// Run `exec` for this invocation.
     pub fn execute_script(&mut self) -> Result<(), BufferError> {
         let argv = self.argv.clone();
-        let raw = self.raw.clone();
         let source = self.source.clone();
         let dialect = self.dialect;
-        self.buffer.execute_script(&argv, &raw, &source, dialect, self.services)
+        self.buffer.execute_script(&argv, &source, dialect, self.services)
     }
 
     /// Forward this invocation to the server.
@@ -637,7 +618,6 @@ pub struct CommandBuffer {
     wait_frames: i32,
     wait_dialect: Option<Dialect>,
     wait_source: Option<CommandContext>,
-    pending_script: Option<PendingScript>,
     frames: Vec<ExecutionFrame>,
     tokens: Vec<String>,
     alias_count: u32,
@@ -677,7 +657,6 @@ impl CommandBuffer {
             wait_frames: 0,
             wait_dialect: None,
             wait_source: None,
-            pending_script: None,
             frames: Vec::new(),
             tokens: Vec::new(),
             alias_count: 0,
@@ -720,10 +699,10 @@ impl CommandBuffer {
         self.revision
     }
 
-    /// Whether chunks or a parked script read are waiting.
+    /// Whether chunks are waiting.
     #[must_use]
     pub fn has_pending_commands(&self) -> bool {
-        !self.chunks.is_empty() || self.pending_script.is_some()
+        !self.chunks.is_empty()
     }
 
     /// Queued text ahead of the drain.
@@ -796,12 +775,6 @@ impl CommandBuffer {
         self.frames.last().map(|frame| &frame.source)
     }
 
-    /// Name of the parked script read, if any.
-    #[must_use]
-    pub fn pending_script_name(&self) -> Option<&str> {
-        self.pending_script.as_ref().map(|read| read.name.as_str())
-    }
-
     /// Install the print sink (default drops output).
     pub fn set_printer(&mut self, printer: impl FnMut(&str, Option<&CommandContext>) + 'static) {
         self.printer = Box::new(printer);
@@ -870,6 +843,7 @@ impl CommandBuffer {
             return Ok(false);
         }
         self.handlers.push(RegisteredEntry {
+            folded: ascii_fold(&name),
             name,
             handler,
             documentation,
@@ -905,7 +879,7 @@ impl CommandBuffer {
         let folded = ascii_fold(name);
         self.handlers
             .iter()
-            .find(|entry| ascii_fold(&entry.name) == folded)
+            .find(|entry| entry.folded == folded)
             .and_then(|entry| entry.documentation.as_ref())
     }
 
@@ -964,6 +938,7 @@ impl CommandBuffer {
             self.aliases.insert(
                 0,
                 AliasEntry {
+                    folded: ascii_fold(&name),
                     name,
                     value: text,
                     text_mode,
@@ -980,7 +955,7 @@ impl CommandBuffer {
         let folded = ascii_fold(name);
         self.aliases
             .iter()
-            .find(|alias| ascii_fold(&alias.name) == folded)
+            .find(|alias| alias.folded == folded)
             .map(|alias| alias.value.as_str())
     }
 
@@ -1178,7 +1153,6 @@ impl CommandBuffer {
         self.wait_frames = previous.wait_frames;
         self.wait_dialect = previous.wait_dialect;
         self.wait_source.clone_from(&previous.wait_source);
-        self.pending_script.clone_from(&previous.pending_script);
         self.alias_count = previous.alias_count;
         self.tokens.clone_from(&previous.tokens);
         self.startup_command_text.clone_from(&previous.startup_command_text);
@@ -1188,8 +1162,8 @@ impl CommandBuffer {
         Ok(())
     }
 
-    /// Drop every chunk, parked read, and wait owned by a disconnected
-    /// client, so a seat's next occupant never inherits them.
+    /// Drop every chunk and wait owned by a disconnected client, so a
+    /// seat's next occupant never inherits them.
     pub fn discard_client(&mut self, client: &ClientId) {
         self.retired_clients.push(client.clone());
         let owned = |source: &CommandContext| source_client(&source.origin) == Some(client);
@@ -1201,31 +1175,12 @@ impl CommandBuffer {
             CommandChunk::Text { source, .. } => !owned(source),
             CommandChunk::Completion { event, .. } => !owned(&event.source),
         });
-        if self.pending_script.as_ref().is_some_and(|read| owned(&read.source)) {
-            self.pending_script = None;
-        }
         if self.wait_source.as_ref().is_some_and(owned) {
             self.wait_frames = 0;
             self.wait_dialect = None;
             self.wait_source = None;
         }
         self.revision += 1;
-    }
-
-    /// Supply the text of the parked script read (`None` means missing).
-    pub fn resolve_pending_script(&mut self, text: Option<String>) {
-        if let Some(read) = self.pending_script.as_mut() {
-            read.state = PendingState::Ready(text);
-            self.revision += 1;
-        }
-    }
-
-    /// Fail the parked script read.
-    pub fn fail_pending_script(&mut self, error: String) {
-        if let Some(read) = self.pending_script.as_mut() {
-            read.state = PendingState::Failed(error);
-            self.revision += 1;
-        }
     }
 
     fn check_registry(&self, cvars: &CvarRegistry) -> Result<(), BufferError> {
@@ -1235,8 +1190,8 @@ impl CommandBuffer {
         Ok(())
     }
 
-    /// Drain one frame: lines run until the queue empties, a `wait`
-    /// boundary lands, or a script read parks.
+    /// Drain one frame: lines run until the queue empties or a `wait`
+    /// boundary lands.
     pub fn execute(
         &mut self,
         cvars: &mut CvarRegistry,
@@ -1290,7 +1245,7 @@ impl CommandBuffer {
         if !self.deferred.is_empty() {
             self.insert_from_defer()?;
         }
-        if self.chunks.is_empty() && self.pending_script.is_none() && self.wait_frames != 0 {
+        if self.chunks.is_empty() && self.wait_frames != 0 {
             self.revision += 1;
             self.wait_frames -= 1;
             return Ok(0);
@@ -1329,30 +1284,6 @@ impl CommandBuffer {
         loop {
             if hooks.as_mut().is_some_and(|hooks| !hooks.should_continue()) {
                 break;
-            }
-            if self.pending_script.is_some() {
-                let state = self.pending_script.as_ref().map(|read| read.state.clone());
-                match state {
-                    Some(PendingState::Waiting) | None => return Ok(executed),
-                    Some(PendingState::Ready(text)) => {
-                        let read = self.pending_script.take().expect("parked script read vanished");
-                        self.revision += 1;
-                        self.insert_script(&read.name, text, &read.source, read.dialect, read.text_mode)?;
-                        continue;
-                    }
-                    Some(PendingState::Failed(error)) => {
-                        let read = self.pending_script.take().expect("parked script read vanished");
-                        self.revision += 1;
-                        self.print(&format!("couldn't exec {}: {error}\n", read.name), Some(&read.source));
-                        let event = Self::completion(&read.name, &read.source, ScriptResult::Failed(error));
-                        self.chunks.push_front(CommandChunk::Completion {
-                            event,
-                            dialect: read.dialect,
-                            text_mode: read.text_mode,
-                        });
-                        continue;
-                    }
-                }
             }
             if self.wait_dialect == Some(Dialect::Q3) && self.wait_frames != 0 {
                 self.revision += 1;
@@ -1584,10 +1515,7 @@ impl CommandBuffer {
             return Ok(1);
         }
         let folded = ascii_fold(name);
-        let selected = self
-            .handlers
-            .iter()
-            .rposition(|entry| ascii_fold(&entry.name) == folded);
+        let selected = self.handlers.iter().rposition(|entry| entry.folded == folded);
         let selected_builtin = selected.map(|index| self.handlers[index].builtin).unwrap_or(false);
         if !selected_builtin && services.external_command(forwarded, selected.is_some()) {
             return Ok(1);
@@ -1601,7 +1529,7 @@ impl CommandBuffer {
                 .handlers
                 .iter()
                 .rev()
-                .find(|entry| ascii_fold(&entry.name) == folded)
+                .find(|entry| entry.folded == folded)
                 .and_then(|entry| entry.handler.clone());
             match handler {
                 Some(handler) => {
@@ -1636,11 +1564,7 @@ impl CommandBuffer {
             }
         }
         if self.execution_dialect() != Dialect::Q3 {
-            let alias = self
-                .aliases
-                .iter()
-                .find(|alias| ascii_fold(&alias.name) == folded)
-                .cloned();
+            let alias = self.aliases.iter().find(|alias| alias.folded == folded).cloned();
             if let Some(alias) = alias {
                 if self.execution_dialect().is_q2() {
                     self.alias_count += 1;
@@ -1759,10 +1683,11 @@ impl CommandBuffer {
             return Ok(());
         };
         self.print(&format!("execing {filename}\n"), Some(caller));
-        let mut text = source_command_text(&file);
-        if dialect.is_q1() && !text.ends_with('\n') {
-            text.push('\n');
-        }
+        // WinQuake inserts script text with no newline repair (cmd.c
+        // `Cbuf_InsertText`); QuakeWorld and Quake III append theirs in
+        // `insert_for`, matching `SZ_Write(&cmd_text, "\n", 1)` and Q3's
+        // `Cbuf_InsertText` tail write.
+        let text = source_command_text(&file);
         let completion = Self::completion(filename, caller, ScriptResult::Completed);
         let source = completion.source.clone();
         self.insert_for(&text, source, false, Some(completion), text_mode, dialect)
@@ -1771,7 +1696,6 @@ impl CommandBuffer {
     fn execute_script(
         &mut self,
         argv: &[String],
-        raw: &str,
         source: &CommandContext,
         dialect: Dialect,
         services: &mut dyn BufferServices,
@@ -1781,11 +1705,6 @@ impl CommandBuffer {
             return Ok(());
         }
         let text_mode = self.frames.last().map_or(TextMode::Source, |frame| frame.text_mode);
-        if self.pending_script.is_some() {
-            let line = format!("{raw}\n");
-            self.insert_for(&line, source.clone(), false, None, text_mode, dialect)?;
-            return Ok(());
-        }
         let requested = argv.get(1).cloned().unwrap_or_default();
         let leaf = requested.rsplit('/').next().unwrap_or(&requested);
         let filename = if dialect == Dialect::Q3 && !leaf.contains('.') {
@@ -1796,16 +1715,6 @@ impl CommandBuffer {
         match services.read_script(&filename, source) {
             ScriptRead::Ready(text) => {
                 self.insert_script(&filename, text, source, dialect, text_mode)?;
-            }
-            ScriptRead::Pending => {
-                self.pending_script = Some(PendingScript {
-                    name: filename,
-                    source: source.clone(),
-                    dialect,
-                    text_mode,
-                    state: PendingState::Waiting,
-                });
-                self.revision += 1;
             }
             ScriptRead::Failed(error) => {
                 self.print(&format!("couldn't exec {filename}: {error}\n"), Some(source));
@@ -2101,6 +2010,7 @@ impl CommandBuffer {
                 continue;
             }
             self.handlers.push(RegisteredEntry {
+                folded: ascii_fold(name),
                 name: name.to_string(),
                 handler: Some(handler),
                 documentation,

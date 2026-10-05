@@ -247,9 +247,10 @@ impl ConsoleBuffer {
         while index < characters.len() {
             let character = characters[index];
             let next = characters.get(index + 1).copied();
-            if self.color_escapes() && character == '^' && next.is_some_and(|next| next != '^' && next.is_ascii_digit())
-            {
-                color = (next.map_or(0, |next| next as u8) - b'0') & 7;
+            // Q3 `Q_IsColorString`/`ColorIndex` (q_shared.h): any byte after
+            // `^` except `^` itself is a color, `(c - '0') & 7`.
+            if self.color_escapes() && character == '^' && next.is_some_and(|next| next != '^') {
+                color = next.map_or(0, |next| (next as u8).wrapping_sub(b'0') & 7);
                 index += 2;
                 continue;
             }
@@ -460,6 +461,18 @@ mod tests {
         let mut quake = ConsoleBuffer::new(Dialect::Q2Classic);
         quake.print("\x01center\n", 10).unwrap();
         assert!(quake.visible(1)[0].cells.iter().all(|cell| cell.alternate));
+    }
+
+    #[test]
+    fn q3_color_escapes_accept_any_byte_after_caret() {
+        // `Q_IsColorString`/`ColorIndex` (q_shared.h): `^a` is color 1,
+        // and `^^` stays literal.
+        let mut buffer = ConsoleBuffer::new(Dialect::Q3);
+        buffer.print("^ared ^xword ^^^7plain\n", 1000).unwrap();
+        let rows = buffer.visible(3);
+        assert_eq!(rows[0].cells[0].color, 1);
+        assert_eq!(row_text(&rows[0]), "red word ^^plain");
+        assert_eq!(rows[0].cells[11].color, 7);
     }
 
     #[test]

@@ -211,8 +211,9 @@ pub fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), FrameTi
         return Ok(());
     }
     if dialect == Dialect::Q1Quakeworld {
+        // `cl_maxfps` is archived (`cl_main.c`: `{"cl_maxfps", "0", true}`).
         if cvars.get("cl_maxfps").is_none() {
-            cvars.register("cl_maxfps", "0", 0)?;
+            cvars.register("cl_maxfps", "0", flags::ARCHIVE)?;
         }
         return Ok(());
     }
@@ -231,6 +232,13 @@ pub fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), FrameTi
     cvars.register("fixedtime", "0", cheat)?;
     if !q2 {
         cvars.register("com_cameraMode", "0", flags::CHEAT)?;
+        // Q3 pause state cvars are read-only (`common.c`: `CVAR_ROM`).
+        if cvars.get("cl_paused").is_none() {
+            cvars.register("cl_paused", "0", flags::READ_ONLY)?;
+        }
+        if cvars.get("sv_paused").is_none() {
+            cvars.register("sv_paused", "0", flags::READ_ONLY)?;
+        }
     }
     Ok(())
 }

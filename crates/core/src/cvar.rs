@@ -148,7 +148,9 @@ pub fn quake_atof(text: &str) -> f64 {
         return value * sign;
     }
     if at(offset) == b'\'' {
-        let code = if offset + 1 < bytes.len() { bytes[offset + 1] } else { 0 };
+        // WinQuake `Q_atof` returns `sign * str[1]` where `char` is signed
+        // (common.c), so high bytes go negative.
+        let code = if offset + 1 < bytes.len() { bytes[offset + 1] as i8 } else { 0 };
         return sign * f64::from(code);
     }
     let mut value = 0.0;
@@ -2346,11 +2348,7 @@ impl VmCvar for RegistryVmCvar {
     }
 
     fn write_integer(&mut self, value: i64) -> Result<(), CvarError> {
-        if !(-(1 << 53)..=(1 << 53)).contains(&value) {
-            return Err(CvarError::Domain(
-                "VM cvar integer write requires a safe integer".to_string(),
-            ));
-        }
+        // `vmCvar_t.integer` is a C int; the store keeps the low 32 bits.
         self.integer = value as i32;
         Ok(())
     }
@@ -2623,8 +2621,10 @@ mod tests {
 
     #[test]
     fn quake_atof_reads_single_bytes() {
-        assert_eq!(quake_atof("'ÿ"), 255.0);
-        assert_eq!(quake_atof("'€"), 172.0);
+        // WinQuake `Q_atof` returns `sign * str[1]` with a signed char, so
+        // high bytes go negative (common.c).
+        assert_eq!(quake_atof("'ÿ"), -1.0);
+        assert_eq!(quake_atof("'€"), -84.0);
         assert_eq!(quake_atof("12ÿ"), 12.0);
         assert_eq!(quake_atof("ÿ12"), 0.0);
         assert_eq!(quake_atof("0xÿ"), 0.0);
@@ -3010,7 +3010,8 @@ mod tests {
         vm.write_integer(7).unwrap();
         assert_eq!(vm.integer_value(), 7);
         assert_eq!(registry.borrow().variable_string("g_speed"), "400");
-        assert!(vm.write_integer(1 << 60).is_err());
+        vm.write_integer((1 << 32) | 9).unwrap();
+        assert_eq!(vm.integer_value(), 9);
         assert!(registry.borrow().read_vm(999).is_err());
     }
 

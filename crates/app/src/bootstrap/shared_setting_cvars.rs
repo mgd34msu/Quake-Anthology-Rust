@@ -12,13 +12,12 @@ use qa_client::audio::error::AudioError;
 use qa_client::audio::output::AudioOutputFormat;
 use qa_client::input::default_tuning;
 use qa_core::cmd::Dialect;
-use qa_core::cvar::{flags, CvarError, CvarRegistry};
+use qa_core::cvar::{cvar_value_text, flags, quake_atof, CvarError, CvarRegistry};
+use qa_core::numeric::native_atof;
 use qa_world::client::ClientFamily;
 
 use super::render_settings::register_render_settings;
-use crate::bootstrap::audio::output_settings::{
-    is_js_trim, js_number, js_number_string, read_audio_output_cvars, register_audio_output_cvars,
-};
+use crate::bootstrap::audio::output_settings::{read_audio_output_cvars, register_audio_output_cvars};
 use crate::bootstrap::audio::playlist_settings::register_music_settings;
 
 /// `cl_run` documentation summary.
@@ -192,10 +191,53 @@ pub fn bind_run_cvar(
     Ok(cvars.variable_value("cl_run") != 0.0)
 }
 
+/// Parse cvar text with the dialect's `atof`: Quake `Q_atof` for Q1,
+/// `strtod` for the others.
+#[must_use]
+pub fn dialect_number(text: &str, dialect: Dialect) -> f64 {
+    if dialect.is_q1() {
+        quake_atof(text)
+    } else {
+        native_atof(text)
+    }
+}
+
+/// Format a number the way `Cvar_SetValue` does: `%f`, with the `%i`
+/// shortcut for integral values outside Q1. Non-finite values render the
+/// way C `%f` renders them.
+#[must_use]
+pub fn number_text(value: f64, dialect: Dialect) -> String {
+    cvar_value_text(value, !dialect.is_q1()).unwrap_or_else(|_| {
+        if value.is_nan() {
+            "nan".to_string()
+        } else if value < 0.0 {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        }
+    })
+}
+
+/// Whether text starts a C number after ASCII whitespace: what the
+/// dialect `atof` consumes, so `"1x"` parses (value 1) and `"abc"` does not.
+fn starts_number(text: &str) -> bool {
+    let trimmed = text.trim_start_matches(|char: char| char.is_ascii_whitespace());
+    let rest = trimmed
+        .strip_prefix('+')
+        .or_else(|| trimmed.strip_prefix('-'))
+        .unwrap_or(trimmed);
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some('0'..='9') => true,
+        Some('.') => matches!(chars.next(), Some('0'..='9')),
+        _ => false,
+    }
+}
+
 /// Validate a finite-number cvar value (`None` accepts; donor text otherwise).
 #[must_use]
-pub fn validate_finite_number(text: &str) -> Option<String> {
-    if !text.trim_matches(is_js_trim).is_empty() && js_number(text).is_finite() {
+pub fn validate_finite_number(text: &str, dialect: Dialect) -> Option<String> {
+    if starts_number(text) && dialect_number(text, dialect).is_finite() {
         None
     } else {
         Some("Expected a finite number".to_string())
@@ -204,11 +246,11 @@ pub fn validate_finite_number(text: &str) -> Option<String> {
 
 /// Validate an `r_gamma` value (`None` accepts; donor text otherwise).
 #[must_use]
-pub fn validate_r_gamma(text: &str) -> Option<String> {
-    if validate_finite_number(text).is_some() {
-        return validate_finite_number(text);
+pub fn validate_r_gamma(text: &str, dialect: Dialect) -> Option<String> {
+    if validate_finite_number(text, dialect).is_some() {
+        return validate_finite_number(text, dialect);
     }
-    let value = js_number(text);
+    let value = dialect_number(text, dialect);
     if (0.5..=3.0).contains(&value) {
         None
     } else {
@@ -226,22 +268,23 @@ pub fn validate_geometry_acoustics(text: &str) -> Option<String> {
     }
 }
 
-/// Gamma alias read conversion (`gamma = 1 / r_gamma`, donor `String(1 / Number(value))`).
+/// Gamma alias read conversion (`gamma = 1 / r_gamma`), formatted the
+/// way `Cvar_SetValue` formats.
 #[must_use]
-pub fn gamma_alias_read(value: &str) -> String {
-    js_number_string(1.0 / js_number(value))
+pub fn gamma_alias_read(value: &str, dialect: Dialect) -> String {
+    number_text(1.0 / dialect_number(value, dialect), dialect)
 }
 
 /// Gamma alias write conversion (donor range `1/3..=2`, exact error text).
-pub fn gamma_alias_write(value: &str) -> Result<String, &'static str> {
-    if validate_finite_number(value).is_some() {
+pub fn gamma_alias_write(value: &str, dialect: Dialect) -> Result<String, &'static str> {
+    if validate_finite_number(value, dialect).is_some() {
         return Err("Gamma must be between 1/3 and 2");
     }
-    let number = js_number(value);
+    let number = dialect_number(value, dialect);
     if number < 1.0 / 3.0 || number > 2.0 {
         return Err("Gamma must be between 1/3 and 2");
     }
-    Ok(js_number_string(1.0 / number))
+    Ok(number_text(1.0 / number, dialect))
 }
 
 /// Register every shared client setting (aliases exist before source configuration executes).
@@ -350,16 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn gamma_alias_conversion_matches_donor() {
-        assert_eq!(gamma_alias_read("0.5"), "2");
-        assert_eq!(gamma_alias_write("0.5").unwrap(), "2");
-        assert_eq!(gamma_alias_write("abc").unwrap_err(), "Gamma must be between 1/3 and 2");
-        assert_eq!(gamma_alias_write("3").unwrap_err(), "Gamma must be between 1/3 and 2");
-        assert_eq!(
-            validate_r_gamma("0.4"),
-            Some("Brightness must be between 0.5 and 3".to_string())
-        );
-        assert_eq!(validate_r_gamma("1"), None);
+    fn gamma_alias_conversion_uses_cvar_set_value_text() {
+        for dialect in [Dialect::Q2Classic, Dialect::Q2Rerelease, Dialect::Q3] {
+            assert_eq!(gamma_alias_read("0.5", dialect), "2");
+            assert_eq!(gamma_alias_write("0.5", dialect).unwrap(), "2");
+            assert_eq!(gamma_alias_read("0.8", dialect), "1.250000");
+            assert_eq!(
+                gamma_alias_write("abc", dialect).unwrap_err(),
+                "Gamma must be between 1/3 and 2"
+            );
+            assert_eq!(
+                gamma_alias_write("3", dialect).unwrap_err(),
+                "Gamma must be between 1/3 and 2"
+            );
+            assert_eq!(
+                validate_r_gamma("0.4", dialect),
+                Some("Brightness must be between 0.5 and 3".to_string())
+            );
+            assert_eq!(validate_r_gamma("1", dialect), None);
+        }
+        for dialect in [Dialect::Q1Netquake, Dialect::Q1Quakeworld] {
+            assert_eq!(gamma_alias_read("0.5", dialect), "2.000000");
+            assert_eq!(gamma_alias_write("0.5", dialect).unwrap(), "2.000000");
+            assert_eq!(validate_finite_number("1x", dialect), None);
+            assert_eq!(
+                validate_finite_number("abc", dialect),
+                Some("Expected a finite number".to_string())
+            );
+        }
         assert_eq!(validate_geometry_acoustics("2"), Some("Use 0 or 1".to_string()));
     }
 

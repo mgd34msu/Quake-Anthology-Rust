@@ -376,15 +376,9 @@ impl<R: RendererBackend> Application<R> {
             .map_err(|error| AppError::Console(error.to_string()))
     }
 
-    /// Supply `exec` script text (`None` means missing).
+    /// Preload `exec` script text (`None` means missing).
     pub fn provide_console_script(&mut self, name: &str, text: Option<String>) {
         self.console_queue.set_script(name, text);
-    }
-
-    /// Park an `exec` script name until [`Application::provide_console_script`]
-    /// supplies it.
-    pub fn stage_console_script(&mut self, name: &str) {
-        self.console_queue.stage_pending_script(name);
     }
 
     /// Console output lines collected so far.
