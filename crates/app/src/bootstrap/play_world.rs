@@ -980,6 +980,63 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_e1m1_descent_stalls_at_hall_wall() {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let Some(catalog) = steel_catalog() else {
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q1-classic-id1".to_string(),
+            map: "maps/e1m1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                require_live_data::<()>(&format!("q1-classic-id1 maps/e1m1.bsp load ({error})"), None);
+                return;
+            }
+        };
+        assert!(world.has_player(), "Q1 e1m1 world admits no player");
+        let (start_eye, angles) = world.player_eye().expect("player eye");
+        let mut lowest = start_eye.z;
+        let mut at_600 = start_eye;
+        for step in 0..660 {
+            let command = UserCommand::Q1Netquake(Q1UserCommand {
+                acknowledged_server_time_seconds: f64::from(step) / 60.0,
+                view_angles: angles,
+                forward_move: 200.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 0,
+                impulse: 0,
+            });
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+            world.step_player(command).unwrap();
+            let (eye, _) = world.player_eye().expect("player eye");
+            lowest = lowest.min(eye.z);
+            if step == 599 {
+                at_600 = eye;
+            }
+        }
+        let (eye, _) = world.player_eye().expect("player eye");
+        assert!(
+            lowest < start_eye.z - 40.0,
+            "player never descended the entry ramp: lowest {lowest} from {start_eye:?}"
+        );
+        assert!(at_600.y > 600.0, "player never reached the hall: {at_600:?}");
+        let pinned = ((eye.x - at_600.x) as f64).hypot((eye.y - at_600.y) as f64);
+        assert!(pinned < 1.0, "player never stalled at the wall: {eye:?} vs {at_600:?}");
+        assert!((eye.z - 46.0).abs() < 4.0, "player left the hall floor: {eye:?}");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_world_admits_player_and_eye_follows_steps() {
         use qa_world::movement::types::{Q1UserCommand, UserCommand};
 

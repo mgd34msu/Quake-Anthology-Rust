@@ -1895,6 +1895,124 @@ mod tests {
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
 
+    fn e1m1_bsp_bytes() -> Option<Vec<u8>> {
+        let root = require_live_corpus("Q1 Steel data", &["q1"])?;
+        let catalog = require_live_data(
+            "Q1 installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )?;
+        let mounts = require_live_data(
+            "q1-classic-id1 mounts for maps/e1m1.bsp",
+            super::super::windowed_scene::open_product_mounts(&catalog, "q1-classic-id1", "maps/e1m1.bsp").ok(),
+        )?;
+        require_live_data(
+            "maps/e1m1.bsp bytes",
+            mounts.read(qa_content::mounts::ResourceRef::Path("maps/e1m1.bsp")).ok(),
+        )
+    }
+
+    fn e1m1_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
+        let parsed = read_q1_bsp(bytes, "maps/e1m1.bsp", Q1BspOptions::default()).unwrap();
+        let records: Vec<Vec<(String, String)>> =
+            parsed.entity_list.into_iter().map(|entity| entity.properties).collect();
+        let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q1).expect("e1m1 spawn");
+        let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q1_VIEW_HEIGHT);
+        (feet, spawn.angles)
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn q1_e1m1_walk_ignores_nonsolid_stops_at_solid() {
+        let Some(bytes) = e1m1_bsp_bytes() else {
+            return;
+        };
+        let mut scene = build_q1_scene(&bytes, "maps/e1m1.bsp").unwrap();
+        let (feet, angles) = e1m1_spawn_feet_and_angles(&bytes);
+        let mut server = q1_server();
+        let yaw = f64::from(angles.y).to_radians();
+        let mut body_at = |distance: f64| {
+            let simulation = server.simulation_mut();
+            simulation
+                .spawn(
+                    player_provider(),
+                    "e1m1-body",
+                    Some(BodyState {
+                        origin: vec3(
+                            feet.x + (distance * yaw.cos()) as f32,
+                            feet.y + (distance * yaw.sin()) as f32,
+                            feet.z,
+                        ),
+                        angles: vec3(0.0, 0.0, 0.0),
+                        velocity: vec3(0.0, 0.0, 0.0),
+                        bounds: Bounds {
+                            min: vec3(-16.0, -16.0, -32.0),
+                            max: vec3(16.0, 16.0, 32.0),
+                        },
+                        ground: None,
+                    }),
+                    None,
+                    Vec::new(),
+                )
+                .unwrap()
+        };
+        // The near body stays SOLID_NOT (never recorded); the far body
+        // is gamecode-solid. The old per-trace box loop swept both and
+        // stalled at the near one.
+        let _phantom = body_at(48.0);
+        let solid = body_at(96.0);
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
+        };
+        let door_models = HashMap::new();
+        let mut solids = HashSet::new();
+        solids.insert(solid.id().clone());
+        solids.insert(player.actor.clone());
+        let links = Q1SceneLinks {
+            door_models: &door_models,
+            solids: &solids,
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            let command = WorldUserCommand::Q1Netquake(forward_command(angles, time));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &mut scene,
+                    Some(&links),
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = q1_state_origin(&player.state);
+        let traveled = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(
+            traveled > 40.0,
+            "player stalled at the non-solid body: traveled {traveled}"
+        );
+        assert!(
+            traveled < 96.0 - 16.0 - 16.0 + 2.0,
+            "player passed through the solid body: traveled {traveled}"
+        );
+        assert!(
+            moved.z <= feet.z + 1.0 && moved.z > feet.z - 40.0,
+            "player left the ramp: {moved:?} from {feet:?}"
+        );
+    }
+
     fn start_bsp_bytes() -> Option<Vec<u8>> {
         let root = require_live_corpus("Q1 Steel data", &["q1"])?;
         let catalog = require_live_data(
