@@ -4,9 +4,9 @@
 //! for real — worldspawn, player starts, lights, func_door — wired to the
 //! reachable [`Server`](qa_world::server::Server) through the native
 //! touch/mover-think hooks. Triggers, buttons, target firing, and toggle
-//! lights live in [`super::native_q1_triggers`]; generic `map:{classname}`
-//! spawns still cover every other classname until their native behavior
-//! lands.
+//! lights live in [`super::native_q1_triggers`], items in
+//! [`super::native_q1_items`]; generic `map:{classname}` spawns still
+//! cover every other classname until their native behavior lands.
 //!
 //! qsrc: `progs106/doors.qc` (func_door spawn, LinkDoors, spawn_field,
 //! door_touch, door_trigger_touch, door_fire, door_go_up, door_go_down,
@@ -33,6 +33,7 @@ use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};
 use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
+use super::native_q1_items::{q1_item_touch, Q1Item, Q1Sprint};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -62,6 +63,8 @@ const DOOR_TOGGLE: i32 = 32;
 const IT_KEY1: u32 = 131_072;
 /// Key item bits (`defs.qc:305-306`).
 const IT_KEY2: u32 = 262_144;
+/// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
+pub const IT_SUPERHEALTH: u32 = 65_536;
 
 /// Door trigger-field expansion in map units (`spawn_field`,
 /// `doors.qc:273`: `setsize (trigger, t1 - '60 60 8', t2 + '60 60 8')`).
@@ -542,6 +545,15 @@ pub struct Q1NativeBehaviors {
     pub buttons: Q1EdictTable<Q1Button>,
     /// Toggle-light actors by id.
     pub lights: Q1EdictTable<Q1Light>,
+    /// Item actors by id.
+    pub items: Q1EdictTable<Q1Item>,
+    /// Item bits the player carries (`defs.qc:296-306`).
+    pub player_items: u32,
+    /// Player health cap (`max_health`, 100 from `PutClientInServer`).
+    pub player_max_health: f64,
+    /// Deathmatch rules (respawns; `GameMode` has no DM2, so this is
+    /// always DM1 where stock branches on it).
+    pub deathmatch: bool,
     /// Spawn-order actor lists by targetname (stock `find` order).
     /// Lookups run only at spawn and at target-firing time (event
     /// rate), never per frame.
@@ -552,6 +564,8 @@ pub struct Q1NativeBehaviors {
     pub delayed_uses: Vec<Q1DelayedUse>,
     /// Queued centerprints for the HUD slice to drain.
     pub centerprints: Vec<Q1Centerprint>,
+    /// Queued console prints (`sprint`) for the HUD slice to drain.
+    pub sprints: Vec<Q1Sprint>,
     /// Queued player impulses for the movement step to mirror.
     pub player_forces: Vec<Q1PlayerForce>,
     /// Current toggle-light style values (`a` off, `m` on).
@@ -573,10 +587,13 @@ pub struct Q1NativeBehaviors {
 }
 
 impl Q1NativeBehaviors {
-    /// Empty behavior set.
+    /// Empty behavior set (`max_health` 100, like `PutClientInServer`).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            player_max_health: 100.0,
+            ..Self::default()
+        }
     }
 
     /// Adopt the admitted player as the door opener.
@@ -612,8 +629,8 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
-/// destinations, buttons, lights, movers, solidity), and release the
-/// actor. Stale targetname
+/// destinations, buttons, lights, items, movers, solidity), and release
+/// the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -635,6 +652,7 @@ pub(crate) fn q1_remove(
     behaviors.teleport_destinations.remove(actor);
     behaviors.buttons.remove(actor);
     behaviors.lights.remove(actor);
+    behaviors.items.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;
@@ -1189,6 +1207,7 @@ pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<R
         let mut behaviors = touch_behaviors.borrow_mut();
         q1_native_touch(&mut behaviors, simulation, movers, triggers, contact);
         q1_trigger_touch(&mut behaviors, simulation, movers, triggers, contact);
+        q1_item_touch(&mut behaviors, simulation, movers, triggers, contact);
     })));
     let think_behaviors = Rc::clone(&behaviors);
     server.set_native_mover_think(Some(Box::new(

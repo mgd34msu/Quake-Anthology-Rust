@@ -44,6 +44,7 @@ use super::play::{
     admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
     provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
 };
+use super::simulation::native_q1_items::{build_q1_item, q1_is_item, register_q1_item_spawns};
 use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
@@ -477,7 +478,9 @@ pub fn spawn_map_entities(
     if let Some(q1) = context.q1.as_ref() {
         register_q1_spawns(server.spawns_mut());
         register_q1_trigger_spawns(server.spawns_mut());
+        register_q1_item_spawns(server.spawns_mut());
         q1.behaviors.borrow_mut().registered = q1.registered;
+        q1.behaviors.borrow_mut().deathmatch = context.deathmatch;
     }
     let mut classnames = BTreeSet::new();
     for properties in entities {
@@ -604,6 +607,33 @@ pub fn spawn_map_entities(
                         q1_note_use_point(&mut behaviors, actor.id(), &fields);
                         q1_note_targetname(&mut behaviors, &fields, actor.id());
                         summary.spawned += 1;
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
+            if q1_is_item(&classname) {
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let built = build_q1_item(server, &mut q1.behaviors.borrow_mut(), &actor, &fields);
+                        match built {
+                            Ok(()) => {
+                                q1_note_targetname(&mut q1.behaviors.borrow_mut(), &fields, actor.id());
+                                summary.spawned += 1;
+                            }
+                            Err(error) => {
+                                let _ignored = server.simulation_mut().release(&actor);
+                                summary.skipped.push(SkippedEntity {
+                                    index,
+                                    classname,
+                                    reason: format!("{source}: item build failed: {error}"),
+                                });
+                            }
+                        }
                     }
                     Err(error) => summary.skipped.push(SkippedEntity {
                         index,

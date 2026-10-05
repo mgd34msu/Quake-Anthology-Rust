@@ -326,7 +326,7 @@ pub struct Q1Light {
 
 /// One scheduled native think: stock `think`/`nextthink` collapsed onto
 /// gamecode-owned state (one slot per actor, like the QC fields).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Q1ThinkKind {
     /// `SUB_Remove` (`subs.qc:5`).
     Remove,
@@ -334,6 +334,15 @@ pub enum Q1ThinkKind {
     MultiWait,
     /// `hurt_on` (`triggers.qc:538`): re-solidify a hurt trigger.
     HurtOn,
+    /// `SUB_regen` (`items.qc:6`): restore a taken item.
+    Regen,
+    /// `item_megahealth_rot` (`items.qc:206`): rot one superhealth
+    /// point off the owner, then re-arm until the owner drops to the
+    /// health cap.
+    MegaRot {
+        /// Pickup owner whose health rots.
+        owner: ActorId,
+    },
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -1501,11 +1510,12 @@ fn q1_spawn_teledeath(
     behaviors.schedule_think(death.id(), Q1ThinkKind::Remove, now + 0.2);
 }
 
-/// Native think dispatch for Q1 triggers: clear last tick's teleport
-/// fogs, then fire due scheduled thinks (removals, multiple re-arms,
-/// hurt re-solidifies) and due delayed uses, each in schedule order.
-/// Runs after the mover pass and before the trigger sweep, so removals
-/// apply before touches and fresh touches queue fresh fogs.
+/// Native think dispatch for Q1 triggers and items: clear last tick's
+/// teleport fogs, then fire due scheduled thinks (removals, multiple
+/// re-arms, hurt re-solidifies, item regens, megahealth rots) and due
+/// delayed uses, each in schedule order. Runs after the mover pass and
+/// before the trigger sweep, so removals apply before touches and fresh
+/// touches queue fresh fogs.
 pub fn q1_trigger_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1515,6 +1525,9 @@ pub fn q1_trigger_think(
     // The think pass runs before the trigger sweep, so last tick's fogs
     // clear here and this tick's touches queue fresh ones; the
     // presentation slice publishes them as `TE_TELEPORT` temp entities.
+    // Print queues are NOT cleared here: mover thinks queue before this
+    // pass, so clearing would wipe same-tick prints. The HUD slice
+    // drains prints per frame once it lands.
     behaviors.teleport_fogs.clear();
     let now = simulation.frame().time.as_seconds_f64();
     let pending = std::mem::take(&mut behaviors.thinks);
@@ -1522,9 +1535,15 @@ pub fn q1_trigger_think(
         pending.into_iter().partition(|think| think.due_seconds <= now);
     behaviors.thinks = later;
     for think in &due {
-        match think.kind {
+        match &think.kind {
             Q1ThinkKind::Remove => {
                 q1_remove(behaviors, simulation, movers, triggers, &think.actor);
+            }
+            Q1ThinkKind::Regen => {
+                super::native_q1_items::q1_item_regen(behaviors, simulation, triggers, &think.actor);
+            }
+            Q1ThinkKind::MegaRot { owner } => {
+                super::native_q1_items::q1_item_mega_rot(behaviors, simulation, &think.actor, owner);
             }
             Q1ThinkKind::MultiWait => {
                 // `multi_wait` restores shootable multiples; touch
