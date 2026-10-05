@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use qa_core::cmd::Dialect;
 use qa_core::cmd_buffer::{
-    BufferError, BufferOptions, BufferServices, CommandBuffer, CommandContext, CommandOrigin, ForwardedCommand,
-    FrameHooks, ScriptCompletion, ScriptRead,
+    source_filter, BufferError, BufferOptions, BufferServices, CommandBuffer, CommandContext, CommandOrigin,
+    ForwardedCommand, FrameHooks, ScriptCompletion, ScriptRead,
 };
 use qa_core::cvar::{flags, q2_flags, CvarRegistry};
 use qa_core::identity::IdentityOwner;
@@ -962,4 +962,14 @@ fn q3_long_line_cuts_at_engine_bytes() {
     buffer.insert(&line, None, None).unwrap();
     buffer.execute(&mut cvars, &mut services).unwrap();
     assert_eq!(*seen.borrow(), vec!["ÿ".repeat(1016), "done".to_string()]);
+}
+
+#[test]
+fn source_filter_star_run_counts_engine_bytes() {
+    // 600 engine bytes, 1200 UTF-8 bytes: under the 1024 scratch limit.
+    let run = "ÿ".repeat(600);
+    assert!(source_filter(&format!("*{run}*"), &run, true).unwrap());
+    // 1024 engine bytes trips the scratch limit.
+    let run = "ÿ".repeat(1024);
+    assert!(source_filter(&format!("*{run}*"), &run, true).is_err());
 }

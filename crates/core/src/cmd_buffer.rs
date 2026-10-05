@@ -79,14 +79,13 @@ pub fn source_filter(filter_text: &str, name_text: &str, case_sensitive: bool) -
             while byte(&filter, pattern)? != 0 && byte(&filter, pattern)? != 42 && byte(&filter, pattern)? != 63 {
                 pattern += 1;
             }
-            let segment: String = filter[start..pattern].iter().collect();
+            let segment = &filter[start..pattern];
             if segment.len() >= 1024 {
                 return Err(CmdError::TokenOverflow(
                     "Source filter star run exceeds its scratch buffer".to_string(),
                 ));
             }
             if !segment.is_empty() {
-                let segment: Vec<char> = segment.chars().collect();
                 let mut found: Option<usize> = None;
                 if segment.len() <= name.len() + 1 {
                     for index in cursor..=name.len().saturating_sub(segment.len()) {
