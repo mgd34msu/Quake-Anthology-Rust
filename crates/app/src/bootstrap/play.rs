@@ -13,8 +13,10 @@
 //! authoritative movement step per frame and commits the result back to
 //! the sim body.
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use qa_bots::q1_collision::q1_collision_geometry;
 use qa_bots::q2_collision::{q2_collision_geometry, Q2Collision};
 use qa_bots::q3_collision::{create_source_q3_collision, Q3Collision};
 use qa_bots::scene::{
@@ -22,10 +24,12 @@ use qa_bots::scene::{
 };
 use qa_bots::scene::{
     PointContentsQuery as ScenePointContentsQuery, PointContentsResult as ScenePointContentsResult,
-    QueryTarget as SceneQueryTarget, TracePolicy as SceneTracePolicy, TraceQuery as SceneTraceQuery,
+    Q1MoveRule as SceneQ1MoveRule, QueryTarget as SceneQueryTarget, TraceContact as SceneTraceContact,
+    TracePolicy as SceneTracePolicy, TraceQuery as SceneTraceQuery, TraceResult as SceneTraceResult,
     TraceShape as SceneTraceShape,
 };
-use qa_content::bsp::{read_q1_bsp, ClipChild as BspClipChild, NodeChild, Plane as BspPlaneData, Q1BspOptions};
+use qa_bots::shared_scene::{DecodedCollisionWorld, SharedSceneQueries};
+use qa_content::bsp::{read_q1_bsp, Q1BspOptions};
 use qa_content::bsp2::{read_q2_bsp, to_q2_world_geometry};
 use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
@@ -33,18 +37,15 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE, Q2_DONOR_PROFILE, Q3_BINARY32_PROFILE};
 use qa_core::time::FrameContext as ClockFrame;
-use qa_world::body::BodyState;
+use qa_world::body::{translated_body_bounds, BodyState, LinkedBody};
 use qa_world::collision::q1::{CONTENTS_EMPTY, CONTENTS_SOLID};
-use qa_world::hull::{
-    axis_box_hull, hull_point_contents, trace_hull, trace_hull_solid, BspPlane, ClipChild as HullClipChild,
-    ClipNode as HullClipNode, Hull, HullTrace,
-};
+use qa_world::hull::{axis_box_hull, trace_hull_solid, BspPlane, HullTrace};
 use qa_world::movement::q1::netquake::move_netquake;
 use qa_world::movement::q1::quakeworld::move_quake_world;
 use qa_world::movement::q1::types::{
     NoQ1Hooks, Q1AnimationStepInput, Q1AnimationStepResult, Q1Edition, Q1MovementInput, Q1MovementOptions,
-    Q1MovementProfile, Q1MovementServices, Q1MovementState, Q1State, Q1Trace, Q1TraceQuery, Q1WeaponStepInput,
-    Q1WeaponStepResult, QwMovementInput, QwMovementProfile, QwMovementState, Q1_MOVE_WALK,
+    Q1MovementProfile, Q1MovementServices, Q1MovementState, Q1State, Q1Trace, Q1TraceMove, Q1TraceQuery,
+    Q1WeaponStepInput, Q1WeaponStepResult, QwMovementInput, QwMovementProfile, QwMovementState, Q1_MOVE_WALK,
 };
 use qa_world::movement::q2::dimensions::Q2_PLAYER_BOUNDS;
 use qa_world::movement::q2::rerelease::Q2RereleaseMovementContext;
@@ -66,6 +67,7 @@ use qa_world::movement::types::{
 };
 use qa_world::movement::Q1MovementParameters;
 use qa_world::session::Simulation;
+use qa_world::spatial::{ActorCollision, CollisionFamily, CollisionRole, CollisionShape};
 use qa_world::triggers::TriggerTable;
 
 /// Quake I player collision box, matching qsrc hull 1 (`gl_model.c`
@@ -78,189 +80,105 @@ pub fn q1_player_bounds() -> Bounds {
     }
 }
 
-/// Quake I player hull expansion: hull 1 clip mins/maxs from qsrc
-/// `gl_model.c`. The player box matches exactly, so the trace offset is
-/// zero against the world; the offset math stays general for other boxes.
-const Q1_HULL1_CLIP_MINS: [f32; 3] = [-16.0, -16.0, -24.0];
-
 /// Quake I eye height above the feet origin (donor `eye_height`, qsrc
 /// `VIEW_OFS` 22).
 pub const Q1_VIEW_HEIGHT: f32 = 22.0;
 
-/// Quake I collision hulls for one map: hull 0 (point traces and contents
-/// over the BSP nodes, qsrc `Mod_MakeHull0`) plus hull 1 (player-box
-/// traces over the shared clip tree, qsrc `Mod_LoadClipnodes`).
-#[derive(Debug, Clone)]
-pub struct Q1ClipWorld {
-    hull0: Hull,
-    hull1: Hull,
-}
-
-/// Build the collision hulls from raw BSP bytes.
+/// Build the shared collision scene from raw Quake I BSP bytes.
 ///
-/// Parses the map with the format reader, converts world-model headnodes
-/// into hull 0 (nodes copied to clip form with leaf contents) and hull 1
-/// (the shared clip tree), and fails honestly when the map has no world
-/// model, no usable headnodes, or dangling plane/node indices.
-pub fn build_q1_clip_world(bytes: &[u8], map: &str) -> Result<Q1ClipWorld, String> {
+/// Parses the map once, converts it into collision geometry, and fails
+/// honestly when the map has no world model or no usable hull headnodes.
+pub fn build_q1_scene(bytes: &[u8], map: &str) -> Result<SharedSceneQueries, String> {
     let parsed = read_q1_bsp(bytes, map, Q1BspOptions::default()).map_err(|error| error.to_string())?;
     let world = parsed
         .models
         .first()
         .ok_or_else(|| format!("{map}: BSP has no world model"))?;
-    let planes = convert_planes(&parsed.planes, map)?;
-    let hull0 = Hull {
-        planes: planes.clone(),
-        clipnodes: convert_nodes(&parsed, map)?,
-        first: world.headnodes[0],
-        last: parsed.nodes.len() as i32 - 1,
-    };
-    let hull1 = Hull {
-        planes,
-        clipnodes: convert_clipnodes(&parsed, map)?,
-        first: world.headnodes[1],
-        last: parsed.clipnodes.len() as i32 - 1,
-    };
-    if hull0.first < 0 {
-        return Err(format!("{map}: world model has no hull 0 headnode"));
+    for (hull, headnode) in world.headnodes.iter().take(3).enumerate() {
+        if *headnode < 0 {
+            return Err(format!("{map}: world model has no hull {hull} headnode"));
+        }
     }
-    if hull1.first < 0 {
-        return Err(format!("{map}: world model has no hull 1 headnode"));
+    SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_collision_geometry(&parsed)))
+        .map_err(|error| error.to_string())
+}
+
+/// Quake I link bounds for a live body (WinQuake `SV_LinkEdict`
+/// `world.c:428-437`): no rotation expansion, and one unit of padding so
+/// epsilon-clipped movers still meet edge-touching bodies. Item pickup
+/// expansion stays out: the live path spawns no items.
+fn q1_link_bounds(state: &BodyState) -> Bounds {
+    let absolute = translated_body_bounds(state);
+    Bounds {
+        min: vec3(absolute.min.x - 1.0, absolute.min.y - 1.0, absolute.min.z - 1.0),
+        max: vec3(absolute.max.x + 1.0, absolute.max.y + 1.0, absolute.max.z + 1.0),
     }
-    Ok(Q1ClipWorld { hull0, hull1 })
 }
 
-/// Convert BSP planes to hull planes.
-fn convert_planes(planes: &[BspPlaneData], map: &str) -> Result<Vec<BspPlane>, String> {
-    planes
-        .iter()
-        .map(|plane| {
-            u8::try_from(plane.plane_type).map_or_else(
-                |_| Err(format!("{map}: plane type {} out of range", plane.plane_type)),
-                |plane_type| {
-                    Ok(BspPlane {
-                        normal: vec3(plane.normal[0], plane.normal[1], plane.normal[2]),
-                        distance: plane.distance,
-                        plane_type,
-                        signbits: plane.signbits,
-                    })
-                },
-            )
-        })
-        .collect()
+/// Live Q1 gamecode collision side channels, borrowed from the spawn
+/// registry for one step: brush-model indices size doors, the solid
+/// set admits box-solid bodies.
+pub struct Q1SceneLinks<'b> {
+    /// Brush-model index by door actor.
+    pub door_models: &'b HashMap<ActorId, u32>,
+    /// Box-solid actors (monsters, the admitted player).
+    pub solids: &'b HashSet<ActorId>,
 }
 
-/// Convert BSP nodes to clip form (qsrc `Mod_MakeHull0`): node children
-/// stay node indices, leaf children become leaf-contents terminals.
-fn convert_nodes(parsed: &qa_content::bsp::Q1Map<'_>, map: &str) -> Result<Vec<HullClipNode>, String> {
-    parsed
-        .nodes
-        .iter()
-        .map(|node| {
-            let plane =
-                usize::try_from(node.plane).map_err(|_| format!("{map}: node plane {} out of range", node.plane))?;
-            if plane >= parsed.planes.len() {
-                return Err(format!(
-                    "{map}: node plane {plane} beyond {} planes",
-                    parsed.planes.len()
-                ));
-            }
-            let mut children = [HullClipChild::Contents(CONTENTS_SOLID); 2];
-            for (index, child) in node.children.iter().enumerate() {
-                children[index] = match child {
-                    NodeChild::Node(node_index) => {
-                        let node_ref = usize::try_from(*node_index)
-                            .map_err(|_| format!("{map}: node child {node_index} out of range"))?;
-                        if node_ref >= parsed.nodes.len() {
-                            return Err(format!(
-                                "{map}: node child {node_ref} beyond {} nodes",
-                                parsed.nodes.len()
-                            ));
-                        }
-                        HullClipChild::Node(node_ref)
-                    }
-                    NodeChild::Leaf(leaf_index) => {
-                        let leaf_ref = usize::try_from(*leaf_index)
-                            .map_err(|_| format!("{map}: leaf child {leaf_index} out of range"))?;
-                        let leaf = parsed.leaves.get(leaf_ref).ok_or_else(|| {
-                            format!("{map}: leaf child {leaf_ref} beyond {} leaves", parsed.leaves.len())
-                        })?;
-                        HullClipChild::Contents(leaf.contents)
-                    }
-                };
-            }
-            Ok(HullClipNode { plane, children })
-        })
-        .collect()
-}
-
-/// Convert the shared clip tree to hull form.
-fn convert_clipnodes(parsed: &qa_content::bsp::Q1Map<'_>, map: &str) -> Result<Vec<HullClipNode>, String> {
-    parsed
-        .clipnodes
-        .iter()
-        .map(|node| {
-            let plane = usize::try_from(node.plane)
-                .map_err(|_| format!("{map}: clipnode plane {} out of range", node.plane))?;
-            if plane >= parsed.planes.len() {
-                return Err(format!(
-                    "{map}: clipnode plane {plane} beyond {} planes",
-                    parsed.planes.len()
-                ));
-            }
-            let mut children = [HullClipChild::Contents(CONTENTS_SOLID); 2];
-            for (index, child) in node.children.iter().enumerate() {
-                children[index] = match child {
-                    BspClipChild::Contents(contents) => HullClipChild::Contents(*contents),
-                    BspClipChild::ClipNode(clip_index) => {
-                        let clip_ref = usize::try_from(*clip_index)
-                            .map_err(|_| format!("{map}: clipnode child {clip_index} out of range"))?;
-                        if clip_ref >= parsed.clipnodes.len() {
-                            return Err(format!(
-                                "{map}: clipnode child {clip_ref} beyond {} clipnodes",
-                                parsed.clipnodes.len()
-                            ));
-                        }
-                        HullClipChild::Node(clip_ref)
-                    }
-                };
-            }
-            Ok(HullClipNode { plane, children })
-        })
-        .collect()
-}
-
-impl Q1ClipWorld {
-    /// Trace a point through hull 0, blocking on solid.
-    pub fn trace_point(&self, start: Vec3, end: Vec3, ops: &NumericOps) -> HullTrace {
-        solid_on_corrupt(trace_hull_solid(&self.hull0, start, end, ops), end)
-    }
-
-    /// Trace a box through hull 1 with the qsrc hull offset
-    /// (`clip_mins - trace_mins + origin`, `SV_ClipMoveToEntity`): the
-    /// pre-expanded clip tree sees the trace shifted so contact lands
-    /// where the box face touches. Blocks on solid.
-    pub fn trace_box(&self, start: Vec3, end: Vec3, bounds: &Bounds, ops: &NumericOps) -> HullTrace {
-        let offset = vec3(
-            Q1_HULL1_CLIP_MINS[0] - bounds.min.x,
-            Q1_HULL1_CLIP_MINS[1] - bounds.min.y,
-            Q1_HULL1_CLIP_MINS[2] - bounds.min.z,
+/// Relink every solid live body into the shared scene in simulation
+/// order, one fresh link per body. Brush doors link as solid inline
+/// models (stock `SOLID_BSP` blocks movement and still takes touches);
+/// box-solid gamecode actors (monsters, the admitted player) link as
+/// solid boxes; marked triggers link as trigger volumes. Anything
+/// gamecode left `SOLID_NOT` stays out. The trigger set is built once,
+/// so classification stays linear.
+fn link_q1_scene(
+    scene: &mut SharedSceneQueries,
+    simulation: &Simulation,
+    triggers: &TriggerTable,
+    links: Option<&Q1SceneLinks<'_>>,
+) {
+    scene.clear_actors();
+    let marked: HashSet<&ActorId> = triggers.iter().collect();
+    for actor in simulation.body_actors() {
+        let Some(state) = simulation.body_state(&actor) else {
+            continue;
+        };
+        let model = links.and_then(|links| links.door_models.get(&actor).copied());
+        let solid = model.is_some() || links.is_some_and(|links| links.solids.contains(&actor));
+        if !solid && !marked.contains(&actor) {
+            // Stock SOLID_NOT: gamecode assigned no solidity (info
+            // points, lights, items, map triggers), so the body never
+            // links and can neither block nor take touches.
+            continue;
+        }
+        let shape = model.map_or(CollisionShape::Box, CollisionShape::Model);
+        let role = if solid {
+            CollisionRole::Solid
+        } else {
+            CollisionRole::Trigger
+        };
+        scene.link_fresh(
+            &LinkedBody {
+                actor,
+                state: state.clone(),
+                absolute_bounds: q1_link_bounds(&state),
+                // Stock Quake I has no link serial; the live play path
+                // never links bodies into the body table either.
+                link_count: 0,
+            },
+            &ActorCollision {
+                family: CollisionFamily::Q1,
+                shape,
+                contents: CONTENTS_SOLID,
+                owner: None,
+                role,
+                monster: false,
+                dead_monster: false,
+                q1_corpse: false,
+                q3_owner: None,
+            },
         );
-        let shifted = |point: Vec3| vec3(point.x + offset.x, point.y + offset.y, point.z + offset.z);
-        let trace = trace_hull(&self.hull1, shifted(start), shifted(end), ops, &|contents| {
-            contents == CONTENTS_SOLID
-        });
-        let mut trace = solid_on_corrupt(trace, end);
-        trace.end = vec3(trace.end.x - offset.x, trace.end.y - offset.y, trace.end.z - offset.z);
-        trace.plane.distance -=
-            trace.plane.normal.x * offset.x + trace.plane.normal.y * offset.y + trace.plane.normal.z * offset.z;
-        trace
-    }
-
-    /// Contents at a point through hull 0 (qsrc `SV_HullPointContents`).
-    /// Corrupt trees report solid: blocking is safer than swimming blind.
-    pub fn point_contents(&self, point: Vec3, ops: &NumericOps) -> i32 {
-        hull_point_contents(&self.hull0, point, ops).unwrap_or(CONTENTS_SOLID)
     }
 }
 
@@ -394,103 +312,106 @@ pub fn q1_rest_animation(provider: ProviderId) -> ActorAnimationState {
     }
 }
 
-/// Quake I movement services over a clip world plus the live server
-/// bodies: world traces run the map hulls, entity traces sweep every
-/// non-trigger body but the mover, and trigger overlap stays with the
-/// server's trigger sweep each tick.
+/// Quake I movement services over the shared collision scene: one
+/// scene trace covers the world hulls and every linked body, and trigger
+/// overlap stays with the server's trigger sweep each tick.
 pub struct Q1PlayerServices<'s> {
     ops: NumericOps,
-    clip: &'s Q1ClipWorld,
-    simulation: &'s Simulation,
-    triggers: &'s TriggerTable,
+    scene: &'s SharedSceneQueries,
     ignore: ActorId,
 }
 
 impl<'s> Q1PlayerServices<'s> {
-    /// Borrow the clip world, the server simulation and trigger table,
-    /// ignoring the moving actor's own body in entity traces.
+    /// Borrow the shared scene, ignoring the moving actor's own body.
     #[must_use]
-    pub fn new(
-        clip: &'s Q1ClipWorld,
-        simulation: &'s Simulation,
-        triggers: &'s TriggerTable,
-        ignore: &ActorId,
-    ) -> Self {
+    pub fn new(scene: &'s SharedSceneQueries, ignore: &ActorId) -> Self {
         Self {
             ops: NumericOps::select(Q1_DONOR_PROFILE).expect("Q1 donor numeric profile"),
-            clip,
-            simulation,
-            triggers,
+            scene,
             ignore: ignore.clone(),
         }
     }
 
-    /// Trace the query against the world hulls and server bodies,
-    /// returning the nearest hit.
+    /// Trace the query against the shared scene, returning its hit.
     fn trace_combined(&self, query: &Q1TraceQuery) -> Q1Trace {
-        let trace_bounds = match &query.shape {
-            TraceShape::Point => Bounds {
-                min: vec3(0.0, 0.0, 0.0),
-                max: vec3(0.0, 0.0, 0.0),
-            },
-            TraceShape::Box(bounds) | TraceShape::Capsule(bounds) => *bounds,
+        let shape = match &query.shape {
+            TraceShape::Point => SceneTraceShape::Point,
+            // Quake I has no capsules; movement treats them as boxes.
+            TraceShape::Box(bounds) | TraceShape::Capsule(bounds) => SceneTraceShape::Box { bounds: *bounds },
         };
-        let point = matches!(query.shape, TraceShape::Point);
-        let world = if point {
-            self.clip.trace_point(query.start, query.end, &self.ops)
-        } else {
-            self.clip.trace_box(query.start, query.end, &trace_bounds, &self.ops)
+        let move_rule = match query.policy {
+            Q1TraceMove::Normal => SceneQ1MoveRule::Normal,
+            Q1TraceMove::NoMonsters => SceneQ1MoveRule::NoMonsters,
+            Q1TraceMove::Missile => SceneQ1MoveRule::Missile,
         };
-        let mut best_fraction = world.fraction;
-        let mut best_hit = if world.fraction < 1.0 {
-            TraceHit::World { model: 0 }
-        } else {
-            TraceHit::None
+        let scene_query = SceneTraceQuery {
+            start: query.start,
+            end: query.end,
+            shape,
+            target: SceneQueryTarget::World,
+            policy: SceneTracePolicy::Q1 { move_rule, hull: None },
+            numeric: Q1_DONOR_PROFILE,
+            pass_actor: Some(self.ignore.clone()),
         };
-        let mut best_plane = world.plane;
-        let mut best = world;
-        for actor in self.simulation.body_actors() {
-            if actor == self.ignore || self.triggers.is_trigger(&actor) {
-                continue;
-            }
-            let Some(body) = self.simulation.body_state(&actor) else {
-                continue;
-            };
-            let entity = trace_entity_box(
-                body.origin,
-                &body.bounds,
-                &trace_bounds,
-                query.start,
-                query.end,
-                &self.ops,
-            );
-            if entity.fraction < best_fraction {
-                best_fraction = entity.fraction;
-                best_hit = TraceHit::Actor { actor };
-                best_plane = entity.plane;
-                best = entity;
-            }
+        match self.scene.trace(&scene_query) {
+            Ok(trace) => q1_trace_from_scene(&trace),
+            Err(_) => q1_blocked_trace(query),
         }
-        q1_trace_from_hull(&best, best_fraction, best_hit, &best_plane)
     }
 }
 
-/// Convert a hull trace to a movement trace result.
-fn q1_trace_from_hull(trace: &HullTrace, fraction: f64, hit: TraceHit, plane: &qa_core::math::Plane) -> Q1Trace {
+/// Convert a shared-scene trace to a movement trace result.
+fn q1_trace_from_scene(trace: &SceneTraceResult) -> Q1Trace {
+    let (in_open, in_water, source_plane) = match &trace.detail {
+        SceneTraceDetail::Q1 {
+            in_open,
+            in_water,
+            source_plane,
+            ..
+        } => (*in_open, *in_water, *source_plane),
+        _ => (
+            false,
+            false,
+            qa_core::math::Plane {
+                normal: vec3(0.0, 0.0, 0.0),
+                distance: 0.0,
+            },
+        ),
+    };
     Q1Trace {
-        fraction,
+        fraction: trace.fraction,
         end: trace.end,
         start_solid: trace.start_solid,
         all_solid: trace.all_solid,
-        contact: if fraction < 1.0 {
-            TraceContact::Plane(*plane)
-        } else {
-            TraceContact::None
+        contact: match &trace.contact {
+            SceneTraceContact::None => TraceContact::None,
+            SceneTraceContact::Plane { plane } => TraceContact::Plane(*plane),
         },
-        hit,
-        in_open: trace.in_open,
-        in_water: trace.in_water,
-        source_plane: *plane,
+        hit: hit_from_scene(&trace.hit),
+        in_open,
+        in_water,
+        source_plane,
+        surface_flags: None,
+    }
+}
+
+/// A failed scene trace becomes a blocking trace at the start point
+/// instead of an error: callers are infallible movement services, and
+/// stopping beats falling through the world.
+fn q1_blocked_trace(query: &Q1TraceQuery) -> Q1Trace {
+    Q1Trace {
+        fraction: 0.0,
+        end: query.start,
+        start_solid: true,
+        all_solid: true,
+        contact: TraceContact::None,
+        hit: TraceHit::None,
+        in_open: false,
+        in_water: false,
+        source_plane: qa_core::math::Plane {
+            normal: vec3(0.0, 0.0, 0.0),
+            distance: 0.0,
+        },
         surface_flags: None,
     }
 }
@@ -505,7 +426,20 @@ impl Q1MovementServices for Q1PlayerServices<'_> {
     }
 
     fn point_contents(&mut self, point: Vec3) -> i32 {
-        self.clip.point_contents(point, &self.ops)
+        let query = ScenePointContentsQuery {
+            point,
+            target: SceneQueryTarget::World,
+            policy: SceneTracePolicy::Q1 {
+                move_rule: SceneQ1MoveRule::Normal,
+                hull: None,
+            },
+            numeric: Q1_DONOR_PROFILE,
+            pass_actor: None,
+        };
+        match self.scene.point_contents(&query) {
+            Ok(ScenePointContentsResult::Q1 { contents }) => contents,
+            _ => CONTENTS_SOLID,
+        }
     }
 
     fn touch(&mut self, _contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State> {
@@ -1586,21 +1520,25 @@ impl Q1PlayerBody {
     }
 
     /// Run one authoritative movement step for a user command, then
-    /// commit the resulting origin back to the sim body. The command
-    /// must match the admitted provider; mismatches are contract
-    /// errors, never silent drops.
+    /// commit the resulting origin back to the sim body. Solid bodies
+    /// relink into the shared scene once per step; gamecode side
+    /// channels resolve through the spawn registry when the live world
+    /// passes them. The command must match the admitted provider;
+    /// mismatches are contract errors, never silent drops.
     pub fn step(
         &mut self,
         simulation: &mut Simulation,
         triggers: &TriggerTable,
-        clip: &Q1ClipWorld,
+        scene: &mut SharedSceneQueries,
+        links: Option<&Q1SceneLinks<'_>>,
         command: WorldUserCommand,
         frame: &ClockFrame,
     ) -> Result<(), String> {
         self.sequence += 1;
+        link_q1_scene(scene, simulation, triggers, links);
         match command {
-            WorldUserCommand::Q1Netquake(command) => self.step_netquake(simulation, triggers, clip, command, frame),
-            WorldUserCommand::Q1Quakeworld(command) => self.step_quakeworld(simulation, triggers, clip, command, frame),
+            WorldUserCommand::Q1Netquake(command) => self.step_netquake(simulation, scene, command, frame),
+            WorldUserCommand::Q1Quakeworld(command) => self.step_quakeworld(simulation, scene, command, frame),
             other => Err(format!(
                 "Q1 player body needs a Quake I user command, got {:?}",
                 other.dialect()
@@ -1643,8 +1581,7 @@ impl Q1PlayerBody {
     fn step_netquake(
         &mut self,
         simulation: &mut Simulation,
-        triggers: &TriggerTable,
-        clip: &Q1ClipWorld,
+        scene: &SharedSceneQueries,
         command: Q1UserCommand,
         frame: &ClockFrame,
     ) -> Result<(), String> {
@@ -1659,7 +1596,7 @@ impl Q1PlayerBody {
         };
         let options = Q1MovementOptions::<NoQ1Hooks>::default();
         let result = {
-            let mut services = Q1PlayerServices::new(clip, simulation, triggers, &self.actor);
+            let mut services = Q1PlayerServices::new(scene, &self.actor);
             move_netquake(input, &mut services, options).map_err(|error| error.to_string())?
         };
         match result {
@@ -1678,8 +1615,7 @@ impl Q1PlayerBody {
     fn step_quakeworld(
         &mut self,
         simulation: &mut Simulation,
-        triggers: &TriggerTable,
-        clip: &Q1ClipWorld,
+        scene: &SharedSceneQueries,
         command: QwUserCommand,
         frame: &ClockFrame,
     ) -> Result<(), String> {
@@ -1694,7 +1630,7 @@ impl Q1PlayerBody {
         };
         let options = Q1MovementOptions::<NoQ1Hooks>::default();
         let result = {
-            let mut services = Q1PlayerServices::new(clip, simulation, triggers, &self.actor);
+            let mut services = Q1PlayerServices::new(scene, &self.actor);
             move_quake_world(input, &mut services, options).map_err(|error| error.to_string())?
         };
         match result {
@@ -1837,8 +1773,8 @@ pub enum PlayerBody {
 
 /// Map collision for any family, matching [`PlayerBody`].
 pub enum PlayerClip {
-    /// Quake I clip hulls.
-    Q1(Q1ClipWorld),
+    /// Quake I shared collision scene (boxed: the scene dwarfs the hulls).
+    Q1(Box<SharedSceneQueries>),
     /// Quake II collision (boxed: the shape store dwarfs the hulls).
     Q2(Box<Q2Collision>),
     /// Quake III collision (boxed: same reason).
@@ -1893,7 +1829,7 @@ pub fn admit_player(
 /// has no collision wired yet (matching [`admit_player`]).
 pub fn build_clip(bytes: &[u8], map: &str, family: GameFamily) -> Result<Option<PlayerClip>, String> {
     match family {
-        GameFamily::Q1 => Ok(Some(PlayerClip::Q1(build_q1_clip_world(bytes, map)?))),
+        GameFamily::Q1 => Ok(Some(PlayerClip::Q1(Box::new(build_q1_scene(bytes, map)?)))),
         GameFamily::Q2 => Ok(Some(PlayerClip::Q2(Box::new(build_q2_collision(bytes, map)?)))),
         GameFamily::Q3 => Ok(Some(PlayerClip::Q3(Box::new(build_q3_collision(bytes, map)?)))),
     }
@@ -1924,17 +1860,22 @@ impl PlayerBody {
 
     /// Run one authoritative movement step for a world user command. The
     /// command dialect must match the player family; mismatches are
-    /// contract errors, never silent drops.
+    /// contract errors, never silent drops. Quake I gamecode side
+    /// channels resolve through the spawn registry when the live world
+    /// passes them.
     pub fn step(
         &mut self,
         simulation: &mut Simulation,
         triggers: &TriggerTable,
-        clip: &PlayerClip,
+        clip: &mut PlayerClip,
+        links: Option<&Q1SceneLinks<'_>>,
         command: WorldUserCommand,
     ) -> Result<(), String> {
         let frame = simulation.frame();
         match (self, clip) {
-            (PlayerBody::Q1(player), PlayerClip::Q1(clip)) => player.step(simulation, triggers, clip, command, &frame),
+            (PlayerBody::Q1(player), PlayerClip::Q1(scene)) => {
+                player.step(simulation, triggers, scene, links, command, &frame)
+            }
             (PlayerBody::Q2(player), PlayerClip::Q2(clip)) => player.step(simulation, triggers, clip, command, &frame),
             (PlayerBody::Q3(player), PlayerClip::Q3(clip)) => player.step(simulation, triggers, clip, command, &frame),
             _ => Err("Player body and clip belong to different families".to_string()),
@@ -1953,6 +1894,124 @@ mod tests {
     use crate::bootstrap::live_proof::{require_live_corpus, require_live_data};
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
+
+    fn e1m1_bsp_bytes() -> Option<Vec<u8>> {
+        let root = require_live_corpus("Q1 Steel data", &["q1"])?;
+        let catalog = require_live_data(
+            "Q1 installed-content catalog",
+            qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok(),
+        )?;
+        let mounts = require_live_data(
+            "q1-classic-id1 mounts for maps/e1m1.bsp",
+            super::super::windowed_scene::open_product_mounts(&catalog, "q1-classic-id1", "maps/e1m1.bsp").ok(),
+        )?;
+        require_live_data(
+            "maps/e1m1.bsp bytes",
+            mounts.read(qa_content::mounts::ResourceRef::Path("maps/e1m1.bsp")).ok(),
+        )
+    }
+
+    fn e1m1_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
+        let parsed = read_q1_bsp(bytes, "maps/e1m1.bsp", Q1BspOptions::default()).unwrap();
+        let records: Vec<Vec<(String, String)>> =
+            parsed.entity_list.into_iter().map(|entity| entity.properties).collect();
+        let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q1).expect("e1m1 spawn");
+        let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q1_VIEW_HEIGHT);
+        (feet, spawn.angles)
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn q1_e1m1_walk_ignores_nonsolid_stops_at_solid() {
+        let Some(bytes) = e1m1_bsp_bytes() else {
+            return;
+        };
+        let mut scene = build_q1_scene(&bytes, "maps/e1m1.bsp").unwrap();
+        let (feet, angles) = e1m1_spawn_feet_and_angles(&bytes);
+        let mut server = q1_server();
+        let yaw = f64::from(angles.y).to_radians();
+        let mut body_at = |distance: f64| {
+            let simulation = server.simulation_mut();
+            simulation
+                .spawn(
+                    player_provider(),
+                    "e1m1-body",
+                    Some(BodyState {
+                        origin: vec3(
+                            feet.x + (distance * yaw.cos()) as f32,
+                            feet.y + (distance * yaw.sin()) as f32,
+                            feet.z,
+                        ),
+                        angles: vec3(0.0, 0.0, 0.0),
+                        velocity: vec3(0.0, 0.0, 0.0),
+                        bounds: Bounds {
+                            min: vec3(-16.0, -16.0, -32.0),
+                            max: vec3(16.0, 16.0, 32.0),
+                        },
+                        ground: None,
+                    }),
+                    None,
+                    Vec::new(),
+                )
+                .unwrap()
+        };
+        // The near body stays SOLID_NOT (never recorded); the far body
+        // is gamecode-solid. The old per-trace box loop swept both and
+        // stalled at the near one.
+        let _phantom = body_at(48.0);
+        let solid = body_at(96.0);
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q1PlayerBody::admit(
+                simulation,
+                player_provider(),
+                feet,
+                angles,
+                Dialect::Q1Netquake,
+                Q1Edition::Classic,
+            )
+            .unwrap()
+        };
+        let door_models = HashMap::new();
+        let mut solids = HashSet::new();
+        solids.insert(solid.id().clone());
+        solids.insert(player.actor.clone());
+        let links = Q1SceneLinks {
+            door_models: &door_models,
+            solids: &solids,
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            let command = WorldUserCommand::Q1Netquake(forward_command(angles, time));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &mut scene,
+                    Some(&links),
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = q1_state_origin(&player.state);
+        let traveled = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(
+            traveled > 40.0,
+            "player stalled at the non-solid body: traveled {traveled}"
+        );
+        assert!(
+            traveled < 96.0 - 16.0 - 16.0 + 2.0,
+            "player passed through the solid body: traveled {traveled}"
+        );
+        assert!(
+            moved.z <= feet.z + 1.0 && moved.z > feet.z - 40.0,
+            "player left the ramp: {moved:?} from {feet:?}"
+        );
+    }
 
     fn start_bsp_bytes() -> Option<Vec<u8>> {
         let root = require_live_corpus("Q1 Steel data", &["q1"])?;
@@ -2203,16 +2262,49 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
-        let ops = NumericOps::select(Q1_DONOR_PROFILE).unwrap();
+        let scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
+        let policy = SceneTracePolicy::Q1 {
+            move_rule: SceneQ1MoveRule::Normal,
+            hull: None,
+        };
         let (feet, _) = spawn_feet_and_angles(&bytes);
         let eye = vec3(feet.x, feet.y, feet.z + Q1_VIEW_HEIGHT);
-        assert_eq!(clip.point_contents(eye, &ops), CONTENTS_EMPTY);
-        assert_eq!(clip.point_contents(feet, &ops), CONTENTS_EMPTY);
-        let down = clip.trace_box(feet, vec3(feet.x, feet.y, feet.z - 256.0), &q1_player_bounds(), &ops);
+        for point in [eye, feet] {
+            let contents = scene
+                .point_contents(&ScenePointContentsQuery {
+                    point,
+                    target: SceneQueryTarget::World,
+                    policy,
+                    numeric: Q1_DONOR_PROFILE,
+                    pass_actor: None,
+                })
+                .unwrap();
+            assert_eq!(
+                contents,
+                ScenePointContentsResult::Q1 {
+                    contents: CONTENTS_EMPTY
+                }
+            );
+        }
+        let down = scene
+            .trace(&SceneTraceQuery {
+                start: feet,
+                end: vec3(feet.x, feet.y, feet.z - 256.0),
+                shape: SceneTraceShape::Box {
+                    bounds: q1_player_bounds(),
+                },
+                target: SceneQueryTarget::World,
+                policy,
+                numeric: Q1_DONOR_PROFILE,
+                pass_actor: None,
+            })
+            .unwrap();
         assert!(!down.start_solid, "spawn feet start inside solid");
         assert!(down.fraction < 1.0, "no floor within 256 units of spawn");
-        assert!(down.plane.normal.z > 0.7, "floor plane {:?}", down.plane.normal);
+        let SceneTraceContact::Plane { plane } = down.contact else {
+            panic!("floor contact {:?}", down.contact);
+        };
+        assert!(plane.normal.z > 0.7, "floor plane {:?}", plane.normal);
         assert!(down.end.z < feet.z, "floor end {:?}", down.end);
     }
 
@@ -2222,7 +2314,7 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let mut scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
         let (feet, angles) = spawn_feet_and_angles(&bytes);
         let mut server = q1_server();
         let mut player = {
@@ -2247,7 +2339,8 @@ mod tests {
                 .step(
                     simulation,
                     triggers,
-                    &clip,
+                    &mut scene,
+                    None,
                     command,
                     &command_frame(frame, time, step_seconds),
                 )
@@ -2277,7 +2370,7 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let mut scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
         let (feet, angles) = spawn_feet_and_angles(&bytes);
         let mut server = q1_server();
         let yaw = f64::from(angles.y).to_radians();
@@ -2286,7 +2379,7 @@ mod tests {
             feet.y + (64.0 * yaw.sin()) as f32,
             feet.z,
         );
-        {
+        let blocker = {
             let simulation = server.simulation_mut();
             simulation
                 .spawn(
@@ -2305,8 +2398,8 @@ mod tests {
                     None,
                     Vec::new(),
                 )
-                .unwrap();
-        }
+                .unwrap()
+        };
         let mut player = {
             let simulation = server.simulation_mut();
             Q1PlayerBody::admit(
@@ -2319,6 +2412,14 @@ mod tests {
             )
             .unwrap()
         };
+        let door_models = HashMap::new();
+        let mut solids = HashSet::new();
+        solids.insert(blocker.id().clone());
+        solids.insert(player.actor.clone());
+        let links = Q1SceneLinks {
+            door_models: &door_models,
+            solids: &solids,
+        };
         let step_seconds = 1.0 / 60.0;
         let mut time = 0.0;
         for frame in 0..120 {
@@ -2329,7 +2430,8 @@ mod tests {
                 .step(
                     simulation,
                     triggers,
-                    &clip,
+                    &mut scene,
+                    Some(&links),
                     command,
                     &command_frame(frame, time, step_seconds),
                 )
@@ -2350,7 +2452,7 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let mut scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
         let (feet, angles) = spawn_feet_and_angles(&bytes);
         let mut server = q1_server();
         let mut player = {
@@ -2375,7 +2477,8 @@ mod tests {
                 .step(
                     simulation,
                     triggers,
-                    &clip,
+                    &mut scene,
+                    None,
                     command,
                     &command_frame(frame, time, step_seconds),
                 )
@@ -2443,7 +2546,7 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let mut scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
         let (feet, angles) = spawn_feet_and_angles(&bytes);
         let mut server = q1_server();
         let mut player = {
@@ -2468,7 +2571,8 @@ mod tests {
                 .step(
                     simulation,
                     triggers,
-                    &clip,
+                    &mut scene,
+                    None,
                     command,
                     &command_frame(frame, time, step_seconds),
                 )
@@ -2755,14 +2859,15 @@ mod tests {
         let Some(bytes) = start_bsp_bytes() else {
             return;
         };
-        let clip = build_q1_clip_world(&bytes, "maps/start.bsp").unwrap();
+        let mut scene = build_q1_scene(&bytes, "maps/start.bsp").unwrap();
         let frame = command_frame(0, 1.0 / 60.0, 1.0 / 60.0);
         let (simulation, triggers) = server.simulation_and_triggers();
         assert!(player
             .step(
                 simulation,
                 triggers,
-                &clip,
+                &mut scene,
+                None,
                 WorldUserCommand::Q1Quakeworld(qw_forward_command(angles)),
                 &frame,
             )

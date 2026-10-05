@@ -311,7 +311,7 @@ pub fn q3_pure_system_info(info: &str, checksum_feed: i64) -> Result<Q3PureSyste
     }
     let mut loaded = ServerPakSet::new();
     loaded.set_checksums(&q3_info_value(info, "sv_paks")?)?;
-    let pure = native_atoi(&q3_info_value(info, "sv_pure")?)? != 0;
+    let pure = native_atoi(&q3_info_value(info, "sv_pure")?) != 0;
     let game = remote_content_selection(RemoteContentBase::Q3Baseq3, &q3_info_value(info, "fs_game")?)?.directory;
     Ok(Q3PureSystemInfo {
         pure,

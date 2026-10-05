@@ -23,8 +23,8 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use crate::cmd::{
-    ascii_fold, command_separator_offset, expand_command_macros, source_command_text, tokenize_command, CmdError,
-    Dialect, TextMode,
+    ascii_fold, command_separator_offset_bytes, expand_command_macros, source_command_text, tokenize_command, CmdError,
+    Dialect, EngineText, TextMode,
 };
 use crate::cvar::{cvar_value_text, flags, q2_flags, CvarRegistry, SetCommandKind};
 use crate::identity::{ClientId, SeatId, SessionId};
@@ -46,8 +46,8 @@ pub struct CommandDocumentation {
 /// Port of the donor `sourceFilter` (`Com_Filter`): prefix matching with
 /// non-backtracking `*` runs, `?` wildcards, and `[...]` classes.
 pub fn source_filter(filter_text: &str, name_text: &str, case_sensitive: bool) -> Result<bool, CmdError> {
-    let filter: Vec<char> = source_command_text(filter_text)?.chars().collect();
-    let name: Vec<char> = source_command_text(name_text)?.chars().collect();
+    let filter: Vec<char> = source_command_text(filter_text).chars().collect();
+    let name: Vec<char> = source_command_text(name_text).chars().collect();
     let byte = |text: &[char], index: usize| -> Result<u32, CmdError> {
         if index > text.len() {
             return Err(CmdError::TokenizedOverflow);
@@ -79,14 +79,13 @@ pub fn source_filter(filter_text: &str, name_text: &str, case_sensitive: bool) -
             while byte(&filter, pattern)? != 0 && byte(&filter, pattern)? != 42 && byte(&filter, pattern)? != 63 {
                 pattern += 1;
             }
-            let segment: String = filter[start..pattern].iter().collect();
+            let segment = &filter[start..pattern];
             if segment.len() >= 1024 {
                 return Err(CmdError::TokenOverflow(
                     "Source filter star run exceeds its scratch buffer".to_string(),
                 ));
             }
             if !segment.is_empty() {
-                let segment: Vec<char> = segment.chars().collect();
                 let mut found: Option<usize> = None;
                 if segment.len() <= name.len() + 1 {
                     for index in cursor..=name.len().saturating_sub(segment.len()) {
@@ -487,7 +486,7 @@ struct AliasEntry {
 enum CommandChunk {
     Text {
         dialect: Dialect,
-        text: String,
+        text: EngineText,
         source: CommandContext,
         direct: bool,
         text_mode: TextMode,
@@ -571,7 +570,7 @@ impl<'b, 'c, 's> Invocation<'b, 'c, 's> {
         if text.is_empty() {
             return self.buffer.execute(self.cvars, self.services);
         }
-        let value = source_command_text(text)?;
+        let value = source_command_text(text);
         let frame = self.buffer.frames.last().cloned().unwrap_or_else(|| ExecutionFrame {
             dialect: self.buffer.dialect,
             source: self.buffer.context.clone(),
@@ -733,10 +732,21 @@ impl CommandBuffer {
         self.chunks
             .iter()
             .filter_map(|chunk| match chunk {
-                CommandChunk::Text { text, .. } => Some(text.as_str()),
+                CommandChunk::Text { text, .. } => Some(text.to_display()),
                 CommandChunk::Completion { .. } => None,
             })
             .collect()
+    }
+
+    /// Queued engine bytes ahead of the drain: every byte counts once.
+    fn pending_len(&self) -> usize {
+        self.chunks
+            .iter()
+            .filter_map(|chunk| match chunk {
+                CommandChunk::Text { text, .. } => Some(text.len()),
+                CommandChunk::Completion { .. } => None,
+            })
+            .sum()
     }
 
     /// Text held in the Quake II overflow queue.
@@ -745,10 +755,21 @@ impl CommandBuffer {
         self.deferred
             .iter()
             .filter_map(|chunk| match chunk {
-                CommandChunk::Text { text, .. } => Some(text.as_str()),
+                CommandChunk::Text { text, .. } => Some(text.to_display()),
                 CommandChunk::Completion { .. } => None,
             })
             .collect()
+    }
+
+    /// Engine bytes held in the Quake II overflow queue.
+    fn deferred_len(&self) -> usize {
+        self.deferred
+            .iter()
+            .filter_map(|chunk| match chunk {
+                CommandChunk::Text { text, .. } => Some(text.len()),
+                CommandChunk::Completion { .. } => None,
+            })
+            .sum()
     }
 
     /// Argument vector of the most recently dispatched line.
@@ -832,7 +853,7 @@ impl CommandBuffer {
         documentation: Option<CommandDocumentation>,
         cvars: &CvarRegistry,
     ) -> Result<bool, BufferError> {
-        let name = source_command_text(name_input)?;
+        let name = source_command_text(name_input);
         if self.exists(&name) {
             if handler.is_some() || self.execution_dialect() != Dialect::Q3 {
                 let source = self.frame_source();
@@ -860,17 +881,13 @@ impl CommandBuffer {
     /// Whether a command is registered.
     #[must_use]
     pub fn exists(&self, name_input: &str) -> bool {
-        let Ok(name) = source_command_text(name_input) else {
-            return false;
-        };
+        let name = source_command_text(name_input);
         self.handlers.iter().any(|entry| entry.name == name)
     }
 
     /// Remove a command; returns whether one was registered.
     pub fn unregister(&mut self, name_input: &str) -> bool {
-        let Ok(name) = source_command_text(name_input) else {
-            return false;
-        };
+        let name = source_command_text(name_input);
         let before = self.handlers.len();
         self.handlers.retain(|entry| entry.name != name);
         self.handlers.len() != before
@@ -902,7 +919,7 @@ impl CommandBuffer {
     /// Complete a partial command name (plus Quake II/QuakeWorld aliases).
     #[must_use]
     pub fn complete(&self, partial_input: &str) -> Option<String> {
-        let partial = source_command_text(partial_input).ok()?;
+        let partial = source_command_text(partial_input);
         if partial.is_empty() {
             return None;
         }
@@ -929,13 +946,14 @@ impl CommandBuffer {
         if self.execution_dialect() == Dialect::Q3 {
             return Err(BufferError::Q3Alias);
         }
-        let name = source_command_text(name_input)?;
-        let text = source_command_text(text_input)?;
-        if name.len() >= 32 {
+        let name_text = EngineText::from(name_input);
+        let text = source_command_text(text_input);
+        if name_text.len() >= 32 {
             let source = self.frame_source();
             self.print("Alias name is too long\n", source.as_ref());
             return Ok(false);
         }
+        let name = name_text.to_display();
         self.revision += 1;
         let (dialect, text_mode) = self.frame_mode();
         if let Some(existing) = self.aliases.iter_mut().find(|alias| alias.name == name) {
@@ -1043,11 +1061,11 @@ impl CommandBuffer {
         text_mode: TextMode,
         dialect: Dialect,
     ) -> Result<(), BufferError> {
-        let text = source_command_text(input)?;
+        let text = EngineText::from(input);
         let limit = self
             .explicit_maximum
             .unwrap_or(if dialect == Dialect::Q3 { 16384 } else { 8192 });
-        if self.pending_text().len() + text.len() >= limit {
+        if self.pending_len() + text.len() >= limit {
             self.print("Cbuf_AddText: overflow\n", None);
             return Ok(());
         }
@@ -1074,15 +1092,15 @@ impl CommandBuffer {
         text_mode: TextMode,
         dialect: Dialect,
     ) -> Result<(), BufferError> {
-        let mut text = source_command_text(input)?;
+        let mut text = EngineText::from(input);
         if dialect == Dialect::Q1Quakeworld || dialect == Dialect::Q3 {
-            text.push('\n');
+            text.push(b'\n');
         }
         let limit = self
             .explicit_maximum
             .unwrap_or(if dialect == Dialect::Q3 { 16384 } else { 8192 });
         if dialect == Dialect::Q3 {
-            if self.pending_text().len() + text.len() > limit {
+            if self.pending_len() + text.len() > limit {
                 self.print("Cbuf_InsertText overflowed\n", None);
                 return Ok(());
             }
@@ -1091,7 +1109,7 @@ impl CommandBuffer {
                 self.print("Cbuf_AddText: overflow\n", None);
                 return Ok(());
             }
-            if self.pending_text().len() + text.len() > limit {
+            if self.pending_len() + text.len() > limit {
                 return Err(BufferError::InsertOverflow);
             }
         }
@@ -1132,7 +1150,7 @@ impl CommandBuffer {
         if !self.execution_dialect().is_q2() {
             return Err(BufferError::DeferDialect);
         }
-        if self.pending_text().len() + self.deferred_text().len() > self.maximum_buffer {
+        if self.pending_len() + self.deferred_len() > self.maximum_buffer {
             return Err(BufferError::DeferOverflow);
         }
         self.revision += 1;
@@ -1152,7 +1170,7 @@ impl CommandBuffer {
         if self.context.session != previous.context.session {
             return Err(BufferError::SessionMismatch);
         }
-        if previous.pending_text().len() + previous.deferred_text().len() >= self.maximum_buffer {
+        if previous.pending_len() + previous.deferred_len() >= self.maximum_buffer {
             return Err(BufferError::ReplacementOverflow);
         }
         self.chunks = previous.chunks.clone();
@@ -1289,7 +1307,7 @@ impl CommandBuffer {
         cvars: &mut CvarRegistry,
         services: &mut dyn BufferServices,
     ) -> Result<usize, BufferError> {
-        let value = text.map_or_else(|| Ok(String::new()), source_command_text)?;
+        let value = text.map_or_else(String::new, source_command_text);
         if value.is_empty() {
             return self.execute(cvars, services);
         }
@@ -1374,14 +1392,14 @@ impl CommandBuffer {
                     ..
                 } => {
                     let joined = self.joined_text();
-                    let mut offset = command_separator_offset(&joined, dialect);
+                    let mut offset = command_separator_offset_bytes(joined.as_bytes(), dialect);
                     if offset >= self.maximum_command {
                         if dialect != Dialect::Q3 {
                             return Err(BufferError::LineOverflow);
                         }
-                        offset = joined.floor_char_boundary(self.maximum_command - 1);
+                        offset = self.maximum_command - 1;
                     }
-                    let line = joined[..offset].to_string();
+                    let line = EngineText::from_bytes(&joined.as_bytes()[..offset]).to_display();
                     let consumed = if offset == joined.len() { offset } else { offset + 1 };
                     self.consume(consumed);
                     let count = self.dispatch(line, source, direct, text_mode, dialect, cvars, services)?;
@@ -1405,7 +1423,7 @@ impl CommandBuffer {
     /// Merge the leading run of chunks into one scannable buffer. Quake II
     /// script text joins the caller's following bytes across completion
     /// nodes; every other boundary stops the run.
-    fn joined_text(&self) -> String {
+    fn joined_text(&self) -> EngineText {
         let Some(CommandChunk::Text {
             dialect,
             source,
@@ -1414,14 +1432,14 @@ impl CommandBuffer {
             ..
         }) = self.chunks.front()
         else {
-            return String::new();
+            return EngineText::new();
         };
         let dialect = *dialect;
         let direct = *direct;
         let text_mode = *text_mode;
         let mut origin = source.origin.clone();
         let mut resumed_caller = false;
-        let mut text = String::new();
+        let mut text = EngineText::new();
         for chunk in &self.chunks {
             match chunk {
                 CommandChunk::Completion { event, .. } => {
@@ -1451,7 +1469,7 @@ impl CommandBuffer {
                     if (!resumed_caller && *next_direct != direct) || !same_origin(&next_source.origin, &origin) {
                         break;
                     }
-                    text.push_str(next_text);
+                    text.push_text(next_text);
                 }
             }
         }
@@ -1471,9 +1489,9 @@ impl CommandBuffer {
                 CommandChunk::Completion { .. } => {
                     index += 1;
                 }
-                CommandChunk::Text { text, .. } => {
+                CommandChunk::Text { mut text, .. } => {
                     if text.len() > count {
-                        let rest = text[count..].to_string();
+                        let rest = text.split_off(count);
                         if let Some(CommandChunk::Text { text: slot, .. }) = self.chunks.get_mut(index) {
                             *slot = rest;
                         }
@@ -1741,7 +1759,7 @@ impl CommandBuffer {
             return Ok(());
         };
         self.print(&format!("execing {filename}\n"), Some(caller));
-        let mut text = source_command_text(&file)?;
+        let mut text = source_command_text(&file);
         if dialect.is_q1() && !text.ends_with('\n') {
             text.push('\n');
         }
@@ -1853,7 +1871,7 @@ impl CommandBuffer {
                 inv.buffer.wait_dialect = Some(inv.dialect);
                 inv.buffer.wait_source = Some(inv.source.clone());
                 inv.buffer.wait_frames = if inv.dialect == Dialect::Q3 && inv.argv.len() == 2 {
-                    native_atoi(inv.argv.get(1).map_or("", String::as_str)).unwrap_or(0)
+                    native_atoi(inv.argv.get(1).map_or("", String::as_str))
                 } else {
                     1
                 };
@@ -2115,7 +2133,7 @@ impl CommandBuffer {
         };
         let joined = rest.join(" ");
         let text = format!("{joined}{gap}\n");
-        if text.len() >= 1024 {
+        if EngineText::from(text.as_str()).len() >= 1024 {
             inv.print("Alias body overflows source cmd[1024]\n");
             return;
         }
@@ -2250,10 +2268,7 @@ impl CommandBuffer {
             ));
             return;
         }
-        let amount = inv
-            .argv
-            .get(2)
-            .map_or(1.0, |text| native_atof(text).unwrap_or(f64::NAN) as f32);
+        let amount = inv.argv.get(2).map_or(1.0, |text| native_atof(text) as f32);
         let value = variable.numeric_value + if name == "dec" { -amount } else { amount };
         let text = if value == variable.numeric_value {
             variable.value.clone()
@@ -2346,7 +2361,7 @@ impl CommandBuffer {
             let mut length = 0usize;
             let total = inv.argv.len();
             for (offset, argument) in inv.argv.iter().enumerate().skip(2) {
-                let source_length = argument.len().saturating_sub(1);
+                let source_length = EngineText::from(argument.as_str()).len().saturating_sub(1);
                 if length + source_length >= 1022 {
                     break;
                 }
@@ -2354,7 +2369,7 @@ impl CommandBuffer {
                 if offset + 1 != total {
                     combined.push(' ');
                 }
-                if combined.len() >= 1024 {
+                if EngineText::from(combined.as_str()).len() >= 1024 {
                     inv.print("Cvar_Set overflows source combined buffer\n");
                     return;
                 }

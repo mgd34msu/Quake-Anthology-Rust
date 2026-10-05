@@ -42,11 +42,11 @@ use thiserror::Error;
 use super::audio_bridge::{map_speakers, MapSpeaker};
 use super::play::{
     admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
-    provider_for_product, PlayerBody, PlayerClip,
+    provider_for_product, PlayerBody, PlayerClip, Q1SceneLinks,
 };
 use super::simulation::native_q1_spawns::{
-    build_q1_door, install_q1_native, link_q1_doors, q1_pre_spawn, register_q1_spawns, Q1NativeBehaviors,
-    Q1PendingDoor, Q1PreSpawn,
+    build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
+    Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
@@ -244,12 +244,18 @@ impl PlayWorld {
     /// player (or no clip) keeps the static-spawn behavior: the world still
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
-        let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_ref()) else {
+        let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
+        let behaviors = self.q1_behaviors.clone();
+        let borrowed = behaviors.as_ref().map(|behaviors| behaviors.borrow());
+        let links = borrowed.as_ref().map(|behaviors| Q1SceneLinks {
+            door_models: &behaviors.brush_models,
+            solids: &behaviors.solids,
+        });
         let (simulation, triggers) = self.server.simulation_and_triggers();
         player
-            .step(simulation, triggers, clip, command)
+            .step(simulation, triggers, clip, links.as_ref(), command)
             .map_err(|reason| PlayWorldError::Play {
                 map: self.map.clone(),
                 reason,
@@ -533,7 +539,12 @@ pub fn spawn_map_entities(
             }
         }
         match server.spawn_entity(&fields) {
-            Ok(_) => summary.spawned += 1,
+            Ok(actor) => {
+                if let Some(q1) = context.q1.as_ref() {
+                    q1_note_solid(&classname, actor.id(), &mut q1.behaviors.borrow_mut());
+                }
+                summary.spawned += 1;
+            }
             Err(error) => summary.skipped.push(SkippedEntity {
                 index,
                 classname,
@@ -678,9 +689,11 @@ pub fn load_play_world(
         None => None,
     };
     if let (Some(player), Some(q1)) = (player.as_ref(), context.q1.as_ref()) {
-        q1.behaviors
-            .borrow_mut()
-            .set_player(Some(PlayerBody::actor(player).clone()));
+        let mut behaviors = q1.behaviors.borrow_mut();
+        behaviors.set_player(Some(PlayerBody::actor(player).clone()));
+        // Stock players spawn `SOLID_SLIDEBOX`; the scene links the
+        // mover like every other solid and skips it via passentity.
+        behaviors.solids.insert(PlayerBody::actor(player).clone());
     }
     // The presentation consumes its mounts, so audio keeps a second open over
     // the same product: without retained mounts no bank can open `sound/*`
@@ -963,6 +976,63 @@ mod tests {
             loaded += 1;
         }
         assert!(loaded > 0, "expected at least one Steel map to load");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_e1m1_descent_stalls_at_hall_wall() {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let Some(catalog) = steel_catalog() else {
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q1-classic-id1".to_string(),
+            map: "maps/e1m1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                require_live_data::<()>(&format!("q1-classic-id1 maps/e1m1.bsp load ({error})"), None);
+                return;
+            }
+        };
+        assert!(world.has_player(), "Q1 e1m1 world admits no player");
+        let (start_eye, angles) = world.player_eye().expect("player eye");
+        let mut lowest = start_eye.z;
+        let mut at_600 = start_eye;
+        for step in 0..660 {
+            let command = UserCommand::Q1Netquake(Q1UserCommand {
+                acknowledged_server_time_seconds: f64::from(step) / 60.0,
+                view_angles: angles,
+                forward_move: 200.0,
+                side_move: 0.0,
+                up_move: 0.0,
+                buttons: 0,
+                impulse: 0,
+            });
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+            world.step_player(command).unwrap();
+            let (eye, _) = world.player_eye().expect("player eye");
+            lowest = lowest.min(eye.z);
+            if step == 599 {
+                at_600 = eye;
+            }
+        }
+        let (eye, _) = world.player_eye().expect("player eye");
+        assert!(
+            lowest < start_eye.z - 40.0,
+            "player never descended the entry ramp: lowest {lowest} from {start_eye:?}"
+        );
+        assert!(at_600.y > 600.0, "player never reached the hall: {at_600:?}");
+        let pinned = ((eye.x - at_600.x) as f64).hypot((eye.y - at_600.y) as f64);
+        assert!(pinned < 1.0, "player never stalled at the wall: {eye:?} vs {at_600:?}");
+        assert!((eye.z - 46.0).abs() < 4.0, "player left the hall floor: {eye:?}");
     }
 
     #[test]
@@ -1354,6 +1424,9 @@ mod tests {
             .iter()
             .map(|operation| match operation {
                 RenderOperation::Draw(batches) => batches.len(),
+                // Static world geometry stays arena-resident under the
+                // retained/VBO design; each retained batch is one draw.
+                RenderOperation::RetainedDraw(draw) => draw.batches.len(),
                 _ => 0,
             })
             .sum();

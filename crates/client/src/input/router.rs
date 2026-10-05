@@ -505,9 +505,7 @@ impl Seat {
             return;
         };
         let key = command_key(input);
-        let Ok(mut remaining) = source_command_text(&text) else {
-            return;
-        };
+        let mut remaining = source_command_text(&text);
         let mut had_button = false;
         while !remaining.is_empty() {
             let offset = command_separator_offset(&remaining, self.dialect).min(remaining.len());

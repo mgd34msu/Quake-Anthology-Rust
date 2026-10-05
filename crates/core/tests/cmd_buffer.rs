@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use qa_core::cmd::Dialect;
 use qa_core::cmd_buffer::{
-    BufferError, BufferOptions, BufferServices, CommandBuffer, CommandContext, CommandOrigin, ForwardedCommand,
-    FrameHooks, ScriptCompletion, ScriptRead,
+    source_filter, BufferError, BufferOptions, BufferServices, CommandBuffer, CommandContext, CommandOrigin,
+    ForwardedCommand, FrameHooks, ScriptCompletion, ScriptRead,
 };
 use qa_core::cvar::{flags, q2_flags, CvarRegistry};
 use qa_core::identity::IdentityOwner;
@@ -918,4 +918,58 @@ fn stuffcmds_inserts_startup_and_command_line_text() {
         .unwrap();
     buffer.execute(&mut cvars, &mut services).unwrap();
     assert_eq!(*seen.borrow(), vec!["cli".to_string()]);
+}
+
+#[test]
+fn high_bytes_count_once_against_buffer_limits() {
+    let owner = owner();
+    let (mut buffer, _, _) = buffer_for(Dialect::Q2Classic, seat_context(&owner, 0));
+    let wide = "ÿ".repeat(5000);
+    buffer.append(&wide, None, None).unwrap();
+    // 5000 engine bytes queue even though the UTF-8 display text is
+    // 10000 bytes: the 8192 limit measures engine bytes.
+    assert_eq!(buffer.pending_text(), wide);
+    buffer.insert(&"a".repeat(3000), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 8000);
+    assert!(matches!(
+        buffer.insert(&"b".repeat(200), None, None),
+        Err(BufferError::InsertOverflow)
+    ));
+
+    let (mut buffer, _, _) = buffer_for(Dialect::Q3, seat_context(&owner, 0));
+    let wide = "ÿ".repeat(9000);
+    buffer.append(&wide, None, None).unwrap();
+    // 9000 engine bytes sit under the 16384 limit; the 18000 display
+    // bytes would have overflowed a UTF-8 length check.
+    assert_eq!(buffer.pending_text(), wide);
+    buffer.insert(&"a".repeat(7000), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 16001);
+    buffer.insert(&"b".repeat(500), None, None).unwrap();
+    assert_eq!(buffer.pending_text().chars().count(), 16001);
+}
+
+#[test]
+fn q3_long_line_cuts_at_engine_bytes() {
+    let owner = owner();
+    let (mut buffer, mut cvars, mut services) = buffer_for(Dialect::Q3, seat_context(&owner, 0));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    buffer
+        .register("record", Some(record_handler(seen.clone())), None, &cvars)
+        .unwrap();
+    // `;` sits at engine offset 1025, so Quake III cuts the line at
+    // 1023 engine bytes: `record ` plus 1016 wide bytes.
+    let line = format!("record {}ZY;record done", "ÿ".repeat(1016));
+    buffer.insert(&line, None, None).unwrap();
+    buffer.execute(&mut cvars, &mut services).unwrap();
+    assert_eq!(*seen.borrow(), vec!["ÿ".repeat(1016), "done".to_string()]);
+}
+
+#[test]
+fn source_filter_star_run_counts_engine_bytes() {
+    // 600 engine bytes, 1200 UTF-8 bytes: under the 1024 scratch limit.
+    let run = "ÿ".repeat(600);
+    assert!(source_filter(&format!("*{run}*"), &run, true).unwrap());
+    // 1024 engine bytes trips the scratch limit.
+    let run = "ÿ".repeat(1024);
+    assert!(source_filter(&format!("*{run}*"), &run, true).is_err());
 }

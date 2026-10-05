@@ -20,9 +20,9 @@ static NEXT_WORLD: AtomicU64 = AtomicU64::new(1);
 static TABLE: OnceLock<Mutex<MaterialRegistrationTable>> = OnceLock::new();
 
 /// Serializes tests that mutate or observe process-wide remap state: the
-/// table and its revision are shared across test threads, and world-ops
-/// cache keys capture the revision, so an interleaved publish or removal
-/// flips exact cache-hit assertions in parallel tests.
+/// table and its revision are shared across test threads, so an
+/// interleaved publish or removal flips revision-sensitive assertions in
+/// parallel tests.
 #[cfg(test)]
 pub(crate) static REMAP_TEST_LOCK: Mutex<()> = Mutex::new(());
 

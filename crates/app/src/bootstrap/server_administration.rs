@@ -281,7 +281,7 @@ impl ServerOperatorState {
         }
         let numbered = !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
         let index = if numbered {
-            native_atoi(value).unwrap_or(0) - 1
+            native_atoi(value) - 1
         } else {
             self.limited_prefixes
                 .iter()
@@ -290,10 +290,7 @@ impl ServerOperatorState {
         };
         if index < 0 || index as usize >= self.limited_prefixes.len() {
             if numbered {
-                print(&format!(
-                    "No such lrconcmd index: {}\n",
-                    native_atoi(value).unwrap_or(0)
-                ));
+                print(&format!("No such lrconcmd index: {}\n", native_atoi(value)));
             } else {
                 print(&format!("No such lrconcmd string: {value}\n"));
             }

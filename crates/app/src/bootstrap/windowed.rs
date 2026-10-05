@@ -420,11 +420,15 @@ impl NativeRenderBackend for NativeGlBackend {
                 }
             }
             RenderCommand::View(view) => {
-                if let Some(parts) = self.parts.as_mut() {
-                    execute_windowed_view(&mut parts.renderer, view);
-                }
+                self.execute_serial_view_timed(view, &mut StageTimer::new(false));
             }
             RenderCommand::Draw | RenderCommand::SwapBuffers => {}
+        }
+    }
+
+    fn execute_serial_view_timed(&mut self, view: &ClientRenderView, _timer: &mut StageTimer) {
+        if let Some(parts) = self.parts.as_mut() {
+            execute_windowed_view(&mut parts.renderer, view);
         }
     }
 
@@ -579,6 +583,13 @@ impl NativeRenderBackend for NativeWindowedBackend {
         match self {
             Self::Gl(backend) => backend.execute_serial_command_timed(command, timer),
             Self::Cpu(backend) => backend.execute_serial_command_timed(command, timer),
+        }
+    }
+
+    fn execute_serial_view_timed(&mut self, view: &ClientRenderView, timer: &mut StageTimer) {
+        match self {
+            Self::Gl(backend) => backend.execute_serial_view_timed(view, timer),
+            Self::Cpu(backend) => backend.execute_serial_view_timed(view, timer),
         }
     }
 
@@ -1129,10 +1140,13 @@ fn windowed_scene_view(
         width: f64::from(camera.viewport.width) as f32,
         height: f64::from(camera.viewport.height) as f32,
     };
+    // Move the presentation-less fallback batches into the view instead of
+    // cloning them every frame. Production scenes always carry a
+    // presentation (or empty batches); only unit tests populate this path.
     let operations = if scene.batches.is_empty() {
         Vec::new()
     } else {
-        vec![RenderOperation::Draw(scene.batches.clone())]
+        vec![RenderOperation::Draw(std::mem::take(&mut scene.batches))]
     };
     Some((
         ClientRenderView {

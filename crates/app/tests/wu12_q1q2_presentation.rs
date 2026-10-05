@@ -28,7 +28,9 @@ use qa_client::materials::legacy::{
 };
 use qa_client::materials::lighting::Q1LightmapEncoding;
 use qa_client::materials::state::{CullFace as MaterialCullFace, OPAQUE_BLEND};
-use qa_client::render::types::{BatchVertices, BlendFactor, RenderOperation, ResourceOwner, SourceTime, ViewTarget};
+use qa_client::render::types::{
+    BatchVertices, BlendFactor, RenderOperation, ResourceOwner, RetainedBatch, RetainedDraw, SourceTime, ViewTarget,
+};
 use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, SceneCamera};
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::identity::IdentityOwner;
@@ -63,6 +65,15 @@ fn batch_first_color(batch: &qa_client::render::types::DrawBatch) -> qa_core::ma
         BatchVertices::Single(vertices) => vertices[0].color,
         BatchVertices::Pair { vertices, .. } => vertices[0].base.color,
     }
+}
+
+/// First-drawn-vertex color of a retained batch: the pass color at the
+/// vertex the batch's index range references first. Matches
+/// [`batch_first_color`] on the resolved vertices.
+fn retained_first_color(draw: &RetainedDraw, batch: &RetainedBatch) -> qa_core::math::Vec4 {
+    let pass = &draw.surface.passes[batch.pass as usize];
+    let first = draw.surface.indices[batch.range.start as usize] as usize;
+    pass.colors[first]
 }
 
 /// Batch-level summary of one map's spawn view, prepared headlessly.
@@ -111,17 +122,33 @@ fn prepare_spawn_view(corpus: &Path, product: &str, map: &str) -> SpawnViewStats
     let mut batches = 0;
     let mut opaque_white = 0;
     for operation in &view.operations {
-        let RenderOperation::Draw(draws) = operation else {
-            continue;
-        };
-        for batch in draws {
-            batches += 1;
-            if batch.state.blend == (BlendFactor::One, BlendFactor::Zero)
-                && batch.state.depth_write
-                && batch_first_color(batch) == vec4(1.0, 1.0, 1.0, 1.0)
-            {
-                opaque_white += 1;
+        match operation {
+            RenderOperation::Draw(draws) => {
+                for batch in draws {
+                    batches += 1;
+                    if batch.state.blend == (BlendFactor::One, BlendFactor::Zero)
+                        && batch.state.depth_write
+                        && batch_first_color(batch) == vec4(1.0, 1.0, 1.0, 1.0)
+                    {
+                        opaque_white += 1;
+                    }
+                }
             }
+            // Static world geometry stays arena-resident under the
+            // retained/VBO design; each retained batch is one draw with
+            // the same pipeline state and per-vertex colors.
+            RenderOperation::RetainedDraw(draw) => {
+                for batch in &draw.batches {
+                    batches += 1;
+                    if batch.state.blend == (BlendFactor::One, BlendFactor::Zero)
+                        && batch.state.depth_write
+                        && retained_first_color(draw, batch) == vec4(1.0, 1.0, 1.0, 1.0)
+                    {
+                        opaque_white += 1;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     SpawnViewStats {

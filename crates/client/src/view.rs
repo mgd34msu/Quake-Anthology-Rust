@@ -369,43 +369,144 @@ pub fn world_point(point: Vec3, model: &ModelTransform) -> Result<Vec3, ClientEr
     Ok(add3(model.origin, world_vector(point, model)?))
 }
 
+/// Camera/model projector with precomputed eye-space rows.
+///
+/// Building the rows once per view/model pair replaces the per-vertex row
+/// math in [`project_point`]; per-point work is then one 4x4-equivalent
+/// multiply with the exact same operations, so results match bit for bit.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewProjector {
+    eye_x: Vec4,
+    eye_y: Vec4,
+    eye_z: Vec4,
+    projection: Mat4,
+    scale_valid: bool,
+}
+
+impl ViewProjector {
+    /// Precompute the projection rows for one camera/model pair.
+    #[must_use]
+    pub fn new(camera: &SceneCamera, model: Option<&ModelTransform>) -> Self {
+        let scale = match model {
+            Some(model) => model.scale,
+            None => 1.0,
+        };
+        let row = |axis: Vec3, translation: f32| -> Vec4 {
+            match model {
+                None => Vec4 {
+                    x: axis.x,
+                    y: axis.y,
+                    z: axis.z,
+                    w: translation,
+                },
+                Some(model) => Vec4 {
+                    x: dot3(model.axis[0], axis) * scale,
+                    y: dot3(model.axis[1], axis) * scale,
+                    z: dot3(model.axis[2], axis) * scale,
+                    w: dot3(model.origin, axis) + translation,
+                },
+            }
+        };
+        Self {
+            eye_x: row(scale3(camera.axis[1], -1.0), dot3(camera.origin, camera.axis[1])),
+            eye_y: row(camera.axis[2], -dot3(camera.origin, camera.axis[2])),
+            eye_z: row(scale3(camera.axis[0], -1.0), dot3(camera.origin, camera.axis[0])),
+            projection: camera.projection,
+            scale_valid: model.is_none_or(|model| model.scale.is_finite() && model.scale != 0.0),
+        }
+    }
+
+    /// Project one point with the precomputed rows.
+    pub fn project(&self, point: Vec3) -> Result<Vec4, ClientError> {
+        if !self.scale_valid {
+            return Err(ClientError::NotFinite("model scale"));
+        }
+        let pick = |row: Vec4| vec3(row.x, row.y, row.z);
+        let x = dot3(point, pick(self.eye_x)) + self.eye_x.w;
+        let y = dot3(point, pick(self.eye_y)) + self.eye_y.w;
+        let z = dot3(point, pick(self.eye_z)) + self.eye_z.w;
+        let projection = self.projection;
+        let component = |a: f32, b: f32, c: f32, d: f32| (x * a + y * b) + z * c + d;
+        Ok(Vec4 {
+            x: component(projection[0], projection[4], projection[8], projection[12]),
+            y: component(projection[1], projection[5], projection[9], projection[13]),
+            z: component(projection[2], projection[6], projection[10], projection[14]),
+            w: component(projection[3], projection[7], projection[11], projection[15]),
+        })
+    }
+
+    /// Project one point, mapping an invalid model scale to the zero
+    /// fallback the surface builders use.
+    #[must_use]
+    pub fn project_or_zero(&self, point: Vec3) -> Vec4 {
+        self.project(point).unwrap_or(Vec4 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        })
+    }
+
+    /// Eye rows plus projection for retained operations. The model is
+    /// already folded into the rows, so positions stay model-local.
+    #[must_use]
+    pub fn rows(&self) -> ([Vec4; 3], Mat4) {
+        ([self.eye_x, self.eye_y, self.eye_z], self.projection)
+    }
+
+    /// Whether the model scale validated. Retained emission requires a
+    /// valid scale so resolve-time projection matches `project` exactly.
+    #[must_use]
+    pub fn scale_valid(&self) -> bool {
+        self.scale_valid
+    }
+
+    /// Rebuild a projector from retained rows. The caller guarantees the
+    /// rows came from a valid projector, so the scale stays valid.
+    #[must_use]
+    pub fn from_rows(eye: [Vec4; 3], projection: Mat4) -> Self {
+        Self {
+            eye_x: eye[0],
+            eye_y: eye[1],
+            eye_z: eye[2],
+            projection,
+            scale_valid: true,
+        }
+    }
+}
+
+/// Compose the column-major model-view-projection matrix matching
+/// [`ViewProjector::project`]: `clip = projection * eye`, with the eye
+/// transform's implicit fourth row `(0, 0, 0, 1)`. The GL retained path
+/// uploads this as `u_mvp`; GPU evaluation rounds independently of the CPU
+/// two-step path, so backends compare against `project` with tolerance.
+#[must_use]
+pub fn compose_retained_mvp(eye: &[Vec4; 3], projection: &Mat4) -> Mat4 {
+    let eye_row = |row: usize, col: usize| -> f32 {
+        let values = [eye[row].x, eye[row].y, eye[row].z, eye[row].w];
+        values[col]
+    };
+    let mut mvp = [0.0f32; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            let mut sum = 0.0;
+            for k in 0..4 {
+                let eye_value = if k < 3 {
+                    eye_row(k, column)
+                } else {
+                    f32::from(column == 3)
+                };
+                sum += projection[k * 4 + row] * eye_value;
+            }
+            mvp[column * 4 + row] = sum;
+        }
+    }
+    mvp
+}
+
 /// Project one point through the camera (`createViewProjector`).
 pub fn project_point(camera: &SceneCamera, model: Option<&ModelTransform>, point: Vec3) -> Result<Vec4, ClientError> {
-    let scale = match model {
-        Some(model) => model_scale(model)?,
-        None => 1.0,
-    };
-    let row = |axis: Vec3, translation: f32| -> Vec4 {
-        match model {
-            None => Vec4 {
-                x: axis.x,
-                y: axis.y,
-                z: axis.z,
-                w: translation,
-            },
-            Some(model) => Vec4 {
-                x: dot3(model.axis[0], axis) * scale,
-                y: dot3(model.axis[1], axis) * scale,
-                z: dot3(model.axis[2], axis) * scale,
-                w: dot3(model.origin, axis) + translation,
-            },
-        }
-    };
-    let eye_x = row(scale3(camera.axis[1], -1.0), dot3(camera.origin, camera.axis[1]));
-    let eye_y = row(camera.axis[2], -dot3(camera.origin, camera.axis[2]));
-    let eye_z = row(scale3(camera.axis[0], -1.0), dot3(camera.origin, camera.axis[0]));
-    let pick = |row: Vec4| vec3(row.x, row.y, row.z);
-    let x = dot3(point, pick(eye_x)) + eye_x.w;
-    let y = dot3(point, pick(eye_y)) + eye_y.w;
-    let z = dot3(point, pick(eye_z)) + eye_z.w;
-    let projection = camera.projection;
-    let component = |a: f32, b: f32, c: f32, d: f32| (x * a + y * b) + z * c + d;
-    Ok(Vec4 {
-        x: component(projection[0], projection[4], projection[8], projection[12]),
-        y: component(projection[1], projection[5], projection[9], projection[13]),
-        z: component(projection[2], projection[6], projection[10], projection[14]),
-        w: component(projection[3], projection[7], projection[11], projection[15]),
-    })
+    ViewProjector::new(camera, model).project(point)
 }
 
 /// Four-sided (plus portal) camera frustum.
@@ -718,6 +819,132 @@ mod tests {
         assert!(!bounds_in_frustum(&behind, &frustum));
         assert!((far_clip(vec3(0.0, 0.0, 0.0), &ahead) - 11.0f32.hypot(2.0f32.sqrt())).abs() < 1e-3);
         assert!(portal_clip_plane(&camera).is_none());
+    }
+
+    #[test]
+    fn projector_matches_point_projection_bitwise() {
+        let projection = perspective_projection(90.0, 90.0, 100.0, DEFAULT_NEAR).unwrap();
+        let camera = SceneCamera {
+            origin: vec3(4.0, -2.0, 8.0),
+            axis: axis(),
+            projection,
+            viewport: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            clip: CameraClip::None,
+        };
+        let model = ModelTransform {
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: axis(),
+            scale: 2.0,
+        };
+        for point in [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10.0, -3.0, 7.0),
+            vec3(-5.0, 5.0, -5.0),
+            vec3(64.0, 32.0, 16.0),
+        ] {
+            for model in [None, Some(&model)] {
+                let projector = ViewProjector::new(&camera, model);
+                let expected = project_point(&camera, model, point).unwrap();
+                assert_eq!(projector.project(point).unwrap(), expected);
+                assert_eq!(projector.project_or_zero(point), expected);
+            }
+        }
+        let bad = ModelTransform { scale: 0.0, ..model };
+        let projector = ViewProjector::new(&camera, Some(&bad));
+        assert!(projector.project(vec3(1.0, 2.0, 3.0)).is_err());
+        assert!(project_point(&camera, Some(&bad), vec3(1.0, 2.0, 3.0)).is_err());
+        assert_eq!(
+            projector.project_or_zero(vec3(1.0, 2.0, 3.0)),
+            Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0
+            }
+        );
+    }
+
+    #[test]
+    fn projector_rows_round_trip_bitwise() {
+        let projection = perspective_projection(90.0, 90.0, 100.0, DEFAULT_NEAR).unwrap();
+        let camera = SceneCamera {
+            origin: vec3(4.0, -2.0, 8.0),
+            axis: axis(),
+            projection,
+            viewport: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            clip: CameraClip::None,
+        };
+        let model = ModelTransform {
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: axis(),
+            scale: 2.0,
+        };
+        for model in [None, Some(&model)] {
+            let projector = ViewProjector::new(&camera, model);
+            assert!(projector.scale_valid());
+            let (eye, projection) = projector.rows();
+            let rebuilt = ViewProjector::from_rows(eye, projection);
+            for point in [vec3(0.0, 0.0, 0.0), vec3(10.0, -3.0, 7.0), vec3(-5.0, 5.0, -5.0)] {
+                assert_eq!(rebuilt.project(point).unwrap(), projector.project(point).unwrap());
+            }
+        }
+        let bad = ModelTransform { scale: 0.0, ..model };
+        assert!(!ViewProjector::new(&camera, Some(&bad)).scale_valid());
+    }
+
+    #[test]
+    fn retained_mvp_matches_project_within_float_tolerance() {
+        let projection = perspective_projection(90.0, 90.0, 100.0, DEFAULT_NEAR).unwrap();
+        let camera = SceneCamera {
+            origin: vec3(4.0, -2.0, 8.0),
+            axis: axis(),
+            projection,
+            viewport: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
+            clip: CameraClip::None,
+        };
+        let model = ModelTransform {
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: axis(),
+            scale: 2.0,
+        };
+        for model in [None, Some(&model)] {
+            let projector = ViewProjector::new(&camera, model);
+            let (eye, projection) = projector.rows();
+            let mvp = compose_retained_mvp(&eye, &projection);
+            for point in [
+                vec3(0.0, 0.0, 0.0),
+                vec3(10.0, -3.0, 7.0),
+                vec3(-5.0, 5.0, -5.0),
+                vec3(64.0, 32.0, 16.0),
+            ] {
+                let expected = projector.project(point).unwrap();
+                let input = [point.x, point.y, point.z, 1.0];
+                let output = [0, 1, 2, 3]
+                    .map(|row| mvp[row] * input[0] + mvp[4 + row] * input[1] + mvp[8 + row] * input[2] + mvp[12 + row]);
+                for (actual, expected) in output.iter().zip([expected.x, expected.y, expected.z, expected.w]) {
+                    let tolerance = 1e-3 * expected.abs().max(1.0);
+                    assert!(
+                        (actual - expected).abs() <= tolerance,
+                        "mvp {output:?} vs project {expected:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

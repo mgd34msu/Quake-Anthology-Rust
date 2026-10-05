@@ -1,7 +1,9 @@
 //! Client-array geometry packing (donor `src/render/gl/buffers.ts`).
 
 use crate::render::error::RenderError;
-use crate::render::types::{BatchLighting, BatchPrimitive, BatchVertices, DrawBatch};
+use crate::render::types::{
+    BatchLighting, BatchPrimitive, BatchVertices, DrawBatch, RetainedBatch, RetainedSurfaceData,
+};
 
 /// Packed client-array storage for one prepared draw.
 #[derive(Debug, Clone, Default)]
@@ -21,6 +23,172 @@ fn lighting_channels(lighting: &BatchLighting) -> (usize, usize) {
         BatchLighting::Q2World { .. } => (3, 3),
         BatchLighting::Q2ModelShadow { .. } => (3, 0),
     }
+}
+
+/// Indices per primitive, validating line widths.
+fn primitive_index_count(primitive: &BatchPrimitive) -> usize {
+    match primitive {
+        BatchPrimitive::Triangles => 3,
+        BatchPrimitive::Lines { line_width } => {
+            if !line_width.is_finite() || *line_width <= 0.0 {
+                panic!(
+                    "{}",
+                    RenderError::BadBatch {
+                        index: 0,
+                        detail: "OpenGL line width must be positive and finite".to_string()
+                    }
+                );
+            }
+            2
+        }
+    }
+}
+
+/// Validate one packed index list against its primitive.
+fn check_packed_indices(indices: &[u32], primitive: &BatchPrimitive, vertex_count: usize) {
+    let size = primitive_index_count(primitive);
+    if !indices.len().is_multiple_of(size) || indices.len() > 0x7FFF_FFFF {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: indices.len(),
+                detail: "OpenGL primitive index count is invalid".to_string()
+            }
+        );
+    }
+    if vertex_count > 0x1FFF_FFFF {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: vertex_count,
+                detail: "OpenGL vertex allocation is too large".to_string()
+            }
+        );
+    }
+    for (slot, index) in indices.iter().enumerate() {
+        if (*index as usize) >= vertex_count {
+            panic!(
+                "{}",
+                RenderError::BadBatch {
+                    index: slot,
+                    detail: "OpenGL vertex index is outside its allocation".to_string()
+                }
+            );
+        }
+    }
+}
+
+/// Validate packed attributes are finite float32 values.
+fn check_packed_finite(attributes: &[&[f32]]) {
+    for values in attributes {
+        for (index, value) in values.iter().enumerate() {
+            if !value.is_finite() {
+                panic!(
+                    "{}",
+                    RenderError::BadBatch {
+                        index,
+                        detail: "OpenGL attributes must be finite float32 values".to_string()
+                    }
+                );
+            }
+        }
+    }
+}
+
+/// Pack one retained batch into fresh vectors. Positions pack as vec3
+/// object-space values for the retained vertex shader (`u_mvp`
+/// transforms them); colors and texture coordinates pack exactly like
+/// immediate batches. Only the batch's index range is packed.
+#[must_use]
+pub fn pack_retained(surface: &RetainedSurfaceData, batch: &RetainedBatch) -> GeometryArrays {
+    if !matches!(batch.lighting, BatchLighting::Vertex) {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: 0,
+                detail: "OpenGL retained draws stay vertex-lit".to_string()
+            }
+        );
+    }
+    let vertex_count = surface.positions.len();
+    let pass = surface.passes.get(batch.pass as usize).unwrap_or_else(|| {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: batch.pass as usize,
+                detail: "OpenGL retained pass is outside its surface".to_string()
+            }
+        )
+    });
+    if pass.tex_coords.len() != vertex_count || pass.colors.len() != vertex_count {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: vertex_count,
+                detail: "OpenGL retained attributes must match the vertex count".to_string()
+            }
+        );
+    }
+    let paired = batch.second_texture.is_some();
+    if paired && pass.tex_coords2.len() != vertex_count {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: vertex_count,
+                detail: "OpenGL retained second coordinates must match the vertex count".to_string()
+            }
+        );
+    }
+    let start = batch.range.start as usize;
+    let end = start + batch.range.count as usize;
+    let range = surface.indices.get(start..end).unwrap_or_else(|| {
+        panic!(
+            "{}",
+            RenderError::BadBatch {
+                index: start,
+                detail: "OpenGL retained range is outside its indices".to_string()
+            }
+        )
+    });
+    check_packed_indices(range, &batch.primitive, vertex_count);
+    let mut arrays = GeometryArrays {
+        positions: vec![0.0; vertex_count * 3],
+        colors: vec![0.0; vertex_count * 4],
+        coordinates: vec![0.0; vertex_count * 2],
+        coordinates2: vec![0.0; vertex_count * 2],
+        world_positions: Vec::new(),
+        normals: Vec::new(),
+        indices: Vec::with_capacity(range.len()),
+    };
+    arrays.indices.extend_from_slice(range);
+    if !paired {
+        arrays.coordinates2.fill(0.0);
+    }
+    for (slot, position) in surface.positions.iter().enumerate() {
+        arrays.positions[slot * 3] = position.x;
+        arrays.positions[slot * 3 + 1] = position.y;
+        arrays.positions[slot * 3 + 2] = position.z;
+        let color = pass.colors[slot];
+        arrays.colors[slot * 4] = color.x;
+        arrays.colors[slot * 4 + 1] = color.y;
+        arrays.colors[slot * 4 + 2] = color.z;
+        arrays.colors[slot * 4 + 3] = color.w;
+        let tex_coord = pass.tex_coords[slot];
+        arrays.coordinates[slot * 2] = tex_coord.x;
+        arrays.coordinates[slot * 2 + 1] = tex_coord.y;
+        if paired {
+            let second = pass.tex_coords2[slot];
+            arrays.coordinates2[slot * 2] = second.x;
+            arrays.coordinates2[slot * 2 + 1] = second.y;
+        }
+    }
+    check_packed_finite(&[
+        &arrays.positions,
+        &arrays.colors,
+        &arrays.coordinates,
+        if paired { &arrays.coordinates2 } else { &[] },
+    ]);
+    arrays
 }
 
 /// Pack `batch` into fresh vectors.
@@ -68,49 +236,8 @@ impl GeometryBuffer {
 }
 
 fn pack_into(batch: &DrawBatch, vertex_count: usize, paired: bool, arrays: &mut GeometryArrays) {
-    let size = match batch.primitive {
-        BatchPrimitive::Triangles => 3,
-        BatchPrimitive::Lines { line_width } => {
-            if !line_width.is_finite() || line_width <= 0.0 {
-                panic!(
-                    "{}",
-                    RenderError::BadBatch {
-                        index: 0,
-                        detail: "OpenGL line width must be positive and finite".to_string()
-                    }
-                );
-            }
-            2
-        }
-    };
-    if !batch.indices.len().is_multiple_of(size) || batch.indices.len() > 0x7FFF_FFFF {
-        panic!(
-            "{}",
-            RenderError::BadBatch {
-                index: batch.indices.len(),
-                detail: "OpenGL primitive index count is invalid".to_string()
-            }
-        );
-    }
-    if vertex_count > 0x1FFF_FFFF {
-        panic!(
-            "{}",
-            RenderError::BadBatch {
-                index: vertex_count,
-                detail: "OpenGL vertex allocation is too large".to_string()
-            }
-        );
-    }
+    check_packed_indices(&batch.indices, &batch.primitive, vertex_count);
     for (slot, index) in batch.indices.iter().enumerate() {
-        if (*index as usize) >= vertex_count {
-            panic!(
-                "{}",
-                RenderError::BadBatch {
-                    index: slot,
-                    detail: "OpenGL vertex index is outside its allocation".to_string()
-                }
-            );
-        }
         arrays.indices[slot] = *index;
     }
     if !paired {
@@ -205,27 +332,14 @@ fn pack_into(batch: &DrawBatch, vertex_count: usize, paired: bool, arrays: &mut 
             }
         }
     }
-    let attributes: [&[f32]; 6] = [
+    check_packed_finite(&[
         &arrays.positions,
         &arrays.colors,
         &arrays.coordinates,
         if paired { &arrays.coordinates2 } else { &[] },
         &arrays.world_positions,
         &arrays.normals,
-    ];
-    for values in attributes {
-        for (index, value) in values.iter().enumerate() {
-            if !value.is_finite() {
-                panic!(
-                    "{}",
-                    RenderError::BadBatch {
-                        index,
-                        detail: "OpenGL attributes must be finite float32 values".to_string()
-                    }
-                );
-            }
-        }
-    }
+    ]);
 }
 
 #[cfg(test)]

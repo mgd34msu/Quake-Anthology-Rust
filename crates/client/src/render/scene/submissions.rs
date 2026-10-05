@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::render::types::{DrawBatch, RenderOperation};
+use crate::render::types::{DrawBatch, RenderOperation, RetainedDraw};
 use crate::render::RenderError;
 use crate::render::{ENTITY_WORLD, MAX_DRAW_SORT_DLIGHT, MAX_DRAW_SORT_FOG, MAX_DRAW_SORT_SHADER};
 
@@ -225,6 +225,61 @@ pub fn sequence_draw_group(phase: SequencePhase, batches: Vec<DrawBatch>) -> Sce
     SceneGroup {
         order: SceneGroupOrder::Sequence { phase },
         operations: vec![RenderOperation::Draw(batches)],
+    }
+}
+
+/// Group a retained draw under a compiled material, ordered like
+/// [`compiled_draw_group`].
+#[must_use]
+pub fn compiled_retained_group(material: RegisteredSceneMaterial, draw: RetainedDraw) -> SceneModelGroup {
+    SceneGroup {
+        order: SceneGroupOrder::Compiled { material },
+        operations: vec![RenderOperation::RetainedDraw(draw)],
+    }
+}
+
+/// Group a retained draw with source ranking, validated like
+/// [`source_draw_group`].
+pub fn source_retained_group(
+    material: RegisteredSceneMaterial,
+    source: SourceSurfaceOrder,
+    draw: RetainedDraw,
+) -> Result<SceneModelGroup, RenderError> {
+    if let SourceEntityOrder::RefEntity { index } = source.entity {
+        if index >= ENTITY_WORLD {
+            return Err(RenderError::Backend(
+                "Source refentity index exceeds the draw-sort field".to_string(),
+            ));
+        }
+    }
+    if source.fog > MAX_DRAW_SORT_FOG {
+        return Err(RenderError::Backend(
+            "Source fog index exceeds the draw-sort field".to_string(),
+        ));
+    }
+    if source.dlight > MAX_DRAW_SORT_DLIGHT {
+        return Err(RenderError::Backend(
+            "Source light flag exceeds the draw-sort field".to_string(),
+        ));
+    }
+    if !source.view.ranks().contains(&material.registration) {
+        return Err(RenderError::Backend(
+            "Source material belongs to another scene".to_string(),
+        ));
+    }
+    Ok(SceneGroup {
+        order: SceneGroupOrder::Source { material, source },
+        operations: vec![RenderOperation::RetainedDraw(draw)],
+    })
+}
+
+/// Group a retained draw under a legacy sequence phase, ordered like
+/// [`sequence_draw_group`].
+#[must_use]
+pub fn sequence_retained_group(phase: SequencePhase, draw: RetainedDraw) -> SceneModelGroup {
+    SceneGroup {
+        order: SceneGroupOrder::Sequence { phase },
+        operations: vec![RenderOperation::RetainedDraw(draw)],
     }
 }
 

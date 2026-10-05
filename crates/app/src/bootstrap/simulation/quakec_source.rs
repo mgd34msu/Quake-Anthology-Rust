@@ -7905,10 +7905,7 @@ impl<P: qa_content::contract::OriginalPickupAdmission + 'static> QuakeCSource<P>
                 return Ok(());
             }
         }
-        let amount = match args.get(1) {
-            None => None,
-            Some(text) => Some(native_atoi(text).map_err(|error| QuakeCSourceError::Invalid(error.to_string()))?),
-        };
+        let amount = args.get(1).map(|text| native_atoi(text));
         let all = input == "all";
         let write = |machine: &mut QcMachine, name: &str, value: f64| -> Result<(), QuakeCSourceError> {
             let word = self.field(name)?;

@@ -69,7 +69,7 @@ impl QcModCvars {
     /// Variable value as a number.
     #[must_use]
     pub fn variable_value(&self, name: &str) -> f64 {
-        self.find(name).and_then(|value| native_atof(value).ok()).unwrap_or(0.0)
+        self.find(name).map(native_atof).unwrap_or(0.0)
     }
 
     /// Variable value as text.

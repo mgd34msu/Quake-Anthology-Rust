@@ -13,11 +13,11 @@ use super::dlight::{project_dlight_texture, receives_projected_dlights};
 use super::fog::{attenuate_fog_color, fog_pass_state, FogAdjustment};
 use super::geometry::{MaterialDeformState, MaterialGeometry, MaterialVertex};
 use super::iterator::{
-    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, IteratorDriver, MaterialIteratorInput,
-    MaterialIteratorProfile, MultitextureEnv,
+    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, IteratorDriver, MaterialIterator,
+    MaterialIteratorInput, MaterialIteratorProfile, MultitextureEnv,
 };
 use super::material::{evaluate_tex_coords, stage_state, TexCoordContext, TexGen, WaveKind};
-use super::material::{SourceColorGen, SourceTcGen};
+use super::material::{ShaderDefinition, SourceColorGen, SourceTcGen};
 use super::q3_lighting::{DynamicLight, EntityLighting};
 use super::state::{source_state_changes, AlphaTest, DepthTest, PolygonMode, RenderState, SourceStateChange};
 use crate::ClientError;
@@ -305,6 +305,112 @@ fn retained_state(state_bits: u32, initial: &RenderState) -> Result<RenderState,
     Ok(result)
 }
 
+/// Per-pass draw parameters without vertex data. Immediate evaluation and
+/// retained cache hits share [`material_pass_params`] so per-frame texture
+/// selection, state, and fog stay identical on both paths; only the vertex
+/// source differs (fresh evaluation vs arena attributes).
+#[derive(Debug, Clone)]
+pub(crate) struct PassParams {
+    /// Pass index into the iterator.
+    pub pass: usize,
+    /// Pipeline state.
+    pub state: RenderState,
+    /// Primary texture.
+    pub texture: TextureRef,
+    /// Second texture plus environment when paired.
+    pub second_texture: Option<(TextureRef, PairEnv)>,
+    /// Lighting mode.
+    pub lighting: BatchLighting,
+    /// Fragment fog.
+    pub fog: Option<BatchFog>,
+    /// Texturing mode.
+    pub texturing: Texturing,
+}
+
+/// Compute per-pass draw parameters (`evaluateMaterialPasses` plan step).
+/// Inactive passes are skipped and a lost second texture errors, exactly as
+/// the vertex loop below expects.
+pub(crate) fn material_pass_params(
+    iterator: &MaterialIterator,
+    definition: &ShaderDefinition,
+    context: &MaterialDrawContext,
+    time: f32,
+) -> Result<Vec<PassParams>, ClientError> {
+    let mut plans = Vec::new();
+    for (index, pass) in iterator.passes.iter().enumerate() {
+        let Some(first) = pass.bundles.first() else {
+            continue;
+        };
+        if !first.active() {
+            continue;
+        }
+        let mut base = stage_state(&pass.stage, definition.cull);
+        base.depth_range = context.depth_range;
+        base.polygon_offset = if definition.polygon_offset {
+            context.polygon_offset
+        } else {
+            None
+        };
+        let render_state = retained_state(pass.state_bits, &base)?;
+        let texture = texture_binding(first, time)?;
+        let adjustment = pass.fog_adjustment;
+        let fragment_fog = match &context.q1_fog {
+            Some(q1) if q1.density > 0.0 => Some(BatchFog {
+                density: q1.density,
+                color: q1.color,
+                effect: adjustment,
+            }),
+            _ => None,
+        };
+        let (texturing, second_texture, lighting) = match pass.bundles.get(1) {
+            None => {
+                let lighting = if first.is_lightmap {
+                    BatchLighting::Q2World {
+                        pass: Q2LightPass::MaterialLightmap,
+                    }
+                } else if pass.rgb_gen == SourceColorGen::LightingDiffuse {
+                    BatchLighting::Q2World {
+                        pass: Q2LightPass::Model,
+                    }
+                } else {
+                    BatchLighting::Vertex
+                };
+                (Texturing::Single, None, lighting)
+            }
+            Some(second) => {
+                if !second.active() {
+                    return Err(ClientError::BadMaterial(
+                        "Collapsed stage lost its second registered texture".to_string(),
+                    ));
+                }
+                let second_texture = texture_binding(second, time)?;
+                (
+                    Texturing::Pair,
+                    Some((
+                        second_texture,
+                        if iterator.multitexture_env == MultitextureEnv::Add {
+                            PairEnv::Add
+                        } else {
+                            PairEnv::Modulate
+                        },
+                    )),
+                    BatchLighting::Vertex,
+                )
+            }
+        };
+        plans.push(PassParams {
+            pass: index,
+            state: render_state,
+            texture,
+            second_texture,
+            lighting,
+            fog: fragment_fog,
+            texturing,
+        });
+    }
+    Ok(plans)
+}
+
 /// Prepare material batches (`prepareMaterialBatches`). Takes the input
 /// geometry by value so the common no-deform path moves it straight into
 /// the deformed result instead of cloning it twice per surface per frame.
@@ -321,6 +427,17 @@ pub fn prepare_material_batches(
     evaluate_material_passes(compiled, input, context)
 }
 
+/// Shader time after offset and clamp (`evaluateMaterialPasses` time step).
+/// Retained cache hits share this so per-frame texture selection matches
+/// immediate evaluation exactly.
+pub(crate) fn material_time(definition: &ShaderDefinition, context: &MaterialDrawContext) -> f32 {
+    let mut time = context.time - context.time_offset;
+    if definition.clamp_time != 0.0 && time >= definition.clamp_time {
+        time = definition.clamp_time;
+    }
+    time
+}
+
 /// Evaluate material passes (`evaluateMaterialPasses`).
 pub fn evaluate_material_passes(
     compiled: &CompiledMaterial,
@@ -328,10 +445,7 @@ pub fn evaluate_material_passes(
     context: &MaterialDrawContext,
 ) -> Result<Vec<MaterialBatch>, ClientError> {
     let definition = &compiled.registered.definition;
-    let mut time = context.time - context.time_offset;
-    if definition.clamp_time != 0.0 && time >= definition.clamp_time {
-        time = definition.clamp_time;
-    }
+    let time = material_time(definition, context);
     // Without deformations the deform pass is the identity, so move the
     // input through instead of cloning it into state and snapshotting it
     // back out. (A `[None]` deform list still takes the slow path; the
@@ -380,31 +494,11 @@ pub fn evaluate_material_passes(
         iterator
     };
     let mut first_vertices: Option<Vec<BatchVertex>> = None;
-    for pass in &iterator.passes {
-        let Some(first) = pass.bundles.first() else {
-            continue;
-        };
-        if !first.active() {
-            continue;
-        }
-        let mut base = stage_state(&pass.stage, definition.cull);
-        base.depth_range = context.depth_range;
-        base.polygon_offset = if definition.polygon_offset {
-            context.polygon_offset
-        } else {
-            None
-        };
-        let render_state = retained_state(pass.state_bits, &base)?;
-        let texture = texture_binding(first, time)?;
+    let plans = material_pass_params(iterator, definition, context, time)?;
+    for plan in &plans {
+        let pass = &iterator.passes[plan.pass];
+        let first = pass.bundles.first().expect("planned pass keeps its first bundle");
         let adjustment = pass.fog_adjustment;
-        let fragment_fog = match &context.q1_fog {
-            Some(q1) if q1.density > 0.0 => Some(BatchFog {
-                density: q1.density,
-                color: q1.color,
-                effect: adjustment,
-            }),
-            _ => None,
-        };
         let mut vertices = Vec::with_capacity(geometry.vertices.len());
         for (index, vertex) in geometry.vertices.iter().enumerate() {
             let previous = previous_colors[index];
@@ -442,59 +536,39 @@ pub fn evaluate_material_passes(
         if first_vertices.is_none() {
             first_vertices = Some(vertices.clone());
         }
-        match pass.bundles.get(1) {
-            None => batches.push(MaterialBatch {
-                lighting: if first.is_lightmap {
-                    BatchLighting::Q2World {
-                        pass: Q2LightPass::MaterialLightmap,
-                    }
-                } else if pass.rgb_gen == SourceColorGen::LightingDiffuse {
-                    BatchLighting::Q2World {
-                        pass: Q2LightPass::Model,
-                    }
-                } else {
-                    BatchLighting::Vertex
-                },
-                fog: fragment_fog,
+        if plan.texturing == Texturing::Single {
+            batches.push(MaterialBatch {
+                lighting: plan.lighting,
+                fog: plan.fog,
                 texturing: Texturing::Single,
-                state: render_state,
-                texture,
+                state: plan.state,
+                texture: plan.texture,
                 second_texture: None,
                 indices: geometry.indices.clone(),
                 vertices,
-            }),
-            Some(second) => {
-                if !second.active() {
-                    return Err(ClientError::BadMaterial(
-                        "Collapsed stage lost its second registered texture".to_string(),
-                    ));
-                }
-                let second_texture = texture_binding(second, time)?;
-                let mut paired = Vec::with_capacity(vertices.len());
-                for (vertex, source) in vertices.into_iter().zip(geometry.vertices.iter()) {
-                    paired.push(BatchVertex {
-                        tex_coord2: Some(bundle_coordinates(second, source, time, context)?),
-                        ..vertex
-                    });
-                }
-                batches.push(MaterialBatch {
-                    lighting: BatchLighting::Vertex,
-                    fog: fragment_fog,
-                    texturing: Texturing::Pair,
-                    state: render_state,
-                    texture,
-                    second_texture: Some((
-                        second_texture,
-                        if iterator.multitexture_env == MultitextureEnv::Add {
-                            PairEnv::Add
-                        } else {
-                            PairEnv::Modulate
-                        },
-                    )),
-                    indices: geometry.indices.clone(),
-                    vertices: paired,
+            });
+        } else {
+            let second = pass
+                .bundles
+                .get(1)
+                .expect("planned paired pass keeps its second bundle");
+            let mut paired = Vec::with_capacity(vertices.len());
+            for (vertex, source) in vertices.into_iter().zip(geometry.vertices.iter()) {
+                paired.push(BatchVertex {
+                    tex_coord2: Some(bundle_coordinates(second, source, time, context)?),
+                    ..vertex
                 });
             }
+            batches.push(MaterialBatch {
+                lighting: plan.lighting,
+                fog: plan.fog,
+                texturing: Texturing::Pair,
+                state: plan.state,
+                texture: plan.texture,
+                second_texture: plan.second_texture,
+                indices: geometry.indices.clone(),
+                vertices: paired,
+            });
         }
     }
     if let Some(hook) = context.dynamic_light_batches {
@@ -701,5 +775,72 @@ mod tests {
         // One material pass; no fog volume means no fog batch.
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].vertices.len(), 3);
+    }
+
+    #[test]
+    fn pass_params_match_evaluated_batches() {
+        let mut host = Host;
+        let materials = compile_shader_script(
+            "rock\n{\n {\n map textures/rock.tga\n }\n {\n map $whiteimage\n blendFunc add\n }\n}\n",
+            &mut host,
+            "<test>",
+            &CompileOptions::default(),
+        )
+        .unwrap();
+        let noise = RendererNoise::new();
+        let project = |position: Vec3| vec4(position.x, position.y, position.z, 1.0);
+        let context = MaterialDrawContext {
+            time: 2.5,
+            time_offset: 0.5,
+            refdef_time: 0.0,
+            identity_light: 1.0,
+            entity_rgba: [255, 255, 255, 255],
+            lighting: None,
+            view_origin: vec3(0.0, 0.0, 0.0),
+            local_view_origin: vec3(0.0, 0.0, 0.0),
+            noise: &noise,
+            shader_tex_coord: vec2(0.0, 0.0),
+            deform_view: DeformView {
+                axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
+                mirror: false,
+                entity_axis: None,
+                non_normalized_axis: None,
+            },
+            projection_shadow: None,
+            render_text: Vec::new(),
+            dynamic_lights: None,
+            dynamic_light_batches: None,
+            depth_range: [0.0, 1.0],
+            polygon_offset: None,
+            q1_fog: None,
+            fog: None,
+            project: &project,
+        };
+        let geometry = MaterialGeometry {
+            vertices: vec![
+                vertex(vec3(0.0, 0.0, 0.0)),
+                vertex(vec3(1.0, 0.0, 0.0)),
+                vertex(vec3(0.0, 1.0, 0.0)),
+            ],
+            indices: vec![0, 1, 2],
+        };
+        let batches = prepare_material_batches(&materials[0], geometry, &context).unwrap();
+        let time = material_time(&materials[0].registered.definition, &context);
+        let plans = material_pass_params(
+            &materials[0].finished.iterator,
+            &materials[0].registered.definition,
+            &context,
+            time,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), batches.len());
+        for (plan, batch) in plans.iter().zip(batches.iter()) {
+            assert_eq!(plan.state, batch.state);
+            assert_eq!(plan.texture, batch.texture);
+            assert_eq!(plan.second_texture, batch.second_texture);
+            assert_eq!(plan.lighting, batch.lighting);
+            assert_eq!(plan.texturing, batch.texturing);
+            assert_eq!(plan.fog, batch.fog);
+        }
     }
 }

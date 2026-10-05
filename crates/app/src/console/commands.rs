@@ -239,7 +239,7 @@ impl ConsoleCommands {
         cvars: &mut CvarRegistry,
         services: &mut dyn ConsoleCommandServices,
     ) -> Result<(), ConsoleError> {
-        let mut rest = qa_core::cmd::source_command_text(text)?;
+        let mut rest = qa_core::cmd::source_command_text(text);
         while !rest.is_empty() {
             let offset = command_separator_offset(&rest, dialect);
             let segment = rest[..offset].to_string();
