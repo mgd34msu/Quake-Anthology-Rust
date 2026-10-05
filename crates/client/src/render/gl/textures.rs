@@ -406,10 +406,7 @@ impl GlTextures {
                         for level in levels {
                             self.check_rgba_level(level, 4);
                         }
-                        levels
-                            .iter()
-                            .map(|level| (level.width, level.height, level.pixels.clone()))
-                            .collect()
+                        Vec::new()
                     }
                     RenderImage::Depth32f { .. } => Vec::new(),
                 };
@@ -428,7 +425,7 @@ impl GlTextures {
                 }
                 gl.bind_texture(TEXTURE_2D, name);
                 with_pixel_store(gl, PixelDirection::Unpack, |gl| match content {
-                    RenderImage::Indexed8 { .. } | RenderImage::Rgba8 { .. } => {
+                    RenderImage::Indexed8 { .. } => {
                         for (index, (width, height, pixels)) in expanded.iter().enumerate() {
                             gl.tex_image_2d_bytes(
                                 TEXTURE_2D,
@@ -440,6 +437,21 @@ impl GlTextures {
                                 RGBA,
                                 UNSIGNED_BYTE,
                                 pixels,
+                            );
+                        }
+                    }
+                    RenderImage::Rgba8 { levels, .. } => {
+                        for (index, level) in levels.iter().enumerate() {
+                            gl.tex_image_2d_bytes(
+                                TEXTURE_2D,
+                                index as i32,
+                                RGBA8,
+                                level.width as i32,
+                                level.height as i32,
+                                0,
+                                RGBA,
+                                UNSIGNED_BYTE,
+                                &level.pixels,
                             );
                         }
                     }

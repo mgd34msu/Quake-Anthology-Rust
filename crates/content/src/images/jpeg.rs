@@ -188,15 +188,16 @@ impl Input<'_> {
 }
 
 struct Entropy {
-    value: u32,
+    value: u64,
     remaining: i32,
     printed_end: bool,
 }
 
 impl Entropy {
     fn fill(&mut self, input: &mut Input<'_>, required: i32) -> Result<(), ContentError> {
-        while self.remaining < 25 {
-            let mut next = 0u32;
+        // 64-bit bit buffer (BIT_BUF_SIZE 64), refilled one byte at a time.
+        while self.remaining < 57 {
+            let mut next = 0u64;
             if input.unread_marker != 0 {
                 if self.remaining >= required {
                     break;
@@ -208,7 +209,7 @@ impl Entropy {
                     self.printed_end = true;
                 }
             } else {
-                next = u32::from(input.byte()?);
+                next = u64::from(input.byte()?);
                 if next == 255 {
                     let mut following = input.byte()?;
                     while following == 255 {
@@ -231,7 +232,7 @@ impl Entropy {
             self.fill(input, count as i32)?;
         }
         self.remaining -= count as i32;
-        Ok((self.value >> ((self.remaining & 31) as u32)) & ((1u32 << count) - 1))
+        Ok(((self.value >> ((self.remaining & 63) as u32)) as u32) & ((1u32 << count) - 1))
     }
 
     fn signed(&mut self, input: &mut Input<'_>, count: u32) -> Result<i32, ContentError> {
@@ -258,27 +259,30 @@ impl Entropy {
         Ok(())
     }
 
-    fn symbol(&mut self, input: &mut Input<'_>, table: &HashMap<u32, u8>) -> Result<u8, ContentError> {
+    fn symbol(&mut self, input: &mut Input<'_>, table: &DerivedHuffman) -> Result<u8, ContentError> {
         if self.remaining < 8 {
             self.fill(input, 0)?;
         }
-        let mut minimum = 1u32;
         if self.remaining >= 8 {
-            let look = (self.value >> ((self.remaining - 8) as u32)) & 255;
-            for length in 1u32..=8 {
-                if let Some(value) = table.get(&((1u32 << length) + (look >> (8 - length)))) {
-                    self.remaining -= length as i32;
-                    return Ok(*value);
-                }
+            // jdhuff.c HUFF_LOOKAHEAD fast path: one array probe per symbol.
+            let look = ((self.value >> ((self.remaining - 8) as u32)) & 255) as usize;
+            let nbits = table.look_nbits[look];
+            if nbits != 0 {
+                self.remaining -= i32::from(nbits);
+                return Ok(table.look_sym[look]);
             }
-            minimum = 9;
         }
-        let mut code = (1u32 << minimum) + self.bits(input, minimum)?;
-        for _ in minimum..=16 {
-            if let Some(value) = table.get(&code) {
-                return Ok(*value);
+        // jpeg_huff_decode slow path: one bit at a time against maxcode/valptr.
+        let mut code = self.bits(input, 1)? as i32;
+        for length in 1..=16usize {
+            if code <= table.maxcode[length] {
+                let index = code + table.valptr[length];
+                if let Some(&symbol) = table.symbols.get(index as usize) {
+                    return Ok(symbol);
+                }
+                break;
             }
-            code = code * 2 + self.bits(input, 1)?;
+            code = code * 2 + self.bits(input, 1)? as i32;
         }
         // jpeg_huff_decode consumes the seventeenth bit before recovery.
         input.warnings.emit("Corrupt JPEG data: bad Huffman code".to_string());
@@ -362,15 +366,29 @@ enum ColorSpace {
 struct ScanComponent {
     component: usize,
     prediction_dc: i32,
-    dc: HashMap<u32, u8>,
-    ac: HashMap<u32, u8>,
     multipliers: [f32; 64],
+}
+
+/// IJG `d_derived_tbl` (jdhuff.c): 256-entry lookahead plus `maxcode`/`valptr`
+/// for codes longer than 8 bits. Built once per DHT definition and borrowed
+/// by every scan; never cloned per scan.
+struct DerivedHuffman {
+    /// Symbols in code order (`huffval`).
+    symbols: [u8; 256],
+    /// Largest code of each length, `-1` when the length is unused (`maxcode`).
+    maxcode: [i32; 18],
+    /// `symbols` index of each length's first code minus that code (`valptr`).
+    valptr: [i32; 18],
+    /// Fast path: code length for each 8-bit prefix, `0` when longer (`look_nbits`).
+    look_nbits: [u8; 256],
+    /// Fast path: symbol for each 8-bit prefix (`look_sym`).
+    look_sym: [u8; 256],
 }
 
 struct HuffmanTable {
     counts: [u8; 16],
     values: Vec<u8>,
-    derived: Option<HashMap<u32, u8>>,
+    derived: Option<DerivedHuffman>,
 }
 
 fn read_frame(
@@ -590,49 +608,95 @@ fn read_huffman(input: &mut Input<'_>, tables: &mut HashMap<u8, HuffmanTable>) -
 }
 
 // jdhuff.c derives tables at scan startup, not while reading DHT markers.
+// jpeg_make_d_derived_tbl: canonical codes feed the lookahead plus
+// maxcode/valptr; callers borrow the stored table instead of cloning it.
+fn build_derived(input: &Input<'_>, raw: &HuffmanTable) -> Result<DerivedHuffman, ContentError> {
+    let mut derived = DerivedHuffman {
+        symbols: [0; 256],
+        maxcode: [-1; 18],
+        valptr: [0; 18],
+        look_nbits: [0; 256],
+        look_sym: [0; 256],
+    };
+    let mut code = 0u32;
+    let mut value_index = 0usize;
+    let mut symbol_index = 0usize;
+    for (length0, count) in raw.counts.iter().enumerate() {
+        let length = length0 as u32 + 1;
+        // Short overfull codes write beyond IJG's 256-entry lookahead arrays.
+        if length <= 8 && *count != 0 && code + u32::from(*count) > 1u32 << length {
+            return Err(input.fail("oversubscribed Huffman table exceeds source lookahead allocation"));
+        }
+        let first_code = code;
+        let first_symbol = symbol_index;
+        let mut assigned = 0u32;
+        for _ in 0..*count {
+            let value = raw
+                .values
+                .get(value_index)
+                .copied()
+                .ok_or_else(|| input.fail("oversubscribed Huffman table exceeds source lookahead allocation"))?;
+            value_index += 1;
+            if code < 1u32 << length {
+                derived.symbols[symbol_index] = value;
+                symbol_index += 1;
+                assigned += 1;
+            }
+            code += 1;
+        }
+        if assigned > 0 {
+            derived.maxcode[length as usize] = (first_code + assigned - 1) as i32;
+            derived.valptr[length as usize] = first_symbol as i32 - first_code as i32;
+            if length <= 8 {
+                let span = 1usize << (8 - length);
+                for offset in 0..assigned {
+                    let prefix = ((first_code + offset) << (8 - length)) as usize;
+                    let symbol = derived.symbols[first_symbol + offset as usize];
+                    for slot in prefix..prefix + span {
+                        derived.look_nbits[slot] = length as u8;
+                        derived.look_sym[slot] = symbol;
+                    }
+                }
+            }
+        }
+        code *= 2;
+    }
+    derived.maxcode[17] = 0xFFFFF;
+    Ok(derived)
+}
+
 fn derive_huffman(
     input: &mut Input<'_>,
     tables: &mut HashMap<u8, HuffmanTable>,
     selector: u8,
-) -> Result<HashMap<u32, u8>, ContentError> {
+) -> Result<(), ContentError> {
     let raw = tables
         .get(&selector)
         .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))?;
-    if let Some(derived) = &raw.derived {
-        return Ok(derived.clone());
+    if raw.derived.is_some() {
+        return Ok(());
     }
-    let table = {
+    let derived = {
         let raw = tables
             .get(&selector)
             .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))?;
-        let mut table = HashMap::new();
-        let mut code = 0u32;
-        let mut value_index = 0usize;
-        for (length, count) in raw.counts.iter().enumerate() {
-            let length = length as u32 + 1;
-            // Short overfull codes write beyond IJG's 256-entry lookahead arrays.
-            if length <= 8 && code + u32::from(*count) > 1u32 << length && *count != 0 {
-                return Err(input.fail("oversubscribed Huffman table exceeds source lookahead allocation"));
-            }
-            for _ in 0..*count {
-                let value =
-                    raw.values.get(value_index).copied().ok_or_else(|| {
-                        input.fail("oversubscribed Huffman table exceeds source lookahead allocation")
-                    })?;
-                value_index += 1;
-                if code < 1u32 << length {
-                    table.insert((1u32 << length) + code, value);
-                }
-                code += 1;
-            }
-            code *= 2;
-        }
-        table
+        build_derived(input, raw)?
     };
     if let Some(raw) = tables.get_mut(&selector) {
-        raw.derived = Some(table.clone());
+        raw.derived = Some(derived);
     }
-    Ok(table)
+    Ok(())
+}
+
+fn derived_table<'a>(
+    tables: &'a HashMap<u8, HuffmanTable>,
+    selector: u8,
+    input: &Input<'_>,
+) -> Result<&'a DerivedHuffman, ContentError> {
+    tables
+        .get(&selector)
+        .and_then(|raw| raw.derived.as_ref())
+        .ok_or_else(|| input.source_fail(format!("Huffman table 0x{:02x} was not defined", selector & 15)))
 }
 
 // jdmarker.c get_dac validates these tables even for a Huffman frame.
@@ -781,11 +845,14 @@ fn idct_sample(value: f32) -> u8 {
     (index - 896) as u8
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_block(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
     frame: &mut Frame,
     scan: &mut ScanComponent,
+    dc: &DerivedHuffman,
+    ac: &DerivedHuffman,
     column: usize,
     row: usize,
     block: &mut [f32; 64],
@@ -810,14 +877,14 @@ fn decode_block(
             *slot = f32::from(*value);
         }
     }
-    let dc_size = entropy.symbol(input, &scan.dc)?;
+    let dc_size = entropy.symbol(input, dc)?;
     scan.prediction_dc = scan
         .prediction_dc
         .wrapping_add(entropy.signed(input, u32::from(dc_size))?);
     block[0] = ((scan.prediction_dc << 16) >> 16) as f32;
     let mut index = 1i32;
     while index < 64 {
-        let symbol = entropy.symbol(input, &scan.ac)?;
+        let symbol = entropy.symbol(input, ac)?;
         let run = i32::from(symbol >> 4);
         let size = symbol & 15;
         if size == 0 {
@@ -1270,19 +1337,28 @@ fn read_scan(
             if !huffman.contains_key(&table_selector) {
                 return Err(input.source_fail(format!("Huffman table 0x{:02x} was not defined", table_selector & 15)));
             }
+            derive_huffman(input, huffman, table_selector)?;
         }
-        let dc = derive_huffman(input, huffman, selector >> 4)?;
-        let ac = derive_huffman(input, huffman, 16 + (selector & 15))?;
-        scans.push(ScanComponent {
-            component,
-            prediction_dc: 0,
-            dc,
-            ac,
-            multipliers,
-        });
+        scans.push((
+            ScanComponent {
+                component,
+                prediction_dc: 0,
+                multipliers,
+            },
+            selector,
+        ));
     }
+    let tables = &*huffman;
+    let mut scans = scans
+        .into_iter()
+        .map(|(scan, selector)| {
+            let dc = derived_table(tables, selector >> 4, input)?;
+            let ac = derived_table(tables, 16 + (selector & 15), input)?;
+            Ok((scan, dc, ac))
+        })
+        .collect::<Result<Vec<(ScanComponent, &DerivedHuffman, &DerivedHuffman)>, ContentError>>()?;
     let single = if scans.len() == 1 {
-        Some(scans[0].component)
+        Some(scans[0].0.component)
     } else {
         None
     };
@@ -1311,14 +1387,15 @@ fn read_scan(
             entropy.restart(input, restart)?;
             restart = (restart + 1) & 7;
             for scan in &mut scans {
-                scan.prediction_dc = 0;
+                scan.0.prediction_dc = 0;
             }
         }
         let column = mcu % columns;
         let row = mcu / columns;
         let mut block_index = 0usize;
         let mut pending = Vec::new();
-        for (index, scan) in scans.iter_mut().enumerate() {
+        for (index, entry) in scans.iter_mut().enumerate() {
+            let (scan, dc, ac) = (&mut entry.0, entry.1, entry.2);
             let (h, v) = match single {
                 None => (frame.components[scan.component].h, frame.components[scan.component].v),
                 Some(_) => (1, 1),
@@ -1335,6 +1412,8 @@ fn read_scan(
                         &mut entropy,
                         frame,
                         scan,
+                        dc,
+                        ac,
                         block_column,
                         block_row,
                         &mut blocks[block_index],
@@ -1380,7 +1459,7 @@ fn read_scan(
 fn progressive_ac_first(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
-    table: &HashMap<u32, u8>,
+    table: &DerivedHuffman,
     coefficients: &mut [i16],
     offset: usize,
     start: u8,
@@ -1437,7 +1516,7 @@ fn refine_coefficient(
 fn progressive_ac_refine(
     input: &mut Input<'_>,
     entropy: &mut Entropy,
-    table: &HashMap<u32, u8>,
+    table: &DerivedHuffman,
     coefficients: &mut [i16],
     offset: usize,
     start: u8,
@@ -1602,25 +1681,40 @@ fn read_progressive_scan(
             storage.bits[index] = low as i8;
         }
     }
-    enum ProgressiveKind {
+    enum ProgressiveKind<'a> {
         DcRefine,
-        DcFirst(HashMap<u32, u8>),
-        AcFirst(HashMap<u32, u8>),
-        AcRefine(HashMap<u32, u8>),
+        DcFirst(&'a DerivedHuffman),
+        AcFirst(&'a DerivedHuffman),
+        AcRefine(&'a DerivedHuffman),
     }
+    for (_, selector) in &members {
+        if start == 0 && high != 0 {
+            continue;
+        }
+        derive_huffman(
+            input,
+            huffman,
+            if start == 0 {
+                selector >> 4
+            } else {
+                16 + (selector & 15)
+            },
+        )?;
+    }
+    let tables = &*huffman;
     let mut scans = Vec::with_capacity(members.len());
     for (component, selector) in members {
         let kind = if start == 0 && high != 0 {
             ProgressiveKind::DcRefine
         } else {
-            let table = derive_huffman(
-                input,
-                huffman,
+            let table = derived_table(
+                tables,
                 if start == 0 {
                     selector >> 4
                 } else {
                     16 + (selector & 15)
                 },
+                input,
             )?;
             if start == 0 {
                 ProgressiveKind::DcFirst(table)
@@ -2465,5 +2559,90 @@ mod tests {
             .map(|pixel| u32::from(pixel[0]))
             .sum();
         assert!(left > 0 && right > 0, "{left} {right}");
+    }
+
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut hash = 0xcbf29ce484222325u64;
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    // Exact bytes of qfiles/q3a/lrctf/pak01/textures/alliance/curved_wall4b.jpg,
+    // a 64x64 baseline RGB texture, embedded so the regression test is hermetic.
+    const CORPUS_BASELINE_JPEG: &[u8] = &[
+        255, 216, 255, 224, 0, 16, 74, 70, 73, 70, 0, 1, 1, 1, 1, 44, 1, 44, 0, 0, 255, 219, 0, 67, 0, 5, 3, 4, 4, 4,
+        3, 5, 4, 4, 4, 5, 5, 5, 6, 7, 12, 8, 7, 7, 7, 7, 15, 11, 11, 9, 12, 17, 15, 18, 18, 17, 15, 17, 17, 19, 22, 28,
+        23, 19, 20, 26, 21, 17, 17, 24, 33, 24, 26, 29, 29, 31, 31, 31, 19, 23, 34, 36, 34, 30, 36, 28, 30, 31, 30,
+        255, 219, 0, 67, 1, 5, 5, 5, 7, 6, 7, 14, 8, 8, 14, 30, 20, 17, 20, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 255, 192, 0, 17, 8, 0, 64, 0, 64, 3, 1, 34, 0, 2, 17, 1, 3, 17, 1,
+        255, 196, 0, 31, 0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 255,
+        196, 0, 181, 16, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125, 1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19,
+        81, 97, 7, 34, 113, 20, 50, 129, 145, 161, 8, 35, 66, 177, 193, 21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10,
+        22, 23, 24, 25, 26, 37, 38, 39, 40, 41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84,
+        85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 131,
+        132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167,
+        168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210,
+        211, 212, 213, 214, 215, 216, 217, 218, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244,
+        245, 246, 247, 248, 249, 250, 255, 196, 0, 31, 1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 3,
+        4, 5, 6, 7, 8, 9, 10, 11, 255, 196, 0, 181, 17, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119, 0, 1, 2, 3,
+        17, 4, 5, 33, 49, 6, 18, 65, 81, 7, 97, 113, 19, 34, 50, 129, 8, 20, 66, 145, 161, 177, 193, 9, 35, 51, 82,
+        240, 21, 98, 114, 209, 10, 22, 36, 52, 225, 37, 241, 23, 24, 25, 26, 38, 39, 40, 41, 42, 53, 54, 55, 56, 57,
+        58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115,
+        116, 117, 118, 119, 120, 121, 122, 130, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151,
+        152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194,
+        195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 226, 227, 228, 229, 230,
+        231, 232, 233, 234, 242, 243, 244, 245, 246, 247, 248, 249, 250, 255, 218, 0, 12, 3, 1, 0, 2, 17, 3, 17, 0, 63,
+        0, 240, 5, 219, 252, 52, 39, 247, 169, 105, 19, 239, 110, 175, 165, 62, 36, 25, 191, 139, 248, 104, 255, 0,
+        102, 143, 253, 10, 157, 64, 9, 72, 244, 124, 180, 127, 227, 212, 0, 234, 74, 41, 118, 208, 0, 255, 0, 247, 213,
+        20, 127, 192, 233, 187, 150, 128, 22, 150, 146, 145, 40, 0, 255, 0, 128, 127, 192, 105, 105, 63, 130, 150, 128,
+        19, 238, 252, 180, 109, 249, 232, 255, 0, 106, 150, 128, 10, 93, 173, 73, 73, 242, 208, 3, 183, 82, 81, 69, 0,
+        38, 218, 117, 55, 115, 82, 208, 1, 69, 39, 251, 84, 110, 160, 5, 164, 95, 247, 254, 106, 62, 90, 63, 221, 160,
+        5, 164, 79, 191, 66, 238, 223, 254, 237, 31, 55, 251, 171, 64, 7, 240, 82, 210, 125, 239, 248, 13, 59, 119,
+        201, 64, 13, 127, 239, 83, 159, 109, 53, 182, 255, 0, 189, 67, 127, 13, 0, 127, 255, 217,
+    ];
+
+    // 32x32 RGB gradient saved progressive (quality 85); the Steel corpus has
+    // no progressive JPEG, so this fixture covers the progressive scan path.
+    const PROGRESSIVE_JPEG: &[u8] = &[
+        255, 216, 255, 224, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 255, 219, 0, 67, 0, 5, 3, 4, 4, 4, 3,
+        5, 4, 4, 4, 5, 5, 5, 6, 7, 12, 8, 7, 7, 7, 7, 15, 11, 11, 9, 12, 17, 15, 18, 18, 17, 15, 17, 17, 19, 22, 28,
+        23, 19, 20, 26, 21, 17, 17, 24, 33, 24, 26, 29, 29, 31, 31, 31, 19, 23, 34, 36, 34, 30, 36, 28, 30, 31, 30,
+        255, 219, 0, 67, 1, 5, 5, 5, 7, 6, 7, 14, 8, 8, 14, 30, 20, 17, 20, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 255, 194, 0, 17, 8, 0, 32, 0, 32, 3, 1, 34, 0, 2, 17, 1, 3, 17, 1,
+        255, 196, 0, 22, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 4, 7, 255, 196, 0, 24, 1, 0, 3, 1, 1, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 6, 5, 7, 255, 218, 0, 12, 3, 1, 0, 2, 16, 3, 16, 0, 0, 1, 203, 210, 189,
+        32, 129, 43, 210, 98, 188, 164, 175, 75, 59, 144, 192, 149, 233, 51, 95, 255, 196, 0, 21, 16, 1, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 255, 218, 0, 8, 1, 1, 0, 1, 5, 2, 50, 140, 99, 40, 202, 49, 140, 163, 24,
+        202, 50, 140, 99, 40, 198, 50, 140, 163, 24, 202, 255, 196, 0, 21, 17, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 4, 0, 255, 218, 0, 8, 1, 3, 1, 1, 63, 1, 19, 97, 54, 19, 97, 54, 255, 196, 0, 21, 17, 1, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 255, 218, 0, 8, 1, 2, 1, 1, 63, 1, 42, 42, 42, 42, 255, 196, 0, 20, 16,
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 255, 218, 0, 8, 1, 1, 0, 6, 63, 2, 7, 255, 196, 0, 21, 16,
+        1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97, 255, 218, 0, 8, 1, 1, 0, 1, 63, 33, 138, 8, 162, 130,
+        40, 34, 138, 8, 160, 138, 40, 34, 255, 218, 0, 12, 3, 1, 0, 2, 0, 3, 0, 0, 0, 16, 3, 224, 188, 255, 196, 0, 22,
+        17, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 49, 255, 218, 0, 8, 1, 3, 1, 1, 63, 16, 155, 38,
+        201, 178, 108, 255, 196, 0, 20, 17, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 255, 218, 0, 8, 1, 2,
+        1, 1, 63, 16, 31, 255, 0, 255, 196, 0, 21, 16, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 255, 218,
+        0, 8, 1, 1, 0, 1, 63, 16, 153, 34, 100, 217, 19, 36, 76, 153, 34, 100, 137, 179, 36, 76, 255, 217,
+    ];
+
+    #[test]
+    fn decodes_corpus_baseline_pixel_identical() {
+        let image = decode_jpeg(CORPUS_BASELINE_JPEG, "<test>").unwrap();
+        assert_eq!((image.width, image.height), (64, 64));
+        assert_eq!(image.pixels.len(), 64 * 64 * 4);
+        assert_eq!(fnv1a64(&image.pixels), 13385976686403150900);
+    }
+
+    #[test]
+    fn decodes_progressive_pixel_identical() {
+        let image = decode_jpeg(PROGRESSIVE_JPEG, "<test>").unwrap();
+        assert_eq!((image.width, image.height), (32, 32));
+        assert_eq!(image.pixels.len(), 32 * 32 * 4);
+        assert_eq!(fnv1a64(&image.pixels), 8454909788123546790);
     }
 }
