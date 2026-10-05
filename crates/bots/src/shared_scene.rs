@@ -206,9 +206,22 @@ impl SharedSceneQueries {
         self.spatial.link(body, collision);
     }
 
+    /// Link a body snapshot known to be absent, skipping the unlink
+    /// scan. The caller must link every actor at most once after a
+    /// clear; a per-step clear plus one fresh link per body keeps the
+    /// rebuild linear.
+    pub fn link_fresh(&mut self, body: &LinkedBody, collision: &ActorCollision) {
+        self.spatial.link_fresh(body, collision);
+    }
+
     /// Unlink an actor.
     pub fn unlink(&mut self, actor: &ActorId) {
         self.spatial.unlink(actor);
+    }
+
+    /// Remove every linked actor.
+    pub fn clear_actors(&mut self) {
+        self.spatial.clear();
     }
 
     /// Fetch a linked actor with current state and collision.
@@ -1350,6 +1363,32 @@ mod tests {
         assert!(caught.start_solid);
         assert!(caught.fraction < geometry.fraction);
         assert_eq!(caught.hit, TraceHit::Actor { actor: snag.clone() });
+    }
+
+    #[test]
+    fn shared_clear_and_fresh_relink() {
+        let mut shared = SharedSceneQueries::new(DecodedCollisionWorld::Q1(q1_geometry())).unwrap();
+        let actor = test_actor(1);
+        let (linked, collision) = body(
+            actor.clone(),
+            Bounds {
+                min: vec3(-40.0, -16.0, -16.0),
+                max: vec3(-8.0, 16.0, 16.0),
+            },
+        );
+        shared.link(&linked, &collision);
+        let world = Bounds {
+            min: vec3(-64.0, -64.0, -64.0),
+            max: vec3(64.0, 64.0, 64.0),
+        };
+        assert_eq!(shared.query_actors(&world, QueryRole::Solid).len(), 1);
+        shared.clear_actors();
+        assert!(shared.query_actors(&world, QueryRole::Both).is_empty());
+        assert!(shared.linked_actor(&actor).is_none());
+        shared.link_fresh(&linked, &collision);
+        assert_eq!(shared.query_actors(&world, QueryRole::Solid).len(), 1);
+        let hit = shared.trace(&q1_query()).unwrap();
+        assert_eq!(hit.hit, TraceHit::Actor { actor });
     }
 
     #[test]
