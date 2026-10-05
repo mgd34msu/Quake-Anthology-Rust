@@ -7,6 +7,7 @@
 //! [`OpenArchive`]; entry lookup, directory parsing, and range checks keep
 //! donor semantics and messages.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::File;
@@ -312,6 +313,8 @@ pub struct MemorySource {
     bytes: Vec<u8>,
     source: String,
     closed: Cell<bool>,
+    #[cfg(test)]
+    reads: Cell<u64>,
 }
 
 impl MemorySource {
@@ -322,6 +325,8 @@ impl MemorySource {
             bytes: bytes.to_vec(),
             source: source.to_string(),
             closed: Cell::new(false),
+            #[cfg(test)]
+            reads: Cell::new(0),
         }
     }
 
@@ -345,13 +350,26 @@ impl MemorySource {
 
     /// Read a checked range.
     pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
+        Ok(self.slice(offset, length)?.to_vec())
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        self.reads.get()
+    }
+
+    /// Borrow a checked range without copying.
+    pub fn slice(&self, offset: u64, length: u64) -> Result<&[u8], ArchiveError> {
         if self.closed.get() {
             return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
         }
         check_range(&self.source, self.byte_length(), offset, length)?;
         let offset = offset as usize;
         let length = length as usize;
-        Ok(self.bytes[offset..offset + length].to_vec())
+        Ok(&self.bytes[offset..offset + length])
     }
 
     /// Release the retained bytes.
@@ -428,6 +446,8 @@ pub struct FileSource {
     file: RefCell<File>,
     identity: FileIdentity,
     closed: Cell<bool>,
+    #[cfg(test)]
+    reads: Cell<u64>,
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> ArchiveError {
@@ -458,6 +478,8 @@ impl FileSource {
             file: RefCell::new(file),
             identity,
             closed: Cell::new(false),
+            #[cfg(test)]
+            reads: Cell::new(0),
         })
     }
 
@@ -569,7 +591,15 @@ impl FileSource {
             .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
         let mut bytes = vec![0u8; length_usize];
         self.read_into(offset, &mut bytes)?;
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
         Ok(bytes)
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        self.reads.get()
     }
 
     /// Release the retained descriptor.
@@ -631,6 +661,25 @@ impl ArchiveSource {
         match self {
             ArchiveSource::Memory(_) => Ok(()),
             ArchiveSource::File(source) => source.verify_identity(),
+        }
+    }
+
+    /// Borrow a checked range from a memory source.
+    ///
+    /// File sources have no borrowed form and report `None`.
+    fn memory_slice(&self, offset: u64, length: u64) -> Option<Result<&[u8], ArchiveError>> {
+        match self {
+            ArchiveSource::Memory(source) => Some(source.slice(offset, length)),
+            ArchiveSource::File(_) => None,
+        }
+    }
+
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    fn test_reads(&self) -> u64 {
+        match self {
+            ArchiveSource::Memory(source) => source.test_reads(),
+            ArchiveSource::File(source) => source.test_reads(),
         }
     }
 
@@ -973,33 +1022,45 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 fn inflate_raw_capped(compressed: &[u8], cap: u64) -> Result<Vec<u8>, String> {
     let cap = usize::try_from(cap).map_err(|_| "output exceeds addressable memory".to_string())?;
-    let mut output = vec![0u8; cap.saturating_add(1)];
+    let mut output: Vec<u8> = Vec::with_capacity(cap.saturating_add(1));
     let mut decoder = Decompress::new(false);
-    decoder
-        .decompress(compressed, &mut output, FlushDecompress::Finish)
-        .map_err(|error| error.to_string())?;
+    // Expose the spare capacity as the output buffer instead of zero-filling
+    // it. `decompress` writes at most `output.len()` bytes starting at index
+    // 0, so bytes `[0..total_out)` are initialized afterwards and the length
+    // is reset to exactly that prefix before any other use.
+    unsafe {
+        output.set_len(output.capacity());
+    }
+    let status = decoder.decompress(compressed, &mut output, FlushDecompress::Finish);
     let length = usize::try_from(decoder.total_out()).map_err(|_| "output exceeds addressable memory".to_string())?;
+    debug_assert!(length <= output.len());
+    unsafe {
+        output.set_len(length.min(output.len()));
+    }
+    status.map_err(|error| error.to_string())?;
     if length > cap {
         return Err(format!("output exceeds {cap}-byte limit"));
     }
-    output.truncate(length);
     Ok(output)
 }
 
 /// Decode an entry payload, checking size and CRC-32 (`decodeZipEntry`).
 ///
-/// DEFLATE output is capped at the entry byte length (minimum one), matching
-/// the donor `maxOutputLength` cap.
-pub fn decode_zip_entry(
-    compressed: &[u8],
+/// Stored entries borrow the input slice; DEFLATE entries inflate into an
+/// owned buffer capped at the entry byte length (minimum one), matching the
+/// donor `maxOutputLength` cap.
+pub fn decode_zip_entry_cow<'a>(
+    compressed: &'a [u8],
     source: &str,
     data_offset: u64,
     entry: &ZipEntry,
-) -> Result<Vec<u8>, ArchiveError> {
-    let output = match entry.compression_method {
-        ZipCompression::Store => compressed.to_vec(),
-        ZipCompression::Deflate => inflate_raw_capped(compressed, entry.byte_length.max(1))
-            .map_err(|message| ArchiveError::archive(source, data_offset, format!("DEFLATE failed: {message}")))?,
+) -> Result<Cow<'a, [u8]>, ArchiveError> {
+    let output: Cow<'a, [u8]> = match entry.compression_method {
+        ZipCompression::Store => Cow::Borrowed(compressed),
+        ZipCompression::Deflate => Cow::Owned(
+            inflate_raw_capped(compressed, entry.byte_length.max(1))
+                .map_err(|message| ArchiveError::archive(source, data_offset, format!("DEFLATE failed: {message}")))?,
+        ),
     };
     if output.len() as u64 != entry.byte_length {
         return Err(ArchiveError::archive(
@@ -1012,6 +1073,16 @@ pub fn decode_zip_entry(
         return Err(ArchiveError::archive(source, data_offset, "entry CRC32 mismatch"));
     }
     Ok(output)
+}
+
+/// Decode an entry payload into an owned buffer, checking size and CRC-32.
+pub fn decode_zip_entry(
+    compressed: &[u8],
+    source: &str,
+    data_offset: u64,
+    entry: &ZipEntry,
+) -> Result<Vec<u8>, ArchiveError> {
+    decode_zip_entry_cow(compressed, source, data_offset, entry).map(Cow::into_owned)
 }
 
 /// Open loose file confined to its root (`LooseEntryHandle`).
@@ -1086,6 +1157,7 @@ pub struct OpenArchive {
     storage: ArchiveSource,
     central_offset: u64,
     entry_indexes: RefCell<HashMap<ArchivePathComparison, HashMap<String, Vec<usize>>>>,
+    zip_data_offsets: RefCell<HashMap<usize, (u64, u64)>>,
 }
 
 impl OpenArchive {
@@ -1149,24 +1221,56 @@ impl OpenArchive {
         Ok(entry)
     }
 
+    /// Resolve a ZIP member payload offset, validating its local header.
+    ///
+    /// Each entry's local header is parsed once; later reads reuse the
+    /// cached payload offset when the directory entry still agrees with it.
+    fn zip_data_offset(&self, entry: &ZipEntry) -> Result<u64, ArchiveError> {
+        if let Some((local_header_offset, data_offset)) = self.zip_data_offsets.borrow().get(&entry.ordinal).copied() {
+            if local_header_offset == entry.local_header_offset {
+                return Ok(data_offset);
+            }
+        }
+        let header = read_zip_local_header(&self.storage.read(entry.local_header_offset, 30)?, &self.source, entry)?;
+        let variable = self
+            .storage
+            .read(entry.local_header_offset + 30, header.byte_length as u64)?;
+        let offset = zip_data_offset(&variable, header.name_length, &self.source, self.central_offset, entry)?;
+        self.zip_data_offsets
+            .borrow_mut()
+            .insert(entry.ordinal, (entry.local_header_offset, offset));
+        Ok(offset)
+    }
+
     /// Read and decode an entry payload.
     pub fn read_entry(&self, requested: EntryRef<'_>) -> Result<Vec<u8>, ArchiveError> {
+        self.read_entry_cow(requested).map(Cow::into_owned)
+    }
+
+    /// Read and decode an entry payload, borrowing stored bytes.
+    ///
+    /// Stored entries over a memory source borrow the retained bytes;
+    /// everything else decodes into an owned buffer.
+    pub fn read_entry_cow(&self, requested: EntryRef<'_>) -> Result<Cow<'_, [u8]>, ArchiveError> {
         let entry = self.select(requested)?;
         match entry {
-            ArchiveEntry::Pak(entry) => self.storage.read(entry.data_offset, entry.byte_length),
+            ArchiveEntry::Pak(entry) => match self.storage.memory_slice(entry.data_offset, entry.byte_length) {
+                Some(slice) => Ok(Cow::Borrowed(slice?)),
+                None => Ok(Cow::Owned(self.storage.read(entry.data_offset, entry.byte_length)?)),
+            },
             ArchiveEntry::Zip(entry) => {
-                let header =
-                    read_zip_local_header(&self.storage.read(entry.local_header_offset, 30)?, &self.source, entry)?;
-                let variable = self
-                    .storage
-                    .read(entry.local_header_offset + 30, header.byte_length as u64)?;
-                let offset = zip_data_offset(&variable, header.name_length, &self.source, self.central_offset, entry)?;
-                decode_zip_entry(
+                let offset = self.zip_data_offset(entry)?;
+                if entry.compression_method == ZipCompression::Store {
+                    if let Some(slice) = self.storage.memory_slice(offset, entry.compressed_size) {
+                        return decode_zip_entry_cow(slice?, &self.source, offset, entry);
+                    }
+                }
+                Ok(Cow::Owned(decode_zip_entry(
                     &self.storage.read(offset, entry.compressed_size)?,
                     &self.source,
                     offset,
                     entry,
-                )
+                )?))
             }
         }
     }
@@ -1179,9 +1283,16 @@ impl OpenArchive {
         self.storage.verify_identity()
     }
 
+    /// Storage reads served so far (test hook).
+    #[cfg(test)]
+    pub fn test_storage_reads(&self) -> u64 {
+        self.storage.test_reads()
+    }
+
     /// Drop lookup indexes and release the retained source.
     pub fn close(&self) {
         self.entry_indexes.borrow_mut().clear();
+        self.zip_data_offsets.borrow_mut().clear();
         self.storage.close();
     }
 }
@@ -1262,6 +1373,7 @@ pub fn open_archive_source(storage: ArchiveSource, format: Option<ArchiveFormat>
             storage,
             central_offset,
             entry_indexes: RefCell::new(HashMap::new()),
+            zip_data_offsets: RefCell::new(HashMap::new()),
         }),
         Err(error) => {
             storage.close();
@@ -1514,6 +1626,81 @@ mod tests {
         let forced = decode_archive(&bytes, Some(ArchiveFormat::Kpf), "mod.bin").unwrap();
         assert_eq!(forced.format, ArchiveFormat::Kpf);
         assert_eq!(forced.entries.len(), 3);
+    }
+
+    #[test]
+    fn zip_member_reread_uses_one_positioned_read() {
+        let bytes = zip_fixture(&[
+            ZipPiece {
+                name: "a.txt",
+                data: b"stored-payload".to_vec(),
+                method: 0,
+            },
+            ZipPiece {
+                name: "b.txt",
+                data: b"deflated-payload ".repeat(20),
+                method: 8,
+            },
+        ]);
+        let root = scratch_dir("zip-reread");
+        let path = root.join("mod.pk3");
+        std::fs::write(&path, &bytes).unwrap();
+        let archive = open_archive(&path, None).unwrap();
+        // Parsing reads the header, the tail, and the central directory once.
+        assert_eq!(archive.test_storage_reads(), 3);
+        // The first member read validates the local header (2 reads) and the payload.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(0)).unwrap(),
+            b"stored-payload".to_vec()
+        );
+        assert_eq!(archive.test_storage_reads(), 6);
+        // The second read of the same member is one positioned payload read.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(0)).unwrap(),
+            b"stored-payload".to_vec()
+        );
+        assert_eq!(archive.test_storage_reads(), 7);
+        // A different member still validates its own local header once.
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(1)).unwrap(),
+            b"deflated-payload ".repeat(20)
+        );
+        assert_eq!(archive.test_storage_reads(), 10);
+        assert_eq!(
+            archive.read_entry(EntryRef::Ordinal(1)).unwrap(),
+            b"deflated-payload ".repeat(20)
+        );
+        assert_eq!(archive.test_storage_reads(), 11);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn stored_memory_entries_borrow_without_copying() {
+        let raw = b"borrowed-payload".to_vec();
+        let bytes = zip_fixture(&[
+            ZipPiece {
+                name: "a.txt",
+                data: raw.clone(),
+                method: 0,
+            },
+            ZipPiece {
+                name: "b.txt",
+                data: b"deflated ".repeat(20),
+                method: 8,
+            },
+        ]);
+        let archive = decode_archive(&bytes, None, "x.zip").unwrap();
+        let stored = archive.read_entry_cow(EntryRef::Ordinal(0)).unwrap();
+        assert!(matches!(stored, Cow::Borrowed(_)));
+        assert_eq!(stored.as_ref(), raw.as_slice());
+        let deflated = archive.read_entry_cow(EntryRef::Ordinal(1)).unwrap();
+        assert!(matches!(deflated, Cow::Owned(_)));
+        // PAK members borrow as well.
+        let pak = decode_archive(&pak_fixture(), None, "x.pak").unwrap();
+        assert!(matches!(
+            pak.read_entry_cow(EntryRef::Ordinal(0)).unwrap(),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
