@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use qa_core::identity::{same_actor, ActorId, OwnedActor, ProviderId};
 use qa_core::math::{Bounds, Vec3};
-use qa_core::numeric::{Arithmetic, DonorSource, NumericOps};
+use qa_core::numeric::NumericOps;
 use qa_core::time::SourceTime;
 
 use crate::bsp::Q1Entity;
@@ -1509,12 +1509,13 @@ impl Q1EntityServices {
 
     /// Damage a target through the shared combat authority.
     ///
-    /// Rerelease-only `T_Damage` branches
-    /// (`quake-rerelease-qc/quakec/combat.qc:152-161,205-213`, absent
-    /// from `progs106`): the Shub crash fix ignores sub-telefrag
-    /// damage on `monster_oldone`, and pentagram-absorbed hits play
+    /// The Shub crash fix is rerelease-only
+    /// (`quake-rerelease-qc/quakec/combat.qc:152-161`, absent from
+    /// `progs106`): sub-telefrag damage on `monster_oldone` is
+    /// ignored. Pentagram-absorbed hits are stock
+    /// (`progs106/combat.qc:154-160`): they play
     /// `items/protect3.wav` at most every 2s per damage-running
-    /// context (`self.invincible_sound`).
+    /// context (`self.invincible_sound`) in every edition.
     pub fn damage(
         &mut self,
         target: &ActorId,
@@ -1578,18 +1579,17 @@ impl Q1EntityServices {
         let mut applied = request.clone();
         applied.knockback = request.amount;
         let outcome = self.host.combat.apply(&applied);
-        if self.options().edition == Q1Edition::Rerelease
-            && matches!(
-                outcome,
-                DamageOutcome::Committed {
-                    ref decision,
-                    ..
-                } if decision.applied_damage == 0.0 && decision.reaction == DamageReaction::None
-            )
-            && self.host.combat.read(target).is_some_and(|combat| combat.invulnerable)
+        if matches!(
+            outcome,
+            DamageOutcome::Committed {
+                ref decision,
+                ..
+            } if decision.applied_damage == 0.0 && decision.reaction == DamageReaction::None
+        ) && self.host.combat.read(target).is_some_and(|combat| combat.invulnerable)
         {
-            // Pentagram absorb (`quakec/combat.qc:205-213`): `self` is
-            // the damage-running context (the attacker on weapon-fire
+            // Pentagram absorb (stock `progs106/combat.qc:154-160`,
+            // rerelease `quakec/combat.qc:205-213`): `self` is the
+            // damage-running context (the attacker on weapon-fire
             // paths), not the victim. Rogue keys the throttle by the
             // victim instead (`quakec_rogue/combat.qc:231-234`); the
             // shared path keeps the base key.
@@ -1618,8 +1618,9 @@ impl Q1EntityServices {
     /// Stock rules (`quake/progs106/combat.qc:102-207`): `teamplay`
     /// defaults to 0 (the stock cvar default; deathmatch does not imply
     /// teamplay); knockback applies only to `MOVETYPE_WALK` targets,
-    /// which stock reserves for players (`defs.qc:248`), along
-    /// `targ.origin - inflictor_center` (`combat.qc:141-146`).
+    /// which stock reserves for players (`defs.qc:248`), along the
+    /// normalized `targ.origin - inflictor_center` (`combat.qc:141-146`,
+    /// `dir = normalize(dir)`).
     pub fn combat_context(&mut self, request: &DamageRequest) -> Q1CombatContext {
         let teamplay = self.options().teamplay.unwrap_or(0);
         let walk = match self.entity_ref(&request.target) {
@@ -1643,7 +1644,7 @@ impl Q1EntityServices {
                 inflictor_body.origin,
                 vscale(vadd(inflictor_body.bounds.min, inflictor_body.bounds.max), 0.5),
             );
-            Some(vsub(target_body.origin, center))
+            Some(pf_normalize(vsub(target_body.origin, center)))
         })();
         Q1CombatContext {
             arithmetic: Q1CombatArithmetic::Binary32,
@@ -3114,6 +3115,24 @@ pub fn ammo_item(weapon: Q1Weapon) -> Option<ItemId> {
     }
 }
 
+/// QC `normalize()` builtin (`PF_normalize`, `pr_cmds.c:361-367`):
+/// the zero vector stays zero (exact `new == 0` comparison on the
+/// binary32 length); anything else — including NaN, for which `== 0`
+/// is false — scales by `1/length`.
+fn pf_normalize(direction: Vec3) -> Vec3 {
+    let length = (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).sqrt();
+    if length == 0.0 {
+        Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    } else {
+        let scale = 1.0 / length;
+        Vec3 {
+            x: direction.x * scale,
+            y: direction.y * scale,
+            z: direction.z * scale,
+        }
+    }
+}
+
 /// Normalize with donor mutable-vector-math semantics, returning the
 /// magnitude. Zero-length input is preserved (`"preserve"`).
 fn donor_normalize(direction: &mut Vec3, numeric: &NumericOps) -> f64 {
@@ -3125,10 +3144,10 @@ fn donor_normalize(direction: &mut Vec3, numeric: &NumericOps) -> f64 {
         numeric.mul(f64::from(direction.z), f64::from(direction.z)),
     );
     let length = numeric.sqrt(dot);
-    let nonzero = match numeric.profile.arithmetic {
-        Arithmetic::DonorBinary64(DonorSource::Q1 | DonorSource::Q2) => length != 0.0 && !length.is_nan(),
-        _ => length != 0.0,
-    };
+    // C `if (length)` (`mathlib.c` VectorNormalize) and `PF_normalize`
+    // (`pr_cmds.c:361`, exact `new == 0`): NaN is truthy, so NaN input
+    // scales (propagating NaN) instead of staying unscaled.
+    let nonzero = length != 0.0;
     if nonzero {
         let scale = numeric.div(1.0, length);
         direction.x = numeric.store(numeric.mul(f64::from(direction.x), scale));
@@ -3246,6 +3265,30 @@ mod tests {
         );
         assert!((f64::from(decayed.x) - 5.0).abs() < 1e-6);
         assert_eq!(drop_q1_punch(ZERO, 1.0, &numeric), ZERO);
+    }
+
+    #[test]
+    fn donor_normalize_zero_stays_zero_and_nan_scales() {
+        // Native profile: the NaN-truthy rule is profile-independent.
+        use qa_core::numeric::Q3_BINARY32_PROFILE;
+        let numeric = NumericOps::select(Q3_BINARY32_PROFILE).expect("numeric");
+        // Exact-zero length stays unscaled (`pr_cmds.c:361`).
+        let mut zero = ZERO;
+        assert_eq!(donor_normalize(&mut zero, &numeric), 0.0);
+        assert_eq!(zero, ZERO);
+        // NaN length is truthy (`if (length)`): scaling propagates NaN.
+        let mut nan = Vec3 {
+            x: f32::NAN,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(donor_normalize(&mut nan, &numeric).is_nan());
+        assert!(nan.x.is_nan() && nan.y.is_nan() && nan.z.is_nan());
+        // Ordinary input normalizes.
+        let mut three_four = Vec3 { x: 3.0, y: 4.0, z: 0.0 };
+        assert_eq!(donor_normalize(&mut three_four, &numeric), 5.0);
+        assert!((f64::from(three_four.x) - 0.6).abs() < 1e-6);
+        assert!((f64::from(three_four.y) - 0.8).abs() < 1e-6);
     }
 
     #[test]
@@ -3649,15 +3692,8 @@ mod tests {
             .expect("walk");
         let context = game.combat_context(&request);
         assert!(context.walk);
-        // targ.origin - inflictor center (`combat.qc:143`).
-        assert_eq!(
-            context.momentum_direction,
-            Some(Vec3 {
-                x: 30.0,
-                y: 0.0,
-                z: 0.0
-            })
-        );
+        // Normalized targ.origin - inflictor center (`combat.qc:143-144`).
+        assert_eq!(context.momentum_direction, Some(Vec3 { x: 1.0, y: 0.0, z: 0.0 }));
 
         // The world inflicts no knockback (`combat.qc:141`).
         let world = game.create("worldspawn", None, None).expect("world");
@@ -3666,6 +3702,69 @@ mod tests {
         world_request.attack.inflictor = Some(world);
         let context = game.combat_context(&world_request);
         assert_eq!(context.momentum_direction, None);
+    }
+
+    #[test]
+    fn knockback_magnitude_is_distance_independent() {
+        use super::super::gameplay::AttackProvenance;
+
+        let (host, _) = mock_host();
+        let mut game = Q1EntityServices::new(host, options()).expect("game");
+        let inflictor = game.create("grenade", None, None).expect("inflictor");
+        place(&mut game, &inflictor, 0.0);
+        let near = game.create("player", None, None).expect("near");
+        place(&mut game, &near, 10.0);
+        let far = game.create("player", None, None).expect("far");
+        place(&mut game, &far, 100.0);
+
+        let provider = ProviderId::new("q1", "test");
+        let request_for = |target: &ActorId| DamageRequest {
+            attack: AttackProvenance {
+                sequence: 1,
+                time: SourceTime::Seconds(1.0),
+                attacker: None,
+                inflictor: Some(inflictor.clone()),
+                originating_projectile: None,
+                weapon: None,
+                weapon_provider: provider.clone(),
+                damage_powerup_owner: None,
+                combat_provider: provider.clone(),
+                inventory_provider: provider.clone(),
+                movement_provider: provider.clone(),
+                cause: AttackCause::Q1 {
+                    death_type: String::new(),
+                    armor_effect: None,
+                },
+            },
+            target: target.clone(),
+            amount: 10.0,
+            knockback: 10.0,
+            direction: ZERO,
+            point: ZERO,
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
+            delivery: DamageDelivery::Direct,
+        };
+        let near_dir = game
+            .combat_context(&request_for(&near))
+            .momentum_direction
+            .expect("near dir");
+        let far_dir = game
+            .combat_context(&request_for(&far))
+            .momentum_direction
+            .expect("far dir");
+        // Stock `dir*damage*8` (`combat.qc:145`): equal damage at 10u
+        // and 100u yields equal impulse magnitude (80.0).
+        let impulse = |dir: Vec3| {
+            let scaled = Vec3 {
+                x: dir.x * 80.0,
+                y: dir.y * 80.0,
+                z: dir.z * 80.0,
+            };
+            (scaled.x * scaled.x + scaled.y * scaled.y + scaled.z * scaled.z).sqrt()
+        };
+        assert_eq!(near_dir, far_dir);
+        assert_eq!(impulse(near_dir), impulse(far_dir));
+        assert_eq!(impulse(near_dir), 80.0);
     }
 
     fn pain_probe(
@@ -3787,7 +3886,7 @@ mod tests {
     }
 
     #[test]
-    fn rerelease_pentagram_absorb_plays_protect3_every_two_seconds() {
+    fn pentagram_absorb_plays_protect3_every_two_seconds_in_all_editions() {
         use super::super::types::{Q1Edition, Q1SoundChannel};
 
         fn shielded(game: &mut Q1EntityServices, target: &ActorId) {
@@ -3846,7 +3945,8 @@ mod tests {
         game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
         assert_eq!(protect_sounds(), 2);
 
-        // Classic has no sound (`progs106`).
+        // Classic plays it too: pentagram absorb is stock
+        // (`progs106/combat.qc:154-160`).
         let (mut game, _, events) = combat_game_with(options(), true);
         let target = game.create("player", None, None).expect("target");
         game.set_damageable(&target, true).expect("damageable");
@@ -3854,6 +3954,20 @@ mod tests {
         let attacker = game.create("monster_army", None, None).expect("attacker");
         game.time = 10.0;
         game.damage(&target, Some(&attacker), Some(&attacker), 50.0, &params);
-        assert!(events.borrow().events.is_empty());
+        assert_eq!(
+            events
+                .borrow()
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Q1Event::Sound { path, channel, .. }
+                            if path == "items/protect3.wav" && *channel == Q1SoundChannel::Item
+                    )
+                })
+                .count(),
+            1
+        );
     }
 }
