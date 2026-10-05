@@ -35,7 +35,7 @@ use qa_world::WorldError;
 
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
-    Q1Light, Q1PendingThink, Q1PlayerForce, Q1ThinkKind, Q1Trigger, Q1UseSource,
+    Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
@@ -358,8 +358,14 @@ pub struct Q1NativeBehaviors {
     /// Key item bits the player carries.
     pub player_keys: u32,
     /// Trigger actors by id (multiples, relays, counters, hurt, push,
-    /// setskill, registered gates).
+    /// setskill, registered gates, teleports, teledeaths).
     pub triggers: HashMap<ActorId, Q1Trigger>,
+    /// Teleport destination records by id (`info_teleport_destination`).
+    pub teleport_destinations: HashMap<ActorId, Q1TeleportDestination>,
+    /// Teleport fog positions for the presentation slice to drain (stock
+    /// `TE_TELEPORT` temp entities; two per teleport: departure and
+    /// arrival).
+    pub teleport_fogs: Vec<Vec3>,
     /// Button actors by id.
     pub buttons: HashMap<ActorId, Q1Button>,
     /// Toggle-light actors by id.
@@ -433,8 +439,9 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 }
 
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
-/// drop every gamecode record (doors, fields, triggers, buttons,
-/// lights, movers, solidity), and release the actor. Stale targetname
+/// drop every gamecode record (doors, fields, triggers, teleport
+/// destinations, buttons, lights, movers, solidity), and release the
+/// actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -453,6 +460,7 @@ pub(crate) fn q1_remove(
     behaviors.solids.remove(actor);
     behaviors.fields.remove(actor);
     behaviors.triggers.remove(actor);
+    behaviors.teleport_destinations.remove(actor);
     behaviors.buttons.remove(actor);
     behaviors.lights.remove(actor);
     movers.remove(actor);

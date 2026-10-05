@@ -50,7 +50,8 @@ use super::simulation::native_q1_spawns::{
 };
 use super::simulation::native_q1_triggers::{
     build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_light, q1_note_targetname,
-    q1_note_use_point, q1_note_worldspawn, q1_registered_version, register_q1_trigger_spawns,
+    q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn, q1_registered_version,
+    register_q1_trigger_spawns,
 };
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
@@ -624,6 +625,17 @@ pub fn spawn_map_entities(
                     }
                     if classname == "worldspawn" {
                         q1_note_worldspawn(&mut behaviors, &fields);
+                    }
+                    if classname == "info_teleport_destination" {
+                        if let Err(error) = q1_note_teleport_destination(&mut behaviors, actor.id(), &fields) {
+                            let _ignored = server.simulation_mut().release(&actor);
+                            summary.skipped.push(SkippedEntity {
+                                index,
+                                classname,
+                                reason: format!("{source}: destination record failed: {error}"),
+                            });
+                            continue;
+                        }
                     }
                 }
                 summary.spawned += 1;
