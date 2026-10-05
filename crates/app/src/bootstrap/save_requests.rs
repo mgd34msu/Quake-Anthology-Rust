@@ -1,6 +1,10 @@
 //! `save` / `load` console command argument parsing.
 //!
-//! Sync port of donor `src/app/bootstrap/save-requests.ts`.
+//! One function, no versions: `save <name>` and `load <name>` take no format
+//! or product arguments. The engine picks the on-disk format internally from
+//! the session classification (vanilla sessions write that game's legacy
+//! format, everything else writes the proprietary format), and the loader
+//! detects the format from the file contents.
 
 use thiserror::Error;
 
@@ -8,44 +12,11 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SaveRequestError {
     /// Bad `save` arguments.
-    #[error("Usage: save <name or path> [shared|v5|v6]")]
+    #[error("Usage: save <name or path>")]
     BadSaveUsage,
     /// Bad `load` arguments.
-    #[error("Usage: load <name or path> [source-product]")]
+    #[error("Usage: load <name or path>")]
     BadLoadUsage,
-}
-
-/// Save file format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApplicationSaveFormat {
-    /// Shared cross-product format.
-    #[default]
-    Shared,
-    /// Original NetQuake v5 format.
-    V5,
-    /// Original NetQuake v6 format.
-    V6,
-}
-
-impl ApplicationSaveFormat {
-    /// Donor wire spelling.
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Shared => "shared",
-            Self::V5 => "v5",
-            Self::V6 => "v6",
-        }
-    }
-
-    fn parse(text: &str) -> Option<Self> {
-        match text {
-            "shared" => Some(Self::Shared),
-            "v5" => Some(Self::V5),
-            "v6" => Some(Self::V6),
-            _ => None,
-        }
-    }
 }
 
 /// A parsed `save` request.
@@ -53,8 +24,6 @@ impl ApplicationSaveFormat {
 pub struct SaveRequest {
     /// Save name or path.
     pub name: String,
-    /// Requested format.
-    pub format: ApplicationSaveFormat,
 }
 
 /// A parsed `load` request.
@@ -62,40 +31,22 @@ pub struct SaveRequest {
 pub struct LoadRequest {
     /// Save name or path.
     pub name: String,
-    /// Source product disambiguating original Quake saves.
-    pub source_product: Option<String>,
 }
 
-/// Parse `save <name or path> [shared|v5|v6]`.
+/// Parse `save <name or path>`.
 pub fn parse_save_request(args: &[String]) -> Result<SaveRequest, SaveRequestError> {
-    let name = args.first();
-    let format = args.get(1).map(String::as_str).unwrap_or("shared");
-    match name {
-        Some(name) if !name.is_empty() && args.len() <= 2 => match ApplicationSaveFormat::parse(format) {
-            Some(format) => Ok(SaveRequest {
-                name: name.clone(),
-                format,
-            }),
-            None => Err(SaveRequestError::BadSaveUsage),
-        },
+    match args {
+        [name] if !name.is_empty() => Ok(SaveRequest { name: name.clone() }),
         _ => Err(SaveRequestError::BadSaveUsage),
     }
 }
 
-/// Parse `load <name or path> [source-product]`.
+/// Parse `load <name or path>`.
 pub fn parse_load_request(args: &[String]) -> Result<LoadRequest, SaveRequestError> {
-    let name = args.first();
-    let source_product = args.get(1);
-    if name.is_none_or(|name| name.is_empty())
-        || args.len() > 2
-        || source_product.is_some_and(|source| source.is_empty())
-    {
-        return Err(SaveRequestError::BadLoadUsage);
+    match args {
+        [name] if !name.is_empty() => Ok(LoadRequest { name: name.clone() }),
+        _ => Err(SaveRequestError::BadLoadUsage),
     }
-    Ok(LoadRequest {
-        name: name.cloned().unwrap_or_default(),
-        source_product: source_product.cloned(),
-    })
 }
 
 /// Static command documentation.
@@ -114,14 +65,14 @@ pub struct SaveCommandDoc {
 pub fn save_command_documentation(name: &str) -> Option<SaveCommandDoc> {
     match name {
         "save" => Some(SaveCommandDoc {
-            summary: "Save the world; v5/v6 export the active singleplayer NetQuake source in its original format.",
-            usage: "save <name or path> [shared|v5|v6]",
-            examples: &["save quicksave", "save original v5"],
+            summary: "Save the world in the format matching the session.",
+            usage: "save <name or path>",
+            examples: &["save quicksave"],
         }),
         "load" => Some(SaveCommandDoc {
-            summary: "Restore a save. Specify the source product when an original Quake save has ambiguous content.",
-            usage: "load <name or path> [source-product]",
-            examples: &["load quicksave", "load original q1-classic-id1"],
+            summary: "Restore a save; the format is detected from the file.",
+            usage: "load <name or path>",
+            examples: &["load quicksave"],
         }),
         _ => None,
     }
@@ -136,55 +87,41 @@ mod tests {
     }
 
     #[test]
-    fn parses_save_forms() {
+    fn parses_save_form() {
         assert_eq!(
             parse_save_request(&args(&["quicksave"])).unwrap(),
             SaveRequest {
                 name: "quicksave".to_string(),
-                format: ApplicationSaveFormat::Shared,
             }
         );
-        assert_eq!(
-            parse_save_request(&args(&["original", "v5"])).unwrap().format,
-            ApplicationSaveFormat::V5
-        );
-        assert_eq!(
-            parse_save_request(&args(&["original", "v6"])).unwrap().format,
-            ApplicationSaveFormat::V6
-        );
-        assert_eq!(ApplicationSaveFormat::default(), ApplicationSaveFormat::Shared);
     }
 
     #[test]
     fn rejects_bad_save_args() {
-        for words in [&[][..], &[""][..], &["a", "v5", "x"][..], &["a", "v7"][..]] {
+        for words in [
+            &[][..],
+            &[""][..],
+            &["a", "v5"][..],
+            &["a", "shared"][..],
+            &["a", "b", "c"][..],
+        ] {
             assert_eq!(
                 parse_save_request(&args(words)).unwrap_err(),
                 SaveRequestError::BadSaveUsage
             );
         }
-        assert_eq!(
-            SaveRequestError::BadSaveUsage.to_string(),
-            "Usage: save <name or path> [shared|v5|v6]"
-        );
+        assert_eq!(SaveRequestError::BadSaveUsage.to_string(), "Usage: save <name or path>");
     }
 
     #[test]
-    fn parses_load_forms() {
+    fn parses_load_form() {
         assert_eq!(
             parse_load_request(&args(&["quicksave"])).unwrap(),
             LoadRequest {
                 name: "quicksave".to_string(),
-                source_product: None,
             }
         );
-        assert_eq!(
-            parse_load_request(&args(&["original", "q1-classic-id1"]))
-                .unwrap()
-                .source_product,
-            Some("q1-classic-id1".to_string())
-        );
-        for words in [&[][..], &[""][..], &["a", "b", "c"][..], &["a", ""][..]] {
+        for words in [&[][..], &[""][..], &["a", "b"][..], &["a", "b", "c"][..]] {
             assert_eq!(
                 parse_load_request(&args(words)).unwrap_err(),
                 SaveRequestError::BadLoadUsage
@@ -195,10 +132,10 @@ mod tests {
     #[test]
     fn documents_save_commands() {
         let save = save_command_documentation("save").unwrap();
-        assert_eq!(save.usage, "save <name or path> [shared|v5|v6]");
-        assert_eq!(save.examples.len(), 2);
+        assert_eq!(save.usage, "save <name or path>");
+        assert_eq!(save.examples.len(), 1);
         let load = save_command_documentation("load").unwrap();
-        assert_eq!(load.usage, "load <name or path> [source-product]");
+        assert_eq!(load.usage, "load <name or path>");
         assert!(save_command_documentation("delete").is_none());
     }
 }
