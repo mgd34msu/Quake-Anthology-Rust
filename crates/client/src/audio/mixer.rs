@@ -246,6 +246,18 @@ enum Notification {
     Stopped,
 }
 
+/// Resample cache key: sound allocation, rate-step bits, output length.
+type ResampleKey = (usize, u64, usize);
+
+/// Output-rate PCM shared by every voice on a sound.
+#[derive(Clone)]
+struct ResampledSound {
+    /// Pinned source: the key address cannot be reused while cached.
+    sound: SharedPcm,
+    /// `output_frames` samples at the mixer rate.
+    samples: Rc<[i16]>,
+}
+
 #[derive(Clone)]
 struct PreparedSound {
     doppler_sums: Option<Vec<f64>>,
@@ -253,6 +265,8 @@ struct PreparedSound {
     step256: f64,
     memory: Option<SharedMixerMemory>,
     output_frames: usize,
+    /// Cached output-rate PCM (`None` only on the bank-memory path).
+    resampled: Option<Rc<[i16]>>,
 }
 
 impl std::fmt::Debug for PreparedSound {
@@ -448,6 +462,7 @@ pub struct AudioMixer {
     milliseconds: Box<dyn Fn() -> i64>,
     output_channels: u8,
     entity_capacity: usize,
+    resample_cache: HashMap<ResampleKey, ResampledSound>,
 }
 
 impl AudioMixer {
@@ -494,6 +509,7 @@ impl AudioMixer {
             milliseconds,
             output_channels,
             entity_capacity,
+            resample_cache: HashMap::new(),
         })
     }
 
@@ -996,12 +1012,16 @@ impl AudioMixer {
         if output_frames < 1.0 {
             return Err(AudioError::ZeroResample);
         }
+        let output_frames = output_frames as usize;
+        let step256 = ratio * 256.0;
+        let resampled = self.resampled_sound(sound, step256, output_frames)?;
         let prepared = PreparedSound {
             doppler_sums: None,
             sound: sound.clone(),
-            step256: ratio * 256.0,
+            step256,
             memory: None,
-            output_frames: output_frames as usize,
+            output_frames,
+            resampled: Some(resampled),
         };
         let marker = policy
             .loop_start
@@ -1556,6 +1576,7 @@ impl AudioMixer {
         self.loops.clear();
         self.loop_channels.clear();
         self.entity_positions.fill(vec3(0.0, 0.0, 0.0));
+        self.resample_cache.clear();
         self.clear_raw();
         Ok(())
     }
@@ -1566,6 +1587,7 @@ impl AudioMixer {
         self.loop_channels.clear();
         self.entity_positions.fill(vec3(0.0, 0.0, 0.0));
         self.reset_channels()?;
+        self.resample_cache.clear();
         self.raw_end_time = 0;
         Ok(())
     }
@@ -1780,6 +1802,7 @@ impl AudioMixer {
                 step256: 256.0,
                 memory: Some(memory.clone()),
                 output_frames,
+                resampled: None,
             });
         }
         let scale = (sound.sample_rate as f32) / (self.output_rate as f32);
@@ -1787,13 +1810,58 @@ impl AudioMixer {
         if !output_frames.is_finite() || output_frames < 0.0 || output_frames > i64::MAX as f32 {
             return Err(AudioError::BadResampleFrames);
         }
+        let output_frames = output_frames as usize;
+        let step256 = f64::from((scale * 256.0).trunc());
+        let resampled = self.resampled_sound(sound, step256, output_frames)?;
         Ok(PreparedSound {
             doppler_sums: None,
             sound: sound.clone(),
-            step256: f64::from((scale * 256.0).trunc()),
+            step256,
             memory: None,
-            output_frames: output_frames as usize,
+            output_frames,
+            resampled: Some(resampled),
         })
+    }
+
+    /// Resample a sound to the output rate once, caching the result.
+    ///
+    /// Uses the exact per-sample index formula `trunc(frame * step256 / 256)`,
+    /// so the cached slice is bit-identical to the old per-sample path.
+    fn resampled_sound(
+        &mut self,
+        sound: &SharedPcm,
+        step256: f64,
+        output_frames: usize,
+    ) -> Result<Rc<[i16]>, AudioError> {
+        let key = (Rc::as_ptr(sound) as usize, step256.to_bits(), output_frames);
+        if let Some(cached) = self.resample_cache.get(&key) {
+            if Rc::ptr_eq(&cached.sound, sound) {
+                return Ok(Rc::clone(&cached.samples));
+            }
+        }
+        let mut samples = Vec::with_capacity(output_frames);
+        for frame in 0..output_frames {
+            let source = (frame as f64 * step256 / 256.0).trunc() as usize;
+            samples.push(
+                sound
+                    .samples
+                    .get(source)
+                    .copied()
+                    .ok_or_else(|| AudioError::BadSampleIndex {
+                        index: source.to_string(),
+                        length: sound.samples.len().to_string(),
+                    })?,
+            );
+        }
+        let samples: Rc<[i16]> = Rc::from(samples);
+        self.resample_cache.insert(
+            key,
+            ResampledSound {
+                sound: Rc::clone(sound),
+                samples: Rc::clone(&samples),
+            },
+        );
+        Ok(samples)
     }
 
     /// Live output frame count (bank-backed sounds read the bank).
@@ -2000,6 +2068,16 @@ impl AudioMixer {
     ) -> Result<i32, AudioError> {
         if let Some(memory) = memory {
             return Ok(memory.borrow().sample(&prepared.sound, output_frame));
+        }
+        if let Some(resampled) = prepared.resampled.as_ref() {
+            return resampled
+                .get(output_frame)
+                .copied()
+                .map(i32::from)
+                .ok_or_else(|| AudioError::BadSampleIndex {
+                    index: output_frame.to_string(),
+                    length: resampled.len().to_string(),
+                });
         }
         let source_frame = (output_frame as f64 * prepared.step256 / 256.0).trunc() as usize;
         checked_sample(&prepared.sound.samples, source_frame)
@@ -2571,6 +2649,86 @@ mod tests {
             mixer.mix(MixRequest::Consume(-1)),
             Err(AudioError::BadMixFrames)
         ));
+    }
+
+    #[test]
+    fn resampled_cache_matches_per_sample_formula() {
+        let mut mixer = mixer();
+        // Fixed input: deterministic sweep across the full i16 range.
+        let samples: Vec<i16> = (0..512)
+            .map(|index: i32| (index * 7919 % 65536 - 32768) as i16)
+            .collect();
+        for sample_rate in [11025u32, 22050, 44100, 48000] {
+            let sound = Rc::new(PcmSound {
+                sample_rate,
+                channels: 1,
+                samples: samples.clone(),
+                frame_count: samples.len(),
+                loop_start: None,
+            });
+            // Independent old-path computation, not the cached values.
+            let scale = (sample_rate as f32) / (mixer.output_rate() as f32);
+            let step256 = f64::from((scale * 256.0).trunc());
+            let output_frames = ((samples.len() as f32) / scale).trunc() as usize;
+            let prepared = mixer.prepare(&sound).unwrap();
+            assert_eq!(prepared.step256, step256);
+            assert_eq!(prepared.output_frames, output_frames);
+            let cached = prepared.resampled.as_ref().expect("cached resample");
+            assert_eq!(cached.len(), output_frames);
+            for frame in 0..output_frames {
+                let source = (frame as f64 * step256 / 256.0).trunc() as usize;
+                assert_eq!(cached[frame], samples[source], "rate {sample_rate} frame {frame}");
+                assert_eq!(
+                    AudioMixer::effect_sample(&None, &prepared, frame).unwrap(),
+                    i32::from(samples[source])
+                );
+            }
+            // A second prepare shares the cached allocation.
+            let again = mixer.prepare(&sound).unwrap();
+            assert!(Rc::ptr_eq(again.resampled.as_ref().expect("cached resample"), cached));
+        }
+        // The source-voice step (untruncated f64 ratio) caches exactly too.
+        let sound = Rc::new(PcmSound {
+            sample_rate: 22050,
+            channels: 1,
+            samples,
+            frame_count: 512,
+            loop_start: None,
+        });
+        let ratio = f64::from(sound.sample_rate) / f64::from(mixer.output_rate());
+        let step256 = ratio * 256.0;
+        let output_frames = (sound.frame_count as f64 / ratio).trunc() as usize;
+        let cached = mixer.resampled_sound(&sound, step256, output_frames).unwrap();
+        for frame in 0..output_frames {
+            let source = (frame as f64 * step256 / 256.0).trunc() as usize;
+            assert_eq!(cached[frame], sound.samples[source]);
+        }
+    }
+
+    #[test]
+    fn golden_mix_is_stable() {
+        let mut mixer = mixer();
+        let sound = Rc::new(PcmSound {
+            sample_rate: 11025,
+            channels: 1,
+            samples: vec![0, 4000, 8000, 12000, -16000, 20000, -24000, 32767],
+            frame_count: 8,
+            loop_start: None,
+        });
+        mixer.start_local_sound(&sound, 0, None).unwrap();
+        let mixed = mixer.mix(MixRequest::Consume(40)).unwrap();
+        assert_eq!(mixed.len(), 80);
+        // Each 11025 Hz frame paints 4 output frames, then the voice ends.
+        assert_eq!(
+            mixed,
+            vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 1581, 1581, 1581, 1581, 1581, 1581, 1581, 1581, 3162, 3162, 3162, 3162, 3162,
+                3162, 3162, 3162, 4743, 4743, 4743, 4743, 4743, 4743, 4743, 4743, -6326, -6326, -6326, -6326, -6326,
+                -6326, -6326, -6326, 7906, 7906, 7906, 7906, 7906, 7906, 7906, 7906, -9488, -9488, -9488, -9488, -9488,
+                -9488, -9488, -9488, 12953, 12953, 12953, 12953, 12953, 12953, 12953, 12953, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+            ]
+        );
     }
 
     #[test]
