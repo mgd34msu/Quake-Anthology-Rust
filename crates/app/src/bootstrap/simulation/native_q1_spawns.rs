@@ -33,7 +33,7 @@ use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};
 use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
-use super::native_q1_items::{q1_item_touch, Q1Item, Q1Sprint};
+use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -65,6 +65,12 @@ const IT_KEY1: u32 = 131_072;
 const IT_KEY2: u32 = 262_144;
 /// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
 pub const IT_SUPERHEALTH: u32 = 65_536;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR1: u32 = 8_192;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR2: u32 = 16_384;
+/// Armor bits (`defs.qc:300-302`).
+pub const IT_ARMOR3: u32 = 32_768;
 
 /// Door trigger-field expansion in map units (`spawn_field`,
 /// `doors.qc:273`: `setsize (trigger, t1 - '60 60 8', t2 + '60 60 8')`).
@@ -549,6 +555,9 @@ pub struct Q1NativeBehaviors {
     pub items: Q1EdictTable<Q1Item>,
     /// Item bits the player carries (`defs.qc:296-306`).
     pub player_items: u32,
+    /// Player ammo counts (stock starts 25 shells with the shotgun;
+    /// the spawn loadout lands with the weapons slice).
+    pub player_ammo: Q1Ammo,
     /// Player health cap (`max_health`, 100 from `PutClientInServer`).
     pub player_max_health: f64,
     /// Deathmatch rules (respawns; `GameMode` has no DM2, so this is
