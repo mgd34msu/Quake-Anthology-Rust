@@ -1424,6 +1424,9 @@ mod tests {
             .iter()
             .map(|operation| match operation {
                 RenderOperation::Draw(batches) => batches.len(),
+                // Static world geometry stays arena-resident under the
+                // retained/VBO design; each retained batch is one draw.
+                RenderOperation::RetainedDraw(draw) => draw.batches.len(),
                 _ => 0,
             })
             .sum();
