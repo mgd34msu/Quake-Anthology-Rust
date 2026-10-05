@@ -22,6 +22,7 @@
 //! logic hooks as the stub path). Records that fail field parse or spawn
 //! are recorded in [`PlayWorld::skipped`] instead of aborting the load.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
@@ -43,8 +44,12 @@ use super::play::{
     admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
     provider_for_product, PlayerBody, PlayerClip,
 };
+use super::simulation::native_q1_spawns::{
+    build_q1_door, install_q1_native, link_q1_doors, q1_pre_spawn, register_q1_spawns, Q1NativeBehaviors,
+    Q1PendingDoor, Q1PreSpawn,
+};
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
-use crate::options::ApplicationOptions;
+use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
 
 /// One map entity record that did not spawn.
@@ -146,6 +151,7 @@ pub struct PlayWorld {
     audio_mounts: Option<Rc<MountedContent>>,
     speakers: Vec<MapSpeaker>,
     sound_family: SoundFamily,
+    q1_behaviors: Option<Rc<RefCell<Q1NativeBehaviors>>>,
 }
 
 impl std::fmt::Debug for PlayWorld {
@@ -163,6 +169,13 @@ impl std::fmt::Debug for PlayWorld {
             .field("audio_mounts", &self.audio_mounts.is_some())
             .field("speakers", &self.speakers.len())
             .field("sound_family", &self.sound_family)
+            .field(
+                "q1_doors",
+                &self
+                    .q1_behaviors
+                    .as_ref()
+                    .map(|behaviors| behaviors.borrow().doors.len()),
+            )
             .finish()
     }
 }
@@ -197,6 +210,13 @@ impl PlayWorld {
     #[must_use]
     pub fn player_actor(&self) -> Option<&qa_core::identity::ActorId> {
         self.player.as_ref().map(PlayerBody::actor)
+    }
+
+    /// Live native Q1 gamecode state (doors, fields, opener), or `None`
+    /// for non-Q1 maps.
+    #[must_use]
+    pub fn q1_behaviors(&self) -> Option<Rc<RefCell<Q1NativeBehaviors>>> {
+        self.q1_behaviors.clone()
     }
 
     /// Retained product mounts for game audio (see
@@ -302,6 +322,23 @@ fn map_content_id(options: &ApplicationOptions) -> &str {
     options.map_product.as_deref().unwrap_or(&options.product)
 }
 
+/// One map's decoded entity records plus the Q1 brush-model bounds the
+/// native door spawns size from.
+pub(crate) struct DecodedMapEntities {
+    /// Entity records as ordered key/value property lists.
+    pub records: Vec<Vec<(String, String)>>,
+    /// Q1 brush-model bounds by model index (`*N`); empty for other kinds.
+    pub q1_models: Vec<qa_core::math::Bounds>,
+}
+
+/// Convert content brush-model bounds to engine bounds.
+fn core_bounds(bounds: qa_content::common::Bounds) -> qa_core::math::Bounds {
+    qa_core::math::Bounds {
+        min: vec3(bounds.min[0], bounds.min[1], bounds.min[2]),
+        max: vec3(bounds.max[0], bounds.max[1], bounds.max[2]),
+    }
+}
+
 /// Decode one map's entity records as ordered key/value property lists.
 ///
 /// Quake II entity strings share the Quake brace syntax, so they parse
@@ -311,7 +348,7 @@ pub(crate) fn decode_map_entities(
     bytes: &[u8],
     map: &str,
     kind: BspKind,
-) -> Result<Vec<Vec<(String, String)>>, PlayWorldError> {
+) -> Result<DecodedMapEntities, PlayWorldError> {
     match kind {
         BspKind::Q1 => {
             let parsed =
@@ -319,7 +356,14 @@ pub(crate) fn decode_map_entities(
                     map: map.to_string(),
                     reason: error.to_string(),
                 })?;
-            Ok(parsed.entity_list.into_iter().map(|entity| entity.properties).collect())
+            Ok(DecodedMapEntities {
+                records: parsed.entity_list.into_iter().map(|entity| entity.properties).collect(),
+                q1_models: parsed
+                    .models
+                    .into_iter()
+                    .map(|model| core_bounds(model.bounds))
+                    .collect(),
+            })
         }
         BspKind::Q2 => {
             let parsed = read_q2_bsp(bytes, map).map_err(|error| PlayWorldError::MapDecode {
@@ -327,7 +371,10 @@ pub(crate) fn decode_map_entities(
                 reason: error.to_string(),
             })?;
             parse_q1_entities(&parsed.entities, &format!("{map}:entities"))
-                .map(|entities| entities.into_iter().map(|entity| entity.properties).collect())
+                .map(|entities| DecodedMapEntities {
+                    records: entities.into_iter().map(|entity| entity.properties).collect(),
+                    q1_models: Vec::new(),
+                })
                 .map_err(|error| PlayWorldError::EntityParse {
                     map: map.to_string(),
                     reason: error.to_string(),
@@ -339,7 +386,10 @@ pub(crate) fn decode_map_entities(
                 reason: error.to_string(),
             })?;
             parse_q3_entities(&parsed.entities, &format!("{map}:entities"))
-                .map(|entities| entities.into_iter().map(|entity| entity.properties).collect())
+                .map(|entities| DecodedMapEntities {
+                    records: entities.into_iter().map(|entity| entity.properties).collect(),
+                    q1_models: Vec::new(),
+                })
                 .map_err(|error| PlayWorldError::EntityParse {
                     map: map.to_string(),
                     reason: error.to_string(),
@@ -368,17 +418,46 @@ fn register_map_classname(server: &mut Server<GuestServerLogic>, classname: &str
     );
 }
 
+/// Native Q1 spawn context: brush-model bounds for door sizing plus the
+/// live behavior set the door spawns populate.
+pub struct Q1SpawnContext {
+    /// Brush-model bounds by model index (`*N`).
+    pub models: Vec<qa_core::math::Bounds>,
+    /// Live native behaviors, shared with the server hooks.
+    pub behaviors: Rc<RefCell<Q1NativeBehaviors>>,
+}
+
+/// Context for spawning one map's records.
+pub struct MapSpawnContext {
+    /// Stock skill level for Q1 spawnflags inhibition.
+    pub skill: u8,
+    /// Deathmatch mode for Q1 spawnflags inhibition.
+    pub deathmatch: bool,
+    /// Native Q1 spawn path (`None` for other families).
+    pub q1: Option<Q1SpawnContext>,
+}
+
 /// Spawn parsed entity records into a server.
 ///
 /// Classnames outside the registry gain a generic `map:{classname}`
 /// function first (deterministic order); records that fail field parse or
-/// spawn are collected as skips instead of aborting the load.
+/// spawn are collected as skips instead of aborting the load. Q1 maps
+/// additionally run the native spawn path: the stock pre-spawn filter
+/// (inhibition, light/static removal), native spawn functions, door
+/// sizing/linking, and the native hook install.
+///
+/// Door-build failures release the spawned actor and record a skip;
+/// door-link failures record a skip; neither aborts the load.
 pub fn spawn_map_entities(
     server: &mut Server<GuestServerLogic>,
     entities: &[Vec<(String, String)>],
     source: &str,
+    context: &MapSpawnContext,
 ) -> MapSpawnSummary {
     let mut summary = MapSpawnSummary::default();
+    if context.q1.is_some() {
+        register_q1_spawns(server.spawns_mut());
+    }
     let mut classnames = BTreeSet::new();
     for properties in entities {
         if let Some((_, classname)) = properties.iter().find(|(key, _)| key == "classname") {
@@ -391,6 +470,7 @@ pub fn spawn_map_entities(
             register_map_classname(server, classname);
         }
     }
+    let mut pending_doors: Vec<Q1PendingDoor> = Vec::new();
     for (index, properties) in entities.iter().enumerate() {
         let pairs: Vec<(&str, &str)> = properties
             .iter()
@@ -412,6 +492,46 @@ pub fn spawn_map_entities(
                 continue;
             }
         };
+        if let Some(q1) = context.q1.as_ref() {
+            match q1_pre_spawn(&classname, &fields, context.skill, context.deathmatch) {
+                Q1PreSpawn::Skip(reason) => {
+                    summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: {reason}"),
+                    });
+                    continue;
+                }
+                Q1PreSpawn::Spawn => {}
+            }
+            if classname == "func_door" {
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let models = &q1.models;
+                        match build_q1_door(server, &mut q1.behaviors.borrow_mut(), &actor, &fields, models) {
+                            Ok(pending) => {
+                                pending_doors.push(pending);
+                                summary.spawned += 1;
+                            }
+                            Err(error) => {
+                                let _ignored = server.simulation_mut().release(&actor);
+                                summary.skipped.push(SkippedEntity {
+                                    index,
+                                    classname,
+                                    reason: format!("{source}: door build failed: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
+        }
         match server.spawn_entity(&fields) {
             Ok(_) => summary.spawned += 1,
             Err(error) => summary.skipped.push(SkippedEntity {
@@ -421,7 +541,53 @@ pub fn spawn_map_entities(
             }),
         }
     }
+    if let Some(q1) = context.q1.as_ref() {
+        if let Err(error) = link_q1_doors(server, &mut q1.behaviors.borrow_mut(), pending_doors) {
+            summary.skipped.push(SkippedEntity {
+                index: entities.len(),
+                classname: "func_door".to_string(),
+                reason: format!("{source}: door link failed: {error}"),
+            });
+        }
+        install_q1_native(server, Rc::clone(&q1.behaviors));
+    }
     summary
+}
+
+/// Selected map read through product mounts and decoded (shared by the
+/// windowed and dedicated loaders).
+pub struct SelectedMap {
+    /// Raw map bytes (clip and presentation builds read these).
+    pub bytes: Vec<u8>,
+    /// Classified BSP kind.
+    pub kind: BspKind,
+    /// Entity records as ordered key/value property lists.
+    pub entities: Vec<Vec<(String, String)>>,
+    /// Q1 brush-model bounds by model index (`*N`); empty for other kinds.
+    pub q1_models: Vec<qa_core::math::Bounds>,
+}
+
+/// Read `map` through opened product mounts, classify, and decode its
+/// entity records (plus Q1 brush-model bounds for door sizing).
+pub fn load_selected_map(mounts: &MountedContent, content: &str, map: &str) -> Result<SelectedMap, PlayWorldError> {
+    let bytes = mounts
+        .read(qa_content::mounts::ResourceRef::Path(map))
+        .map_err(|error| PlayWorldError::MapUnread {
+            content: content.to_string(),
+            map: map.to_string(),
+            reason: error.to_string(),
+        })?;
+    let kind = classify_bsp(&bytes, map).map_err(|error| PlayWorldError::MapDecode {
+        map: map.to_string(),
+        reason: error.to_string(),
+    })?;
+    let decoded = decode_map_entities(&bytes, map, kind)?;
+    Ok(SelectedMap {
+        bytes,
+        kind,
+        entities: decoded.records,
+        q1_models: decoded.q1_models,
+    })
 }
 
 /// Load the selected map's real entities into a live server.
@@ -452,18 +618,11 @@ pub fn load_play_world(
         &movement_edition,
     );
     let mounts = open_product_mounts(catalog, &content, &options.map)?;
-    let bytes = mounts
-        .read(qa_content::mounts::ResourceRef::Path(&options.map))
-        .map_err(|error| PlayWorldError::MapUnread {
-            content: content.clone(),
-            map: options.map.clone(),
-            reason: error.to_string(),
-        })?;
-    let kind = classify_bsp(&bytes, &options.map).map_err(|error| PlayWorldError::MapDecode {
-        map: options.map.clone(),
-        reason: error.to_string(),
-    })?;
-    let entities = decode_map_entities(&bytes, &options.map, kind)?;
+    let selected = load_selected_map(&mounts, &content, &options.map)?;
+    let bytes = selected.bytes;
+    let kind = selected.kind;
+    let entities = selected.entities;
+    let q1_models = selected.q1_models;
     let sound_family = match kind {
         BspKind::Q1 => SoundFamily::Q1,
         BspKind::Q2 => SoundFamily::Q2,
@@ -471,7 +630,15 @@ pub fn load_play_world(
     };
     let speakers = map_speakers(&entities, sound_family);
     let mut server = open_server(config).map_err(|error| PlayWorldError::Server(error.to_string()))?;
-    let summary = spawn_map_entities(&mut server, &entities, &options.map);
+    let context = MapSpawnContext {
+        skill: options.skill,
+        deathmatch: options.mode == GameMode::Deathmatch,
+        q1: (kind == BspKind::Q1).then(|| Q1SpawnContext {
+            models: q1_models,
+            behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
+        }),
+    };
+    let summary = spawn_map_entities(&mut server, &entities, &options.map, &context);
     if summary.spawned == 0 {
         let reason = summary.skipped.first().map_or_else(
             || "map has no entity records".to_string(),
@@ -510,6 +677,11 @@ pub fn load_play_world(
         }
         None => None,
     };
+    if let (Some(player), Some(q1)) = (player.as_ref(), context.q1.as_ref()) {
+        q1.behaviors
+            .borrow_mut()
+            .set_player(Some(PlayerBody::actor(player).clone()));
+    }
     // The presentation consumes its mounts, so audio keeps a second open over
     // the same product: without retained mounts no bank can open `sound/*`
     // bytes. Best-effort only; a failed audio open keeps the run silent.
@@ -539,6 +711,7 @@ pub fn load_play_world(
         audio_mounts,
         speakers,
         sound_family,
+        q1_behaviors: context.q1.map(|q1| q1.behaviors),
     })
 }
 
@@ -581,6 +754,14 @@ mod tests {
         qa_client::render::types::ResourceOwner::new(7, session, 0)
     }
 
+    fn generic_context() -> MapSpawnContext {
+        MapSpawnContext {
+            skill: 1,
+            deathmatch: false,
+            q1: None,
+        }
+    }
+
     #[test]
     fn map_content_prefers_map_game() {
         let options = ApplicationOptions::default();
@@ -615,7 +796,7 @@ mod tests {
             ]
         })
         .collect();
-        let summary = spawn_map_entities(&mut server, &entities, "maps/test.bsp");
+        let summary = spawn_map_entities(&mut server, &entities, "maps/test.bsp", &generic_context());
         assert!(summary.skipped.is_empty(), "skips: {:?}", summary.skipped);
         assert_eq!(summary.spawned, entities.len());
         assert_eq!(server.simulation().actor_count(), entities.len());
@@ -638,7 +819,7 @@ mod tests {
                 ("origin".to_string(), "0 0 32".to_string()),
             ],
         ];
-        let summary = spawn_map_entities(&mut server, &entities, "maps/test.bsp");
+        let summary = spawn_map_entities(&mut server, &entities, "maps/test.bsp", &generic_context());
         assert_eq!(summary.spawned, 1);
         assert_eq!(summary.skipped.len(), 2);
         assert_eq!(summary.skipped[0].index, 0);

@@ -13,10 +13,16 @@
 //! and reused; the loop makes no per-frame allocations of its own beyond
 //! what the world and client APIs return.
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
 use qa_client::audio::ChannelPool;
 use qa_client::prediction::CommandRing;
 use qa_client::render::{FrameStats as RenderFrameStats, ModelPose, RenderView, RendererBackend, SceneEntity};
 use qa_client::view::{CameraClip, ModelTransform, Rect, SceneCamera};
+use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
+use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
 use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
 use qa_core::cvar::CvarRegistry;
@@ -28,9 +34,13 @@ use qa_guest::server::GuestServerLogic;
 use qa_world::client::{apply_scalar, ClientCommand, ClientFamily, ScalarInput};
 use qa_world::server::Server;
 
+use crate::bootstrap::play_world::{load_selected_map, spawn_map_entities, MapSpawnContext, Q1SpawnContext};
+use crate::bootstrap::simulation::native_q1_spawns::Q1NativeBehaviors;
+use crate::bootstrap::windowed_scene::open_product_mounts;
 use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
 use crate::console::queue::ConsoleQueue;
 use crate::error::AppError;
+use crate::options::GameMode;
 use crate::startup::{load_stub_map, open_server, spawn_stub_map, StartupConfig};
 
 /// Registry slot sentinel for an unbound seat.
@@ -157,6 +167,58 @@ impl ConsoleCommandServices for AppConsoleServices<'_> {
     }
 }
 
+/// Dedicated map spawn: the real map with native spawns when the
+/// product is an installed Q1 product (no player, no stubs), else the
+/// stub map. Unknown products and unavailable catalogs fall back to the
+/// stub with a warning, preserving content-less runs; a known Q1 product
+/// with an unreadable map fails honestly.
+fn open_dedicated_map(
+    server: &mut Server<GuestServerLogic>,
+    config: &StartupConfig,
+) -> Result<Vec<qa_core::identity::OwnedActor>, AppError> {
+    let catalog = match discover_installed_content(&DiscoverContentOptions::new(PathBuf::from(&config.corpus_root))) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("dedicated: catalog unavailable ({error}); hosting stub map");
+            let stub = load_stub_map(&config.map);
+            return spawn_stub_map(server, &stub);
+        }
+    };
+    let q1 = match catalog.require(&config.product) {
+        Ok(product) => product.expectation.family == GameFamily::Q1,
+        Err(_) => {
+            eprintln!("dedicated: unknown product {}; hosting stub map", config.product);
+            let stub = load_stub_map(&config.map);
+            return spawn_stub_map(server, &stub);
+        }
+    };
+    if !q1 {
+        let stub = load_stub_map(&config.map);
+        return spawn_stub_map(server, &stub);
+    }
+    let mounts = open_product_mounts(&catalog, &config.product, &config.map)
+        .map_err(|error| AppError::Startup(error.to_string()))?;
+    let selected = load_selected_map(&mounts, &config.product, &config.map)
+        .map_err(|error| AppError::Startup(error.to_string()))?;
+    let context = MapSpawnContext {
+        skill: config.skill,
+        deathmatch: config.mode == GameMode::Deathmatch,
+        q1: Some(Q1SpawnContext {
+            models: selected.q1_models,
+            behaviors: Rc::new(RefCell::new(Q1NativeBehaviors::new())),
+        }),
+    };
+    let summary = spawn_map_entities(server, &selected.entities, &config.map, &context);
+    eprintln!(
+        "dedicated: spawned {} of {} map entities ({} {})",
+        summary.spawned,
+        selected.entities.len(),
+        config.product,
+        config.map
+    );
+    Ok(Vec::new())
+}
+
 fn console_dialect_for(family: ClientFamily) -> Dialect {
     match family {
         ClientFamily::Q1Netquake => Dialect::Q1Netquake,
@@ -168,13 +230,19 @@ fn console_dialect_for(family: ClientFamily) -> Dialect {
 }
 
 impl<R: RendererBackend> Application<R> {
-    /// Assemble an application: open the server, spawn the stub map, and
-    /// bind seats to player actors in spawn order (seat `i` takes the
-    /// `i`-th player start; missing actors leave the seat unbound).
+    /// Assemble an application: open the server, spawn the map, and bind
+    /// seats to player actors in spawn order (seat `i` takes the `i`-th
+    /// player start; missing actors leave the seat unbound). Dedicated
+    /// Q1 servers load the real map with native spawns (no player, no
+    /// stubs); every other headless assembly keeps the stub map.
     pub fn open(config: &StartupConfig, renderer: R) -> Result<Self, AppError> {
         let mut server = open_server(config)?;
-        let stub = load_stub_map(&config.map);
-        let actors = spawn_stub_map(&mut server, &stub)?;
+        let actors = if config.dedicated {
+            open_dedicated_map(&mut server, config)?
+        } else {
+            let stub = load_stub_map(&config.map);
+            spawn_stub_map(&mut server, &stub)?
+        };
         let mut seats = Vec::with_capacity(config.seats as usize);
         for index in 0..config.seats {
             let slot = actors
@@ -192,6 +260,7 @@ impl<R: RendererBackend> Application<R> {
         .map_err(|error| AppError::Console(error.to_string()))?;
         let mut console_commands = ConsoleCommands::new();
         register_console_commands(&mut console_commands);
+        let scratch_capacity = server.simulation().actor_count();
         Ok(Self {
             server,
             renderer,
@@ -207,7 +276,7 @@ impl<R: RendererBackend> Application<R> {
             width: config.width as i32,
             height: config.height as i32,
             client_family: config.client_family,
-            scratch_entities: Vec::with_capacity(actors.len()),
+            scratch_entities: Vec::with_capacity(scratch_capacity),
             console_owner,
             console_queue,
             console_commands,

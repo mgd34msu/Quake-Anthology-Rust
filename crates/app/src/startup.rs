@@ -57,6 +57,12 @@ pub struct StartupConfig {
     pub map: String,
     /// Installed catalog product.
     pub product: String,
+    /// Game data root for catalog discovery.
+    pub corpus_root: String,
+    /// Stock skill level for Q1 spawnflags inhibition.
+    pub skill: u8,
+    /// Game mode for Q1 spawnflags inhibition.
+    pub mode: crate::options::GameMode,
     /// Window width.
     pub width: u32,
     /// Window height.
@@ -96,6 +102,9 @@ impl StartupConfig {
             seed: options.seed,
             map: options.map.clone(),
             product: options.product.clone(),
+            corpus_root: options.corpus_root.clone(),
+            skill: options.skill,
+            mode: options.mode,
             width: options.width,
             height: options.height,
             client_family,

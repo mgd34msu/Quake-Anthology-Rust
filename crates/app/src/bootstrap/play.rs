@@ -2061,7 +2061,9 @@ mod tests {
     }
 
     fn q2_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
-        let records = super::super::play_world::decode_map_entities(bytes, "maps/base1.bsp", BspKind::Q2).unwrap();
+        let records = super::super::play_world::decode_map_entities(bytes, "maps/base1.bsp", BspKind::Q2)
+            .unwrap()
+            .records;
         let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q2).expect("base1 spawn");
         let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q2_VIEW_HEIGHT);
         (feet, spawn.angles)
@@ -2617,7 +2619,9 @@ mod tests {
     }
 
     fn q3_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
-        let records = super::super::play_world::decode_map_entities(bytes, "maps/q3dm1.bsp", BspKind::Q3).unwrap();
+        let records = super::super::play_world::decode_map_entities(bytes, "maps/q3dm1.bsp", BspKind::Q3)
+            .unwrap()
+            .records;
         let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q3).expect("q3dm1 spawn");
         let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q3_VIEW_HEIGHT);
         (feet, spawn.angles)
