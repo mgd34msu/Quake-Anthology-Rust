@@ -2878,7 +2878,7 @@ impl UiRuntime {
 
     /// Set a cvar with source-text validation (`setCvar`).
     fn set_cvar(&mut self, name: Option<&str>, value: Option<&str>, force: bool) {
-        let text = name.and_then(|name| source_command_text(name).ok());
+        let text = name.map(source_command_text);
         let invalid = match text.as_deref() {
             None => true,
             Some(text) => text.contains('\\') || text.contains('"') || text.contains(';'),

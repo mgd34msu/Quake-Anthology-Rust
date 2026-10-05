@@ -5780,7 +5780,7 @@ impl<'a> Q3Rcon<'a> {
             return Ok(());
         }
         self.state.last_time = time;
-        let password = source_command_text(&self.bindings.password())?;
+        let password = source_command_text(&self.bindings.password());
         let valid = !password.is_empty() && password == *packet.arguments.first().cloned().unwrap_or_default();
         let empty = password.is_empty();
         let line = packet.line.clone();
@@ -5817,8 +5817,8 @@ impl<'a> Q3Rcon<'a> {
 pub fn encode_q3_rcon(password: &str, command: &str) -> Result<Vec<u8>, Q3NetError> {
     encode_connectionless_text(&format!(
         "rcon {} {}",
-        source_command_text(password)?,
-        source_command_text(command)?
+        source_command_text(password),
+        source_command_text(command)
     ))
 }
 
@@ -5866,7 +5866,7 @@ pub fn q3_info_value(info: &str, key: &str) -> Result<String, Q3NetError> {
     if info.len() >= 8192 {
         return Err(Q3NetError::drop("drop", "Info_ValueForKey: oversize infostring"));
     }
-    let sanitized = source_command_text(info)?;
+    let sanitized = source_command_text(info);
     let fields: Vec<&str> = sanitized.split('\\').collect();
     let mut index = if info.starts_with('\\') { 1 } else { 0 };
     while index + 1 < fields.len() {
@@ -5998,7 +5998,7 @@ impl<'a> Q3ClientAdmission<'a> {
                 payload: encode_connectionless_text("getchallenge")?,
             }));
         }
-        let mut info: String = source_command_text(userinfo)?.chars().take(1023).collect();
+        let mut info: String = source_command_text(userinfo).chars().take(1023).collect();
         info = info_set(&info, "protocol", "68", &mut self.print)?;
         info = info_set(&info, "qport", &self.qport.to_string(), &mut self.print)?;
         let challenge = self.challenge;
@@ -6290,7 +6290,7 @@ impl<'a> Q3ServerAdmission<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn connect(&mut self, from: &NetworkAddress, input: &str, now: i32) -> Result<(), Q3NetError> {
-        let mut userinfo: String = source_command_text(&source_command_text(input)?)?
+        let mut userinfo: String = source_command_text(&source_command_text(input))
             .chars()
             .take(1023)
             .collect();

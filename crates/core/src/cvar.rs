@@ -217,9 +217,9 @@ pub fn set_info_value(
     options: InfoOptions,
     print: &mut dyn FnMut(&str),
 ) -> Result<String, CvarError> {
-    let info = source_command_text(input)?;
-    let key = source_command_text(key_input)?;
-    let value = source_command_text(value_input)?;
+    let info = source_command_text(input);
+    let key = source_command_text(key_input);
+    let value = source_command_text(value_input);
     let q3 = options.dialect == Dialect::Q3;
     let qw = options.dialect == Dialect::Q1Quakeworld;
     if info.chars().count() >= options.maximum_length {
@@ -859,7 +859,7 @@ impl CvarRegistry {
     /// Find a variable snapshot by name, projecting aliases.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<CvarSnapshot> {
-        let key = self.key(&source_command_text(name).ok()?);
+        let key = self.key(&source_command_text(name));
         if let Some(alias) = self.aliases.get(&key) {
             let target = self.key(&alias.target);
             return self
@@ -889,9 +889,10 @@ impl CvarRegistry {
     /// Canonical variable behind a name (the name itself when unaliased).
     #[must_use]
     pub fn canonical_name(&self, name: &str) -> String {
-        source_command_text(name)
-            .ok()
-            .and_then(|clean| self.aliases.get(&self.key(&clean)).map(|alias| alias.target.clone()))
+        let clean = source_command_text(name);
+        self.aliases
+            .get(&self.key(&clean))
+            .map(|alias| alias.target.clone())
             .unwrap_or_else(|| name.to_string())
     }
 
@@ -948,7 +949,8 @@ impl CvarRegistry {
     #[must_use]
     pub fn is_console_created(&self, name: &str) -> bool {
         let canonical = self.canonical_name(name);
-        source_command_text(&canonical).is_ok_and(|text| self.console_variables.contains(&self.key(&text)))
+        self.console_variables
+            .contains(&self.key(&source_command_text(&canonical)))
     }
 
     /// Snapshots newest-first, optionally filtered by flag mask; alias
@@ -977,7 +979,7 @@ impl CvarRegistry {
 
     /// Complete a partial name against registered variables.
     pub fn complete(&self, partial_input: &str) -> Result<Option<String>, CvarError> {
-        let partial = source_command_text(partial_input)?;
+        let partial = source_command_text(partial_input);
         if partial.is_empty() {
             return Ok(None);
         }
@@ -1050,13 +1052,13 @@ impl CvarRegistry {
         default_input: &str,
         flag_input: u32,
     ) -> Result<Option<CvarSnapshot>, CvarError> {
-        let mut name = source_command_text(name_input)?;
+        let mut name = source_command_text(name_input);
         // A donor declaration of an alias must not replace the canonical default or policy.
         if self.aliases.contains_key(&self.key(&name)) {
             self.reject_alias_info_flags(&name.clone(), flag_input)?;
             return Ok(self.get(&name));
         }
-        let default_value = source_command_text(default_input)?;
+        let default_value = source_command_text(default_input);
         if !self.valid_bound_value(&name.clone(), &default_value) {
             return Ok(self.get(&name));
         }
@@ -1170,10 +1172,10 @@ impl CvarRegistry {
 
     /// Set a variable. Q3/Q2 create unknown variables; Q1 reports them.
     pub fn set(&mut self, name_input: &str, value_input: &str, force: bool) -> Result<Option<CvarSnapshot>, CvarError> {
-        let mut name = source_command_text(name_input)?;
+        let mut name = source_command_text(name_input);
         if self.aliases.contains_key(&self.key(&name)) {
             let target = self.canonical_name(&name);
-            let clean = source_command_text(value_input)?;
+            let clean = source_command_text(value_input);
             let Some(converted) = self.alias_write(&name.clone(), &clean) else {
                 return Ok(None);
             };
@@ -1186,7 +1188,7 @@ impl CvarRegistry {
             self.print(&format!("invalid cvar name string: {name}\n"));
             name = "BADNAME".to_string();
         }
-        let value = source_command_text(value_input)?;
+        let value = source_command_text(value_input);
         let key = self.key(&name);
         if !self.valid_bound_value(&name.clone(), &value) {
             return Ok(None);
@@ -1308,10 +1310,10 @@ impl CvarRegistry {
     /// Console `set`: like [`CvarRegistry::set`], but a Q2 write of the
     /// current value clears the latch instead.
     pub fn set_console(&mut self, name: &str, value: &str) -> Result<Option<CvarSnapshot>, CvarError> {
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             let target = self.canonical_name(&clean_name);
-            let clean = source_command_text(value)?;
+            let clean = source_command_text(value);
             let Some(converted) = self.alias_write(&clean_name.clone(), &clean) else {
                 return Ok(None);
             };
@@ -1358,7 +1360,7 @@ impl CvarRegistry {
                 }
             }
         };
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             if kind != SetCommandKind::Archive {
                 let notice = format!("Cvar alias {clean_name} requires an explicit protocol info-key mapping\n");
@@ -1366,13 +1368,13 @@ impl CvarRegistry {
                 return Ok(());
             }
             let target = self.canonical_name(&clean_name);
-            let clean_value = source_command_text(value)?;
+            let clean_value = source_command_text(value);
             if let Some(converted) = self.alias_write(&clean_name.clone(), &clean_value) {
                 self.set_command_flags(&target, &converted, kind)?;
             }
             return Ok(());
         }
-        let clean_value = source_command_text(value)?;
+        let clean_value = source_command_text(value);
         if !self.valid_bound_value(&clean_name.clone(), &clean_value) {
             return Ok(());
         }
@@ -1457,11 +1459,11 @@ impl CvarRegistry {
         if !self.dialect.is_q2() {
             return Err(CvarError::Domain("Cvar_FullSet belongs to Quake II".to_string()));
         }
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             self.reject_alias_info_flags(&clean_name.clone(), flag_word)?;
             let target = self.canonical_name(&clean_name);
-            let clean_value = source_command_text(value)?;
+            let clean_value = source_command_text(value);
             let Some(converted) = self.alias_write(&clean_name.clone(), &clean_value) else {
                 return Ok(None);
             };
@@ -1471,7 +1473,7 @@ impl CvarRegistry {
             return Ok(self.get(&clean_name));
         }
         let key = self.key(&clean_name);
-        let clean_value = source_command_text(value)?;
+        let clean_value = source_command_text(value);
         if !self.valid_bound_value(&clean_name.clone(), &clean_value) {
             return Ok(self.variables.get(&key).map(CvarState::snapshot));
         }
@@ -1507,10 +1509,10 @@ impl CvarRegistry {
 
     /// Defer a value on a registered variable without changing flags.
     pub fn stage(&mut self, name: &str, input: &str) -> Result<CvarSnapshot, CvarError> {
-        let clean_name = source_command_text(name)?;
+        let clean_name = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean_name)) {
             let target = self.canonical_name(&clean_name);
-            let clean = source_command_text(input)?;
+            let clean = source_command_text(input);
             if let Some(converted) = self.alias_write(&clean_name.clone(), &clean) {
                 self.stage(&target, &converted)?;
             }
@@ -1519,7 +1521,7 @@ impl CvarRegistry {
                 .ok_or_else(|| CvarError::Domain(format!("Cannot stage an unregistered cvar {name}")));
         }
         let key = self.key(&clean_name);
-        let value = source_command_text(input)?;
+        let value = source_command_text(input);
         let Some(state) = self.variables.get(&key).map(CvarState::snapshot) else {
             return Err(CvarError::Domain(format!("Cannot stage an unregistered cvar {name}")));
         };
@@ -1550,9 +1552,10 @@ impl CvarRegistry {
 
     /// Apply latched values (all, or one name).
     pub fn apply_latched(&mut self, name: Option<&str>) -> Result<Vec<CvarSnapshot>, CvarError> {
-        let filter = name
-            .map(|text| source_command_text(text).map(|clean| self.key(&self.canonical_name(&clean))))
-            .transpose()?;
+        let filter = name.map(|text| {
+            let clean = source_command_text(text);
+            self.key(&self.canonical_name(&clean))
+        });
         let mut changed = Vec::new();
         let order: Vec<String> = self.order.iter().rev().cloned().collect();
         for key in order {
@@ -1730,7 +1733,7 @@ impl CvarRegistry {
 
     /// OR flags into a variable.
     pub fn add_flags(&mut self, name: &str, flag_mask: u32) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean)) {
             self.reject_alias_info_flags(&clean.clone(), flag_mask)?;
         }
@@ -1743,7 +1746,7 @@ impl CvarRegistry {
 
     /// Clear a variable's modified bit.
     pub fn clear_modified(&mut self, name: &str) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         let key = self.key(&self.canonical_name(&clean));
         if let Some(state) = self.variables.get_mut(&key) {
             state.modified = false;
@@ -1911,8 +1914,8 @@ impl CvarRegistry {
 
     /// Register a name alias projecting a canonical variable.
     pub fn register_alias(&mut self, alias: CvarAlias) -> Result<(), CvarError> {
-        let clean_name = source_command_text(&alias.name)?;
-        let clean_target = source_command_text(&alias.target)?;
+        let clean_name = source_command_text(&alias.name);
+        let clean_target = source_command_text(&alias.target);
         let key = self.key(&clean_name);
         let target = self.key(&clean_target);
         if key == target || self.aliases.contains_key(&target) {
@@ -1944,7 +1947,7 @@ impl CvarRegistry {
     /// Bind a live value binding to a canonical variable; returns a token
     /// that releases exactly this binding.
     pub fn bind_value(&mut self, name: &str, binding: Box<dyn CvarValueBinding>) -> Result<BindingToken, CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.aliases.contains_key(&self.key(&clean)) {
             return Err(CvarError::Domain(format!(
                 "Bind the canonical cvar {} instead of alias {name}",
@@ -1983,7 +1986,7 @@ impl CvarRegistry {
 
     /// Attach help text to a registered variable or alias.
     pub fn document(&mut self, name: &str, documentation: CvarDocumentation) -> Result<(), CvarError> {
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if self.get(&clean).is_none() {
             return Err(CvarError::Domain(format!("Cannot document unregistered cvar {name}")));
         }
@@ -1994,7 +1997,7 @@ impl CvarRegistry {
     /// Help text for a variable: its own document, else the alias document.
     #[must_use]
     pub fn documentation(&self, name: &str) -> Option<CvarDocumentation> {
-        let clean = source_command_text(name).ok()?;
+        let clean = source_command_text(name);
         self.get(&clean)?;
         let key = self.key(&clean);
         self.documents
@@ -2015,7 +2018,7 @@ impl CvarRegistry {
         if self.dialect != Dialect::Q3 {
             return Err(CvarError::Domain("VM cvar handles belong to Quake III".to_string()));
         }
-        let clean = source_command_text(name)?;
+        let clean = source_command_text(name);
         if let Some(alias) = self.aliases.get(&self.key(&clean)) {
             if matches!(alias.conversion, CvarAliasConversion::Converted { .. }) {
                 self.reject_alias_info_flags(&clean.clone(), flag_word)?;

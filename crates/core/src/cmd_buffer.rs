@@ -46,8 +46,8 @@ pub struct CommandDocumentation {
 /// Port of the donor `sourceFilter` (`Com_Filter`): prefix matching with
 /// non-backtracking `*` runs, `?` wildcards, and `[...]` classes.
 pub fn source_filter(filter_text: &str, name_text: &str, case_sensitive: bool) -> Result<bool, CmdError> {
-    let filter: Vec<char> = source_command_text(filter_text)?.chars().collect();
-    let name: Vec<char> = source_command_text(name_text)?.chars().collect();
+    let filter: Vec<char> = source_command_text(filter_text).chars().collect();
+    let name: Vec<char> = source_command_text(name_text).chars().collect();
     let byte = |text: &[char], index: usize| -> Result<u32, CmdError> {
         if index > text.len() {
             return Err(CmdError::TokenizedOverflow);
@@ -571,7 +571,7 @@ impl<'b, 'c, 's> Invocation<'b, 'c, 's> {
         if text.is_empty() {
             return self.buffer.execute(self.cvars, self.services);
         }
-        let value = source_command_text(text)?;
+        let value = source_command_text(text);
         let frame = self.buffer.frames.last().cloned().unwrap_or_else(|| ExecutionFrame {
             dialect: self.buffer.dialect,
             source: self.buffer.context.clone(),
@@ -832,7 +832,7 @@ impl CommandBuffer {
         documentation: Option<CommandDocumentation>,
         cvars: &CvarRegistry,
     ) -> Result<bool, BufferError> {
-        let name = source_command_text(name_input)?;
+        let name = source_command_text(name_input);
         if self.exists(&name) {
             if handler.is_some() || self.execution_dialect() != Dialect::Q3 {
                 let source = self.frame_source();
@@ -860,17 +860,13 @@ impl CommandBuffer {
     /// Whether a command is registered.
     #[must_use]
     pub fn exists(&self, name_input: &str) -> bool {
-        let Ok(name) = source_command_text(name_input) else {
-            return false;
-        };
+        let name = source_command_text(name_input);
         self.handlers.iter().any(|entry| entry.name == name)
     }
 
     /// Remove a command; returns whether one was registered.
     pub fn unregister(&mut self, name_input: &str) -> bool {
-        let Ok(name) = source_command_text(name_input) else {
-            return false;
-        };
+        let name = source_command_text(name_input);
         let before = self.handlers.len();
         self.handlers.retain(|entry| entry.name != name);
         self.handlers.len() != before
@@ -902,7 +898,7 @@ impl CommandBuffer {
     /// Complete a partial command name (plus Quake II/QuakeWorld aliases).
     #[must_use]
     pub fn complete(&self, partial_input: &str) -> Option<String> {
-        let partial = source_command_text(partial_input).ok()?;
+        let partial = source_command_text(partial_input);
         if partial.is_empty() {
             return None;
         }
@@ -929,8 +925,8 @@ impl CommandBuffer {
         if self.execution_dialect() == Dialect::Q3 {
             return Err(BufferError::Q3Alias);
         }
-        let name = source_command_text(name_input)?;
-        let text = source_command_text(text_input)?;
+        let name = source_command_text(name_input);
+        let text = source_command_text(text_input);
         if name.len() >= 32 {
             let source = self.frame_source();
             self.print("Alias name is too long\n", source.as_ref());
@@ -1043,7 +1039,7 @@ impl CommandBuffer {
         text_mode: TextMode,
         dialect: Dialect,
     ) -> Result<(), BufferError> {
-        let text = source_command_text(input)?;
+        let text = source_command_text(input);
         let limit = self
             .explicit_maximum
             .unwrap_or(if dialect == Dialect::Q3 { 16384 } else { 8192 });
@@ -1074,7 +1070,7 @@ impl CommandBuffer {
         text_mode: TextMode,
         dialect: Dialect,
     ) -> Result<(), BufferError> {
-        let mut text = source_command_text(input)?;
+        let mut text = source_command_text(input);
         if dialect == Dialect::Q1Quakeworld || dialect == Dialect::Q3 {
             text.push('\n');
         }
@@ -1289,7 +1285,7 @@ impl CommandBuffer {
         cvars: &mut CvarRegistry,
         services: &mut dyn BufferServices,
     ) -> Result<usize, BufferError> {
-        let value = text.map_or_else(|| Ok(String::new()), source_command_text)?;
+        let value = text.map_or_else(String::new, source_command_text);
         if value.is_empty() {
             return self.execute(cvars, services);
         }
@@ -1741,7 +1737,7 @@ impl CommandBuffer {
             return Ok(());
         };
         self.print(&format!("execing {filename}\n"), Some(caller));
-        let mut text = source_command_text(&file)?;
+        let mut text = source_command_text(&file);
         if dialect.is_q1() && !text.ends_with('\n') {
             text.push('\n');
         }

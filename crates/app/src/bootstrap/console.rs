@@ -254,7 +254,7 @@ impl<'a> ApplicationConsoleRouting<'a> {
 
 impl<'a> ConsoleCvarRouting<'a> for ApplicationConsoleRouting<'a> {
     fn owner(&self, name_input: &str, source: &CommandContext) -> Result<&'a CvarRegistry, ConsoleError> {
-        let name = source_command_text(name_input)?;
+        let name = source_command_text(name_input);
         let resolved = self.owners(source)?;
         if let Some(shared) = self.options.shared.as_ref().and_then(|lookup| lookup()) {
             if shared.get(&name).is_some() {

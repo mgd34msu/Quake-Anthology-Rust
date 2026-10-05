@@ -104,7 +104,7 @@ impl EditField {
 
     /// Replace the buffer contents (source bytes, at most 255).
     pub fn set_text(&mut self, value: &str) -> Result<(), ConsoleError> {
-        let text = qa_core::cmd::source_command_text(value)?;
+        let text = qa_core::cmd::source_command_text(value);
         if text.len() >= self.buffer.len() {
             return Err(ConsoleError::BadField("Field text exceeds 255 bytes".to_string()));
         }

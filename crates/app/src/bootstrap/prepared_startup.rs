@@ -345,7 +345,7 @@ impl StartupCvarRouting for CanonicalSlotRouting {
         seats: &[SeatRegistries],
     ) -> Result<RegistrySlot, PreparedStartupError> {
         self.check_source(source)?;
-        let name = source_command_text(name)?;
+        let name = source_command_text(name);
         if self.shared.as_ref().is_some_and(|shared| shared.declares(&name)) {
             return Ok(RegistrySlot::Shared);
         }
@@ -406,7 +406,7 @@ impl StartupCvarRouting for CanonicalSlotRouting {
     }
 
     fn note_declared(&self, slot: RegistrySlot, name: &str) {
-        let validated = source_command_text(name).unwrap_or_else(|_| name.to_string());
+        let validated = source_command_text(name);
         match slot {
             RegistrySlot::Source => self.source.note(&validated),
             RegistrySlot::Movement => self.movement.note(&validated),

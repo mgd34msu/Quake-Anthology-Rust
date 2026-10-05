@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use qa_content::catalog::RemoteContentSelection;
-use qa_core::cmd::{ascii_fold, command_separator_offset, source_command_text, tokenize_command, Dialect, TextMode};
+use qa_core::cmd::{ascii_fold, command_separator_offset, tokenize_command, Dialect, TextMode};
 use qa_net::protocol::{q1, ProtocolIdentity};
 
 use crate::error::AppError;
@@ -590,7 +590,6 @@ pub fn read_startup_command(argv: &[String], index: usize) -> Result<(String, us
         text.push_str(&startup_operand(next)?);
         end += 1;
     }
-    source_command_text(&text)?;
     if text.chars().any(|char| matches!(char, '\r' | '\n' | '\0'))
         || command_separator_offset(&text, Dialect::Q3) < text.len()
     {
@@ -625,7 +624,6 @@ pub fn read_startup_command(argv: &[String], index: usize) -> Result<(String, us
 }
 
 fn startup_operand(value: &str) -> Result<String, AppError> {
-    source_command_text(value)?;
     if value.chars().any(|char| matches!(char, '"' | '\r' | '\n' | '\0')) {
         return Err(AppError::BadStartupCommand(
             "Startup argument cannot contain quotes or line breaks; use a quoted +command batch or exec a cfg file."

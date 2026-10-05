@@ -11,9 +11,6 @@ use thiserror::Error;
 /// Error for invalid command text.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CmdError {
-    /// Command text must be source bytes (truncated at NUL, code points `<= 255`).
-    #[error("Command text requires source bytes")]
-    NonByteText,
     /// A token overflowed its source buffer.
     #[error("{0}")]
     TokenOverflow(String),
@@ -167,13 +164,11 @@ impl From<Vec<u8>> for EngineText {
     }
 }
 
-/// Truncate at the first NUL and reject code points above 255.
-pub fn source_command_text(input: &str) -> Result<String, CmdError> {
-    let text = input.split('\0').next().unwrap_or("");
-    if text.chars().any(|c| c as u32 > 255) {
-        return Err(CmdError::NonByteText);
-    }
-    Ok(text.to_string())
+/// Truncate at the first NUL and map host text to engine byte text.
+/// Chars `<= 255` map exactly; anything above truncates to its low byte
+/// (the UTF-8 boundary mapping; see [`EngineText`]).
+pub fn source_command_text(input: &str) -> String {
+    EngineText::from(input).to_display()
 }
 
 /// Fold ASCII uppercase to lowercase (Quake III name comparison).
@@ -190,7 +185,7 @@ pub fn ascii_fold(text: &str) -> String {
         .collect()
 }
 
-fn is_whitespace(byte: u32, mode: TextMode) -> bool {
+fn is_whitespace(byte: u8, mode: TextMode) -> bool {
     byte <= 32 || (mode == TextMode::Source && byte >= 128)
 }
 
@@ -220,82 +215,77 @@ pub fn command_separator_offset_bytes(bytes: &[u8], dialect: Dialect) -> usize {
 }
 
 struct ParsedToken {
-    value: String,
+    value: EngineText,
     end: usize,
 }
 
-fn parse_token(
-    chars: &[char],
-    start: usize,
-    dialect: Dialect,
-    mode: TextMode,
-) -> Result<Option<ParsedToken>, CmdError> {
+fn parse_token(bytes: &[u8], start: usize, dialect: Dialect, mode: TextMode) -> Result<Option<ParsedToken>, CmdError> {
     let mut offset = start;
     loop {
-        while offset < chars.len() && is_whitespace(chars[offset] as u32, mode) {
+        while offset < bytes.len() && is_whitespace(bytes[offset], mode) {
             offset += 1;
         }
-        if offset + 1 < chars.len() && chars[offset] == '/' && chars[offset + 1] == '/' {
+        if offset + 1 < bytes.len() && bytes[offset] == b'/' && bytes[offset + 1] == b'/' {
             if dialect == Dialect::Q3 {
                 return Ok(None);
             }
-            while offset < chars.len() && chars[offset] != '\n' {
+            while offset < bytes.len() && bytes[offset] != b'\n' {
                 offset += 1;
             }
             continue;
         }
-        if dialect == Dialect::Q3 && offset + 1 < chars.len() && chars[offset] == '/' && chars[offset + 1] == '*' {
+        if dialect == Dialect::Q3 && offset + 1 < bytes.len() && bytes[offset] == b'/' && bytes[offset + 1] == b'*' {
             let mut end = offset + 2;
-            while end + 1 < chars.len() && !(chars[end] == '*' && chars[end + 1] == '/') {
+            while end + 1 < bytes.len() && !(bytes[end] == b'*' && bytes[end + 1] == b'/') {
                 end += 1;
             }
-            offset = if end + 1 < chars.len() { end + 2 } else { chars.len() };
+            offset = if end + 1 < bytes.len() { end + 2 } else { bytes.len() };
             continue;
         }
         break;
     }
-    if offset >= chars.len() {
+    if offset >= bytes.len() {
         return Ok(None);
     }
-    let quoted = chars[offset] == '"';
+    let quoted = bytes[offset] == b'"';
     if quoted {
         offset += 1;
     }
     let token_start = offset;
     if quoted {
-        while offset < chars.len() && chars[offset] != '"' {
+        while offset < bytes.len() && bytes[offset] != b'"' {
             offset += 1;
         }
-    } else if dialect == Dialect::Q1Netquake && matches!(chars[offset], '{' | '}' | '(' | ')' | '\'' | ':') {
+    } else if dialect == Dialect::Q1Netquake && matches!(bytes[offset], b'{' | b'}' | b'(' | b')' | b'\'' | b':') {
         offset += 1;
     } else {
-        while offset < chars.len() && !is_whitespace(chars[offset] as u32, mode) {
-            if dialect == Dialect::Q1Netquake && matches!(chars[offset], '{' | '}' | '(' | ')' | '\'' | ':') {
+        while offset < bytes.len() && !is_whitespace(bytes[offset], mode) {
+            if dialect == Dialect::Q1Netquake && matches!(bytes[offset], b'{' | b'}' | b'(' | b')' | b'\'' | b':') {
                 break;
             }
             if dialect == Dialect::Q3
-                && (chars[offset] == '"'
-                    || (offset + 1 < chars.len() && chars[offset] == '/' && matches!(chars[offset + 1], '/' | '*')))
+                && (bytes[offset] == b'"'
+                    || (offset + 1 < bytes.len() && bytes[offset] == b'/' && matches!(bytes[offset + 1], b'/' | b'*')))
             {
                 break;
             }
             offset += 1;
         }
     }
-    let mut value: String = chars[token_start..offset].iter().collect();
+    let mut value = EngineText::from_bytes(&bytes[token_start..offset]);
     if dialect.is_q2() && value.len() >= 128 {
         if quoted {
             return Err(CmdError::TokenOverflow(
                 "Quoted command token overflows source MAX_TOKEN_CHARS".to_string(),
             ));
         }
-        value = String::new();
+        value = EngineText::new();
     } else if dialect.is_q1() && value.len() >= 1024 {
         return Err(CmdError::TokenOverflow(
             "Command token overflows source com_token".to_string(),
         ));
     }
-    if quoted && offset < chars.len() && chars[offset] == '"' {
+    if quoted && offset < bytes.len() && bytes[offset] == b'"' {
         offset += 1;
     }
     Ok(Some(ParsedToken { value, end: offset }))
@@ -310,8 +300,20 @@ pub fn expand_command_macros(
     print: &mut dyn FnMut(&str),
     mode: TextMode,
 ) -> Result<Option<String>, CmdError> {
-    let mut text = source_command_text(input)?;
-    let mut budget = text.chars().count();
+    let host = EngineText::from(input);
+    Ok(expand_command_macros_bytes(host.as_bytes(), variable, print, mode)?.map(|text| text.to_display()))
+}
+
+/// Expand unquoted `$cvar` macros over engine bytes. The macro budget
+/// counts bytes, matching Q2 `MAX_STRING_CHARS`.
+pub(crate) fn expand_command_macros_bytes(
+    input: &[u8],
+    variable: &dyn Fn(&str) -> String,
+    print: &mut dyn FnMut(&str),
+    mode: TextMode,
+) -> Result<Option<EngineText>, CmdError> {
+    let mut text = EngineText::from_bytes(input);
+    let mut budget = text.len();
     if budget >= 1024 {
         print("Line exceeded 1024 chars, discarded.\n");
         return Ok(None);
@@ -320,25 +322,26 @@ pub fn expand_command_macros(
     let mut count = 0;
     let mut offset = 0;
     loop {
-        let chars: Vec<char> = text.chars().collect();
-        if offset >= chars.len() {
+        let bytes = text.as_bytes();
+        if offset >= bytes.len() {
             break;
         }
-        if chars[offset] == '"' {
+        if bytes[offset] == b'"' {
             quoted = !quoted;
         }
-        if !quoted && chars[offset] == '$' {
-            let token = parse_token(&chars, offset + 1, Dialect::Q2Classic, mode)?;
+        if !quoted && bytes[offset] == b'$' {
+            let token = parse_token(bytes, offset + 1, Dialect::Q2Classic, mode)?;
             if let Some(token) = token {
-                let value = variable(&token.value);
-                budget += value.chars().count();
+                let value = EngineText::from(variable(&token.value.to_display()).as_str());
+                budget += value.len();
                 if budget >= 1024 {
                     print("Expanded line exceeded 1024 chars, discarded.\n");
                     return Ok(None);
                 }
-                let before: String = chars[..offset].iter().collect();
-                let after: String = chars[token.end..].iter().collect();
-                text = format!("{before}{value}{after}");
+                let mut expanded = EngineText::from_bytes(&bytes[..offset]);
+                expanded.push_text(&value);
+                expanded.push_text(&EngineText::from_bytes(&bytes[token.end..]));
+                text = expanded;
                 count += 1;
                 if count == 100 {
                     print("Macro expansion loop, discarded.\n");
@@ -368,54 +371,78 @@ pub struct CommandTokens {
 /// Retain quotes and punctuation when a dispatcher removes its own leading
 /// tokens: the tail after skipping `count` tokens.
 pub fn command_text_tail(input: &str, dialect: Dialect, count: usize) -> Result<String, CmdError> {
-    let text = source_command_text(input)?;
-    let chars: Vec<char> = text.chars().collect();
+    let host = EngineText::from(input);
+    Ok(command_text_tail_bytes(host.as_bytes(), dialect, count)?.to_display())
+}
+
+/// Tail after skipping `count` tokens, over engine bytes.
+pub(crate) fn command_text_tail_bytes(input: &[u8], dialect: Dialect, count: usize) -> Result<EngineText, CmdError> {
+    let bytes = EngineText::from_bytes(input);
+    let bytes = bytes.as_bytes();
     let mut offset = 0;
     for _ in 0..count {
-        while offset < chars.len() && is_whitespace(chars[offset] as u32, TextMode::Source) {
+        while offset < bytes.len() && is_whitespace(bytes[offset], TextMode::Source) {
             offset += 1;
         }
-        let token = parse_token(&chars, offset, dialect, TextMode::Source)?;
+        let token = parse_token(bytes, offset, dialect, TextMode::Source)?;
         if token.is_none() {
-            return Ok(String::new());
+            return Ok(EngineText::new());
         }
         offset = token.map_or(offset, |token| token.end);
     }
-    while offset < chars.len() && is_whitespace(chars[offset] as u32, TextMode::Source) {
+    while offset < bytes.len() && is_whitespace(bytes[offset], TextMode::Source) {
         offset += 1;
     }
-    Ok(chars[offset..].iter().collect())
+    Ok(EngineText::from_bytes(&bytes[offset..]))
 }
 
 /// Tokenize one command line. Q2 trims trailing control bytes from the
 /// argument text; Q3 rebuilds it from tokenized arguments.
 pub fn tokenize_command(input: &str, dialect: Dialect, mode: TextMode) -> Result<CommandTokens, CmdError> {
-    let text = source_command_text(input)?;
-    let chars: Vec<char> = text.chars().collect();
+    let host = EngineText::from(input);
+    let (argv, args_text) = tokenize_command_bytes(host.as_bytes(), dialect, mode)?;
+    Ok(CommandTokens {
+        argv: argv.iter().map(EngineText::to_display).collect(),
+        args_text: args_text.to_display(),
+    })
+}
+
+/// Tokenize one command line over engine bytes: argument vector plus the
+/// raw text after the first token. Token storage counts bytes.
+pub(crate) fn tokenize_command_bytes(
+    input: &[u8],
+    dialect: Dialect,
+    mode: TextMode,
+) -> Result<(Vec<EngineText>, EngineText), CmdError> {
+    let text = EngineText::from_bytes(input);
+    let bytes = text.as_bytes();
     let maximum_tokens = if dialect == Dialect::Q3 { 1024 } else { 80 };
-    let mut argv: Vec<String> = Vec::new();
-    let mut args_text = String::new();
+    let mut argv: Vec<EngineText> = Vec::new();
+    let mut args_text = EngineText::new();
     let mut stored_bytes = 0;
     let mut offset = 0;
-    while offset < chars.len() {
-        while offset < chars.len()
-            && is_whitespace(chars[offset] as u32, mode)
-            && (dialect == Dialect::Q3 || chars[offset] != '\n')
+    while offset < bytes.len() {
+        while offset < bytes.len()
+            && is_whitespace(bytes[offset], mode)
+            && (dialect == Dialect::Q3 || bytes[offset] != b'\n')
         {
             offset += 1;
         }
-        if dialect != Dialect::Q3 && offset < chars.len() && chars[offset] == '\n' {
+        if dialect != Dialect::Q3 && offset < bytes.len() && bytes[offset] == b'\n' {
             break;
         }
         if argv.len() == 1 {
-            let tail: String = chars[offset..].iter().collect();
-            args_text = if dialect.is_q2() {
-                tail.trim_end_matches(|c: char| (c as u32) <= 32).to_string()
-            } else {
-                tail
-            };
+            let mut tail = EngineText::from_bytes(&bytes[offset..]);
+            if dialect.is_q2() {
+                let mut end = tail.len();
+                while end > 0 && tail.as_bytes()[end - 1] <= 32 {
+                    end -= 1;
+                }
+                tail.truncate(end);
+            }
+            args_text = tail;
         }
-        let token = parse_token(&chars, offset, dialect, mode)?;
+        let token = parse_token(bytes, offset, dialect, mode)?;
         let Some(token) = token else { break };
         offset = token.end;
         if argv.len() < maximum_tokens {
@@ -430,9 +457,16 @@ pub fn tokenize_command(input: &str, dialect: Dialect, mode: TextMode) -> Result
         }
     }
     if dialect == Dialect::Q3 {
-        args_text = argv.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
+        let mut joined = EngineText::new();
+        for (index, argument) in argv.iter().skip(1).enumerate() {
+            if index > 0 {
+                joined.push(b' ');
+            }
+            joined.push_text(argument);
+        }
+        args_text = joined;
     }
-    Ok(CommandTokens { argv, args_text })
+    Ok((argv, args_text))
 }
 
 #[cfg(test)]
@@ -441,8 +475,8 @@ mod tests {
 
     #[test]
     fn source_text_validates_bytes() {
-        assert_eq!(source_command_text("say hi\0trailing"), Ok("say hi".to_string()));
-        assert!(source_command_text("caf\u{20ac}").is_err());
+        assert_eq!(source_command_text("say hi\0trailing"), "say hi".to_string());
+        assert_eq!(source_command_text("caf\u{20ac}"), "caf\u{ac}".to_string());
         assert_eq!(ascii_fold("Sv_Cheats"), "sv_cheats");
     }
 
@@ -515,6 +549,23 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_keeps_high_bytes_byte_exact() {
+        // Source mode keeps qsrc signed-char semantics: bare bytes >= 0x80
+        // are separators, while quoted high bytes stay byte-exact.
+        let tokens = tokenize_command("say \"\u{80}aÿ\" \u{ff}", Dialect::Q2Classic, TextMode::Source).unwrap();
+        assert_eq!(tokens.argv, vec!["say".to_string(), "\u{80}aÿ".to_string()]);
+        assert_eq!(tokens.args_text, "\"\u{80}aÿ\" \u{ff}");
+        // Console mode treats high bytes as single content units.
+        let (argv, args) = tokenize_command_bytes(b"say \x80\xff", Dialect::Q2Classic, TextMode::Console).unwrap();
+        assert_eq!(argv[1].as_bytes(), b"\x80\xff");
+        assert_eq!(args.as_bytes(), b"\x80\xff");
+        assert_eq!(
+            command_text_tail("give \u{80}health 100", Dialect::Q3, 1).unwrap(),
+            "health 100"
+        );
+    }
+
+    #[test]
     fn macro_expansion_matches_q2() {
         let mut printed = Vec::new();
         let expanded = expand_command_macros(
@@ -548,5 +599,25 @@ mod tests {
         .unwrap();
         assert_eq!(looping, None);
         assert!(printed.iter().any(|line| line.contains("Macro expansion loop")));
+    }
+
+    #[test]
+    fn macro_expansion_splices_high_bytes() {
+        let mut printed = Vec::new();
+        let expanded = expand_command_macros(
+            "say $greet !",
+            &|name| {
+                if name == "greet" {
+                    "\u{80}hiÿ".to_string()
+                } else {
+                    String::new()
+                }
+            },
+            &mut |text| printed.push(text.to_string()),
+            TextMode::Source,
+        )
+        .unwrap();
+        assert_eq!(expanded, Some("say \u{80}hiÿ !".to_string()));
+        assert!(printed.is_empty());
     }
 }
