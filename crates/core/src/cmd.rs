@@ -65,6 +65,108 @@ pub enum TextMode {
     Console,
 }
 
+/// Engine byte string: one byte per unit, NUL-truncated, the qsrc
+/// `char[]` command/cvar text model. Bytes `0x80..=0xFF` are single
+/// units (extended console glyphs), never multi-byte sequences, so
+/// [`EngineText::len`] is the length the `8192`/`16384` buffer limits
+/// and the `1024` line limit measure.
+///
+/// UTF-8 conversion happens only at the boundaries: [`EngineText::from`]
+/// maps host `&str` in (chars `<= 255` map exactly, anything above
+/// truncates to its low byte) and [`EngineText::to_display`] maps out
+/// to the UI/font layer (Latin-1 bytes to chars, exact for `0..=255`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineText(Vec<u8>);
+
+impl EngineText {
+    /// Empty engine text.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Copy engine bytes, truncating at the first NUL like qsrc
+    /// `strcpy` into `cmd_text`.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        Self(bytes[..end].to_vec())
+    }
+
+    /// Borrow the engine bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Engine length in bytes: every byte counts once.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no bytes are queued.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Append one engine byte.
+    pub fn push(&mut self, byte: u8) {
+        self.0.push(byte);
+    }
+
+    /// Append another engine string's bytes.
+    pub fn push_text(&mut self, other: &EngineText) {
+        self.0.extend_from_slice(other.as_bytes());
+    }
+
+    /// Shorten to at most `len` bytes; any byte index is a valid cut.
+    pub fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+
+    /// Split off the bytes at and after `at`; any byte index is valid.
+    #[must_use]
+    pub fn split_off(&mut self, at: usize) -> EngineText {
+        Self(self.0.split_off(at))
+    }
+
+    /// Render for the UI/font boundary: each byte becomes the Latin-1
+    /// char with that value, so engine bytes round-trip byte-exactly.
+    #[must_use]
+    pub fn to_display(&self) -> String {
+        self.0.iter().map(|byte| char::from(*byte)).collect()
+    }
+}
+
+impl From<&str> for EngineText {
+    /// Map host text to engine bytes: truncate at the first NUL, then
+    /// take each char's low byte. Chars `<= 255` map exactly (so
+    /// `to_display` inverts this for engine-range text); anything above
+    /// is host text the byte engine cannot name and truncates.
+    fn from(input: &str) -> Self {
+        let mut bytes = Vec::with_capacity(input.len());
+        for c in input.chars() {
+            if c == '\0' {
+                break;
+            }
+            bytes.push(c as u8);
+        }
+        Self(bytes)
+    }
+}
+
+impl From<Vec<u8>> for EngineText {
+    /// Take ownership of engine bytes, truncating at the first NUL.
+    fn from(mut bytes: Vec<u8>) -> Self {
+        if let Some(end) = bytes.iter().position(|byte| *byte == 0) {
+            bytes.truncate(end);
+        }
+        Self(bytes)
+    }
+}
+
 /// Truncate at the first NUL and reject code points above 255.
 pub fn source_command_text(input: &str) -> Result<String, CmdError> {
     let text = input.split('\0').next().unwrap_or("");
@@ -94,18 +196,27 @@ fn is_whitespace(byte: u32, mode: TextMode) -> bool {
 
 /// Byte offset of the next command separator (`;` outside quotes, newline,
 /// or Q3 carriage return), or the text length when there is none.
+/// Separators are ASCII, so scanning host bytes finds the same offsets
+/// as scanning chars, and the returned index is always a valid split.
 #[must_use]
 pub fn command_separator_offset(text: &str, dialect: Dialect) -> usize {
+    command_separator_offset_bytes(text.as_bytes(), dialect)
+}
+
+/// Byte offset of the next command separator in engine bytes, or the
+/// byte length when there is none.
+#[must_use]
+pub fn command_separator_offset_bytes(bytes: &[u8], dialect: Dialect) -> usize {
     let mut quoted = false;
-    for (offset, c) in text.char_indices() {
-        if c == '"' {
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'"' {
             quoted = !quoted;
         }
-        if (!quoted && c == ';') || c == '\n' || (dialect == Dialect::Q3 && c == '\r') {
+        if (!quoted && *byte == b';') || *byte == b'\n' || (dialect == Dialect::Q3 && *byte == b'\r') {
             return offset;
         }
     }
-    text.len()
+    bytes.len()
 }
 
 struct ParsedToken {
@@ -341,6 +452,43 @@ mod tests {
         assert_eq!(command_separator_offset("a\rb", Dialect::Q3), 1);
         assert_eq!(command_separator_offset("a\rb", Dialect::Q2Classic), 3);
         assert_eq!(command_separator_offset("plain", Dialect::Q3), 5);
+    }
+
+    #[test]
+    fn engine_text_counts_every_byte_once() {
+        let text = EngineText::from_bytes(b"say \x80\xff\n");
+        assert_eq!(text.len(), 7);
+        assert_eq!(text.as_bytes(), b"say \x80\xff\n");
+        assert_eq!(command_separator_offset_bytes(text.as_bytes(), Dialect::Q2Classic), 6);
+        let mut text = text;
+        text.push(b'!');
+        assert_eq!(text.len(), 8);
+        text.truncate(7);
+        assert_eq!(text.as_bytes(), b"say \x80\xff\n");
+        let rest = text.split_off(4);
+        assert_eq!(text.as_bytes(), b"say ");
+        assert_eq!(rest.as_bytes(), b"\x80\xff\n");
+        assert!(EngineText::new().is_empty());
+        assert!(!rest.is_empty());
+    }
+
+    #[test]
+    fn engine_text_truncates_at_nul() {
+        assert_eq!(EngineText::from_bytes(b"ab\0cd").as_bytes(), b"ab");
+        assert_eq!(EngineText::from("ab\0cd").as_bytes(), b"ab");
+        assert_eq!(EngineText::from(vec![b'a', 0, b'b']).as_bytes(), b"a");
+    }
+
+    #[test]
+    fn engine_text_round_trips_bytes_through_display() {
+        let bytes: Vec<u8> = (1u8..=255).collect();
+        let text = EngineText::from(bytes.clone());
+        assert_eq!(text.len(), 255);
+        assert_eq!(
+            EngineText::from(text.to_display().as_str()).as_bytes(),
+            bytes.as_slice()
+        );
+        assert_eq!(EngineText::from("caf\u{20ac}").as_bytes(), b"caf\xac");
     }
 
     #[test]
