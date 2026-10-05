@@ -1023,10 +1023,18 @@ where
     where
         BackendFactory: NativeBackendFactory<Backend = Backend>,
     {
+        let (width, height) = self.window.drawable_size();
         if !self.backend.is_worker() && !self.backend.is_software() {
+            // The GL view rect sizes from the live drawable every frame; a
+            // compositor tile or resize after open would otherwise leave
+            // the backend's cached height behind and shift every frame
+            // (content up, black bar below). The donor skips this because
+            // its window never changes size; ours is resizable.
+            if width > 0 && height > 0 && (width != self.backend.width() || height != self.backend.height()) {
+                self.backend.resize_backend(width, height);
+            }
             return Ok(());
         }
-        let (width, height) = self.window.drawable_size();
         if self.backend.is_worker() {
             self.backend.resize_backend(width, height);
             return Ok(());
@@ -1614,6 +1622,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(renderer.window().swap_interval(), 0);
+    }
+
+    #[test]
+    fn gl_backend_tracks_live_drawable_size() {
+        // A tiling compositor retargets a resizable window after open; the
+        // GL backend must follow the live drawable or begin_view's cached
+        // height shifts every frame (content up, black bar below).
+        let mut windows = FakeWindows;
+        let mut backends = FakeBackends {
+            backend_kind: RenderBackendKind::Gl,
+            worker: false,
+        };
+        let options = NativeRendererOptions {
+            renderer: RenderBackendKind::Gl,
+            width: 960,
+            height: 600,
+            ..options()
+        };
+        let mut renderer = NativeRenderer::open(
+            &options,
+            owner(),
+            FakeImages { owner: owner() },
+            &mut windows,
+            &mut backends,
+        )
+        .unwrap();
+        assert_eq!((renderer.backend().width(), renderer.backend().height()), (960, 600));
+        renderer.window.height = 480;
+        renderer
+            .execute(
+                &RenderFrame {
+                    owner: owner(),
+                    commands: vec![RenderCommand::Draw],
+                },
+                &mut backends,
+            )
+            .unwrap();
+        assert_eq!((renderer.backend().width(), renderer.backend().height()), (960, 480));
     }
 
     #[test]
