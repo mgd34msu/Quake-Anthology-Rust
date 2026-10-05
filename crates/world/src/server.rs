@@ -157,14 +157,28 @@ pub type NativeTouchHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &m
 /// Native mover-think handler: runs after [`ServerLogic::mover_think`]
 /// when a mover crosses its local think time. `arrived` mirrors the
 /// engine think (true on endpoint arrival); gamecode returns doors and
-/// plats via the mover table, exactly like the guest hook.
-pub type NativeMoverThinkHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &ActorId, MoverPhase, bool)>;
+/// plats via the mover table, exactly like the guest hook. The trigger
+/// table rides along because arrival thinks fire targets (`func_button`
+/// uses `killtarget`), exactly like the touch handler's context.
+pub type NativeMoverThinkHandler =
+    Box<dyn FnMut(&mut Simulation, &mut MoverTable, &mut TriggerTable, &ActorId, MoverPhase, bool)>;
 
 /// Native mover-blocked handler: runs when a pusher transaction meets a
 /// solid obstacle, after the obstacle and pusher roll back but before the
 /// carried entities do (stock `blocked`). Gamecode damages the obstacle
-/// and reverses or stops the pusher via the mover table.
-pub type NativeMoverBlockedHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &ActorId, &ActorId)>;
+/// and reverses or stops the pusher via the mover table. The trigger
+/// table rides along because reversals fire targets (door `killtarget`
+/// removal unmarks volumes), exactly like the touch handler's context.
+pub type NativeMoverBlockedHandler =
+    Box<dyn FnMut(&mut Simulation, &mut MoverTable, &mut TriggerTable, &ActorId, &ActorId)>;
+
+/// Native think handler: runs once per frame after the mover pass and
+/// before the trigger sweep. Natively simulated games fire due entity
+/// thinks here (trigger re-arms, delayed uses, scheduled removals) from
+/// gamecode-owned think state; the stock per-entity think order inside
+/// `SV_Physics` collapses to one pass because native thinks never move
+/// pushers.
+pub type NativeThinkHandler = Box<dyn FnMut(&mut Simulation, &mut MoverTable, &mut TriggerTable)>;
 
 /// Server tick event.
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +245,7 @@ pub struct Server<L: ServerLogic> {
     native_touch: Option<NativeTouchHandler>,
     native_mover_think: Option<NativeMoverThinkHandler>,
     native_mover_blocked: Option<NativeMoverBlockedHandler>,
+    native_think: Option<NativeThinkHandler>,
     game_provider: ProviderId,
     default_bounds: Bounds,
     body_scratch: Vec<ActorId>,
@@ -275,6 +290,7 @@ impl<L: ServerLogic> Server<L> {
             native_touch: None,
             native_mover_think: None,
             native_mover_blocked: None,
+            native_think: None,
             game_provider,
             default_bounds,
             body_scratch: Vec::new(),
@@ -383,6 +399,11 @@ impl<L: ServerLogic> Server<L> {
     /// source: checkpoints do not carry it.
     pub fn set_native_mover_blocked(&mut self, handler: Option<NativeMoverBlockedHandler>) {
         self.native_mover_blocked = handler;
+    }
+
+    /// Install the native think handler (see [`NativeThinkHandler`)).
+    pub fn set_native_think(&mut self, handler: Option<NativeThinkHandler>) {
+        self.native_think = handler;
     }
 
     /// Spawn a map entity through the registered spawn function.
@@ -497,6 +518,9 @@ impl<L: ServerLogic> Server<L> {
             events.push(ServerEvent::Timer(fired));
         }
         self.step_movers(&mut events)?;
+        if let Some(handler) = self.native_think.as_mut() {
+            handler(&mut self.simulation, &mut self.movers, &mut self.triggers);
+        }
         self.sweep_triggers(&mut events)?;
         events.push(ServerEvent::Frame {
             frame: self.simulation.frame().frame,
@@ -609,7 +633,7 @@ impl<L: ServerLogic> Server<L> {
                     let _ignored = self.simulation.set_body_origin(actor, origin);
                     self.movers.insert(actor.clone(), saved_mover);
                     if let (Some(stuck), Some(handler)) = (&obstacle, self.native_mover_blocked.as_mut()) {
-                        handler(&mut self.simulation, &mut self.movers, actor, stuck);
+                        handler(&mut self.simulation, &mut self.movers, &mut self.triggers, actor, stuck);
                     }
                     for moved_actor in &moved {
                         if let Some((_, before)) = saved_origins.iter().find(|(id, _)| id == moved_actor) {
@@ -627,7 +651,14 @@ impl<L: ServerLogic> Server<L> {
                 self.logic
                     .mover_think(&mut self.simulation, &mut self.movers, actor, phase, step.arrived);
                 if let Some(handler) = self.native_mover_think.as_mut() {
-                    handler(&mut self.simulation, &mut self.movers, actor, phase, step.arrived);
+                    handler(
+                        &mut self.simulation,
+                        &mut self.movers,
+                        &mut self.triggers,
+                        actor,
+                        phase,
+                        step.arrived,
+                    );
                 }
                 events.push(ServerEvent::MoverThink { actor: saved });
             }
@@ -1150,7 +1181,7 @@ mod tests {
         let seen = Rc::clone(&fired);
         let door_id = door.id().clone();
         server.set_native_mover_think(Some(Box::new(
-            move |_simulation, _movers, actor: &ActorId, phase: MoverPhase, arrived: bool| {
+            move |_simulation, _movers, _triggers, actor: &ActorId, phase: MoverPhase, arrived: bool| {
                 assert_eq!(actor, &door_id);
                 seen.borrow_mut().push((phase, arrived));
             },
@@ -1170,7 +1201,7 @@ mod tests {
         let fired: Rc<RefCell<Vec<(ActorId, ActorId)>>> = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&fired);
         server.set_native_mover_blocked(Some(Box::new(
-            move |_simulation, _movers, pusher: &ActorId, obstacle: &ActorId| {
+            move |_simulation, _movers, _triggers, pusher: &ActorId, obstacle: &ActorId| {
                 seen.borrow_mut().push((pusher.clone(), obstacle.clone()));
             },
         )));
