@@ -322,6 +322,9 @@ struct EngineMix {
     streams: HashMap<String, StreamBus>,
     music: HashMap<String, MusicBus>,
     frame: i64,
+    seat: Vec<f64>,
+    mixed: Vec<i16>,
+    output: Vec<f64>,
 }
 
 fn selected(audience: &AudioAudience, seat: &SeatId) -> bool {
@@ -428,55 +431,59 @@ pub struct UnifiedAudio {
     factory: Rc<dyn AudioDeviceFactory>,
 }
 
-impl EngineMix {
-    fn audience_gain(&self, audience: &AudioAudience) -> f64 {
-        match audience {
-            AudioAudience::World => 1.0,
-            AudioAudience::Seat { seat } => self
-                .seats
-                .iter()
-                .find(|state| state.listener.borrow().seat == *seat)
-                .map_or(0.0, |state| state.listener.borrow().gain),
-        }
+fn audience_gain(seats: &[SeatAudio], audience: &AudioAudience) -> f64 {
+    match audience {
+        AudioAudience::World => 1.0,
+        AudioAudience::Seat { seat } => seats
+            .iter()
+            .find(|state| state.listener.borrow().seat == *seat)
+            .map_or(0.0, |state| state.listener.borrow().gain),
     }
+}
 
+impl EngineMix {
     fn mix(&mut self, frames: usize, sample_rate: u32) -> Result<Vec<i16>, AudioError> {
         if frames > sample_rate as usize * 2 {
             return Err(AudioError::MixTooLarge);
         }
-        let mut output = vec![0.0f64; frames * 2];
-        for state in &mut self.seats {
-            let mut seat = vec![0.0f64; frames * 2];
-            let mixed = state.mixer.mix(MixRequest::Consume(frames as i64))?;
-            add_i16(&mut seat, &mixed, 1.0)?;
+        let EngineMix {
+            seats,
+            streams,
+            music,
+            frame,
+            seat,
+            mixed,
+            output,
+        } = self;
+        output.clear();
+        output.resize(frames * 2, 0.0);
+        seat.resize(frames * 2, 0.0);
+        mixed.resize(frames * 2, 0);
+        for state in seats.iter_mut() {
+            seat.fill(0.0);
+            state.mixer.mix_into(MixRequest::Consume(frames as i64), mixed)?;
+            add_i16(seat, mixed, 1.0)?;
             if let Some(params) = state.environment.as_ref().and_then(|environment| environment.params()) {
-                state.reverb.process(&mut seat, &params)?;
+                state.reverb.process(seat, &params)?;
             }
             let listener = state.listener.borrow().clone();
             if listener.underwater {
-                state.underwater.process(&mut seat, UNDERWATER_GAIN);
+                state.underwater.process(seat, UNDERWATER_GAIN);
             } else {
                 state.underwater.reset();
             }
-            add_f64(&mut output, &seat, listener.gain)?;
+            add_f64(output, seat, listener.gain)?;
         }
-        let mut streams: Vec<(AudioStreamTarget, Vec<f64>)> = Vec::new();
-        for bus in self.streams.values_mut() {
+        for bus in streams.values_mut() {
             let mixed = bus.stream.mix(frames, bus.target.gain, None)?;
-            streams.push((bus.target.clone(), mixed));
+            add_f64(output, &mixed, audience_gain(seats, &bus.target.audience))?;
         }
-        for (target, mixed) in &streams {
-            add_f64(&mut output, mixed, self.audience_gain(&target.audience))?;
-        }
-        let mut music: Vec<(f64, AudioAudience, Vec<f64>)> = Vec::new();
-        for bus in self.music.values_mut() {
+        for bus in music.values_mut() {
             let mixed = bus.player.mix(frames)?;
-            music.push((bus.target.gain, bus.target.audience.clone(), mixed));
+            let gain = bus.target.gain * audience_gain(seats, &bus.target.audience);
+            add_f64(output, &mixed, gain)?;
         }
-        for (gain, audience, mixed) in &music {
-            add_f64(&mut output, mixed, *gain * self.audience_gain(audience))?;
-        }
-        self.frame += frames as i64;
+        *frame += frames as i64;
         Ok(output
             .iter()
             .map(|value| (value.trunc() as i64).clamp(-32768, 32767) as i16)
@@ -509,6 +516,9 @@ impl UnifiedAudio {
                 streams: HashMap::new(),
                 music: HashMap::new(),
                 frame: 0,
+                seat: Vec::new(),
+                mixed: Vec::new(),
+                output: Vec::new(),
             },
             voice_observers: Rc::new(RefCell::new(Vec::new())),
             next_observer: 0,
