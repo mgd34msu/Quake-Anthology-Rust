@@ -18,7 +18,7 @@ use qa_content::contract::{
     CampaignSelection, CharacterSelection, EnemySelection, ExecutableRecipe, ModuleRole, ProviderReference,
     Q3ApiIdentity, ResolvedExecutionModule, ResolvedResourceReference, ResourceProvenance,
 };
-use qa_content::mounts::{MountedContent, ResourceRef};
+use qa_content::mounts::{digest_bytes, MountedContent, ResourceRef};
 use qa_content::q3::guest_items::{q3_guest_weapons, Q3GuestWeapon};
 use qa_content::value::{parse_save_json, SaveJson as ContentSaveJson};
 use qa_core::identity::ProviderId;
@@ -431,6 +431,7 @@ pub fn prepare_q3_game(
     let bytes = mounts
         .read(ResourceRef::Resolved(reference))
         .map_err(|error| GuestError::invalid(error.to_string()))?;
+    let content_digest = digest_bytes(&bytes);
     let bridge = CompatMounts {
         mounts,
         reference: RefCell::new(None),
@@ -438,7 +439,7 @@ pub fn prepare_q3_game(
     let (declaration, _) = read_qvm_compatibility_declaration(
         &bridge,
         &reference.requested_path,
-        reference.digest.as_str(),
+        content_digest.as_str(),
         SyscallRole::Qagame,
     )?;
     let modern = declaration.profile == QvmAbiProfile::Modern;
@@ -447,8 +448,7 @@ pub fn prepare_q3_game(
             "Selected QVM ABI differs from its saved or resolved recipe",
         ));
     }
-    let (algorithm, value) = reference
-        .digest
+    let (algorithm, value) = content_digest
         .as_str()
         .split_once(':')
         .ok_or_else(|| GuestError::invalid("Selected Q3 server artifact must provide a supported qagame ABI"))?;
@@ -477,7 +477,7 @@ pub fn prepare_q3_game(
         module: GameModuleIdentity {
             id: provider_name(&owner.provider),
             artifact_path: reference.requested_path.clone(),
-            digest: reference.digest.as_str().to_string(),
+            digest: content_digest.as_str().to_string(),
             revision: format!("{}:{}", identity.id.as_str(), identity.generation),
         },
         role: GameRole::Qagame,
@@ -514,7 +514,7 @@ pub fn prepare_q3_game(
         module: ProviderModuleId {
             id: provider_name(&owner.provider),
             artifact_path: reference.requested_path.clone(),
-            digest: reference.digest.as_str().to_string(),
+            digest: content_digest.as_str().to_string(),
             revision: format!("{}:{}", identity.id.as_str(), identity.generation),
         },
         role: ProviderRole::Qagame,

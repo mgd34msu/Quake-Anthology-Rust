@@ -18,7 +18,7 @@ use qa_content::contract::{
     NativeModTarget, NativeModValue, ProviderCheckpointHeader, ProviderReference, ResolvedResourceReference,
 };
 use qa_content::hash::sha256_hex;
-use qa_content::mounts::MountedContent;
+use qa_content::mounts::{archive_digest_or_compute, MountedContent};
 use qa_core::identity::{ActorId, IdentityOwner, OwnedActor, ProviderId};
 use qa_guest::checkpoint::{GameApi, NativeCall, NativeCallAbi};
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue, GuestStorage};
@@ -139,7 +139,9 @@ pub struct NativeModSavedState {
 }
 
 /// Lower a content artifact to the recipe record.
-fn convert_artifact(artifact: &ResolvedResourceReference) -> crate::persistence::recipe::ResolvedResourceReference {
+fn convert_artifact(
+    artifact: &ResolvedResourceReference,
+) -> Result<crate::persistence::recipe::ResolvedResourceReference, NativeModError> {
     use crate::persistence::recipe;
     let provenance = match &artifact.provenance {
         qa_content::contract::ResourceProvenance::Archive {
@@ -160,7 +162,7 @@ fn convert_artifact(artifact: &ResolvedResourceReference) -> crate::persistence:
                     qa_content::contract::ArchiveFormat::Zip => "zip".to_string(),
                 },
                 archive_path: mount.archive_path.clone(),
-                archive_digest: mount.archive_digest.as_str().to_string(),
+                archive_digest: archive_digest_or_compute(mount).map_err(mapped)?.as_str().to_string(),
             }),
             member_path: member_path.clone(),
             member_index: *member_index,
@@ -201,14 +203,14 @@ fn convert_artifact(artifact: &ResolvedResourceReference) -> crate::persistence:
             target_path: target_path.clone(),
         },
     };
-    recipe::ResolvedResourceReference {
+    Ok(recipe::ResolvedResourceReference {
         id: artifact.id.as_str().to_string(),
         requested_path: artifact.requested_path.clone(),
         provenance,
         digest: artifact.digest.as_str().to_string(),
         byte_length: artifact.byte_length,
         resolution,
-    }
+    })
 }
 
 fn artifact_mismatch() -> NativeModError {
@@ -223,7 +225,7 @@ pub fn prepare_mounted_native_mod(
         .mounts
         .open(&options.declaration.program.path, |_| true)
         .map_err(mapped)?
-        .filter(|resource| resource.reference.digest == options.declaration.program.digest)
+        .filter(|resource| resource.content_digest() == &options.declaration.program.digest)
         .ok_or_else(|| NativeModError::invalid("Selected native mod differs from its resolved artifact"))?;
     let mounts = Rc::new(options.mounts);
     let mut reader = MountReader {
@@ -326,7 +328,7 @@ pub fn prepare_native_mod(options: PrepareNativeModOptions) -> Result<NativePrep
         role: "server-game".to_string(),
         api,
         implementation: ExecutionImplementation::Native {
-            artifact: convert_artifact(&options.artifact),
+            artifact: convert_artifact(&options.artifact)?,
             profile,
         },
     };
@@ -1709,7 +1711,7 @@ mod tests {
     #[test]
     fn convert_artifact_maps_mounts() {
         let digest = ContentDigest("sha256:abc".to_string());
-        let record = convert_artifact(&artifact(digest));
+        let record = convert_artifact(&artifact(digest)).unwrap();
         assert_eq!(record.id, "resource:game");
         assert_eq!(record.digest, "sha256:abc");
         assert!(matches!(

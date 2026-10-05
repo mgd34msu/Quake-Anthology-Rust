@@ -433,6 +433,12 @@ fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
     }
 }
 
+/// Filesystem identity of the file at `path`.
+pub fn file_identity_at(path: &Path) -> Result<FileIdentity, ArchiveError> {
+    let meta = std::fs::metadata(path).map_err(|error| io_error(path, error))?;
+    Ok(file_identity(&meta))
+}
+
 /// Retained file descriptor (`FileSource`).
 ///
 /// A retained descriptor keeps path replacements from changing an open

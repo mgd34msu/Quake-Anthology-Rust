@@ -235,10 +235,15 @@ impl Q3ApplicationPackages {
             .check(&file)
             .map_err(|_| Q3DownloadError::Message("Download archive changed after opening".to_string()))?;
         let digest = hex_lower(&hash.finish());
-        if create_content_digest(&digest)? != mounted.mount.archive_digest {
-            return Err(Q3DownloadError::Message(
-                "Download archive changed after mount".to_string(),
-            ));
+        let expected = create_content_digest(&digest)?;
+        match mounted.mount.archive_digest.get() {
+            Some(known) if known != expected => {
+                return Err(Q3DownloadError::Message(
+                    "Download archive changed after mount".to_string(),
+                ));
+            }
+            Some(_) => {}
+            None => mounted.mount.archive_digest.set(expected),
         }
         Ok(Some(Box::new(Q3DownloadFile {
             file: Some(file),

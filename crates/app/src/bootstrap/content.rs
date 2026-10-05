@@ -48,7 +48,8 @@ use qa_content::contract::{
 };
 use qa_content::hash::hex_lower;
 use qa_content::mounts::{
-    open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy, Q3Restriction, ResourceRef,
+    archive_digest_or_compute, open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy,
+    Q3Restriction, ResourceRef,
 };
 use qa_content::paths::{find_content_path, PathComparison};
 use qa_content::user_data::{default_user_content_root, user_product_directory};
@@ -1531,13 +1532,13 @@ impl ContentScope for ContentScopeRef<'_> {
                 }
             }
         }
-        let digests: HashSet<&qa_content::contract::ContentDigest> = ordered
-            .iter()
-            .filter_map(|mount| match mount {
-                ContentMount::Archive(archive) => Some(&archive.archive_digest),
-                ContentMount::Loose(_) => None,
-            })
-            .collect();
+        let mut forced = Vec::new();
+        for mount in &ordered {
+            if let ContentMount::Archive(archive) = mount {
+                forced.push(archive_digest_or_compute(archive)?);
+            }
+        }
+        let digests: HashSet<&qa_content::contract::ContentDigest> = forced.iter().collect();
         let pure = match self.pure {
             None => None,
             Some(policy) => {

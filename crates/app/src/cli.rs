@@ -49,7 +49,7 @@ use qa_content::contract::{
     ResourceResolution as ContractResolution, WeaponBehaviorCallback, WeaponBehaviorDefinition,
 };
 use qa_content::mods::ModsError;
-use qa_content::mounts::{open_mount_plan, MountedContent, OpenMountOptions};
+use qa_content::mounts::{archive_digest_or_compute, open_mount_plan, MountError, MountedContent, OpenMountOptions};
 use qa_content::q1::mods_callbacks::read_mod_callbacks;
 use qa_content::value::{SaveJson, SaveReader};
 use qa_core::identity::ProviderId;
@@ -456,7 +456,7 @@ impl WeaponBehaviorHost<CliQvmArtifact, CliQvmProfile> for CliWeaponBehaviorHost
             role: "server-game".to_owned(),
             api: GameApi::Q2RereleaseGame,
             implementation: ExecutionImplementation::Native {
-                artifact: recipe_resource(artifact),
+                artifact: recipe_resource(artifact).map_err(catalog_invalid)?,
                 profile: CheckpointNativeCallAbi::WindowsX8664,
             },
         };
@@ -1385,8 +1385,8 @@ fn save_json_to_json(value: &SaveJson) -> Result<Json, String> {
 }
 
 /// Recipe resource reference for a contract resource reference.
-fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceReference {
-    RecipeResourceReference {
+fn recipe_resource(reference: &ResolvedResourceReference) -> Result<RecipeResourceReference, MountError> {
+    Ok(RecipeResourceReference {
         id: reference.id.as_str().to_owned(),
         requested_path: reference.requested_path.clone(),
         provenance: match &reference.provenance {
@@ -1403,7 +1403,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceRefer
                     },
                     format: archive_format_name(&mount.format).to_owned(),
                     archive_path: mount.archive_path.clone(),
-                    archive_digest: mount.archive_digest.as_str().to_owned(),
+                    archive_digest: archive_digest_or_compute(mount)?.as_str().to_owned(),
                 }),
                 member_path: member_path.clone(),
                 member_index: *member_index,
@@ -1442,7 +1442,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> RecipeResourceRefer
                 target_path: target_path.clone(),
             },
         },
-    }
+    })
 }
 
 /// Recipe archive format name for a contract archive format.

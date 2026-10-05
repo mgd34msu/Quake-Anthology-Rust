@@ -32,7 +32,6 @@
 //! weapon behavior declarations, `.quaddicted.json`) parse through the
 //! shared [`SaveJson`] reader.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
@@ -52,18 +51,18 @@ use crate::contract::{
     is_content_digest, ArchiveFormat, ArchiveMount, CampaignSelection, CharacterSelection, ContentDigest, ContentId,
     ContentIdentity, ContentMount, ContractError, EnemySelection, EnvironmentSelection, EquipmentSelection,
     ExecutableRecipe, ExecutionModule, ExecutionSelection, FrameOrdering, GameFamily, GrappleBinding,
-    GrappleMechanicDetail, GrappleSelection, HandGrenadeSelection, LaunchChoice, LaunchSelection, LooseMount,
-    MapSelection, ModuleIdentity, ModuleRole, MonsterDefinitionReference, MonsterSelectionTarget, MountId, MountPlanId,
-    NativeWeaponBehaviorDeclaration, PrefixMountOrder, PresentationSelection, ProjectileRole, ProviderReference,
-    ProviderTiming, Q3ApiIdentity, QvmAbiProfile, QvmGrappleCable, RecipeId, ResolvedExecutionModule,
-    ResolvedGameplayMod, ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResolvedWeaponBehaviorSelection,
-    ResourceProvenance, ResourceRequest, SourceEdition, WeaponBehaviorCallback, WeaponBehaviorDefinition,
-    MAX_SAFE_INTEGER,
+    GrappleMechanicDetail, GrappleSelection, HandGrenadeSelection, LaunchChoice, LaunchSelection, LazyArchiveDigest,
+    LooseMount, MapSelection, ModuleIdentity, ModuleRole, MonsterDefinitionReference, MonsterSelectionTarget, MountId,
+    MountPlanId, NativeWeaponBehaviorDeclaration, PrefixMountOrder, PresentationSelection, ProjectileRole,
+    ProviderReference, ProviderTiming, Q3ApiIdentity, QvmAbiProfile, QvmGrappleCable, RecipeId,
+    ResolvedExecutionModule, ResolvedGameplayMod, ResolvedMap, ResolvedMountPlan, ResolvedResourceReference,
+    ResolvedWeaponBehaviorSelection, ResourceProvenance, ResourceRequest, SourceEdition, WeaponBehaviorCallback,
+    WeaponBehaviorDefinition, MAX_SAFE_INTEGER,
 };
 use crate::monsters::{monster_source, monster_timing, provider_text};
 use crate::mounts::{
-    digest_file, open_mount_plan, MountError, MountedContent, OpenMountOptions, OpenedResource, OrderedPlan,
-    OrderedReader, ResourceRef,
+    open_mount_plan, MountError, MountedContent, OpenMountOptions, OpenedResource, OrderedPlan, OrderedReader,
+    ResourceRef,
 };
 use crate::paths::{find_content_path, normalize_resource_path, PathComparison, PathError};
 use crate::user_data::user_product_directory;
@@ -2944,7 +2943,6 @@ pub struct InstalledCatalog {
     /// Resolved user content root.
     pub user_content_root: Option<String>,
     by_id: HashMap<String, usize>,
-    digests: RefCell<HashMap<String, ContentDigest>>,
 }
 
 impl InstalledCatalog {
@@ -2971,7 +2969,6 @@ impl InstalledCatalog {
             generation,
             user_content_root,
             by_id,
-            digests: RefCell::new(HashMap::new()),
         })
     }
 
@@ -3049,17 +3046,11 @@ impl InstalledCatalog {
         Ok(winners)
     }
 
-    /// Cached file digest.
-    fn digest(&self, path: &str) -> Result<ContentDigest, CatalogError> {
-        if let Some(digest) = self.digests.borrow().get(path) {
-            return Ok(digest.clone());
-        }
-        let digest = digest_file(Path::new(path))?;
-        self.digests.borrow_mut().insert(path.to_string(), digest.clone());
-        Ok(digest)
-    }
-
     /// Add one archive mount unless its path is already mounted.
+    ///
+    /// Discovery never hashes: the archive digest stays lazy until a
+    /// real consumer (download verification, save provenance, pure
+    /// checks) forces it.
     fn add_archive(
         &self,
         product: &CatalogProduct,
@@ -3079,7 +3070,7 @@ impl InstalledCatalog {
             )?,
             format: archive.format,
             archive_path: archive.path.clone(),
-            archive_digest: self.digest(&archive.path)?,
+            archive_digest: LazyArchiveDigest::uncomputed(),
         }));
         Ok(())
     }
@@ -4902,8 +4893,8 @@ pub fn load_qvm_weapon_behavior<Artifact, Profile>(
     let module = ModuleIdentity {
         id: provider.clone(),
         artifact_path: path,
-        digest: opened.reference.digest.clone(),
-        revision: opened.reference.digest.as_str().to_string(),
+        digest: opened.content_digest().clone(),
+        revision: opened.content_digest().as_str().to_string(),
     };
     let artifact = match service.resolve_qvm_artifact(abi_profile, &opened.bytes, &module)? {
         QvmWeaponArtifactResolution::Bytecode(artifact) => artifact,
@@ -4945,7 +4936,7 @@ pub fn discover_qvm_weapon_behaviors<Artifact, Profile>(
 // `native-weapon-behaviors.ts`.
 
 /// Mounted native weapon behavior (`MountedNativeWeaponBehavior`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountedNativeWeaponBehavior {
     /// Artifact resource reference.
     pub resource: ResolvedResourceReference,
@@ -5020,8 +5011,8 @@ fn load_declared_native_weapon_behavior(
     let module = ModuleIdentity {
         id: provider.clone(),
         artifact_path: opened.reference.requested_path.clone(),
-        digest: opened.reference.digest.clone(),
-        revision: opened.reference.digest.as_str().to_string(),
+        digest: opened.content_digest().clone(),
+        revision: opened.content_digest().as_str().to_string(),
     };
     let Some(definition) = service.native_weapon_definition(declaration, &module, &opened.bytes)? else {
         return Err(failed("Declared native behavior has no executable definition"));
@@ -5046,8 +5037,8 @@ pub fn discover_native_weapon_behaviors(
         let module = ModuleIdentity {
             id: provider.clone(),
             artifact_path: opened.reference.requested_path.clone(),
-            digest: opened.reference.digest.clone(),
-            revision: opened.reference.digest.as_str().to_string(),
+            digest: opened.content_digest().clone(),
+            revision: opened.content_digest().as_str().to_string(),
         };
         let Some(declaration) = service.builtin_rerelease_weapon_declaration(&module)? else {
             return Ok(None);
@@ -6981,8 +6972,8 @@ mod tests {
                 return Ok(None);
             };
             let content = seam_content();
-            Ok(Some(OpenedResource {
-                reference: ResolvedResourceReference {
+            Ok(Some(OpenedResource::new(
+                ResolvedResourceReference {
                     id: crate::contract::ResourceId(format!("resource:seam:{path}")),
                     requested_path: path.to_string(),
                     provenance: ResourceProvenance::Loose {
@@ -7000,8 +6991,8 @@ mod tests {
                         rank: 0,
                     },
                 },
-                bytes: bytes.clone(),
-            }))
+                bytes.clone(),
+            )))
         }
     }
 

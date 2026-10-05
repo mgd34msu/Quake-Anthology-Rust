@@ -284,7 +284,7 @@ fn open_program(mounts: &MountedContent, path: &str, digest: &str, drift: QvmMod
     let Some(found) = found else {
         return Err(drift);
     };
-    if found.reference.digest.as_str() != digest {
+    if found.content_digest().as_str() != digest {
         return Err(drift);
     }
     Ok(found.bytes)

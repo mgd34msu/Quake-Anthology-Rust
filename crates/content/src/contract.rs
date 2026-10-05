@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::sync::{Arc, OnceLock};
 
 use qa_core::cmd::{command_text_tail, tokenize_command, Dialect, TextMode};
 use qa_core::cmd_buffer::CommandOrigin;
@@ -285,8 +286,68 @@ pub enum ArchiveFormat {
     Zip,
 }
 
+/// Archive content digest, computed lazily by real consumers.
+///
+/// Mounts resolve without hashing: the cell starts uncomputed, and only
+/// download verification, save provenance, and pure-server checks force
+/// it (see `crate::mounts::archive_digest_or_compute`). Clones share one
+/// cell, so forcing through any handle fills them all. Equality never
+/// forces: two uncomputed digests compare equal, and a computed digest
+/// never equals an uncomputed one.
+#[derive(Debug, Clone)]
+pub struct LazyArchiveDigest {
+    cell: Arc<OnceLock<ContentDigest>>,
+}
+
+impl LazyArchiveDigest {
+    /// An uncomputed digest (no hashing).
+    #[must_use]
+    pub fn uncomputed() -> Self {
+        Self {
+            cell: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// A digest with a known value (tests, persisted manifests).
+    #[must_use]
+    pub fn computed(digest: ContentDigest) -> Self {
+        let cell = OnceLock::new();
+        let _ = cell.set(digest);
+        Self { cell: Arc::new(cell) }
+    }
+
+    /// The computed value, without forcing.
+    #[must_use]
+    pub fn get(&self) -> Option<ContentDigest> {
+        self.cell.get().cloned()
+    }
+
+    /// Whether a value was computed.
+    #[must_use]
+    pub fn is_computed(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// Record a computed value (first writer wins).
+    pub fn set(&self, digest: ContentDigest) {
+        let _ = self.cell.set(digest);
+    }
+}
+
+impl PartialEq for LazyArchiveDigest {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.cell.get(), other.cell.get()) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        }
+    }
+}
+
+impl Eq for LazyArchiveDigest {}
+
 /// Archive-backed mount.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveMount {
     /// Mount identity.
     pub identity: MountIdentity,
@@ -294,8 +355,19 @@ pub struct ArchiveMount {
     pub format: ArchiveFormat,
     /// Archive file path.
     pub archive_path: String,
-    /// Archive digest.
-    pub archive_digest: ContentDigest,
+    /// Archive content digest, computed lazily.
+    pub archive_digest: LazyArchiveDigest,
+}
+
+/// Short container-format name for resource identities.
+#[must_use]
+pub fn archive_format_name(format: ArchiveFormat) -> &'static str {
+    match format {
+        ArchiveFormat::Pak => "pak",
+        ArchiveFormat::Pk3 => "pk3",
+        ArchiveFormat::Kpf => "kpf",
+        ArchiveFormat::Zip => "zip",
+    }
 }
 
 /// Directory-backed mount.
@@ -308,7 +380,7 @@ pub struct LooseMount {
 }
 
 /// Mounted content source.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentMount {
     /// Archive mount.
     Archive(ArchiveMount),
@@ -328,7 +400,7 @@ impl ContentMount {
 }
 
 /// Provenance of resolved resource bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceProvenance {
     /// Archive member bytes.
     Archive {
@@ -358,7 +430,7 @@ pub struct PrefixMountOrder {
 }
 
 /// Resolved mount plan.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMountPlan {
     /// Plan identity.
     pub id: MountPlanId,
@@ -401,7 +473,7 @@ pub enum ResourceResolution {
 }
 
 /// Records the selected byte identity and mount generation across remounts.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedResourceReference {
     /// Resource identity.
     pub id: ResourceId,
@@ -409,7 +481,12 @@ pub struct ResolvedResourceReference {
     pub requested_path: String,
     /// Byte provenance.
     pub provenance: ResourceProvenance,
-    /// Byte digest.
+    /// Byte identity token, minted without hashing.
+    ///
+    /// Opening resources never hashes their bytes. The token carries the
+    /// payload length and cheap checksums for identity and manifest
+    /// purposes; consumers that verify bytes against external hashes
+    /// hash the opened bytes at their own site instead of reading this.
     pub digest: ContentDigest,
     /// Byte length.
     pub byte_length: u64,
@@ -459,13 +536,13 @@ fn resolution_key(resolution: &ResourceResolution) -> String {
 }
 
 /// Resource fields feeding [`create_resource_id`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedResourceReference {
     /// Requested path.
     pub requested_path: String,
     /// Byte provenance.
     pub provenance: ResourceProvenance,
-    /// Byte digest.
+    /// Byte identity token, minted without hashing.
     pub digest: ContentDigest,
     /// Byte length.
     pub byte_length: u64,
@@ -501,7 +578,7 @@ pub fn create_resource_id(resource: &UnresolvedResourceReference) -> Result<Reso
         } => format!(
             "{}:{}:{member_index}",
             encode_uri_component(&mount.archive_path),
-            mount.archive_digest
+            archive_format_name(mount.format),
         ),
         ResourceProvenance::Loose { mount, .. } => encode_uri_component(&mount.root_path),
     };
@@ -995,7 +1072,7 @@ pub struct LaunchChoice {
 }
 
 /// Resolved map.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMap {
     /// Selected map product.
     pub geometry_content: ContentId,
@@ -9851,7 +9928,7 @@ mod tests {
             identity: create_mount_identity(create_mount_id("ns", "pak0").unwrap(), content_id(), 0).unwrap(),
             format: ArchiveFormat::Pak,
             archive_path: "id1/pak0.pak".to_string(),
-            archive_digest: create_content_digest(&"cd".repeat(32)).unwrap(),
+            archive_digest: LazyArchiveDigest::computed(create_content_digest(&"cd".repeat(32)).unwrap()),
         };
         let resource = UnresolvedResourceReference {
             requested_path: "maps/e1m1.bsp".to_string(),

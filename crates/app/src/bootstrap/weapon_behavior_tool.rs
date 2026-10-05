@@ -640,7 +640,7 @@ where
         let report = qvm_inspect_json(
             &product.expectation.id,
             &path,
-            opened.reference.digest.as_str(),
+            opened.content_digest().as_str(),
             image.instructions.len(),
             image.data_length + image.literal_length + image.bss_length,
             entries,
@@ -810,7 +810,7 @@ where
         let report = native_inspect_json(
             &product.expectation.id,
             &path,
-            opened.reference.digest.as_str(),
+            opened.content_digest().as_str(),
             NativeCallAbi::of(image.abi).kind(),
             image.entry_point_rva,
             sections,

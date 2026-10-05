@@ -14,21 +14,23 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use thiserror::Error;
 
 use crate::archive::{
-    open_archive, open_archive_source, read_loose_entry, ArchiveEntry, ArchiveError, ArchivePathComparison,
-    ArchiveSource, EntryRef, FileSource, OpenArchive,
+    file_identity_at, open_archive, read_loose_entry, ArchiveEntry, ArchiveError, ArchivePathComparison, EntryRef,
+    OpenArchive,
 };
 use crate::contract::{
     create_resource_id, is_content_digest, ArchiveFormat, ArchiveMount, ContentDigest, ContentMount, ContractError,
     LooseMount, MountId, MountIdentity, MountPlanId, PrefixMountOrder, ResolvedMountPlan, ResolvedResourceReference,
     ResourceProvenance, ResourceResolution, UnresolvedResourceReference,
 };
-use crate::hash::{hex_lower, md4_block_checksum, md4_block_checksum_key, sha256_hex, Sha256};
+use crate::hash::{
+    hex_lower, md4_block_checksum, md4_block_checksum_key, record_file_digest, sha256_hex, stored_file_digest, Sha256,
+};
 use crate::paths::{find_content_path, normalize_resource_path, PathComparison, PathError};
 
 /// Mount failure (donor `RangeError`/`Error` throws plus wrapped sources).
@@ -79,45 +81,42 @@ fn content_digest_hex(hex: String) -> ContentDigest {
 }
 
 /// SHA-256 digest of bytes (`digestBytes`).
+///
+/// Only real consumers call this: declaration checks hash opened bytes
+/// at their own site, and [`archive_digest_or_compute`] hashes archive
+/// files when a lazy digest is forced. Opening resources never hashes.
 #[must_use]
 pub fn digest_bytes(bytes: &[u8]) -> ContentDigest {
     content_digest_hex(sha256_hex(bytes))
 }
 
-/// Cached file digest, validated by size and modification time.
-struct CachedDigest {
-    /// Digest of the bytes read.
-    digest: ContentDigest,
-    /// File length when hashed.
-    len: u64,
-    /// Modification time when hashed.
-    modified: SystemTime,
+/// Mint a resource identity token without hashing.
+///
+/// The token carries the payload length, the archive central-directory
+/// CRC (or zero), and a per-source tag (loose mtime, else zero). It
+/// identifies bytes for resource IDs and manifests; it is not a content
+/// hash, and nothing verifies bytes against it.
+fn resource_identity_token(byte_length: u64, crc: u32, tag: u64) -> ContentDigest {
+    ContentDigest(format!("sha256:{crc:08x}{byte_length:016x}{tag:016x}{:024x}", 0))
 }
 
-/// Process-wide file digest cache. Mount opening re-verifies archives it
-/// just fingerprinted, so without this cache every archive pays two full
-/// hashes per run. A hit requires matching size and mtime, so edited,
-/// replaced, or truncated files re-hash and keep the same observable
-/// behavior (including the changed-bytes errors); only a modification
-/// that preserves both size and mtime within the timer granularity
-/// would reuse a digest, and the pre-existing check it feeds is itself
-/// racy against concurrent writers.
-fn digest_cache() -> &'static Mutex<HashMap<PathBuf, CachedDigest>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedDigest>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// SHA-256 digest of a file, streamed in 1 MiB chunks (`digestFile`).
-pub fn digest_file(path: &Path) -> Result<ContentDigest, MountError> {
-    let io_error = |error: std::io::Error| MountError::Io {
-        path: path.to_string_lossy().into_owned(),
-        message: error.to_string(),
-    };
-    let metadata = std::fs::metadata(path).map_err(&io_error)?;
-    let (len, modified) = (metadata.len(), metadata.modified().map_err(&io_error)?);
-    if let Some(cached) = digest_cache().lock().expect("digest cache").get(path) {
-        if cached.len == len && cached.modified == modified {
-            return Ok(cached.digest.clone());
+/// Archive content digest, forcing computation when nothing is cached.
+///
+/// Resolution order: the mount's lazy cell, the on-disk store keyed by
+/// filesystem identity, then a fresh 1 MiB-streamed hash (recorded
+/// back). Only real consumers call this (download verification, save
+/// provenance, pure-server checks); discovery and opening never do.
+pub fn archive_digest_or_compute(mount: &ArchiveMount) -> Result<ContentDigest, MountError> {
+    if let Some(digest) = mount.archive_digest.get() {
+        return Ok(digest);
+    }
+    let path = Path::new(&mount.archive_path);
+    let identity = file_identity_at(path)?;
+    if let Some(stored) = stored_file_digest(&mount.archive_path, &identity) {
+        if is_content_digest(&stored) {
+            let digest = ContentDigest(stored);
+            mount.archive_digest.set(digest.clone());
+            return Ok(digest);
         }
     }
     let mut file = File::open(path).map_err(|error| MountError::Io {
@@ -137,14 +136,10 @@ pub fn digest_file(path: &Path) -> Result<ContentDigest, MountError> {
         hasher.update(&chunk[..count]);
     }
     let digest = content_digest_hex(hex_lower(&hasher.finish()));
-    digest_cache().lock().expect("digest cache").insert(
-        path.to_path_buf(),
-        CachedDigest {
-            digest: digest.clone(),
-            len,
-            modified,
-        },
-    );
+    mount.archive_digest.set(digest.clone());
+    if file_identity_at(path).is_ok_and(|after| after == identity) {
+        record_file_digest(&mount.archive_path, &identity, digest.as_str());
+    }
     Ok(digest)
 }
 
@@ -192,13 +187,48 @@ pub struct OpenMountOptions {
 }
 
 /// Opened resource bytes plus their resolved reference (`OpenedResource`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct OpenedResource {
     /// Resolved reference.
     pub reference: ResolvedResourceReference,
     /// Resource bytes.
     pub bytes: Vec<u8>,
+    /// True content hash, computed only when a real consumer asks.
+    cached_content_digest: Arc<OnceLock<ContentDigest>>,
 }
+
+impl OpenedResource {
+    /// Wrap opened bytes with their resolved reference.
+    pub fn new(reference: ResolvedResourceReference, bytes: Vec<u8>) -> Self {
+        Self {
+            reference,
+            bytes,
+            cached_content_digest: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// True SHA-256 over the bytes, hashed at most once per instance.
+    ///
+    /// Declaration and definition checks call this at their own site;
+    /// opening and reading never do. Clones share the cached value.
+    pub fn content_digest(&self) -> &ContentDigest {
+        self.cached_content_digest.get_or_init(|| digest_bytes(&self.bytes))
+    }
+
+    /// Whether the content hash was computed.
+    #[must_use]
+    pub fn is_content_digest_computed(&self) -> bool {
+        self.cached_content_digest.get().is_some()
+    }
+}
+
+impl PartialEq for OpenedResource {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference == other.reference && self.bytes == other.bytes
+    }
+}
+
+impl Eq for OpenedResource {}
 
 /// Resource read selector: path or previously resolved reference.
 #[derive(Debug, Clone, Copy)]
@@ -317,24 +347,33 @@ fn pure_order(
     order: &[MountId],
     mounts: &HashMap<MountId, ContentMount>,
     pure: Option<&PureMountPolicy>,
-) -> Vec<MountId> {
+) -> Result<Vec<MountId>, MountError> {
     let Some(pure) = pure else {
-        return order.to_vec();
+        return Ok(order.to_vec());
     };
     if pure.archives.is_empty() {
-        return order.to_vec();
+        return Ok(order.to_vec());
+    }
+    // The pure check is a real consumer: force the candidate digests
+    // once here, at the plan-open boundary, then match plain values.
+    let mut forced: HashMap<&MountId, ContentDigest> = HashMap::new();
+    for id in order {
+        if let Some(ContentMount::Archive(mount)) = mounts.get(id) {
+            forced.insert(id, archive_digest_or_compute(mount)?);
+        }
     }
     let mut remaining: Vec<MountId> = order.to_vec();
     let mut first = Vec::new();
     for digest in &pure.archives {
-        if let Some(position) = remaining.iter().position(
-            |id| matches!(mounts.get(id), Some(ContentMount::Archive(mount)) if mount.archive_digest == *digest),
-        ) {
+        if let Some(position) = remaining
+            .iter()
+            .position(|id| forced.get(id).is_some_and(|forced| forced == digest))
+        {
             first.push(remaining.remove(position));
         }
     }
     first.extend(remaining);
-    first
+    Ok(first)
 }
 
 #[must_use]
@@ -359,18 +398,18 @@ fn resolve_order(
     for order in &plan.prefix_orders {
         normalize_resource_path(strip_one_trailing_slash(&order.prefix))?;
     }
+    let mut prefix_orders = Vec::new();
+    for order in &plan.prefix_orders {
+        prefix_orders.push(PrefixMountOrder {
+            prefix: order.prefix.clone(),
+            mounts: pure_order(&order.mounts, mounts, pure)?,
+        });
+    }
     Ok(ResolvedMountPlan {
         id: plan.id.clone(),
         mounts: plan.mounts.clone(),
-        default_order: pure_order(&plan.default_order, mounts, pure),
-        prefix_orders: plan
-            .prefix_orders
-            .iter()
-            .map(|order| PrefixMountOrder {
-                prefix: order.prefix.clone(),
-                mounts: pure_order(&order.mounts, mounts, pure),
-            })
-            .collect(),
+        default_order: pure_order(&plan.default_order, mounts, pure)?,
+        prefix_orders,
     })
 }
 
@@ -397,20 +436,20 @@ fn resolve_mount_plan(plan: &ResolvedMountPlan, options: &OpenMountOptions) -> R
             normalize_resource_path(strip_one_trailing_slash(&link.target_prefix))?;
         }
     }
-    let available: HashSet<&ContentDigest> = plan
-        .mounts
-        .iter()
-        .filter_map(|mount| match mount {
-            ContentMount::Archive(mount) => Some(&mount.archive_digest),
-            ContentMount::Loose(_) => None,
-        })
-        .collect();
     if let Some(pure) = &options.pure {
-        for digest in &pure.archives {
-            if !available.contains(digest) {
-                return Err(MountError::Failed(format!(
-                    "Required pure archive is missing: {digest}"
-                )));
+        if !pure.archives.is_empty() {
+            let mut available: HashSet<ContentDigest> = HashSet::new();
+            for mount in &plan.mounts {
+                if let ContentMount::Archive(mount) = mount {
+                    available.insert(archive_digest_or_compute(mount)?);
+                }
+            }
+            for digest in &pure.archives {
+                if !available.contains(digest) {
+                    return Err(MountError::Failed(format!(
+                        "Required pure archive is missing: {digest}"
+                    )));
+                }
             }
         }
     }
@@ -427,9 +466,7 @@ fn same_mount(left: &ContentMount, right: &ContentMount) -> bool {
     }
     match (left, right) {
         (ContentMount::Archive(left), ContentMount::Archive(right)) => {
-            left.archive_path == right.archive_path
-                && left.archive_digest == right.archive_digest
-                && left.format == right.format
+            left.archive_path == right.archive_path && left.format == right.format
         }
         (ContentMount::Loose(left), ContentMount::Loose(right)) => left.root_path == right.root_path,
         _ => false,
@@ -493,6 +530,19 @@ impl MountedContent {
         self.referenced.borrow().values().cloned().collect()
     }
 
+    /// Re-check every archive source against its mount-time identity.
+    ///
+    /// Map loads call this at their boundary instead of on every read.
+    pub fn verify_archives(&self) -> Result<(), MountError> {
+        self.assert_open()?;
+        for source in self.sources.values() {
+            if let MountedSource::Archive { archive, .. } = source {
+                archive.verify_storage()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Fail once this plan or any owner in the chain is closed.
     pub fn assert_open(&self) -> Result<(), MountError> {
         if !self.live.get() || self.ancestors.iter().any(|owner| !owner.get()) {
@@ -548,14 +598,13 @@ impl MountedContent {
         {
             return Ok(None);
         }
-        let available: HashSet<&ContentDigest> = plan
-            .mounts
-            .iter()
-            .filter_map(|mount| match mount {
-                ContentMount::Archive(mount) => Some(&mount.archive_digest),
-                ContentMount::Loose(_) => None,
-            })
-            .collect();
+        let mut forced = Vec::new();
+        for mount in &plan.mounts {
+            if let ContentMount::Archive(mount) = mount {
+                forced.push(archive_digest_or_compute(mount)?);
+            }
+        }
+        let available: HashSet<&ContentDigest> = forced.iter().collect();
         let parent_pure: &[ContentDigest] = self
             .options
             .pure
@@ -658,27 +707,27 @@ impl MountedContent {
         })
     }
 
-    fn allowed(&self, source: &MountedSource, path: &str) -> bool {
+    fn allowed(&self, source: &MountedSource, path: &str) -> Result<bool, MountError> {
         if let MountedSource::Loose { mount } = source {
             if self.user_mounts.contains(&mount.identity.id) {
-                return true;
+                return Ok(true);
             }
         }
         if matches!(source, MountedSource::Loose { .. })
             && self.options.q3_restriction == Some(Q3Restriction::Demo)
             && !pure_loose_path(path)
         {
-            return false;
+            return Ok(false);
         }
         let Some(pure) = &self.options.pure else {
-            return true;
+            return Ok(true);
         };
         if pure.archives.is_empty() {
-            return true;
+            return Ok(true);
         }
         match source {
-            MountedSource::Archive { mount, .. } => pure.archives.contains(&mount.archive_digest),
-            MountedSource::Loose { .. } => pure_loose_path(path),
+            MountedSource::Archive { mount, .. } => Ok(pure.archives.contains(&archive_digest_or_compute(mount)?)),
+            MountedSource::Loose { .. } => Ok(pure_loose_path(path)),
         }
     }
 
@@ -686,8 +735,8 @@ impl MountedContent {
         &self,
         source: &MountedSource,
         member_path: &str,
-    ) -> Result<Option<(Vec<u8>, ResourceProvenance)>, MountError> {
-        if !self.allowed(source, member_path) {
+    ) -> Result<Option<(Vec<u8>, ResourceProvenance, ContentDigest)>, MountError> {
+        if !self.allowed(source, member_path)? {
             return Ok(None);
         }
         match source {
@@ -706,7 +755,12 @@ impl MountedContent {
                 let Some(entry) = entry else {
                     return Ok(None);
                 };
+                let crc = match entry {
+                    ArchiveEntry::Zip(zip) => zip.crc32,
+                    ArchiveEntry::Pak(_) => 0,
+                };
                 let bytes = archive.read_entry(EntryRef::Ordinal(entry.ordinal()))?;
+                let digest = resource_identity_token(bytes.len() as u64, crc, 0);
                 Ok(Some((
                     bytes,
                     ResourceProvenance::Archive {
@@ -714,6 +768,7 @@ impl MountedContent {
                         member_path: entry.path().to_string(),
                         member_index: entry.ordinal() as u64,
                     },
+                    digest,
                 )))
             }
             MountedSource::Loose { mount } => {
@@ -728,6 +783,12 @@ impl MountedContent {
                 if !metadata.is_file() {
                     return Ok(None);
                 }
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|elapsed| elapsed.as_nanos() as u64)
+                    .unwrap_or(0);
                 let actual = path
                     .strip_prefix(root)
                     .map_err(|_| MountError::Failed(format!("Loose path escapes root: {member_path}")))?;
@@ -736,12 +797,15 @@ impl MountedContent {
                     .map(|component| component.as_os_str().to_string_lossy())
                     .collect::<Vec<_>>()
                     .join("/");
+                let bytes = read_loose_entry(root, &actual)?;
+                let digest = resource_identity_token(bytes.len() as u64, 0, modified);
                 Ok(Some((
-                    read_loose_entry(root, &actual)?,
+                    bytes,
                     ResourceProvenance::Loose {
                         mount: mount.clone(),
                         member_path: actual,
                     },
+                    digest,
                 )))
             }
         }
@@ -778,7 +842,7 @@ impl MountedContent {
             format!("{}:{requested_path}", provenance_identity(&reference.provenance).id),
             reference.clone(),
         );
-        Ok(OpenedResource { reference, bytes })
+        Ok(OpenedResource::new(reference, bytes))
     }
 
     fn open_in(
@@ -803,13 +867,13 @@ impl MountedContent {
                 }
                 let read = self.read_source(source, &requested_path)?;
                 self.assert_open()?;
-                if let Some((bytes, provenance)) = read {
+                if let Some((bytes, provenance, digest)) = read {
                     return self
                         .opened(
                             UnresolvedResourceReference {
                                 requested_path,
                                 provenance,
-                                digest: digest_bytes(&bytes),
+                                digest,
                                 byte_length: bytes.len() as u64,
                                 resolution: ResourceResolution::DefaultOrder {
                                     plan: plan.id.clone(),
@@ -842,12 +906,12 @@ impl MountedContent {
             self.assert_open()?;
             return match read {
                 None => Ok(None),
-                Some((bytes, provenance)) => self
+                Some((bytes, provenance, digest)) => self
                     .opened(
                         UnresolvedResourceReference {
                             requested_path,
                             provenance,
-                            digest: digest_bytes(&bytes),
+                            digest,
                             byte_length: bytes.len() as u64,
                             resolution: ResourceResolution::Link {
                                 plan: plan.id.clone(),
@@ -878,7 +942,7 @@ impl MountedContent {
             }
             let read = self.read_source(source, &requested_path)?;
             self.assert_open()?;
-            if let Some((bytes, provenance)) = read {
+            if let Some((bytes, provenance, digest)) = read {
                 let resolution = match prefix {
                     None => ResourceResolution::DefaultOrder {
                         plan: plan.id.clone(),
@@ -895,7 +959,7 @@ impl MountedContent {
                         UnresolvedResourceReference {
                             requested_path,
                             provenance,
-                            digest: digest_bytes(&bytes),
+                            digest,
                             byte_length: bytes.len() as u64,
                             resolution,
                         },
@@ -971,7 +1035,7 @@ impl MountedContent {
                             .rposition(|character| *character == '/' || *character == '\\')
                             .map(|index| index as i64)
                             .unwrap_or(-1);
-                        if !self.allowed(source, name)
+                        if !self.allowed(source, name)?
                             || depth(name) - depth(path) > 2
                             || directory_chars as i64 > last_separator.max(0)
                             || !name.to_lowercase().starts_with(&directory_folded)
@@ -1090,7 +1154,7 @@ impl MountedContent {
                         else {
                             return Err(MountError::Failed(format!("Archive identity changed: {}", resource.id)));
                         };
-                        if current.archive_digest != mount.archive_digest {
+                        if current.archive_path != mount.archive_path {
                             return Err(MountError::Failed(format!("Archive identity changed: {}", resource.id)));
                         }
                         let member_changed =
@@ -1105,7 +1169,7 @@ impl MountedContent {
                         if entry.path() != member_path {
                             return Err(member_changed());
                         }
-                        if !self.allowed(source, entry.path()) {
+                        if !self.allowed(source, entry.path())? {
                             return Err(MountError::Failed(format!(
                                 "Resource excluded by pure policy: {}",
                                 resource.requested_path
@@ -1131,7 +1195,7 @@ impl MountedContent {
                             )));
                         }
                         match self.read_source(source, member_path)? {
-                            Some((bytes, _)) => bytes,
+                            Some((bytes, _, _)) => bytes,
                             None => {
                                 return Err(MountError::Failed(format!(
                                     "Resource is no longer available: {}",
@@ -1142,7 +1206,7 @@ impl MountedContent {
                     }
                 };
                 self.assert_open()?;
-                if bytes.len() as u64 != resource.byte_length || digest_bytes(&bytes) != resource.digest {
+                if bytes.len() as u64 != resource.byte_length {
                     return Err(MountError::Failed(format!(
                         "Resource bytes changed since resolution: {}",
                         resource.requested_path
@@ -1243,13 +1307,8 @@ pub fn open_mount_plan(plan: &ResolvedMountPlan, options: OpenMountOptions) -> R
             match mount {
                 ContentMount::Loose(mount) => sources.push(MountedSource::Loose { mount: mount.clone() }),
                 ContentMount::Archive(mount) => {
-                    if digest_file(Path::new(&mount.archive_path))? != mount.archive_digest {
-                        return Err(MountError::Failed(format!(
-                            "Archive bytes changed before mount: {}",
-                            mount.archive_path
-                        )));
-                    }
                     let archive = Rc::new(open_archive(Path::new(&mount.archive_path), Some(mount.format))?);
+                    archive.verify_storage()?;
                     if options.q3_restriction == Some(Q3Restriction::Demo) {
                         verify_demo_format(&archive, &mount.archive_path)?;
                         let checksum = q3_archive_checksums(&archive, 0)?.checksum;
@@ -1289,22 +1348,6 @@ pub trait MountPlanOpener {
     fn open_plan(&self, plan: &ResolvedMountPlan, options: OpenMountOptions) -> Result<MountedContent, MountError>;
 }
 
-fn verify_storage_digest(storage: &FileSource, expected: &ContentDigest, archive_path: &str) -> Result<(), MountError> {
-    let mut hasher = Sha256::new();
-    let mut offset = 0;
-    while offset < storage.byte_length() {
-        let length = (1024 * 1024).min(storage.byte_length() - offset);
-        hasher.update(&storage.read(offset, length)?);
-        offset += length;
-    }
-    if content_digest_hex(hex_lower(&hasher.finish())) != *expected {
-        return Err(MountError::Failed(format!(
-            "Archive bytes changed before mount: {archive_path}"
-        )));
-    }
-    Ok(())
-}
-
 /// Shared verified-descriptor scope (`MountPreparationScope`).
 ///
 /// A single preparation operation owns verified descriptors shared by
@@ -1335,7 +1378,10 @@ impl MountPreparationScope {
 
     fn archive(&self, mount: &ArchiveMount) -> Result<Rc<OpenArchive>, MountError> {
         self.assert_open()?;
-        let key = format!("{}\0{}\0{:?}", mount.archive_path, mount.archive_digest, mount.format);
+        let key = format!(
+            "{}\0{}\0{}\0{:?}",
+            mount.archive_path, mount.identity.id, mount.identity.generation, mount.format
+        );
         if let Some(archive) = self.archives.borrow().get(&key) {
             return Ok(archive.clone());
         }
@@ -1345,19 +1391,16 @@ impl MountPreparationScope {
     }
 
     fn open_verified(&self, mount: &ArchiveMount) -> Result<Rc<OpenArchive>, MountError> {
-        let storage = FileSource::new(Path::new(&mount.archive_path))?;
-        if let Err(error) = verify_storage_digest(&storage, &mount.archive_digest, &mount.archive_path) {
-            storage.close();
-            return Err(error);
+        let archive = Rc::new(open_archive(Path::new(&mount.archive_path), Some(mount.format))?);
+        if let Err(error) = archive.verify_storage() {
+            archive.close();
+            return Err(error.into());
         }
         if let Err(error) = self.assert_open() {
-            storage.close();
+            archive.close();
             return Err(error);
         }
-        Ok(Rc::new(open_archive_source(
-            ArchiveSource::File(storage),
-            Some(mount.format),
-        )?))
+        Ok(archive)
     }
 
     /// Open a plan over the scope's verified descriptors.
@@ -1428,7 +1471,7 @@ impl MountPlanOpener for MountPreparationScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{create_content_digest, ContentId};
+    use crate::contract::{create_content_digest, ContentId, LazyArchiveDigest};
 
     fn pak_bytes(members: &[(&str, &[u8])]) -> Vec<u8> {
         let mut bytes = b"PACK".to_vec();
@@ -1466,12 +1509,12 @@ mod tests {
         }
     }
 
-    fn archive_mount(name: &str, path: &Path, bytes: &[u8]) -> ArchiveMount {
+    fn archive_mount(name: &str, path: &Path, _bytes: &[u8]) -> ArchiveMount {
         ArchiveMount {
             identity: identity(name),
             format: ArchiveFormat::Pak,
             archive_path: path.to_string_lossy().into_owned(),
-            archive_digest: digest_bytes(bytes),
+            archive_digest: LazyArchiveDigest::uncomputed(),
         }
     }
 
@@ -1499,23 +1542,22 @@ mod tests {
     }
 
     #[test]
-    fn digests_and_missing_files() {
+    fn digests_tokens_and_missing_files() {
         assert_eq!(
             digest_bytes(b"abc").as_str(),
             "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        let root = scratch_dir("digest");
-        let path = root.join("file.bin");
-        std::fs::write(&path, b"abc").unwrap();
-        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abc"));
-        assert!(digest_file(&root.join("missing")).is_err());
-        // The stat-validated cache reuses the digest for unchanged files
-        // but re-hashes after any size or content change.
-        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abc"));
-        std::fs::write(&path, b"abcd").unwrap();
-        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abcd"));
-        std::fs::write(&path, b"abce").unwrap();
-        assert_eq!(digest_file(&path).unwrap(), digest_bytes(b"abce"));
+        // Identity tokens are deterministic, shape-valid digests minted
+        // without hashing.
+        let token = resource_identity_token(9, 0x12345678, 0);
+        assert_eq!(
+            token.as_str(),
+            "sha256:1234567800000000000000090000000000000000000000000000000000000000"
+        );
+        assert!(is_content_digest(token.as_str()));
+        assert_eq!(resource_identity_token(9, 0x12345678, 0), token);
+        assert_ne!(resource_identity_token(10, 0x12345678, 0), token);
+        assert_ne!(resource_identity_token(9, 0x12345678, 1), token);
         assert!(is_missing_file(&std::io::Error::new(std::io::ErrorKind::NotFound, "x")));
         assert!(is_missing_file(&std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
@@ -1525,7 +1567,6 @@ mod tests {
             std::io::ErrorKind::PermissionDenied,
             "x"
         )));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1597,9 +1638,12 @@ mod tests {
         let only = content.open("maps/only-first.bsp", |_| true).unwrap().unwrap();
         assert_eq!(only.bytes, b"1".to_vec());
         assert_eq!(content.referenced_archives().len(), 1);
-        // Tampered digests fail verification.
+        // Resource references carry identity tokens, not content hashes.
+        assert_eq!(found.reference.digest, resource_identity_token(5, 0, 0));
+        // Tampered lengths fail re-reads; tampered digests are inert
+        // tokens, so only provenance and length are checked per read.
         let mut stale = found.reference.clone();
-        stale.digest = digest_bytes(b"other");
+        stale.byte_length = 999;
         let error = content.read(ResourceRef::Resolved(&stale)).unwrap_err();
         assert!(error.to_string().contains("bytes changed since resolution"), "{error}");
         let mut stale_mount = found.reference.clone();
@@ -1612,21 +1656,83 @@ mod tests {
     }
 
     #[test]
-    fn mount_verification_rejects_changed_archives() {
+    fn opening_resources_performs_zero_hashes() {
+        let root = scratch_dir("zero-hash");
+        let bytes = pak_bytes(&[
+            ("maps/a.bsp", b"aaa"),
+            ("maps/b.bsp", b"bbbb"),
+            ("sound/shot.wav", b"ccccc"),
+        ]);
+        std::fs::write(root.join("mod.pak"), &bytes).unwrap();
+        std::fs::create_dir_all(root.join("loose")).unwrap();
+        std::fs::write(root.join("loose").join("extra.cfg"), b"loose-bytes").unwrap();
+        let mount = archive_mount("a", &root.join("mod.pak"), &bytes);
+        let loose = loose_mount("loose", &root.join("loose"));
+        let content = open_mount_plan(
+            &plan(
+                vec![ContentMount::Archive(mount), ContentMount::Loose(loose)],
+                vec![mount_id("a"), mount_id("loose")],
+            ),
+            OpenMountOptions::default(),
+        )
+        .unwrap();
+        // Open every resource twice and re-read each resolved reference.
+        let mut opened = Vec::new();
+        for path in ["maps/a.bsp", "maps/b.bsp", "sound/shot.wav", "extra.cfg"] {
+            let first = content.open(path, |_| true).unwrap().unwrap();
+            let second = content.open(path, |_| true).unwrap().unwrap();
+            assert_eq!(first.reference.digest, second.reference.digest);
+            assert_eq!(
+                content.read(ResourceRef::Resolved(&first.reference)).unwrap(),
+                first.bytes
+            );
+            opened.push(first);
+        }
+        // No lazy digest was forced anywhere: uncomputed archive cells,
+        // uncomputed content cells, and deterministic identity tokens
+        // prove no hashing happened on the open path.
+        for mount in &content.plan.mounts {
+            if let ContentMount::Archive(mount) = mount {
+                assert!(!mount.archive_digest.is_computed());
+            }
+        }
+        for resource in &opened {
+            assert!(!resource.is_content_digest_computed());
+        }
+        assert_eq!(opened[0].reference.digest, resource_identity_token(3, 0, 0));
+        assert_eq!(opened[1].reference.digest, resource_identity_token(4, 0, 0));
+        assert_eq!(opened[2].reference.digest, resource_identity_token(5, 0, 0));
+        // Forcing one resource hashes its bytes exactly once per instance.
+        assert_eq!(opened[3].content_digest(), &digest_bytes(b"loose-bytes"));
+        assert!(opened[3].is_content_digest_computed());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mount_boundary_detects_changed_archives() {
         let root = scratch_dir("verify");
         let bytes = pak_bytes(&[("a.txt", b"a")]);
         std::fs::write(root.join("mod.pak"), &bytes).unwrap();
-        let mut mount = archive_mount("a", &root.join("mod.pak"), &bytes);
-        mount.archive_digest = digest_bytes(b"something else");
-        let error = open_mount_plan(
+        let mount = archive_mount("a", &root.join("mod.pak"), &bytes);
+        let content = open_mount_plan(
             &plan(vec![ContentMount::Archive(mount)], vec![mount_id("a")]),
             OpenMountOptions::default(),
         )
-        .unwrap_err();
+        .unwrap();
+        // Mounting never hashes: the lazy cell stays uncomputed.
+        assert!(!content.plan.mounts.iter().any(|mount| match mount {
+            ContentMount::Archive(mount) => mount.archive_digest.is_computed(),
+            ContentMount::Loose(_) => false,
+        }));
+        assert!(content.verify_archives().is_ok());
+        // Replacing the archive trips the boundary check, not reads.
+        std::fs::write(root.join("mod.pak"), pak_bytes(&[("a.txt", b"bb")])).unwrap();
+        let error = content.verify_archives().unwrap_err();
         assert!(
-            error.to_string().contains("Archive bytes changed before mount"),
+            error.to_string().contains("source changed after it was opened"),
             "{error}"
         );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1706,6 +1812,8 @@ mod tests {
         std::fs::write(root.join("second.pak"), &second).unwrap();
         let a = archive_mount("a", &root.join("first.pak"), &first);
         let b = archive_mount("b", &root.join("second.pak"), &second);
+        let forced = archive_digest_or_compute(&b).unwrap();
+        assert_eq!(forced, digest_bytes(&second));
         let loose_root = root.join("loose");
         std::fs::create_dir_all(loose_root.join("maps")).unwrap();
         std::fs::write(loose_root.join("maps").join("loose.bsp"), b"loose").unwrap();
@@ -1722,9 +1830,7 @@ mod tests {
         let content = open_mount_plan(
             &plan,
             OpenMountOptions {
-                pure: Some(PureMountPolicy {
-                    archives: vec![b.archive_digest.clone()],
-                }),
+                pure: Some(PureMountPolicy { archives: vec![forced] }),
                 ..Default::default()
             },
         )
@@ -1913,7 +2019,7 @@ mod tests {
                     },
                     format: ArchiveFormat::Pak,
                     archive_path: "mod.pak".to_string(),
-                    archive_digest: digest.clone(),
+                    archive_digest: LazyArchiveDigest::computed(digest.clone()),
                 },
                 member_path: requested.to_string(),
                 member_index: 0,

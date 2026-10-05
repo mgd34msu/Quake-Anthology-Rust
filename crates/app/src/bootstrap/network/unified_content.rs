@@ -32,7 +32,7 @@ use qa_content::contract::{
     MAX_SAFE_INTEGER,
 };
 use qa_content::hash::sha256_hex;
-use qa_content::mounts::{open_mount_plan, MountError, OpenMountOptions, ResourceRef};
+use qa_content::mounts::{archive_digest_or_compute, open_mount_plan, MountError, OpenMountOptions, ResourceRef};
 use qa_content::paths::normalize_resource_path;
 use qa_net::common::session::{canonical, Json, SessionError};
 use qa_world::save::shared::{read_content_id, read_digest};
@@ -447,16 +447,16 @@ fn contract_archive_format_name(format: &ArchiveFormat) -> &'static str {
 }
 
 /// Whether a catalog mount can serve an offered mount.
-fn candidate_matches(offered: &ContentMount, candidate: &ContractMount) -> bool {
+fn candidate_matches(offered: &ContentMount, candidate: &ContractMount) -> Result<bool, UnifiedContentError> {
     if mount_identity(offered).content != candidate.identity().content.as_str() {
-        return false;
+        return Ok(false);
     }
     match (mount_archive_details(offered), candidate) {
-        (Some((format, _, digest)), ContractMount::Archive(found)) => {
-            contract_archive_format_name(&found.format) == format && found.archive_digest.as_str() == digest
-        }
-        (None, ContractMount::Loose(_)) => true,
-        _ => false,
+        (Some((format, _, digest)), ContractMount::Archive(found)) => Ok(contract_archive_format_name(&found.format)
+            == format
+            && archive_digest_or_compute(found)?.as_str() == digest),
+        (None, ContractMount::Loose(_)) => Ok(true),
+        _ => Ok(false),
     }
 }
 
@@ -485,7 +485,7 @@ fn contract_mount_to_app(mount: &ContractMount) -> Result<ContentMount, UnifiedC
             members.push(("kind", json_str("archive")));
             members.push(("format", json_str(contract_archive_format_name(&found.format))));
             members.push(("archivePath", json_str(&found.archive_path)));
-            members.push(("archiveDigest", json_str(found.archive_digest.as_str())));
+            members.push(("archiveDigest", json_str(archive_digest_or_compute(found)?.as_str())));
         }
         ContractMount::Loose(found) => {
             members.push(("kind", json_str("loose")));
@@ -522,9 +522,16 @@ pub fn resolve_unified_composition(
         let identity = mount_identity(mount);
         let empty = Vec::new();
         let candidates = available.get(&identity.content).unwrap_or(&empty);
-        let local = candidates
-            .iter()
-            .find(|candidate| !used.contains(candidate.identity().id.as_str()) && candidate_matches(mount, candidate));
+        let mut local = None;
+        for candidate in candidates {
+            if used.contains(candidate.identity().id.as_str()) {
+                continue;
+            }
+            if candidate_matches(mount, candidate)? {
+                local = Some(candidate);
+                break;
+            }
+        }
         let Some(local) = local else {
             return Err(UnifiedContentError::Composition(format!(
                 "Installed content lacks unified mount {}/{}",
@@ -976,13 +983,13 @@ mod tests {
         let offered = &recipe.mounts.mounts[0];
         let identity = mount_identity(offered);
         let mirror = contract_loose("mount:local:0", &identity.content, "/local/base");
-        assert!(candidate_matches(offered, &mirror));
+        assert!(candidate_matches(offered, &mirror).unwrap());
         assert_eq!(
             mount_identity(&contract_mount_to_app(&mirror).unwrap()).content,
             identity.content
         );
         let foreign = contract_loose("mount:local:0", "q2:classic:base:1", "/local/base");
-        assert!(!candidate_matches(offered, &foreign));
+        assert!(!candidate_matches(offered, &foreign).unwrap());
         let archive = ContractMount::Archive(ContractArchiveMount {
             identity: ContractMountIdentity {
                 id: MountId("mount:local:0".to_string()),
@@ -991,7 +998,10 @@ mod tests {
             },
             format: ArchiveFormat::Pak,
             archive_path: "baseq3/pak0.pak".to_string(),
-            archive_digest: ContentDigest(format!("sha256:{}", "ab".repeat(32))),
+            archive_digest: qa_content::contract::LazyArchiveDigest::computed(ContentDigest(format!(
+                "sha256:{}",
+                "ab".repeat(32)
+            ))),
         });
         assert_eq!(
             mount_archive_details(&contract_mount_to_app(&archive).unwrap())
@@ -999,6 +1009,6 @@ mod tests {
                 .0,
             "pak"
         );
-        assert!(!candidate_matches(offered, &archive));
+        assert!(!candidate_matches(offered, &archive).unwrap());
     }
 }
