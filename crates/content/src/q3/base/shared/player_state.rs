@@ -767,7 +767,7 @@ impl PlayerState {
     pub fn add_event(&mut self, event: i32, parameter: i32) -> PredictableEvent {
         if let Some(debug) = &self.event_debug {
             let text: String = debug.show_events().chars().take(255).collect();
-            if native_atof(&text).is_ok_and(|value| value != 0.0) {
+            if native_atof(&text) != 0.0 {
                 let name = usize::try_from(event)
                     .ok()
                     .and_then(|index| EVENT_NAMES.get(index))

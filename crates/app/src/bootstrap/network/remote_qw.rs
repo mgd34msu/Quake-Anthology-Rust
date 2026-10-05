@@ -564,7 +564,7 @@ impl<H: QwRemoteHost + 'static> QwRemotePresentation<H> {
             panic!("Invalid QW userinfo slot");
         }
         let color = |info: &HashMap<String, String>, key: &str| {
-            let value = native_atoi(info.get(key).map_or("0", String::as_str)).unwrap_or(0);
+            let value = native_atoi(info.get(key).map_or("0", String::as_str));
             if !(0..=13).contains(&value) {
                 13
             } else {

@@ -17,7 +17,7 @@ pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 pub fn number_field(fields: &Q2SpawnFields, key: &str, fallback: f64) -> f64 {
     match fields.values.get(key) {
         None => fallback,
-        Some(value) => native_atof(value).unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
+        Some(value) => native_atof(value),
     }
 }
 
@@ -25,7 +25,7 @@ pub fn number_field(fields: &Q2SpawnFields, key: &str, fallback: f64) -> f64 {
 pub fn integer_field(fields: &Q2SpawnFields, key: &str, fallback: i32) -> i32 {
     match fields.values.get(key) {
         None => fallback,
-        Some(value) => native_atoi(value).unwrap_or_else(|_| panic!("Q2 spawn field {key} is not source text")),
+        Some(value) => native_atoi(value),
     }
 }
 
@@ -33,7 +33,7 @@ pub fn integer_field(fields: &Q2SpawnFields, key: &str, fallback: i32) -> i32 {
 pub fn vector_field(fields: &Q2SpawnFields, key: &str) -> Vec3 {
     let text = fields.values.get(key).map_or("", String::as_str);
     let mut parts = text.split_whitespace();
-    let component = |part: Option<&str>| native_atof(part.unwrap_or("0")).unwrap_or(0.0) as f32;
+    let component = |part: Option<&str>| native_atof(part.unwrap_or("0")) as f32;
     Vec3 {
         x: component(parts.next()),
         y: component(parts.next()),

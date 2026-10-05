@@ -105,16 +105,8 @@ pub fn validate_q3_cd_key(key: &str, checksum: Option<&str>) -> bool {
     if checksum.is_some_and(|checksum| checksum.chars().any(|character| character as u32 > 255)) {
         return false;
     }
-    let Ok(key) = source_command_text(key) else {
-        return false;
-    };
-    let checksum = match checksum {
-        None => None,
-        Some(checksum) => match source_command_text(checksum) {
-            Ok(checksum) => Some(checksum),
-            Err(_) => return false,
-        },
-    };
+    let key = source_command_text(key);
+    let checksum = checksum.map(source_command_text);
     if key.chars().count() != 16 || checksum.as_ref().is_some_and(|checksum| checksum.chars().count() != 2) {
         return false;
     }
@@ -248,7 +240,7 @@ impl Q3CdKeyState {
 
     /// Byte offset of the UI key half.
     fn ui_offset(&self, unique: i32, game_directory: &str) -> Result<usize, Q3CdKeyError> {
-        let directory = source_command_text(game_directory)?;
+        let directory = source_command_text(game_directory);
         Ok(if unique == 1 && !directory.is_empty() { 16 } else { 0 })
     }
 
@@ -536,9 +528,8 @@ mod tests {
             state.write_ui(0, "", &[0u8; 8], &mut registry),
             Err(Q3CdKeyError::UiSourceTooShort)
         );
-        assert!(matches!(
-            state.write_ui(0, "€", VALID_BASE.as_bytes(), &mut registry),
-            Err(Q3CdKeyError::CommandText(_))
-        ));
+        // Engine text maps to bytes instead of rejecting: the directory
+        // low byte keeps the write on the base half.
+        assert!(state.write_ui(0, "€", VALID_BASE.as_bytes(), &mut registry).is_ok());
     }
 }
