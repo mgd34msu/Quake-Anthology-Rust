@@ -147,6 +147,108 @@ fn clipped(value: i32) -> i16 {
     (value >> 8).clamp(-32768, 32767) as i16
 }
 
+/// Whether float gains can take the integer fast path exactly.
+///
+/// Finite integral gains below 2^37 keep `sample * gain` inside `i64` and
+/// below 2^53, where the `f64` multiply is exact, so both paths agree bit for bit.
+#[must_use]
+pub fn integral_gains(left_gain: f64, right_gain: f64) -> bool {
+    const BOUND: f64 = 137_438_953_472.0;
+    left_gain.is_finite()
+        && right_gain.is_finite()
+        && left_gain.trunc() == left_gain
+        && right_gain.trunc() == right_gain
+        && left_gain.abs() < BOUND
+        && right_gain.abs() < BOUND
+}
+
+/// Paint one resampled span into integer paint with integral gains.
+///
+/// Each contribution is `(sample * gain) >> 8`, which equals
+/// `floor(sample * gain / 256)` for integral inputs, so this matches the
+/// float paint path bit for bit. Range-checked once per span.
+pub fn paint_span_i32(
+    paint: &mut [i32],
+    out_start: usize,
+    samples: &[i16],
+    left_gain: i64,
+    right_gain: i64,
+) -> Result<(), AudioError> {
+    let len = paint.len();
+    let end = out_start
+        .checked_add(samples.len())
+        .ok_or_else(|| AudioError::BadPaintIndex {
+            index: out_start.to_string(),
+            length: len.to_string(),
+        })?;
+    let paint = paint
+        .get_mut(out_start * 2..end * 2)
+        .ok_or_else(|| AudioError::BadPaintIndex {
+            index: (end * 2).to_string(),
+            length: len.to_string(),
+        })?;
+    let (slots, _) = paint.as_chunks_mut::<2>();
+    for (slot, sample) in slots.iter_mut().zip(samples.iter()) {
+        slot[0] = slot[0].wrapping_add((((i64::from(*sample)) * left_gain) >> 8) as i32);
+        slot[1] = slot[1].wrapping_add((((i64::from(*sample)) * right_gain) >> 8) as i32);
+    }
+    Ok(())
+}
+
+/// Paint one resampled span with fractional gains (ambient fades).
+///
+/// Contributions are `floor(sample * gain / 256)` exactly like the float
+/// path, accumulated into integer paint. Range-checked once per span.
+pub fn paint_span_f64(
+    paint: &mut [i32],
+    out_start: usize,
+    samples: &[i16],
+    left_gain: f64,
+    right_gain: f64,
+) -> Result<(), AudioError> {
+    let len = paint.len();
+    let end = out_start
+        .checked_add(samples.len())
+        .ok_or_else(|| AudioError::BadPaintIndex {
+            index: out_start.to_string(),
+            length: len.to_string(),
+        })?;
+    let paint = paint
+        .get_mut(out_start * 2..end * 2)
+        .ok_or_else(|| AudioError::BadPaintIndex {
+            index: (end * 2).to_string(),
+            length: len.to_string(),
+        })?;
+    let (slots, _) = paint.as_chunks_mut::<2>();
+    for (slot, sample) in slots.iter_mut().zip(samples.iter()) {
+        slot[0] = slot[0].wrapping_add((f64::from(*sample) * left_gain / 256.0).floor() as i32);
+        slot[1] = slot[1].wrapping_add((f64::from(*sample) * right_gain / 256.0).floor() as i32);
+    }
+    Ok(())
+}
+
+/// Paint one bank-memory sample with float gains.
+pub fn paint_sample_f64(
+    paint: &mut [i32],
+    out_frame: usize,
+    sample: i32,
+    left_gain: f64,
+    right_gain: f64,
+) -> Result<(), AudioError> {
+    let len = paint.len();
+    let base = out_frame.checked_mul(2).ok_or_else(|| AudioError::BadPaintIndex {
+        index: out_frame.to_string(),
+        length: len.to_string(),
+    })?;
+    let slot = paint.get_mut(base..base + 2).ok_or_else(|| AudioError::BadPaintIndex {
+        index: (base + 1).to_string(),
+        length: len.to_string(),
+    })?;
+    slot[0] = slot[0].wrapping_add((f64::from(sample) * left_gain / 256.0).floor() as i32);
+    slot[1] = slot[1].wrapping_add((f64::from(sample) * right_gain / 256.0).floor() as i32);
+    Ok(())
+}
+
 /// Blast an integer paint buffer to interleaved stereo.
 pub fn write_linear_blast_stereo16(paint: &[i32], output: &mut [i16], count: usize) -> Result<(), AudioError> {
     if !count.is_multiple_of(2) {
@@ -526,6 +628,41 @@ mod tests {
             4
         );
         assert_eq!(output, [(-128 << 8) as i16, 0, (127 << 8) as i16, (-64 << 8) as i16]);
+    }
+
+    #[test]
+    fn span_paint_matches_float_path() {
+        let samples: Vec<i16> = vec![0, 1, -1, 1000, -2000, 32767, -32768, 12345];
+        // Integral gains: integer spans equal per-sample float floor.
+        for (left, right) in [(127.0f64, 127.0f64), (25908.0, 13000.0), (0.0, 255.0)] {
+            assert!(integral_gains(left, right));
+            let mut paint = [100i32, -100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            paint_span_i32(&mut paint, 0, &samples, left as i64, right as i64).unwrap();
+            for (index, sample) in samples.iter().enumerate() {
+                let left_want = (f64::from(*sample) * left / 256.0).floor() as i32 + [100, 0, 0, 0, 0, 0, 0, 0][index];
+                let right_want =
+                    (f64::from(*sample) * right / 256.0).floor() as i32 + [-100, 0, 0, 0, 0, 0, 0, 0][index];
+                assert_eq!(paint[index * 2], left_want, "gain {left}/{right} sample {sample}");
+                assert_eq!(paint[index * 2 + 1], right_want);
+            }
+        }
+        // Fractional gains take the float span with the same floor.
+        assert!(!integral_gains(12.5, 127.0));
+        let mut paint = [0i32; 6];
+        paint_span_f64(&mut paint, 1, &samples[..2], 12.5, -3.25).unwrap();
+        assert_eq!(paint[0], 0);
+        assert_eq!(paint[1], 0);
+        for (index, sample) in samples[..2].iter().enumerate() {
+            assert_eq!(paint[2 + index * 2], (f64::from(*sample) * 12.5 / 256.0).floor() as i32);
+            assert_eq!(
+                paint[2 + index * 2 + 1],
+                (f64::from(*sample) * -3.25 / 256.0).floor() as i32
+            );
+        }
+        paint_sample_f64(&mut paint, 0, 1000, 25908.0, 25908.0).unwrap();
+        assert_eq!(paint[0], (1000.0f64 * 25908.0 / 256.0).floor() as i32);
+        assert!(paint_span_i32(&mut paint, 3, &samples, 1, 1).is_err());
+        assert!(paint_sample_f64(&mut paint, 3, 0, 1.0, 1.0).is_err());
     }
 
     #[test]
