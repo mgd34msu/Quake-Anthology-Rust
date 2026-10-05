@@ -2,12 +2,11 @@
 //!
 //! Port of Quake-Anthology-TS `src/app/bootstrap/renderer.ts`
 //! (`RendererDiagnostics`, `PreparedRendererRestart`, `NativeRenderer`).
-//! Owns the native surface, image identity, and ordered serial or worker
+//! Owns the native surface, image identity, and ordered serial
 //! execution. Windows ([`SdlWindow`](qa_platform::sdl::SdlWindow)), backends
 //! ([`GlRenderer`](qa_client::render::gl::renderer::GlRenderer),
 //! [`CpuRenderer`](qa_client::render::cpu::rasterizer::CpuRenderer),
-//! [`RenderExecutor`](qa_client::render::execution::RenderExecutor); the worker
-//! side is ported ([`worker`](qa_client::render::worker)) and the backend
+//! [`RenderExecutor`](qa_client::render::execution::RenderExecutor); the backend
 //! union stays absorbed behind [`NativeRenderBackend`]), and the image registry
 //! ([`SceneImageRegistry`](qa_client::render::scene::resources::SceneImageRegistry))
 //! arrive as injected traits; the image journal, display modes, and math reuse
@@ -15,8 +14,7 @@
 //! open/restart/close become sync
 //! factory calls with the same aggregate cleanup texts; frame-capture
 //! promises become one-shot callbacks; the restart `publish`/`discard`
-//! closures become id-checked renderer methods; worker context parking is a
-//! backend-internal no-op.
+//! closures become id-checked renderer methods.
 
 use std::collections::HashMap;
 
@@ -397,6 +395,10 @@ pub trait NativeRenderBackend {
     fn execute_serial_command_timed(&mut self, command: &RenderCommand, _timer: &mut StageTimer) {
         self.execute_serial_command(command);
     }
+    /// Execute one borrowed view with stage timing. The serial dispatch
+    /// calls this directly so production frames never deep-clone the
+    /// submitted view into a temporary command.
+    fn execute_serial_view_timed(&mut self, view: &ClientRenderView, timer: &mut StageTimer);
     /// Execute worker commands with captures and image operations.
     fn execute_worker(
         &mut self,
@@ -1137,8 +1139,7 @@ where
                         );
                     }
                     RenderCommand::View(view) => {
-                        self.backend
-                            .execute_serial_command_timed(&RenderCommand::View(view.clone()), timer);
+                        self.backend.execute_serial_view_timed(view, timer);
                     }
                 }
                 index += 1;
@@ -1389,6 +1390,10 @@ mod tests {
 
         fn execute_serial_command(&mut self, command: &RenderCommand) {
             self.executed.push(command.clone());
+        }
+
+        fn execute_serial_view_timed(&mut self, view: &ClientRenderView, _timer: &mut StageTimer) {
+            self.executed.push(RenderCommand::View(view.clone()));
         }
 
         fn execute_worker(

@@ -35,11 +35,6 @@ pub mod q3_hardware;
 pub mod scene;
 pub mod stage_timings;
 pub mod types;
-pub mod worker;
-pub mod worker_entry;
-pub mod worker_protocol;
-pub mod worker_runtime;
-pub mod worker_transport;
 
 pub use error::RenderError;
 

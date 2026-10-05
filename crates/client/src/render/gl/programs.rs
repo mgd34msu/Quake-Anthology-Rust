@@ -255,12 +255,120 @@ pub fn compile_program<C: GlContext>(gl: &mut C, vertex: &str, fragment: &str) -
     program
 }
 
-/// Compiled stage program with uniform caches.
+/// Retained-geometry vertex shader: same varyings as the stage shader, but
+/// object-space positions transform by the `u_mvp` uniform instead of the
+/// fixed-function matrices (which stay identity for projected batches).
+pub const RETAINED_VERTEX_SHADER: &str = "#version 120\nuniform mat4 u_mvp;\nvarying vec4 vertexColor;\nvarying vec2 coordinates0;\nvarying vec2 coordinates1;\nvarying vec3 worldPosition;\nvarying vec3 worldNormal;\nvoid main() {\n  gl_Position = u_mvp * gl_Vertex;\n  gl_ClipVertex = u_mvp * gl_Vertex;\n  vertexColor = clamp(gl_Color, 0.0, 1.0);\n  coordinates0 = gl_MultiTexCoord0.xy;\n  coordinates1 = gl_MultiTexCoord1.xy;\n  worldPosition = gl_MultiTexCoord2.xyz;\n  worldNormal = gl_MultiTexCoord3.xyz;\n}\n";
+
+/// Every stage-fragment uniform location for one linked program, resolved
+/// once at link. The projected stage program and the retained-geometry
+/// program share the fragment shader; locations are per-program, so each
+/// program holds its own resolved copy and no name lookup (or allocation)
+/// happens on the draw path.
+#[derive(Clone, Copy, Debug)]
+struct StageUniforms {
+    primary_texture: i32,
+    secondary_texture: i32,
+    shadow_map: i32,
+    fog_mode: i32,
+    fog_color: i32,
+    fog_amount: i32,
+    secondary_mode: i32,
+    alpha_mode: i32,
+    luminance_alpha: i32,
+    lighting_mode: i32,
+    light_count: i32,
+    shadow_texel: i32,
+    shadow_near: i32,
+    shade_scale: i32,
+    light_pos: [i32; 8],
+    light_radius: [i32; 8],
+    light_color: [i32; 8],
+    light_scale: [i32; 8],
+    light_cone_cos: [i32; 8],
+    light_cone_dir: [i32; 8],
+    light_frac: [i32; 8],
+    light_shadow: [i32; 8],
+    light_atlas: [i32; 8],
+    light_matrix: [i32; 8],
+}
+
+/// Retained-geometry program: its own linked program plus link-time
+/// locations (the stage fragment uniforms plus the vertex `u_mvp`).
+#[derive(Clone, Copy, Debug)]
+struct RetainedProgram {
+    program: u32,
+    uniforms: StageUniforms,
+    u_mvp: i32,
+}
+
+/// Resolve one uniform location; a missing stage uniform fails the link.
+fn resolve_uniform<C: GlContext>(gl: &mut C, program: u32, name: &str) -> i32 {
+    let location = gl.get_uniform_location(program, name);
+    if location < 0 {
+        panic!(
+            "{}",
+            RenderError::Backend(format!("OpenGL stage uniform is missing: {name}"))
+        );
+    }
+    location
+}
+
+/// Resolve one eight-element light uniform array.
+fn resolve_light_array<C: GlContext>(gl: &mut C, program: u32, base: &str) -> [i32; 8] {
+    std::array::from_fn(|index| resolve_uniform(gl, program, &format!("{base}[{index}]")))
+}
+
+/// Resolve every stage uniform location once, immediately after linking.
+fn resolve_stage_uniforms<C: GlContext>(gl: &mut C, program: u32) -> StageUniforms {
+    StageUniforms {
+        primary_texture: resolve_uniform(gl, program, "primaryTexture"),
+        secondary_texture: resolve_uniform(gl, program, "secondaryTexture"),
+        shadow_map: resolve_uniform(gl, program, "u_shadow_map"),
+        fog_mode: resolve_uniform(gl, program, "u_fog_mode"),
+        fog_color: resolve_uniform(gl, program, "u_fog_color"),
+        fog_amount: resolve_uniform(gl, program, "u_fog_amount"),
+        secondary_mode: resolve_uniform(gl, program, "secondaryMode"),
+        alpha_mode: resolve_uniform(gl, program, "alphaMode"),
+        luminance_alpha: resolve_uniform(gl, program, "u_luminance_alpha"),
+        lighting_mode: resolve_uniform(gl, program, "u_lighting_mode"),
+        light_count: resolve_uniform(gl, program, "u_light_count"),
+        shadow_texel: resolve_uniform(gl, program, "u_shadow_texel"),
+        shadow_near: resolve_uniform(gl, program, "u_shadow_near"),
+        shade_scale: resolve_uniform(gl, program, "u_shade_scale"),
+        light_pos: resolve_light_array(gl, program, "u_light_pos"),
+        light_radius: resolve_light_array(gl, program, "u_light_radius"),
+        light_color: resolve_light_array(gl, program, "u_light_color"),
+        light_scale: resolve_light_array(gl, program, "u_light_scale"),
+        light_cone_cos: resolve_light_array(gl, program, "u_light_cone_cos"),
+        light_cone_dir: resolve_light_array(gl, program, "u_light_cone_dir"),
+        light_frac: resolve_light_array(gl, program, "u_light_frac"),
+        light_shadow: resolve_light_array(gl, program, "u_light_shadow"),
+        light_atlas: resolve_light_array(gl, program, "u_light_atlas"),
+        light_matrix: resolve_light_array(gl, program, "u_light_matrix"),
+    }
+}
+
+/// Bind the stage fragment sampler uniforms to their texture units.
+fn bind_stage_samplers<C: GlContext>(gl: &mut C, program: u32, uniforms: &StageUniforms) {
+    gl.use_program(program);
+    gl.uniform_1i(uniforms.primary_texture, 0);
+    gl.uniform_1i(uniforms.secondary_texture, 1);
+    gl.uniform_1i(uniforms.shadow_map, 2);
+    gl.use_program(0);
+}
+
+/// Compiled stage program with link-time uniform locations plus value
+/// caches. Locations resolve once per linked program (the retained
+/// program carries its own copy); value caches flush on program switches
+/// so dedup never crosses programs.
 #[derive(Debug)]
 pub struct StageProgram {
     program: u32,
     depth_program: u32,
-    uniforms: HashMap<String, i32>,
+    uniforms: StageUniforms,
+    retained: Option<RetainedProgram>,
+    values_program: Option<u32>,
     integers: HashMap<i32, i32>,
     scalars: HashMap<i32, u32>,
     vectors3: HashMap<i32, [u32; 3]>,
@@ -273,10 +381,12 @@ impl StageProgram {
     pub fn new<C: GlContext>(gl: &mut C) -> Self {
         let program = compile_program(gl, STAGE_VERTEX_SHADER, &stage_fragment_shader());
         let depth_program = compile_program(gl, DEPTH_VERTEX_SHADER, DEPTH_FRAGMENT_SHADER);
-        let mut stage = Self {
+        let stage = Self {
             program,
             depth_program,
-            uniforms: HashMap::new(),
+            uniforms: resolve_stage_uniforms(gl, program),
+            retained: None,
+            values_program: None,
             integers: HashMap::new(),
             scalars: HashMap::new(),
             vectors3: HashMap::new(),
@@ -284,14 +394,7 @@ impl StageProgram {
             matrices: HashMap::new(),
             closed: false,
         };
-        gl.use_program(program);
-        let primary = stage.uniform(gl, "primaryTexture");
-        gl.uniform_1i(primary, 0);
-        let secondary = stage.uniform(gl, "secondaryTexture");
-        gl.uniform_1i(secondary, 1);
-        let shadow = stage.uniform(gl, "u_shadow_map");
-        gl.uniform_1i(shadow, 2);
-        gl.use_program(0);
+        bind_stage_samplers(gl, program, &stage.uniforms);
         stage
     }
 
@@ -300,23 +403,30 @@ impl StageProgram {
         self.program
     }
 
-    fn uniform<C: GlContext>(&mut self, gl: &mut C, name: &str) -> i32 {
-        if let Some(location) = self.uniforms.get(name) {
-            return *location;
+    fn locations(&self) -> &StageUniforms {
+        let program = self
+            .values_program
+            .expect("stage program is selected before uniform lookup");
+        match &self.retained {
+            Some(retained) if retained.program == program => &retained.uniforms,
+            _ => &self.uniforms,
         }
-        let location = gl.get_uniform_location(self.program, name);
-        if location < 0 {
-            panic!(
-                "{}",
-                RenderError::Backend(format!("OpenGL stage uniform is missing: {name}"))
-            );
-        }
-        self.uniforms.insert(name.to_string(), location);
-        location
     }
 
-    fn integer<C: GlContext>(&mut self, gl: &mut C, name: &str, value: i32) {
-        let location = self.uniform(gl, name);
+    /// Bind one stage program, flushing value caches on switches.
+    fn select<C: GlContext>(&mut self, gl: &mut C, program: u32) {
+        if self.values_program != Some(program) {
+            self.integers.clear();
+            self.scalars.clear();
+            self.vectors3.clear();
+            self.vectors4.clear();
+            self.matrices.clear();
+            self.values_program = Some(program);
+        }
+        gl.use_program(program);
+    }
+
+    fn integer<C: GlContext>(&mut self, gl: &mut C, location: i32, value: i32) {
         if self.integers.get(&location) == Some(&value) {
             return;
         }
@@ -324,8 +434,7 @@ impl StageProgram {
         self.integers.insert(location, value);
     }
 
-    fn scalar<C: GlContext>(&mut self, gl: &mut C, name: &str, value: f32) {
-        let location = self.uniform(gl, name);
+    fn scalar<C: GlContext>(&mut self, gl: &mut C, location: i32, value: f32) {
         if self.scalars.get(&location) == Some(&value.to_bits()) {
             return;
         }
@@ -333,8 +442,7 @@ impl StageProgram {
         self.scalars.insert(location, value.to_bits());
     }
 
-    fn vector3<C: GlContext>(&mut self, gl: &mut C, name: &str, x: f32, y: f32, z: f32) {
-        let location = self.uniform(gl, name);
+    fn vector3<C: GlContext>(&mut self, gl: &mut C, location: i32, x: f32, y: f32, z: f32) {
         let bits = [x.to_bits(), y.to_bits(), z.to_bits()];
         if self.vectors3.get(&location) == Some(&bits) {
             return;
@@ -343,8 +451,7 @@ impl StageProgram {
         self.vectors3.insert(location, bits);
     }
 
-    fn vector4<C: GlContext>(&mut self, gl: &mut C, name: &str, x: f32, y: f32, z: f32, w: f32) {
-        let location = self.uniform(gl, name);
+    fn vector4<C: GlContext>(&mut self, gl: &mut C, location: i32, x: f32, y: f32, z: f32, w: f32) {
         let bits = [x.to_bits(), y.to_bits(), z.to_bits(), w.to_bits()];
         if self.vectors4.get(&location) == Some(&bits) {
             return;
@@ -353,8 +460,7 @@ impl StageProgram {
         self.vectors4.insert(location, bits);
     }
 
-    fn matrix<C: GlContext>(&mut self, gl: &mut C, name: &str, value: &[f32; 16]) {
-        let location = self.uniform(gl, name);
+    fn matrix<C: GlContext>(&mut self, gl: &mut C, location: i32, value: &[f32; 16]) {
         let bits = value.map(f32::to_bits);
         if self.matrices.get(&location) == Some(&bits) {
             return;
@@ -376,20 +482,96 @@ impl StageProgram {
         if self.closed {
             panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
         }
-        gl.use_program(self.program);
-        self.integer(gl, "u_fog_mode", fog_mode(fog));
+        let program = self.program;
+        self.select(gl, program);
+        self.apply_stage(gl, environment, alpha_test, lighting, luminance_alpha, fog);
+    }
+
+    /// Bind the retained-geometry program, compiling it on first use.
+    pub fn use_retained<C: GlContext>(&mut self, gl: &mut C) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
+        if self.retained.is_none() {
+            let program = compile_program(gl, RETAINED_VERTEX_SHADER, &stage_fragment_shader());
+            let uniforms = resolve_stage_uniforms(gl, program);
+            bind_stage_samplers(gl, program, &uniforms);
+            let u_mvp = resolve_uniform(gl, program, "u_mvp");
+            self.retained = Some(RetainedProgram {
+                program,
+                uniforms,
+                u_mvp,
+            });
+        }
+        let program = self
+            .retained
+            .as_ref()
+            .expect("retained program compiled before use")
+            .program;
+        self.select(gl, program);
+    }
+
+    /// Apply the MVP plus stage uniforms to the bound retained program.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_retained<C: GlContext>(
+        &mut self,
+        gl: &mut C,
+        mvp: &[f32; 16],
+        environment: Option<PairEnvironment>,
+        alpha_test: AlphaTest,
+        lighting: &BatchLighting,
+        luminance_alpha: bool,
+        fog: Option<BatchFog>,
+    ) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
+        let retained_program = self.retained.as_ref().map(|retained| retained.program);
+        if self.values_program != retained_program {
+            panic!(
+                "{}",
+                RenderError::Backend("OpenGL retained program is bound before use".to_string())
+            );
+        }
+        let mvp_location = self
+            .retained
+            .as_ref()
+            .expect("retained program is bound before use")
+            .u_mvp;
+        self.matrix(gl, mvp_location, mvp);
+        self.apply_stage(gl, environment, alpha_test, lighting, luminance_alpha, fog);
+    }
+
+    /// Apply stage uniforms to the currently bound program. The retained
+    /// program shares the stage fragment shader, so retained draws bind
+    /// their own program and reuse this for identical fragment shading.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_stage<C: GlContext>(
+        &mut self,
+        gl: &mut C,
+        environment: Option<PairEnvironment>,
+        alpha_test: AlphaTest,
+        lighting: &BatchLighting,
+        luminance_alpha: bool,
+        fog: Option<BatchFog>,
+    ) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
+        let locations = *self.locations();
+        self.integer(gl, locations.fog_mode, fog_mode(fog));
         let (fr, fg, fb) = fog.map_or((0.0, 0.0, 0.0), |fog| match fog {
             BatchFog::Exp2 { color, .. } | BatchFog::Constant { color, .. } => (color.x, color.y, color.z),
         });
-        self.vector3(gl, "u_fog_color", fr, fg, fb);
+        self.vector3(gl, locations.fog_color, fr, fg, fb);
         let amount = fog.map_or(0.0, |fog| match fog {
             BatchFog::Exp2 { density, .. } => density,
             BatchFog::Constant { amount, .. } => amount,
         });
-        self.scalar(gl, "u_fog_amount", amount);
-        self.integer(gl, "secondaryMode", environment.map_or(0, secondary_mode));
-        self.integer(gl, "alphaMode", alpha_mode(alpha_test));
-        self.integer(gl, "u_luminance_alpha", i32::from(luminance_alpha));
+        self.scalar(gl, locations.fog_amount, amount);
+        self.integer(gl, locations.secondary_mode, environment.map_or(0, secondary_mode));
+        self.integer(gl, locations.alpha_mode, alpha_mode(alpha_test));
+        self.integer(gl, locations.luminance_alpha, i32::from(luminance_alpha));
         let lighting_mode = match lighting {
             BatchLighting::Vertex => 0,
             BatchLighting::Q2ModelShadow { .. } => 3,
@@ -400,10 +582,10 @@ impl StageProgram {
                 Q2LightPass::Texture { .. } => 2,
             },
         };
-        self.integer(gl, "u_lighting_mode", lighting_mode);
+        self.integer(gl, locations.lighting_mode, lighting_mode);
         match lighting {
             BatchLighting::Vertex => {
-                self.integer(gl, "u_light_count", 0);
+                self.integer(gl, locations.light_count, 0);
             }
             BatchLighting::Q2World { atlas, pass, .. } => {
                 let (count, shade_scale) = match pass {
@@ -421,7 +603,7 @@ impl StageProgram {
                         }
                     );
                 }
-                self.integer(gl, "u_light_count", count as i32);
+                self.integer(gl, locations.light_count, count as i32);
                 if let Some(atlas) = atlas {
                     finite_uniforms(&[atlas.texel_size, atlas.near_plane]);
                     if atlas.texel_size <= 0.0 || atlas.near_plane <= 0.0 {
@@ -433,12 +615,12 @@ impl StageProgram {
                             }
                         );
                     }
-                    self.scalar(gl, "u_shadow_texel", atlas.texel_size);
-                    self.scalar(gl, "u_shadow_near", atlas.near_plane);
+                    self.scalar(gl, locations.shadow_texel, atlas.texel_size);
+                    self.scalar(gl, locations.shadow_near, atlas.near_plane);
                 }
                 if let Some(scale) = shade_scale {
                     finite_uniforms(&[scale]);
-                    self.scalar(gl, "u_shade_scale", scale);
+                    self.scalar(gl, locations.shade_scale, scale);
                 }
                 match pass {
                     Q2LightPass::Lightmap { lights }
@@ -473,9 +655,9 @@ impl StageProgram {
                         }
                     );
                 }
-                self.integer(gl, "u_light_count", lights.len() as i32);
+                self.integer(gl, locations.light_count, lights.len() as i32);
                 finite_uniforms(&[*shade_scale]);
-                self.scalar(gl, "u_shade_scale", *shade_scale);
+                self.scalar(gl, locations.shade_scale, *shade_scale);
                 for (index, light) in lights.iter().enumerate() {
                     finite_uniforms(&[light.origin.x, light.origin.y, light.origin.z, light.radius]);
                     if light.radius <= 0.0 {
@@ -489,16 +671,16 @@ impl StageProgram {
                     }
                     self.vector3(
                         gl,
-                        &format!("u_light_pos[{index}]"),
+                        locations.light_pos[index],
                         light.origin.x,
                         light.origin.y,
                         light.origin.z,
                     );
-                    self.scalar(gl, &format!("u_light_radius[{index}]"), light.radius);
+                    self.scalar(gl, locations.light_radius[index], light.radius);
                     finite_uniforms(&[light.fraction.x, light.fraction.y, light.fraction.z]);
                     self.vector3(
                         gl,
-                        &format!("u_light_frac[{index}]"),
+                        locations.light_frac[index],
                         light.fraction.x,
                         light.fraction.y,
                         light.fraction.z,
@@ -517,6 +699,7 @@ impl StageProgram {
         fraction: Option<[f32; 3]>,
         has_atlas: bool,
     ) {
+        let locations = *self.locations();
         finite_uniforms(&[light.origin.x, light.origin.y, light.origin.z, light.radius]);
         if light.radius <= 0.0 {
             panic!(
@@ -529,12 +712,12 @@ impl StageProgram {
         }
         self.vector3(
             gl,
-            &format!("u_light_pos[{index}]"),
+            locations.light_pos[index],
             light.origin.x,
             light.origin.y,
             light.origin.z,
         );
-        self.scalar(gl, &format!("u_light_radius[{index}]"), light.radius);
+        self.scalar(gl, locations.light_radius[index], light.radius);
         finite_uniforms(&[light.color.x, light.color.y, light.color.z, light.scale]);
         if let Some(cone) = &light.cone {
             finite_uniforms(&[
@@ -546,32 +729,33 @@ impl StageProgram {
         }
         self.vector3(
             gl,
-            &format!("u_light_color[{index}]"),
+            locations.light_color[index],
             light.color.x,
             light.color.y,
             light.color.z,
         );
-        self.scalar(gl, &format!("u_light_scale[{index}]"), light.scale);
+        self.scalar(gl, locations.light_scale[index], light.scale);
         self.scalar(
             gl,
-            &format!("u_light_cone_cos[{index}]"),
+            locations.light_cone_cos[index],
             light.cone.as_ref().map_or(0.0, |cone| cone.cos_half_angle),
         );
         let (dx, dy, dz) = light.cone.as_ref().map_or((0.0, 0.0, 0.0), |cone| {
             (cone.direction.x, cone.direction.y, cone.direction.z)
         });
-        self.vector3(gl, &format!("u_light_cone_dir[{index}]"), dx, dy, dz);
+        self.vector3(gl, locations.light_cone_dir[index], dx, dy, dz);
         match fraction {
             Some([x, y, z]) => {
                 finite_uniforms(&[x, y, z]);
-                self.vector3(gl, &format!("u_light_frac[{index}]"), x, y, z);
+                self.vector3(gl, locations.light_frac[index], x, y, z);
             }
-            None => self.vector3(gl, &format!("u_light_frac[{index}]"), 0.0, 0.0, 0.0),
+            None => self.vector3(gl, locations.light_frac[index], 0.0, 0.0, 0.0),
         }
         self.shadow(gl, index, &light.shadow, has_atlas);
     }
 
     fn shadow<C: GlContext>(&mut self, gl: &mut C, index: usize, shadow: &Q2ShadowProjection, has_atlas: bool) {
+        let locations = *self.locations();
         if !matches!(shadow, Q2ShadowProjection::None) && !has_atlas {
             panic!(
                 "{}",
@@ -583,27 +767,27 @@ impl StageProgram {
             Q2ShadowProjection::Cone { .. } => 1.0,
             Q2ShadowProjection::Point { .. } => 2.0,
         };
-        self.scalar(gl, &format!("u_light_shadow[{index}]"), mode);
+        self.scalar(gl, locations.light_shadow[index], mode);
         match shadow {
             Q2ShadowProjection::None => {}
             Q2ShadowProjection::Cone { matrix, atlas_rect } => {
                 finite_uniforms(&[atlas_rect.x, atlas_rect.y, atlas_rect.z, atlas_rect.w]);
                 self.vector4(
                     gl,
-                    &format!("u_light_atlas[{index}]"),
+                    locations.light_atlas[index],
                     atlas_rect.x,
                     atlas_rect.y,
                     atlas_rect.z,
                     atlas_rect.w,
                 );
                 finite_uniforms(matrix);
-                self.matrix(gl, &format!("u_light_matrix[{index}]"), matrix);
+                self.matrix(gl, locations.light_matrix[index], matrix);
             }
             Q2ShadowProjection::Point { atlas_rect } => {
                 finite_uniforms(&[atlas_rect.x, atlas_rect.y, atlas_rect.z, atlas_rect.w]);
                 self.vector4(
                     gl,
-                    &format!("u_light_atlas[{index}]"),
+                    locations.light_atlas[index],
                     atlas_rect.x,
                     atlas_rect.y,
                     atlas_rect.z,
@@ -628,7 +812,11 @@ impl StageProgram {
         gl.use_program(0);
         gl.delete_program(self.program);
         gl.delete_program(self.depth_program);
+        if let Some(retained) = self.retained.take() {
+            gl.delete_program(retained.program);
+        }
         self.closed = true;
+        self.values_program = None;
         self.integers.clear();
         self.scalars.clear();
         self.vectors3.clear();
@@ -688,6 +876,60 @@ mod tests {
         assert!(cached.is_empty(), "cached uniforms must not re-emit: {cached:?}");
         stage.close(&mut gl);
         gl.assert_contains("unbind", |call| matches!(call, GlCall::UseProgram { program: 0 }));
+    }
+
+    #[test]
+    fn stage_resolves_uniform_locations_once_at_link() {
+        let mut gl = FakeGlContext::new();
+        let mut stage = StageProgram::new(&mut gl);
+        stage.use_retained(&mut gl);
+        gl.clear_log();
+        stage.use_stage(
+            &mut gl,
+            Some(PairEnvironment::Add),
+            AlphaTest::GreaterZero,
+            &BatchLighting::Vertex,
+            true,
+            None,
+        );
+        stage.use_retained(&mut gl);
+        stage.apply_retained(
+            &mut gl,
+            &[
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            Some(PairEnvironment::Add),
+            AlphaTest::GreaterZero,
+            &BatchLighting::Vertex,
+            true,
+            None,
+        );
+        let lighting = BatchLighting::Q2World {
+            world_positions: Vec::new(),
+            normals: Vec::new(),
+            atlas: None,
+            pass: Q2LightPass::Texture {
+                lights: vec![crate::render::types::Q2FragmentLight {
+                    origin: vec3(1.0, 2.0, 3.0),
+                    radius: 100.0,
+                    color: vec3(1.0, 1.0, 1.0),
+                    scale: 1.0,
+                    cone: None,
+                    shadow: Q2ShadowProjection::None,
+                }],
+            },
+        };
+        stage.use_stage(&mut gl, None, AlphaTest::None, &lighting, false, None);
+        let lookups: Vec<_> = gl
+            .log
+            .iter()
+            .filter(|call| matches!(call, GlCall::GetUniformLocation { .. }))
+            .collect();
+        assert!(
+            lookups.is_empty(),
+            "draws must not resolve uniform locations: {lookups:?}"
+        );
+        stage.close(&mut gl);
     }
 
     #[test]

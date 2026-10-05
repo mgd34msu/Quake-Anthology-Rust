@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::buffers::GeometryBuffer;
+use super::buffers::{pack_retained, GeometryArrays, GeometryBuffer};
 use super::depth_atlas::DepthAtlasTarget;
 use super::fog::Q2FogPass;
 use super::object_opacity::GlObjectOpacity;
@@ -25,8 +25,9 @@ use crate::render::error::RenderError;
 use crate::render::types::{
     AlphaTest, BatchFog, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest, DrawBatch,
     DrawBuffer, ImageResourceOperation, OrderedBackend, PairEnvironment, PolygonOffset, PreparedDraw, RenderOperation,
-    RenderState, RenderViewState, RendererImage, ResourceOwner, TextureBinding,
+    RenderState, RenderViewState, RendererImage, ResourceOwner, RetainedBatch, RetainedDraw, TextureBinding,
 };
+use crate::view::compose_retained_mvp;
 use qa_core::math::Vec4;
 
 fn blend_factor(factor: BlendFactor) -> u32 {
@@ -87,6 +88,10 @@ enum DrawPhase {
     Cleaned,
 }
 
+/// Cap for cached retained uploads; the map clears wholesale past this so
+/// stale generations never grow it without bound.
+const RETAINED_CACHE_CAP: usize = 4096;
+
 /// Ordered GL backend over a [`GlContext`].
 pub struct GlRenderer<C: GlContext> {
     gl: RefCell<C>,
@@ -95,6 +100,8 @@ pub struct GlRenderer<C: GlContext> {
     textures: GlTextures,
     active_arrays: bool,
     idle_geometry: Option<GeometryBuffer>,
+    retained_arrays: HashMap<(u32, u64, u32), GeometryArrays>,
+    retained_uploads: u64,
     depth_atlas: Option<DepthAtlasTarget>,
     fog: Option<Q2FogPass>,
     object_opacity: Option<GlObjectOpacity>,
@@ -156,6 +163,8 @@ impl<C: GlContext> GlRenderer<C> {
             textures,
             active_arrays: false,
             idle_geometry: None,
+            retained_arrays: HashMap::new(),
+            retained_uploads: 0,
             depth_atlas: None,
             fog: None,
             object_opacity: None,
@@ -224,6 +233,13 @@ impl<C: GlContext> GlRenderer<C> {
     #[must_use]
     pub fn texture_units(&self) -> u32 {
         self.texture_units
+    }
+
+    /// Retained pack count: increments only when a draw's allocation is
+    /// packed, never when a cached upload is reused across frames.
+    #[cfg(test)]
+    pub fn retained_upload_count(&self) -> u64 {
+        self.retained_uploads
     }
 
     pub fn set_output_gamma(&mut self, gamma: f32) {
@@ -602,6 +618,106 @@ impl<C: GlContext> GlRenderer<C> {
                 );
             }
             self.gl.borrow_mut().end();
+        }
+    }
+
+    /// Draw arena-resident geometry without CPU projection. Each batch's
+    /// packed arrays persist across frames keyed by allocation id; only
+    /// the MVP uniform and per-frame state update per draw.
+    fn draw_retained(&mut self, draw: &RetainedDraw) {
+        self.ensure_open();
+        if self.active_arrays {
+            panic!(
+                "{}",
+                RenderError::Backend("OpenGL retained draw cannot interrupt a prepared draw".to_string())
+            );
+        }
+        self.draw_target(true);
+        let mvp = compose_retained_mvp(&draw.eye, &draw.projection);
+        for batch in &draw.batches {
+            let key = (draw.surface.id.surface, draw.surface.id.generation, batch.pass);
+            let arrays = match self.retained_arrays.remove(&key) {
+                Some(arrays) => arrays,
+                None => {
+                    if self.retained_arrays.len() >= RETAINED_CACHE_CAP {
+                        self.retained_arrays.clear();
+                    }
+                    let arrays = pack_retained(&draw.surface, batch);
+                    self.retained_uploads += 1;
+                    arrays
+                }
+            };
+            self.draw_retained_batch(batch, &mvp, &arrays);
+            // The entry was removed above, so returning it cannot collide.
+            self.retained_arrays.insert(key, arrays);
+        }
+    }
+
+    /// Draw one retained batch from packed arrays through the retained
+    /// program, mirroring the prepared-draw state and texture sequence.
+    fn draw_retained_batch(&mut self, batch: &RetainedBatch, mvp: &[f32; 16], arrays: &GeometryArrays) {
+        self.apply_state(&batch.state);
+        let environment = batch.second_texture.as_ref().map(|second| second.environment);
+        let (mode, line_width) = match batch.primitive {
+            BatchPrimitive::Triangles => (TRIANGLES, 1.0),
+            BatchPrimitive::Lines { line_width } => (GL_LINES, line_width),
+        };
+        self.program.use_retained(&mut *self.gl.borrow_mut());
+        self.program.apply_retained(
+            &mut *self.gl.borrow_mut(),
+            mvp,
+            environment,
+            batch.state.alpha_test,
+            &batch.lighting,
+            batch.luminance_alpha,
+            batch.fog,
+        );
+        self.active_arrays = true;
+        self.gl.borrow_mut().enable_client_state(VERTEX_ARRAY);
+        self.gl.borrow_mut().enable_client_state(COLOR_ARRAY);
+        if !arrays.positions.is_empty() {
+            self.gl.borrow_mut().vertex_pointer(3, 0, &arrays.positions);
+            self.gl.borrow_mut().color_pointer(4, 0, &arrays.colors);
+        }
+        for unit in [2, 3] {
+            self.select_texture(unit);
+            self.gl.borrow_mut().disable_client_state(TEXTURE_COORD_ARRAY);
+        }
+        self.select_texture(0);
+        let resolved = self.resolve_retained_binding(&batch.texture);
+        self.textures.bind(&mut *self.gl.borrow_mut(), &resolved);
+        self.gl.borrow_mut().enable_client_state(TEXTURE_COORD_ARRAY);
+        if !arrays.coordinates.is_empty() {
+            self.gl.borrow_mut().tex_coord_pointer(2, 0, &arrays.coordinates);
+        }
+        if let Some(second) = &batch.second_texture {
+            self.select_texture(1);
+            let resolved = self.resolve_retained_binding(&second.binding);
+            self.textures.bind(&mut *self.gl.borrow_mut(), &resolved);
+            self.gl.borrow_mut().enable_client_state(TEXTURE_COORD_ARRAY);
+            if !arrays.coordinates2.is_empty() {
+                self.gl.borrow_mut().tex_coord_pointer(2, 0, &arrays.coordinates2);
+            }
+        }
+        self.select_texture(0);
+        self.gl.borrow_mut().line_width(line_width);
+        if !arrays.indices.is_empty() {
+            self.gl.borrow_mut().draw_elements(mode, &arrays.indices);
+        }
+        self.disable_arrays();
+        self.gl.borrow_mut().line_width(1.0);
+    }
+
+    /// Resolve one retained texture binding, uploading dynamic frames first
+    /// like the prepared-draw path.
+    fn resolve_retained_binding(&mut self, binding: &TextureBinding) -> TextureBinding {
+        match binding {
+            TextureBinding::DynamicImage(source) => {
+                let mut apply = |operation: ImageResourceOperation| self.apply_image_resource(&operation);
+                let image = source.resolve(&mut apply);
+                TextureBinding::BindImage(image)
+            }
+            other => other.clone(),
         }
     }
 
@@ -1098,6 +1214,9 @@ impl<C: GlContext> OrderedBackend for GlRenderer<C> {
             RenderOperation::ShadowFinish { positions, white_image } => {
                 self.draw_shadow(positions, white_image, true, false);
             }
+            RenderOperation::RetainedDraw(draw) => {
+                self.draw_retained(draw);
+            }
         }
     }
 
@@ -1197,6 +1316,7 @@ impl<C: GlContext> OrderedBackend for GlRenderer<C> {
         self.invalidate_state();
         self.disable_arrays();
         self.idle_geometry = None;
+        self.retained_arrays.clear();
         {
             let mut slot = self.output_gamma.borrow_mut();
             if let Some(pass) = slot.as_mut() {
@@ -1426,7 +1546,8 @@ mod tests {
     use crate::render::types::{
         BatchFog, DepthAtlasDraw, DepthAtlasPass, DepthImageLevel, DynamicImageSource, FogEffect, ImageLevel,
         ImageSource, LevelContent, MultitextureVertex, Q2Fog, Q2FogOperation, Q2HeightFog, Q2HeightStop, Rect,
-        RenderCamera, RenderImage, RenderVertex, SkyVertex, TextureBundle, TextureFilter, TextureSampling, ViewClear,
+        RenderCamera, RenderImage, RenderVertex, RetainedBatch, RetainedDraw, RetainedId, RetainedPassAttrs,
+        RetainedSlice, RetainedSurfaceData, SkyVertex, TextureBundle, TextureFilter, TextureSampling, ViewClear,
         ViewClip,
     };
     use qa_core::identity::IdentityOwner;
@@ -1517,6 +1638,105 @@ mod tests {
             }),
             clip_plane: None,
         }
+    }
+
+    fn retained_draw_fixture() -> RetainedDraw {
+        RetainedDraw {
+            surface: Arc::new(RetainedSurfaceData {
+                id: RetainedId {
+                    surface: 7,
+                    generation: 3,
+                },
+                positions: vec![vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)],
+                indices: vec![0, 1, 2],
+                passes: vec![RetainedPassAttrs {
+                    tex_coords: vec![vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0)],
+                    tex_coords2: Vec::new(),
+                    colors: vec![
+                        vec4(1.0, 0.0, 0.0, 1.0),
+                        vec4(0.0, 1.0, 0.0, 1.0),
+                        vec4(0.0, 0.0, 1.0, 1.0),
+                    ],
+                }],
+            }),
+            eye: [
+                vec4(1.0, 0.0, 0.0, 0.5),
+                vec4(0.0, 1.0, 0.0, -0.5),
+                vec4(0.0, 0.0, 1.0, 2.0),
+            ],
+            projection: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            batches: vec![RetainedBatch {
+                range: RetainedSlice { start: 0, count: 3 },
+                pass: 0,
+                texture: TextureBinding::RetainCurrentTexture,
+                second_texture: None,
+                state: RenderState::opaque(CullFace::Back),
+                lighting: BatchLighting::Vertex,
+                fog: None,
+                primitive: BatchPrimitive::Triangles,
+                luminance_alpha: false,
+            }],
+        }
+    }
+
+    fn mvp_call_count(renderer: &GlRenderer<FakeGlContext>) -> usize {
+        renderer
+            .gl
+            .borrow()
+            .count_matching(|call| matches!(call, GlCall::UniformMatrix4fv { .. }))
+    }
+
+    #[test]
+    fn static_world_geometry_is_not_reuploaded_across_frames() {
+        let mut renderer = renderer();
+        let draw = retained_draw_fixture();
+        renderer.draw_immediate(&RenderOperation::RetainedDraw(draw.clone()));
+        assert_eq!(renderer.retained_upload_count(), 1);
+        assert_eq!(mvp_call_count(&renderer), 1);
+        // Second frame, same allocation, moved camera: uniforms update but
+        // packed arrays are reused without re-upload.
+        let mut moved = draw.clone();
+        moved.eye[0].w += 1.0;
+        renderer.draw_immediate(&RenderOperation::RetainedDraw(moved));
+        assert_eq!(renderer.retained_upload_count(), 1);
+        assert_eq!(mvp_call_count(&renderer), 2);
+        // A new content generation packs once more.
+        let mut surface = (*draw.surface).clone();
+        surface.id.generation = 4;
+        let mut next = draw.clone();
+        next.surface = Arc::new(surface);
+        renderer.draw_immediate(&RenderOperation::RetainedDraw(next));
+        assert_eq!(renderer.retained_upload_count(), 2);
+    }
+
+    #[test]
+    fn retained_draw_submits_vec3_positions() {
+        let mut renderer = renderer();
+        let draw = retained_draw_fixture();
+        renderer.draw_immediate(&RenderOperation::RetainedDraw(draw.clone()));
+        let gl = renderer.gl.borrow();
+        let pointers = gl.calls_matching(|call| matches!(call, GlCall::VertexPointer { .. }));
+        assert!(!pointers.is_empty());
+        for pointer in pointers {
+            assert!(
+                matches!(pointer, GlCall::VertexPointer { size: 3, len: 9, .. }),
+                "unexpected pointer: {pointer:?}"
+            );
+        }
+        let matrices = gl.calls_matching(|call| matches!(call, GlCall::UniformMatrix4fv { .. }));
+        assert_eq!(matrices.len(), 1);
+        let expected = compose_retained_mvp(&draw.eye, &draw.projection);
+        assert!(
+            matches!(&matrices[0], GlCall::UniformMatrix4fv { value, .. } if *value == expected),
+            "unexpected mvp: {:?}",
+            matrices[0]
+        );
+        assert_eq!(
+            gl.count_matching(|call| matches!(call, GlCall::DrawElements { count: 3, .. })),
+            1
+        );
     }
 
     #[test]

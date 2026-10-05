@@ -615,6 +615,13 @@ mod tests {
 
         fn execute_serial_command(&mut self, _command: &super::super::renderer::RenderCommand) {}
 
+        fn execute_serial_view_timed(
+            &mut self,
+            _view: &qa_client::render::types::RenderView,
+            _timer: &mut qa_client::render::stage_timings::StageTimer,
+        ) {
+        }
+
         fn execute_worker(
             &mut self,
             _commands: &[super::super::renderer::RenderCommand],

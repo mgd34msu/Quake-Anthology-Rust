@@ -1098,6 +1098,94 @@ pub enum BatchVertices {
     },
 }
 
+/// Identity of one retained surface allocation: the source surface plus the
+/// content generation of its cached arrays. Backends keep uploaded arrays
+/// keyed by this id and skip re-upload while it matches; the scene bumps the
+/// generation only when the cached content inputs change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RetainedId {
+    /// Source surface index.
+    pub surface: u32,
+    /// Content generation of the cached arrays.
+    pub generation: u64,
+}
+
+/// Index range into retained geometry. Draws reference ranges so later
+/// splits reuse the same allocation; the first slice always spans it fully.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetainedSlice {
+    /// First index.
+    pub start: u32,
+    /// Index count.
+    pub count: u32,
+}
+
+/// One statically evaluated retained pass: per-vertex attributes computed
+/// once per content key with projection deferred to resolve time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedPassAttrs {
+    /// Primary texture coordinates, one per vertex.
+    pub tex_coords: Vec<Vec2>,
+    /// Second texture coordinates, one per vertex when paired, else empty.
+    pub tex_coords2: Vec<Vec2>,
+    /// Vertex colors, one per vertex.
+    pub colors: Vec<Vec4>,
+}
+
+/// Arena-resident surface arrays shared by every frame's operations without
+/// per-frame clones. Positions stay model-local; each operation carries the
+/// model-folded projector rows that resolve them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedSurfaceData {
+    /// Allocation identity.
+    pub id: RetainedId,
+    /// Model-local positions, one per vertex.
+    pub positions: Vec<Vec3>,
+    /// Triangle indices.
+    pub indices: Vec<u32>,
+    /// Statically evaluated attributes, one entry per pass.
+    pub passes: Vec<RetainedPassAttrs>,
+}
+
+/// Per-frame parameters for one retained pass draw. Textures, state, and fog
+/// are cheap per-frame values; vertex data stays in the arena allocation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedBatch {
+    /// Index range into the shared geometry.
+    pub range: RetainedSlice,
+    /// Pass index into the shared attributes.
+    pub pass: u32,
+    /// Primary texture binding.
+    pub texture: TextureBinding,
+    /// Second texture bundle when paired.
+    pub second_texture: Option<TextureBundle>,
+    /// Pipeline state.
+    pub state: RenderState,
+    /// Lighting parameters (retained draws stay vertex-lit).
+    pub lighting: BatchLighting,
+    /// Optional fragment fog.
+    pub fog: Option<BatchFog>,
+    /// Primitive type.
+    pub primitive: BatchPrimitive,
+    /// Luminance-alpha texture effect.
+    pub luminance_alpha: bool,
+}
+
+/// One retained draw: shared arena geometry plus the frame's projector rows.
+/// Backends resolve positions through the rows (CPU) or a composed MVP
+/// uniform (GL) instead of receiving per-frame projected batches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedDraw {
+    /// Shared arena allocation.
+    pub surface: Arc<RetainedSurfaceData>,
+    /// Model-folded eye rows from the frame projector.
+    pub eye: [Vec4; 3],
+    /// Camera projection matrix, column-major.
+    pub projection: Mat4,
+    /// Per-pass draw parameters.
+    pub batches: Vec<RetainedBatch>,
+}
+
 /// Float rectangle: viewports, pictures, atlas passes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -1319,6 +1407,8 @@ pub enum RenderOperation {
         /// White image.
         white_image: RendererImage,
     },
+    /// Draw arena-resident geometry with the frame's projector rows.
+    RetainedDraw(RetainedDraw),
 }
 
 /// Viewport, clear, and clip state shared by every view.
