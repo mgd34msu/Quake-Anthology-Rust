@@ -45,8 +45,7 @@ mod tests {
         // The dialect `atof` consumes a numeric prefix, so trailing junk
         // parses (value 1 for "1x", -16 for "-0x10", 0 for "0x").
         for text in [
-            "0", "1", "0.5", "-2", " 1 ", "0x10", "+0x10", "0b101", "0o17", "1e3", "1x", "-0x10", "0x",
-            "1.2.3",
+            "0", "1", "0.5", "-2", " 1 ", "0x10", "+0x10", "0b101", "0o17", "1e3", "1x", "-0x10", "0x", "1.2.3",
         ] {
             for dialect in [Dialect::Q1Netquake, Dialect::Q2Classic, Dialect::Q3] {
                 assert_eq!(validate_r_shadows(text, dialect), None, "{text}");
