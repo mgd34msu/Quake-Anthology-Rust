@@ -313,7 +313,7 @@ mod tests {
     fn slide_clip_applies_dead_zone() {
         let math = math();
         let clipped = math.slide_clip_velocity([0.05, 0.2, 1.0], [0.0, 0.0, 1.0], 1.0);
-        assert_eq!(clipped, [0.0, 0.2, 0.0]);
+        assert_eq!(clipped, [0.0, f64::from(0.2f32), 0.0]);
     }
 
     #[test]

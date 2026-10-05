@@ -1,11 +1,12 @@
 //! Frame-time cvars and source frame-delta transforms.
 //!
-//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/frame-time.ts`
-//! (`FrameTimeControls`, `q3ServerPaused`, `frameTimeCvarNames`,
-//! `refreshFrameTimeCvars`, `FrameTimeCvarMirror`, `registerFrameTimeCvars`,
-//! `readFrameTimeControls`, `sourceFrameMilliseconds`).
+//! Behavior follows the originals: NetQuake `Host_FilterTime`
+//! (`quake/WinQuake/host.c:501-522`), QuakeWorld client throttling
+//! (`quake/QW/client/cl_main.c:1317-1328`), Quake 2 `Qcommon_Frame`
+//! (`quake-2/qcommon/common.c:1491-1529`), Quake 3 `Com_ModifyMsec`
+//! (`quake-iii-arena/code/qcommon/common.c:2584-2627`).
 //!
-//! `FrameTimeCvarMirror` is an explicit-sync port: `qa-core` has no cvar
+//! `FrameTimeCvarMirror` is explicit-sync: `qa-core` has no cvar
 //! value-subscription API, so owner-to-mirror copies happen through
 //! [`FrameTimeCvarMirror::refresh`] and mirror-to-owner writes through
 //! [`FrameTimeCvarMirror::push`] instead of live bindings.
@@ -30,14 +31,18 @@ pub enum FrameTimeError {
 /// Timescale, fixed-step, host-framerate, and camera-mode controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameTimeControls {
-    /// Timescale multiplier.
+    /// Timescale multiplier (Q2/Q3 only; Q1 has no timescale cvar).
     pub timescale: f64,
     /// Fixed frame time.
     pub fixedtime: f64,
-    /// Host framerate override (frames per second).
+    /// Host framerate override, in seconds (NetQuake only).
     pub host_framerate: f64,
     /// Camera mode.
     pub camera_mode: f64,
+    /// QuakeWorld `cl_maxfps` (0 selects the rate fallback).
+    pub maxfps: f64,
+    /// QuakeWorld `rate` (bytes/sec) for the `cl_maxfps = 0` fallback.
+    pub rate: f64,
 }
 
 /// Host dedication for the Q3 frame clamp.
@@ -67,15 +72,53 @@ pub fn q3_server_paused(
 }
 
 /// Frame-time cvar names owned by a dialect.
+///
+/// Q1 has no `timescale` cvar (`host.c`, `cl_main.c`); NetQuake owns only
+/// `host_framerate`, QuakeWorld only `cl_maxfps`.
 #[must_use]
 pub fn frame_time_cvar_names(dialect: Dialect) -> &'static [&'static str] {
-    if dialect.is_q1() {
-        &["timescale", "host_framerate"]
+    if dialect == Dialect::Q1Netquake {
+        &["host_framerate"]
+    } else if dialect == Dialect::Q1Quakeworld {
+        &["cl_maxfps"]
     } else if dialect.is_q2() {
         &["timescale", "fixedtime"]
     } else {
         &["timescale", "fixedtime", "com_cameraMode"]
     }
+}
+
+/// NetQuake frame gate (`Host_FilterTime`, `host.c:501-522`): false when
+/// the frame arrives too soon after the previous one (72 Hz throttle),
+/// unless a timedemo is running.
+#[must_use]
+pub fn nq_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, timedemo: bool) -> bool {
+    timedemo || realtime_seconds - old_realtime_seconds >= 1.0 / 72.0
+}
+
+/// QuakeWorld simulation fps (`cl_main.c:1317-1320`): `cl_maxfps` clamped
+/// to 30..72, or `rate / 80` clamped the same way when `cl_maxfps` is 0.
+/// Callers must pass finite values.
+#[must_use]
+pub fn qw_fps(maxfps: f64, rate: f64) -> f64 {
+    if maxfps != 0.0 {
+        maxfps.clamp(30.0, 72.0)
+    } else {
+        (rate / 80.0).clamp(30.0, 72.0)
+    }
+}
+
+/// QuakeWorld frame gate (`cl_main.c:1314-1328`): false when the frame
+/// arrives too soon at the current `fps` throttle, unless a timedemo is
+/// running. A clock that runs backward resets the previous timestamp.
+#[must_use]
+pub fn qw_frame_due(realtime_seconds: f64, old_realtime_seconds: f64, fps: f64, timedemo: bool) -> bool {
+    let old = if old_realtime_seconds > realtime_seconds {
+        0.0
+    } else {
+        old_realtime_seconds
+    };
+    timedemo || realtime_seconds - old >= 1.0 / fps
 }
 
 /// Copy declared frame-time values from `owner` into `mirror`.
@@ -156,33 +199,38 @@ impl FrameTimeCvarMirror {
 }
 
 /// Register the frame-time cvars for the registry dialect.
+///
+/// Q1 dialects register no `timescale`: the originals have no such cvar.
 pub fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), FrameTimeError> {
-    let q1 = cvars.dialect().is_q1();
-    let q2 = cvars.dialect().is_q2();
-    let mut register = |name: &str, value: &str, flag_word: u32| -> Result<(), FrameTimeError> {
-        if !q1 || cvars.get(name).is_none() {
-            cvars.register(name, value, flag_word)?;
+    let dialect = cvars.dialect();
+    let q2 = dialect.is_q2();
+    if dialect == Dialect::Q1Netquake {
+        if cvars.get("host_framerate").is_none() {
+            cvars.register("host_framerate", "0", 0)?;
         }
-        Ok(())
+        return Ok(());
+    }
+    if dialect == Dialect::Q1Quakeworld {
+        if cvars.get("cl_maxfps").is_none() {
+            cvars.register("cl_maxfps", "0", 0)?;
+        }
+        return Ok(());
+    }
+    let cheat = if dialect == Dialect::Q2Classic {
+        0
+    } else if q2 {
+        q2_flags::CHEAT
+    } else {
+        flags::CHEAT
     };
-    register(
+    cvars.register(
         "timescale",
         "1",
-        if q1 {
-            0
-        } else if q2 {
-            q2_flags::CHEAT
-        } else {
-            flags::CHEAT | flags::SYSTEM_INFO
-        },
+        if q2 { cheat } else { flags::CHEAT | flags::SYSTEM_INFO },
     )?;
-    if q1 {
-        register("host_framerate", "0", 0)?;
-    } else {
-        register("fixedtime", "0", if q2 { q2_flags::CHEAT } else { flags::CHEAT })?;
-        if !q2 {
-            register("com_cameraMode", "0", flags::CHEAT)?;
-        }
+    cvars.register("fixedtime", "0", cheat)?;
+    if !q2 {
+        cvars.register("com_cameraMode", "0", flags::CHEAT)?;
     }
     Ok(())
 }
@@ -206,6 +254,8 @@ pub fn read_frame_time_controls(cvars: &CvarRegistry) -> FrameTimeControls {
         camera_mode: cvars
             .get("com_cameraMode")
             .map_or(0.0, |value| f64::from(value.integer_value)),
+        maxfps: f64::from(cvars.variable_value("cl_maxfps")),
+        rate: cvars.get("rate").map_or(2500.0, |value| f64::from(value.numeric_value)),
     }
 }
 
@@ -226,32 +276,31 @@ pub fn source_frame_milliseconds(
         controls.fixedtime,
         controls.host_framerate,
         controls.camera_mode,
+        controls.maxfps,
+        controls.rate,
     ]
     .iter()
     .all(|value| value.is_finite())
     {
         return Err(FrameTimeError::Invalid("Frame time controls must be finite".to_owned()));
     }
-    if dialect == Dialect::Q1Netquake || dialect == Dialect::Q1Quakeworld {
+    if dialect == Dialect::Q1Netquake {
         if controls.host_framerate > 0.0 {
             return Ok(controls.host_framerate * 1000.0);
         }
-        let scaled = if controls.timescale == 0.0 {
-            raw_milliseconds
-        } else {
-            raw_milliseconds * controls.timescale
-        };
-        return Ok(scaled.clamp(1.0, 100.0));
+        return Ok(raw_milliseconds.clamp(1.0, 100.0));
+    }
+    if dialect == Dialect::Q1Quakeworld {
+        return Ok(raw_milliseconds.min(200.0));
     }
     if dialect.is_q2() {
         if controls.fixedtime != 0.0 {
-            return Ok(controls.fixedtime);
+            return Ok(controls.fixedtime.trunc());
         }
-        return Ok(if controls.timescale == 0.0 {
-            raw_milliseconds
-        } else {
-            (raw_milliseconds * controls.timescale).max(1.0)
-        });
+        if controls.timescale == 0.0 {
+            return Ok(raw_milliseconds.trunc());
+        }
+        return Ok((raw_milliseconds * controls.timescale).trunc().max(1.0));
     }
     let mut milliseconds = raw_milliseconds.trunc() as i64;
     let scale = controls.timescale as f32;
@@ -288,6 +337,8 @@ mod tests {
             fixedtime: 0.0,
             host_framerate: 0.0,
             camera_mode: 0.0,
+            maxfps: 0.0,
+            rate: 2500.0,
         }
     }
 
@@ -299,15 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn q1_clamps_scaled_frame() {
+    fn netquake_ignores_timescale_and_clamps() {
         let mut scaled = controls();
         scaled.timescale = 2.0;
         assert_eq!(
-            source_frame_milliseconds(Dialect::Q1Netquake, 30.0, &scaled, &host()).expect("scaled"),
-            60.0
+            source_frame_milliseconds(Dialect::Q1Netquake, 30.0, &scaled, &host()).expect("unscaled"),
+            30.0
         );
         assert_eq!(
-            source_frame_milliseconds(Dialect::Q1Quakeworld, 500.0, &controls(), &host()).expect("clamped"),
+            source_frame_milliseconds(Dialect::Q1Netquake, 500.0, &controls(), &host()).expect("clamped"),
             100.0
         );
         assert_eq!(
@@ -323,16 +374,73 @@ mod tests {
     }
 
     #[test]
-    fn q2_prefers_fixedtime() {
+    fn netquake_gate_throttles_to_72hz() {
+        assert!(!nq_frame_due(1.0, 1.0, false));
+        assert!(!nq_frame_due(1.0 + 1.0 / 72.0 - 0.0001, 1.0, false));
+        assert!(nq_frame_due(1.0 + 1.0 / 72.0 + 0.0001, 1.0, false));
+        assert!(nq_frame_due(2.0, 1.0, false));
+        assert!(nq_frame_due(1.0, 1.0, true));
+    }
+
+    #[test]
+    fn quakeworld_caps_at_200ms_without_floor_or_framerate() {
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q1Quakeworld, 500.0, &controls(), &host()).expect("capped"),
+            200.0
+        );
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q1Quakeworld, 0.0, &controls(), &host()).expect("no floor"),
+            0.0
+        );
+        let mut framerate = controls();
+        framerate.host_framerate = 0.05;
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q1Quakeworld, 30.0, &framerate, &host()).expect("framerate ignored"),
+            30.0
+        );
+    }
+
+    #[test]
+    fn quakeworld_fps_follows_maxfps_or_rate() {
+        assert_eq!(qw_fps(60.0, 2500.0), 60.0);
+        assert_eq!(qw_fps(100.0, 2500.0), 72.0);
+        assert_eq!(qw_fps(10.0, 2500.0), 30.0);
+        assert_eq!(qw_fps(0.0, 2500.0), 31.25);
+        assert_eq!(qw_fps(0.0, 100_000.0), 72.0);
+        assert!(!qw_frame_due(1.0, 1.0, 31.25, false));
+        assert!(qw_frame_due(1.0 + 1.0 / 31.25 + 0.0001, 1.0, 31.25, false));
+        assert!(qw_frame_due(1.0, 1.0, 31.25, true));
+        assert!(qw_frame_due(0.5, 1.0, 31.25, false));
+    }
+
+    #[test]
+    fn q2_truncates_to_integer_msec() {
         let mut fixed = controls();
         fixed.fixedtime = 8.0;
         assert_eq!(
             source_frame_milliseconds(Dialect::Q2Classic, 30.0, &fixed, &host()).expect("fixed"),
             8.0
         );
+        fixed.fixedtime = 8.9;
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q2Classic, 30.0, &fixed, &host()).expect("fixed truncates"),
+            8.0
+        );
         assert_eq!(
             source_frame_milliseconds(Dialect::Q2Rerelease, 0.2, &controls(), &host()).expect("floored"),
             1.0
+        );
+        let mut unscaled = controls();
+        unscaled.timescale = 0.0;
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q2Classic, 30.7, &unscaled, &host()).expect("raw truncates"),
+            30.0
+        );
+        let mut half = controls();
+        half.timescale = 0.5;
+        assert_eq!(
+            source_frame_milliseconds(Dialect::Q2Classic, 33.0, &half, &host()).expect("product truncates"),
+            16.0
         );
     }
 
@@ -371,13 +479,32 @@ mod tests {
     }
 
     #[test]
+    fn q2_timescale_flags_follow_edition() {
+        let mut classic = CvarRegistry::new(Dialect::Q2Classic);
+        register_frame_time_cvars(&mut classic).expect("register");
+        assert_eq!(classic.get("timescale").expect("timescale").flags, 0);
+        assert_eq!(classic.get("fixedtime").expect("fixedtime").flags, 0);
+        let mut rerelease = CvarRegistry::new(Dialect::Q2Rerelease);
+        register_frame_time_cvars(&mut rerelease).expect("register");
+        assert_eq!(rerelease.get("timescale").expect("timescale").flags, q2_flags::CHEAT);
+        assert_eq!(rerelease.get("fixedtime").expect("fixedtime").flags, q2_flags::CHEAT);
+    }
+
+    #[test]
     fn registers_and_reads_dialect_cvars() {
         let mut cvars = CvarRegistry::new(Dialect::Q1Netquake);
         register_frame_time_cvars(&mut cvars).expect("register");
-        assert!(cvars.get("timescale").is_some());
+        assert!(cvars.get("timescale").is_none());
         assert!(cvars.get("host_framerate").is_some());
+        let mut qw = CvarRegistry::new(Dialect::Q1Quakeworld);
+        register_frame_time_cvars(&mut qw).expect("register");
+        assert!(qw.get("timescale").is_none());
+        assert!(qw.get("host_framerate").is_none());
+        assert!(qw.get("cl_maxfps").is_some());
         let read = read_frame_time_controls(&cvars);
         assert_eq!(read.timescale, 1.0);
+        assert_eq!(read.maxfps, 0.0);
+        assert_eq!(read.rate, 2500.0);
         let mut q3 = CvarRegistry::new(Dialect::Q3);
         register_frame_time_cvars(&mut q3).expect("register");
         assert!(q3.get("com_cameraMode").is_some());

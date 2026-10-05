@@ -344,10 +344,25 @@ pub fn vector_to_angles(value: Vec3) -> Vec3 {
     vec3(-pitch, yaw, 0.0)
 }
 
-/// Reduce an angle to `[0, 360)` via the donor's 16-bit fixed-point path.
+/// Reduce an angle to `[0, 360)` via the original 16-bit fixed-point path.
+/// One formula shared by Q1, classic Q2 and Q3: WinQuake `mathlib.c:155`
+/// `anglemod`, Quake 2 `q_shared.c:293` `anglemod`, Q3 `q_math.c:632`
+/// `AngleMod` are the identical expression.
 #[must_use]
 pub fn angle_mod(angle: f64) -> f64 {
     (360.0 / 65_536.0) * f64::from(float_to_wrapped_i32(angle * (65_536.0 / 360.0)) & 65_535)
+}
+
+/// Reduce an angle to `[0, 360)` via the rerelease `fmod` path
+/// (`quake2-rerelease-dll` `q_std.h` `anglemod`).
+#[must_use]
+pub fn angle_mod_rerelease(angle: f64) -> f64 {
+    let wrapped = angle % 360.0;
+    if wrapped < 0.0 {
+        wrapped + 360.0
+    } else {
+        wrapped
+    }
 }
 
 /// Normalize an angle to `[0, 360)`.
@@ -861,12 +876,16 @@ mod tests {
     }
 
     #[test]
-    fn angle_helpers_match_donor() {
+    fn angle_helpers_match_qsrc() {
         assert_eq!(angle_mod(720.5), 91.0 * (360.0 / 65_536.0));
         assert!((angle_mod(-90.0) - 270.0).abs() < 0.01);
         assert!((angle_normalize180(270.0) + 90.0).abs() < 0.01);
         assert!((angle_delta(10.0, 350.0) - 20.0).abs() < 0.01);
         assert!((lerp_angle(350.0, 10.0, 0.5) - 360.0).abs() < 1e-9);
+        assert_eq!(angle_mod_rerelease(720.5), 0.5);
+        assert_eq!(angle_mod_rerelease(-90.0), 270.0);
+        assert_eq!(angle_mod_rerelease(360.0), 0.0);
+        assert_eq!(angle_mod_rerelease(0.0), 0.0);
     }
 
     #[test]

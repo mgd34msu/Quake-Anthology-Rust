@@ -150,6 +150,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn service(
         source: FakeSource,
     ) -> ConfigMenuService<FakeSource, impl FnMut(&str) -> Result<String, String>, impl FnMut(&str) -> Result<(), String>>

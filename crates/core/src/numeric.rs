@@ -1,5 +1,7 @@
-//! Numeric semantics ported from `src/core/numeric.ts` and
-//! `src/contracts/numeric.ts` (Q3 `q_math.c`, `q_shared.h`, QVM `OP_CVFI`).
+//! Numeric semantics: qsrc behavior per dialect (Q1/Q2 C float semantics
+//! with `f32` storage, Q3 binary32, QVM `OP_CVFI`). The `DonorBinary64` and
+//! `DonorSource` names are retained only until the gameplay verticals delete
+//! the per-operation wrappers; they no longer reproduce any donor port.
 
 use thiserror::Error;
 
@@ -126,9 +128,11 @@ pub fn q_crandom(seed: i32) -> RandomStep {
 /// Which arithmetic a call chain evaluates with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arithmetic {
-    /// Round every operation to binary32 (Q3 donor order).
+    /// Round every operation to binary32 (Q3 binary32).
     Binary32EachOp,
-    /// Unrounded binary64 intermediates with binary32 storage (Q1/Q2 donors).
+    /// C float semantics with binary32 storage (Q1/Q2 engine code and
+    /// QuakeC opcodes, which store a float after every op). The name is a
+    /// retained alias; behavior follows the originals, not any donor port.
     DonorBinary64(DonorSource),
     /// Native x87 precision; needs its own backend.
     X87 {
@@ -148,12 +152,13 @@ pub enum Arithmetic {
     },
 }
 
-/// Which donor port the unrounded binary64 path reproduces.
+/// Which original engine the C-float path models. The name is a retained
+/// alias; behavior follows qsrc (WinQuake `mathlib.c`, Quake 2 `q_shared.c`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DonorSource {
-    /// Quake I TypeScript donor.
+    /// Quake I C float semantics.
     Q1,
-    /// Quake II TypeScript donor.
+    /// Quake II C float semantics.
     Q2,
 }
 
@@ -211,14 +216,17 @@ pub const Q3_BINARY32_PROFILE: NumericProfile = NumericProfile {
     float_to_int: FloatToInt::QvmIndefinite,
 };
 
-/// Q1 donor binary64 profile (reproduces the TS port, not native x87).
+/// Q1 C float profile: `f32` storage with per-operation rounding, matching
+/// WinQuake `float` declarations (`mathlib.c`) and QuakeC's store-after-op.
+/// C `if (x)` is `x != 0.0`, true for NaN.
 pub const Q1_DONOR_PROFILE: NumericProfile = NumericProfile {
     id: "q1:donor-binary64",
     arithmetic: Arithmetic::DonorBinary64(DonorSource::Q1),
     float_to_int: FloatToInt::CheckedTruncation,
 };
 
-/// Q2 donor binary64 profile (reproduces the TS port, not native x87).
+/// Q2 C float profile: `f32` storage with per-operation rounding, matching
+/// Quake 2 `float` declarations (`q_shared.c`, game `*.c`).
 pub const Q2_DONOR_PROFILE: NumericProfile = NumericProfile {
     id: "q2:donor-binary64",
     arithmetic: Arithmetic::DonorBinary64(DonorSource::Q2),
@@ -238,7 +246,7 @@ impl NumericOps {
     pub fn select(profile: NumericProfile) -> Result<Self, NumericError> {
         let round_each_op = match profile.arithmetic {
             Arithmetic::Binary32EachOp => true,
-            Arithmetic::DonorBinary64(_) => false,
+            Arithmetic::DonorBinary64(_) => true,
             Arithmetic::Sse {
                 flush_to_zero: false,
                 denormals_are_zero: false,
@@ -797,7 +805,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn qvm_float_to_int_matches_donor_edges() {
+    fn qvm_float_to_int_matches_qsrc_edges() {
         assert_eq!(qvm_float_to_int(1.9), 1);
         assert_eq!(qvm_float_to_int(-1.9), -1);
         assert_eq!(qvm_float_to_int(-0.5), 0);
@@ -820,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn q_rand_sequence_matches_donor() {
+    fn q_rand_sequence_matches_qsrc() {
         let mut seed = 1;
         let mut values = Vec::new();
         for _ in 0..4 {
@@ -839,10 +847,12 @@ mod tests {
     fn numeric_ops_follow_selected_profile() {
         let binary32 = NumericOps::select(Q3_BINARY32_PROFILE).unwrap();
         assert_eq!(binary32.add(16_777_216.0, 1.0), 16_777_216.0);
-        let donor = NumericOps::select(Q1_DONOR_PROFILE).unwrap();
-        assert_eq!(donor.add(16_777_216.0, 1.0), 16_777_217.0);
+        let q1 = NumericOps::select(Q1_DONOR_PROFILE).unwrap();
+        assert_eq!(q1.add(16_777_216.0, 1.0), 16_777_216.0);
+        let q2 = NumericOps::select(Q2_DONOR_PROFILE).unwrap();
+        assert_eq!(q2.mul(16_777_216.0, 1.1), 18_454_938.0);
         assert_eq!(binary32.to_int32(f64::NAN), Ok(i32::MIN));
-        assert_eq!(donor.to_int32(f64::NAN), Err(NumericError::IntRange));
+        assert_eq!(q1.to_int32(f64::NAN), Err(NumericError::IntRange));
         let x87 = NumericProfile {
             id: "native:x87",
             arithmetic: Arithmetic::X87 {
