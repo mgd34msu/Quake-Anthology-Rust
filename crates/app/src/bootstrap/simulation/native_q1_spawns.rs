@@ -917,6 +917,22 @@ mod tests {
     }
 
     #[test]
+    fn door_zero_fields_select_stock_defaults() {
+        // Stock QuakeC uses `if (!self.x) self.x = N` (`doors.qc:504-509`),
+        // so an explicit "0" also selects the default, for every defaulted
+        // door field.
+        let params = q1_door_params(
+            &door_fields(&[("speed", "0"), ("wait", "0"), ("lip", "0"), ("dmg", "0")]),
+            &door_model(),
+        )
+        .unwrap();
+        assert_eq!(params.speed, 100.0);
+        assert_eq!(params.wait, 3.0);
+        assert_eq!(params.lip, 8.0);
+        assert_eq!(params.dmg, 2.0);
+    }
+
+    #[test]
     fn blocked_damages_and_reverses_when_wait_is_positive() {
         let mut server = test_server();
         register_q1_spawns(server.spawns_mut());
