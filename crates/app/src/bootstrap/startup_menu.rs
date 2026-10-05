@@ -44,7 +44,6 @@ use qa_client::ui::common::menu_theme::menu_backdrop;
 use qa_client::ui::common::menu_theme::menu_panel;
 use qa_client::ui::common::menu_theme::menu_skin;
 use qa_client::ui::common::menu_theme::menu_title_font;
-use qa_client::ui::common::skin::nine_slice;
 use qa_client::ui::library::menu::register_library_menu;
 use qa_client::ui::library::menu::LibraryMenuService;
 use qa_client::ui::mods::menu::register_mod_menu;
@@ -597,13 +596,7 @@ impl StartupMenu {
         let mut text = UiTextRenderer::new(seat.clone());
         text.bind(MENU_BODY_FONT_SLOT, options.font.clone());
         text.bind(MENU_TITLE_FONT_SLOT, options.title_font.clone());
-        let mut skin = menu_skin(&options.art.skin.font);
-        // The donor theme leaves focus art unset, so the focused control
-        // would show only a flat fill; wire the loaded nine-slice glow.
-        // Panel and background stay unset: the draw path paints the panel
-        // frame over the narrow-aware panel rect itself, and the backdrop
-        // command already paints the main-menu art fullscreen every frame.
-        skin.focus = options.art.skin.focus.clone();
+        let skin = menu_skin(&options.art.skin.font);
         let options = Rc::new(options);
         let measure_options = Rc::clone(&options);
         let appearance_options = Rc::clone(&options);
@@ -3315,24 +3308,7 @@ impl StartupMenu {
             .into_iter()
             .map(|command| transform_ui(&command, &transform))
             .collect();
-        let mut head = vec![backdrop, panel.clone()];
-        // Frame the panel fill with the nine-slice art over the same
-        // narrow-aware rect (the controller's fixed panel rect does not
-        // match the main menu's narrow fill).
-        if let UiDrawCommand::Fill { rect, .. } = &panel {
-            if let Some(slice) = self.options.art.skin.panel.as_ref() {
-                head.extend(nine_slice(
-                    slice,
-                    rect,
-                    Vec4 {
-                        x: 1.0,
-                        y: 1.0,
-                        z: 1.0,
-                        w: 1.0,
-                    },
-                )?);
-            }
-        }
+        let mut head = vec![backdrop, panel];
         head.extend(main_commands);
         render_ui_commands(context, &head, services)?;
         let menu_commands = self.controller.borrow_mut().draw(context)?;

@@ -13,12 +13,13 @@
 //! records fills, images, and text runs as pixel quads, which become
 //! vertex-colored [`DrawBatch`] values (the same overlay pattern as the
 //! Quake II damage blend): fills over a 1x1 uploaded white image grouped
-//! into emit-order runs with the textured donor art quads (backdrop plus
-//! nine-slice panel and focus), then one textured batch binding the
-//! console charset atlas from [`super::windowed_menu_text`] so every glyph
-//! draws with real UVs. The atlas loads the real `conchars` through
-//! installed content mounts when game data is present and falls back to
-//! the synthetic atlas otherwise, so the menu entry is always available,
+//! into emit-order runs with the textured donor backdrop quad (the panel
+//! is a flat fill and the skin leaves panel/focus art unset, exactly the
+//! donor theme), then one textured batch binding the console charset
+//! atlas from [`super::windowed_menu_text`] so every glyph draws with
+//! real UVs. The atlas loads the real `conchars` through installed
+//! content mounts when game data is present and falls back to the
+//! synthetic atlas otherwise, so the menu entry is always available,
 //! with or without game content.
 
 use std::cell::Cell;
@@ -643,8 +644,7 @@ struct MenuQuad {
 }
 
 /// One emit-order run of quads over a single image: consecutive fills and
-/// art quads group into runs so painter order survives batching (panel art
-/// stays under later control fills, focus art over its control fill).
+/// art quads group into runs so painter order survives batching.
 struct MenuQuadRun {
     /// Art slot, or `None` for the white image.
     art: Option<usize>,
@@ -816,8 +816,8 @@ fn tag_art_slot(tag: u32) -> Option<usize> {
 
 /// Vertex-colored overlay batches for captured runs in NDC space (the
 /// damage-blend overlay pattern: depth-always, no depth writes, blended).
-/// Each run binds its own image (white for fills, one art image for
-/// backdrop and nine-slice quads) so painter order survives batching.
+/// Each run binds its own image (white for fills, one art image for the
+/// backdrop) so painter order survives batching.
 fn menu_batches(
     runs: &[MenuQuadRun],
     width: f32,
@@ -966,7 +966,9 @@ mod tests {
             assert!(matches!(upload, ImageResourceOperation::CreateImage { .. }));
         }
         let batches = batches_of(&view);
-        assert_eq!(batches.len(), 7);
+        // Donor draw order: backdrop art, one flat-fill run (panel,
+        // divider, control fills), then the glyph batch.
+        assert_eq!(batches.len(), 3);
         for batch in batches {
             assert_eq!(batch.lighting, BatchLighting::Vertex);
         }
@@ -1051,7 +1053,9 @@ mod tests {
     }
 
     #[test]
-    fn menu_panel_and_focus_use_nine_slice_art() {
+    fn menu_panel_is_a_flat_fill_without_nine_slice_art() {
+        // Donor `menuPanel` is a flat fill and the menu skin leaves panel
+        // and focus art unset; no batch may bind the nine-slice images.
         let mut menu = menu();
         let (view, _) = menu.frame_view(960, 600, None, 0.0).expect("menu view");
         let batches = batches_of(&view);
@@ -1064,21 +1068,23 @@ mod tests {
             .collect();
         let panel = MENU_ART_ORDINAL_BASE + 2;
         let focus = MENU_ART_ORDINAL_BASE + 3;
-        assert!(ordinals.contains(&panel), "panel art batch present: {ordinals:?}");
-        assert!(ordinals.contains(&focus), "focus art batch present: {ordinals:?}");
-        let panel_batch = batches
-            .iter()
-            .find(|batch| matches!(&batch.texture, TextureBinding::BindImage(image) if image.ordinal == panel))
-            .expect("panel batch");
-        let BatchVertices::Single(vertices) = &panel_batch.vertices else {
-            panic!("expected single-textured panel vertices");
+        assert!(!ordinals.contains(&panel), "no panel art batch: {ordinals:?}");
+        assert!(!ordinals.contains(&focus), "no focus art batch: {ordinals:?}");
+        let TextureBinding::BindImage(backdrop) = &batches[0].texture else {
+            panic!("first batch must bind a menu image");
         };
-        assert_eq!(vertices.len() % 4, 0);
-        assert!(
-            vertices.len() / 4 >= 4,
-            "panel nine-slice emits corner quads, got {}",
-            vertices.len() / 4
-        );
+        assert_eq!(backdrop.ordinal, MENU_ART_ORDINAL_BASE + 1);
+        let white_batches = batches
+            .iter()
+            .filter(|batch| {
+                matches!(&batch.texture, TextureBinding::BindImage(image) if image.ordinal == MENU_WHITE_ORDINAL)
+            })
+            .count();
+        assert!(white_batches >= 1, "panel and controls draw as flat fills");
+        let BatchVertices::Single(text) = &batches.last().expect("text batch").vertices else {
+            panic!("expected single-textured text vertices");
+        };
+        assert!(!text.is_empty() && text.len() % 4 == 0, "text draws whole glyph quads");
     }
 
     #[test]
