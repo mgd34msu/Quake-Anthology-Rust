@@ -1334,6 +1334,121 @@ pub fn create_shared_q1_collision(geometry: Q1CollisionGeometry) -> Q1Collision 
     Q1Collision::with_blocks(geometry, blocks_q1_contents)
 }
 
+/// Collision geometry from a decoded Quake I map: models, nodes, planes,
+/// clipnodes, leaves, faces, and visibility copied into the collision
+/// record shapes.
+#[must_use]
+pub fn q1_collision_geometry(map: &qa_content::bsp::Q1Map<'_>) -> Q1CollisionGeometry {
+    use qa_content::bsp::{ClipChild as MapClipChild, NodeChild};
+    use qa_content::wad::MipTexture;
+
+    fn child(child: &NodeChild) -> Q1BspChild {
+        match child {
+            NodeChild::Node(index) => Q1BspChild::Node(*index as usize),
+            NodeChild::Leaf(index) => Q1BspChild::Leaf(*index as usize),
+        }
+    }
+
+    fn point(values: &[f32; 3]) -> Vec3 {
+        vec3(values[0], values[1], values[2])
+    }
+
+    Q1CollisionGeometry {
+        models: map
+            .models
+            .iter()
+            .map(|model| Q1CollisionModel {
+                bounds: Bounds {
+                    min: point(&model.bounds.min),
+                    max: point(&model.bounds.max),
+                },
+                headnodes: model.headnodes.to_vec(),
+                visible_leaves: model.visible_leaves,
+                faces: IndexRange {
+                    first: model.face_first as usize,
+                    count: model.face_count as usize,
+                },
+            })
+            .collect(),
+        nodes: map
+            .nodes
+            .iter()
+            .map(|node| Q1CollisionNode {
+                plane: node.plane as usize,
+                children: [child(&node.children[0]), child(&node.children[1])],
+            })
+            .collect(),
+        clipnodes: map
+            .clipnodes
+            .iter()
+            .map(|node| ClipNode {
+                plane: node.plane as usize,
+                children: node.children.map(|child| match child {
+                    MapClipChild::Contents(contents) => ClipChild::Contents(contents),
+                    MapClipChild::ClipNode(index) => ClipChild::Node(index as usize),
+                }),
+            })
+            .collect(),
+        planes: map
+            .planes
+            .iter()
+            .map(|plane| BspPlane {
+                normal: point(&plane.normal),
+                distance: plane.distance,
+                plane_type: plane.plane_type,
+                signbits: i32::from(plane.signbits),
+            })
+            .collect(),
+        leaves: map
+            .leaves
+            .iter()
+            .map(|leaf| Q1CollisionLeaf {
+                contents: leaf.contents,
+                visibility_offset: leaf.visibility_offset,
+            })
+            .collect(),
+        faces: map
+            .faces
+            .iter()
+            .map(|face| Q1CollisionFace {
+                plane: face.plane as usize,
+                back: face.back,
+                edges: IndexRange {
+                    first: face.edge_first as usize,
+                    count: face.edge_count as usize,
+                },
+                texture_info: face.texture_info as usize,
+            })
+            .collect(),
+        texture_info: map
+            .texture_info
+            .iter()
+            .map(|info| Q1CollisionTextureInfo {
+                texture: info.texture as usize,
+            })
+            .collect(),
+        textures: map
+            .textures
+            .iter()
+            .map(|texture| match texture {
+                Some(MipTexture::Embedded { name, .. } | MipTexture::External { name, .. }) => Some(name.clone()),
+                None => None,
+            })
+            .collect(),
+        vertices: map.vertices.iter().map(point).collect(),
+        edges: map
+            .edges
+            .iter()
+            .map(|edge| BspEdge {
+                vertices: [edge.vertices[0] as i32, edge.vertices[1] as i32],
+            })
+            .collect(),
+        surface_edges: map.surface_edges.clone(),
+        visibility: map.visibility.to_vec(),
+        brush_list: Vec::new(),
+    }
+}
+
 impl SceneQueries for Q1Collision {
     fn trace(&self, query: &TraceQuery) -> TraceResult {
         scene_expect(self.trace(query), WorldKind::Q1Bsp, "trace")
@@ -1601,6 +1716,123 @@ mod tests {
         assert!(collision.cluster_visible(-1, 0, VisibilityKind::Pvs).expect("pvs"));
         let tasks: &dyn SceneQueries = &collision;
         assert!(tasks.areas_connected(0, 0));
+    }
+
+    #[test]
+    fn q1_geometry_loader_copies_map_records() {
+        use qa_content::bsp::{
+            BspFormat, BspLighting, ClipChild as MapClipChild, ClipNode as MapClipNode, Edge as MapEdge,
+            Face as MapFace, Leaf as MapLeaf, Node as MapNode, NodeChild, Plane as MapPlane, Q1Map,
+            TextureInfo as MapTextureInfo, WorldModel as MapModel,
+        };
+        use qa_content::common::Bounds as MapBounds;
+        use qa_content::wad::MipTexture;
+
+        let map = Q1Map {
+            format: BspFormat::Bsp29,
+            source: "test".to_string(),
+            version: 29,
+            data: &[],
+            lumps: Vec::new(),
+            entities: String::new(),
+            entity_list: Vec::new(),
+            planes: vec![MapPlane {
+                normal: [1.0, 0.0, 0.0],
+                distance: 8.0,
+                plane_type: 0,
+                signbits: 0,
+            }],
+            vertices: vec![[0.0, -16.0, -16.0], [0.0, 16.0, 16.0]],
+            textures: vec![Some(MipTexture::External {
+                name: "sky1".to_string(),
+                width: 128,
+                height: 128,
+            })],
+            texture_offsets: vec![None],
+            mip_offsets: vec![None],
+            texture_info: vec![MapTextureInfo {
+                s: [1.0, 0.0, 0.0, 0.0],
+                t: [0.0, 1.0, 0.0, 0.0],
+                texture: 0,
+                flags: 0,
+            }],
+            faces: vec![MapFace {
+                plane: 0,
+                back: true,
+                edge_first: 0,
+                edge_count: 1,
+                texture_info: 0,
+                styles: [0, 0, 0, 0],
+                lighting_offset: None,
+            }],
+            models: vec![MapModel {
+                bounds: MapBounds {
+                    min: [-64.0, -64.0, -64.0],
+                    max: [64.0, 64.0, 64.0],
+                },
+                origin: [0.0, 0.0, 0.0],
+                headnodes: [0, 0, 0, 0],
+                visible_leaves: 1,
+                face_first: 0,
+                face_count: 1,
+            }],
+            nodes: vec![MapNode {
+                plane: 0,
+                children: [NodeChild::Leaf(0), NodeChild::Leaf(1)],
+                bounds: MapBounds {
+                    min: [-64.0, -64.0, -64.0],
+                    max: [64.0, 64.0, 64.0],
+                },
+                faces: qa_content::bsp::IndexRange { first: 0, count: 0 },
+            }],
+            leaves: vec![
+                MapLeaf {
+                    contents: -2,
+                    visibility_offset: None,
+                    bounds: MapBounds {
+                        min: [0.0, -64.0, -64.0],
+                        max: [64.0, 64.0, 64.0],
+                    },
+                    faces: qa_content::bsp::IndexRange { first: 0, count: 0 },
+                    ambient_sound: [0, 0, 0, 0],
+                },
+                MapLeaf {
+                    contents: -1,
+                    visibility_offset: Some(0),
+                    bounds: MapBounds {
+                        min: [-64.0, -64.0, -64.0],
+                        max: [0.0, 64.0, 64.0],
+                    },
+                    faces: qa_content::bsp::IndexRange { first: 0, count: 0 },
+                    ambient_sound: [0, 0, 0, 0],
+                },
+            ],
+            edges: vec![MapEdge { vertices: [0, 1] }],
+            clipnodes: vec![MapClipNode {
+                plane: 0,
+                children: [MapClipChild::Contents(-2), MapClipChild::Contents(-1)],
+            }],
+            surface_edges: vec![0],
+            leaf_faces: Vec::new(),
+            visibility: &[0x01],
+            monochrome_lighting: &[],
+            lighting: BspLighting::Luminance8 { samples: &[] },
+        };
+        let converted = q1_collision_geometry(&map);
+        assert_eq!(converted.models.len(), 1);
+        assert_eq!(converted.models[0].headnodes, vec![0, 0, 0, 0]);
+        assert_eq!(converted.models[0].bounds.min, vec3(-64.0, -64.0, -64.0));
+        assert_eq!(converted.clipnodes.len(), 1);
+        assert_eq!(converted.textures, vec![Some("sky1".to_string())]);
+        assert_eq!(converted.visibility, vec![0x01]);
+        assert_eq!(converted.edges[0].vertices, [0, 1]);
+        // The converted records trace like the handwritten fixture.
+        let collision = Q1Collision::new(converted);
+        let hit = collision
+            .trace(&query(vec3(-50.0, 0.0, 0.0), vec3(50.0, 0.0, 0.0), SceneShape::Point))
+            .expect("trace");
+        assert!(hit.fraction < 1.0);
+        assert_eq!(hit.hit, TraceHit::World { model: 0 });
     }
 
     #[test]
