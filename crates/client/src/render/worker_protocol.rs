@@ -23,8 +23,9 @@ use super::types::{
     PaletteTransparency, PolygonOffset, Q2Fog, Q2FogOperation, Q2FragmentLight, Q2HeightFog, Q2HeightStop, Q2LightCone,
     Q2LightPass, Q2ModelFragmentLight, Q2ModelShadowLight, Q2ShadowAtlas, Q2ShadowProjection, Rect, RenderCamera,
     RenderCommand, RenderImage, RenderOperation, RenderState, RenderVertex, RenderView, RenderViewState, RendererImage,
-    ResourceOwner, SkyVertex, SourceTime, TextureBinding, TextureBundle, TextureFilter, TextureRect, TextureSampling,
-    ViewClear, ViewClip, ViewTarget,
+    ResourceOwner, RetainedBatch, RetainedDraw, RetainedId, RetainedPassAttrs, RetainedSlice, RetainedSurfaceData,
+    SkyVertex, SourceTime, TextureBinding, TextureBundle, TextureFilter, TextureRect, TextureSampling, ViewClear,
+    ViewClip, ViewTarget,
 };
 
 /// Owned snapshot of one wire node.
@@ -1311,7 +1312,111 @@ impl WireEncoder {
                 "kind",
                 WireValue::text("disable-portal-clip"),
             )])),
+            RenderOperation::RetainedDraw(draw) => {
+                let mut batches = Vec::with_capacity(draw.batches.len());
+                for batch in &draw.batches {
+                    batches.push(self.retained_batch(batch)?);
+                }
+                let passes = draw
+                    .surface
+                    .passes
+                    .iter()
+                    .map(|pass| {
+                        WireValue::object(vec![
+                            (
+                                "texCoords",
+                                WireValue::list(pass.tex_coords.iter().map(|uv| encode_vec2(*uv)).collect()),
+                            ),
+                            (
+                                "texCoords2",
+                                WireValue::list(pass.tex_coords2.iter().map(|uv| encode_vec2(*uv)).collect()),
+                            ),
+                            (
+                                "colors",
+                                WireValue::list(pass.colors.iter().map(|color| encode_vec4(*color)).collect()),
+                            ),
+                        ])
+                    })
+                    .collect();
+                Ok(WireValue::object(vec![
+                    ("kind", WireValue::text("retained-draw")),
+                    ("surface", WireValue::Int(i64::from(draw.surface.id.surface))),
+                    ("generation", WireValue::Int(draw.surface.id.generation as i64)),
+                    (
+                        "eye",
+                        WireValue::list(draw.eye.iter().map(|row| encode_vec4(*row)).collect()),
+                    ),
+                    ("projection", encode_matrix(&draw.projection)),
+                    (
+                        "positions",
+                        WireValue::list(draw.surface.positions.iter().map(|point| encode_vec3(*point)).collect()),
+                    ),
+                    (
+                        "indices",
+                        WireValue::list(
+                            draw.surface
+                                .indices
+                                .iter()
+                                .map(|index| WireValue::Int(i64::from(*index)))
+                                .collect(),
+                        ),
+                    ),
+                    ("passes", WireValue::list(passes)),
+                    ("batches", WireValue::list(batches)),
+                ]))
+            }
         }
+    }
+
+    /// Encode one retained batch's per-frame parameters.
+    fn retained_batch(&mut self, batch: &RetainedBatch) -> Result<WireValue, RenderError> {
+        let lighting = self.lighting(&batch.lighting)?;
+        let texture = self.binding(&batch.texture)?;
+        let mut entries: Vec<(String, WireValue)> = Vec::new();
+        match batch.primitive {
+            BatchPrimitive::Triangles => {
+                entries.push(("primitive".to_string(), WireValue::text("triangles")));
+            }
+            BatchPrimitive::Lines { line_width } => {
+                entries.push(("primitive".to_string(), WireValue::text("lines")));
+                entries.push(("lineWidth".to_string(), WireValue::Float(line_width)));
+            }
+        }
+        entries.push((
+            "range".to_string(),
+            WireValue::object(vec![
+                ("start", WireValue::Int(i64::from(batch.range.start))),
+                ("count", WireValue::Int(i64::from(batch.range.count))),
+            ]),
+        ));
+        entries.push(("pass".to_string(), WireValue::Int(i64::from(batch.pass))));
+        entries.push(("texture".to_string(), texture));
+        if let Some(second) = &batch.second_texture {
+            let binding = self.binding(&second.binding)?;
+            entries.push((
+                "secondTexture".to_string(),
+                WireValue::object(vec![
+                    (
+                        "environment",
+                        WireValue::text(match second.environment {
+                            PairEnvironment::Modulate => "modulate",
+                            PairEnvironment::Add => "add",
+                            PairEnvironment::Replace => "replace",
+                        }),
+                    ),
+                    ("binding", binding),
+                ]),
+            ));
+        }
+        entries.push(("state".to_string(), encode_state(&batch.state)));
+        entries.push(("lighting".to_string(), lighting));
+        if let Some(fog) = &batch.fog {
+            entries.push(("fog".to_string(), encode_fog(fog)));
+        }
+        if batch.luminance_alpha {
+            entries.push(("textureEffect".to_string(), WireValue::text("luminance-alpha")));
+        }
+        Ok(WireValue::Map(entries))
     }
 
     /// Encode one render command. `captures` rides with swap-buffers.
@@ -1963,8 +2068,127 @@ impl WireDecoder {
                     sky_drawn: boolean(field(map, "skyDrawn")?)?,
                 }))
             }
+            "retained-draw" => {
+                let eye_raw = list(field(map, "eye")?)?;
+                if eye_raw.len() != 3 {
+                    return Err(bad_wire("invalid retained eye rows"));
+                }
+                let eye = [vec4(&eye_raw[0])?, vec4(&eye_raw[1])?, vec4(&eye_raw[2])?];
+                let positions_raw = list(field(map, "positions")?)?;
+                let mut positions = Vec::with_capacity(positions_raw.len());
+                for raw in positions_raw {
+                    positions.push(vec3(raw)?);
+                }
+                let indices_raw = list(field(map, "indices")?)?;
+                let mut indices = Vec::with_capacity(indices_raw.len());
+                for raw in indices_raw {
+                    indices.push(integer(raw)?);
+                }
+                let passes_raw = list(field(map, "passes")?)?;
+                let mut passes = Vec::with_capacity(passes_raw.len());
+                for raw in passes_raw {
+                    let pass_map = record(raw)?;
+                    let coords_raw = list(field(pass_map, "texCoords")?)?;
+                    let mut tex_coords = Vec::with_capacity(coords_raw.len());
+                    for entry in coords_raw {
+                        tex_coords.push(vec2(entry)?);
+                    }
+                    let coords2_raw = list(field(pass_map, "texCoords2")?)?;
+                    let mut tex_coords2 = Vec::with_capacity(coords2_raw.len());
+                    for entry in coords2_raw {
+                        tex_coords2.push(vec2(entry)?);
+                    }
+                    let colors_raw = list(field(pass_map, "colors")?)?;
+                    let mut colors = Vec::with_capacity(colors_raw.len());
+                    for entry in colors_raw {
+                        colors.push(vec4(entry)?);
+                    }
+                    passes.push(RetainedPassAttrs {
+                        tex_coords,
+                        tex_coords2,
+                        colors,
+                    });
+                }
+                let batches_raw = list(field(map, "batches")?)?;
+                let mut batches = Vec::with_capacity(batches_raw.len());
+                for raw in batches_raw {
+                    batches.push(self.retained_batch(raw)?);
+                }
+                let generation = match field(map, "generation")? {
+                    WireValue::Int(value) if *value >= 0 => *value as u64,
+                    _ => return Err(bad_wire("invalid retained generation")),
+                };
+                Ok(RenderOperation::RetainedDraw(RetainedDraw {
+                    surface: Arc::new(RetainedSurfaceData {
+                        id: RetainedId {
+                            surface: integer(field(map, "surface")?)?,
+                            generation,
+                        },
+                        positions,
+                        indices,
+                        passes,
+                    }),
+                    eye,
+                    projection: matrix(field(map, "projection")?)?,
+                    batches,
+                }))
+            }
             _ => Err(bad_wire("invalid renderer operation")),
         }
+    }
+
+    /// Decode one retained batch's per-frame parameters.
+    fn retained_batch(&mut self, value: &WireValue) -> Result<RetainedBatch, RenderError> {
+        let map = record(value)?;
+        let primitive_raw = field(map, "primitive")?;
+        let primitive = if matches!(primitive_raw, WireValue::Str(text) if text == "lines") {
+            BatchPrimitive::Lines {
+                line_width: number(field(map, "lineWidth")?)?,
+            }
+        } else {
+            choice(primitive_raw, &["triangles"])?;
+            BatchPrimitive::Triangles
+        };
+        let range_map = record(field(map, "range")?)?;
+        let second_texture = match optional(map, "secondTexture") {
+            None => None,
+            Some(raw) => {
+                let second = record(raw)?;
+                let environment = match choice(field(second, "environment")?, &["modulate", "add", "replace"])? {
+                    "modulate" => PairEnvironment::Modulate,
+                    "add" => PairEnvironment::Add,
+                    _ => PairEnvironment::Replace,
+                };
+                Some(TextureBundle {
+                    binding: self.binding(field(second, "binding")?)?,
+                    environment,
+                })
+            }
+        };
+        let luminance_alpha = match optional(map, "textureEffect") {
+            None => false,
+            Some(raw) => {
+                choice(raw, &["luminance-alpha"])?;
+                true
+            }
+        };
+        Ok(RetainedBatch {
+            range: RetainedSlice {
+                start: integer(field(range_map, "start")?)?,
+                count: integer(field(range_map, "count")?)?,
+            },
+            pass: integer(field(map, "pass")?)?,
+            texture: self.binding(field(map, "texture")?)?,
+            second_texture,
+            state: state(field(map, "state")?)?,
+            lighting: self.lighting(field(map, "lighting")?)?,
+            fog: match optional(map, "fog") {
+                None => None,
+                Some(raw) => Some(fog(raw)?),
+            },
+            primitive,
+            luminance_alpha,
+        })
     }
 
     /// Decode shared view state.
@@ -2173,6 +2397,49 @@ mod tests {
             lighting,
             primitive: BatchPrimitive::Triangles,
             vertices: BatchVertices::Single(vec![vertex()]),
+        }
+    }
+
+    fn retained_draw(image: RendererImage) -> RetainedDraw {
+        RetainedDraw {
+            surface: Arc::new(RetainedSurfaceData {
+                id: RetainedId {
+                    surface: 7,
+                    generation: 3,
+                },
+                positions: vec![vec3(1.0, 2.0, 3.0), vec3(4.0, 5.0, 6.0)],
+                indices: vec![0, 1, 0],
+                passes: vec![RetainedPassAttrs {
+                    tex_coords: vec![vec2(0.0, 0.0), vec2(1.0, 1.0)],
+                    tex_coords2: vec![vec2(0.5, 0.5), vec2(0.25, 0.75)],
+                    colors: vec![vec4(1.0, 0.0, 0.0, 1.0), vec4(0.0, 1.0, 0.0, 1.0)],
+                }],
+            }),
+            eye: [
+                vec4(1.0, 0.0, 0.0, 0.5),
+                vec4(0.0, 1.0, 0.0, -0.5),
+                vec4(0.0, 0.0, 1.0, 2.0),
+            ],
+            projection: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            batches: vec![RetainedBatch {
+                range: RetainedSlice { start: 0, count: 3 },
+                pass: 0,
+                texture: TextureBinding::BindImage(image.clone()),
+                second_texture: Some(TextureBundle {
+                    binding: TextureBinding::BindImage(image),
+                    environment: PairEnvironment::Modulate,
+                }),
+                state: RenderState::opaque(CullFace::Back),
+                lighting: BatchLighting::Vertex,
+                fog: Some(BatchFog::Constant {
+                    color: vec3(0.1, 0.2, 0.3),
+                    amount: 0.5,
+                }),
+                primitive: BatchPrimitive::Triangles,
+                luminance_alpha: true,
+            }],
         }
     }
 
@@ -2664,6 +2931,7 @@ mod tests {
                 positions: [vec4(0.0, 0.0, 0.0, 1.0); 4],
                 white_image: image.clone(),
             },
+            RenderOperation::RetainedDraw(retained_draw(image.clone())),
         ];
         for operation in cases {
             assert_eq!(round_trip_operation_value(&operation, &shared), operation);

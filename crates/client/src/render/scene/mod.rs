@@ -14,6 +14,7 @@ pub mod q1_fog;
 pub mod q2_image;
 pub mod q2_sky;
 pub mod resources;
+pub mod retained;
 pub mod shaders;
 pub mod shadow_geometry;
 pub mod shadows;

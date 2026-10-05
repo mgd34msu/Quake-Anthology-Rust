@@ -255,12 +255,51 @@ pub fn compile_program<C: GlContext>(gl: &mut C, vertex: &str, fragment: &str) -
     program
 }
 
-/// Compiled stage program with uniform caches.
+/// Retained-geometry vertex shader: same varyings as the stage shader, but
+/// object-space positions transform by the `u_mvp` uniform instead of the
+/// fixed-function matrices (which stay identity for projected batches).
+pub const RETAINED_VERTEX_SHADER: &str = "#version 120\nuniform mat4 u_mvp;\nvarying vec4 vertexColor;\nvarying vec2 coordinates0;\nvarying vec2 coordinates1;\nvarying vec3 worldPosition;\nvarying vec3 worldNormal;\nvoid main() {\n  gl_Position = u_mvp * gl_Vertex;\n  gl_ClipVertex = u_mvp * gl_Vertex;\n  vertexColor = clamp(gl_Color, 0.0, 1.0);\n  coordinates0 = gl_MultiTexCoord0.xy;\n  coordinates1 = gl_MultiTexCoord1.xy;\n  worldPosition = gl_MultiTexCoord2.xyz;\n  worldNormal = gl_MultiTexCoord3.xyz;\n}\n";
+
+/// Look up and cache one program uniform location.
+fn program_uniform<C: GlContext>(gl: &mut C, program: u32, uniforms: &mut HashMap<String, i32>, name: &str) -> i32 {
+    if let Some(location) = uniforms.get(name) {
+        return *location;
+    }
+    let location = gl.get_uniform_location(program, name);
+    if location < 0 {
+        panic!(
+            "{}",
+            RenderError::Backend(format!("OpenGL stage uniform is missing: {name}"))
+        );
+    }
+    uniforms.insert(name.to_string(), location);
+    location
+}
+
+/// Bind the stage fragment sampler uniforms to their texture units.
+fn bind_stage_samplers<C: GlContext>(gl: &mut C, program: u32, uniforms: &mut HashMap<String, i32>) {
+    gl.use_program(program);
+    let primary = program_uniform(gl, program, uniforms, "primaryTexture");
+    gl.uniform_1i(primary, 0);
+    let secondary = program_uniform(gl, program, uniforms, "secondaryTexture");
+    gl.uniform_1i(secondary, 1);
+    let shadow = program_uniform(gl, program, uniforms, "u_shadow_map");
+    gl.uniform_1i(shadow, 2);
+    gl.use_program(0);
+}
+
+/// Compiled stage program with uniform caches. The retained-geometry
+/// program shares the stage fragment shader but needs its own uniform
+/// locations (locations are per-program); value caches flush on program
+/// switches so dedup never crosses programs.
 #[derive(Debug)]
 pub struct StageProgram {
     program: u32,
     depth_program: u32,
+    retained_program: Option<u32>,
     uniforms: HashMap<String, i32>,
+    retained_uniforms: HashMap<String, i32>,
+    values_program: Option<u32>,
     integers: HashMap<i32, i32>,
     scalars: HashMap<i32, u32>,
     vectors3: HashMap<i32, [u32; 3]>,
@@ -276,7 +315,10 @@ impl StageProgram {
         let mut stage = Self {
             program,
             depth_program,
+            retained_program: None,
             uniforms: HashMap::new(),
+            retained_uniforms: HashMap::new(),
+            values_program: None,
             integers: HashMap::new(),
             scalars: HashMap::new(),
             vectors3: HashMap::new(),
@@ -284,14 +326,7 @@ impl StageProgram {
             matrices: HashMap::new(),
             closed: false,
         };
-        gl.use_program(program);
-        let primary = stage.uniform(gl, "primaryTexture");
-        gl.uniform_1i(primary, 0);
-        let secondary = stage.uniform(gl, "secondaryTexture");
-        gl.uniform_1i(secondary, 1);
-        let shadow = stage.uniform(gl, "u_shadow_map");
-        gl.uniform_1i(shadow, 2);
-        gl.use_program(0);
+        bind_stage_samplers(gl, program, &mut stage.uniforms);
         stage
     }
 
@@ -301,18 +336,28 @@ impl StageProgram {
     }
 
     fn uniform<C: GlContext>(&mut self, gl: &mut C, name: &str) -> i32 {
-        if let Some(location) = self.uniforms.get(name) {
-            return *location;
+        let program = self
+            .values_program
+            .expect("stage program is selected before uniform lookup");
+        let locations = if Some(program) == self.retained_program {
+            &mut self.retained_uniforms
+        } else {
+            &mut self.uniforms
+        };
+        program_uniform(gl, program, locations, name)
+    }
+
+    /// Bind one stage program, flushing value caches on switches.
+    fn select<C: GlContext>(&mut self, gl: &mut C, program: u32) {
+        if self.values_program != Some(program) {
+            self.integers.clear();
+            self.scalars.clear();
+            self.vectors3.clear();
+            self.vectors4.clear();
+            self.matrices.clear();
+            self.values_program = Some(program);
         }
-        let location = gl.get_uniform_location(self.program, name);
-        if location < 0 {
-            panic!(
-                "{}",
-                RenderError::Backend(format!("OpenGL stage uniform is missing: {name}"))
-            );
-        }
-        self.uniforms.insert(name.to_string(), location);
-        location
+        gl.use_program(program);
     }
 
     fn integer<C: GlContext>(&mut self, gl: &mut C, name: &str, value: i32) {
@@ -376,7 +421,66 @@ impl StageProgram {
         if self.closed {
             panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
         }
-        gl.use_program(self.program);
+        let program = self.program;
+        self.select(gl, program);
+        self.apply_stage(gl, environment, alpha_test, lighting, luminance_alpha, fog);
+    }
+
+    /// Bind the retained-geometry program, compiling it on first use.
+    pub fn use_retained<C: GlContext>(&mut self, gl: &mut C) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
+        if self.retained_program.is_none() {
+            let program = compile_program(gl, RETAINED_VERTEX_SHADER, &stage_fragment_shader());
+            bind_stage_samplers(gl, program, &mut self.retained_uniforms);
+            self.retained_program = Some(program);
+        }
+        let program = self.retained_program.expect("retained program compiled before use");
+        self.select(gl, program);
+    }
+
+    /// Apply the MVP plus stage uniforms to the bound retained program.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_retained<C: GlContext>(
+        &mut self,
+        gl: &mut C,
+        mvp: &[f32; 16],
+        environment: Option<PairEnvironment>,
+        alpha_test: AlphaTest,
+        lighting: &BatchLighting,
+        luminance_alpha: bool,
+        fog: Option<BatchFog>,
+    ) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
+        if self.values_program != self.retained_program {
+            panic!(
+                "{}",
+                RenderError::Backend("OpenGL retained program is bound before use".to_string())
+            );
+        }
+        self.matrix(gl, "u_mvp", mvp);
+        self.apply_stage(gl, environment, alpha_test, lighting, luminance_alpha, fog);
+    }
+
+    /// Apply stage uniforms to the currently bound program. The retained
+    /// program shares the stage fragment shader, so retained draws bind
+    /// their own program and reuse this for identical fragment shading.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_stage<C: GlContext>(
+        &mut self,
+        gl: &mut C,
+        environment: Option<PairEnvironment>,
+        alpha_test: AlphaTest,
+        lighting: &BatchLighting,
+        luminance_alpha: bool,
+        fog: Option<BatchFog>,
+    ) {
+        if self.closed {
+            panic!("{}", RenderError::Backend("OpenGL stage program is closed".to_string()));
+        }
         self.integer(gl, "u_fog_mode", fog_mode(fog));
         let (fr, fg, fb) = fog.map_or((0.0, 0.0, 0.0), |fog| match fog {
             BatchFog::Exp2 { color, .. } | BatchFog::Constant { color, .. } => (color.x, color.y, color.z),
@@ -628,7 +732,12 @@ impl StageProgram {
         gl.use_program(0);
         gl.delete_program(self.program);
         gl.delete_program(self.depth_program);
+        if let Some(retained) = self.retained_program.take() {
+            gl.delete_program(retained);
+        }
         self.closed = true;
+        self.retained_uniforms.clear();
+        self.values_program = None;
         self.integers.clear();
         self.scalars.clear();
         self.vectors3.clear();

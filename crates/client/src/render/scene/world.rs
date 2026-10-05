@@ -18,16 +18,17 @@ use crate::materials::dlight::{
     transform_dlights,
 };
 use crate::materials::evaluate::{
-    evaluate_material_passes, prepare_material_batches, DynamicLightBatches, FogVolumeInput, MaterialBatch,
-    MaterialDrawContext, PairEnv, Q1FogInput, Q2LightPass as EvaluateLightPass, TextureRef, Texturing,
+    evaluate_material_passes, material_pass_params, material_time, prepare_material_batches, BatchFog as EvaluateFog,
+    BatchLighting as EvaluateLighting, DynamicLightBatches, FogVolumeInput, MaterialBatch, MaterialDrawContext,
+    PairEnv, Q1FogInput, Q2LightPass as EvaluateLightPass, TextureRef, Texturing,
 };
 use crate::materials::fog::{create_fog_texture, prepare_fog_volume, FogBrushMap, FogCoordinates, FogVolume};
 use crate::materials::geometry::{MaterialGeometry, MaterialVertex};
 use crate::materials::iterator::MaterialIteratorKind;
 use crate::materials::legacy::{
-    create_q1_material, create_q2_material, prepare_legacy_material_batches, q1_animated_texture, q1_sky_tex_coords,
-    q1_surface_kind, q1_texture_animations, split_q1_sky_texture, IndexedImage, LegacyMaterial,
-    LegacyMaterialDrawContext, Q1SkyLayer, Q1Surface,
+    create_q1_material, create_q2_material, legacy_pass_params, prepare_legacy_material_batches, q1_animated_texture,
+    q1_sky_tex_coords, q1_surface_kind, q1_texture_animations, split_q1_sky_texture, IndexedImage, LegacyMaterial,
+    LegacyMaterialDrawContext, LegacyPassPlan, Q1SkyLayer, Q1Surface,
 };
 use crate::materials::lighting::{
     build_q1_lightmap, build_q2_lightmap, direct_lightmap_pixels, BspLighting, BuiltLightmap, LightmapFace,
@@ -37,15 +38,16 @@ use crate::materials::q3_lighting::{DynamicLight, EntityLighting};
 use crate::materials::sky::SKY_FACE_SUFFIXES;
 use crate::materials::state::{
     AlphaTest as MaterialAlphaTest, BlendFactor as MaterialBlendFactor, CullFace as MaterialCullFace,
-    DepthTest as MaterialDepthTest,
+    DepthTest as MaterialDepthTest, RenderState as MaterialRenderState,
 };
 use crate::render::types::{
     AlphaTest, BatchFog, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest, DrawBatch,
     FogEffect, ImageLevel, ImageResourceOperation, ImageSource, LevelContent, MultitextureVertex, PairEnvironment,
     PolygonOffset, Q2Fog, Q2FogOperation, Q2FragmentLight, Q2LightPass, Q2ModelFragmentLight, Q2ShadowAtlas,
     RenderCamera, RenderImage, RenderOperation, RenderState, RenderVertex, RenderView, RenderViewState, RendererImage,
-    SceneFog, SkyVertex, SourceTime, TextureBinding, TextureBundle, TextureFilter, TextureSampling, ViewClear,
-    ViewClip, ViewTarget,
+    RetainedBatch, RetainedDraw, RetainedId, RetainedPassAttrs, RetainedSlice, RetainedSurfaceData, SceneFog,
+    SkyVertex, SourceTime, TextureBinding, TextureBundle, TextureFilter, TextureSampling, ViewClear, ViewClip,
+    ViewTarget,
 };
 use crate::render::{RenderError, SceneLight};
 use crate::view::{
@@ -64,6 +66,10 @@ use super::portal::{portal_camera, portal_surface_offscreen, PortalEntity};
 use super::q1_fog::fog_scene_operations;
 use super::q2_sky::{q2_sky_sides, Q2SkyView};
 use super::resources::{rgba_image, SceneImageRegistry};
+use super::retained::{
+    classify_legacy_q1, classify_legacy_q2, classify_q3, unproject_identity, RetainedArena, RetainedKey,
+    SurfaceRetainClass,
+};
 use super::shaders::{SceneShaderBinding, SceneShaderRegistry};
 use super::shadow_geometry::{shadow_material_geometry, ShadowMaterialContext};
 use super::shadows::{
@@ -71,8 +77,9 @@ use super::shadows::{
     ShadowWorldInput, StaticShadowWorld,
 };
 use super::submissions::{
-    compiled_draw_group, create_source_scene_order, finish_scene_operations, sequence_draw_group, source_draw_group,
-    SceneOperation, SequencePhase, SourceEntityOrder, SourceSceneOrder, SourceSurfaceOrder,
+    compiled_draw_group, compiled_retained_group, create_source_scene_order, finish_scene_operations,
+    sequence_draw_group, sequence_retained_group, source_draw_group, source_retained_group, SceneOperation,
+    SequencePhase, SourceEntityOrder, SourceSceneOrder, SourceSurfaceOrder,
 };
 use super::textures::{SceneTexture, SceneTextureLoadOptions, TextureFamily};
 use super::visibility::{
@@ -1166,6 +1173,7 @@ pub struct WorldScene {
     options: WorldSceneOptions,
     shaders: SceneShaderRegistry,
     sky_drawn_cache: Option<(u64, bool)>,
+    retained: RetainedArena,
 }
 
 fn q3_lightmap_level(bytes: &[u8], shift: u32) -> Result<ImageLevel, RenderError> {
@@ -1339,6 +1347,7 @@ impl WorldScene {
             options,
             shaders,
             sky_drawn_cache: None,
+            retained: RetainedArena::new(),
         };
         // Build may fail partway; release anything registered so far.
         let result = scene.build_surfaces();
@@ -3232,11 +3241,224 @@ fn draw_batch_from_material(
 }
 
 fn flip_cull(batch: &mut DrawBatch) {
-    batch.state.cull = match batch.state.cull {
+    flip_cull_face(&mut batch.state.cull);
+}
+
+fn flip_cull_face(cull: &mut CullFace) {
+    *cull = match *cull {
         CullFace::Front => CullFace::Back,
         CullFace::Back => CullFace::Front,
         CullFace::None => CullFace::None,
     };
+}
+
+/// Identity projection for retained evaluation: positions pass through
+/// untouched so resolve-time projection reproduces the legacy path exactly.
+fn identity_project(point: Vec3) -> Vec4 {
+    vec4(point.x, point.y, point.z, 1.0)
+}
+
+/// Assemble arena-resident arrays from identity-projected batches. Returns
+/// `None` when the evaluated shape cannot be retained; the caller falls
+/// back to immediate conversion instead of emitting a corrupt draw.
+fn retained_surface_from_batches(id: RetainedId, batches: &[MaterialBatch]) -> Option<RetainedSurfaceData> {
+    let first = batches.first()?;
+    let vertex_count = first.vertices.len();
+    let mut passes = Vec::with_capacity(batches.len());
+    for batch in batches {
+        if batch.vertices.len() != vertex_count || batch.indices != first.indices {
+            return None;
+        }
+        let mut tex_coords = Vec::with_capacity(vertex_count);
+        let mut tex_coords2 = Vec::new();
+        let mut colors = Vec::with_capacity(vertex_count);
+        for vertex in &batch.vertices {
+            tex_coords.push(vertex.tex_coord);
+            colors.push(vertex.color);
+            match batch.texturing {
+                Texturing::Single => {
+                    if vertex.tex_coord2.is_some() {
+                        return None;
+                    }
+                }
+                Texturing::Pair => {
+                    tex_coords2.push(vertex.tex_coord2?);
+                }
+            }
+        }
+        passes.push(RetainedPassAttrs {
+            tex_coords,
+            tex_coords2,
+            colors,
+        });
+    }
+    Some(RetainedSurfaceData {
+        id,
+        positions: first
+            .vertices
+            .iter()
+            .map(|vertex| unproject_identity(vertex.position))
+            .collect(),
+        indices: first.indices.clone(),
+        passes,
+    })
+}
+
+/// Convert one shell batch's parameters into a retained batch draw through
+/// the shared immediate mapping. Shells carry no vertices; only parameters
+/// are read, and lighting must already be vertex-lit.
+fn retained_batch_from_shell(
+    registry: &SceneImageRegistry,
+    shell: &MaterialBatch,
+    q2: Option<&Q2BatchContext>,
+    dynamic_images: &HashMap<u32, RendererImage>,
+    pass: u32,
+    index_count: u32,
+) -> Result<RetainedBatch, RenderError> {
+    let draw = draw_batch_from_material(registry, shell, q2, dynamic_images)?;
+    if !matches!(draw.lighting, BatchLighting::Vertex) {
+        return Err(RenderError::Backend("Retained draws stay vertex-lit".to_string()));
+    }
+    let second_texture = match &draw.vertices {
+        BatchVertices::Single(_) => None,
+        BatchVertices::Pair { second_texture, .. } => Some(second_texture.clone()),
+    };
+    Ok(RetainedBatch {
+        range: RetainedSlice {
+            start: 0,
+            count: index_count,
+        },
+        pass,
+        texture: draw.texture,
+        second_texture,
+        state: draw.state,
+        lighting: draw.lighting,
+        fog: draw.fog,
+        primitive: draw.primitive,
+        luminance_alpha: draw.luminance_alpha,
+    })
+}
+
+/// Shell batch carrying pass parameters without vertices.
+fn shell_batch(
+    lighting: EvaluateLighting,
+    fog: Option<EvaluateFog>,
+    texturing: Texturing,
+    state: MaterialRenderState,
+    texture: TextureRef,
+    second_texture: Option<(TextureRef, PairEnv)>,
+) -> MaterialBatch {
+    MaterialBatch {
+        lighting,
+        fog,
+        texturing,
+        state,
+        texture,
+        second_texture,
+        indices: Vec::new(),
+        vertices: Vec::new(),
+    }
+}
+
+/// Project identity-evaluated batches for the legacy fallback. The
+/// attribute values are identical to immediate evaluation (the projection
+/// closure never affects them), so only positions need projecting.
+fn project_identity_batches(batches: Vec<MaterialBatch>, project: &dyn Fn(Vec3) -> Vec4) -> Vec<MaterialBatch> {
+    batches
+        .into_iter()
+        .map(|mut batch| {
+            for vertex in &mut batch.vertices {
+                vertex.position = project(unproject_identity(vertex.position));
+            }
+            batch
+        })
+        .collect()
+}
+
+/// Batch count of a legacy pass plan: base plus extras.
+fn plan_pass_count(plan: &LegacyPassPlan) -> usize {
+    1 + plan.extras.len()
+}
+
+/// Shell batches carrying a legacy plan's parameters without vertices.
+fn legacy_shells(plan: &LegacyPassPlan) -> Vec<MaterialBatch> {
+    let mut shells = Vec::with_capacity(plan_pass_count(plan));
+    shells.push(shell_batch(
+        EvaluateLighting::Vertex,
+        None,
+        plan.base.texturing,
+        plan.base.state,
+        plan.base.texture,
+        plan.base.second_texture,
+    ));
+    for extra in &plan.extras {
+        shells.push(shell_batch(
+            EvaluateLighting::Vertex,
+            None,
+            extra.texturing,
+            extra.state,
+            extra.texture,
+            extra.second_texture,
+        ));
+    }
+    shells
+}
+
+/// Convert evaluated shader batches into a grouped draw submission.
+fn convert_shader_batches(
+    shaders: &SceneShaderRegistry,
+    shader: &RegisteredSceneMaterial,
+    batches: &[MaterialBatch],
+    q2: Option<&Q2BatchContext>,
+    input: &WorldViewInput,
+    data: &DrawContextData,
+    order: Option<&SourceSurfaceOrder>,
+) -> Result<Vec<SceneOperation>, RenderError> {
+    let mut converted = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let mut draw = draw_batch_from_material(shaders.textures().images(), batch, q2, &input.dynamic_images)?;
+        if data.mirror {
+            flip_cull(&mut draw);
+        }
+        converted.push(draw);
+    }
+    Ok(vec![SceneOperation::Group(match order {
+        None => compiled_draw_group(shader.clone(), converted),
+        Some(order) => source_draw_group(shader.clone(), order.clone(), converted)?,
+    })])
+}
+
+/// Assemble one retained draw from cached arrays plus per-frame shells.
+fn assemble_retained_draw(
+    images: &SceneImageRegistry,
+    cached: &Arc<RetainedSurfaceData>,
+    shells: &[MaterialBatch],
+    dynamic_images: &HashMap<u32, RendererImage>,
+    mirror: bool,
+    projector: &ViewProjector,
+) -> Result<RetainedDraw, RenderError> {
+    if shells.len() != cached.passes.len() {
+        return Err(RenderError::Backend(
+            "Retained pass count drifted from the cached shape".to_string(),
+        ));
+    }
+    let index_count = u32::try_from(cached.indices.len())
+        .map_err(|_| RenderError::BadWire("Retained index count exceeds u32".to_string()))?;
+    let mut batches = Vec::with_capacity(shells.len());
+    for (pass, shell) in shells.iter().enumerate() {
+        let mut batch = retained_batch_from_shell(images, shell, None, dynamic_images, pass as u32, index_count)?;
+        if mirror {
+            flip_cull_face(&mut batch.state.cull);
+        }
+        batches.push(batch);
+    }
+    let (eye, projection) = projector.rows();
+    Ok(RetainedDraw {
+        surface: cached.clone(),
+        eye,
+        projection,
+        batches,
+    })
 }
 
 impl WorldScene {
@@ -3266,7 +3488,7 @@ impl WorldScene {
             }
         };
         if selected.is_none() {
-            return self.unshaded_surface_operations(index, input, data, model, project_ref);
+            return self.unshaded_surface_operations(index, input, data, model, project_ref, projector);
         }
         let shader = selected.expect("resolved selected shader");
         let flare = {
@@ -3292,6 +3514,44 @@ impl WorldScene {
             {
                 let (lightmap, material) = (lightmap.clone(), material.clone());
                 self.refresh_lightmap(index, &lightmap, &material, input, model)?;
+            }
+        }
+        // Retained hit probe before any geometry work: arena hits need no
+        // vertex data at all (parameters only), so skip the LOD selection
+        // and geometry clone below. Patch grids morph per frame and fog
+        // volumes plus projected dlights vary per frame, so those surfaces
+        // never probe.
+        if projector.scale_valid() && input.q2_fragment_lighting.is_none() {
+            let probe = {
+                let surface = at(&self.surfaces, index, "surface")?;
+                let grid = matches!(&surface.data, WorldSurfaceData::Q3 { grid: Some(_), .. });
+                let fogged = matches!(&surface.data, WorldSurfaceData::Q3 { fog: Some(_), .. });
+                (grid, fogged)
+            };
+            if !probe.0 && !probe.1 && (lighting.0 == 0 || !receives_projected_dlights(&shader)) {
+                let context = draw_context(data, &self.noise, project_ref, None, None, time_offset);
+                if matches!(classify_q3(&shader, &context), SurfaceRetainClass::Retained) {
+                    let key = RetainedKey {
+                        surface: index as u32,
+                        revision: material_revision(),
+                        entity: data.entity_rgba,
+                        identity_light: data.identity_light.to_bits(),
+                        shape: 0,
+                    };
+                    if let Some(cached) = self.retained.get(&key) {
+                        if let Some(operations) = self.retained_hit_operations(
+                            &shader,
+                            &cached,
+                            input,
+                            data,
+                            order.as_ref(),
+                            projector,
+                            &context,
+                        ) {
+                            return Ok(operations);
+                        }
+                    }
+                }
             }
         }
         let (geometry, fog) = {
@@ -3323,6 +3583,7 @@ impl WorldScene {
             (geometry, fog)
         };
         self.shader_operations(
+            index,
             geometry,
             fog,
             &shader,
@@ -3333,12 +3594,13 @@ impl WorldScene {
             &lighting,
             order.as_ref(),
             project_ref,
+            projector,
         )
     }
 
     /// Operations for a legacy surface with no selected shader. Clones only
-    /// the small branch inputs (material, lightmap, sky layers) plus the
-    /// geometry the batch builders borrow.
+    /// the small branch inputs (material, lightmap, sky layers); geometry is
+    /// cloned lazily below so retained arena hits skip it entirely.
     fn unshaded_surface_operations(
         &mut self,
         index: usize,
@@ -3346,8 +3608,9 @@ impl WorldScene {
         data: &DrawContextData,
         model: Option<&ModelTransform>,
         project_ref: &dyn Fn(Vec3) -> Vec4,
+        projector: &ViewProjector,
     ) -> Result<Vec<SceneOperation>, RenderError> {
-        let (plane, geometry, material, lightmap, fullbright, q1_sky) = {
+        let (plane, material, lightmap, fullbright, q1_sky) = {
             let surface = at(&self.surfaces, index, "surface")?;
             let WorldSurfaceData::Legacy {
                 material,
@@ -3361,7 +3624,6 @@ impl WorldScene {
             };
             (
                 surface.plane,
-                surface.geometry.clone(),
                 material.clone(),
                 lightmap.clone(),
                 fullbright.clone(),
@@ -3381,6 +3643,7 @@ impl WorldScene {
             }
         }
         if let Some(layers) = &q1_sky {
+            let geometry = self.surface_geometry(index)?;
             if let Some(sky) = input.source_sky.as_ref() {
                 return Ok(self
                     .q2_sky_operations(&geometry, sky, input, project_ref)?
@@ -3395,6 +3658,7 @@ impl WorldScene {
             ))]);
         }
         if sky && matches!(&material, LegacyMaterial::Q2 { .. }) {
+            let geometry = self.surface_geometry(index)?;
             let fallback = Q2SkyView {
                 images: self.q2_sky.clone(),
                 rotation: 0.0,
@@ -3423,6 +3687,16 @@ impl WorldScene {
             LegacyMaterial::Q2 { .. } => fullbright.as_ref().map(|image| image.ordinal),
         };
         let entity = data.entity_rgba;
+        let animation_frame = input.animation_frame.unwrap_or((data.time * 2.0).trunc());
+        let encoding = lightmap
+            .as_ref()
+            .map(|lightmap| lightmap.encoding)
+            .unwrap_or(self.options.q1_lightmap_encoding);
+        let cull = if data.mirror != model.is_some_and(|model| model_scale(model).is_ok_and(|scale| scale < 0.0)) {
+            MaterialCullFace::Back
+        } else {
+            MaterialCullFace::Front
+        };
         let context = LegacyMaterialDrawContext {
             // Donor `entityRGBA` is bytes-as-floats (0..255); the legacy
             // batch builder divides by 255 itself, so pass bytes through.
@@ -3433,23 +3707,28 @@ impl WorldScene {
                 f32::from(entity[3]),
             )),
             time: data.time,
-            animation_frame: input.animation_frame.unwrap_or((data.time * 2.0).trunc()),
+            animation_frame,
             alternate_animation: input.alternate_animation,
             fullbright,
             q1_fog_active: input.q1_fog.is_some_and(|fog| fog.density > 0.0),
-            q1_lightmap_encoding: lightmap
-                .as_ref()
-                .map(|lightmap| lightmap.encoding)
-                .unwrap_or(self.options.q1_lightmap_encoding),
+            q1_lightmap_encoding: encoding,
             translucent_lightmap: lightmap.as_ref().map(|lightmap| lightmap.direct.ordinal),
-            cull: if data.mirror != model.is_some_and(|model| model_scale(model).is_ok_and(|scale| scale < 0.0)) {
-                MaterialCullFace::Back
-            } else {
-                MaterialCullFace::Front
-            },
+            cull,
             depth_range: [0.0, 1.0],
             project: project_ref,
         };
+        let class = match &material {
+            LegacyMaterial::Q1(material) => classify_legacy_q1(material),
+            LegacyMaterial::Q2 { material, .. } => classify_legacy_q2(material),
+        };
+        if projector.scale_valid() && matches!(class, SurfaceRetainClass::Retained) {
+            if let Some(operations) =
+                self.retained_legacy_operations(index, &material, &context, input, data, projector)
+            {
+                return Ok(operations);
+            }
+        }
+        let geometry = self.surface_geometry(index)?;
         let batches = prepare_legacy_material_batches(&material, &geometry, &context).map_err(client_error)?;
         let alpha = match &material {
             LegacyMaterial::Q1(material) => material.alpha,
@@ -3473,6 +3752,93 @@ impl WorldScene {
             },
             converted,
         ))])
+    }
+
+    /// Clone one surface's source geometry.
+    fn surface_geometry(&self, index: usize) -> Result<MaterialGeometry, RenderError> {
+        Ok(at(&self.surfaces, index, "surface")?.geometry.clone())
+    }
+
+    /// Emit a retained draw for a static legacy surface, or `None` to take
+    /// the immediate path below. Hits compute the shared pass plan only;
+    /// misses evaluate once with the identity projection and intern. The
+    /// batch builders borrow geometry, so nothing is consumed here.
+    fn retained_legacy_operations(
+        &mut self,
+        index: usize,
+        material: &LegacyMaterial,
+        context: &LegacyMaterialDrawContext,
+        input: &WorldViewInput,
+        data: &DrawContextData,
+        projector: &ViewProjector,
+    ) -> Option<Vec<SceneOperation>> {
+        let mut shape = 0u32;
+        if context.q1_fog_active {
+            shape |= 1;
+        }
+        if context.fullbright.is_some() {
+            shape |= 2;
+        }
+        let key = RetainedKey {
+            surface: index as u32,
+            revision: material_revision(),
+            entity: data.entity_rgba,
+            identity_light: data.identity_light.to_bits(),
+            shape,
+        };
+        let plan = legacy_pass_params(material, context).ok()?;
+        let phase = if plan.alpha < 1.0 {
+            SequencePhase::Translucent
+        } else {
+            SequencePhase::Opaque
+        };
+        if let Some(cached) = self.retained.get(&key) {
+            if plan_pass_count(&plan) != cached.passes.len() {
+                return None;
+            }
+            let paired = plan.base.texturing == Texturing::Pair;
+            if paired != !cached.passes[0].tex_coords2.is_empty() {
+                return None;
+            }
+            let shells = legacy_shells(&plan);
+            let draw = self
+                .assemble_retained_draw(&cached, &shells, input, data.mirror, projector)
+                .ok()?;
+            return Some(vec![SceneOperation::Group(sequence_retained_group(phase, draw))]);
+        }
+        let geometry = self.surface_geometry(index).ok()?;
+        let identity: &dyn Fn(Vec3) -> Vec4 = &identity_project;
+        let retained_context = LegacyMaterialDrawContext {
+            project: identity,
+            entity_rgba: context.entity_rgba,
+            time: context.time,
+            animation_frame: context.animation_frame,
+            alternate_animation: context.alternate_animation,
+            fullbright: context.fullbright,
+            q1_fog_active: context.q1_fog_active,
+            q1_lightmap_encoding: context.q1_lightmap_encoding,
+            translucent_lightmap: context.translucent_lightmap,
+            cull: context.cull,
+            depth_range: context.depth_range,
+        };
+        let evaluated = prepare_legacy_material_batches(material, &geometry, &retained_context).ok()?;
+        let surface = retained_surface_from_batches(
+            RetainedId {
+                surface: key.surface,
+                generation: 0,
+            },
+            &evaluated,
+        )?;
+        let stored = self.retained.intern(key, |id| {
+            let mut stored = surface;
+            stored.id = id;
+            stored
+        });
+        let shells = legacy_shells(&plan);
+        let draw = self
+            .assemble_retained_draw(&stored, &shells, input, data.mirror, projector)
+            .ok()?;
+        Some(vec![SceneOperation::Group(sequence_retained_group(phase, draw))])
     }
 
     fn refresh_lightmap(
@@ -3567,8 +3933,10 @@ impl WorldScene {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn shader_operations(
         &mut self,
+        index: usize,
         geometry: MaterialGeometry,
         fog: Option<FogVolume>,
         shader: &RegisteredSceneMaterial,
@@ -3579,6 +3947,7 @@ impl WorldScene {
         lighting: &(u32, Vec<DynamicLight>),
         order: Option<&SourceSurfaceOrder>,
         project: &dyn Fn(Vec3) -> Vec4,
+        projector: &ViewProjector,
     ) -> Result<Vec<SceneOperation>, RenderError> {
         if shader.finished.iterator.kind == MaterialIteratorKind::Sky {
             return self.sky_operations(&geometry, shader, input, data, order, project);
@@ -3663,24 +4032,215 @@ impl WorldScene {
                 lights,
             }
         });
-        let batches = prepare_material_batches(shader, geometry, &context).map_err(client_error)?;
-        let mut converted = Vec::with_capacity(batches.len());
-        for batch in &batches {
-            let mut draw = draw_batch_from_material(
-                self.shaders.textures().images(),
-                batch,
-                q2.as_ref(),
-                &input.dynamic_images,
-            )?;
-            if data.mirror {
-                flip_cull(&mut draw);
+        if projector.scale_valid()
+            && input.q2_fragment_lighting.is_none()
+            && matches!(classify_q3(shader, &context), SurfaceRetainClass::Retained)
+        {
+            let key = RetainedKey {
+                surface: index as u32,
+                revision: material_revision(),
+                entity: data.entity_rgba,
+                identity_light: data.identity_light.to_bits(),
+                shape: 0,
+            };
+            if let Some(cached) = self.retained.get(&key) {
+                if let Some(operations) =
+                    self.retained_hit_operations(shader, &cached, input, data, order, projector, &context)
+                {
+                    return Ok(operations);
+                }
+                // Params drifted from the cached shape; re-run immediate
+                // with the intact geometry and context.
+                let batches = prepare_material_batches(shader, geometry, &context).map_err(client_error)?;
+                return self.convert_shader_batches(shader, &batches, q2.as_ref(), input, data, order);
             }
-            converted.push(draw);
+            return Self::retained_miss_operations(
+                &mut self.retained,
+                &self.shaders,
+                key,
+                geometry,
+                shader,
+                input,
+                data,
+                order,
+                projector,
+                &context,
+            );
         }
+        let batches = prepare_material_batches(shader, geometry, &context).map_err(client_error)?;
+        self.convert_shader_batches(shader, &batches, q2.as_ref(), input, data, order)
+    }
+
+    /// Convert evaluated shader batches into a grouped draw submission.
+    fn convert_shader_batches(
+        &self,
+        shader: &RegisteredSceneMaterial,
+        batches: &[MaterialBatch],
+        q2: Option<&Q2BatchContext>,
+        input: &WorldViewInput,
+        data: &DrawContextData,
+        order: Option<&SourceSurfaceOrder>,
+    ) -> Result<Vec<SceneOperation>, RenderError> {
+        convert_shader_batches(&self.shaders, shader, batches, q2, input, data, order)
+    }
+
+    /// Assemble a retained draw on an arena hit: per-frame parameters only,
+    /// no vertex work. Returns `None` when params drift from the cached
+    /// shape so the caller re-runs the immediate path.
+    #[allow(clippy::too_many_arguments)]
+    fn retained_hit_operations(
+        &self,
+        shader: &RegisteredSceneMaterial,
+        cached: &Arc<RetainedSurfaceData>,
+        input: &WorldViewInput,
+        data: &DrawContextData,
+        order: Option<&SourceSurfaceOrder>,
+        projector: &ViewProjector,
+        context: &MaterialDrawContext,
+    ) -> Option<Vec<SceneOperation>> {
+        let definition = &shader.registered.definition;
+        let time = material_time(definition, context);
+        let plans = material_pass_params(&shader.finished.iterator, definition, context, time).ok()?;
+        if plans.len() != cached.passes.len() {
+            return None;
+        }
+        let shells: Vec<MaterialBatch> = plans
+            .iter()
+            .map(|plan| {
+                shell_batch(
+                    plan.lighting,
+                    plan.fog,
+                    plan.texturing,
+                    plan.state,
+                    plan.texture,
+                    plan.second_texture,
+                )
+            })
+            .collect();
+        let draw = self
+            .assemble_retained_draw(cached, &shells, input, data.mirror, projector)
+            .ok()?;
+        let group = match order {
+            None => compiled_retained_group(shader.clone(), draw),
+            Some(order) => source_retained_group(shader.clone(), order.clone(), draw).ok()?,
+        };
+        Some(vec![SceneOperation::Group(group)])
+    }
+
+    /// Evaluate once with the identity projection and intern the arrays on
+    /// an arena miss. Unretainable shapes project the evaluated batches
+    /// directly, reproducing the immediate path without re-evaluation.
+    /// Takes the arena and registry by field so the calling context can
+    /// keep borrowing scene noise. Classification guarantees no fog volume
+    /// or dynamic lights here, so those stay `None`.
+    #[allow(clippy::too_many_arguments)]
+    fn retained_miss_operations(
+        retained: &mut RetainedArena,
+        shaders: &SceneShaderRegistry,
+        key: RetainedKey,
+        geometry: MaterialGeometry,
+        shader: &RegisteredSceneMaterial,
+        input: &WorldViewInput,
+        data: &DrawContextData,
+        order: Option<&SourceSurfaceOrder>,
+        projector: &ViewProjector,
+        context: &MaterialDrawContext,
+    ) -> Result<Vec<SceneOperation>, RenderError> {
+        debug_assert!(context.fog.is_none(), "retained miss excludes fog volumes");
+        debug_assert!(
+            context.dynamic_lights.is_none() && context.dynamic_light_batches.is_none(),
+            "retained miss excludes dynamic lights"
+        );
+        let identity: &dyn Fn(Vec3) -> Vec4 = &identity_project;
+        let retained_context = MaterialDrawContext {
+            project: identity,
+            identity_light: context.identity_light,
+            time: context.time,
+            time_offset: context.time_offset,
+            refdef_time: context.refdef_time,
+            view_origin: context.view_origin,
+            local_view_origin: context.local_view_origin,
+            shader_tex_coord: context.shader_tex_coord,
+            deform_view: context.deform_view,
+            projection_shadow: context.projection_shadow,
+            render_text: context.render_text.clone(),
+            depth_range: context.depth_range,
+            polygon_offset: context.polygon_offset,
+            noise: context.noise,
+            fog: None,
+            q1_fog: context.q1_fog,
+            dynamic_light_batches: context.dynamic_light_batches,
+            dynamic_lights: None,
+            lighting: context.lighting,
+            entity_rgba: context.entity_rgba,
+        };
+        let evaluated = prepare_material_batches(shader, geometry, &retained_context).map_err(client_error)?;
+        let Some(surface) = retained_surface_from_batches(
+            RetainedId {
+                surface: key.surface,
+                generation: 0,
+            },
+            &evaluated,
+        ) else {
+            // Unretainable shape; project the evaluated batches directly.
+            let projected = project_identity_batches(evaluated, context.project);
+            return convert_shader_batches(shaders, shader, &projected, None, input, data, order);
+        };
+        let shells: Vec<MaterialBatch> = evaluated
+            .iter()
+            .map(|batch| {
+                shell_batch(
+                    batch.lighting,
+                    batch.fog,
+                    batch.texturing,
+                    batch.state,
+                    batch.texture,
+                    batch.second_texture,
+                )
+            })
+            .collect();
+        let stored = retained.intern(key, |id| {
+            let mut stored = surface;
+            stored.id = id;
+            stored
+        });
+        let draw = match assemble_retained_draw(
+            shaders.textures().images(),
+            &stored,
+            &shells,
+            &input.dynamic_images,
+            data.mirror,
+            projector,
+        ) {
+            Ok(draw) => draw,
+            Err(_) => {
+                let projected = project_identity_batches(evaluated, context.project);
+                return convert_shader_batches(shaders, shader, &projected, None, input, data, order);
+            }
+        };
         Ok(vec![SceneOperation::Group(match order {
-            None => compiled_draw_group(shader.clone(), converted),
-            Some(order) => source_draw_group(shader.clone(), order.clone(), converted)?,
+            None => compiled_retained_group(shader.clone(), draw),
+            Some(order) => source_retained_group(shader.clone(), order.clone(), draw)?,
         })])
+    }
+
+    /// Assemble one retained draw from cached arrays plus per-frame shells.
+    fn assemble_retained_draw(
+        &self,
+        cached: &Arc<RetainedSurfaceData>,
+        shells: &[MaterialBatch],
+        input: &WorldViewInput,
+        mirror: bool,
+        projector: &ViewProjector,
+    ) -> Result<RetainedDraw, RenderError> {
+        assemble_retained_draw(
+            self.shaders.textures().images(),
+            cached,
+            shells,
+            &input.dynamic_images,
+            mirror,
+            projector,
+        )
     }
 
     fn sky_operations(
@@ -4357,6 +4917,67 @@ mod tests {
     }
 
     #[test]
+    fn retained_surfaces_reuse_arena_allocations_across_frames() {
+        use super::super::retained::resolve_retained_positions;
+
+        let _remap_lock = lock_remap_tests();
+        let levels = q1_levels();
+        let visibility = [0b11u8];
+        let lighting = [128u8; 4];
+        let mut scene = cached_scene("world-q1-retained", &visibility, &lighting, &levels);
+        let base = input(camera_at(vec3(8.0, 8.0, 64.0)));
+        let first = scene.prepare_view(&mut base.clone()).expect("first view");
+        let retained_first: Vec<&RetainedDraw> = first
+            .view
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                RenderOperation::RetainedDraw(draw) => Some(draw),
+                _ => None,
+            })
+            .collect();
+        assert!(!retained_first.is_empty(), "static surfaces emit retained draws");
+        let mut moved_input = base.clone();
+        moved_input.camera.origin = vec3(4.0, 4.0, 32.0);
+        let second = scene.prepare_view(&mut moved_input).expect("second view");
+        let retained_second: Vec<&RetainedDraw> = second
+            .view
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                RenderOperation::RetainedDraw(draw) => Some(draw),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retained_first.len(), retained_second.len());
+        for (before, after) in retained_first.iter().zip(retained_second.iter()) {
+            assert_eq!(before.surface.id, after.surface.id);
+            assert!(Arc::ptr_eq(&before.surface, &after.surface));
+            assert_ne!(before.eye, after.eye);
+            let early = ViewProjector::from_rows(before.eye, before.projection);
+            let late = ViewProjector::from_rows(after.eye, after.projection);
+            let mut early_positions = Vec::new();
+            let mut late_positions = Vec::new();
+            resolve_retained_positions(before, &early, &mut early_positions);
+            resolve_retained_positions(after, &late, &mut late_positions);
+            assert_eq!(early_positions.len(), late_positions.len());
+            assert!(
+                early_positions.iter().zip(late_positions.iter()).any(|(a, b)| a != b),
+                "moved camera resolves moved positions"
+            );
+        }
+        // The scrolling sky surface keeps the immediate path.
+        assert!(
+            second
+                .view
+                .operations
+                .iter()
+                .any(|operation| !matches!(operation, RenderOperation::RetainedDraw(_))),
+            "sky stays immediate"
+        );
+    }
+
+    #[test]
     fn empty_view_skips_world_model() {
         let levels = q1_levels();
         let visibility = [0b11u8];
@@ -4657,7 +5278,20 @@ mod tests {
         let mut view_input = input(camera_at(vec3(8.0, 8.0, 64.0)));
         let prepared = scene.prepare_view(&mut view_input).expect("view");
         assert_eq!(prepared.view.operations.len(), 1);
-        assert!(matches!(prepared.view.operations[0], RenderOperation::Draw(_)));
+        let RenderOperation::RetainedDraw(draw) = &prepared.view.operations[0] else {
+            panic!(
+                "planar surface emits a retained draw, got {:?}",
+                prepared.view.operations[0]
+            );
+        };
+        assert_eq!(draw.surface.positions.len(), 3);
+        assert_eq!(draw.surface.indices.len(), 3);
+        assert_eq!(draw.batches.len(), 1);
+        let projector = ViewProjector::from_rows(draw.eye, draw.projection);
+        let mut resolved = Vec::new();
+        super::super::retained::resolve_retained_positions(draw, &projector, &mut resolved);
+        assert_eq!(resolved.len(), 3);
+        assert!(resolved.iter().all(|position| position.w != 0.0));
         let views = scene.prepare_views(&mut view_input, &[]).expect("views");
         assert_eq!(views.len(), 1);
     }

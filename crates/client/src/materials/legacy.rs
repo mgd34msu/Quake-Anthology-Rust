@@ -362,12 +362,55 @@ pub enum LegacyMaterial {
     },
 }
 
-/// Prepare legacy material batches (`prepareLegacyMaterialBatches`).
-pub fn prepare_legacy_material_batches(
+/// One legacy pass kind: base plus optional lightmap/fullbright extras.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyPassKind {
+    /// Base textured pass.
+    Base,
+    /// Separate lightmap multiply pass.
+    Lightmap,
+    /// Fullbright overlay pass.
+    Fullbright,
+}
+
+/// One legacy pass's draw parameters without vertex data.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LegacyPassParams {
+    /// Pass kind.
+    pub kind: LegacyPassKind,
+    /// Pipeline state.
+    pub state: RenderState,
+    /// Primary texture.
+    pub texture: TextureRef,
+    /// Second texture plus environment when paired.
+    pub second_texture: Option<(TextureRef, super::evaluate::PairEnv)>,
+    /// Texturing mode.
+    pub texturing: Texturing,
+}
+
+/// Legacy draw plan: vertex scalars plus per-pass parameters, shared by
+/// immediate evaluation and retained cache hits.
+#[derive(Debug, Clone)]
+pub(crate) struct LegacyPassPlan {
+    /// Combined opacity.
+    pub alpha: f32,
+    /// Whether the base pass blends.
+    pub blended: bool,
+    /// Vertex-lit pass.
+    pub vertex_lit: bool,
+    /// Entity tint (opaque white when absent).
+    pub tint: Vec4,
+    /// Base pass parameters.
+    pub base: LegacyPassParams,
+    /// Extra passes in batch order.
+    pub extras: Vec<LegacyPassParams>,
+}
+
+/// Compute the legacy draw plan (`prepareLegacyMaterialBatches` plan step).
+pub(crate) fn legacy_pass_params(
     material: &LegacyMaterial,
-    geometry: &MaterialGeometry,
     context: &LegacyMaterialDrawContext,
-) -> Result<Vec<MaterialBatch>, ClientError> {
+) -> Result<LegacyPassPlan, ClientError> {
     let is_sky = match material {
         LegacyMaterial::Q1(material) => material.surface == Q1Surface::Sky,
         LegacyMaterial::Q2 { material, .. } => material.surface_flags & 4 != 0,
@@ -413,6 +456,96 @@ pub fn prepare_legacy_material_batches(
         depth_range: context.depth_range,
         polygon_offset: None,
     };
+    let mut base = LegacyPassParams {
+        kind: LegacyPassKind::Base,
+        state,
+        texture: TextureRef::BindImage(image),
+        second_texture: None,
+        texturing: Texturing::Single,
+    };
+    let mut extras = Vec::new();
+    if let Some(lightmap) = lightmap {
+        if blended || context.q1_fog_active {
+            let combined = context.translucent_lightmap.ok_or_else(|| {
+                ClientError::BadMaterial(
+                    "Translucent lightmapped surfaces require an uploaded directLightmapPixels image".to_string(),
+                )
+            })?;
+            base.texturing = Texturing::Pair;
+            base.second_texture = Some((TextureRef::BindImage(combined), super::evaluate::PairEnv::Modulate));
+        } else {
+            let blend = match material {
+                LegacyMaterial::Q1(_) if context.q1_lightmap_encoding != Q1LightmapEncoding::Rgb => Blend {
+                    source: super::state::BlendFactor::Zero,
+                    destination: if context.q1_lightmap_encoding == Q1LightmapEncoding::InvertedAlpha {
+                        super::state::BlendFactor::OneMinusSrcAlpha
+                    } else {
+                        super::state::BlendFactor::OneMinusSrcColor
+                    },
+                },
+                _ => Blend {
+                    source: super::state::BlendFactor::DstColor,
+                    destination: super::state::BlendFactor::Zero,
+                },
+            };
+            extras.push(LegacyPassParams {
+                kind: LegacyPassKind::Lightmap,
+                state: RenderState {
+                    blend,
+                    depth_test: DepthTest::Equal,
+                    depth_write: false,
+                    alpha_test: AlphaTest::None,
+                    ..state
+                },
+                texture: TextureRef::BindImage(lightmap),
+                second_texture: None,
+                texturing: Texturing::Single,
+            });
+        }
+    }
+    if let Some(fullbright) = context.fullbright {
+        extras.push(LegacyPassParams {
+            kind: LegacyPassKind::Fullbright,
+            state: RenderState {
+                blend: Blend {
+                    source: super::state::BlendFactor::SrcAlpha,
+                    destination: super::state::BlendFactor::OneMinusSrcAlpha,
+                },
+                depth_test: if blended {
+                    DepthTest::LessEqual
+                } else {
+                    DepthTest::Equal
+                },
+                depth_write: false,
+                alpha_test: AlphaTest::Gt0,
+                ..state
+            },
+            texture: TextureRef::BindImage(fullbright),
+            second_texture: None,
+            texturing: Texturing::Single,
+        });
+    }
+    Ok(LegacyPassPlan {
+        alpha,
+        blended,
+        vertex_lit,
+        tint,
+        base,
+        extras,
+    })
+}
+
+/// Prepare legacy material batches (`prepareLegacyMaterialBatches`).
+pub fn prepare_legacy_material_batches(
+    material: &LegacyMaterial,
+    geometry: &MaterialGeometry,
+    context: &LegacyMaterialDrawContext,
+) -> Result<Vec<MaterialBatch>, ClientError> {
+    let plan = legacy_pass_params(material, context)?;
+    let tint = plan.tint;
+    let alpha = plan.alpha;
+    let blended = plan.blended;
+    let vertex_lit = plan.vertex_lit;
     let vertices: Vec<BatchVertex> = geometry
         .vertices
         .iter()
@@ -459,118 +592,77 @@ pub fn prepare_legacy_material_batches(
             }
         })
         .collect();
+    let base_params = plan.base;
     let mut batches = vec![MaterialBatch {
         lighting: BatchLighting::Vertex,
         fog: None,
-        texturing: Texturing::Single,
-        state,
-        texture: TextureRef::BindImage(image),
-        second_texture: None,
+        texturing: base_params.texturing,
+        state: base_params.state,
+        texture: base_params.texture,
+        second_texture: base_params.second_texture,
         indices: geometry.indices.clone(),
         vertices,
     }];
-    if let Some(lightmap) = lightmap {
-        if blended || context.q1_fog_active {
-            let combined = context.translucent_lightmap.ok_or_else(|| {
-                ClientError::BadMaterial(
-                    "Translucent lightmapped surfaces require an uploaded directLightmapPixels image".to_string(),
-                )
-            })?;
-            let paired: Vec<BatchVertex> = batches[0]
-                .vertices
-                .iter()
-                .zip(geometry.vertices.iter())
-                .map(|(vertex, source)| BatchVertex {
-                    tex_coord2: Some(source.lightmap_coord),
-                    ..*vertex
-                })
-                .collect();
-            batches[0] = MaterialBatch {
-                lighting: BatchLighting::Vertex,
-                fog: None,
-                texturing: Texturing::Pair,
-                state: batches[0].state,
-                texture: TextureRef::BindImage(image),
-                second_texture: Some((TextureRef::BindImage(combined), super::evaluate::PairEnv::Modulate)),
-                indices: geometry.indices.clone(),
-                vertices: paired,
-            };
-        } else {
-            let blend = match material {
-                LegacyMaterial::Q1(_) if context.q1_lightmap_encoding != Q1LightmapEncoding::Rgb => Blend {
-                    source: super::state::BlendFactor::Zero,
-                    destination: if context.q1_lightmap_encoding == Q1LightmapEncoding::InvertedAlpha {
-                        super::state::BlendFactor::OneMinusSrcAlpha
-                    } else {
-                        super::state::BlendFactor::OneMinusSrcColor
-                    },
-                },
-                _ => Blend {
-                    source: super::state::BlendFactor::DstColor,
-                    destination: super::state::BlendFactor::Zero,
-                },
-            };
-            let light_vertices: Vec<BatchVertex> = batches[0]
-                .vertices
-                .iter()
-                .zip(geometry.vertices.iter())
-                .map(|(vertex, source)| BatchVertex {
-                    position: vertex.position,
-                    tex_coord: source.lightmap_coord,
-                    tex_coord2: None,
-                    color: qa_core::math::vec4(1.0, 1.0, 1.0, 1.0),
-                })
-                .collect();
-            batches.push(MaterialBatch {
-                lighting: BatchLighting::Vertex,
-                fog: None,
-                texturing: Texturing::Single,
-                texture: TextureRef::BindImage(lightmap),
-                state: RenderState {
-                    blend,
-                    depth_test: DepthTest::Equal,
-                    depth_write: false,
-                    alpha_test: AlphaTest::None,
-                    ..state
-                },
-                second_texture: None,
-                indices: geometry.indices.clone(),
-                vertices: light_vertices,
-            });
-        }
-    }
-    if let Some(fullbright) = context.fullbright {
-        let bright: Vec<BatchVertex> = batches[0]
+    if base_params.texturing == Texturing::Pair {
+        let paired: Vec<BatchVertex> = batches[0]
             .vertices
             .iter()
-            .map(|vertex| BatchVertex {
-                color: qa_core::math::vec4(tint.x / 255.0, tint.y / 255.0, tint.z / 255.0, alpha),
+            .zip(geometry.vertices.iter())
+            .map(|(vertex, source)| BatchVertex {
+                tex_coord2: Some(source.lightmap_coord),
                 ..*vertex
             })
             .collect();
-        batches.push(MaterialBatch {
-            lighting: BatchLighting::Vertex,
-            fog: None,
-            texturing: Texturing::Single,
-            texture: TextureRef::BindImage(fullbright),
-            state: RenderState {
-                blend: Blend {
-                    source: super::state::BlendFactor::SrcAlpha,
-                    destination: super::state::BlendFactor::OneMinusSrcAlpha,
-                },
-                depth_test: if blended {
-                    DepthTest::LessEqual
-                } else {
-                    DepthTest::Equal
-                },
-                depth_write: false,
-                alpha_test: AlphaTest::Gt0,
-                ..state
-            },
-            second_texture: None,
-            indices: geometry.indices.clone(),
-            vertices: bright,
-        });
+        batches[0].vertices = paired;
+    }
+    for extra in &plan.extras {
+        match extra.kind {
+            // Base is assembled above; extras only carry lightmap/fullbright.
+            LegacyPassKind::Base => {}
+            LegacyPassKind::Lightmap => {
+                let light_vertices: Vec<BatchVertex> = batches[0]
+                    .vertices
+                    .iter()
+                    .zip(geometry.vertices.iter())
+                    .map(|(vertex, source)| BatchVertex {
+                        position: vertex.position,
+                        tex_coord: source.lightmap_coord,
+                        tex_coord2: None,
+                        color: qa_core::math::vec4(1.0, 1.0, 1.0, 1.0),
+                    })
+                    .collect();
+                batches.push(MaterialBatch {
+                    lighting: BatchLighting::Vertex,
+                    fog: None,
+                    texturing: Texturing::Single,
+                    texture: extra.texture,
+                    state: extra.state,
+                    second_texture: None,
+                    indices: geometry.indices.clone(),
+                    vertices: light_vertices,
+                });
+            }
+            LegacyPassKind::Fullbright => {
+                let bright: Vec<BatchVertex> = batches[0]
+                    .vertices
+                    .iter()
+                    .map(|vertex| BatchVertex {
+                        color: qa_core::math::vec4(tint.x / 255.0, tint.y / 255.0, tint.z / 255.0, alpha),
+                        ..*vertex
+                    })
+                    .collect();
+                batches.push(MaterialBatch {
+                    lighting: BatchLighting::Vertex,
+                    fog: None,
+                    texturing: Texturing::Single,
+                    texture: extra.texture,
+                    state: extra.state,
+                    second_texture: None,
+                    indices: geometry.indices.clone(),
+                    vertices: bright,
+                });
+            }
+        }
     }
     Ok(batches)
 }

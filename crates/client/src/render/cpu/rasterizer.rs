@@ -16,12 +16,14 @@ use qa_core::math::{vec2, vec4, Mat4, Vec2, Vec3, Vec4};
 
 use super::super::types::{
     fresh_owner_identity, AlphaTest, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest,
-    DrawBatch, DrawBuffer, FogEffect, ImageLevel, ImageResourceOperation, OrderedBackend, PairEnvironment,
-    PreparedDraw, Q2LightPass, Rect, RenderOperation, RenderState, RenderVertex, RenderViewState, RendererImage,
-    ResourceOwner, TextureBinding, TextureRect, ViewClear,
+    DrawBatch, DrawBuffer, FogEffect, ImageLevel, ImageResourceOperation, MultitextureVertex, OrderedBackend,
+    PairEnvironment, PreparedDraw, Q2LightPass, Rect, RenderOperation, RenderState, RenderVertex, RenderViewState,
+    RendererImage, ResourceOwner, RetainedDraw, TextureBinding, TextureRect, ViewClear,
 };
 use super::super::{FrameStats, RenderView, RendererBackend, SceneDecal, SceneEntity, SceneLight, SceneParticle};
 use crate::materials::fog::Q1Fog;
+use crate::render::scene::retained::{fill_retained_batch_vertices, resolve_retained_positions};
+use crate::view::ViewProjector;
 
 use super::super::stage_timings::StageTimer;
 use super::fog::{apply_q1_depth_fog, apply_q2_depth_fog, Q1FogOutput};
@@ -314,6 +316,14 @@ pub struct SoftwareRenderer {
     parallel_min_setups: usize,
     /// Strip count for parallel shading.
     parallel_threads: usize,
+    /// Reused scratch for retained-draw resolution (no per-frame allocs).
+    retained_positions: Vec<Vec4>,
+    /// Reused single-textured vertex scratch.
+    retained_single: Vec<RenderVertex>,
+    /// Reused paired-textured vertex scratch.
+    retained_pair: Vec<MultitextureVertex>,
+    /// Reused index scratch.
+    retained_indices: Vec<u32>,
 }
 
 impl SoftwareRenderer {
@@ -396,6 +406,10 @@ impl SoftwareRenderer {
             closed: false,
             parallel_min_setups: 512,
             parallel_threads: std::thread::available_parallelism().map_or(4, |threads| threads.get()),
+            retained_positions: Vec::new(),
+            retained_single: Vec::new(),
+            retained_pair: Vec::new(),
+            retained_indices: Vec::new(),
         }
     }
 
@@ -508,6 +522,66 @@ impl SoftwareRenderer {
         }
         prepared.draw();
         prepared.cleanup();
+    }
+
+    /// Resolve a retained draw through the frame projector into reused
+    /// scratch and draw each batch. Positions resolve with the exact legacy
+    /// projection, so output matches the immediate path bitwise. Scratch
+    /// vectors round-trip through each assembled batch, so steady-state
+    /// resolution allocates nothing.
+    fn draw_retained(&mut self, draw: &RetainedDraw) {
+        self.assert_open();
+        let projector = ViewProjector::from_rows(draw.eye, draw.projection);
+        resolve_retained_positions(draw, &projector, &mut self.retained_positions);
+        for index in 0..draw.batches.len() {
+            let paired = draw.batches[index].second_texture.is_some();
+            {
+                let Self {
+                    retained_positions,
+                    retained_single,
+                    retained_pair,
+                    retained_indices,
+                    ..
+                } = self;
+                fill_retained_batch_vertices(
+                    draw,
+                    index,
+                    retained_positions,
+                    paired,
+                    retained_single,
+                    retained_pair,
+                    retained_indices,
+                );
+            }
+            let batch = &draw.batches[index];
+            let vertices = if paired {
+                BatchVertices::Pair {
+                    vertices: std::mem::take(&mut self.retained_pair),
+                    second_texture: batch
+                        .second_texture
+                        .clone()
+                        .expect("paired retained batch keeps its bundle"),
+                }
+            } else {
+                BatchVertices::Single(std::mem::take(&mut self.retained_single))
+            };
+            let assembled = DrawBatch {
+                fog: batch.fog,
+                luminance_alpha: batch.luminance_alpha,
+                indices: std::mem::take(&mut self.retained_indices),
+                texture: batch.texture.clone(),
+                state: batch.state,
+                lighting: batch.lighting.clone(),
+                primitive: batch.primitive,
+                vertices,
+            };
+            self.draw(&assembled);
+            match assembled.vertices {
+                BatchVertices::Single(vertices) => self.retained_single = vertices,
+                BatchVertices::Pair { vertices, .. } => self.retained_pair = vertices,
+            }
+            self.retained_indices = assembled.indices;
+        }
     }
 
     /// Stretch a picture over the full framebuffer with the 2D color.
@@ -1776,6 +1850,9 @@ impl OrderedBackend for SoftwareRenderer {
             RenderOperation::ShadowFinish { positions, white_image } => {
                 let positions = positions.to_vec();
                 self.shadow_pass(&positions, &[0, 1, 2, 0, 2, 3], false, white_image, true);
+            }
+            RenderOperation::RetainedDraw(draw) => {
+                self.draw_retained(draw);
             }
         }
     }

@@ -433,6 +433,7 @@ pub(crate) mod support {
             RenderOperation::SkySide { .. } => "sky-side",
             RenderOperation::ShadowVolume { .. } => "shadow-volume",
             RenderOperation::ShadowFinish { .. } => "shadow-finish",
+            RenderOperation::RetainedDraw(_) => "retained-draw",
         }
     }
 
