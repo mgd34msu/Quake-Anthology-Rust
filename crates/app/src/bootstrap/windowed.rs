@@ -2972,6 +2972,145 @@ mod tests {
     }
 
     #[test]
+    fn live_q1_start_player_walks_under_host_gate() {
+        // Live Xvfb proof that the Q1 walking skeleton moves and collides
+        // through the real gated loop: open start.bsp in a real window,
+        // hold Forward through the seat, step display frames through
+        // `StartupApplication::step` (host gate + server tick + player
+        // step) until the eye stalls against the far wall, and assert the
+        // eye advanced along its facing, the floor held, the stall held
+        // with Forward still down, and the sim ran at most once per
+        // display frame. The drive-until-stall loop keeps the proof
+        // independent of frame-render speed. Skips loudly without Q1
+        // corpus; without a display the honest open failure is required
+        // (same contract as the smoke tests).
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let corpus = steel_corpus_root();
+        if !corpus.join("q1").is_dir() {
+            eprintln!("skipped: Steel corpus root {} has no Q1 data", corpus.display());
+            return;
+        }
+        let mut options = windowed_options();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/start.bsp".to_string();
+        options.frame_limit = None;
+        let mut composed = match open_windowed_application(&options, StartupEntry::Run) {
+            Ok(composed) => composed,
+            Err(error) => {
+                assert!(!error.is_empty(), "honest open failure");
+                eprintln!("skipped: windowed Q1 open failed without a display ({error})");
+                return;
+            }
+        };
+        let (start_eye, start_angles) = composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .and_then(PlayWorld::player_eye)
+            .expect("Q1 world admits a player");
+        let start_frame = composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .map(|world| world.server().simulation().frame().frame)
+            .unwrap_or(0);
+        // Hold Forward through the real seat path (SDL W key-down), exactly
+        // as a player pressing W: scancode 26 is SDL_SCANCODE_W, keycode 87
+        // ('W') translates to game key 119 ('w'), bound to Forward.
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::Key {
+                timestamp: 0,
+                down: true,
+                repeat: false,
+                scancode: 26,
+                keycode: 87,
+                modifiers: 0,
+            }])
+            .expect("forward key injects");
+        // Drive in 60-frame chunks until two consecutive chunks move the
+        // eye less than half a unit while Forward stays held: the wall
+        // stall, held for 120 frames with no creep, sink, or
+        // pop-through. The chunk cap only bounds a runaway; reaching it
+        // fails the proof below.
+        let eye_of = |composed: &WindowedApplication| {
+            composed
+                .app
+                .backend()
+                .world
+                .as_ref()
+                .and_then(PlayWorld::player_eye)
+                .map(|(eye, _)| eye)
+        };
+        let mut previous = start_eye;
+        let mut calm = 0;
+        let mut chunks = 0;
+        while chunks < 20 && calm < 2 {
+            for _ in 0..60 {
+                composed.app.step().expect("windowed step works");
+            }
+            chunks += 1;
+            let current = eye_of(&composed).expect("Q1 world keeps its player");
+            let drift = ((current.x - previous.x) as f64)
+                .hypot((current.y - previous.y) as f64)
+                .hypot((current.z - previous.z) as f64);
+            eprintln!("live-q1-walk: chunk {chunks} eye {current:?} drift {drift:.3}");
+            calm = if drift < 0.5 { calm + 1 } else { 0 };
+            previous = current;
+        }
+        let stalled = calm >= 2;
+        let (end_eye, _) = composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .and_then(PlayWorld::player_eye)
+            .expect("Q1 world keeps its player");
+        let end_frame = composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .map(|world| world.server().simulation().frame().frame)
+            .unwrap_or(0);
+        let display_frames = composed.app.frames();
+        eprintln!("live-q1-walk: eye {start_eye:?} -> {end_eye:?} angles {start_angles:?}");
+        eprintln!("live-q1-walk: sim frames {start_frame} -> {end_frame} over {display_frames} display frames");
+        assert!(stalled, "the player never stalled against the wall");
+        assert!(end_frame > start_frame, "the host gate ran sim frames");
+        assert!(
+            i64::from(end_frame - start_frame) <= display_frames as i64,
+            "the gate runs at most one sim frame per display frame"
+        );
+        let moved_x = f64::from(end_eye.x - start_eye.x);
+        let moved_y = f64::from(end_eye.y - start_eye.y);
+        let horizontal = moved_x.hypot(moved_y);
+        assert!(horizontal > 10.0, "eye did not advance: {end_eye:?} from {start_eye:?}");
+        let yaw = f64::from(start_angles.y).to_radians();
+        let along = (moved_x * yaw.cos() + moved_y * yaw.sin()) / horizontal;
+        assert!(
+            along > 0.5,
+            "player walked off facing: {end_eye:?} from {start_eye:?} yaw {}",
+            start_angles.y
+        );
+        assert!(
+            end_eye.z >= start_eye.z - 72.0 && end_eye.z <= start_eye.z + 8.0,
+            "player left the floor: {end_eye:?} from {start_eye:?}"
+        );
+        // The stall above held with Forward still down, so collision (not
+        // a released key) stopped the eye; pin the far-wall reach so a
+        // mid-map snag cannot masquerade as the wall block.
+        assert!(
+            end_eye.y > 1300.0 && end_eye.y < 1400.0,
+            "player stalled before the far wall: {end_eye:?}"
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
     fn non_black_counter_diffs_captures_from_black() {
         assert_eq!(count_non_black(&[0, 0, 0, 255, 0, 0, 0, 255]), 0);
         assert_eq!(count_non_black(&[0, 0, 0, 255, 1, 0, 0, 255, 0, 0, 5, 0]), 2);
