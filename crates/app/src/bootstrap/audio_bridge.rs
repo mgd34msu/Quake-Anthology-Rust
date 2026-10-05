@@ -230,9 +230,7 @@ impl<Content: SoundContent> AudioBridge<Content> {
         eye: Option<(Vec3, Vec3)>,
         actor: Option<&ActorId>,
     ) {
-        let (origin, angles) = eye.map_or((vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0)), |(eye, angles)| {
-            (eye, angles)
-        });
+        let (origin, angles) = eye.unwrap_or((vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0)));
         let listener = AudioListener {
             seat: seat.clone(),
             actor: actor.cloned(),
@@ -741,7 +739,7 @@ mod tests {
         let mut engine = engine();
         let mut bridge = bridge();
         let event = q1_sound(&actor, "test/blip.wav");
-        bridge.receive(&mut engine, &[event.clone()], &AudioAudience::World);
+        bridge.receive(&mut engine, std::slice::from_ref(&event), &AudioAudience::World);
         let silent = engine.mix(256).unwrap();
         assert!(
             silent.iter().all(|sample| *sample == 0),
@@ -770,7 +768,7 @@ mod tests {
         let mut bridge = bridge();
         bridge.update_listeners(&mut engine, &seat, None, None);
         let event = q1_sound(&actor, "missing/nope.wav");
-        bridge.receive(&mut engine, &[event.clone()], &AudioAudience::World);
+        bridge.receive(&mut engine, std::slice::from_ref(&event), &AudioAudience::World);
         bridge.receive(&mut engine, &[event], &AudioAudience::World);
         assert_eq!(bridge.warned_count(), 1);
         let mixed = engine.mix(64).unwrap();

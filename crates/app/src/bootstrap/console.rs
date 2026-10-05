@@ -6,12 +6,13 @@
 //! context (upstream follow-up), so each registry handle is paired with its
 //! declaring session and origin in [`ConsoleRegistry`]; the routing
 //! precedence, dialect guards, and seat-ownership checks otherwise match the
-//! donor. `frameTimeCvarNames` is absorbed from `frame-time.ts`.
+//! donor. Frame-time cvar names come from the canonical `frame_time` module.
 //! Seat and client handles include their session token in equality, so the
 //! donor's `origin.seat.session !== source.session` checks are covered by
 //! the seat-identity comparisons; handles expose no separate session
 //! projection to compare against the command session directly.
 
+use super::frame_time::frame_time_cvar_names;
 use qa_core::cmd::{source_command_text, CmdError, Dialect};
 use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
 use qa_core::cvar::{CvarError, CvarRegistry};
@@ -65,19 +66,6 @@ fn caller(origin: &CommandOrigin) -> &CommandOrigin {
         current = caller;
     }
     current
-}
-
-/// Frame-time cvar names shared with client mirrors, by dialect
-/// (`frameTimeCvarNames` from `frame-time.ts`).
-#[must_use]
-pub fn frame_time_cvar_names(dialect: Dialect) -> &'static [&'static str] {
-    if dialect.is_q1() {
-        &["timescale", "host_framerate"]
-    } else if dialect.is_q2() {
-        &["timescale", "fixedtime"]
-    } else {
-        &["timescale", "fixedtime", "com_cameraMode"]
-    }
 }
 
 /// One registry plus the session context the Rust core does not carry.

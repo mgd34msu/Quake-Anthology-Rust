@@ -1234,6 +1234,17 @@ pub struct Q2TextureInfo {
     pub next: Option<u32>,
 }
 
+/// Which leaf-contents value a consumer resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q2LeafContents {
+    /// Stored per-leaf contents: classic Q2 resolves point and leaf
+    /// contents from this value (`CM_PointContents` returns
+    /// `map_leafs[l].contents`, cmodel.c).
+    Stored,
+    /// Contents merged with leaf brushes: rerelease path only.
+    Merged,
+}
+
 /// Decoded leaf (`Q2Leaf`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Q2Leaf {
@@ -1251,6 +1262,20 @@ pub struct Q2Leaf {
     pub faces: IndexRange,
     /// Leaf-brush range.
     pub brushes: IndexRange,
+}
+
+impl Q2Leaf {
+    /// Resolve the contents value a consumer reads.
+    ///
+    /// Classic Q2 passes [`Q2LeafContents::Stored`]; merged contents stay
+    /// available for the rerelease path only.
+    #[must_use]
+    pub fn contents_for(&self, which: Q2LeafContents) -> i32 {
+        match which {
+            Q2LeafContents::Stored => self.contents,
+            Q2LeafContents::Merged => self.merged_contents,
+        }
+    }
 }
 
 /// Decoded face (`BspFace`).
@@ -1494,6 +1519,10 @@ mod tests {
     }
 
     fn fixture_with_lighting(lighting: &[u8]) -> Fixture {
+        fixture_with_contents(lighting, 0, 0)
+    }
+
+    fn fixture_with_contents(lighting: &[u8], leaf_contents: i32, brush_contents: i32) -> Fixture {
         // Minimal valid map: 1 plane, 4 vertices, 4 edges, 4 surface edges,
         // 1 node, 2 leaves (solid + empty), 1 texture, 1 face, 1 model,
         // 1 brush + 1 side, 1 area + 1 portal, empty visibility.
@@ -1557,7 +1586,7 @@ mod tests {
         writer.u16(0).unwrap();
         writer.u16(0).unwrap();
         writer.u16(0).unwrap();
-        writer.i32(0).unwrap();
+        writer.i32(leaf_contents).unwrap();
         writer.u16(0xffff).unwrap();
         writer.u16(0).unwrap();
         for value in [0i16, 0, 0, 16, 16, 16] {
@@ -1596,7 +1625,7 @@ mod tests {
         let mut writer = BinaryWriter::new(12);
         writer.u32(0).unwrap();
         writer.u32(1).unwrap();
-        writer.i32(0).unwrap();
+        writer.i32(brush_contents).unwrap();
         lumps[LUMP_BRUSHES] = writer.finish();
         let mut writer = BinaryWriter::new(4);
         writer.u16(0).unwrap();
@@ -1666,10 +1695,69 @@ mod tests {
         assert_eq!(world.texture_info[0].material, "");
         assert_eq!(world.texture_info[0].next, None);
         assert_eq!(world.leaves[1].merged_contents, 0);
+        assert_eq!(world.leaves[1].contents_for(Q2LeafContents::Stored), 0);
+        assert_eq!(world.leaves[1].contents_for(Q2LeafContents::Merged), 0);
         assert_eq!(world.leaves[1].cluster, -1);
         assert_eq!(world.models[0].bounds.min, [-1.0, -1.0, -1.0]);
         assert_eq!(world.models[0].bounds.max, [17.0, 17.0, 17.0]);
         assert!(world.decoupled_lightmaps.is_none());
+    }
+
+    #[test]
+    fn classic_leaf_contents_resolve_stored() {
+        // Classic Q2 resolves point/leaf contents from the stored per-leaf
+        // value (`CM_PointContents` returns `map_leafs[l].contents`); the
+        // merged value exists for the rerelease path only.
+        let fixture = fixture_with_contents(&[], 8, 1);
+        let map = read_q2_bsp(&fixture.bytes, "<test>").unwrap();
+
+        struct NoResources;
+        impl Q2MapResources for NoResources {
+            fn read_material(&self, _path: &str) -> Option<Vec<u8>> {
+                None
+            }
+        }
+        let world = to_q2_world_geometry(map, Some(&NoResources)).unwrap();
+        let leaf = world.leaves[1];
+        assert_eq!(leaf.contents, 8);
+        assert_eq!(leaf.merged_contents, 8 | 1);
+        assert_eq!(leaf.contents_for(Q2LeafContents::Stored), 8);
+        assert_eq!(leaf.contents_for(Q2LeafContents::Merged), 8 | 1);
+        assert_eq!(world.leaves[0].contents_for(Q2LeafContents::Stored), 1);
+        assert_eq!(world.leaves[0].contents_for(Q2LeafContents::Merged), 1);
+    }
+
+    #[test]
+    fn retail_classic_bsp_keeps_stored_and_merged_contents() {
+        // Retail regression: stored per-leaf contents survive the loader
+        // verbatim while merged contents OR in leaf brushes. Point it at a
+        // classic Q2 map, e.g. `QA_MUSE_Q2_BSP_PATH=/tmp/base1.bsp`.
+        let path = std::env::var("QA_MUSE_Q2_BSP_PATH").unwrap_or_default();
+        if path.is_empty() {
+            eprintln!("skipping: set QA_MUSE_Q2_BSP_PATH to a classic Q2 .bsp");
+            return;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let map = read_q2_bsp(&bytes, &path).unwrap();
+        let stored: Vec<i32> = map.leaves.iter().map(|leaf| leaf.contents).collect();
+        let world = to_q2_world_geometry(map, None).unwrap();
+        assert_eq!(world.leaves[0].contents, 1);
+        for (index, leaf) in world.leaves.iter().enumerate() {
+            assert_eq!(leaf.contents, stored[index], "leaf {index}");
+            assert_eq!(leaf.contents_for(Q2LeafContents::Stored), stored[index], "leaf {index}");
+            assert_eq!(leaf.merged_contents & stored[index], stored[index], "leaf {index}");
+            assert_eq!(
+                leaf.contents_for(Q2LeafContents::Merged),
+                leaf.merged_contents,
+                "leaf {index}"
+            );
+        }
+        let diverged = world
+            .leaves
+            .iter()
+            .filter(|leaf| leaf.merged_contents != leaf.contents)
+            .count();
+        assert!(diverged > 0, "expected brush merging on retail data");
     }
 
     #[test]

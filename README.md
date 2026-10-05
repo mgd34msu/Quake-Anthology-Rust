@@ -41,27 +41,20 @@ QuakeC game logic.
 ## Playing
 
 ```sh
-# Quake II campaign, hard difficulty
+# Launch a game and walk its maps (one local seat)
+./target/release/quake-anthology --game q1-classic-id1
 ./target/release/quake-anthology --game q2-classic-baseq2 --skill 2
-
-# Quake III with bots, nightmare bot skill
-./target/release/quake-anthology --game q3-baseq3 --bot-skill 5
-
-# Two-player local splitscreen deathmatch
-./target/release/quake-anthology --game q1-classic-id1 --seats 2 --mode deathmatch --rules standard
 
 # Software rendering instead of GL, 20 frames, then quit
 ./target/release/quake-anthology --renderer cpu --width 1280 --height 720 --gamma 1.2 --frames 20
-
-# Mixed-game recipe
-./target/release/quake-anthology --preset q2-q1-q3
 ```
 
-Movement, characters, and models follow the game you pick
-(`--movement q1|q2|q3|qw`, `--character`, `--model`); `+command`
-arguments run startup console commands (`'+bind x "+attack"'` as one
-shell argument). `--frames N` opens the game, runs N frames, and
-quits — useful for smoke-testing a setup:
+Movement follows the game you pick (`--movement q1|q2|q3|qw`,
+`--character`, `--model`); `+command` arguments run startup console
+commands (`'+bind x "+attack"'` as one shell argument). Campaigns with
+monsters, items, and doors, bots, splitscreen seats, and mixed-game
+presets are under construction (see Status). `--frames N` opens the
+game, runs N frames, and quits — useful for smoke-testing a setup:
 
 ```sh
 # Smoke test: opens a window, runs 600 frames, prints
@@ -77,20 +70,14 @@ until stopped (add `--frames N` to stop it after N steps).
 ## Hosting and joining
 
 ```sh
-# Dedicated server (no window, no local seats)
+# Dedicated server loop (no window, no local seats)
 ./target/release/qa-dedicated --game q1-classic-id1 --listen 26000
-
-# Host the selected game's native protocol / join servers
-./target/release/quake-anthology --game q2-classic-baseq2 --listen-q2 27910
-./target/release/quake-anthology --connect-q1 play.example.com
-./target/release/quake-anthology --connect-q2 play.example.com
-./target/release/quake-anthology --connect-q3 play.example.com:27960
-./target/release/quake-anthology --connect-qw play.example.com:27500
-
-# Mixed-game hosting
-./target/release/quake-anthology --listen-unified 27960
-./target/release/quake-anthology --connect-unified play.example.com:27960
 ```
+
+The dedicated server currently runs a placeholder scene while the
+gameplay verticals land; native-protocol hosting and joining
+(`--listen-q2`, `--connect-*`) and mixed-game hosting are under
+construction (see Status) and not yet wired to the live server.
 
 Server knobs: `--bind ADDRESS`, `--mode`, `--rules
 standard|ctf|lmctf|tag|deathball|horde`, `--seed N`,
@@ -101,11 +88,15 @@ standard|ctf|lmctf|tag|deathball|horde`, `--seed N`,
 
 Pre-release (`0.1.0`), under active development. Verified working:
 startup menu (opens in a window, runs until quit), game launch with
-installed content, local seats, dedicated servers, native-protocol
-clients, the headless simulation (`--dedicated … --frames N` prints
-a per-run summary such as `Ran 20 host frames, 20 server ticks, 5
-entities`), and the windowed smoke run (`--windowed --frames 600`
+installed content and player movement, menu navigation, one local
+seat, the dedicated server loop, and the smoke runs (`--dedicated …
+--frames N` prints a per-run summary; `--windowed --frames 600`
 prints `Ran 600 windowed frames` and exits 0).
+
+Under construction, in order: playable Quake 1 (monsters, weapons,
+items, doors, HUD), then Quake 2, then Quake 3; after that bots,
+splitscreen seats, native-protocol online play, and mods. Until a
+feature is listed here as working, its flags parse but do nothing.
 
 ## Development
 
@@ -124,7 +115,8 @@ One Cargo workspace, eleven library crates plus the two binaries:
 - `qa-tools` — verification and inventory tooling
 
 ```sh
-cargo test --workspace           # full suite incl. headless end-to-end
+# full suite incl. headless end-to-end (always under xvfb, never bare)
+WAYLAND_DISPLAY= SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=dummy xvfb-run -a cargo test --workspace -q
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```

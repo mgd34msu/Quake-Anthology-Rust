@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, angle_mod, dot3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::state::rogue_state;
 use super::tables::rogue_turret::{turret_frame, turret_moves};
@@ -24,11 +24,6 @@ use crate::q2::foundation::monsters::types::{
 use crate::q2::foundation::weapons::types::Mod;
 use crate::q2::rerelease::monsters::common::monster_flash;
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReaction, TraceHit, TraceResult};
-
-/// Angle mod (`anglemod`).
-fn angle_mod(angle: f64) -> f64 {
-    ((angle * 65536.0 / 360.0).trunc() as i64 & 65535) as f64 * 360.0 / 65536.0
-}
 
 /// Clamp (`clamp`).
 fn clamp_f32(value: f32, low: f32, high: f32) -> f32 {

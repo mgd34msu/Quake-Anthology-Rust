@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, angle_mod_rerelease as medic_angle_mod, length3, scale3, sub3, vec3, Bounds, Vec3};
 
 use super::super::common::{
     blocked_check_platform, chainfist, check_gib, monster_flash, reacts_to_pain, rerelease_random,
@@ -157,11 +157,6 @@ pub fn rerelease_medic_reinforcements(fields: &BTreeMap<String, String>) -> Vec<
             MedicReinforcement { classname, strength }
         })
         .collect()
-}
-
-/// Angle mod (`anglemod`).
-fn medic_angle_mod(angle: f64) -> f64 {
-    ((angle * 65536.0 / 360.0).trunc() as i32 & 65535) as f64 * 360.0 / 65536.0
 }
 
 /// Spawn grow laser think (`spawnGrowLaserThink`).
@@ -1423,4 +1418,18 @@ pub fn create_rerelease_medic_definitions() -> Vec<Q2MonsterDefinition> {
     commander.mass = 600.0;
     commander.yaw_speed = Some(40.0);
     vec![definition, commander]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::medic_angle_mod;
+
+    /// Rerelease `anglemod` is the `fmod` form: fractional inputs survive.
+    #[test]
+    fn rerelease_angle_mod_uses_fmod() {
+        assert_eq!(medic_angle_mod(720.5), 0.5);
+        assert_eq!(medic_angle_mod(-90.0), 270.0);
+        assert_eq!(medic_angle_mod(360.0), 0.0);
+        assert_eq!(medic_angle_mod(0.0), 0.0);
+    }
 }

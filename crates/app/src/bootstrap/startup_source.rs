@@ -8,10 +8,10 @@
 //! arrive as explicit caller inputs. Cvar registration reuses `qa_core`,
 //! Q2 server cvars and profile application reuse `crate::settings::server`,
 //! Q3 game definitions reuse `qa_content`, and source administration reuses
-//! [`super::server_administration`]. The frame-time
-//! ([`frame_time`](super::frame_time)), QuakeWorld engine
-//! ([`quakeworld_cvars`](super::simulation::quakeworld_cvars)), Q3 server
-//! ([`q3::server_state`](super::simulation::q3::server_state), via
+//! [`super::server_administration`]. Frame-time registration delegates to
+//! the canonical [`frame_time`](super::frame_time) module. The QuakeWorld
+//! engine ([`quakeworld_cvars`](super::simulation::quakeworld_cvars)), Q3
+//! server ([`q3::server_state`](super::simulation::q3::server_state), via
 //! [`q3_common_cvars`](super::q3_common_cvars)), and Q3 product-policy
 //! ([`Q3ApplicationProduct`](super::content::Q3ApplicationProduct))
 //! registrations are ported inline with donor provenance; the shared
@@ -22,7 +22,6 @@ use qa_content::q3::base::settings::q3_game_cvar_definitions;
 use qa_content::q3::base::shared::definitions::Product;
 use qa_core::cmd::Dialect;
 use qa_core::cvar::flags;
-use qa_core::cvar::q2_flags;
 use qa_core::cvar::CvarError;
 use qa_core::cvar::CvarRegistry;
 use thiserror::Error;
@@ -151,31 +150,13 @@ fn register_when_absent(cvars: &mut CvarRegistry, name: &str, value: &str, bits:
     Ok(())
 }
 
-/// Frame-time cvars, ported inline from `../frame-time.ts`
-/// (`registerFrameTimeCvars`).
+/// Frame-time cvars, delegated to the canonical [`frame_time`](super::frame_time)
+/// registration so all three former copies stay consistent.
 fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
-    let dialect = cvars.dialect();
-    let q1 = dialect.is_q1();
-    let q2 = dialect.is_q2();
-    let timescale_flags = if q1 {
-        0
-    } else if q2 {
-        q2_flags::CHEAT
-    } else {
-        flags::CHEAT | flags::SYSTEM_INFO
-    };
-    if !q1 || cvars.get("timescale").is_none() {
-        cvars.register("timescale", "1", timescale_flags)?;
-    }
-    if q1 {
-        register_when_absent(cvars, "host_framerate", "0", 0)?;
-        return Ok(());
-    }
-    register_when_absent(cvars, "fixedtime", "0", if q2 { q2_flags::CHEAT } else { flags::CHEAT })?;
-    if !q2 {
-        register_when_absent(cvars, "com_cameraMode", "0", flags::CHEAT)?;
-    }
-    Ok(())
+    super::frame_time::register_frame_time_cvars(cvars).map_err(|error| match error {
+        super::frame_time::FrameTimeError::Cvar(source) => source,
+        super::frame_time::FrameTimeError::Invalid(message) => CvarError::Domain(message),
+    })
 }
 
 /// QuakeWorld engine cvars, ported inline from
@@ -483,7 +464,7 @@ mod tests {
         assert_eq!(cvars.variable_string("coop"), "0");
         assert_eq!(cvars.variable_string("maxclients"), "4");
         assert_eq!(cvars.variable_string("sv_gravity"), "800");
-        assert_eq!(cvars.variable_string("timescale"), "1");
+        assert!(cvars.get("timescale").is_none());
         assert_eq!(cvars.variable_string("host_framerate"), "0");
         assert_eq!(cvars.variable_string("sv_autosave"), "1");
         assert!(cvars.get("qts_weaponBehavior").is_some());
@@ -495,6 +476,8 @@ mod tests {
         assert_eq!(cvars.variable_string("sv_aim"), "2");
         assert_eq!(cvars.variable_string("sv_phs"), "1");
         assert_eq!(cvars.variable_string("maxspectators"), "8");
+        assert!(cvars.get("timescale").is_none());
+        assert_eq!(cvars.variable_string("cl_maxfps"), "0");
     }
 
     #[test]
