@@ -209,6 +209,8 @@ pub struct Q1DoorParams {
     pub wait: f64,
     /// Lip remaining when open (default 8).
     pub lip: f64,
+    /// Crush damage when blocked (default 2).
+    pub dmg: f32,
     /// Key item bits required to open (0 for plain doors).
     pub items: u32,
     /// Toggle flag: stays open until fired again.
@@ -240,6 +242,7 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
     let speed = q1_field_or(fields, "speed", 100.0);
     let mut wait = q1_field_or(fields, "wait", 3.0);
     let lip = q1_field_or(fields, "lip", 8.0);
+    let dmg = q1_field_or(fields, "dmg", 2.0) as f32;
     let health = fields
         .extra
         .get("health")
@@ -270,6 +273,7 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
         speed,
         wait,
         lip,
+        dmg,
         items,
         toggle: fields.spawnflags & DOOR_TOGGLE != 0,
         start_open: fields.spawnflags & DOOR_START_OPEN != 0,
@@ -297,6 +301,8 @@ pub struct Q1Door {
     pub items: u32,
     /// Wait at the top in seconds.
     pub wait: f64,
+    /// Crush damage when blocked.
+    pub dmg: f32,
     /// Toggle flag.
     pub toggle: bool,
     /// Master-clock seconds until which `door_touch` stays throttled.
@@ -395,6 +401,7 @@ pub fn build_q1_door<L: ServerLogic>(
             peers: vec![actor.id().clone()],
             items: params.items,
             wait: params.wait,
+            dmg: params.dmg,
             toggle: params.toggle,
             touch_throttle_until: 0.0,
         },
@@ -763,6 +770,32 @@ pub fn q1_native_mover_think(
     }
 }
 
+/// Native mover-blocked dispatch for Q1 doors (`door_blocked`,
+/// `doors.qc:32`): crush damage first, then reverse unless the wait is
+/// negative (negative-wait doors keep squashing). Armor and knockback
+/// need the combat path; only health applies yet.
+pub fn q1_native_mover_blocked(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    pusher: &ActorId,
+    obstacle: &ActorId,
+) {
+    let Some(door) = behaviors.doors.get(pusher) else {
+        return;
+    };
+    let (dmg, wait) = (door.dmg, door.wait);
+    simulation.damage_q1(obstacle, f64::from(dmg));
+    if wait < 0.0 {
+        return;
+    }
+    match movers.get(pusher).map(|state| state.phase) {
+        Some(MoverPhase::ToPos1) => q1_door_go_up(behaviors, simulation, movers, pusher),
+        Some(MoverPhase::ToPos2) => q1_door_go_down(simulation, movers, pusher),
+        _ => {}
+    }
+}
+
 /// Install the native Q1 hooks on a server, sharing `behaviors` with the
 /// spawn path. Spawn the map first, then install before the first tick.
 pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<RefCell<Q1NativeBehaviors>>) {
@@ -770,8 +803,19 @@ pub fn install_q1_native<L: ServerLogic>(server: &mut Server<L>, behaviors: Rc<R
     server.set_native_touch(Some(Box::new(move |simulation, movers, triggers, contact| {
         q1_native_touch(&mut touch_behaviors.borrow_mut(), simulation, movers, triggers, contact);
     })));
+    let think_behaviors = Rc::clone(&behaviors);
     server.set_native_mover_think(Some(Box::new(move |simulation, movers, actor, phase, arrived| {
-        q1_native_mover_think(&mut behaviors.borrow_mut(), simulation, movers, actor, phase, arrived);
+        q1_native_mover_think(
+            &mut think_behaviors.borrow_mut(),
+            simulation,
+            movers,
+            actor,
+            phase,
+            arrived,
+        );
+    })));
+    server.set_native_mover_blocked(Some(Box::new(move |simulation, movers, pusher, obstacle| {
+        q1_native_mover_blocked(&mut behaviors.borrow_mut(), simulation, movers, pusher, obstacle);
     })));
 }
 
@@ -862,6 +906,68 @@ mod tests {
         let fields = door_fields(&[("angle", "-1"), ("origin", "0 0 0"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
         assert_eq!(params.movedir, vec3(0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn door_dmg_defaults_to_two() {
+        let params = q1_door_params(&door_fields(&[]), &door_model()).unwrap();
+        assert_eq!(params.dmg, 2.0);
+        let params = q1_door_params(&door_fields(&[("dmg", "10")]), &door_model()).unwrap();
+        assert_eq!(params.dmg, 10.0);
+    }
+
+    #[test]
+    fn blocked_damages_and_reverses_when_wait_is_positive() {
+        let mut server = test_server();
+        register_q1_spawns(server.spawns_mut());
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = door_fields(&[("origin", "0 0 0"), ("model", "*0")]);
+        let pending = spawn_door(&mut server, &mut behaviors, &fields, &[door_model()]);
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        {
+            let mover = server.movers_mut().get_mut(pending.actor.id()).unwrap();
+            mover.phase = MoverPhase::ToPos1;
+        }
+        let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+        q1_native_mover_blocked(&mut behaviors, simulation, movers, pending.actor.id(), player.id());
+        assert_eq!(
+            server
+                .simulation()
+                .combat_state(player.id())
+                .map(|combat| combat.health),
+            Some(98.0)
+        );
+        assert_eq!(
+            server.movers_mut().get(pending.actor.id()).map(|mover| mover.phase),
+            Some(MoverPhase::ToPos2)
+        );
+    }
+
+    #[test]
+    fn blocked_damages_without_reversing_when_wait_is_negative() {
+        let mut server = test_server();
+        register_q1_spawns(server.spawns_mut());
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = door_fields(&[("origin", "0 0 0"), ("model", "*0"), ("wait", "-1")]);
+        let pending = spawn_door(&mut server, &mut behaviors, &fields, &[door_model()]);
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        {
+            let mover = server.movers_mut().get_mut(pending.actor.id()).unwrap();
+            mover.phase = MoverPhase::ToPos1;
+        }
+        let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+        q1_native_mover_blocked(&mut behaviors, simulation, movers, pending.actor.id(), player.id());
+        assert_eq!(
+            server
+                .simulation()
+                .combat_state(player.id())
+                .map(|combat| combat.health),
+            Some(98.0)
+        );
+        assert_eq!(
+            server.movers_mut().get(pending.actor.id()).map(|mover| mover.phase),
+            Some(MoverPhase::ToPos1)
+        );
     }
 
     #[test]

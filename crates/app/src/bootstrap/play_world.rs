@@ -1117,6 +1117,182 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_e1m1_closing_door_crushes_and_reverses() {
+        use qa_core::identity::ActorId;
+        use qa_core::math::sub3;
+        use qa_world::body::translated_body_bounds;
+        use qa_world::movers::{use_mover, MoverPhase};
+
+        let Some(catalog) = steel_catalog() else {
+            return;
+        };
+        let options = ApplicationOptions {
+            product: "q1-classic-id1".to_string(),
+            map: "maps/e1m1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = test_config(&options);
+        let mut world = match load_play_world(&config, &catalog, &options, test_owner()) {
+            Ok(world) => world,
+            Err(error) => {
+                require_live_data::<()>(&format!("q1-classic-id1 maps/e1m1.bsp load ({error})"), None);
+                return;
+            }
+        };
+        let player = world.player_actor().cloned().expect("e1m1 admits a player");
+        // Pick a reversing door whose swept volume holds no other bodies,
+        // so the opening below is deterministic. Brush doors sit at origin
+        // zero with offset bounds, so sweep the absolute bounds.
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let doors = behaviors.borrow().doors.clone();
+        let server = world.server_mut();
+        let mut bodies = Vec::new();
+        for id in server.simulation().body_actors() {
+            let Some(body) = server.simulation().body_state(&id) else {
+                continue;
+            };
+            let skipped = server.movers_mut().get(&id).is_some() || server.triggers_mut().is_trigger(&id);
+            bodies.push((translated_body_bounds(&body), skipped));
+        }
+        let mut picked: Option<(ActorId, f32)> = None;
+        let mut door_ids: Vec<_> = doors.keys().cloned().collect();
+        door_ids.sort_by(|left, right| {
+            left.slot()
+                .cmp(&right.slot())
+                .then(left.generation().cmp(&right.generation()))
+        });
+        for id in &door_ids {
+            let door = &doors[id];
+            if door.wait < 0.0 {
+                continue;
+            }
+            let mover = world.server_mut().movers_mut().get(id).cloned().expect("door mover");
+            if mover.phase != MoverPhase::AtPos1 {
+                continue;
+            }
+            let travel = sub3(mover.pos2, mover.pos1);
+            let length = f64::from(travel.x)
+                .hypot(f64::from(travel.y))
+                .hypot(f64::from(travel.z));
+            if length < 1.0 {
+                continue;
+            }
+            let closed = translated_body_bounds(&world.server().simulation().body_state(id).expect("door body"));
+            let (lo, hi) = (
+                vec3(
+                    closed.min.x.min(closed.min.x + travel.x) - 40.0,
+                    closed.min.y.min(closed.min.y + travel.y) - 40.0,
+                    closed.min.z.min(closed.min.z + travel.z) - 40.0,
+                ),
+                vec3(
+                    closed.max.x.max(closed.max.x + travel.x) + 40.0,
+                    closed.max.y.max(closed.max.y + travel.y) + 40.0,
+                    closed.max.z.max(closed.max.z + travel.z) + 40.0,
+                ),
+            );
+            let overlaps = |bounds: &qa_core::math::Bounds| {
+                bounds.min.x < hi.x
+                    && bounds.min.y < hi.y
+                    && bounds.min.z < hi.z
+                    && bounds.max.x > lo.x
+                    && bounds.max.y > lo.y
+                    && bounds.max.z > lo.z
+            };
+            let clear = bodies.iter().all(|(bounds, skipped)| *skipped || !overlaps(bounds));
+            if clear {
+                picked = Some((id.clone(), door.dmg));
+                break;
+            }
+        }
+        let (door_id, crush_dmg) = picked.expect("e1m1 has a crush-testable door");
+        let crush_dmg = f64::from(crush_dmg);
+        // Throttle every trigger field past the proof so touches never
+        // re-fire the door while it closes onto the player; the blocked
+        // path below is the only gamecode in play.
+        {
+            let now = world.server().simulation().frame().time.as_seconds_f64();
+            for field in behaviors.borrow_mut().fields.values_mut() {
+                field.throttle_until = now + 3600.0;
+            }
+        }
+        // Open the door, then stand the player in the closed volume.
+        {
+            let server = world.server_mut();
+            let origin = server.simulation().body_state(&door_id).unwrap().origin;
+            use_mover(server.movers_mut().get_mut(&door_id).unwrap(), origin);
+        }
+        let mut opened = false;
+        for _ in 0..600 {
+            let phase = world.server_mut().movers_mut().get(&door_id).unwrap().phase;
+            if phase == MoverPhase::AtPos2 {
+                opened = true;
+                break;
+            }
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+        }
+        assert!(opened, "test door opens without obstruction");
+        // Stand the player inside the door's open volume: the first
+        // closing tick overlaps old and new bounds at once, so the
+        // transaction blocks instead of shoving the player ahead.
+        let open = translated_body_bounds(&world.server().simulation().body_state(&door_id).unwrap());
+        let crush_at = vec3(
+            (open.min.x + open.max.x) / 2.0,
+            (open.min.y + open.max.y) / 2.0,
+            (open.min.z + open.max.z) / 2.0,
+        );
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_body_origin(&player, crush_at)
+            .unwrap();
+        {
+            let server = world.server_mut();
+            let origin = server.simulation().body_state(&door_id).unwrap().origin;
+            use_mover(server.movers_mut().get_mut(&door_id).unwrap(), origin);
+            assert_eq!(server.movers_mut().get(&door_id).unwrap().phase, MoverPhase::ToPos1);
+        }
+        // Close until the door leaves its closing phase: one crush's
+        // worth of damage, reversal toward open, and rollback to the
+        // pre-tick origin. The reversal snaps to AtPos2: rollback already
+        // restored the open origin, so the return trip has zero distance.
+        let loop_health = world
+            .server()
+            .simulation()
+            .combat_state(&player)
+            .map_or(100.0, |combat| combat.health);
+        let mut crushed = false;
+        for _ in 0..600 {
+            let before = world.server().simulation().body_state(&door_id).unwrap().origin;
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+            match world.server_mut().movers_mut().get(&door_id).unwrap().phase {
+                MoverPhase::ToPos1 => {}
+                MoverPhase::ToPos2 | MoverPhase::AtPos2 => {
+                    assert_eq!(
+                        world
+                            .server()
+                            .simulation()
+                            .combat_state(&player)
+                            .map(|combat| combat.health),
+                        Some(loop_health - crush_dmg)
+                    );
+                    assert_eq!(world.server().simulation().body_state(&door_id).unwrap().origin, before);
+                    crushed = true;
+                    break;
+                }
+                MoverPhase::AtPos1 => panic!("door closed through the player"),
+            }
+        }
+        assert!(crushed, "closing door crushes the player and reverses");
+    }
+
     /// Assert one Steel map presents draw batches at its spawn camera.
     /// Returns `None` when the corpus or map is unavailable (skip).
     fn steel_presentation_batches(product: &str, map: &str) -> Option<usize> {
