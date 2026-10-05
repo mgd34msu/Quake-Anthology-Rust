@@ -38,6 +38,7 @@ use qa_client::render::types::{
 use qa_client::view::{perspective_projection, CameraClip, Rect as ViewRect, SceneCamera};
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_core::cmd::Dialect;
+use qa_core::cvar::CvarRegistry;
 use qa_core::identity::{IdentityOwner, SeatId};
 use qa_core::math::{angles_to_axis, vec3, vec4, Vec3, Vec4};
 use qa_platform::controller::ControllerEvent;
@@ -53,7 +54,8 @@ use qa_world::session::SessionSeat;
 
 use super::audio_bridge::{AudioBridge, MountsSoundContent};
 use super::frame_time::{
-    nq_frame_due, qw_fps, qw_frame_due, source_frame_milliseconds, FrameTimeControls, FrameTimeHost,
+    nq_frame_due, qw_fps, qw_frame_due, read_frame_time_controls, register_frame_time_cvars, source_frame_milliseconds,
+    FrameTimeControls, FrameTimeHost,
 };
 use super::input::{dialect_family, seat_sample, user_command, LocalPlayer, NullRegistry};
 use super::play_world::{load_play_world, PlayWorld};
@@ -1258,6 +1260,19 @@ impl HostFrameGate {
         self.realtime_s += elapsed_s;
     }
 
+    /// Refresh the throttle from the live cvar registry: NetQuake
+    /// `host_framerate`, QuakeWorld `cl_maxfps`/`rate`. The loop calls
+    /// this every frame before [`sim_due`](Self::sim_due), so a
+    /// player-set cvar changes the throttle on the next frame.
+    /// `timedemo` is deliberately untouched: it stays a loop/CLI-fed
+    /// flag (`cls.timedemo`), never a cvar read.
+    pub fn sync(&mut self, cvars: &CvarRegistry) {
+        let controls = read_frame_time_controls(cvars);
+        self.nq_host_framerate = controls.host_framerate;
+        self.qw_maxfps = controls.maxfps;
+        self.qw_rate = controls.rate;
+    }
+
     /// Whether the simulation runs this frame, updating `oldrealtime`
     /// on run frames. Non-Q1 dialects always run.
     pub fn sim_due(&mut self, dialect: Dialect) -> bool {
@@ -1343,6 +1358,11 @@ pub struct WindowedStartupBackend {
     timer: StageTimer,
     totals: StageTotals,
     host_gate: HostFrameGate,
+    /// Live frame-time cvars for the loaded world dialect, installed at
+    /// world set; the play step syncs the host gate from these every
+    /// frame so player-set `cl_maxfps`/`host_framerate`/`rate` values
+    /// change the throttle without a relaunch.
+    cvars: Option<CvarRegistry>,
 }
 
 impl WindowedStartupBackend {
@@ -1388,7 +1408,24 @@ impl WindowedStartupBackend {
             timer: StageTimer::new(false),
             totals: StageTotals::new(),
             host_gate: HostFrameGate::new(),
+            cvars: None,
         }
+    }
+
+    /// Live frame-time cvar registry for the loaded world, when set.
+    #[must_use]
+    pub fn cvars(&self) -> Option<&CvarRegistry> {
+        self.cvars.as_ref()
+    }
+
+    /// Mutable live frame-time cvar registry (console/player writes).
+    pub fn cvars_mut(&mut self) -> Option<&mut CvarRegistry> {
+        self.cvars.as_mut()
+    }
+
+    /// Feed the timedemo exemption (`cls.timedemo`) from the loop/CLI.
+    pub fn set_timedemo(&mut self, timedemo: bool) {
+        self.host_gate.timedemo = timedemo;
     }
 
     /// Enable or disable per-stage frame timing collection.
@@ -1481,9 +1518,30 @@ impl WindowedStartupBackend {
             .audio_mounts()
             .map(|mounts| AudioBridge::new(MountsSoundContent::new(mounts)));
         self.audio_speakers_started = false;
+        self.install_frame_time_cvars(world.dialect());
         self.world = Some(world);
         self.apply_input_profile();
         self.pair_local_player();
+    }
+
+    /// Install the live frame-time cvar registry for a world dialect
+    /// (stock `host_framerate` for NetQuake, `cl_maxfps` plus `rate`
+    /// for QuakeWorld). A same-dialect relaunch keeps the existing
+    /// registry so player-set values survive map changes.
+    fn install_frame_time_cvars(&mut self, dialect: Dialect) {
+        if self.cvars.as_ref().is_some_and(|cvars| cvars.dialect() == dialect) {
+            return;
+        }
+        let mut cvars = CvarRegistry::new(dialect);
+        if register_frame_time_cvars(&mut cvars).is_err() {
+            return;
+        }
+        if dialect == Dialect::Q1Quakeworld && cvars.get("rate").is_none() {
+            if cvars.register("rate", "2500", 0).is_err() {
+                return;
+            }
+        }
+        self.cvars = Some(cvars);
     }
 
     /// Pair the driving seat with the admitted body as the one local
@@ -1547,9 +1605,13 @@ impl WindowedStartupBackend {
         let Some(world) = self.world.as_ref() else {
             return;
         };
-        // Stock host-frame gate: skip simulation frames that arrive
-        // too early for the launched game's rate (NetQuake 72Hz,
+        // Stock host-frame gate: sync the throttle from the live
+        // cvar registry, then skip simulation frames that arrive too
+        // early for the launched game's rate (NetQuake 72Hz,
         // QuakeWorld fps rule).
+        if let Some(cvars) = self.cvars.as_ref() {
+            self.host_gate.sync(cvars);
+        }
         if !self.host_gate.sim_due(world.dialect()) {
             return;
         }
@@ -3295,5 +3357,52 @@ mod tests {
         gate.advance(5.0);
         assert!(gate.sim_due(Dialect::Q1Netquake));
         assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), 50.0);
+    }
+
+    #[test]
+    fn host_gate_sync_reads_live_qw_throttle_cvars() {
+        use qa_core::cmd::Dialect;
+        use qa_core::cvar::CvarRegistry;
+
+        // Stock QW default (`cl_maxfps` 0, `rate` 2500) paces at
+        // 31.25Hz: 20ms after the epoch the sim is not due.
+        let mut cvars = CvarRegistry::new(Dialect::Q1Quakeworld);
+        register_frame_time_cvars(&mut cvars).expect("register");
+        cvars.register("rate", "2500", 0).expect("rate");
+        let mut gate = HostFrameGate::new();
+        gate.sync(&cvars);
+        gate.advance(0.020);
+        assert!(!gate.sim_due(Dialect::Q1Quakeworld));
+
+        // A player-set `cl_maxfps 72` on the same clock makes the
+        // same frame due: the throttle follows the live registry.
+        cvars.set("cl_maxfps", "72", true).expect("set maxfps");
+        gate.sync(&cvars);
+        assert_eq!(gate.qw_maxfps, 72.0);
+        assert!(gate.sim_due(Dialect::Q1Quakeworld));
+
+        // `sync` never touches the loop-fed timedemo flag.
+        gate.timedemo = true;
+        gate.sync(&cvars);
+        assert!(gate.timedemo);
+    }
+
+    #[test]
+    fn host_gate_sync_reads_live_nq_host_framerate() {
+        use qa_core::cmd::Dialect;
+        use qa_core::cvar::CvarRegistry;
+
+        let mut cvars = CvarRegistry::new(Dialect::Q1Netquake);
+        register_frame_time_cvars(&mut cvars).expect("register");
+        let mut gate = HostFrameGate::new();
+        gate.sync(&cvars);
+        assert_eq!(gate.nq_host_framerate, 0.0);
+        cvars.set("host_framerate", "0.05", true).expect("set framerate");
+        gate.sync(&cvars);
+        gate.advance(5.0);
+        assert!(gate.sim_due(Dialect::Q1Netquake));
+        // The cvar read is f32 (`variable_value`), so compare against
+        // the f32 spelling of 0.05s in milliseconds.
+        assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), f64::from(0.05f32) * 1000.0);
     }
 }
