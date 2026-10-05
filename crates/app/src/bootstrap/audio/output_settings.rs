@@ -68,117 +68,6 @@ pub(crate) fn is_js_trim(char: char) -> bool {
     )
 }
 
-/// Whether a string is a decimal numeric literal (no sign, handled by caller).
-fn is_decimal_shape(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    let mut digits = 0;
-    while index < bytes.len() && bytes[index].is_ascii_digit() {
-        index += 1;
-        digits += 1;
-    }
-    if index < bytes.len() && bytes[index] == b'.' {
-        index += 1;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-            digits += 1;
-        }
-    }
-    if digits == 0 {
-        return false;
-    }
-    if index < bytes.len() && (bytes[index] == b'e' || bytes[index] == b'E') {
-        index += 1;
-        if index < bytes.len() && (bytes[index] == b'+' || bytes[index] == b'-') {
-            index += 1;
-        }
-        let start = index;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-        }
-        if index == start {
-            return false;
-        }
-    }
-    index == bytes.len()
-}
-
-/// Accumulate prefixed integer digits as binary64 (overflow rounds to infinity).
-fn prefixed_value(digits: &str, radix: f64, valid: fn(u8) -> bool, digit: fn(u8) -> f64) -> f64 {
-    if digits.is_empty() || !digits.bytes().all(valid) {
-        return f64::NAN;
-    }
-    digits
-        .bytes()
-        .fold(0.0, |accumulated, byte| accumulated * radix + digit(byte))
-}
-
-/// JavaScript `Number(text)` conversion.
-pub(crate) fn js_number(text: &str) -> f64 {
-    let trimmed = text.trim_matches(is_js_trim);
-    if trimmed.is_empty() {
-        return 0.0;
-    }
-    let (sign, rest) = match trimmed.strip_prefix('+') {
-        Some(rest) => (1.0, rest),
-        None => match trimmed.strip_prefix('-') {
-            Some(rest) => (-1.0, rest),
-            None => (1.0, trimmed),
-        },
-    };
-    if rest == "Infinity" {
-        return sign * f64::INFINITY;
-    }
-    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-        if sign < 0.0 {
-            return f64::NAN;
-        }
-        return prefixed_value(
-            hex,
-            16.0,
-            |byte| byte.is_ascii_hexdigit(),
-            |byte| {
-                f64::from(match byte {
-                    b'0'..=b'9' => byte - b'0',
-                    b'a'..=b'f' => byte - b'a' + 10,
-                    _ => byte - b'A' + 10,
-                })
-            },
-        );
-    }
-    if let Some(binary) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-        if sign < 0.0 {
-            return f64::NAN;
-        }
-        return prefixed_value(
-            binary,
-            2.0,
-            |byte| byte == b'0' || byte == b'1',
-            |byte| f64::from(byte - b'0'),
-        );
-    }
-    if let Some(octal) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-        if sign < 0.0 {
-            return f64::NAN;
-        }
-        return prefixed_value(
-            octal,
-            8.0,
-            |byte| matches!(byte, b'0'..=b'7'),
-            |byte| f64::from(byte - b'0'),
-        );
-    }
-    if !is_decimal_shape(rest) {
-        return f64::NAN;
-    }
-    let mut full = String::with_capacity(trimmed.len());
-    if sign < 0.0 {
-        full.push('-');
-    }
-    full.push_str(rest);
-    full.parse::<f64>().unwrap_or(f64::NAN)
-}
-
 /// JavaScript `String(number)` conversion.
 pub(crate) fn js_number_string(value: f64) -> String {
     if value.is_nan() {
@@ -232,10 +121,18 @@ pub(crate) fn js_number_string(value: f64) -> String {
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
 pub fn validate_audio_output_value(defaults: AudioOutputFormat, field: AudioOutputField, text: &str) -> Option<String> {
-    if text.trim_matches(is_js_trim).is_empty() {
+    let trimmed = text.trim_matches(|char: char| char.is_ascii_whitespace());
+    let digits = trimmed
+        .strip_prefix('+')
+        .or_else(|| trimmed.strip_prefix('-'))
+        .unwrap_or(trimmed);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Some("Expected an integer audio format value".to_string());
     }
-    let number = js_number(text);
+    let number = match trimmed.parse::<f64>() {
+        Ok(number) if number.is_finite() => number,
+        _ => return Some(AudioError::BadOutputFormat.to_string()),
+    };
     let candidate = match field {
         AudioOutputField::SampleRate => {
             if !number.is_finite() || number.fract() != 0.0 || number.abs() > 9_007_199_254_740_991.0 {
@@ -316,16 +213,10 @@ pub fn write_audio_output_cvars(cvars: &mut CvarRegistry, format: AudioOutputFor
     Ok(())
 }
 
-/// Read the `s_khz` alias for an `s_outputRate` value.
+/// Read the `s_khz` alias for an `s_outputRate` value: integer kHz.
 #[must_use]
 pub fn s_khz_read(value: &str) -> String {
-    match value {
-        "11025" => "11".to_string(),
-        "22050" => "22".to_string(),
-        "44100" => "44".to_string(),
-        "48000" => "48".to_string(),
-        _ => js_number_string(js_number(value) / 1000.0),
-    }
+    (qa_core::numeric::native_atoi(value) / 1000).to_string()
 }
 
 /// Write the `s_khz` alias to an `s_outputRate` value.
@@ -361,11 +252,11 @@ mod tests {
         );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, "1e4"),
-            None
+            Some("Expected an integer audio format value".to_string())
         );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, "0xAC44"),
-            None
+            Some("Expected an integer audio format value".to_string())
         );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, ""),
@@ -373,7 +264,7 @@ mod tests {
         );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, "12.5"),
-            Some("Audio output requires 8000–192000 Hz, 1 or 2 channels, and 8 or 16 bits".to_string())
+            Some("Expected an integer audio format value".to_string())
         );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, "7000"),
@@ -430,7 +321,7 @@ mod tests {
         assert_eq!(s_khz_read("44100"), "44");
         assert_eq!(s_khz_read("48000"), "48");
         assert_eq!(s_khz_read("12000"), "12");
-        assert_eq!(s_khz_read("abc"), "NaN");
+        assert_eq!(s_khz_read("abc"), "0");
         assert_eq!(s_khz_write("44").unwrap(), "44100");
         assert_eq!(s_khz_write("11").unwrap(), "11025");
         assert_eq!(s_khz_write("12"), Err("Use s_khz 11, 22, 44 or 48"));
@@ -444,9 +335,5 @@ mod tests {
         assert_eq!(js_number_string(0.0000001), "1e-7");
         assert_eq!(js_number_string(1e21), "1e+21");
         assert_eq!(js_number_string(-0.0), "0");
-        assert_eq!(js_number("0xAC44"), 44100.0);
-        assert_eq!(js_number("  1e3  "), 1000.0);
-        assert!(js_number("12abc").is_nan());
-        assert_eq!(js_number(""), 0.0);
     }
 }

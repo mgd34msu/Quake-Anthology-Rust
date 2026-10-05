@@ -7,8 +7,8 @@
 //! queue, the program revision) while registered console commands stay in
 //! [`ConsoleCommands`]. Each host frame calls [`ConsoleQueue::drive_frame`],
 //! which drains one frame and flushes prints into console services. Script
-//! reads park while their text is unavailable and resume in order once the
-//! host supplies it, matching the donor host-queue ordering with no threads.
+//! reads resolve synchronously from preloaded text, like `COM_LoadHunkFile`
+//! followed by `Cbuf_InsertText`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,9 +33,6 @@ impl From<BufferError> for ConsoleError {
 /// Script text held by the queue.
 #[derive(Debug, Clone)]
 enum QueuedScript {
-    /// Text not yet available; `exec` parks until
-    /// [`ConsoleQueue::set_script`] supplies it.
-    Pending,
     /// The read failed; `exec` reports it and continues.
     Failed(String),
     /// Settled text (`None` means missing).
@@ -54,7 +51,6 @@ impl BufferServices for Bridge<'_> {
         match self.scripts.get(name) {
             None | Some(QueuedScript::Ready(None)) => ScriptRead::Ready(None),
             Some(QueuedScript::Ready(Some(text))) => ScriptRead::Ready(Some(text.clone())),
-            Some(QueuedScript::Pending) => ScriptRead::Pending,
             Some(QueuedScript::Failed(error)) => ScriptRead::Failed(error.clone()),
         }
     }
@@ -135,28 +131,15 @@ impl ConsoleQueue {
         Ok(())
     }
 
-    /// Park a script name until [`ConsoleQueue::set_script`] supplies it.
-    pub fn stage_pending_script(&mut self, name: &str) {
-        self.scripts.insert(name.to_string(), QueuedScript::Pending);
-    }
-
-    /// Supply script text (`None` means missing), resuming a parked `exec`
-    /// for the name.
+    /// Preload script text (`None` means missing) for later `exec` reads.
     pub fn set_script(&mut self, name: &str, text: Option<String>) {
-        self.scripts.insert(name.to_string(), QueuedScript::Ready(text.clone()));
-        if self.buffer.pending_script_name() == Some(name) {
-            self.buffer.resolve_pending_script(text);
-        }
+        self.scripts.insert(name.to_string(), QueuedScript::Ready(text));
     }
 
-    /// Fail a script read, resuming a parked `exec` for the name with the
-    /// error.
+    /// Preload a script read failure for later `exec` reads.
     pub fn fail_script(&mut self, name: &str, error: &str) {
         self.scripts
             .insert(name.to_string(), QueuedScript::Failed(error.to_string()));
-        if self.buffer.pending_script_name() == Some(name) {
-            self.buffer.fail_pending_script(error.to_string());
-        }
     }
 
     /// Bind a script-completion listener; returns its binding id.
@@ -333,15 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn parked_scripts_resume_and_missing_scripts_report() {
+    fn preloaded_missing_and_failed_scripts_report() {
         let (mut queue, mut commands, mut cvars, mut services, _) = harness(Dialect::Q2Classic);
-        queue.stage_pending_script("late.cfg");
-        queue.submit("exec late.cfg; echo after\n").unwrap();
-        queue
-            .drive_frame(&mut commands, &mut cvars, &mut services, &mut || {})
-            .unwrap();
-        assert!(!services.printed.iter().any(|line| line == "execing late.cfg\n"));
         queue.set_script("late.cfg", Some("echo late\n".to_string()));
+        queue.fail_script("bad.cfg", "read denied");
+        queue.submit("exec late.cfg; echo after\n").unwrap();
         queue
             .drive_until_idle(&mut commands, &mut cvars, &mut services, 8)
             .unwrap();
@@ -353,7 +332,7 @@ mod tests {
                 "after \n".to_string()
             ]
         );
-        queue.submit("exec missing.cfg\n").unwrap();
+        queue.submit("exec missing.cfg; exec bad.cfg\n").unwrap();
         queue
             .drive_until_idle(&mut commands, &mut cvars, &mut services, 8)
             .unwrap();
@@ -361,6 +340,9 @@ mod tests {
             .printed
             .iter()
             .any(|line| line == "couldn't exec missing.cfg\n"));
-        assert_eq!(queue.buffer().pending_script_name(), None);
+        assert!(services
+            .printed
+            .iter()
+            .any(|line| line == "couldn't exec bad.cfg: read denied\n"));
     }
 }

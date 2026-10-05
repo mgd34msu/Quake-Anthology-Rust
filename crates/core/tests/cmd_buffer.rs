@@ -31,7 +31,6 @@ fn seat_context(owner: &IdentityOwner, index: u32) -> CommandContext {
 #[derive(Clone)]
 enum ScriptAnswer {
     Ready(Option<String>),
-    Pending,
     Failed(String),
 }
 
@@ -69,7 +68,6 @@ impl BufferServices for Services {
     fn read_script(&mut self, name: &str, _source: &CommandContext) -> ScriptRead {
         match self.scripts.get(name).cloned().unwrap_or(ScriptAnswer::Ready(None)) {
             ScriptAnswer::Ready(text) => ScriptRead::Ready(text),
-            ScriptAnswer::Pending => ScriptRead::Pending,
             ScriptAnswer::Failed(error) => ScriptRead::Failed(error),
         }
     }
@@ -304,29 +302,25 @@ fn script_completion_follows_nested_scripts_across_wait() {
 }
 
 #[test]
-fn parked_script_reads_resume_in_order_with_wait_preserved() {
+fn nested_exec_reads_run_synchronously_in_order_with_wait_preserved() {
     let owner = owner();
     let context = seat_context(&owner, 0);
     let mut buffer = CommandBuffer::new(Dialect::Q3, context.clone(), BufferOptions::new()).unwrap();
     let mut cvars = CvarRegistry::new(Dialect::Q3);
     let mut services = Services::new();
-    services.scripts.insert("outer.cfg".to_string(), ScriptAnswer::Pending);
-    services.scripts.insert("inner.cfg".to_string(), ScriptAnswer::Pending);
+    services.scripts.insert(
+        "outer.cfg".to_string(),
+        ScriptAnswer::Ready(Some("record outer; exec inner; record outer-tail\n".to_string())),
+    );
+    services.scripts.insert(
+        "inner.cfg".to_string(),
+        ScriptAnswer::Ready(Some("record inner; wait; record inner-tail\n".to_string())),
+    );
     let seen = Rc::new(RefCell::new(Vec::new()));
     buffer
         .register("record", Some(record_handler(seen.clone())), None, &cvars)
         .unwrap();
     buffer.append("exec outer; record after\n", None, None).unwrap();
-    assert_eq!(buffer.execute(&mut cvars, &mut services).unwrap(), 1);
-    assert_eq!(buffer.execute(&mut cvars, &mut services).unwrap(), 0);
-    assert!(seen.borrow().is_empty());
-    assert_eq!(buffer.pending_script_name(), Some("outer.cfg"));
-
-    buffer.resolve_pending_script(Some("record outer; exec inner; record outer-tail\n".to_string()));
-    buffer.execute(&mut cvars, &mut services).unwrap();
-    assert_eq!(*seen.borrow(), vec!["outer".to_string()]);
-    assert_eq!(buffer.pending_script_name(), Some("inner.cfg"));
-    buffer.resolve_pending_script(Some("record inner; wait; record inner-tail\n".to_string()));
     buffer.execute(&mut cvars, &mut services).unwrap();
     assert_eq!(*seen.borrow(), vec!["outer".to_string(), "inner".to_string()]);
     buffer.execute(&mut cvars, &mut services).unwrap();
@@ -856,16 +850,23 @@ fn replacement_buffers_take_over_pending_programs() {
     let mut original = CommandBuffer::new(Dialect::Q3, context.clone(), BufferOptions::new()).unwrap();
     let mut cvars = CvarRegistry::new(Dialect::Q3);
     let mut services = Services::new();
-    services.scripts.insert("late.cfg".to_string(), ScriptAnswer::Pending);
-    original.append("exec late; record after\n", None, None).unwrap();
-    original.execute(&mut cvars, &mut services).unwrap();
-    let mut replacement = CommandBuffer::new(Dialect::Q3, context, BufferOptions::new()).unwrap();
+    services.scripts.insert(
+        "late.cfg".to_string(),
+        ScriptAnswer::Ready(Some("record script\n".to_string())),
+    );
     let seen = Rc::new(RefCell::new(Vec::new()));
+    original
+        .register("record", Some(record_handler(seen.clone())), None, &cvars)
+        .unwrap();
+    // `wait` stops the drain mid-program so the replacement takes over text.
+    original.append("exec late; wait; record after\n", None, None).unwrap();
+    original.execute(&mut cvars, &mut services).unwrap();
+    assert_eq!(*seen.borrow(), vec!["script".to_string()]);
+    let mut replacement = CommandBuffer::new(Dialect::Q3, context, BufferOptions::new()).unwrap();
     replacement
         .register("record", Some(record_handler(seen.clone())), None, &cvars)
         .unwrap();
     replacement.copy_pending_from(&original).unwrap();
-    replacement.resolve_pending_script(Some("record script\n".to_string()));
     replacement.execute(&mut cvars, &mut services).unwrap();
     assert_eq!(*seen.borrow(), vec!["script".to_string(), "after".to_string()]);
 }

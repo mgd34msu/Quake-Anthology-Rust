@@ -213,9 +213,19 @@ pub fn validate_field_of_view(text: &str) -> Option<String> {
 type PrintSink = Rc<RefCell<dyn FnMut(&str)>>;
 
 /// Adapter registering accessibility cvars on a real registry.
-struct RegistryAdapter<'a> {
+pub(crate) struct RegistryAdapter<'a> {
     cvars: &'a mut CvarRegistry,
     validators: HashMap<String, CvarValidator>,
+}
+
+impl<'a> RegistryAdapter<'a> {
+    /// Adapter over a live registry.
+    pub(crate) fn new(cvars: &'a mut CvarRegistry) -> Self {
+        Self {
+            cvars,
+            validators: HashMap::new(),
+        }
+    }
 }
 
 impl SettingCvars for RegistryAdapter<'_> {
@@ -461,7 +471,7 @@ impl ApplicationImageSettings {
         out
     }
 
-    fn register_owned(cvars: &mut CvarRegistry, gamma: f64) -> Result<(), ImageSettingsError> {
+    pub(crate) fn register_owned(cvars: &mut CvarRegistry, gamma: f64) -> Result<(), ImageSettingsError> {
         cvars.register("fov", "90", flags::ARCHIVE)?;
         cvars.register("con_scale", "0", flags::ARCHIVE)?;
         cvars.register("r_gamma", &gamma.to_string(), flags::ARCHIVE)?;
@@ -496,10 +506,7 @@ impl ApplicationImageSettings {
         let mut cvars = CvarRegistry::new(options.dialect);
         Self::register_owned(&mut cvars, options.gamma.unwrap_or(1.0))?;
         register_extra(&mut cvars)?;
-        let mut adapter = RegistryAdapter {
-            cvars: &mut cvars,
-            validators: HashMap::new(),
-        };
+        let mut adapter = RegistryAdapter::new(&mut cvars);
         register_accessibility_settings(&mut adapter);
         let RegistryAdapter { validators, .. } = adapter;
         let mut settings = Self {

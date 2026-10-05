@@ -126,7 +126,7 @@ fn aliases_and_console_commands_share_one_buffered_program() {
 }
 
 #[test]
-fn parked_scripts_resume_and_callbacks_fire_once() {
+fn synchronous_scripts_run_and_callbacks_fire_once() {
     let (_owner, mut queue, mut commands, mut cvars, mut services) = harness(Dialect::Q3);
     let completed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let completed_handler = completed.clone();
@@ -135,14 +135,8 @@ fn parked_scripts_resume_and_callbacks_fire_once() {
             .borrow_mut()
             .push(format!("{}:{:?}", event.name, event.result));
     });
-    queue.stage_pending_script("late.cfg");
-    queue.submit("exec late; echo after\n").unwrap();
-    queue
-        .drive_frame(&mut commands, &mut cvars, &mut services, &mut || {})
-        .unwrap();
-    assert!(services.printed.is_empty());
-    assert_eq!(queue.buffer().pending_script_name(), Some("late.cfg"));
     queue.set_script("late.cfg", Some("echo late; wait; echo resumed\n".to_string()));
+    queue.submit("exec late; echo after\n").unwrap();
     queue
         .drive_frame(&mut commands, &mut cvars, &mut services, &mut || {})
         .unwrap();

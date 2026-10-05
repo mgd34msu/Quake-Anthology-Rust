@@ -38041,8 +38041,9 @@ impl SharedSimulation {
         let session = self.peek().session.clone();
         let register: super::q3::server_state::Q3ServerCvarRegistration = Rc::new(
             move |cvars: &mut qa_core::cvar::CvarRegistry, max_clients: usize, map: &str| {
-                for definition in q3_server_cvar_definitions(max_clients, map) {
-                    let _ = cvars.register(&definition.name, &definition.value, definition.flags);
+                let capacity = u32::try_from(max_clients).unwrap_or(u32::MAX);
+                for definition in super::super::q3_common_cvars::q3_server_cvar_definitions(capacity, map) {
+                    let _ = cvars.register(definition.name, &definition.value, definition.flags);
                 }
             },
         );
@@ -38119,73 +38120,6 @@ impl SharedSimulation {
         game.attach_host(runtime);
         Ok(SourceRuntime::Q3 { game })
     }
-}
-
-/// One server cvar definition row (donor `q3ServerCvarDefinitions`
-/// entry).
-struct Q3ServerCvarDefinition {
-    /// Variable name.
-    name: String,
-    /// Default value.
-    value: String,
-    /// Flag word.
-    flags: u32,
-}
-
-/// Server cvar definitions (donor `q3ServerCvarDefinitions`,
-/// `src/app/bootstrap/q3-common-cvars.ts` 5-21).
-fn q3_server_cvar_definitions(max_clients: usize, map_name: &str) -> Vec<Q3ServerCvarDefinition> {
-    use qa_core::cvar::flags;
-    let mut definitions: Vec<(&str, String, u32)> = vec![
-        (
-            "protocol",
-            qa_net::protocol::q3::PROTOCOL_VERSION.to_string(),
-            flags::SERVER_INFO | flags::READ_ONLY,
-        ),
-        ("sv_pure", "1".to_string(), flags::SYSTEM_INFO),
-        ("sv_allowDownload", "0".to_string(), flags::SERVER_INFO),
-        ("sv_maxRate", "0".to_string(), flags::SERVER_INFO),
-        ("sv_fps", "20".to_string(), flags::NONE),
-        ("sv_serverid", "0".to_string(), flags::SYSTEM_INFO | flags::READ_ONLY),
-        ("sv_paks", String::new(), flags::SYSTEM_INFO | flags::READ_ONLY),
-        ("sv_pakNames", String::new(), flags::SYSTEM_INFO | flags::READ_ONLY),
-        (
-            "sv_referencedPaks",
-            String::new(),
-            flags::SYSTEM_INFO | flags::READ_ONLY,
-        ),
-        (
-            "sv_referencedPakNames",
-            String::new(),
-            flags::SYSTEM_INFO | flags::READ_ONLY,
-        ),
-        (
-            "sv_maxclients",
-            max_clients.to_string(),
-            flags::SERVER_INFO | flags::LATCH,
-        ),
-        ("mapname", map_name.to_string(), flags::SERVER_INFO | flags::READ_ONLY),
-        ("sv_mapname", String::new(), flags::SERVER_INFO | flags::READ_ONLY),
-        ("sv_privateClients", "0".to_string(), flags::SERVER_INFO),
-        ("sv_privatePassword", String::new(), flags::TEMPORARY),
-        ("sv_reconnectlimit", "3".to_string(), flags::NONE),
-        ("sv_minPing", "0".to_string(), flags::ARCHIVE | flags::SERVER_INFO),
-        ("sv_maxPing", "0".to_string(), flags::ARCHIVE | flags::SERVER_INFO),
-        ("sv_floodProtect", "1".to_string(), flags::ARCHIVE | flags::SERVER_INFO),
-        ("sv_strictAuth", "1".to_string(), flags::ARCHIVE),
-        ("bot_enable", "1".to_string(), flags::NONE),
-    ];
-    for (name, value, flag) in CollisionMapSettings::DEFINITIONS {
-        definitions.push((name, value.to_string(), flag));
-    }
-    definitions
-        .into_iter()
-        .map(|(name, value, flag)| Q3ServerCvarDefinition {
-            name: name.to_string(),
-            value,
-            flags: flag,
-        })
-        .collect()
 }
 
 /// Session tables shared by the Q3 source operations (donor

@@ -77,6 +77,10 @@ pub struct StartupConfig {
     pub default_bounds: Bounds,
     /// Spatial bounds for the server trigger sweep.
     pub spatial_bounds: Bounds,
+    /// `+command` lines from the command line, without the `+`.
+    pub startup_commands: Vec<String>,
+    /// Selected network mode.
+    pub network: crate::options::Network,
 }
 
 impl StartupConfig {
@@ -118,6 +122,8 @@ impl StartupConfig {
                 min: vec3(-4096.0, -4096.0, -4096.0),
                 max: vec3(4096.0, 4096.0, 4096.0),
             },
+            startup_commands: options.startup_commands.clone(),
+            network: options.network.clone(),
         })
     }
 }

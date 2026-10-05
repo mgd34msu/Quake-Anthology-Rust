@@ -54,8 +54,8 @@ use qa_world::session::SessionSeat;
 
 use super::audio_bridge::{AudioBridge, MountsSoundContent};
 use super::frame_time::{
-    nq_frame_due, qw_fps, qw_frame_due, read_frame_time_controls, register_frame_time_cvars, source_frame_milliseconds,
-    FrameTimeControls, FrameTimeHost,
+    nq_frame_due, qw_fps, qw_frame_due, read_frame_time_controls, source_frame_milliseconds, FrameTimeControls,
+    FrameTimeHost,
 };
 use super::input::{dialect_family, seat_sample, user_command, LocalPlayer, NullRegistry};
 use super::play_world::{load_play_world, PlayWorld};
@@ -73,7 +73,8 @@ use super::windowed_menu_launch::{launch_options, pump_windowed_controllers, Men
 use super::windowed_pacer::WindowedPacer;
 use super::windowed_preset::WindowedPresetCollaborators;
 use super::windowed_scene::PlayPresentation;
-use crate::options::{ApplicationOptions, Renderer};
+use crate::console::live::{open_seat_userinfo, register_live_cvars, LiveCvarParams, SeatUserinfo};
+use crate::options::{ApplicationOptions, GameMode, Network, Renderer};
 use crate::startup::StartupConfig;
 
 /// SDL window-event id for close (donor `event.event === 14` quit check).
@@ -1377,6 +1378,12 @@ pub struct WindowedStartupBackend {
     /// frame so player-set `cl_maxfps`/`host_framerate`/`rate` values
     /// change the throttle without a relaunch.
     cvars: Option<CvarRegistry>,
+    seat_userinfo: Option<SeatUserinfo>,
+    skill: u8,
+    mode: GameMode,
+    network: Network,
+    dedicated: bool,
+    max_clients: u32,
 }
 
 impl WindowedStartupBackend {
@@ -1423,6 +1430,12 @@ impl WindowedStartupBackend {
             totals: StageTotals::new(),
             host_gate: HostFrameGate::new(),
             cvars: None,
+            seat_userinfo: None,
+            skill: config.skill,
+            mode: config.mode,
+            network: config.network.clone(),
+            dedicated: config.dedicated,
+            max_clients: config.seats.max(8),
         }
     }
 
@@ -1435,6 +1448,12 @@ impl WindowedStartupBackend {
     /// Mutable live frame-time cvar registry (console/player writes).
     pub fn cvars_mut(&mut self) -> Option<&mut CvarRegistry> {
         self.cvars.as_mut()
+    }
+
+    /// Live per-seat userinfo registries for the loaded world, when set.
+    #[must_use]
+    pub fn seat_userinfo(&self) -> Option<&SeatUserinfo> {
+        self.seat_userinfo.as_ref()
     }
 
     /// Feed the timedemo exemption (`cls.timedemo`) from the loop/CLI.
@@ -1532,29 +1551,42 @@ impl WindowedStartupBackend {
             .audio_mounts()
             .map(|mounts| AudioBridge::new(MountsSoundContent::new(mounts)));
         self.audio_speakers_started = false;
-        self.install_frame_time_cvars(world.dialect());
+        self.install_live_cvars(&world);
         self.world = Some(world);
         self.apply_input_profile();
         self.pair_local_player();
     }
 
-    /// Install the live frame-time cvar registry for a world dialect
-    /// (stock `host_framerate` for NetQuake, `cl_maxfps` plus `rate`
-    /// for QuakeWorld). A same-dialect relaunch keeps the existing
-    /// registry so player-set values survive map changes.
-    fn install_frame_time_cvars(&mut self, dialect: Dialect) {
+    /// Install the live cvar registry plus one seat userinfo registry for
+    /// a world. A same-dialect relaunch keeps the existing registry so
+    /// player-set values survive map changes.
+    fn install_live_cvars(&mut self, world: &PlayWorld) {
+        let dialect = world.dialect();
         if self.cvars.as_ref().is_some_and(|cvars| cvars.dialect() == dialect) {
             return;
         }
+        let params = LiveCvarParams {
+            skill: self.skill,
+            mode: self.mode,
+            map: world.map().to_string(),
+            product: world.content().to_string(),
+            dedicated: self.dedicated,
+            network: self.network.clone(),
+            max_clients: self.max_clients,
+            gamma: self.gamma,
+            output_format: qa_client::audio::output::DEFAULT_AUDIO_OUTPUT_FORMAT,
+            model: "male".to_string(),
+        };
         let mut cvars = CvarRegistry::new(dialect);
-        if register_frame_time_cvars(&mut cvars).is_err() {
+        if register_live_cvars(&mut cvars, &params).is_err() {
             return;
         }
-        if dialect == Dialect::Q1Quakeworld && cvars.get("rate").is_none() && cvars.register("rate", "2500", 0).is_err()
-        {
+        let seats = open_seat_userinfo(dialect, self.identity.session(), 1, &params.model);
+        let Ok(seats) = seats else {
             return;
-        }
+        };
         self.cvars = Some(cvars);
+        self.seat_userinfo = Some(seats);
     }
 
     /// Pair the driving seat with the admitted body as the one local
@@ -2245,6 +2277,7 @@ mod tests {
     use qa_core::identity::ProviderId;
     use qa_platform::sdl::{decode_sdl_event, encode_sdl_event, SdlInjectedEvent};
 
+    use super::super::frame_time::register_frame_time_cvars;
     use super::super::startup_selection::StartupSelectionCollaborators;
     use super::*;
     use crate::bootstrap::live_proof::{require_live_corpus, require_live_window};

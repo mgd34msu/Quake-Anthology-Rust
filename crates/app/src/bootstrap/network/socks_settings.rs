@@ -64,16 +64,26 @@ pub struct ClientSocksSettings {
     pub cvars: CvarRegistry,
 }
 
+/// Register the `net_socks*` cvars with archive/latch semantics.
+/// Quake III only; no-op elsewhere.
+pub fn register_socks_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
+    if cvars.dialect() != Dialect::Q3 {
+        return Ok(());
+    }
+    let latched = flags::ARCHIVE | flags::LATCH;
+    cvars.register("net_socksEnabled", "0", latched)?;
+    cvars.register("net_socksServer", "", latched)?;
+    cvars.register("net_socksPort", "1080", latched)?;
+    cvars.register("net_socksUsername", "", latched)?;
+    cvars.register("net_socksPassword", "", latched)?;
+    Ok(())
+}
+
 impl ClientSocksSettings {
     /// Register the `net_socks*` cvars with archive/latch semantics.
     pub fn new() -> Result<Self, CvarError> {
         let mut cvars = CvarRegistry::new(Dialect::Q3);
-        let latched = flags::ARCHIVE | flags::LATCH;
-        cvars.register("net_socksEnabled", "0", latched)?;
-        cvars.register("net_socksServer", "", latched)?;
-        cvars.register("net_socksPort", "1080", latched)?;
-        cvars.register("net_socksUsername", "", latched)?;
-        cvars.register("net_socksPassword", "", latched)?;
+        register_socks_cvars(&mut cvars)?;
         Ok(Self { cvars })
     }
 

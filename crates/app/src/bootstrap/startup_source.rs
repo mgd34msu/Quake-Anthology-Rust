@@ -22,6 +22,7 @@ use qa_content::q3::base::settings::q3_game_cvar_definitions;
 use qa_content::q3::base::shared::definitions::Product;
 use qa_core::cmd::Dialect;
 use qa_core::cvar::flags;
+use qa_core::cvar::q2_flags;
 use qa_core::cvar::CvarError;
 use qa_core::cvar::CvarRegistry;
 use thiserror::Error;
@@ -138,18 +139,6 @@ pub struct ResolvedStartupRules {
     pub max_clients: u32,
 }
 
-/// Quake III network protocol version (donor `Q3_PROTOCOL` in
-/// `../../network/q3/adapters.ts`).
-const Q3_PROTOCOL_VERSION: u32 = 68;
-
-/// Register when absent (donor `cvars.find(name) === undefined` guard).
-fn register_when_absent(cvars: &mut CvarRegistry, name: &str, value: &str, bits: u32) -> Result<(), CvarError> {
-    if cvars.get(name).is_none() {
-        cvars.register(name, value, bits)?;
-    }
-    Ok(())
-}
-
 /// Frame-time cvars, delegated to the canonical [`frame_time`](super::frame_time)
 /// registration so all three former copies stay consistent.
 fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
@@ -159,90 +148,47 @@ fn register_frame_time_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> 
     })
 }
 
-/// QuakeWorld engine cvars, ported inline from
-/// `./simulation/quakeworld-cvars.ts` (`registerQuakeWorldEngineCvars`).
+/// QuakeWorld engine cvars, delegated to the canonical
+/// [`quakeworld_cvars`](super::simulation::quakeworld_cvars) registration.
 fn register_quake_world_engine_cvars(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
-    for (name, value) in [
-        ("sv_phs", "1"),
-        ("sv_stopspeed", "100"),
-        ("sv_spectatormaxspeed", "500"),
-        ("sv_accelerate", "10"),
-        ("sv_airaccelerate", "0.7"),
-        ("sv_wateraccelerate", "10"),
-        ("sv_friction", "4"),
-        ("sv_waterfriction", "4"),
-        ("password", ""),
-        ("spectator_password", ""),
-        ("sv_highchars", "1"),
-    ] {
-        register_when_absent(cvars, name, value, 0)?;
-    }
-    cvars.register("maxspectators", "8", flags::SERVER_INFO)?;
-    Ok(())
+    super::simulation::quakeworld_cvars::register_quake_world_engine_cvars(cvars)
 }
 
-/// Q3 server cvars, ported inline from `../q3-common-cvars.ts`
-/// (`q3ServerCvarDefinitions`/`registerQ3ServerCvars`) plus the collision map
-/// definitions from `../../world/collision/q3/settings.ts`.
+/// Q3 server cvars, delegated to the canonical
+/// [`q3_common_cvars`](super::q3_common_cvars) engine table.
 fn register_q3_server_cvars(cvars: &mut CvarRegistry, max_clients: u32, map_name: &str) -> Result<(), CvarError> {
-    let server_info = flags::SERVER_INFO;
-    let read_only = flags::READ_ONLY;
-    let system_info = flags::SYSTEM_INFO;
-    let definitions = [
-        ("protocol", Q3_PROTOCOL_VERSION.to_string(), server_info | read_only),
-        ("sv_pure", "1".to_string(), system_info),
-        ("sv_allowDownload", "0".to_string(), server_info),
-        ("sv_maxRate", "0".to_string(), server_info),
-        ("sv_fps", "20".to_string(), flags::NONE),
-        ("sv_serverid", "0".to_string(), system_info | read_only),
-        ("sv_paks", String::new(), system_info | read_only),
-        ("sv_pakNames", String::new(), system_info | read_only),
-        ("sv_referencedPaks", String::new(), system_info | read_only),
-        ("sv_referencedPakNames", String::new(), system_info | read_only),
-        ("sv_maxclients", max_clients.to_string(), server_info | flags::LATCH),
-        ("mapname", map_name.to_string(), server_info | read_only),
-        ("sv_mapname", String::new(), server_info | read_only),
-        ("sv_privateClients", "0".to_string(), server_info),
-        ("sv_privatePassword", String::new(), flags::TEMPORARY),
-        ("sv_reconnectlimit", "3".to_string(), flags::NONE),
-        ("sv_minPing", "0".to_string(), flags::ARCHIVE | server_info),
-        ("sv_maxPing", "0".to_string(), flags::ARCHIVE | server_info),
-        ("sv_floodProtect", "1".to_string(), flags::ARCHIVE | server_info),
-        ("sv_strictAuth", "1".to_string(), flags::ARCHIVE),
-        ("bot_enable", "1".to_string(), flags::NONE),
-        ("cm_noAreas", "0".to_string(), flags::CHEAT),
-        ("cm_noCurves", "0".to_string(), flags::CHEAT),
-        ("cm_playerCurveClip", "1".to_string(), flags::ARCHIVE | flags::CHEAT),
-    ];
-    for (name, value, bits) in definitions {
-        cvars.register(name, &value, bits)?;
-    }
-    Ok(())
+    super::q3_common_cvars::register_q3_server_cvars(cvars, max_clients, map_name)
 }
 
-/// Q3 product-policy cvars, ported inline from
-/// `../../core/q3-product-policy.ts` (`registerQ3ProductPolicy`).
+/// Q3 product-policy cvars, delegated to the canonical content
+/// registration; the resolved policy is returned to the caller by
+/// [`qa_content::q3::product_restriction::register_q3_product_policy`].
 fn register_q3_product_policy(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
-    cvars.register("com_prereleaseDemo", "0", flags::INIT)?;
-    cvars.register("com_prereleaseTeamArenaDemo", "0", flags::INIT)?;
-    Ok(())
+    qa_content::q3::product_restriction::register_q3_product_policy(cvars)
+        .map(|_| ())
+        .map_err(|error| CvarError::Domain(error.to_string()))
 }
 
-/// Build the source cvar registry for a startup selection (donor
-/// `createStartupSource`). `q3_product` carries the donor's
-/// `options.q3Product`; the donor's context/print parameters have no Rust
-/// `CvarRegistry` counterpart and are dropped.
-pub fn create_startup_source(
+/// Register the source cvars for a startup selection into a live
+/// registry (donor `createStartupSource`). `q3_product` carries the
+/// donor's `options.q3Product`; the donor's context/print parameters have
+/// no Rust `CvarRegistry` counterpart and are dropped. Engine tables run
+/// before game tables so re-registration merges flags exactly like the
+/// engine-then-VM order; capacity/mode rows carry the sources' flags.
+pub fn register_startup_source_cvars(
+    cvars: &mut CvarRegistry,
     options: &ApplicationOptions,
     selection: &StartupSourceSelection,
-    dialect: Dialect,
     max_clients: u32,
     q3_product: Option<StartupQ3Product>,
-) -> Result<CvarRegistry, StartupSourceError> {
-    let mut cvars = CvarRegistry::new(dialect);
+) -> Result<(), StartupSourceError> {
+    let dialect = cvars.dialect();
     if dialect == Dialect::Q2Classic || dialect == Dialect::Q2Rerelease {
-        register_q2_server_cvars(&mut cvars, &selection.match_provider)?;
+        register_q2_server_cvars(cvars, &selection.match_provider)?;
     } else if dialect == Dialect::Q3 {
+        register_q3_server_cvars(cvars, max_clients, &options.map)?;
+        register_q3_product_policy(cvars)?;
+        cvars.register("fs_restrict", "0", flags::INIT)?;
         if let Some(product) = q3_product {
             cvars.set(
                 "com_prereleaseDemo",
@@ -256,8 +202,6 @@ pub fn create_startup_source(
             )?;
             cvars.set("fs_restrict", if product.demo_restricted { "1" } else { "0" }, true)?;
         }
-        register_q3_product_policy(&mut cvars)?;
-        cvars.register("fs_restrict", "0", flags::INIT)?;
         let product = if selection.source_content.contains("missionpack") {
             Product::Missionpack
         } else {
@@ -288,22 +232,31 @@ pub fn create_startup_source(
             cvars.register(name, value, 0)?;
         }
     }
-    let capacity_name = if dialect == Dialect::Q3 {
-        "sv_maxclients"
+    let q2_latched_info = q2_flags::SERVER_INFO | q2_flags::LATCH;
+    let latched_info = if dialect.is_q2() {
+        q2_latched_info
+    } else if dialect == Dialect::Q3 {
+        flags::SERVER_INFO | flags::LATCH
+    } else if dialect == Dialect::Q1Quakeworld {
+        flags::SERVER_INFO
     } else {
-        "maxclients"
+        0
     };
-    for (name, value) in [
-        ("skill", options.skill.to_string()),
-        (
+    let mut rules: Vec<(&str, String, u32)> = Vec::new();
+    if dialect != Dialect::Q3 {
+        rules.push(("skill", options.skill.to_string(), 0));
+        rules.push((
             "deathmatch",
             if options.mode == GameMode::Deathmatch { "1" } else { "0" }.to_string(),
-        ),
-        (
+            if dialect.is_q2() { q2_latched_info } else { 0 },
+        ));
+        rules.push((
             "coop",
             if options.mode == GameMode::Coop { "1" } else { "0" }.to_string(),
-        ),
-        (
+            if dialect.is_q2() { q2_latched_info } else { 0 },
+        ));
+    } else {
+        rules.push((
             "g_gametype",
             if options.mode == GameMode::Singleplayer {
                 "2"
@@ -311,29 +264,35 @@ pub fn create_startup_source(
                 "0"
             }
             .to_string(),
-        ),
-        (capacity_name, max_clients.to_string()),
-    ] {
-        if cvars.get(name).is_none() {
-            cvars.register(name, &value, 0)?;
+            flags::SERVER_INFO | flags::LATCH,
+        ));
+    }
+    rules.push((
+        if dialect == Dialect::Q3 {
+            "sv_maxclients"
         } else {
-            cvars.set(name, &value, true)?;
+            "maxclients"
+        },
+        max_clients.to_string(),
+        latched_info,
+    ));
+    for (name, value, bits) in &rules {
+        if cvars.get(name).is_none() {
+            cvars.register(name, value, *bits)?;
+        } else {
+            cvars.set(name, value, true)?;
         }
     }
     if dialect == Dialect::Q1Quakeworld {
-        register_quake_world_engine_cvars(&mut cvars)?;
+        register_quake_world_engine_cvars(cvars)?;
     }
-    if dialect == Dialect::Q3 {
-        register_q3_server_cvars(&mut cvars, max_clients, &options.map)?;
-    }
-    register_frame_time_cvars(&mut cvars)?;
-    register_source_administration_cvars(&mut cvars)?;
+    register_frame_time_cvars(cvars)?;
+    register_source_administration_cvars(cvars)?;
     if !options.dedicated && options.network == Network::Offline && dialect != Dialect::Q3 {
         cvars.register("sv_autosave", "1", flags::ARCHIVE)?;
-        cvars.register("sv_autosave_interval", "0", flags::ARCHIVE)?;
     }
     cvars.register("qts_weaponBehavior", "", flags::ARCHIVE)?;
-    Ok(cvars)
+    Ok(())
 }
 
 /// Resolve latched rules back into options and capacity (donor
@@ -456,9 +415,21 @@ mod tests {
         }
     }
 
+    fn source(
+        options: &ApplicationOptions,
+        selection: &StartupSourceSelection,
+        dialect: Dialect,
+        max_clients: u32,
+        product: Option<StartupQ3Product>,
+    ) -> CvarRegistry {
+        let mut cvars = CvarRegistry::new(dialect);
+        register_startup_source_cvars(&mut cvars, options, selection, max_clients, product).unwrap();
+        cvars
+    }
+
     #[test]
     fn builds_q1_source_with_rules() {
-        let cvars = create_startup_source(&options(), &selection(), Dialect::Q1Netquake, 4, None).unwrap();
+        let cvars = source(&options(), &selection(), Dialect::Q1Netquake, 4, None);
         assert_eq!(cvars.variable_string("skill"), "2");
         assert_eq!(cvars.variable_string("deathmatch"), "1");
         assert_eq!(cvars.variable_string("coop"), "0");
@@ -472,7 +443,7 @@ mod tests {
 
     #[test]
     fn builds_quakeworld_source_with_engine_cvars() {
-        let cvars = create_startup_source(&options(), &selection(), Dialect::Q1Quakeworld, 8, None).unwrap();
+        let cvars = source(&options(), &selection(), Dialect::Q1Quakeworld, 8, None);
         assert_eq!(cvars.variable_string("sv_aim"), "2");
         assert_eq!(cvars.variable_string("sv_phs"), "1");
         assert_eq!(cvars.variable_string("maxspectators"), "8");
@@ -482,7 +453,7 @@ mod tests {
 
     #[test]
     fn builds_q2_source_with_match_provider() {
-        let cvars = create_startup_source(&options(), &selection(), Dialect::Q2Classic, 8, None).unwrap();
+        let cvars = source(&options(), &selection(), Dialect::Q2Classic, 8, None);
         assert_eq!(cvars.variable_string("maxclients"), "8");
         assert_eq!(cvars.variable_string("fixedtime"), "0");
         assert!(cvars.get("timescale").is_some());
@@ -500,7 +471,7 @@ mod tests {
             source_content: "q3-missionpack".to_string(),
             match_provider: "q3:official".to_string(),
         };
-        let cvars = create_startup_source(&options(), &selection, Dialect::Q3, 12, Some(product)).unwrap();
+        let cvars = source(&options(), &selection, Dialect::Q3, 12, Some(product));
         assert_eq!(cvars.variable_string("com_prereleaseDemo"), "1");
         assert_eq!(cvars.variable_string("com_prereleaseTeamArenaDemo"), "1");
         assert!(cvars.get("g_gametype").is_some());
@@ -516,7 +487,7 @@ mod tests {
         options.explicit_rules.skill = true;
         options.explicit_rules.mode = true;
         options.explicit_rules.capacity = true;
-        let mut cvars = create_startup_source(&options, &selection(), Dialect::Q1Netquake, 4, None).unwrap();
+        let mut cvars = source(&options, &selection(), Dialect::Q1Netquake, 4, None);
         let resolved = resolve_startup_rules(&options, &mut cvars, 6, &[], None, true).unwrap();
         assert_eq!(resolved.options.skill, 2);
         assert_eq!(resolved.options.mode, GameMode::Deathmatch);
@@ -527,7 +498,7 @@ mod tests {
     #[test]
     fn resolves_latched_mode_and_q2_capacity_floors() {
         let options = options();
-        let mut cvars = create_startup_source(&options, &selection(), Dialect::Q2Classic, 1, None).unwrap();
+        let mut cvars = source(&options, &selection(), Dialect::Q2Classic, 1, None);
         cvars.set("deathmatch", "1", true).unwrap();
         let resolved = resolve_startup_rules(&options, &mut cvars, 1, &[], None, false).unwrap();
         assert_eq!(resolved.options.mode, GameMode::Deathmatch);
@@ -537,7 +508,7 @@ mod tests {
     #[test]
     fn rejects_invalid_capacity() {
         let options = options();
-        let mut cvars = create_startup_source(&options, &selection(), Dialect::Q1Netquake, 4, None).unwrap();
+        let mut cvars = source(&options, &selection(), Dialect::Q1Netquake, 4, None);
         cvars.set("maxclients", "99", true).unwrap();
         assert_eq!(
             resolve_startup_rules(&options, &mut cvars, 4, &[], None, false),

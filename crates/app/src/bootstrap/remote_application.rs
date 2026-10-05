@@ -722,7 +722,7 @@ pub fn seed_seat_cvars(
             for (name, value) in [
                 ("name", player.as_str()),
                 ("skin", skin),
-                ("rate", "15000"),
+                ("rate", "25000"),
                 ("msg", "1"),
                 ("hand", "0"),
                 ("fov", "90"),
@@ -741,7 +741,7 @@ pub fn seed_seat_cvars(
         Dialect::Q1Quakeworld => {
             cvars.register("cl_hightrack", "0", cvar_flags::NONE)?;
             cvars.register("cl_chasecam", "0", 0)?;
-            cvars.register("rate", "25000", cvar_flags::ARCHIVE | cvar_flags::USER_INFO)?;
+            cvars.register("rate", "2500", cvar_flags::ARCHIVE | cvar_flags::USER_INFO)?;
             cvars.register("noskins", "0", cvar_flags::ARCHIVE)?;
             cvars.register("baseskin", "base", cvar_flags::ARCHIVE)?;
             for (name, value) in [
@@ -4842,11 +4842,11 @@ mod tests {
         let classic = seed_seat_cvars(Dialect::Q2Classic, 0, "female", false).expect("q2");
         assert_eq!(classic.get("skin").expect("skin").value, "female/athena");
         assert_eq!(classic.get("gender").expect("gender").value, "female");
-        assert_eq!(classic.get("rate").expect("rate").value, "15000");
+        assert_eq!(classic.get("rate").expect("rate").value, "25000");
 
         let qw = seed_seat_cvars(Dialect::Q1Quakeworld, 0, "player", false).expect("qw");
         assert_eq!(qw.get("name").expect("name").value, "unnamed");
-        assert_eq!(qw.get("rate").expect("rate").value, "25000");
+        assert_eq!(qw.get("rate").expect("rate").value, "2500");
         assert!(qw.get("password").is_some());
     }
 

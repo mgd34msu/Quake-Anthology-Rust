@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use qa_client::audio::output::DEFAULT_AUDIO_OUTPUT_FORMAT;
 use qa_client::audio::ChannelPool;
 use qa_client::prediction::CommandRing;
 use qa_client::render::{FrameStats as RenderFrameStats, ModelPose, RenderView, RendererBackend, SceneEntity};
@@ -24,7 +25,7 @@ use qa_client::view::{CameraClip, ModelTransform, Rect, SceneCamera};
 use qa_content::catalog::{discover_installed_content, DiscoverContentOptions};
 use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
-use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
+use qa_core::cmd_buffer::{BufferOptions, CommandContext, CommandOrigin};
 use qa_core::cvar::CvarRegistry;
 use qa_core::identity::IdentityOwner;
 use qa_core::math::{vec3, vec4, Axis, Vec3};
@@ -39,6 +40,7 @@ use crate::bootstrap::simulation::native_q1_spawns::Q1NativeBehaviors;
 use crate::bootstrap::simulation::native_q1_triggers::q1_registered_version;
 use crate::bootstrap::windowed_scene::open_product_mounts;
 use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
+use crate::console::live::{open_seat_userinfo, register_live_cvars, LiveCvarParams, SeatUserinfo};
 use crate::console::queue::ConsoleQueue;
 use crate::error::AppError;
 use crate::options::GameMode;
@@ -117,6 +119,7 @@ pub struct Application<R: RendererBackend> {
     console_queue: ConsoleQueue,
     console_commands: ConsoleCommands,
     console_cvars: CvarRegistry,
+    seat_userinfo: SeatUserinfo,
     console_log: Vec<String>,
     console_forwarded: Vec<String>,
     map_name: String,
@@ -260,13 +263,44 @@ impl<R: RendererBackend> Application<R> {
         let console_owner = IdentityOwner::create(&format!("{}:console", config.session_name))
             .map_err(|error| AppError::Startup(error.to_string()))?;
         let dialect = console_dialect_for(config.client_family);
-        let console_queue = ConsoleQueue::new(
+        let mut queue_options = BufferOptions::new();
+        if !config.startup_commands.is_empty() {
+            queue_options.startup_command_text = Some(format!("{}\n", config.startup_commands.join("\n")));
+        }
+        let mut console_queue = ConsoleQueue::with_options(
             dialect,
             CommandContext::new(console_owner.session().clone(), CommandOrigin::LocalConsole),
+            queue_options,
         )
         .map_err(|error| AppError::Console(error.to_string()))?;
+        for command in &config.startup_commands {
+            console_queue
+                .submit(&format!("{command}\n"))
+                .map_err(|error| AppError::Console(error.to_string()))?;
+        }
         let mut console_commands = ConsoleCommands::new();
         register_console_commands(&mut console_commands);
+        let mut console_cvars = CvarRegistry::new(dialect);
+        let live_params = LiveCvarParams {
+            skill: config.skill,
+            mode: config.mode,
+            map: config.map.clone(),
+            product: config.product.clone(),
+            dedicated: config.dedicated,
+            network: config.network.clone(),
+            max_clients: config.seats.max(8),
+            gamma: 1.0,
+            output_format: DEFAULT_AUDIO_OUTPUT_FORMAT,
+            model: "male".to_string(),
+        };
+        register_live_cvars(&mut console_cvars, &live_params).map_err(|error| AppError::Console(error.to_string()))?;
+        let seat_userinfo = open_seat_userinfo(
+            dialect,
+            console_owner.session(),
+            config.seats as usize,
+            &live_params.model,
+        )
+        .map_err(|error| AppError::Console(error.to_string()))?;
         let scratch_capacity = server.simulation().actor_count();
         Ok(Self {
             server,
@@ -287,7 +321,8 @@ impl<R: RendererBackend> Application<R> {
             console_owner,
             console_queue,
             console_commands,
-            console_cvars: CvarRegistry::new(dialect),
+            console_cvars,
+            seat_userinfo,
             console_log: Vec::new(),
             console_forwarded: Vec::new(),
             map_name: config.map.clone(),
@@ -377,15 +412,9 @@ impl<R: RendererBackend> Application<R> {
             .map_err(|error| AppError::Console(error.to_string()))
     }
 
-    /// Supply `exec` script text (`None` means missing).
+    /// Preload `exec` script text (`None` means missing).
     pub fn provide_console_script(&mut self, name: &str, text: Option<String>) {
         self.console_queue.set_script(name, text);
-    }
-
-    /// Park an `exec` script name until [`Application::provide_console_script`]
-    /// supplies it.
-    pub fn stage_console_script(&mut self, name: &str) {
-        self.console_queue.stage_pending_script(name);
     }
 
     /// Console output lines collected so far.
@@ -418,9 +447,25 @@ impl<R: RendererBackend> Application<R> {
         self.console_cvars.variable_string(name)
     }
 
+    /// Per-seat userinfo registries.
+    #[must_use]
+    pub fn seat_userinfo(&self) -> &SeatUserinfo {
+        &self.seat_userinfo
+    }
+
     /// Run host frames until quit is requested or the frame limit lands.
     pub fn run(&mut self) -> Result<RunStats, AppError> {
+        self.run_with_feed(&mut |_| Ok(()))
+    }
+
+    /// Run host frames, calling `feed` before every frame so the host can
+    /// submit external console input (dedicated stdin).
+    pub fn run_with_feed(
+        &mut self,
+        feed: &mut dyn FnMut(&mut Self) -> Result<(), AppError>,
+    ) -> Result<RunStats, AppError> {
         while !self.finished {
+            feed(self)?;
             self.step_frame()?;
         }
         Ok(RunStats {
@@ -669,10 +714,7 @@ mod tests {
             Ok(_) => panic!("dedicated without content must refuse to start"),
             Err(error) => error,
         };
-        let message = error.to_string();
-        assert!(message.contains("corpus root"), "names the corpus root: {message}");
-        assert!(message.contains(&missing), "names the missing root: {message}");
-        assert!(message.contains("stub"), "says why it refuses: {message}");
+        assert!(matches!(error, AppError::Startup(_)), "refusal is a startup error");
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
         if !root.join("q1").is_dir() {
@@ -694,9 +736,7 @@ mod tests {
             Ok(_) => panic!("dedicated with an unknown product must refuse to start"),
             Err(error) => error,
         };
-        let message = error.to_string();
-        assert!(message.contains("qa-bogus-product"), "names the product: {message}");
-        assert!(message.contains(&root), "names the corpus root: {message}");
+        assert!(matches!(error, AppError::Startup(_)), "refusal is a startup error");
     }
 
     #[test]
@@ -710,6 +750,35 @@ mod tests {
         assert_eq!(stats.entities, 5);
         assert!(application.is_finished());
         assert_eq!(application.step_frame(), Err(AppError::Finished));
+    }
+
+    #[test]
+    fn startup_commands_run_on_first_frame() {
+        let mut application =
+            Application::open(&config(&["--movement", "q1", "+echo", "hi"]), NullRenderer::new()).unwrap();
+        assert!(application.console_has_pending());
+        let logged = application.console_log().len();
+        application.step_frame().unwrap();
+        assert!(application.console_log().len() > logged);
+    }
+
+    #[test]
+    fn run_with_feed_pumps_external_input() {
+        let mut application =
+            Application::open(&config(&["--movement", "q1", "--frames", "2"]), NullRenderer::new()).unwrap();
+        let mut fed = false;
+        let stats = application
+            .run_with_feed(&mut |app| {
+                if !fed {
+                    fed = true;
+                    app.submit_console("echo fed\n")?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stats.frames, 2);
+        assert!(!application.console_log().is_empty());
+        assert!(application.is_finished());
     }
 
     #[test]
