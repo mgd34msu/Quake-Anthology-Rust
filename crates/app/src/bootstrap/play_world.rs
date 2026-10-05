@@ -963,7 +963,13 @@ mod tests {
                 world.entity_count()
             );
             let players = usize::from(world.has_player());
-            assert_eq!(world.entity_count(), world.spawned() + players);
+            // Native Q1 doors add trigger-field actors beyond the spawned
+            // records (one per LinkDoors chain); other families add none.
+            let fields = world
+                .q1_behaviors()
+                .map(|behaviors| behaviors.borrow().fields.len())
+                .unwrap_or(0);
+            assert_eq!(world.entity_count(), world.spawned() + players + fields);
             loaded += 1;
         }
         assert!(loaded > 0, "expected at least one Steel map to load");
