@@ -176,11 +176,15 @@ mod tests {
     use crate::q3_net::{Q3ArchiveEntry, Q3ArchiveHandle};
     use qa_content::contract::{
         ArchiveFormat, ContentDigest, ContentId, LazyArchiveDigest, LooseMount, MountIdentity, MountPlanId, ResourceId,
-        ResourceResolution,
+        ResourceIdentity, ResourceResolution,
     };
 
     fn digest(byte: u8) -> ContentDigest {
         ContentDigest(format!("sha256:{}", format!("{byte:02x}").repeat(32)))
+    }
+
+    fn identity(byte: u8) -> ResourceIdentity {
+        ResourceIdentity::parse(&format!("identity:0:{byte}:8:{byte}")).unwrap()
     }
 
     fn mount(id: &str, generation: u64, digest: ContentDigest) -> ArchiveMount {
@@ -211,7 +215,7 @@ mod tests {
                 },
                 member_path: path.to_owned(),
             },
-            digest: digest(0),
+            identity: identity(0),
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:catalog:0".to_string()),
@@ -229,7 +233,7 @@ mod tests {
                 member_path: path.to_owned(),
                 member_index: 0,
             },
-            digest: digest(0),
+            identity: identity(0),
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:catalog:0".to_string()),

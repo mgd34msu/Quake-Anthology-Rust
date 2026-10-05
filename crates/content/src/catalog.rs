@@ -61,8 +61,8 @@ use crate::contract::{
 };
 use crate::monsters::{monster_source, monster_timing, provider_text};
 use crate::mounts::{
-    open_mount_plan, MountError, MountedContent, OpenMountOptions, OpenedResource, OrderedPlan, OrderedReader,
-    ResourceRef,
+    digest_bytes, open_mount_plan, MountError, MountedContent, OpenMountOptions, OpenedResource, OrderedPlan,
+    OrderedReader, ResourceRef,
 };
 use crate::paths::{find_content_path, normalize_resource_path, PathComparison, PathError};
 use crate::user_data::user_product_directory;
@@ -4211,8 +4211,10 @@ pub fn resolve_launch(
                     Q3ApiIdentity::Cgame(_) => QvmCompatRole::Cgame,
                     Q3ApiIdentity::Ui(_) => QvmCompatRole::Ui,
                 };
+                let artifact_bytes = scoped.read(ResourceRef::Resolved(&resolved))?;
+                let artifact_digest = digest_bytes(&artifact_bytes);
                 let profile =
-                    compat.read_qvm_compatibility(&scoped, &resolved.requested_path, &resolved.digest, compat_role)?;
+                    compat.read_qvm_compatibility(&scoped, &resolved.requested_path, &artifact_digest, compat_role)?;
                 let modern = profile == QvmAbiProfile::Modern;
                 match role {
                     ModuleRole::ServerGame => execution.push(ExecutionModule::Qvm {
@@ -5067,7 +5069,7 @@ mod tests {
     use crate::contract::{
         ModuleIdentity, QvmAbiProfile, QvmGrappleCallbacks, QvmGrappleDefinition, QvmGrappleFields,
         QvmGrappleFovOffset, QvmGrappleGlobals, QvmGrappleMovement, QvmGrapplePresentation, QvmGrappleViewAnchor,
-        QvmGrappleViewAttachment, ResourceResolution, SourceModuleApi,
+        QvmGrappleViewAttachment, ResourceIdentity, ResourceResolution, SourceModuleApi,
     };
     use crate::monsters::{MonsterFamily, MonsterProgram};
     use qa_core::math::Vec3;
@@ -6793,6 +6795,15 @@ mod tests {
         create_content_digest(&"ab".repeat(32)).unwrap()
     }
 
+    fn seam_identity() -> ResourceIdentity {
+        ResourceIdentity {
+            mount_generation: 0,
+            member_index: 0,
+            byte_length: 0,
+            crc: 0,
+        }
+    }
+
     fn seam_module() -> ModuleIdentity {
         ModuleIdentity {
             id: ProviderId::new("q1", "gameplay"),
@@ -6959,7 +6970,7 @@ mod tests {
 
     struct StubMounts {
         files: HashMap<String, Vec<u8>>,
-        digest: ContentDigest,
+        identity: ResourceIdentity,
     }
 
     impl BehaviorMounts for StubMounts {
@@ -6980,7 +6991,7 @@ mod tests {
                         },
                         member_path: path.to_string(),
                     },
-                    digest: self.digest.clone(),
+                    identity: self.identity,
                     byte_length: bytes.len() as u64,
                     resolution: ResourceResolution::DefaultOrder {
                         plan: create_mount_plan_id("seam", "stub").unwrap(),
@@ -6998,7 +7009,7 @@ mod tests {
         let module = seam_module();
         let empty = StubMounts {
             files: HashMap::new(),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         match discover_qc_weapon_behaviors(&empty, &module, &program).unwrap() {
             MountedWeaponBehaviorDiscovery::Undeclared { bindings, reason } => {
@@ -7017,7 +7028,7 @@ mod tests {
         );
         let declared = StubMounts {
             files: HashMap::from([("weapon-behaviors.json".to_string(), document.into_bytes())]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         match discover_qc_weapon_behaviors(&declared, &module, &program).unwrap() {
             MountedWeaponBehaviorDiscovery::Declared { declarations } => {
@@ -7040,7 +7051,7 @@ mod tests {
         ] {
             let mounts = StubMounts {
                 files: HashMap::from([("weapon-behaviors.json".to_string(), bytes)]),
-                digest: seam_digest(),
+                identity: seam_identity(),
             };
             assert!(
                 discover_qc_weapon_behaviors(&mounts, &module, &program).is_err(),
@@ -7052,7 +7063,7 @@ mod tests {
              "aspect": "trajectory", "fireFunction": "fire"}]}"#;
         let mounts = StubMounts {
             files: HashMap::from([("weapon-behaviors.json".to_string(), bad_digest.to_vec())]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let error = discover_qc_weapon_behaviors(&mounts, &module, &program).unwrap_err();
         assert!(error.to_string().contains("artifact digest"), "{error}");
@@ -7065,7 +7076,7 @@ mod tests {
         );
         let mounts = StubMounts {
             files: HashMap::from([("weapon-behaviors.json".to_string(), duplicate.into_bytes())]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let error = discover_qc_weapon_behaviors(&mounts, &module, &program).unwrap_err();
         assert!(
@@ -7129,7 +7140,7 @@ mod tests {
                         .to_vec(),
                 ),
             ]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let service = StubQvmService { bytecode: true };
         let loaded = load_qvm_weapon_behavior(&mounts, &provider, &qvm_declaration("qvm:rocket"), &service).unwrap();
@@ -7142,7 +7153,7 @@ mod tests {
         assert_eq!(discovered.len(), 2);
         let absent = StubMounts {
             files: HashMap::new(),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         assert!(discover_qvm_weapon_behaviors(&absent, &provider, &service)
             .unwrap()
@@ -7168,7 +7179,7 @@ mod tests {
                         .to_vec(),
                 ),
             ]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let error = discover_qvm_weapon_behaviors(&duplicated, &provider, &service).unwrap_err();
         assert!(error.to_string().contains("Duplicate QVM weapon behavior"), "{error}");
@@ -7318,7 +7329,7 @@ mod tests {
                         .to_vec(),
                 ),
             ]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let value = parse_save_json(r#"{"artifactPath": "game_x64.dll", "id": "native:blaster"}"#).unwrap();
         let loaded = load_native_weapon_behavior(&mounts, &provider, &value, &service).unwrap();
@@ -7331,7 +7342,7 @@ mod tests {
         // No document falls back to the stock game image.
         let fallback = StubMounts {
             files: HashMap::from([("game_x64.dll".to_string(), b"pe-bytes".to_vec())]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let discovered = discover_native_weapon_behaviors(&fallback, &provider, &service)
             .unwrap()
@@ -7340,7 +7351,7 @@ mod tests {
         assert_eq!(discovered[0].definition.id, "native:blaster");
         let empty = StubMounts {
             files: HashMap::new(),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         assert!(discover_native_weapon_behaviors(&empty, &provider, &service)
             .unwrap()
@@ -7372,7 +7383,7 @@ mod tests {
                         .to_vec(),
                 ),
             ]),
-            digest: seam_digest(),
+            identity: seam_identity(),
         };
         let error = discover_native_weapon_behaviors(&duplicated, &provider, &service).unwrap_err();
         assert!(

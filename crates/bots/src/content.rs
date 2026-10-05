@@ -1,8 +1,10 @@
 //! Navigation-visible content references projected from
 //! `src/contracts/content.ts` and `src/content/mounts/index.ts`: content
-//! and digest identities, resource provenance, and the resource-open seam
+//! and value identities, resource provenance, and the resource-open seam
 //! that navigation loading reads through. Full mount ownership lives with
 //! the content provider.
+
+use qa_content::contract::ResourceIdentity;
 
 /// Content identity (`family:group:name:variant`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -13,21 +15,6 @@ pub struct ContentId {
 
 impl ContentId {
     /// Wrap identity text.
-    #[must_use]
-    pub fn new(text: &str) -> Self {
-        Self { text: text.to_string() }
-    }
-}
-
-/// Content digest (`sha256:...`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ContentDigest {
-    /// Opaque digest text.
-    pub text: String,
-}
-
-impl ContentDigest {
-    /// Wrap digest text.
     #[must_use]
     pub fn new(text: &str) -> Self {
         Self { text: text.to_string() }
@@ -49,8 +36,8 @@ pub struct ResourceReference {
     pub requested_path: String,
     /// Resource provenance.
     pub provenance: ResourceProvenance,
-    /// Byte digest.
-    pub digest: ContentDigest,
+    /// Byte value identity.
+    pub identity: ResourceIdentity,
     /// Byte length.
     pub byte_length: usize,
 }

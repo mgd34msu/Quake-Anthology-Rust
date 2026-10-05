@@ -103,7 +103,7 @@ pub struct ModelResource {
     pub id: String,
     /// Requested content path.
     pub requested_path: String,
-    /// Digest of the source bytes the entity was built from.
+    /// Fingerprint of the source bytes the entity was built from.
     pub digest: u64,
 }
 

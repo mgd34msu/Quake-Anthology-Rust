@@ -15,18 +15,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use std::time::SystemTime;
 
 use thiserror::Error;
 
 use crate::archive::{
-    file_identity_at, open_archive, read_loose_entry, ArchiveEntry, ArchiveError, ArchivePathComparison, EntryRef,
-    OpenArchive,
+    crc32, file_identity_at, open_archive, read_loose_entry, ArchiveEntry, ArchiveError, ArchivePathComparison,
+    EntryRef, OpenArchive,
 };
 use crate::contract::{
     create_resource_id, is_content_digest, ArchiveFormat, ArchiveMount, ContentDigest, ContentMount, ContractError,
     LooseMount, MountId, MountIdentity, MountPlanId, PrefixMountOrder, ResolvedMountPlan, ResolvedResourceReference,
-    ResourceProvenance, ResourceResolution, UnresolvedResourceReference,
+    ResourceIdentity, ResourceProvenance, ResourceResolution, UnresolvedResourceReference,
 };
 use crate::hash::{
     hex_lower, md4_block_checksum, md4_block_checksum_key, record_file_digest, sha256_hex, stored_file_digest, Sha256,
@@ -88,16 +87,6 @@ fn content_digest_hex(hex: String) -> ContentDigest {
 #[must_use]
 pub fn digest_bytes(bytes: &[u8]) -> ContentDigest {
     content_digest_hex(sha256_hex(bytes))
-}
-
-/// Mint a resource identity token without hashing.
-///
-/// The token carries the payload length, the archive central-directory
-/// CRC (or zero), and a per-source tag (loose mtime, else zero). It
-/// identifies bytes for resource IDs and manifests; it is not a content
-/// hash, and nothing verifies bytes against it.
-fn resource_identity_token(byte_length: u64, crc: u32, tag: u64) -> ContentDigest {
-    ContentDigest(format!("sha256:{crc:08x}{byte_length:016x}{tag:016x}{:024x}", 0))
 }
 
 /// Archive content digest, forcing computation when nothing is cached.
@@ -743,7 +732,7 @@ impl MountedContent {
         &self,
         source: &MountedSource,
         member_path: &str,
-    ) -> Result<Option<(Vec<u8>, ResourceProvenance, ContentDigest)>, MountError> {
+    ) -> Result<Option<(Vec<u8>, ResourceProvenance, ResourceIdentity)>, MountError> {
         if !self.allowed(source, member_path)? {
             return Ok(None);
         }
@@ -768,7 +757,12 @@ impl MountedContent {
                     ArchiveEntry::Pak(_) => 0,
                 };
                 let bytes = archive.read_entry(EntryRef::Ordinal(entry.ordinal()))?;
-                let digest = resource_identity_token(bytes.len() as u64, crc, 0);
+                let identity = ResourceIdentity {
+                    mount_generation: mount.identity.generation,
+                    member_index: entry.ordinal() as u32,
+                    byte_length: bytes.len() as u64,
+                    crc,
+                };
                 Ok(Some((
                     bytes,
                     ResourceProvenance::Archive {
@@ -776,7 +770,7 @@ impl MountedContent {
                         member_path: entry.path().to_string(),
                         member_index: entry.ordinal() as u64,
                     },
-                    digest,
+                    identity,
                 )))
             }
             MountedSource::Loose { mount } => {
@@ -791,12 +785,6 @@ impl MountedContent {
                 if !metadata.is_file() {
                     return Ok(None);
                 }
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map(|elapsed| elapsed.as_nanos() as u64)
-                    .unwrap_or(0);
                 let actual = path
                     .strip_prefix(root)
                     .map_err(|_| MountError::Failed(format!("Loose path escapes root: {member_path}")))?;
@@ -806,14 +794,19 @@ impl MountedContent {
                     .collect::<Vec<_>>()
                     .join("/");
                 let bytes = read_loose_entry(root, &actual)?;
-                let digest = resource_identity_token(bytes.len() as u64, 0, modified);
+                let identity = ResourceIdentity {
+                    mount_generation: mount.identity.generation,
+                    member_index: crc32(actual.as_bytes()),
+                    byte_length: bytes.len() as u64,
+                    crc: crc32(&bytes),
+                };
                 Ok(Some((
                     bytes,
                     ResourceProvenance::Loose {
                         mount: mount.clone(),
                         member_path: actual,
                     },
-                    digest,
+                    identity,
                 )))
             }
         }
@@ -829,7 +822,7 @@ impl MountedContent {
         let UnresolvedResourceReference {
             requested_path,
             provenance,
-            digest,
+            identity,
             byte_length,
             resolution,
         } = unresolved;
@@ -842,7 +835,7 @@ impl MountedContent {
             id,
             requested_path: requested_path.clone(),
             provenance,
-            digest,
+            identity,
             byte_length,
             resolution,
         };
@@ -875,13 +868,13 @@ impl MountedContent {
                 }
                 let read = self.read_source(source, &requested_path)?;
                 self.assert_open()?;
-                if let Some((bytes, provenance, digest)) = read {
+                if let Some((bytes, provenance, identity)) = read {
                     return self
                         .opened(
                             UnresolvedResourceReference {
                                 requested_path,
                                 provenance,
-                                digest,
+                                identity,
                                 byte_length: bytes.len() as u64,
                                 resolution: ResourceResolution::DefaultOrder {
                                     plan: plan.id.clone(),
@@ -914,12 +907,12 @@ impl MountedContent {
             self.assert_open()?;
             return match read {
                 None => Ok(None),
-                Some((bytes, provenance, digest)) => self
+                Some((bytes, provenance, identity)) => self
                     .opened(
                         UnresolvedResourceReference {
                             requested_path,
                             provenance,
-                            digest,
+                            identity,
                             byte_length: bytes.len() as u64,
                             resolution: ResourceResolution::Link {
                                 plan: plan.id.clone(),
@@ -950,7 +943,7 @@ impl MountedContent {
             }
             let read = self.read_source(source, &requested_path)?;
             self.assert_open()?;
-            if let Some((bytes, provenance, digest)) = read {
+            if let Some((bytes, provenance, identity)) = read {
                 let resolution = match prefix {
                     None => ResourceResolution::DefaultOrder {
                         plan: plan.id.clone(),
@@ -967,7 +960,7 @@ impl MountedContent {
                         UnresolvedResourceReference {
                             requested_path,
                             provenance,
-                            digest,
+                            identity,
                             byte_length: bytes.len() as u64,
                             resolution,
                         },
@@ -1550,22 +1543,30 @@ mod tests {
     }
 
     #[test]
-    fn digests_tokens_and_missing_files() {
+    fn digests_identities_and_missing_files() {
         assert_eq!(
             digest_bytes(b"abc").as_str(),
             "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        // Identity tokens are deterministic, shape-valid digests minted
-        // without hashing.
-        let token = resource_identity_token(9, 0x12345678, 0);
-        assert_eq!(
-            token.as_str(),
-            "sha256:1234567800000000000000090000000000000000000000000000000000000000"
+        // Value identities are deterministic, compared by value, and never
+        // shaped like digests.
+        let identity = ResourceIdentity {
+            mount_generation: 1,
+            member_index: 2,
+            byte_length: 9,
+            crc: 0x12345678,
+        };
+        assert_eq!(identity.canonical(), "identity:1:2:9:305419896");
+        assert_eq!(ResourceIdentity::parse(&identity.canonical()), Some(identity));
+        assert!(!is_content_digest(&identity.canonical()));
+        assert_ne!(
+            ResourceIdentity {
+                byte_length: 10,
+                ..identity
+            },
+            identity
         );
-        assert!(is_content_digest(token.as_str()));
-        assert_eq!(resource_identity_token(9, 0x12345678, 0), token);
-        assert_ne!(resource_identity_token(10, 0x12345678, 0), token);
-        assert_ne!(resource_identity_token(9, 0x12345678, 1), token);
+        assert_ne!(ResourceIdentity { crc: 1, ..identity }, identity);
         assert!(is_missing_file(&std::io::Error::new(std::io::ErrorKind::NotFound, "x")));
         assert!(is_missing_file(&std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
@@ -1596,8 +1597,8 @@ mod tests {
         assert_eq!(found.bytes, b"loose-map".to_vec());
         assert_eq!(found.reference.requested_path, "MAPS/A.BSP");
         assert_eq!(
-            content.resolve("maps/a.bsp").unwrap().unwrap().digest,
-            found.reference.digest
+            content.resolve("maps/a.bsp").unwrap().unwrap().identity,
+            found.reference.identity
         );
         assert_eq!(
             content.read(ResourceRef::Path("maps/a.bsp")).unwrap(),
@@ -1646,10 +1647,18 @@ mod tests {
         let only = content.open("maps/only-first.bsp", |_| true).unwrap().unwrap();
         assert_eq!(only.bytes, b"1".to_vec());
         assert_eq!(content.referenced_archives().len(), 1);
-        // Resource references carry identity tokens, not content hashes.
-        assert_eq!(found.reference.digest, resource_identity_token(5, 0, 0));
-        // Tampered lengths fail re-reads; tampered digests are inert
-        // tokens, so only provenance and length are checked per read.
+        // Resource references carry value identities, not content hashes.
+        assert_eq!(
+            found.reference.identity,
+            ResourceIdentity {
+                mount_generation: 1,
+                member_index: 0,
+                byte_length: 5,
+                crc: 0,
+            }
+        );
+        // Tampered lengths fail re-reads; identity fields are inert, so
+        // only provenance and length are checked per read.
         let mut stale = found.reference.clone();
         stale.byte_length = 999;
         let error = content.read(ResourceRef::Resolved(&stale)).unwrap_err();
@@ -1689,7 +1698,7 @@ mod tests {
         for path in ["maps/a.bsp", "maps/b.bsp", "sound/shot.wav", "extra.cfg"] {
             let first = content.open(path, |_| true).unwrap().unwrap();
             let second = content.open(path, |_| true).unwrap().unwrap();
-            assert_eq!(first.reference.digest, second.reference.digest);
+            assert_eq!(first.reference.identity, second.reference.identity);
             assert_eq!(
                 content.read(ResourceRef::Resolved(&first.reference)).unwrap(),
                 first.bytes
@@ -1697,7 +1706,7 @@ mod tests {
             opened.push(first);
         }
         // No lazy digest was forced anywhere: uncomputed archive cells,
-        // uncomputed content cells, and deterministic identity tokens
+        // uncomputed content cells, and deterministic value identities
         // prove no hashing happened on the open path.
         for mount in &content.plan.mounts {
             if let ContentMount::Archive(mount) = mount {
@@ -1707,9 +1716,17 @@ mod tests {
         for resource in &opened {
             assert!(!resource.is_content_digest_computed());
         }
-        assert_eq!(opened[0].reference.digest, resource_identity_token(3, 0, 0));
-        assert_eq!(opened[1].reference.digest, resource_identity_token(4, 0, 0));
-        assert_eq!(opened[2].reference.digest, resource_identity_token(5, 0, 0));
+        for (resource, member_index, byte_length) in [(&opened[0], 0, 3), (&opened[1], 1, 4), (&opened[2], 2, 5)] {
+            assert_eq!(
+                resource.reference.identity,
+                ResourceIdentity {
+                    mount_generation: 1,
+                    member_index,
+                    byte_length,
+                    crc: 0,
+                }
+            );
+        }
         // Forcing one resource hashes its bytes exactly once per instance.
         assert_eq!(opened[3].content_digest(), &digest_bytes(b"loose-bytes"));
         assert!(opened[3].is_content_digest_computed());
@@ -2032,7 +2049,12 @@ mod tests {
                 member_path: requested.to_string(),
                 member_index: 0,
             },
-            digest: digest.clone(),
+            identity: ResourceIdentity {
+                mount_generation: 1,
+                member_index: 0,
+                byte_length: 1,
+                crc: 0,
+            },
             byte_length: 1,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_string()),

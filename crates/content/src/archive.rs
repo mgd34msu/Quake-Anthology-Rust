@@ -1022,7 +1022,7 @@ pub fn zip_data_offset(
 
 /// IEEE CRC-32 (donor `Bun.hash.crc32`).
 #[must_use]
-fn crc32(bytes: &[u8]) -> u32 {
+pub fn crc32(bytes: &[u8]) -> u32 {
     crc32fast::hash(bytes)
 }
 

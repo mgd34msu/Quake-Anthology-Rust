@@ -550,7 +550,7 @@ pub fn prepare_q3_game(
             let declaration = PrimaryResourceReference {
                 id: resource.id.0.clone(),
                 requested_path: resource.requested_path.clone(),
-                digest: resource.digest.as_str().to_string(),
+                identity: resource.identity.canonical(),
                 byte_length: resource.byte_length as usize,
             };
             read_qvm_primary_profile(
@@ -632,7 +632,12 @@ mod tests {
                     },
                     member_path: "vm/qagame.qvm".to_string(),
                 },
-                digest: qa_content::contract::ContentDigest("sha256:deadbeef".to_string()),
+                identity: qa_content::contract::ResourceIdentity {
+                    mount_generation: 1,
+                    member_index: 0,
+                    byte_length: 64,
+                    crc: 0,
+                },
                 byte_length: 64,
                 resolution: ResourceResolution::DefaultOrder {
                     plan: MountPlanId("mount-plan:q3:1".to_string()),
@@ -1146,7 +1151,6 @@ mod tests {
         std::fs::create_dir_all(dir.join("vm")).unwrap();
         let bytes = qvm_bytes();
         std::fs::write(dir.join("vm/qagame.qvm"), &bytes).unwrap();
-        let digest = format!("sha256:{}", qa_net::common::hash::sha256_hex(&bytes));
         let plan = ResolvedMountPlan {
             id: MountPlanId("mount-plan:q3:test".to_string()),
             mounts: vec![ContentMount::Loose(qa_content::contract::LooseMount {
@@ -1172,7 +1176,12 @@ mod tests {
         .unwrap();
         let mut execution = execution();
         if let ExecutionModule::Qvm { artifact, .. } = &mut execution {
-            artifact.digest = qa_content::contract::ContentDigest(digest);
+            artifact.identity = qa_content::contract::ResourceIdentity {
+                mount_generation: 1,
+                member_index: qa_content::archive::crc32("vm/qagame.qvm".as_bytes()),
+                byte_length: bytes.len() as u64,
+                crc: qa_content::archive::crc32(&bytes),
+            };
             artifact.byte_length = bytes.len() as u64;
             artifact.provenance = ResourceProvenance::Loose {
                 mount: qa_content::contract::LooseMount {

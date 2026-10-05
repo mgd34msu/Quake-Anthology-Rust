@@ -76,8 +76,8 @@ pub struct Mg3NavigationEdge {
 /// Navigation route (donor `bots/navigation` `NavigationRoute`).
 #[derive(Debug, Clone)]
 pub struct Mg3NavigationRoute {
-    /// Route map digest.
-    pub map_digest: String,
+    /// Route map identity.
+    pub map_identity: String,
     /// Route node ids.
     pub nodes: Vec<i32>,
     /// Route edges.
@@ -108,8 +108,8 @@ pub trait Mg3NavigationRuntime {
     fn monster_profile(&self) -> bool;
     /// The runtime self collision exclusion.
     fn pass_actor(&self) -> Option<ActorId>;
-    /// The runtime map digest.
-    fn map_digest(&self) -> &str;
+    /// The runtime map identity.
+    fn map_identity(&self) -> &str;
     /// Whether a node id exists.
     fn node_known(&self, id: i32) -> bool;
     /// Look up an edge by id.
@@ -241,7 +241,7 @@ pub fn register_mg3_monster_navigation(
                                     ),
                                     ("goal", point_json(&path.goal)),
                                     ("cursor", int(path.cursor as i64)),
-                                    ("map", save_str(&path.route.map_digest)),
+                                    ("map", save_str(&path.route.map_identity)),
                                     (
                                         "nodes",
                                         arr(path.route.nodes.iter().map(|node| int(i64::from(*node))).collect()),
@@ -279,7 +279,7 @@ pub fn register_mg3_monster_navigation(
                     let Some(runtime) = runtime else {
                         return Err(Q1Error::from(reader.fail("saved navigation map is unavailable")));
                     };
-                    if runtime.map_digest() != reader.field("map").string()? {
+                    if runtime.map_identity() != reader.field("map").string()? {
                         return Err(Q1Error::from(reader.fail("saved navigation map is unavailable")));
                     }
                     let nodes: Vec<i32> = reader.field("nodes").list(|value| {
@@ -298,7 +298,7 @@ pub fn register_mg3_monster_navigation(
                     })?;
                     let points: Vec<Vec3> = reader.field("points").list(|entry| point(&entry))?;
                     let route = Mg3NavigationRoute {
-                        map_digest: runtime.map_digest().to_string(),
+                        map_identity: runtime.map_identity().to_string(),
                         nodes,
                         edges,
                         points,
@@ -347,7 +347,7 @@ pub fn register_mg3_monster_navigation(
                     Path {
                         goal: path.goal,
                         route: Mg3NavigationRoute {
-                            map_digest: path.route.map_digest.clone(),
+                            map_identity: path.route.map_identity.clone(),
                             nodes: path.route.nodes.clone(),
                             edges: path.route.edges.clone(),
                             points: path.route.points.clone(),

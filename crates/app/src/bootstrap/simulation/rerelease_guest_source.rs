@@ -21,6 +21,8 @@ use qa_compat::q2::native_primary_validation::{
 };
 use qa_compat::q2::rerelease::api::rerelease_abi;
 use qa_compat::q2::rerelease::host::{HostOptions, RereleaseQ2GuestHost};
+use qa_content::archive::crc32;
+use qa_content::contract::ResourceIdentity;
 use qa_content::hash::sha256_hex;
 use qa_content::mounts::MountError;
 use qa_guest::checkpoint::{GameApi, NativeCallAbi};
@@ -121,14 +123,15 @@ pub fn prepare_rerelease_guest(
     }
     let (artifact, _) = native_parts(execution).expect("native execution");
     let bytes = mounts.read_artifact(&artifact.requested_path)?;
-    match artifact.digest.strip_prefix("sha256:") {
-        Some(hex) if sha256_hex(&bytes) == hex => {}
+    match ResourceIdentity::parse(&artifact.identity) {
+        Some(expected) if expected.byte_length == bytes.len() as u64 && expected.crc == crc32(&bytes) => {}
         _ => {
             return Err(RereleaseGuestSourceError::invalid(
-                "Rerelease native artifact digest differs from the selected module",
+                "Rerelease native artifact bytes differ from the selected module",
             ));
         }
     }
+    let digest = format!("sha256:{}", sha256_hex(&bytes));
     let pe = parse_pe(&bytes)?;
     if pe.abi != NativeAbi::WindowsX86_64 {
         return Err(RereleaseGuestSourceError::invalid(
@@ -139,7 +142,7 @@ pub fn prepare_rerelease_guest(
         &CompatMounts(mounts),
         &CompatExecution {
             artifact_path: artifact.requested_path.clone(),
-            digest: artifact.digest.clone(),
+            digest,
             api_version: 2023,
             profile: NativeAbi::WindowsX86_64,
             owner_content: execution.owner.content.clone(),
@@ -277,7 +280,9 @@ impl RereleaseGuestSource {
             ),
             None => {
                 let digest = match &prepared.execution.implementation {
-                    ExecutionImplementation::Native { artifact, .. } => artifact.digest.clone(),
+                    ExecutionImplementation::Native { .. } => {
+                        format!("sha256:{}", sha256_hex(&prepared.bytes))
+                    }
                     _ => String::new(),
                 };
                 rerelease_primary_world_profile(&digest).is_some()
@@ -451,7 +456,6 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
-    use qa_content::hash::sha256_hex;
     use qa_guest::checkpoint::{GameApi, NativeCallAbi};
 
     use super::super::q2_native_world::fixtures::*;
@@ -472,7 +476,14 @@ mod tests {
         artifacts.insert("q2game.dll".to_string(), bytes);
         let mut execution = rerelease_execution();
         if let ExecutionImplementation::Native { artifact, .. } = &mut execution.implementation {
-            artifact.digest = format!("sha256:{}", sha256_hex(&artifacts["q2game.dll"]));
+            let image = &artifacts["q2game.dll"];
+            artifact.identity = ResourceIdentity {
+                mount_generation: 0,
+                member_index: 0,
+                byte_length: image.len() as u64,
+                crc: crc32(image),
+            }
+            .canonical();
         }
         let mounts = FakeMounts::new(artifacts, None);
         prepare_rerelease_guest(&execution, &mounts).expect("prepared")

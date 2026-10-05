@@ -452,7 +452,7 @@ where
         return Ok(unavailable(format!("Declared behavior requires mounted {path}")));
     };
     let program = load_qc_program(&artifact.bytes, None, "progs.dat")?;
-    let module = behavior_module(&product.id, &path, &artifact.reference.digest);
+    let module = behavior_module(&product.id, &path, artifact.content_digest());
     let snapshot = host.weapon_snapshot(&program);
     let discovered = discover_qc_weapon_behaviors(mounts as &dyn BehaviorMounts, &module, &snapshot)?;
     let declarations = match discovered {
@@ -675,7 +675,7 @@ fn verify_prepared_selection(
         ));
     };
     if current.artifact.requested_path != selection.artifact.requested_path
-        || current.artifact.digest != selection.artifact.digest
+        || current.artifact.identity != selection.artifact.identity
         || current.source.provider != selection.source.provider
         || !same_weapon_behavior(&current.definition, &selection.definition)
     {
@@ -1025,8 +1025,8 @@ mod tests {
         ContentId, LooseMount, MountId, MountIdentity, MountPlanId, NativeAbi, NativeModuleApi, NativeWeaponAllocate,
         NativeWeaponCalls, NativeWeaponClient, NativeWeaponCommand, NativeWeaponCvar, NativeWeaponEntity,
         NativeWeaponEntry, NativeWeaponEquipped, NativeWeaponFree, NativeWeaponRegistrationLayout, NativeWeaponThink,
-        NativeWeaponTime, Q3ApiIdentity, QuakeCApiIdentity, ResourceId, ResourceProvenance, ResourceRequest,
-        ResourceResolution, SourceModuleApi,
+        NativeWeaponTime, Q3ApiIdentity, QuakeCApiIdentity, ResourceId, ResourceIdentity, ResourceProvenance,
+        ResourceRequest, ResourceResolution, SourceModuleApi,
     };
     use qa_core::cmd::Dialect;
     use qa_core::cvar::flags;
@@ -1068,7 +1068,7 @@ mod tests {
                 },
                 member_path: path.to_owned(),
             },
-            digest: digest(),
+            identity: ResourceIdentity::parse("identity:0:0:8:0").unwrap(),
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:seam:stub".to_owned()),

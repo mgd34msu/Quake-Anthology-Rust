@@ -472,6 +472,55 @@ pub enum ResourceResolution {
     },
 }
 
+/// Value identity for a resource's bytes: mount generation, member slot,
+/// length, and cheap checksum. Minted without hashing; compared by value.
+///
+/// This is deliberately not a [`ContentDigest`]: it names bytes without
+/// hashing them, and neither compares equal to nor parses as a digest, so
+/// byte-verifying consumers cannot mistake it for a SHA-256.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceIdentity {
+    /// Owning mount's generation.
+    pub mount_generation: u64,
+    /// Archive member ordinal, or the loose member path hash.
+    pub member_index: u32,
+    /// Byte length.
+    pub byte_length: u64,
+    /// Entry CRC32, or the loose bytes' CRC32.
+    pub crc: u32,
+}
+
+impl ResourceIdentity {
+    /// Canonical save/wire rendering (`identity:...`, never `sha256:...`).
+    #[must_use]
+    pub fn canonical(&self) -> String {
+        format!(
+            "identity:{}:{}:{}:{}",
+            self.mount_generation, self.member_index, self.byte_length, self.crc
+        )
+    }
+
+    /// Parse a canonical rendering.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let rest = text.strip_prefix("identity:")?;
+        let mut parts = rest.split(':');
+        let mount_generation = parts.next()?.parse().ok()?;
+        let member_index = parts.next()?.parse().ok()?;
+        let byte_length = parts.next()?.parse().ok()?;
+        let crc = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            mount_generation,
+            member_index,
+            byte_length,
+            crc,
+        })
+    }
+}
+
 /// Records the selected byte identity and mount generation across remounts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedResourceReference {
@@ -481,13 +530,12 @@ pub struct ResolvedResourceReference {
     pub requested_path: String,
     /// Byte provenance.
     pub provenance: ResourceProvenance,
-    /// Byte identity token, minted without hashing.
+    /// Byte value identity, minted without hashing.
     ///
-    /// Opening resources never hashes their bytes. The token carries the
-    /// payload length and cheap checksums for identity and manifest
-    /// purposes; consumers that verify bytes against external hashes
-    /// hash the opened bytes at their own site instead of reading this.
-    pub digest: ContentDigest,
+    /// Opening resources never hashes their bytes. Consumers that verify
+    /// bytes against external hashes hash the opened bytes at their own
+    /// site instead of reading this.
+    pub identity: ResourceIdentity,
     /// Byte length.
     pub byte_length: u64,
     /// Precedence decision.
@@ -542,8 +590,8 @@ pub struct UnresolvedResourceReference {
     pub requested_path: String,
     /// Byte provenance.
     pub provenance: ResourceProvenance,
-    /// Byte identity token, minted without hashing.
-    pub digest: ContentDigest,
+    /// Byte value identity, minted without hashing.
+    pub identity: ResourceIdentity,
     /// Byte length.
     pub byte_length: u64,
     /// Precedence decision.
@@ -583,12 +631,15 @@ pub fn create_resource_id(resource: &UnresolvedResourceReference) -> Result<Reso
         ResourceProvenance::Loose { mount, .. } => encode_uri_component(&mount.root_path),
     };
     Ok(ResourceId(format!(
-        "resource:{}:{}:{}:{source}:{}:{}:{}",
+        "resource:{}:{}:{}:{source}:{}:{}:{}:{}:{}:{}",
         identity.content,
         identity.id,
         identity.generation,
         encode_uri_component(member_path),
-        resource.digest,
+        resource.identity.mount_generation,
+        resource.identity.member_index,
+        resource.identity.byte_length,
+        resource.identity.crc,
         resolution_key(&resource.resolution)
     )))
 }
@@ -9937,7 +9988,12 @@ mod tests {
                 member_path: "maps/e1m1.bsp".to_string(),
                 member_index: 3,
             },
-            digest: create_content_digest(&"ef".repeat(32)).unwrap(),
+            identity: ResourceIdentity {
+                mount_generation: 7,
+                member_index: 3,
+                byte_length: 100,
+                crc: 0x12345678,
+            },
             byte_length: 100,
             resolution: ResourceResolution::DefaultOrder {
                 plan: create_mount_plan_id("plans", "r1").unwrap(),
@@ -9947,6 +10003,29 @@ mod tests {
         let id = create_resource_id(&resource).unwrap();
         assert!(id.as_str().starts_with("resource:q1:classic:id1:v1:"));
         assert!(id.as_str().contains("maps%2Fe1m1.bsp"));
+        assert!(id.as_str().contains(":7:3:100:305419896:"));
+    }
+
+    #[test]
+    fn resource_identity_never_parses_as_content_digest() {
+        let identity = ResourceIdentity {
+            mount_generation: 1,
+            member_index: 2,
+            byte_length: 3,
+            crc: 4,
+        };
+        let canonical = identity.canonical();
+        assert_eq!(canonical, "identity:1:2:3:4");
+        assert_eq!(ResourceIdentity::parse(&canonical), Some(identity));
+        assert!(!is_content_digest(&canonical));
+        assert!(create_content_digest(&canonical).is_err());
+        assert!(ResourceIdentity::parse("sha256:ab").is_none());
+        assert!(ResourceIdentity::parse(&"ab".repeat(32)).is_none());
+        assert!(ResourceIdentity::parse("identity:1:2:3").is_none());
+        assert!(ResourceIdentity::parse("identity:1:2:3:4:5").is_none());
+        assert!(ResourceIdentity::parse("identity:1:x:3:4").is_none());
+        let digest = create_content_digest(&"ab".repeat(32)).unwrap();
+        assert!(ResourceIdentity::parse(digest.as_str()).is_none());
     }
 
     #[test]

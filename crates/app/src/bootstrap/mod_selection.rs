@@ -509,10 +509,10 @@ pub fn prepare_application_mods<P: GameplayModPreparer>(
 mod tests {
     use super::*;
     use qa_content::contract::{
-        CampaignSelection, CharacterSelection, ContentDigest, DopplerSelection, EnemySelection, EnvironmentSelection,
+        CampaignSelection, CharacterSelection, DopplerSelection, EnemySelection, EnvironmentSelection,
         EquipmentSelection, ExecutableRecipe, FrameOrdering, GrappleSelection, HandGrenadeSelection, LooseMount,
         MountId, MountIdentity, MountPlanId, PresentationSelection, RecipeId, ResolvedMap, ResolvedResourceReference,
-        ResourceId, ResourceProvenance, ResourceResolution,
+        ResourceId, ResourceIdentity, ResourceProvenance, ResourceResolution,
     };
 
     fn provider(content: &str) -> ProviderReference {
@@ -537,7 +537,7 @@ mod tests {
                 },
                 member_path: "maps/e1m1.bsp".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),

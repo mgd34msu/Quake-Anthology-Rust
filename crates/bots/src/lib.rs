@@ -61,9 +61,7 @@ pub use aas_reachability_types::{
 pub use aas_write::write_aas;
 pub use behavior::{BotMovementPrediction, BotMovementStop, BotTravelPredictionResult, TravelType};
 pub use construct::{construct_navigation, NavigationConnection, NavigationConstruction};
-pub use content::{
-    ContentDigest, ContentId, NavigationResources, OpenedResource, ResourceProvenance, ResourceReference,
-};
+pub use content::{ContentId, NavigationResources, OpenedResource, ResourceProvenance, ResourceReference};
 pub use entity_binding::source_mover_bounds_match;
 pub use error::BotsError;
 pub use estimate_aas::{aas_estimate_area_time, AasNavigationEstimates};

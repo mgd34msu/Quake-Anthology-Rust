@@ -2440,7 +2440,7 @@ mod tests {
     use super::*;
     use qa_content::catalog::{BehaviorMounts, ProductAvailability, QvmCompatRole};
     use qa_content::contract::{
-        ContentDigest, LooseMount, MountId, MountIdentity, QvmAbiProfile, ResolvedResourceReference,
+        ContentDigest, LooseMount, MountId, MountIdentity, QvmAbiProfile, ResolvedResourceReference, ResourceIdentity,
         ResourceProvenance, ResourceResolution,
     };
     use std::fs;
@@ -2837,7 +2837,7 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:00".to_string()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:scripted".to_string()),

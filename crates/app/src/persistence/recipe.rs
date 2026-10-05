@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 
+use qa_content::contract::ResourceIdentity;
 use qa_core::time::ClockProfile;
 use qa_guest::checkpoint::{
     read_api, read_module, read_native_abi, write_api, write_module, write_native_call_abi, GameApi, NativeCallAbi,
@@ -341,8 +342,8 @@ pub struct ResolvedResourceReference {
     pub requested_path: String,
     /// Provenance.
     pub provenance: ResourceProvenance,
-    /// Digest.
-    pub digest: String,
+    /// Canonical value identity (`identity:...`, never a digest).
+    pub identity: String,
     /// Byte length.
     pub byte_length: u64,
     /// Resolution.
@@ -373,7 +374,7 @@ fn resolution_key(resolution: &ResourceResolution) -> String {
 pub fn create_resource_id(
     requested_path: &str,
     provenance: &ResourceProvenance,
-    digest: &str,
+    resource_identity: &str,
     _byte_length: u64,
     resolution: &ResourceResolution,
 ) -> Result<String, PersistenceError> {
@@ -410,7 +411,7 @@ pub fn create_resource_id(
     validate_content_id(&identity.content)
         .map_err(|_| PersistenceError::BadSave("expected a content identity".to_string()))?;
     Ok(format!(
-        "resource:{}:{}:{}:{source}:{}:{digest}:{}",
+        "resource:{}:{}:{}:{source}:{}:{resource_identity}:{}",
         identity.content,
         identity.id,
         identity.generation,
@@ -423,12 +424,16 @@ pub fn create_resource_id(
 pub fn read_resource(reader: SaveReader) -> Result<ResolvedResourceReference, PersistenceError> {
     let requested_path = reader.field("requestedPath").string()?;
     let provenance = read_provenance(reader.field("provenance"))?;
-    let digest = read_digest(reader.field("digest"))?;
+    let identity_field = reader.field("identity");
+    let identity_text = identity_field.string()?;
+    let identity = ResourceIdentity::parse(&identity_text)
+        .map(|parsed| parsed.canonical())
+        .ok_or_else(|| PersistenceError::from(identity_field.fail("expected a resource identity")))?;
     let byte_length = reader.field("byteLength").integer(0)?;
     let resolution = read_resolution(reader.field("resolution"))?;
     #[allow(clippy::cast_sign_loss)]
     let byte_length = byte_length as u64;
-    let id = create_resource_id(&requested_path, &provenance, &digest, byte_length, &resolution)?;
+    let id = create_resource_id(&requested_path, &provenance, &identity, byte_length, &resolution)?;
     if reader.field("id").string()? != id {
         return Err(PersistenceError::from(
             reader.fail("resource identity differs from its provenance"),
@@ -438,7 +443,7 @@ pub fn read_resource(reader: SaveReader) -> Result<ResolvedResourceReference, Pe
         id,
         requested_path,
         provenance,
-        digest,
+        identity,
         byte_length,
         resolution,
     })
@@ -452,7 +457,7 @@ pub fn write_resource(resource: &ResolvedResourceReference) -> SaveJson {
         ("id", str(&resource.id)),
         ("requestedPath", str(&resource.requested_path)),
         ("provenance", write_provenance(&resource.provenance)),
-        ("digest", str(&resource.digest)),
+        ("identity", str(&resource.identity)),
         ("byteLength", int(resource.byte_length as i64)),
         ("resolution", write_resolution(&resource.resolution)),
     ])
@@ -627,7 +632,7 @@ pub fn rebind_resource_reference(
     let id = create_resource_id(
         &resource.requested_path,
         &provenance,
-        &resource.digest,
+        &resource.identity,
         resource.byte_length,
         &resolution,
     )?;
@@ -635,7 +640,7 @@ pub fn rebind_resource_reference(
         id,
         requested_path: resource.requested_path.clone(),
         provenance,
-        digest: resource.digest.clone(),
+        identity: resource.identity.clone(),
         byte_length: resource.byte_length,
         resolution,
     })
@@ -1345,10 +1350,11 @@ fn read_weapon_behavior(
     let module = read_module(value.field("module"))?;
     let source = read_provider_ref(reader.field("source"))?;
     let artifact = read_resource(reader.field("artifact"))?;
-    if source.provider != module.id
-        || artifact.digest != module.digest
-        || artifact.requested_path != module.artifact_path
-    {
+    // The artifact carries a value identity while the module carries a
+    // content hash: the two are incommensurable by design, so parse only
+    // checks selection (provider and path). Byte equality is enforced
+    // when the artifact is opened live against its declaration.
+    if source.provider != module.id || artifact.requested_path != module.artifact_path {
         return Err(PersistenceError::from(
             reader.fail("weapon behavior source differs from selected artifact"),
         ));
@@ -1741,17 +1747,17 @@ mod tests {
             }),
             member_path: requested_path.to_string(),
         };
-        let digest = format!("sha256:{}", "4".repeat(64));
+        let identity = "identity:0:0:128:0".to_string();
         let resolution = ResourceResolution::DefaultOrder {
             plan: "mount-plan:q3:1".to_string(),
             rank: 0,
         };
-        let id = create_resource_id(requested_path, &provenance, &digest, 128, &resolution).unwrap();
+        let id = create_resource_id(requested_path, &provenance, &identity, 128, &resolution).unwrap();
         ResolvedResourceReference {
             id,
             requested_path: requested_path.to_string(),
             provenance,
-            digest,
+            identity,
             byte_length: 128,
             resolution,
         }

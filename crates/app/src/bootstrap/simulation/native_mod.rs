@@ -207,7 +207,7 @@ fn convert_artifact(
         id: artifact.id.as_str().to_string(),
         requested_path: artifact.requested_path.clone(),
         provenance,
-        digest: artifact.digest.as_str().to_string(),
+        identity: artifact.identity.canonical(),
         byte_length: artifact.byte_length,
         resolution,
     })
@@ -292,8 +292,10 @@ pub fn prepare_native_mod(options: PrepareNativeModOptions) -> Result<NativePrep
         (true, qa_guest::core::contracts::NativeAbi::WindowsI386)
             | (false, qa_guest::core::contracts::NativeAbi::WindowsX86_64)
     );
-    if options.artifact.digest != options.declaration.program.digest
-        || options.artifact.requested_path != options.declaration.program.path
+    // The mounted artifact's bytes were verified against the declaration at
+    // open; here the program bytes and path carry the check (the artifact
+    // reference holds a value identity, not a digest).
+    if options.artifact.requested_path != options.declaration.program.path
         || program_digest != options.declaration.program.digest.as_str()
         || !abi_matches
     {
@@ -1339,6 +1341,7 @@ mod tests {
     use qa_content::contract::{
         ArchiveFormat, ContentId, LooseMount, ModAvailability, ModCallbackInput, ModCallbackString, ModCallbackValue,
         ModClientInput, ModProgram, ModPurpose, ModSelection, MountId, MountIdentity, NativeModValueKind, ResourceId,
+        ResourceIdentity,
     };
     use qa_core::math::Vec3;
 
@@ -1401,7 +1404,16 @@ mod tests {
         }
     }
 
-    fn artifact(digest: ContentDigest) -> ResolvedResourceReference {
+    fn test_identity() -> ResourceIdentity {
+        ResourceIdentity {
+            mount_generation: 3,
+            member_index: 0,
+            byte_length: 1024,
+            crc: 0,
+        }
+    }
+
+    fn artifact(identity: ResourceIdentity) -> ResolvedResourceReference {
         ResolvedResourceReference {
             id: ResourceId("resource:game".to_string()),
             requested_path: "game.dll".to_string(),
@@ -1416,7 +1428,7 @@ mod tests {
                 },
                 member_path: "game.dll".to_string(),
             },
-            digest,
+            identity,
             byte_length: 1024,
             resolution: qa_content::contract::ResourceResolution::DefaultOrder {
                 plan: qa_content::contract::MountPlanId("mount-plan:test:1".to_string()),
@@ -1438,7 +1450,7 @@ mod tests {
             declaration: declaration(digest.clone()),
             declaration_digest: ContentDigest("sha256:decl".to_string()),
             program,
-            artifact: artifact(digest.clone()),
+            artifact: artifact(test_identity()),
             read_script: None,
             localize: localize(),
         })
@@ -1461,13 +1473,10 @@ mod tests {
             declaration: declaration(digest.clone()),
             declaration_digest: ContentDigest("sha256:decl".to_string()),
             program: program.clone(),
-            artifact: artifact(digest.clone()),
+            artifact: artifact(test_identity()),
             read_script: None,
             localize: localize(),
         };
-        let mut bad_digest = options();
-        bad_digest.artifact.digest = ContentDigest("sha256:other".to_string());
-        assert!(prepare_native_mod(bad_digest).is_err());
         let mut bad_path = options();
         bad_path.artifact.requested_path = "other.dll".to_string();
         assert!(prepare_native_mod(bad_path).is_err());
@@ -1477,8 +1486,7 @@ mod tests {
         let mut bad_abi = options();
         bad_abi.program = minimal_pe(0x8664, 0x20b, &["GetGameAPI"]);
         let changed = ContentDigest(format!("sha256:{}", sha256_hex(&bad_abi.program)));
-        bad_abi.declaration.program.digest = changed.clone();
-        bad_abi.artifact.digest = changed;
+        bad_abi.declaration.program.digest = changed;
         assert!(prepare_native_mod(bad_abi).is_err());
     }
 
@@ -1493,7 +1501,7 @@ mod tests {
             declaration,
             declaration_digest: ContentDigest("sha256:decl".to_string()),
             program,
-            artifact: artifact(digest),
+            artifact: artifact(test_identity()),
             read_script: None,
             localize: localize(),
         })
@@ -1710,10 +1718,9 @@ mod tests {
 
     #[test]
     fn convert_artifact_maps_mounts() {
-        let digest = ContentDigest("sha256:abc".to_string());
-        let record = convert_artifact(&artifact(digest)).unwrap();
+        let record = convert_artifact(&artifact(test_identity())).unwrap();
         assert_eq!(record.id, "resource:game");
-        assert_eq!(record.digest, "sha256:abc");
+        assert_eq!(record.identity, "identity:3:0:1024:0");
         assert!(matches!(
             record.provenance,
             crate::persistence::recipe::ResourceProvenance::Loose { .. }

@@ -29,7 +29,7 @@ use qa_content::catalog::{CatalogError, InstalledCatalog};
 use qa_content::contract::{
     create_content_digest, ArchiveFormat, ContentDigest, ContentId, ContentMount as ContractMount, ContractError,
     MountPlanId, PrefixMountOrder as ContractPrefixOrder, ResolvedMountPlan as ContractMountPlan, ResourceId,
-    MAX_SAFE_INTEGER,
+    ResourceIdentity, MAX_SAFE_INTEGER,
 };
 use qa_content::hash::sha256_hex;
 use qa_content::mounts::{archive_digest_or_compute, open_mount_plan, MountError, OpenMountOptions, ResourceRef};
@@ -120,7 +120,7 @@ pub fn resource_key(value: &ResolvedResourceReference) -> UnifiedResourceKey {
     UnifiedResourceKey {
         content: ContentId(mount_identity(provenance_mount(&value.provenance)).content.clone()),
         path: value.requested_path.clone(),
-        digest: value.digest.clone(),
+        identity: value.identity.clone(),
         byte_length: value.byte_length,
     }
 }
@@ -159,7 +159,7 @@ pub fn unified_resource_id(key: &UnifiedResourceKey) -> Result<ResourceId, Unifi
         "[{},{},{},{}]",
         json_escape(key.content.as_str()),
         json_escape(&key.path),
-        json_escape(&key.digest),
+        json_escape(&key.identity),
         key.byte_length
     );
     Ok(ResourceId(format!(
@@ -174,10 +174,14 @@ pub fn unified_resource_id_for_reference(value: &ResolvedResourceReference) -> R
 }
 
 fn read_key(reader: SaveReader) -> Result<UnifiedResourceKey, UnifiedContentError> {
+    let identity_field = reader.field("identity");
+    let identity = ResourceIdentity::parse(&identity_field.string().map_err(UnifiedContentError::from)?)
+        .map(|parsed| parsed.canonical())
+        .ok_or_else(|| UnifiedContentError::Composition("expected a resource identity".to_string()))?;
     Ok(UnifiedResourceKey {
         content: ContentId(read_content_id(reader.field("content"))?),
         path: unified_path(&reader.field("path").string()?)?,
-        digest: read_digest(reader.field("digest"))?,
+        identity,
         byte_length: reader
             .field("byteLength")
             .integer(0)
@@ -194,7 +198,7 @@ fn write_key(key: &UnifiedResourceKey) -> SaveJson {
     obj(vec![
         ("content", json_str(key.content.as_str())),
         ("path", json_str(&key.path)),
-        ("digest", json_str(&key.digest)),
+        ("identity", json_str(&key.identity)),
         ("byteLength", int(key.byte_length as i64)),
     ])
 }
@@ -764,7 +768,7 @@ pub fn resolve_unified_resource(
     match opened {
         Some(reference)
             if mount_identity(provenance_mount(&reference.provenance)).content == key.content.as_str()
-                && reference.digest == key.digest
+                && reference.identity == key.identity
                 && reference.byte_length == key.byte_length =>
         {
             Ok(reference)
@@ -795,7 +799,7 @@ mod tests {
         let key = UnifiedResourceKey {
             content: ContentId("q1:classic:base:1".to_string()),
             path: "../escape.bsp".to_string(),
-            digest: "sha256:0".to_string(),
+            identity: "identity:0:0:8:0".to_string(),
             byte_length: 8,
         };
         assert!(unified_resource_id(&key).is_err());
@@ -806,7 +810,7 @@ mod tests {
         let key = UnifiedResourceKey {
             content: ContentId("q1:classic:base:1".to_string()),
             path: "maps/e1m1.bsp".to_string(),
-            digest: format!("sha256:{}", "ab".repeat(32)),
+            identity: "identity:0:0:8:0".to_string(),
             byte_length: 8,
         };
         let first = unified_resource_id(&key).unwrap();

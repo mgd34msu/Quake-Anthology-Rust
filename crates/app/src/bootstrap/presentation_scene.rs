@@ -34,8 +34,8 @@ use qa_client::render::types::{DrawBatch, RenderOperation, RendererImage, Source
 use qa_client::render::{LightProfile, LightShadow, SceneLight};
 use qa_client::view::{CameraClip, ModelTransform as ViewModelTransform, SceneCamera};
 use qa_content::contract::{
-    same_presentation_owner, ContentDigest, ContentId, GameFamily, ModelTransform, PresentationOwner,
-    ResolvedResourceReference,
+    same_presentation_owner, ContentId, GameFamily, ModelTransform, PresentationOwner, ResolvedResourceReference,
+    ResourceIdentity,
 };
 use qa_content::md5::{DecodedMd5Model, Md5Animation, SkinSelection};
 use qa_content::q3::foundation::assets::Q3CharacterAssets;
@@ -590,10 +590,12 @@ pub struct ScenePrepareInput<'a> {
     pub primary_bodies: &'a [ScenePrimaryBody],
 }
 
-/// First 64 bits of a `sha256:` digest for model resources.
-fn resource_digest(digest: &ContentDigest) -> u64 {
-    let hex = digest.as_str().strip_prefix("sha256:").unwrap_or(digest.as_str());
-    u64::from_str_radix(hex.get(..16).unwrap_or(""), 16).unwrap_or(0)
+/// 64-bit fingerprint of a value identity for model resources.
+fn resource_identity_fingerprint(identity: &ResourceIdentity) -> u64 {
+    (identity.crc as u64)
+        ^ identity.byte_length
+        ^ identity.mount_generation.wrapping_mul(0x9E3779B97F4A7C15)
+        ^ (identity.member_index as u64).wrapping_mul(0xBF58476D1CE4E5B9)
 }
 
 /// Render resource for a resolved reference.
@@ -601,7 +603,7 @@ fn model_resource(resource: &ResolvedResourceReference) -> ModelResource {
     ModelResource {
         id: resource.id.to_string(),
         requested_path: resource.requested_path.clone(),
-        digest: resource_digest(&resource.digest),
+        digest: resource_identity_fingerprint(&resource.identity),
     }
 }
 
@@ -2534,7 +2536,12 @@ mod tests {
                 },
                 member_path: path.to_string(),
             },
-            digest: ContentDigest("sha256:0123456789abcdef0123456789abcdef".to_string()),
+            identity: ResourceIdentity {
+                mount_generation: 0,
+                member_index: 0,
+                byte_length: 8,
+                crc: 0,
+            },
             byte_length: 8,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:p".to_string()),

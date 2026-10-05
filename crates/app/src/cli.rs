@@ -1420,7 +1420,7 @@ fn recipe_resource(reference: &ResolvedResourceReference) -> Result<RecipeResour
                 member_path: member_path.clone(),
             },
         },
-        digest: reference.digest.as_str().to_owned(),
+        identity: reference.identity.canonical(),
         byte_length: reference.byte_length,
         resolution: match &reference.resolution {
             ContractResolution::DefaultOrder { plan, rank } => RecipeResolution::DefaultOrder {
@@ -1624,6 +1624,7 @@ fn list_content(corpus_root: &str, stdout: &mut dyn Write) {
 mod tests {
     use super::*;
     use crate::options::ApplicationOptions;
+    use qa_content::contract::ResourceIdentity;
     use qa_guest::qc::program::load_qc_program;
 
     #[test]
@@ -2146,7 +2147,7 @@ mod tests {
                 },
                 member_path: "maps/e1m1.bsp".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:0:0").unwrap(),
             byte_length: 0,
             resolution: ResourceResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),
@@ -2250,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rerelease_guest_checks_artifact_digest() {
+    fn prepare_rerelease_guest_checks_artifact_identity() {
         use qa_content::contract::{LooseMount, MountId, MountIdentity, MountPlanId, ResourceId};
         let artifact = ResolvedResourceReference {
             id: ResourceId("resource:game_x64.dll".to_owned()),
@@ -2266,7 +2267,7 @@ mod tests {
                 },
                 member_path: "game_x64.dll".to_owned(),
             },
-            digest: ContentDigest("sha256:00".to_owned()),
+            identity: ResourceIdentity::parse("identity:1:0:4:0").unwrap(),
             byte_length: 4,
             resolution: ContractResolution::DefaultOrder {
                 plan: MountPlanId("mount-plan:test:1".to_owned()),
@@ -2277,9 +2278,9 @@ mod tests {
         let mut host = CliWeaponBehaviorHost::default();
         let error = host
             .prepare_rerelease_guest(&test_provider("q2-rerelease"), &artifact, b"fake", &mounts)
-            .expect_err("digest mismatch is rejected");
+            .expect_err("identity mismatch is rejected");
         let message = error.to_string();
-        assert!(message.contains("digest"), "{message}");
+        assert!(message.contains("differ"), "{message}");
         assert!(!message.contains("unported"), "{message}");
     }
 }

@@ -191,8 +191,8 @@ pub struct NavPathT {
     pub cost: f64,
     /// Runtime generation.
     pub generation: i64,
-    /// Map digest.
-    pub map_digest: String,
+    /// Map identity.
+    pub map_identity: String,
 }
 
 /// Plan options.
@@ -402,12 +402,12 @@ impl RereleaseNavigation for SourceRereleaseNavigation<'_> {
             links,
             cost: route.travel_seconds,
             generation: route.generation,
-            map_digest: route.map.digest.text.clone(),
+            map_identity: route.map.identity.canonical(),
         })
     }
 
     fn path_valid(&mut self, path: &NavPathT) -> bool {
-        path.generation == self.runtime.generation() && path.map_digest == self.runtime.graph.map.digest.text
+        path.generation == self.runtime.generation() && path.map_identity == self.runtime.graph.map.identity.canonical()
     }
 
     fn transport(&mut self, link: &NavGraphLinkT, origin: Vec3) -> Option<BotTransportStep> {

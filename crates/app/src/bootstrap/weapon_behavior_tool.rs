@@ -424,7 +424,7 @@ where
         return Err(invalid(format!("Mounted behavior artifact is missing: {path}")));
     };
     let program = load_qc_program(&artifact.bytes, None, "progs.dat")?;
-    let module = behavior_module(&product.id, &path, &artifact.reference.digest);
+    let module = behavior_module(&product.id, &path, artifact.content_digest());
     if matches!(command, WeaponBehaviorToolCommand::Inspect { .. }) {
         let snapshot = host.weapon_snapshot(&program);
         let callbacks = program
@@ -633,7 +633,7 @@ where
                 (
                     host.qvm_service().qvm_weapon_profile_id(&entry.profile),
                     entry.resource.requested_path.clone(),
-                    entry.resource.digest.as_str().to_owned(),
+                    entry.resource.identity.canonical(),
                 )
             })
             .collect();

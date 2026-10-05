@@ -5,11 +5,11 @@
 
 use std::collections::HashSet;
 
+use qa_content::contract::ResourceIdentity;
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3};
 
 use crate::aas::AasAsset;
-use crate::content::ContentDigest;
 use crate::movement_contract::MovementProfile;
 use crate::nav::KexNavigationAsset;
 use crate::scene::{BodyShape, SceneQueries, TracePolicy, WorldKind};
@@ -88,15 +88,15 @@ pub enum Team {
     Blue,
 }
 
-/// Map identity: name, BSP family, and content digest.
+/// Map identity: name, BSP family, and value identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NavigationMapIdentity {
     /// Map name.
     pub name: String,
     /// BSP family.
     pub format: WorldKind,
-    /// Content digest.
-    pub digest: ContentDigest,
+    /// Map value identity.
+    pub identity: ResourceIdentity,
 }
 
 /// Character traversal profile.

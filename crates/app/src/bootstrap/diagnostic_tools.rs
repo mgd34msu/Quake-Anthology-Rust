@@ -285,10 +285,10 @@ fn resources_json(resources: &[ResolvedResourceReference]) -> String {
         json_escape(resource.id.as_str(), &mut id);
         let mut path = String::new();
         json_escape(&resource.requested_path, &mut path);
-        let mut digest = String::new();
-        json_escape(resource.digest.as_str(), &mut digest);
+        let mut identity = String::new();
+        json_escape(&resource.identity.canonical(), &mut identity);
         out.push_str(&format!(
-            "  {{\n    \"id\": \"{id}\",\n    \"requestedPath\": \"{path}\",\n    \"digest\": \"{digest}\",\n    \"byteLength\": {}\n  }}{}\n",
+            "  {{\n    \"id\": \"{id}\",\n    \"requestedPath\": \"{path}\",\n    \"identity\": \"{identity}\",\n    \"byteLength\": {}\n  }}{}\n",
             resource.byte_length,
             if index + 1 == resources.len() { "" } else { "," },
         ));
