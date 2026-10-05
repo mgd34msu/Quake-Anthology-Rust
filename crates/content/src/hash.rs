@@ -1,17 +1,15 @@
 //! Self-contained hashes for content digests and Quake III checksums.
 //!
-//! Donor: `crates/net/src/common/hash.rs` (`Sha256`, `sha256_hex`,
-//! `hex_lower`, `md4`, `md4_block_checksum`, `md4_block_checksum_key`),
-//! itself ported from Node's `crypto` (`createHash`) and
-//! `src/core/md4.ts` (RSA Data Security, Inc. MD4 as used by id
-//! Software's `code/qcommon/md4.c`).
+//! Canonical workspace hashes (`Sha256`, `sha256_hex`, `hex_lower`, `md4`,
+//! `md4_block_checksum`, `md4_block_checksum_key`), ported from Node's
+//! `crypto` (`createHash`) and `src/core/md4.ts` (RSA Data Security, Inc.
+//! MD4 as used by id Software's `code/qcommon/md4.c`).
 //!
 //! `qa-content` cannot depend on `qa-net` (content sits below networking in
 //! the layering: mounts resolve bytes that netcode later verifies), so the
-//! hashes mount and archive handling needs are duplicated here instead of
-//! shared. The credential helpers from the donor (`password_verifier`,
-//! `timing_safe_equal`, `hex_decode`) are intentionally not copied: no
-//! content reader authenticates anything.
+//! implementations live here and `qa-net` re-exports them. The credential
+//! helpers (`password_verifier`, `timing_safe_equal`, `hex_decode`) stay in
+//! `qa-net`: no content reader authenticates anything.
 //!
 //! Archive content hashes resolve through the on-disk digest store
 //! ([`stored_file_digest`]/[`record_file_digest`]), keyed by filesystem
