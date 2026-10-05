@@ -36,7 +36,7 @@ use qa_client::audio::{source_sound_channel, ChannelCommand, SoundFamily};
 use qa_content::mounts::MountedContent;
 use qa_content::q1::foundation::types::{Q1Event, Q1SoundChannel};
 use qa_content::q2::foundation::host::{Q2PresentationEvent, Q2SoundLoop};
-use qa_core::identity::{ActorId, ProviderId, SeatId};
+use qa_core::identity::{ActorId, IdentityOwner, ProviderId, SeatId};
 use qa_core::math::{angles_to_axis, vec3, Vec3};
 
 use super::audio::q3::Q3SeatAudioOperation;
@@ -80,6 +80,121 @@ fn q1_channel_number(channel: &Q1SoundChannel) -> i32 {
     }
 }
 
+/// Q2/Q3 `target_speaker` spawnflag bit that prestarts the loop (donor
+/// `SP_target_speaker`: `spawnflags & 1`).
+const SPEAKER_LOOPED_ON: i32 = 1;
+
+/// One map `target_speaker` resolved to a startable positional loop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapSpeaker {
+    /// Sound path with the donor `.wav` suffix rule applied.
+    pub noise: String,
+    /// Fixed speaker position from the entity `origin`.
+    pub position: Vec3,
+    /// Loop volume (donor default 1.0).
+    pub volume: f64,
+    /// Loop attenuation (donor default 1.0, normal).
+    pub attenuation: f64,
+}
+
+/// Fetch one entity key from a raw property list.
+fn entity_key<'a>(properties: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    properties
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+}
+
+/// Parse an `origin` triple, or `None` when it is missing or malformed.
+fn parse_speaker_origin(text: &str) -> Option<Vec3> {
+    let mut parts = text.split_whitespace();
+    let (x, y, z) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let (Ok(x), Ok(y), Ok(z)) = (x.parse::<f32>(), y.parse::<f32>(), z.parse::<f32>()) else {
+        return None;
+    };
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
+    Some(vec3(x, y, z))
+}
+
+/// Parse a speaker float key with the Q2 donor normalization (`SP_target_speaker`):
+/// missing/unparseable/zero reads `1.0`; for attenuation only, `-1` reads
+/// `0.0` (global). Shared by every family (unified engine rule).
+fn parse_speaker_float(properties: &[(String, String)], key: &str, minus_one_global: bool) -> f64 {
+    let parsed = entity_key(properties, key).map_or(0.0, |text| text.parse::<f64>().unwrap_or(0.0));
+    if !parsed.is_finite() || parsed == 0.0 {
+        1.0
+    } else if minus_one_global && parsed == -1.0 {
+        0.0
+    } else {
+        parsed
+    }
+}
+
+/// Whether one raw `target_speaker` record loops at spawn. The only
+/// family-parameterized piece of the shared speaker path: Q2/Q3 need
+/// spawnflags bit 1 (`LOOPED_ON`; bit 2 `LOOPED_OFF` and triggerable
+/// speakers stay silent — the shell has no trigger system), while Q1
+/// loops when the speaker has no `targetname` (a named speaker waits for
+/// a trigger, like the QuakeC `ambientsound` convention).
+fn speaker_loops_at_spawn(properties: &[(String, String)], family: SoundFamily) -> bool {
+    if family == SoundFamily::Q1 {
+        return entity_key(properties, "targetname").is_none_or(|name| name.is_empty());
+    }
+    let spawnflags = entity_key(properties, "spawnflags").map_or(0, |text| text.parse::<i32>().unwrap_or(0));
+    spawnflags & SPEAKER_LOOPED_ON != 0
+}
+
+/// Scan raw map entity records for startable `target_speaker` loops.
+///
+/// One shared path for every family over the [`decode_map_entities`](super::play_world::decode_map_entities)
+/// key/value records; only the start condition is family-parameterized
+/// (see [`speaker_loops_at_spawn`]). Records without a `noise` key, with
+/// an unparseable `origin`, or that wait for a trigger are skipped.
+/// Failures log to stderr and stay silent, never panic.
+#[must_use]
+pub fn map_speakers(entities: &[Vec<(String, String)>], family: SoundFamily) -> Vec<MapSpeaker> {
+    let mut speakers = Vec::new();
+    for properties in entities {
+        if entity_key(properties, "classname") != Some("target_speaker") {
+            continue;
+        }
+        let Some(noise) = entity_key(properties, "noise").filter(|noise| !noise.is_empty()) else {
+            eprintln!("windowed audio: target_speaker with no noise set");
+            continue;
+        };
+        if !speaker_loops_at_spawn(properties, family) {
+            continue;
+        }
+        let Some(origin) = entity_key(properties, "origin") else {
+            eprintln!("windowed audio: target_speaker {noise} with no origin");
+            continue;
+        };
+        let Some(position) = parse_speaker_origin(origin) else {
+            eprintln!("windowed audio: target_speaker {noise} has a bad origin ({origin})");
+            continue;
+        };
+        // Donor `.wav` suffix rule (Q2/Q3 `SP_target_speaker`): the bank
+        // opens `sound/{noise}`, so a suffix-less noise would miss.
+        let noise = if noise.contains(".wav") {
+            noise.to_string()
+        } else {
+            format!("{noise}.wav")
+        };
+        speakers.push(MapSpeaker {
+            noise,
+            position,
+            volume: parse_speaker_float(properties, "volume", false),
+            attenuation: parse_speaker_float(properties, "attenuation", true),
+        });
+    }
+    speakers
+}
+
 /// Gameplay audio bridge: one shared sound bank plus trigger mapping.
 ///
 /// Generic over the bank content so tests can serve synthetic bytes; the
@@ -89,6 +204,10 @@ pub struct AudioBridge<Content: SoundContent> {
     bank: SoundBank<Content>,
     /// Warn-once keys (`{family:?}:{path}`) for missing sounds.
     warned: HashSet<String>,
+    /// Actor mint for map-speaker loop keys (map speakers are fixed, so
+    /// they carry no simulation actor; the engine still keys loops by
+    /// actor, hence one slot per speaker).
+    speaker_owner: Option<IdentityOwner>,
 }
 
 impl<Content: SoundContent> AudioBridge<Content> {
@@ -98,6 +217,7 @@ impl<Content: SoundContent> AudioBridge<Content> {
         Self {
             bank: SoundBank::new(content),
             warned: HashSet::new(),
+            speaker_owner: IdentityOwner::create("map-speakers").ok(),
         }
     }
 
@@ -193,6 +313,56 @@ impl<Content: SoundContent> AudioBridge<Content> {
                     None => eprintln!("windowed audio: q3 release-owner without a source owner"),
                 },
                 Q3SeatAudioOperation::Loop { .. } | Q3SeatAudioOperation::Position { .. } => {}
+            }
+        }
+    }
+
+    /// Start parsed map speakers as persistent positional loops (donor
+    /// prestarted-speaker slice): one [`LoopSound`] per speaker with a
+    /// fixed origin, World audience, and a minted loop-key actor (map
+    /// speakers are fixed, so they carry no simulation actor). Sounds
+    /// resolve through the shared bank with warn-once; every failure logs
+    /// to stderr and stays silent. Q1/Q2 loops queue until
+    /// `end_loop_frame` pushes them into the seat mixers, like `receive`.
+    pub fn start_map_speakers(&mut self, engine: &mut UnifiedAudio, speakers: &[MapSpeaker], family: SoundFamily) {
+        let Some(speaker_owner) = self.speaker_owner.as_ref() else {
+            eprintln!("windowed audio: cannot mint map-speaker actors");
+            return;
+        };
+        // Mint every loop-key actor before resolving sounds (the bank
+        // borrow below is mutable, so the mint cannot stay borrowed).
+        let actors: Vec<ActorId> = (0..speakers.len())
+            .map(|index| speaker_owner.actor(u32::try_from(index).unwrap_or(u32::MAX), 0))
+            .collect();
+        let mut started = false;
+        for (speaker, actor) in speakers.iter().zip(actors) {
+            let Some(asset) = self.sound(&speaker.noise, family) else {
+                continue;
+            };
+            let request = LoopSound {
+                family,
+                sound: asset,
+                origin: SoundOrigin::Fixed {
+                    position: speaker.position,
+                },
+                actor,
+                owner: None,
+                velocity: vec3(0.0, 0.0, 0.0),
+                frame_number: 0,
+                volume: speaker.volume,
+                attenuation: speaker.attenuation,
+                lifetime: LoopLifetime::Persistent,
+                audience: AudioAudience::World,
+            };
+            if let Err(error) = engine.start_loop(&request) {
+                eprintln!("windowed audio: cannot start map speaker {} ({error})", speaker.noise);
+                continue;
+            }
+            started = true;
+        }
+        if started {
+            if let Err(error) = engine.end_loop_frame() {
+                eprintln!("windowed audio: cannot push loop frame ({error})");
             }
         }
     }
@@ -732,5 +902,215 @@ mod tests {
         // Ownerless release warns instead of panicking.
         bridge.receive_q3_operations(&mut engine, &seat, None, &[Q3SeatAudioOperation::ReleaseOwner]);
         assert!(engine.mix(64).is_ok());
+    }
+
+    /// One raw entity record from key/value pairs.
+    fn entity(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn q2_looped_on_scans_and_looped_off_skips() {
+        let entities = vec![
+            entity(&[("classname", "worldspawn")]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "10 0 0"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "20 0 0"),
+                ("spawnflags", "2"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "30 0 0"),
+            ]),
+        ];
+        let speakers = map_speakers(&entities, SoundFamily::Q2);
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(speakers[0].noise, "test/blip.wav");
+        assert_eq!(speakers[0].position, vec3(10.0, 0.0, 0.0));
+        assert_eq!(speakers[0].volume, 1.0);
+        assert_eq!(speakers[0].attenuation, 1.0);
+    }
+
+    #[test]
+    fn q3_loop_bit_scans_and_triggerable_skips() {
+        let entities = vec![
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "10 0 0"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "20 0 0"),
+                ("spawnflags", "3"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "30 0 0"),
+                ("spawnflags", "2"),
+            ]),
+        ];
+        let speakers = map_speakers(&entities, SoundFamily::Q3);
+        assert_eq!(speakers.len(), 2);
+        assert_eq!(speakers[0].position, vec3(10.0, 0.0, 0.0));
+        assert_eq!(speakers[1].position, vec3(20.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn q1_unnamed_speaker_loops_and_named_waits() {
+        let entities = vec![
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "10 0 0"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "20 0 0"),
+                ("targetname", "toggle"),
+            ]),
+        ];
+        let speakers = map_speakers(&entities, SoundFamily::Q1);
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(speakers[0].position, vec3(10.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn speaker_volume_attenuation_follow_donor_defaults() {
+        let entities = vec![
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "10 0 0"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "20 0 0"),
+                ("spawnflags", "1"),
+                ("volume", "0.5"),
+                ("attenuation", "2"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "30 0 0"),
+                ("spawnflags", "1"),
+                ("volume", "0"),
+                ("attenuation", "-1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "40 0 0"),
+                ("spawnflags", "1"),
+                ("volume", "loud"),
+                ("attenuation", "far"),
+            ]),
+        ];
+        let speakers = map_speakers(&entities, SoundFamily::Q2);
+        assert_eq!(speakers.len(), 4);
+        assert_eq!((speakers[0].volume, speakers[0].attenuation), (1.0, 1.0));
+        assert_eq!((speakers[1].volume, speakers[1].attenuation), (0.5, 2.0));
+        assert_eq!((speakers[2].volume, speakers[2].attenuation), (1.0, 0.0));
+        assert_eq!((speakers[3].volume, speakers[3].attenuation), (1.0, 1.0));
+    }
+
+    #[test]
+    fn speaker_noise_gains_wav_suffix_and_bad_records_skip() {
+        let entities = vec![
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip"),
+                ("origin", "10 0 0"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("origin", "20 0 0"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("origin", "not a vector"),
+                ("spawnflags", "1"),
+            ]),
+            entity(&[
+                ("classname", "target_speaker"),
+                ("noise", "test/blip.wav"),
+                ("spawnflags", "1"),
+            ]),
+        ];
+        let speakers = map_speakers(&entities, SoundFamily::Q2);
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(speakers[0].noise, "test/blip.wav");
+    }
+
+    #[test]
+    fn started_map_speaker_mixes_audible_pcm() {
+        let owner = IdentityOwner::create("audio-bridge-test").unwrap();
+        let seat = owner.seat(0);
+        let actor = owner.actor(1, 0);
+        let mut engine = engine();
+        let mut bridge = bridge();
+        bridge.update_listeners(
+            &mut engine,
+            &seat,
+            Some((vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0))),
+            Some(&actor),
+        );
+        let entities = vec![entity(&[
+            ("classname", "target_speaker"),
+            ("noise", "test/blip.wav"),
+            ("origin", "10 0 0"),
+            ("spawnflags", "1"),
+        ])];
+        let speakers = map_speakers(&entities, SoundFamily::Q2);
+        assert_eq!(speakers.len(), 1);
+        bridge.start_map_speakers(&mut engine, &speakers, SoundFamily::Q2);
+        let mixed = engine.mix(256).unwrap();
+        assert_eq!(mixed.len(), 512);
+        assert!(
+            mixed.iter().any(|sample| *sample != 0),
+            "started map speaker mixed silence"
+        );
+    }
+
+    #[test]
+    fn missing_speaker_noise_warns_once_and_stays_silent() {
+        let owner = IdentityOwner::create("audio-bridge-test").unwrap();
+        let seat = owner.seat(0);
+        let mut engine = engine();
+        let mut bridge = bridge();
+        bridge.update_listeners(&mut engine, &seat, None, None);
+        let entities = vec![entity(&[
+            ("classname", "target_speaker"),
+            ("noise", "missing/nope.wav"),
+            ("origin", "10 0 0"),
+            ("spawnflags", "1"),
+        ])];
+        let speakers = map_speakers(&entities, SoundFamily::Q2);
+        bridge.start_map_speakers(&mut engine, &speakers, SoundFamily::Q2);
+        bridge.start_map_speakers(&mut engine, &speakers, SoundFamily::Q2);
+        assert_eq!(bridge.warned_count(), 1);
+        let mixed = engine.mix(64).unwrap();
+        assert!(mixed.iter().all(|sample| *sample == 0));
     }
 }

@@ -25,6 +25,7 @@
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use qa_client::audio::SoundFamily;
 use qa_content::bsp::{parse_q1_entities, read_q1_bsp, Q1BspOptions};
 use qa_content::bsp2::read_q2_bsp;
 use qa_content::bsp3::{parse_q3_bsp, parse_q3_entities};
@@ -37,6 +38,7 @@ use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
 use thiserror::Error;
 
+use super::audio_bridge::{map_speakers, MapSpeaker};
 use super::play::{
     admit_player, build_clip, eye_height_for_family, movement_content_edition, movement_dialect_for_selection,
     provider_for_product, PlayerBody, PlayerClip,
@@ -142,6 +144,8 @@ pub struct PlayWorld {
     player: Option<PlayerBody>,
     dialect: qa_core::cmd::Dialect,
     audio_mounts: Option<Rc<MountedContent>>,
+    speakers: Vec<MapSpeaker>,
+    sound_family: SoundFamily,
 }
 
 impl std::fmt::Debug for PlayWorld {
@@ -157,6 +161,8 @@ impl std::fmt::Debug for PlayWorld {
             .field("presentation", &self.presentation)
             .field("presentation_error", &self.presentation_error)
             .field("audio_mounts", &self.audio_mounts.is_some())
+            .field("speakers", &self.speakers.len())
+            .field("sound_family", &self.sound_family)
             .finish()
     }
 }
@@ -199,6 +205,19 @@ impl PlayWorld {
     #[must_use]
     pub fn audio_mounts(&self) -> Option<Rc<MountedContent>> {
         self.audio_mounts.clone()
+    }
+
+    /// Map `target_speaker` loops stashed at load for the audio bridge to
+    /// start once after the world installs.
+    #[must_use]
+    pub fn map_speakers(&self) -> &[MapSpeaker] {
+        &self.speakers
+    }
+
+    /// Sound family of the loaded map, from its decoded BSP kind.
+    #[must_use]
+    pub fn sound_family(&self) -> SoundFamily {
+        self.sound_family
     }
 
     /// Run one player movement step for a world user command. No admitted
@@ -445,6 +464,12 @@ pub fn load_play_world(
         reason: error.to_string(),
     })?;
     let entities = decode_map_entities(&bytes, &options.map, kind)?;
+    let sound_family = match kind {
+        BspKind::Q1 => SoundFamily::Q1,
+        BspKind::Q2 => SoundFamily::Q2,
+        BspKind::Q3 => SoundFamily::Q3,
+    };
+    let speakers = map_speakers(&entities, sound_family);
     let mut server = open_server(config).map_err(|error| PlayWorldError::Server(error.to_string()))?;
     let summary = spawn_map_entities(&mut server, &entities, &options.map);
     if summary.spawned == 0 {
@@ -512,6 +537,8 @@ pub fn load_play_world(
         player,
         dialect,
         audio_mounts,
+        speakers,
+        sound_family,
     })
 }
 

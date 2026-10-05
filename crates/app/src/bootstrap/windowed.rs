@@ -951,7 +951,8 @@ fn open_windowed_audio() -> Option<UnifiedAudio> {
 }
 
 /// Refresh windowed game audio once per frame: set the local seat/eye
-/// listener, then drain sim sound events into the engine (donor
+/// listener, start the world's stashed map speakers once per install,
+/// then drain sim sound events into the engine (donor
 /// `ApplicationAudio.frame` order: listeners, receive, music, pump). The
 /// windowed sim produces no presentation sound events yet, so the receive
 /// drains an empty batch; the music advance and pump stay in
@@ -962,11 +963,19 @@ fn refresh_windowed_bridge_audio(
     bridge: &mut Option<AudioBridge<MountsSoundContent>>,
     seat: Option<&SeatId>,
     world: Option<&PlayWorld>,
+    speakers_started: &mut bool,
 ) {
     let (Some(engine), Some(bridge), Some(seat), Some(world)) = (audio.as_mut(), bridge.as_mut(), seat, world) else {
         return;
     };
     bridge.update_listeners(engine, seat, world.player_eye(), world.player_actor());
+    // The engine opens after the direct-launch world installs, so the
+    // first frame with audio present starts the speakers; the latch keeps
+    // it exactly once per install (`set_world` resets it).
+    if !*speakers_started {
+        *speakers_started = true;
+        bridge.start_map_speakers(engine, world.map_speakers(), world.sound_family());
+    }
     bridge.receive(engine, &[], &AudioAudience::World);
 }
 
@@ -1215,6 +1224,7 @@ pub struct WindowedStartupBackend {
     backends: Option<NativeWindowedBackendFactory>,
     audio: Option<UnifiedAudio>,
     audio_bridge: Option<AudioBridge<MountsSoundContent>>,
+    audio_speakers_started: bool,
     share: Rc<RefCell<WindowedShare>>,
     quit: Rc<Cell<bool>>,
     start: Instant,
@@ -1258,6 +1268,7 @@ impl WindowedStartupBackend {
             backends: None,
             audio: None,
             audio_bridge: None,
+            audio_speakers_started: false,
             share: Rc::new(RefCell::new(WindowedShare::default())),
             quit,
             start: Instant::now(),
@@ -1366,6 +1377,7 @@ impl WindowedStartupBackend {
         self.audio_bridge = world
             .audio_mounts()
             .map(|mounts| AudioBridge::new(MountsSoundContent::new(mounts)));
+        self.audio_speakers_started = false;
         self.world = Some(world);
         self.apply_input_profile();
         self.pair_local_player();
@@ -1812,6 +1824,7 @@ impl StartupBackend for WindowedStartupBackend {
             &mut self.audio_bridge,
             self.input_seat.as_ref(),
             self.world.as_ref(),
+            &mut self.audio_speakers_started,
         );
         if let Some(menu) = self.menu.as_mut() {
             menu.drain_menu_audio(&mut self.audio);
