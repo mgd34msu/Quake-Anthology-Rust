@@ -48,7 +48,7 @@ use qa_content::contract::{
 };
 use qa_content::hash::hex_lower;
 use qa_content::mounts::{
-    archive_digest_or_compute, open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy,
+    forced_archive_digests, open_mount_plan, MountError, MountedContent, OpenMountOptions, PureMountPolicy,
     Q3Restriction, ResourceRef,
 };
 use qa_content::paths::{find_content_path, PathComparison};
@@ -1532,12 +1532,7 @@ impl ContentScope for ContentScopeRef<'_> {
                 }
             }
         }
-        let mut forced = Vec::new();
-        for mount in &ordered {
-            if let ContentMount::Archive(archive) = mount {
-                forced.push(archive_digest_or_compute(archive)?);
-            }
-        }
+        let forced = forced_archive_digests(&ordered)?;
         let digests: HashSet<&qa_content::contract::ContentDigest> = forced.iter().collect();
         let pure = match self.pure {
             None => None,

@@ -143,6 +143,19 @@ pub fn archive_digest_or_compute(mount: &ArchiveMount) -> Result<ContentDigest, 
     Ok(digest)
 }
 
+/// Force digests for every archive mount in `mounts` (pure-policy filtering).
+///
+/// Loose mounts are skipped. Only pure consumers call this.
+pub fn forced_archive_digests(mounts: &[ContentMount]) -> Result<Vec<ContentDigest>, MountError> {
+    let mut forced = Vec::new();
+    for mount in mounts {
+        if let ContentMount::Archive(archive) = mount {
+            forced.push(archive_digest_or_compute(archive)?);
+        }
+    }
+    Ok(forced)
+}
+
 /// Resource prefix link into a loose mount (`ResourceLink`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResourceLink {
@@ -598,12 +611,7 @@ impl MountedContent {
         {
             return Ok(None);
         }
-        let mut forced = Vec::new();
-        for mount in &plan.mounts {
-            if let ContentMount::Archive(mount) = mount {
-                forced.push(archive_digest_or_compute(mount)?);
-            }
-        }
+        let forced = forced_archive_digests(&plan.mounts)?;
         let available: HashSet<&ContentDigest> = forced.iter().collect();
         let parent_pure: &[ContentDigest] = self
             .options

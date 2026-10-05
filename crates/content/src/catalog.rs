@@ -4890,12 +4890,7 @@ pub fn load_qvm_weapon_behavior<Artifact, Profile>(
     let Some(opened) = mounts.open_behavior(&path)? else {
         return Err(failed(format!("Declared QVM behavior artifact is missing: {path}")));
     };
-    let module = ModuleIdentity {
-        id: provider.clone(),
-        artifact_path: path,
-        digest: opened.content_digest().clone(),
-        revision: opened.content_digest().as_str().to_string(),
-    };
+    let module = module_identity_for_opened(provider, path, &opened);
     let artifact = match service.resolve_qvm_artifact(abi_profile, &opened.bytes, &module)? {
         QvmWeaponArtifactResolution::Bytecode(artifact) => artifact,
         QvmWeaponArtifactResolution::Other => {
@@ -5008,12 +5003,7 @@ fn load_declared_native_weapon_behavior(
             declaration.artifact_path
         )));
     };
-    let module = ModuleIdentity {
-        id: provider.clone(),
-        artifact_path: opened.reference.requested_path.clone(),
-        digest: opened.content_digest().clone(),
-        revision: opened.content_digest().as_str().to_string(),
-    };
+    let module = module_identity_for_opened(provider, opened.reference.requested_path.clone(), &opened);
     let Some(definition) = service.native_weapon_definition(declaration, &module, &opened.bytes)? else {
         return Err(failed("Declared native behavior has no executable definition"));
     };
@@ -5022,6 +5012,17 @@ fn load_declared_native_weapon_behavior(
         definition,
         declaration: declaration.clone(),
     })
+}
+
+/// Module identity for an opened behavior artifact: the true content digest,
+/// forced once and cached on the opened resource.
+fn module_identity_for_opened(provider: &ProviderId, artifact_path: String, opened: &OpenedResource) -> ModuleIdentity {
+    ModuleIdentity {
+        id: provider.clone(),
+        artifact_path,
+        digest: opened.content_digest().clone(),
+        revision: opened.content_digest().as_str().to_string(),
+    }
 }
 
 /// Discover mounted native weapon behaviors (`discoverNativeWeaponBehaviors`).
@@ -5034,12 +5035,7 @@ pub fn discover_native_weapon_behaviors(
         let Some(opened) = mounts.open_behavior("game_x64.dll")? else {
             return Ok(None);
         };
-        let module = ModuleIdentity {
-            id: provider.clone(),
-            artifact_path: opened.reference.requested_path.clone(),
-            digest: opened.content_digest().clone(),
-            revision: opened.content_digest().as_str().to_string(),
-        };
+        let module = module_identity_for_opened(provider, opened.reference.requested_path.clone(), &opened);
         let Some(declaration) = service.builtin_rerelease_weapon_declaration(&module)? else {
             return Ok(None);
         };
