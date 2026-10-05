@@ -796,7 +796,7 @@ impl SceneTextureLoader {
 
     /// Advance GIF animations; the Q2 donor loops forever at 10 Hz.
     pub fn tick_animations(&mut self, milliseconds: f64) {
-        let mut updates: Vec<(RendererImage, Vec<RenderImage>)> = Vec::new();
+        let mut updates: Vec<(u32, usize)> = Vec::new();
         for animation in self.animations.values_mut() {
             if animation.frames.len() < 2 {
                 continue;
@@ -808,14 +808,20 @@ impl SceneTextureLoader {
                 continue;
             }
             animation.previous = index;
-            updates.push((animation.image.clone(), vec![animation.frames[index].clone()]));
+            updates.push((animation.image.ordinal, index));
         }
-        for (image, frames) in updates {
-            if let RenderImage::Rgba8 { levels, .. } = &frames[0] {
+        for (ordinal, index) in updates {
+            let Some(animation) = self.animations.get(&ordinal) else {
+                continue;
+            };
+            let Some(frame) = animation.frames.get(index) else {
+                continue;
+            };
+            if let RenderImage::Rgba8 { levels, .. } = frame {
                 for (level, content) in levels.iter().enumerate() {
                     let _ = self
                         .images
-                        .update(&image, level as u32, LevelContent::Rgba(content.clone()));
+                        .update(&animation.image, level as u32, LevelContent::Rgba(content.clone()));
                 }
             }
         }
