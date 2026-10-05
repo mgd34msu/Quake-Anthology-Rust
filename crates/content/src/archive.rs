@@ -10,6 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -359,29 +360,74 @@ impl MemorySource {
     }
 }
 
+/// Filesystem identity of a retained file: the stat tuple that detects
+/// replacement, truncation, or rewrite without reading any bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    /// Filesystem device number (zero off unix).
+    pub device: u64,
+    /// Inode number (zero off unix).
+    pub inode: u64,
+    /// Byte length.
+    pub size: u64,
+    /// Last-modification time, seconds and nanoseconds.
+    pub modified_secs: i64,
+    /// Last-modification time, nanosecond part.
+    pub modified_nanos: i64,
+    /// Last-status-change time, seconds and nanoseconds (zero off unix).
+    pub changed_secs: i64,
+    /// Last-status-change time, nanosecond part.
+    pub changed_nanos: i64,
+}
+
+#[cfg(unix)]
+#[must_use]
+fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    FileIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+        size: meta.len(),
+        modified_secs: meta.mtime(),
+        modified_nanos: meta.mtime_nsec(),
+        changed_secs: meta.ctime(),
+        changed_nanos: meta.ctime_nsec(),
+    }
+}
+
+#[cfg(not(unix))]
+#[must_use]
+fn file_identity(meta: &std::fs::Metadata) -> FileIdentity {
+    let (modified_secs, modified_nanos) = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| (elapsed.as_secs() as i64, elapsed.subsec_nanos() as i64))
+        .unwrap_or((0, 0));
+    FileIdentity {
+        device: 0,
+        inode: 0,
+        size: meta.len(),
+        modified_secs,
+        modified_nanos,
+        changed_secs: 0,
+        changed_nanos: 0,
+    }
+}
+
 /// Retained file descriptor (`FileSource`).
 ///
 /// A retained descriptor keeps path replacements from changing an open
-/// archive; size and timestamps are verified around every read.
+/// archive. Size and timestamps are recorded at open and checked by
+/// [`FileSource::verify_identity`] at mount and map-load boundaries;
+/// reads themselves do no metadata checks.
 #[derive(Debug)]
 pub struct FileSource {
     source: String,
     byte_length: u64,
     file: RefCell<File>,
-    modified: std::time::SystemTime,
-    changed: Option<(i64, i64)>,
+    identity: FileIdentity,
     closed: Cell<bool>,
-}
-
-#[cfg(unix)]
-fn file_changed(meta: &std::fs::Metadata) -> Option<(i64, i64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.ctime(), meta.ctime_nsec()))
-}
-
-#[cfg(not(unix))]
-fn file_changed(_meta: &std::fs::Metadata) -> Option<(i64, i64)> {
-    None
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> ArchiveError {
@@ -405,14 +451,12 @@ impl FileSource {
                 "expected a regular file with a safe byte length",
             ));
         }
-        let modified = meta.modified().map_err(|error| io_error(path, error))?;
-        let changed = file_changed(&meta);
+        let identity = file_identity(&meta);
         Ok(Self {
             source,
             byte_length,
             file: RefCell::new(file),
-            modified,
-            changed,
+            identity,
             closed: Cell::new(false),
         })
     }
@@ -435,45 +479,67 @@ impl FileSource {
         self.closed.get()
     }
 
-    fn verify_unchanged(&self, offset: u64) -> Result<(), ArchiveError> {
+    /// Filesystem identity recorded when the source was opened.
+    #[must_use]
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    /// Check the retained descriptor against its recorded identity.
+    ///
+    /// Callers run this at mount and map-load boundaries instead of on
+    /// every read.
+    pub fn verify_identity(&self) -> Result<(), ArchiveError> {
+        if self.closed.get() {
+            return Err(ArchiveError::archive(&self.source, 0, "archive is closed"));
+        }
         let meta = self.file.borrow().metadata().map_err(|error| ArchiveError::Io {
             path: self.source.clone(),
             message: error.to_string(),
         })?;
-        let modified = meta.modified().map_err(|error| ArchiveError::Io {
-            path: self.source.clone(),
-            message: error.to_string(),
-        })?;
-        if meta.len() != self.byte_length || modified != self.modified || file_changed(&meta) != self.changed {
+        if file_identity(&meta) != self.identity {
             return Err(ArchiveError::archive(
                 &self.source,
-                offset,
+                0,
                 "source changed after it was opened",
             ));
         }
         Ok(())
     }
 
-    /// Read a checked range through the retained descriptor.
-    pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
-        if self.closed.get() {
-            return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
-        }
-        check_range(&self.source, self.byte_length, offset, length)?;
-        self.verify_unchanged(offset)?;
-        let offset_usize = usize::try_from(offset)
-            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
-        let length_usize = usize::try_from(length)
-            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
-        let mut bytes = vec![0u8; length_usize];
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(offset_usize as u64))
-            .map_err(|error| ArchiveError::Io {
-                path: self.source.clone(),
-                message: error.to_string(),
-            })?;
+    #[cfg(unix)]
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<(), ArchiveError> {
+        use std::os::unix::fs::FileExt;
+        let file = self.file.borrow();
         let mut total = 0;
-        while total < length_usize {
+        while total < bytes.len() {
+            let count = file
+                .read_at(&mut bytes[total..], offset + total as u64)
+                .map_err(|error| ArchiveError::Io {
+                    path: self.source.clone(),
+                    message: error.to_string(),
+                })?;
+            if count == 0 {
+                return Err(ArchiveError::archive(
+                    &self.source,
+                    offset,
+                    format!("short read: expected {}, got {total}", bytes.len()),
+                ));
+            }
+            total += count;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<(), ArchiveError> {
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(offset)).map_err(|error| ArchiveError::Io {
+            path: self.source.clone(),
+            message: error.to_string(),
+        })?;
+        let mut total = 0;
+        while total < bytes.len() {
             let count = file.read(&mut bytes[total..]).map_err(|error| ArchiveError::Io {
                 path: self.source.clone(),
                 message: error.to_string(),
@@ -482,13 +548,27 @@ impl FileSource {
                 return Err(ArchiveError::archive(
                     &self.source,
                     offset,
-                    format!("short read: expected {length}, got {total}"),
+                    format!("short read: expected {}, got {total}", bytes.len()),
                 ));
             }
             total += count;
         }
-        drop(file);
-        self.verify_unchanged(offset)?;
+        Ok(())
+    }
+
+    /// Read a checked range through the retained descriptor.
+    ///
+    /// The read is positioned (no shared file offset) and performs no
+    /// metadata checks; use [`FileSource::verify_identity`] at boundaries.
+    pub fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, ArchiveError> {
+        if self.closed.get() {
+            return Err(ArchiveError::archive(&self.source, offset, "archive is closed"));
+        }
+        check_range(&self.source, self.byte_length, offset, length)?;
+        let length_usize = usize::try_from(length)
+            .map_err(|_| ArchiveError::archive(&self.source, offset, "range exceeds addressable memory"))?;
+        let mut bytes = vec![0u8; length_usize];
+        self.read_into(offset, &mut bytes)?;
         Ok(bytes)
     }
 
@@ -540,6 +620,17 @@ impl ArchiveSource {
         match self {
             ArchiveSource::Memory(source) => source.read(offset, length),
             ArchiveSource::File(source) => source.read(offset, length),
+        }
+    }
+
+    /// Check a file source against its recorded identity.
+    ///
+    /// Memory sources are immutable and always pass. Callers run this at
+    /// mount and map-load boundaries instead of on every read.
+    pub fn verify_identity(&self) -> Result<(), ArchiveError> {
+        match self {
+            ArchiveSource::Memory(_) => Ok(()),
+            ArchiveSource::File(source) => source.verify_identity(),
         }
     }
 
@@ -1080,6 +1171,14 @@ impl OpenArchive {
         }
     }
 
+    /// Check the retained storage against its recorded identity.
+    ///
+    /// Callers run this at mount and map-load boundaries instead of on
+    /// every read.
+    pub fn verify_storage(&self) -> Result<(), ArchiveError> {
+        self.storage.verify_identity()
+    }
+
     /// Drop lookup indexes and release the retained source.
     pub fn close(&self) {
         self.entry_indexes.borrow_mut().clear();
@@ -1523,8 +1622,11 @@ mod tests {
         std::fs::write(&path, b"version-one").unwrap();
         let source = FileSource::new(&path).unwrap();
         assert_eq!(source.read(0, 11).unwrap(), b"version-one".to_vec());
+        assert!(source.verify_identity().is_ok());
         std::fs::write(&path, b"version-two-much-longer").unwrap();
-        let error = source.read(0, 11).unwrap_err();
+        // Reads stay cheap; the boundary check reports the change.
+        assert_eq!(source.read(0, 11).unwrap(), b"version-two".to_vec());
+        let error = source.verify_identity().unwrap_err();
         assert!(
             error.to_string().contains("source changed after it was opened"),
             "{error}"
@@ -1532,6 +1634,7 @@ mod tests {
         source.close();
         assert!(source.is_closed());
         assert!(source.read(0, 1).is_err());
+        assert!(source.verify_identity().is_err());
         assert!(FileSource::new(&root).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
