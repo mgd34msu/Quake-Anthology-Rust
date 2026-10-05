@@ -9,15 +9,14 @@
 //!
 //! One shared path with family arms: [`PlayerBody`] and [`PlayerClip`]
 //! dispatch per family, and every family reuses the same admit, step, and
-//! eye flow. [`Q1ClipWorld`] builds the Quake I collision hulls from the
-//! parsed BSP, [`Q1PlayerServices`] implements the movement services over
-//! those hulls plus the live server bodies, and the Q1 arm runs one
-//! [`move_netquake`](qa_world::movement::q1::netquake::move_netquake)
-//! step per frame and commits the result back to the sim body. Quake II
-//! and III arrive as new arms on these same enums, extending the existing
-//! trace and movement cores rather than forking them.
+//! eye flow over its own trace and movement cores. Each arm runs one
+//! authoritative movement step per frame and commits the result back to
+//! the sim body.
+
+use std::rc::Rc;
 
 use qa_bots::q2_collision::{q2_collision_geometry, Q2Collision};
+use qa_bots::q3_collision::{create_source_q3_collision, Q3Collision};
 use qa_bots::scene::{
     scene_expect, TraceDetail as SceneTraceDetail, TraceHit as SceneTraceHit, WorldKind as SceneWorldKind,
 };
@@ -32,7 +31,7 @@ use qa_content::contract::GameFamily;
 use qa_core::cmd::Dialect;
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
-use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE, Q2_DONOR_PROFILE};
+use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE, Q2_DONOR_PROFILE, Q3_BINARY32_PROFILE};
 use qa_core::time::FrameContext as ClockFrame;
 use qa_world::body::BodyState;
 use qa_world::collision::q1::{CONTENTS_EMPTY, CONTENTS_SOLID};
@@ -55,6 +54,11 @@ use qa_world::movement::q2::types::{
     Q2TraceQuery,
 };
 use qa_world::movement::q2::{move_q2_classic, move_q2_rerelease};
+use qa_world::movement::q3::postures::Q3_SOURCE_POSTURES;
+use qa_world::movement::q3::provider::{move_q3, NoQ3Hooks, Q3MovementProviderOptions};
+use qa_world::movement::q3::types::{
+    Q3MovementInput, Q3MovementProfile, Q3MovementServices, Q3MovementState, Q3Product, Q3Trace, Q3TraceQuery,
+};
 use qa_world::movement::types::{
     ActorAnimationState, AnimationState, ArsenalState, MovementContinuation, MovementEnvironment, MovementExecution,
     MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, Q2RereleaseUserCommand, Q2UserCommand,
@@ -651,7 +655,7 @@ fn q2_trace_from_scene(trace: &qa_bots::scene::TraceResult) -> Q2Trace {
             qa_bots::scene::TraceContact::None => TraceContact::None,
             qa_bots::scene::TraceContact::Plane { plane } => TraceContact::Plane(*plane),
         },
-        hit: q2_hit_from_scene(&trace.hit),
+        hit: hit_from_scene(&trace.hit),
         contents: *contents,
         surface: surface.as_ref().map(|surface| Q2Surface {
             name: surface.name.clone(),
@@ -684,8 +688,9 @@ fn q2_trace_from_scene(trace: &qa_bots::scene::TraceResult) -> Q2Trace {
     }
 }
 
-/// Convert a scene hit record to a movement hit record.
-fn q2_hit_from_scene(hit: &SceneTraceHit) -> TraceHit {
+/// Convert a scene hit record to a movement hit record, shared by the
+/// Quake II and III arms (the mapping is family-agnostic).
+fn hit_from_scene(hit: &SceneTraceHit) -> TraceHit {
     match hit {
         SceneTraceHit::None => TraceHit::None,
         SceneTraceHit::World { model } => TraceHit::World { model: *model as u32 },
@@ -1060,6 +1065,407 @@ impl Q2PlayerBody {
     }
 }
 
+/// Quake III eye height above the feet origin (donor `eye_height`, qsrc
+/// `DEFAULT_VIEWHEIGHT` 26).
+const Q3_VIEW_HEIGHT: f32 = 26.0;
+
+/// Quake III player collision box (donor postures: x/y half-width 15,
+/// feet at -24, head at +32).
+const Q3_PLAYER_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -15.0,
+        y: -15.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 15.0,
+        y: 15.0,
+        z: 32.0,
+    },
+};
+
+/// Build Quake III collision from raw map bytes through the shared
+/// source-collision loader.
+fn build_q3_collision(bytes: &[u8], map: &str) -> Result<Q3Collision, String> {
+    create_source_q3_collision(bytes, map).map_err(|error| error.to_string())
+}
+
+/// Quake III movement services over map collision plus the live server
+/// bodies: world traces run the shared collision core, entity traces
+/// sweep every non-trigger body but the mover.
+pub struct Q3PlayerServices<'s> {
+    ops: NumericOps,
+    collision: &'s Q3Collision,
+    simulation: &'s Simulation,
+    triggers: &'s TriggerTable,
+    ignore: ActorId,
+}
+
+impl<'s> Q3PlayerServices<'s> {
+    /// Borrow the collision world, the server simulation and trigger
+    /// table, ignoring the moving actor's own body in entity traces.
+    #[must_use]
+    pub fn new(
+        collision: &'s Q3Collision,
+        simulation: &'s Simulation,
+        triggers: &'s TriggerTable,
+        ignore: &ActorId,
+    ) -> Self {
+        Self {
+            ops: NumericOps::select(Q3_BINARY32_PROFILE).expect("Q3 binary32 numeric profile"),
+            collision,
+            simulation,
+            triggers,
+            ignore: ignore.clone(),
+        }
+    }
+
+    /// Trace the query against the world brushes and server bodies,
+    /// returning the nearest hit.
+    fn trace_combined(&self, query: &Q3TraceQuery) -> Q3Trace {
+        let shape = if query.point {
+            SceneTraceShape::Point
+        } else {
+            SceneTraceShape::Box { bounds: query.bounds }
+        };
+        let world = scene_expect(
+            self.collision.trace(&SceneTraceQuery {
+                start: query.start,
+                end: query.end,
+                shape,
+                target: SceneQueryTarget::World,
+                policy: SceneTracePolicy::Q3 {
+                    contents_mask: query.mask,
+                    curves: query.curves,
+                    player_curve_clip: query.player_curve_clip,
+                },
+                numeric: Q3_BINARY32_PROFILE,
+                pass_actor: Some(self.ignore.clone()),
+            }),
+            SceneWorldKind::Q3Bsp,
+            "trace",
+        );
+        let mut best = q3_trace_from_scene(&world);
+        for actor in self.simulation.body_actors() {
+            if actor == self.ignore || self.triggers.is_trigger(&actor) {
+                continue;
+            }
+            let Some(body) = self.simulation.body_state(&actor) else {
+                continue;
+            };
+            let entity = trace_entity_box(
+                body.origin,
+                &body.bounds,
+                &query.bounds,
+                query.start,
+                query.end,
+                &self.ops,
+            );
+            if entity.fraction < best.fraction {
+                best = q3_trace_from_entity(&entity, actor);
+            }
+        }
+        best
+    }
+}
+
+/// Convert a scene trace to a Quake III movement trace result.
+fn q3_trace_from_scene(trace: &qa_bots::scene::TraceResult) -> Q3Trace {
+    let SceneTraceDetail::Q3 {
+        contents,
+        surface_flags,
+        source_plane,
+    } = &trace.detail
+    else {
+        panic!("Quake III collision returned non-Quake-III trace detail");
+    };
+    Q3Trace {
+        fraction: trace.fraction,
+        end: trace.end,
+        start_solid: trace.start_solid,
+        all_solid: trace.all_solid,
+        contact: match &trace.contact {
+            qa_bots::scene::TraceContact::None => TraceContact::None,
+            qa_bots::scene::TraceContact::Plane { plane } => TraceContact::Plane(*plane),
+        },
+        hit: hit_from_scene(&trace.hit),
+        contents: *contents,
+        surface_flags: *surface_flags,
+        source_plane: BspPlane {
+            normal: source_plane.normal,
+            distance: source_plane.distance,
+            plane_type: source_plane.plane_type as u8,
+            signbits: source_plane.signbits as u8,
+        },
+    }
+}
+
+/// Convert a swept server body to a Quake III movement trace result.
+/// Box bodies carry no brush surface, so surface detail stays empty.
+fn q3_trace_from_entity(trace: &HullTrace, actor: ActorId) -> Q3Trace {
+    Q3Trace {
+        fraction: trace.fraction,
+        end: trace.end,
+        start_solid: trace.start_solid,
+        all_solid: trace.all_solid,
+        contact: if trace.fraction < 1.0 {
+            TraceContact::Plane(trace.plane)
+        } else {
+            TraceContact::None
+        },
+        hit: TraceHit::Actor { actor },
+        contents: 0,
+        surface_flags: 0,
+        source_plane: BspPlane {
+            normal: trace.plane.normal,
+            distance: trace.plane.distance,
+            plane_type: 0,
+            signbits: 0,
+        },
+    }
+}
+
+impl Q3MovementServices for Q3PlayerServices<'_> {
+    fn numeric(&self) -> NumericOps {
+        self.ops
+    }
+
+    fn trace(&mut self, query: Q3TraceQuery) -> Q3Trace {
+        self.trace_combined(&query)
+    }
+
+    fn point_contents(&mut self, point: Vec3, pass_actor: &ActorId) -> i32 {
+        let result = scene_expect(
+            self.collision.point_contents(&ScenePointContentsQuery {
+                point,
+                target: SceneQueryTarget::World,
+                policy: SceneTracePolicy::Q3 {
+                    contents_mask: -1,
+                    curves: true,
+                    player_curve_clip: true,
+                },
+                numeric: Q3_BINARY32_PROFILE,
+                pass_actor: Some(pass_actor.clone()),
+            }),
+            SceneWorldKind::Q3Bsp,
+            "contents",
+        );
+        match result {
+            ScenePointContentsResult::Q3 { contents } => contents,
+            _ => panic!("Quake III collision returned non-Quake-III contents"),
+        }
+    }
+}
+
+/// Base Quake III movement profile: 50ms server frames, no fixed-step
+/// override, footsteps on (donor `movementProfile`).
+#[must_use]
+pub fn q3_profile(provider: ProviderId) -> Q3MovementProfile {
+    Q3MovementProfile {
+        id: provider,
+        clock: qa_core::time::ClockProfile::Q3 {
+            server_frame_milliseconds: 50.0,
+            fixed_movement_milliseconds: None,
+        },
+        numeric: Q3_BINARY32_PROFILE,
+        product: Q3Product::BaseQ3,
+        fixed_milliseconds: None,
+        no_footsteps: false,
+    }
+}
+
+/// Fresh Quake III arsenal: no weapon yet, no ammo. Weapon grants arrive
+/// with the spawn loadout in the weapons phase.
+#[must_use]
+pub fn q3_empty_arsenal(provider: ProviderId) -> ArsenalState {
+    ArsenalState {
+        provider,
+        active_weapon: None,
+        state: WeaponState::Q3 {
+            source_weapon: 0,
+            state: 0,
+            time_milliseconds: 0,
+        },
+        ammo: Vec::new(),
+    }
+}
+
+/// Resting Quake III animation: standing legs and torso, timers clear.
+#[must_use]
+pub fn q3_rest_animation(provider: ProviderId) -> ActorAnimationState {
+    ActorAnimationState {
+        provider,
+        state: AnimationState::Q3 {
+            legs: 0,
+            torso: 0,
+            legs_timer_milliseconds: 0,
+            torso_timer_milliseconds: 0,
+        },
+    }
+}
+
+/// One admitted Quake III player body: the sim actor plus its
+/// authoritative movement state, view angles, and command sequence.
+pub struct Q3PlayerBody {
+    /// Sim actor id.
+    pub actor: ActorId,
+    owned: OwnedActor,
+    /// Authoritative movement state.
+    pub state: Q3MovementState,
+    /// View angles in degrees.
+    pub view_angles: Vec3,
+    sequence: i32,
+    arsenal: ArsenalState,
+    animation: ActorAnimationState,
+    profile: Q3MovementProfile,
+}
+
+impl Q3PlayerBody {
+    /// Admit a player: spawn a body at the feet origin and seed walk
+    /// movement state with the spawn angles. Non-Quake-III dialects are
+    /// contract errors, never silent defaults.
+    pub fn admit(
+        simulation: &mut Simulation,
+        provider: ProviderId,
+        feet: Vec3,
+        angles: Vec3,
+        dialect: Dialect,
+    ) -> Result<Self, String> {
+        if !matches!(dialect, Dialect::Q3) {
+            return Err(format!(
+                "Q3 player body needs a Quake III movement dialect, got {dialect:?}"
+            ));
+        }
+        let body = BodyState {
+            origin: feet,
+            angles,
+            velocity: vec3(0.0, 0.0, 0.0),
+            bounds: Q3_PLAYER_BOUNDS,
+            ground: None,
+        };
+        let owned = simulation
+            .spawn(provider.clone(), "player", Some(body), None, Vec::new())
+            .map_err(|error| error.to_string())?;
+        let actor = owned.id().clone();
+        let zero = vec3(0.0, 0.0, 0.0);
+        let state = Q3MovementState {
+            command_time_milliseconds: 0,
+            movement_type: 0,
+            bob_cycle: 0,
+            movement_flags: 0,
+            movement_time_milliseconds: 0,
+            origin: feet,
+            velocity: zero,
+            gravity: 800.0,
+            speed: 320.0,
+            delta_angle_words: [0, 0, 0],
+            movement_direction: 0,
+            grapple_point: zero,
+            flags: 0,
+            view_angles: angles,
+            view_height: f64::from(Q3_VIEW_HEIGHT),
+            ground: TraceHit::None,
+            predictable_event_sequence: 0,
+            jump_pad: None,
+            movement_frame: 0,
+            jump_pad_frame: 0,
+        };
+        Ok(Self {
+            actor,
+            owned,
+            state,
+            view_angles: angles,
+            sequence: 0,
+            arsenal: q3_empty_arsenal(provider.clone()),
+            animation: q3_rest_animation(provider.clone()),
+            profile: q3_profile(provider),
+        })
+    }
+
+    /// Eye origin: feet plus the Quake III view height.
+    #[must_use]
+    pub fn eye(&self) -> Vec3 {
+        vec3(
+            self.state.origin.x,
+            self.state.origin.y,
+            self.state.origin.z + Q3_VIEW_HEIGHT,
+        )
+    }
+
+    /// Run one authoritative movement step for a user command, then
+    /// commit the resulting origin back to the sim body. The command
+    /// must be Quake III; anything else is a contract error.
+    pub fn step(
+        &mut self,
+        simulation: &mut Simulation,
+        triggers: &TriggerTable,
+        collision: &Q3Collision,
+        command: WorldUserCommand,
+        frame: &ClockFrame,
+    ) -> Result<(), String> {
+        self.sequence += 1;
+        match command {
+            WorldUserCommand::Q3(command) => {
+                let input = Q3MovementInput {
+                    fields: self.fields(frame),
+                    command,
+                    state: self.state.clone(),
+                    profile: self.profile.clone(),
+                };
+                let result = {
+                    let mut services = Q3PlayerServices::new(collision, simulation, triggers, &self.actor);
+                    move_q3(
+                        input,
+                        &mut services,
+                        Q3MovementProviderOptions {
+                            id: self.profile.id.clone(),
+                            hooks: NoQ3Hooks,
+                            postures: Rc::new(|_| Q3_SOURCE_POSTURES),
+                            trace_policy: None,
+                            diagnostics: None,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?
+                };
+                match result {
+                    MovementOutcome::Active { fields, state } => {
+                        self.view_angles = fields.view_angles;
+                        self.state = state;
+                        self.commit_origin(simulation, self.state.origin)
+                    }
+                    MovementOutcome::ActorRemoved { .. } => Err("Q3 player body was removed mid-step".to_string()),
+                }
+            }
+            other => Err(format!(
+                "Q3 player body needs a Quake III user command, got {:?}",
+                other.dialect()
+            )),
+        }
+    }
+
+    /// Shared command fields; the environment stays at its default.
+    fn fields(&self, frame: &ClockFrame) -> MovementInputFields {
+        MovementInputFields {
+            actor: self.owned.clone(),
+            command_sequence: self.sequence,
+            frame: *frame,
+            shape: TraceShape::Box(Q3_PLAYER_BOUNDS),
+            current_bounds: None,
+            environment: MovementEnvironment::default(),
+            arsenal: self.arsenal.clone(),
+            animation: self.animation.clone(),
+            execution: MovementExecution::Authoritative,
+        }
+    }
+
+    /// Commit a stepped origin back to the sim body.
+    fn commit_origin(&self, simulation: &mut Simulation, origin: Vec3) -> Result<(), String> {
+        simulation
+            .set_body_origin(&self.actor, origin)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Movement profile matching the admitted Quake I provider.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Q1BodyProfile {
@@ -1418,13 +1824,15 @@ pub fn provider_for_product(family: GameFamily, campaign: &str) -> ProviderId {
 }
 
 /// Admitted player body for any family: one enum, one step dispatch.
-/// Quake I and II are live; Quake III arrives as a new arm on this same
-/// enum, extending the existing trace and movement cores.
+/// Every family rides the same admit, step, and eye flow over its own
+/// trace and movement cores.
 pub enum PlayerBody {
     /// Quake I player.
     Q1(Q1PlayerBody),
     /// Quake II player.
     Q2(Q2PlayerBody),
+    /// Quake III player.
+    Q3(Q3PlayerBody),
 }
 
 /// Map collision for any family, matching [`PlayerBody`].
@@ -1433,6 +1841,8 @@ pub enum PlayerClip {
     Q1(Q1ClipWorld),
     /// Quake II collision (boxed: the shape store dwarfs the hulls).
     Q2(Box<Q2Collision>),
+    /// Quake III collision (boxed: same reason).
+    Q3(Box<Q3Collision>),
 }
 
 /// Admit a player for a catalog family and resolved movement provider,
@@ -1473,7 +1883,9 @@ pub fn admit_player(
         GameFamily::Q2 => Ok(Some(PlayerBody::Q2(Q2PlayerBody::admit(
             simulation, provider, feet, angles, dialect,
         )?))),
-        GameFamily::Q3 => Ok(None),
+        GameFamily::Q3 => Ok(Some(PlayerBody::Q3(Q3PlayerBody::admit(
+            simulation, provider, feet, angles, dialect,
+        )?))),
     }
 }
 
@@ -1483,7 +1895,7 @@ pub fn build_clip(bytes: &[u8], map: &str, family: GameFamily) -> Result<Option<
     match family {
         GameFamily::Q1 => Ok(Some(PlayerClip::Q1(build_q1_clip_world(bytes, map)?))),
         GameFamily::Q2 => Ok(Some(PlayerClip::Q2(Box::new(build_q2_collision(bytes, map)?)))),
-        GameFamily::Q3 => Ok(None),
+        GameFamily::Q3 => Ok(Some(PlayerClip::Q3(Box::new(build_q3_collision(bytes, map)?)))),
     }
 }
 
@@ -1494,6 +1906,7 @@ impl PlayerBody {
         match self {
             PlayerBody::Q1(player) => (player.eye(), player.view_angles),
             PlayerBody::Q2(player) => (player.eye(), player.view_angles),
+            PlayerBody::Q3(player) => (player.eye(), player.view_angles),
         }
     }
 
@@ -1505,6 +1918,7 @@ impl PlayerBody {
         match self {
             PlayerBody::Q1(player) => &player.actor,
             PlayerBody::Q2(player) => &player.actor,
+            PlayerBody::Q3(player) => &player.actor,
         }
     }
 
@@ -1522,6 +1936,7 @@ impl PlayerBody {
         match (self, clip) {
             (PlayerBody::Q1(player), PlayerClip::Q1(clip)) => player.step(simulation, triggers, clip, command, &frame),
             (PlayerBody::Q2(player), PlayerClip::Q2(clip)) => player.step(simulation, triggers, clip, command, &frame),
+            (PlayerBody::Q3(player), PlayerClip::Q3(clip)) => player.step(simulation, triggers, clip, command, &frame),
             _ => Err("Player body and clip belong to different families".to_string()),
         }
     }
@@ -1534,6 +1949,7 @@ mod tests {
     use qa_content::catalog::DiscoverContentOptions;
     use qa_content::BspKind;
     use qa_core::time::{FramePhase, SourceTime};
+    use qa_world::movement::types::Q3UserCommand;
 
     use super::*;
     use crate::options::ApplicationOptions;
@@ -2168,6 +2584,120 @@ mod tests {
                 triggers,
                 &collision,
                 WorldUserCommand::Q2Rerelease(q2_rerelease_forward_command(angles)),
+                &frame,
+            )
+            .is_err());
+    }
+
+    fn q3dm1_bsp_bytes() -> Option<Vec<u8>> {
+        let root = steel_corpus_root();
+        if !root.join("q3a").is_dir() {
+            eprintln!("skipped: Steel corpus root {} has no Q3 data", root.display());
+            return None;
+        }
+        let catalog = qa_content::catalog::discover_installed_content(&DiscoverContentOptions::new(root)).ok()?;
+        let mounts = super::super::windowed_scene::open_product_mounts(&catalog, "q3-baseq3", "maps/q3dm1.bsp").ok()?;
+        mounts
+            .read(qa_content::mounts::ResourceRef::Path("maps/q3dm1.bsp"))
+            .ok()
+    }
+
+    fn q3_server() -> qa_world::server::Server<qa_guest::server::GuestServerLogic> {
+        let options = ApplicationOptions {
+            product: "q3-baseq3".to_string(),
+            map: "maps/q3dm1.bsp".to_string(),
+            ..ApplicationOptions::default()
+        };
+        let config = StartupConfig::from_options(&options).unwrap();
+        open_server(&config).unwrap()
+    }
+
+    fn q3_provider() -> ProviderId {
+        ProviderId::new("q3", "baseq3")
+    }
+
+    fn q3_spawn_feet_and_angles(bytes: &[u8]) -> (Vec3, Vec3) {
+        let records = super::super::play_world::decode_map_entities(bytes, "maps/q3dm1.bsp", BspKind::Q3).unwrap();
+        let spawn = super::super::windowed_scene::select_spawn(&records, BspKind::Q3).expect("q3dm1 spawn");
+        let feet = vec3(spawn.origin.x, spawn.origin.y, spawn.origin.z - Q3_VIEW_HEIGHT);
+        (feet, spawn.angles)
+    }
+
+    fn q3_forward_command(angles: Vec3, server_time_milliseconds: i32) -> Q3UserCommand {
+        Q3UserCommand {
+            server_time_milliseconds,
+            angle_words: angle_shorts(angles),
+            buttons: 0,
+            weapon: 0,
+            forward_move: 127,
+            right_move: 0,
+            up_move: 0,
+        }
+    }
+
+    #[test]
+    fn q3_player_walks_forward_on_q3dm1() {
+        let Some(bytes) = q3dm1_bsp_bytes() else {
+            return;
+        };
+        let collision = build_q3_collision(&bytes, "maps/q3dm1.bsp").unwrap();
+        let (feet, angles) = q3_spawn_feet_and_angles(&bytes);
+        let mut server = q3_server();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q3PlayerBody::admit(simulation, q3_provider(), feet, angles, Dialect::Q3).unwrap()
+        };
+        let step_seconds = 1.0 / 60.0;
+        let mut time = 0.0;
+        for frame in 0..120 {
+            time += step_seconds;
+            // Quake III drops commands at or behind the state's command
+            // time, so every step carries a fresh server timestamp.
+            let command = WorldUserCommand::Q3(q3_forward_command(angles, (frame + 1) * 16));
+            let (simulation, triggers) = server.simulation_and_triggers();
+            player
+                .step(
+                    simulation,
+                    triggers,
+                    &collision,
+                    command,
+                    &command_frame(frame, time, step_seconds),
+                )
+                .unwrap();
+        }
+        let moved = player.state.origin;
+        let horizontal = ((moved.x - feet.x) as f64).hypot((moved.y - feet.y) as f64);
+        assert!(horizontal > 10.0, "Q3 player did not advance: {moved:?} from {feet:?}");
+        assert!(
+            moved.z >= feet.z - 72.0 && moved.z <= feet.z + 8.0,
+            "Q3 player left the floor: {moved:?} from {feet:?}"
+        );
+        let body = server.simulation().body_state(&player.actor).expect("player body");
+        assert_eq!(body.origin, moved);
+    }
+
+    #[test]
+    fn q3_provider_mismatches_are_contract_errors() {
+        let mut server = q3_server();
+        let feet = vec3(0.0, 0.0, 32.0);
+        let angles = vec3(0.0, 180.0, 0.0);
+        assert!(Q3PlayerBody::admit(server.simulation_mut(), q3_provider(), feet, angles, Dialect::Q2Classic).is_err());
+        let Some(bytes) = q3dm1_bsp_bytes() else {
+            return;
+        };
+        let collision = build_q3_collision(&bytes, "maps/q3dm1.bsp").unwrap();
+        let mut player = {
+            let simulation = server.simulation_mut();
+            Q3PlayerBody::admit(simulation, q3_provider(), feet, angles, Dialect::Q3).unwrap()
+        };
+        let frame = command_frame(0, 1.0 / 60.0, 1.0 / 60.0);
+        let (simulation, triggers) = server.simulation_and_triggers();
+        assert!(player
+            .step(
+                simulation,
+                triggers,
+                &collision,
+                WorldUserCommand::Q2Classic(q2_classic_forward_command(angles)),
                 &frame,
             )
             .is_err());
