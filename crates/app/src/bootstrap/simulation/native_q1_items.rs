@@ -3,16 +3,18 @@
 //! Stock spawn/touch/think gamecode for `item_health` (rotten, normal,
 //! megahealth), `item_armor1`/`item_armor2`/`item_armorInv`, the
 //! `item_shells`/`item_spikes`/`item_rockets`/`item_cells` ammo boxes,
+//! the legacy `item_weapon` ammo box, the `item_sigil` episode rune,
 //! and dropped backpacks, driven from [`Q1NativeBehaviors`] through the
-//! native touch hook. Weapons, keys, sigils, and powerups follow in
-//! later slices; each stays a generic inert spawn until then.
+//! native touch hook. Weapons, keys, and powerups follow in later
+//! slices; each stays a generic inert spawn until then.
 //!
 //! qsrc: `progs106/items.qc` (`SUB_regen` 6, `PlaceItem` 36, `StartItem`
 //! 64, `T_Heal` 81, `item_health` 112, `health_touch` 150,
 //! `item_megahealth_rot` 206, `item_armor1/2/Inv` 291-317, `armor_touch`
 //! 238, `bound_other_ammo` 335, `item_shells/spikes/rockets/cells`
 //! 691-797, `ammo_touch` 597, `BackpackTouch` 1229, `DropBackpack`
-//! 1332), `progs106/defs.qc:300-303` (armor and superhealth bits).
+//! 1332, `item_weapon` 798, `sigil_touch` 1005, `item_sigil` 1033),
+//! `progs106/defs.qc:300-303` (armor and superhealth bits).
 //!
 //! Skeleton scope notes: pickup/respawn/rot sounds have no sim audio
 //! path yet (the parsed noise rides the state for the audio slice);
@@ -39,7 +41,7 @@ use qa_world::WorldError;
 use super::native_q1_spawns::{
     q1_health_of, q1_remove, Q1NativeBehaviors, IT_ARMOR1, IT_ARMOR2, IT_ARMOR3, IT_SUPERHEALTH,
 };
-use super::native_q1_triggers::{q1_use_targets, Q1ThinkKind, Q1UseSource};
+use super::native_q1_triggers::{q1_use_targets, Q1Centerprint, Q1ThinkKind, Q1UseSource};
 
 /// `item_health` H_ROTTEN spawnflag (`items.qc:106`): 15-health box.
 const HEALTH_ROTTEN: i32 = 1;
@@ -49,6 +51,14 @@ const HEALTH_MEGA: i32 = 2;
 /// Ammo-box big-box spawnflag (`items.qc:686`, shared `WEAPON_BIG2`):
 /// double the small-box amount.
 const AMMO_BIG: i32 = 1;
+/// Legacy `item_weapon` shells bit (`items.qc:794` `WEAPON_SHOTGUN`).
+const LEGACY_WEAPON_SHOTGUN: i32 = 1;
+/// Legacy `item_weapon` rockets bit (`items.qc:795` `WEAPON_ROCKET`).
+const LEGACY_WEAPON_ROCKET: i32 = 2;
+/// Legacy `item_weapon` nails bit (`items.qc:796` `WEAPON_SPIKES`).
+const LEGACY_WEAPON_SPIKES: i32 = 4;
+/// Legacy `item_weapon` big-box bit (`items.qc:797` `WEAPON_BIG`).
+const LEGACY_WEAPON_BIG: i32 = 8;
 
 /// Rotten-health `healtype` (`items.qc:124`).
 const HEAL_ROTTEN: u8 = 0;
@@ -106,6 +116,20 @@ const AMMO_BOUNDS: Bounds = Bounds {
         x: 32.0,
         y: 32.0,
         z: 56.0,
+    },
+};
+
+/// Fixed sigil touch volume (`item_sigil`, `items.qc:1063`).
+const SIGIL_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 32.0,
     },
 };
 
@@ -221,6 +245,12 @@ pub enum Q1ItemKind {
         /// Receipt name (`netname`: shells/nails/rockets/cells).
         netname: &'static str,
     },
+    /// `item_sigil`: sets the episode rune bits on pickup.
+    Sigil {
+        /// Authored spawnflags; the touch ORs the low four bits into
+        /// `serverflags` (`sigil_touch`, `items.qc:1021`).
+        spawnflags: i32,
+    },
     /// Dropped backpacks: grant every carried ammo kind, bounded at
     /// the caps. Monster drops never carry a weapon (`self.weapon` is
     /// unset, so `item.items` is 0); player-death weapon payloads land
@@ -290,6 +320,8 @@ pub fn register_q1_item_spawns(registry: &mut qa_world::spawn::SpawnRegistry) {
         "item_spikes",
         "item_rockets",
         "item_cells",
+        "item_weapon",
+        "item_sigil",
     ] {
         let definition = format!("q1:{classname}");
         registry.register(
@@ -319,6 +351,8 @@ pub fn q1_is_item(classname: &str) -> bool {
             | "item_spikes"
             | "item_rockets"
             | "item_cells"
+            | "item_weapon"
+            | "item_sigil"
     )
 }
 
@@ -393,6 +427,62 @@ pub fn build_q1_item<L: ServerLogic>(
                     },
                     source: Q1UseSource::from_fields(fields),
                     noise: "weapons/lock4.wav",
+                    taken: false,
+                },
+            );
+            server.mark_trigger(actor.id())?;
+        }
+        "item_weapon" => {
+            // Stock runs the three kind branches in shotgun, spikes,
+            // rocket order with later branches overwriting
+            // (`items.qc:802-858`), so combined flags resolve to the
+            // last set bit. Amounts are the legacy box values, not
+            // the `item_shells/spikes/rockets` ones.
+            let big = fields.spawnflags & LEGACY_WEAPON_BIG != 0;
+            let (kind, small, netname) = if fields.spawnflags & LEGACY_WEAPON_ROCKET != 0 {
+                (Q1AmmoKind::Rockets, 5.0, "rockets")
+            } else if fields.spawnflags & LEGACY_WEAPON_SPIKES != 0 {
+                (Q1AmmoKind::Nails, 20.0, "spikes")
+            } else if fields.spawnflags & LEGACY_WEAPON_SHOTGUN != 0 {
+                (Q1AmmoKind::Shells, 20.0, "shells")
+            } else {
+                // Bare flags leave `self.weapon`/`aflag` unset, and
+                // stock `ammo_touch` still prints, hides, and fires
+                // with no grant (`items.qc:597-683`).
+                (Q1AmmoKind::Shells, 0.0, "")
+            };
+            server.simulation_mut().set_body_bounds(actor.id(), AMMO_BOUNDS)?;
+            behaviors.items.insert(
+                actor.id(),
+                Q1Item {
+                    kind: Q1ItemKind::Ammo {
+                        kind,
+                        amount: if big { small * 2.0 } else { small },
+                        netname,
+                    },
+                    source: Q1UseSource::from_fields(fields),
+                    noise: "weapons/lock4.wav",
+                    taken: false,
+                },
+            );
+            server.mark_trigger(actor.id())?;
+        }
+        "item_sigil" => {
+            if fields.spawnflags == 0 {
+                // Stock `objerror ("no spawnflags")` removes the rune
+                // (`items.qc:1035`); the build error skips it the same
+                // way.
+                return Err(WorldError::BadSpawnFields("item_sigil without spawnflags".to_string()));
+            }
+            server.simulation_mut().set_body_bounds(actor.id(), SIGIL_BOUNDS)?;
+            behaviors.items.insert(
+                actor.id(),
+                Q1Item {
+                    kind: Q1ItemKind::Sigil {
+                        spawnflags: fields.spawnflags,
+                    },
+                    source: Q1UseSource::from_fields(fields),
+                    noise: "misc/runekey.wav",
                     taken: false,
                 },
             );
@@ -553,6 +643,18 @@ pub fn q1_item_touch(
                 *nails,
                 *rockets,
                 *cells,
+            );
+        }
+        Q1ItemKind::Sigil { spawnflags } => {
+            q1_sigil_touch(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                &item.source,
+                &contact.trigger,
+                &contact.other,
+                *spawnflags,
             );
         }
     }
@@ -725,6 +827,42 @@ fn q1_ammo_touch(
     if behaviors.deathmatch {
         let now = simulation.frame().time.as_seconds_f64();
         behaviors.schedule_think(actor, Q1ThinkKind::Regen, now + AMMO_RESPAWN_SECONDS);
+    }
+    q1_use_targets(behaviors, simulation, movers, triggers, source, Some(other));
+}
+
+/// Run `sigil_touch` (`items.qc:1005-1026`): living players take the
+/// rune — the center print, the low-four-bits `serverflags` OR, the
+/// hide, and the target firing. Stock plays the pickup noise and `bf`
+/// screen flash here; the audio and presentation slices own them.
+/// Stock also clears the classname so rune doors stop finding the
+/// rune; the taken flag covers that (no native find runs on it).
+/// Runes never respawn.
+#[allow(clippy::too_many_arguments)]
+fn q1_sigil_touch(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    source: &Q1UseSource,
+    actor: &ActorId,
+    other: &ActorId,
+    spawnflags: i32,
+) {
+    if Some(other) != behaviors.player.as_ref() {
+        return;
+    }
+    if q1_health_of(simulation, other) <= 0.0 {
+        return;
+    }
+    behaviors.centerprints.push(Q1Centerprint {
+        target: other.clone(),
+        text: "You got the rune!".to_string(),
+    });
+    behaviors.serverflags |= spawnflags & 15;
+    triggers.unmark(actor);
+    if let Some(item) = behaviors.items.get_mut(actor) {
+        item.taken = true;
     }
     q1_use_targets(behaviors, simulation, movers, triggers, source, Some(other));
 }
@@ -1348,5 +1486,160 @@ mod tests {
         assert!(behaviors.thinks.iter().any(|think| think.actor == *shells.id()
             && think.kind == Q1ThinkKind::Regen
             && (think.due_seconds - 30.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn legacy_weapon_spawn_parses_flags_and_amounts() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        // Stock runs shotgun, spikes, rocket branches in order with
+        // later branches overwriting (`items.qc:802-858`): combined
+        // flags resolve to rockets, then spikes, then shells. The
+        // spikes receipt keeps the legacy "spikes" netname.
+        for (flags, kind, amount, netname) in [
+            ("1", Q1AmmoKind::Shells, 20.0, "shells"),
+            ("9", Q1AmmoKind::Shells, 40.0, "shells"),
+            ("4", Q1AmmoKind::Nails, 20.0, "spikes"),
+            ("12", Q1AmmoKind::Nails, 40.0, "spikes"),
+            ("2", Q1AmmoKind::Rockets, 5.0, "rockets"),
+            ("10", Q1AmmoKind::Rockets, 10.0, "rockets"),
+            ("3", Q1AmmoKind::Rockets, 5.0, "rockets"),
+            ("7", Q1AmmoKind::Rockets, 5.0, "rockets"),
+            ("0", Q1AmmoKind::Shells, 0.0, ""),
+        ] {
+            let legacy = spawn_item(
+                &mut server,
+                &mut behaviors,
+                &item_fields("item_weapon", &[("origin", "0 0 0"), ("spawnflags", flags)]),
+            );
+            let record = behaviors.items.get(legacy.id()).unwrap();
+            assert!(matches!(
+                &record.kind,
+                Q1ItemKind::Ammo { kind: parsed, amount: parsed_amount, netname: parsed_name }
+                    if *parsed == kind && *parsed_amount == amount && *parsed_name == netname
+            ));
+            assert_eq!(record.noise, "weapons/lock4.wav");
+            assert!(server.triggers_mut().is_trigger(legacy.id()));
+            let body = server.simulation().body_state(legacy.id()).unwrap();
+            assert_eq!(body.bounds.min, vec3(0.0, 0.0, 0.0));
+            assert_eq!(body.bounds.max, vec3(32.0, 32.0, 56.0));
+        }
+    }
+
+    #[test]
+    fn legacy_weapon_touch_grants_like_ammo() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let rockets = spawn_item(
+            &mut server,
+            &mut behaviors,
+            &item_fields("item_weapon", &[("origin", "0 0 0"), ("spawnflags", "2")]),
+        );
+        let player = spawn_player(&mut server, vec3(8.0, 8.0, 8.0), 100.0);
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, rockets.id(), player.id());
+        assert_eq!(behaviors.player_ammo.rockets, 5.0);
+        assert_eq!(behaviors.sprints.len(), 1);
+        assert_eq!(behaviors.sprints[0].text, "You got the rockets");
+        assert!(!server.triggers_mut().is_trigger(rockets.id()));
+        assert!(behaviors.items.get(rockets.id()).unwrap().taken);
+    }
+
+    #[test]
+    fn sigil_spawn_sets_bits_and_bounds() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let sigil = spawn_item(
+            &mut server,
+            &mut behaviors,
+            &item_fields("item_sigil", &[("origin", "0 0 0"), ("spawnflags", "4")]),
+        );
+        let record = behaviors.items.get(sigil.id()).unwrap();
+        assert!(matches!(&record.kind, Q1ItemKind::Sigil { spawnflags } if *spawnflags == 4));
+        assert_eq!(record.noise, "misc/runekey.wav");
+        assert!(server.triggers_mut().is_trigger(sigil.id()));
+        let body = server.simulation().body_state(sigil.id()).unwrap();
+        assert_eq!(body.bounds.min, vec3(-16.0, -16.0, -24.0));
+        assert_eq!(body.bounds.max, vec3(16.0, 16.0, 32.0));
+        // No spawnflags: stock `objerror` removes the rune
+        // (`items.qc:1035`), so the build fails the same way.
+        let actor = server
+            .spawn_entity(&item_fields("item_sigil", &[("origin", "64 0 0")]))
+            .unwrap();
+        assert!(
+            build_q1_item(
+                &mut server,
+                &mut behaviors,
+                &actor,
+                &item_fields("item_sigil", &[("origin", "64 0 0")]),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sigil_touch_sets_flags_prints_and_fires() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.deathmatch = true;
+        let sigil = spawn_item(
+            &mut server,
+            &mut behaviors,
+            &item_fields("item_sigil", &[("origin", "0 0 0"), ("spawnflags", "4")]),
+        );
+        let player = spawn_player(&mut server, vec3(8.0, 8.0, 8.0), 100.0);
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, sigil.id(), player.id());
+        assert_eq!(behaviors.serverflags, 4);
+        assert_eq!(behaviors.centerprints.len(), 1);
+        assert_eq!(behaviors.centerprints[0].text, "You got the rune!");
+        assert!(!server.triggers_mut().is_trigger(sigil.id()));
+        assert!(behaviors.items.get(sigil.id()).unwrap().taken);
+        // Runes never respawn, even in deathmatch.
+        assert!(!behaviors.thinks.iter().any(|think| think.actor == *sigil.id()));
+        // A second rune ORs its bits in.
+        let second = spawn_item(
+            &mut server,
+            &mut behaviors,
+            &item_fields("item_sigil", &[("origin", "64 0 0"), ("spawnflags", "3")]),
+        );
+        touch(&mut server, &mut behaviors, second.id(), player.id());
+        assert_eq!(behaviors.serverflags, 7);
+    }
+
+    #[test]
+    fn sigil_touch_refuses_non_players_and_corpses() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let sigil = spawn_item(
+            &mut server,
+            &mut behaviors,
+            &item_fields("item_sigil", &[("origin", "0 0 0"), ("spawnflags", "4")]),
+        );
+        let player = spawn_player(&mut server, vec3(8.0, 8.0, 8.0), 100.0);
+        admit_player(&mut behaviors, &player);
+        let stranger = spawn_player(&mut server, vec3(8.0, 8.0, 8.0), 100.0);
+        touch(&mut server, &mut behaviors, sigil.id(), stranger.id());
+        assert_eq!(behaviors.serverflags, 0);
+        assert!(behaviors.centerprints.is_empty());
+        assert!(server.triggers_mut().is_trigger(sigil.id()));
+        // A dead player takes nothing either.
+        let worn = server.simulation().combat_state(player.id()).unwrap().clone();
+        let _ignored = server.simulation_mut().set_combat(
+            player.id(),
+            CombatState {
+                health: 0.0,
+                ..worn
+            },
+        );
+        touch(&mut server, &mut behaviors, sigil.id(), player.id());
+        assert_eq!(behaviors.serverflags, 0);
+        assert!(behaviors.centerprints.is_empty());
+        assert!(server.triggers_mut().is_trigger(sigil.id()));
     }
 }
