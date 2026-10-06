@@ -60,7 +60,7 @@ use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1Nat
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
 use super::native_q1_weapons::{
     q1_client_obituary, q1_grenade_explode, q1_lightning_damage, q1_player_die, q1_player_pain, q1_spawn_missile,
-    q1_traceline, Q1MissileKind, Q1MissileSpawn, Q1TempEnt, Q1WeaponFire, Q1_IT_INVISIBILITY,
+    q1_t_radius_damage, q1_traceline, Q1MissileKind, Q1MissileSpawn, Q1TempEnt, Q1WeaponFire, Q1_IT_INVISIBILITY,
 };
 
 /// Stock entity flags (`defs.qc:231-240`).
@@ -167,6 +167,8 @@ pub enum Q1MonsterKind {
     Wizard,
     /// `monster_hell_knight` (`hknight.qc`).
     HellKnight,
+    /// `monster_tarbaby` (`tarbaby.qc`).
+    Tarbaby,
 }
 
 impl Q1MonsterKind {
@@ -185,6 +187,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Shambler => "monster_shambler",
             Q1MonsterKind::Wizard => "monster_wizard",
             Q1MonsterKind::HellKnight => "monster_hell_knight",
+            Q1MonsterKind::Tarbaby => "monster_tarbaby",
         }
     }
 
@@ -204,6 +207,7 @@ impl Q1MonsterKind {
             "monster_shambler" => Some(Q1MonsterKind::Shambler),
             "monster_wizard" => Some(Q1MonsterKind::Wizard),
             "monster_hell_knight" => Some(Q1MonsterKind::HellKnight),
+            "monster_tarbaby" => Some(Q1MonsterKind::Tarbaby),
             _ => None,
         }
     }
@@ -428,6 +432,18 @@ pub enum Q1MonsterSeq {
     HknDie,
     /// Hell knight deathb 1-9.
     HknDieB,
+    /// Spawn stand (one `walk1` hold, `tarbaby.qc`).
+    TbStand,
+    /// Spawn walk 1-25.
+    TbWalk,
+    /// Spawn run 1-25.
+    TbRun,
+    /// Spawn jump 1-6.
+    TbJump,
+    /// Spawn airborne loop 1-4 (over `fly1-4`).
+    TbFly,
+    /// Spawn death thinks 1-2 (both over the single `exp` frame).
+    TbDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -459,6 +475,10 @@ pub enum Q1MonsterTouch {
     /// leap tail, and the edge popjump re-leaps with velocity (the
     /// dog's popjump velocity stays commented out in stock).
     FiendJumpTouch,
+    /// `Tar_JumpTouch` (`tarbaby.qc`): fast bodies wound other
+    /// classes, everything else lands with a splat; grounded
+    /// bodies re-jump, edge-hung bodies pop back to the run.
+    TarJumpTouch,
 }
 
 /// Live stock monster gamecode state: the entity fields `ai.qc`,
@@ -690,6 +710,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_shambler",
         "monster_wizard",
         "monster_hell_knight",
+        "monster_tarbaby",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -1207,6 +1228,35 @@ pub const Q1_HKNIGHT_SPIKE_LIFE: f64 = 6.0;
 /// Hell knight head model (`hknight_die`, `hknight.qc`).
 pub const Q1_HKNIGHT_HEAD_MODEL: &str = "progs/h_hellkn.mdl";
 
+/// Spawn collision bounds (`setsize`, `monster_tarbaby`, `tarbaby.qc`).
+pub const Q1_TARBABY_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Spawn health (`monster_tarbaby`, `tarbaby.qc`).
+pub const Q1_TARBABY_HEALTH: f64 = 80.0;
+
+/// Spawn touch-hit speed floor (`Tar_JumpTouch`, `tarbaby.qc`).
+pub const Q1_TARBABY_TOUCH_SPEED: f32 = 400.0;
+
+/// Spawn jump forward speed (`tbaby_jump5`, `tarbaby.qc`).
+pub const Q1_TARBABY_JUMP_FORWARD: f32 = 600.0;
+
+/// Spawn jump base upward speed (`tbaby_jump5`).
+pub const Q1_TARBABY_JUMP_UP: f32 = 200.0;
+
+/// Spawn death-blast damage (`T_RadiusDamage`, `tbaby_die2`).
+pub const Q1_TARBABY_BLAST_DAMAGE: f64 = 120.0;
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -1252,6 +1302,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Shambler => (Q1_SHAMBLER_BOUNDS, Q1_SHAMBLER_HEALTH),
         Q1MonsterKind::Wizard => (Q1_WIZARD_BOUNDS, Q1_WIZARD_HEALTH),
         Q1MonsterKind::HellKnight => (Q1_HKNIGHT_BOUNDS, Q1_HKNIGHT_HEALTH),
+        Q1MonsterKind::Tarbaby => (Q1_TARBABY_BOUNDS, Q1_TARBABY_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1751,6 +1802,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Shambler => Some("shambler/ssight.wav"),
         Q1MonsterKind::Wizard => Some("wizard/wsight.wav"),
         Q1MonsterKind::HellKnight => Some("hknight/sight1.wav"),
+        Q1MonsterKind::Tarbaby => Some("blob/sight1.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1843,6 +1895,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, 0),
+        Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, 0),
     }
 }
 
@@ -1861,6 +1914,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamWalk, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, 0),
+        Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbWalk, 0),
     }
 }
 
@@ -1879,6 +1933,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0),
+        Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0),
     }
 }
 
@@ -1924,6 +1979,9 @@ pub fn q1_th_melee(
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0))
             }
         }
+        // Both spawn strokes jump (`th_melee` and `th_missile` aim
+        // at `tbaby_jump1`, `tarbaby.qc`).
+        Q1MonsterKind::Tarbaby => Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0)),
         // The shared combo counter advances first, then the slash
         // barks, then slice/smash/whirl runs in turn (the whirl
         // resets the counter). Past 3 stock sets no think, which
@@ -1966,6 +2024,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Shambler => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 0)),
         Q1MonsterKind::Wizard => Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0)),
         Q1MonsterKind::HellKnight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknMagicC, 0)),
+        Q1MonsterKind::Tarbaby => Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -2088,6 +2147,12 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::HknPain => 5,
         Q1MonsterSeq::HknDie => 12,
         Q1MonsterSeq::HknDieB => 9,
+        Q1MonsterSeq::TbStand => 1,
+        Q1MonsterSeq::TbWalk => 25,
+        Q1MonsterSeq::TbRun => 25,
+        Q1MonsterSeq::TbJump => 6,
+        Q1MonsterSeq::TbFly => 4,
+        Q1MonsterSeq::TbDie => 2,
     }
 }
 
@@ -2111,7 +2176,8 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// stand 0-8, walk 9-28, run 29-36, pain 37-41, death 42-53, deathb
 /// 54-62, char_a 63-78, magica 79-92, magicb 93-105, char_b
 /// 106-111, slice 112-121, smash 122-132, w_attack 133-154, magicc
-/// 155-165).
+/// 155-165; spawn walk 0-24, run 25-49, jump 50-55, fly 56-59, exp
+/// 60, with stand holding walk1 and both death thinks on exp).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -2129,6 +2195,11 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     if seq == Q1MonsterSeq::ZombieAttB {
         let clamped = index.min(12);
         return 65 + i32::from(clamped);
+    }
+    // Both spawn death thinks pose on the single `exp` frame
+    // (`tbaby_die1..2`, `tarbaby.qc`).
+    if seq == Q1MonsterSeq::TbDie {
+        return 60;
     }
     // The fish run skims the odd swim frames (`f_run1..9`, `fish.qc`).
     if seq == Q1MonsterSeq::FishRun {
@@ -2242,6 +2313,12 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::HknPain => 37,
         Q1MonsterSeq::HknDie => 42,
         Q1MonsterSeq::HknDieB => 54,
+        Q1MonsterSeq::TbStand => 0,
+        Q1MonsterSeq::TbWalk => 0,
+        Q1MonsterSeq::TbRun => 25,
+        Q1MonsterSeq::TbJump => 50,
+        Q1MonsterSeq::TbFly => 56,
+        Q1MonsterSeq::TbDie => 60,
     };
     // The volley rewinds `magatt5..2` over its tail (`wizard.qc`).
     if seq == Q1MonsterSeq::WizFast {
@@ -2390,6 +2467,14 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         // Death tails self-loop (`hknight.qc`); death never exits.
         (_, Q1MonsterSeq::HknDie) => Q1MonsterThink::Frame(Q1MonsterSeq::HknDie, index),
         (_, Q1MonsterSeq::HknDieB) => Q1MonsterThink::Frame(Q1MonsterSeq::HknDieB, index),
+        (_, Q1MonsterSeq::TbStand) => Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, 0),
+        (_, Q1MonsterSeq::TbWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::TbWalk, 0),
+        (_, Q1MonsterSeq::TbRun) => Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0),
+        (_, Q1MonsterSeq::TbJump) => Q1MonsterThink::Frame(Q1MonsterSeq::TbFly, 0),
+        (_, Q1MonsterSeq::TbFly) => Q1MonsterThink::Frame(Q1MonsterSeq::TbFly, 0),
+        // The blast removes the body (`BecomeExplosion`), so the
+        // death tail never runs; the run is the fallback.
+        (_, Q1MonsterSeq::TbDie) => q1_th_run(kind),
     }
 }
 
@@ -2655,6 +2740,9 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // Spawns set no `th_pain` (`monster_tarbaby`, `tarbaby.qc`):
+        // hits never flinch them.
+        Q1MonsterKind::Tarbaby => {}
     }
 }
 
@@ -2894,6 +2982,16 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(seq, 0);
                 monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        // Stock points `th_die` at `tbaby_die1` directly
+        // (`tarbaby.qc`): spawns never gib — the death thinks arm
+        // `DAMAGE_NO`, then blast and remove.
+        Q1MonsterKind::Tarbaby => {
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::TbDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::TbDie, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -3266,9 +3364,26 @@ fn q1_monster_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
     let airborne = ctx.behaviors.monsters.get(actor).is_some_and(|monster| {
         !q1_is_crucified(monster) && monster.flags & (Q1_FLAG_ONGROUND | Q1_FLAG_FLY | Q1_FLAG_SWIM) == 0
     });
-    if airborne {
-        q1_step_physics(ctx, actor);
+    if !airborne {
+        return;
     }
+    // Mid-leap spawns toss (`MOVETYPE_BOUNCE`, `tbaby_jump5`): fall,
+    // bounce at the toss backoff, and ground on quiet landings (the
+    // landing touch already re-armed the jump).
+    let bouncing = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .is_some_and(|monster| monster.touch == Q1MonsterTouch::TarJumpTouch);
+    if bouncing {
+        if q1_toss_step(ctx, actor, vec3(0.0, 0.0, 0.0), 1.5) {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.flags |= Q1_FLAG_ONGROUND;
+            }
+        }
+        return;
+    }
+    q1_step_physics(ctx, actor);
 }
 
 /// Step one gib actor: scheduled chunks remove (`SUB_Remove`); airborne
@@ -4537,6 +4652,9 @@ fn q1_check_any_attack<L: ServerLogic>(
         // (`CheckAttack`, `fight.qc:57`): melee cycles the combos,
         // missile fans the spikes.
         Some(Q1MonsterKind::HellKnight) => q1_check_attack(ctx, actor, memo, true, true),
+        // Spawns run the same generic check; both strokes jump
+        // (`th_melee` and `th_missile` aim at `tbaby_jump1`).
+        Some(Q1MonsterKind::Tarbaby) => q1_check_attack(ctx, actor, memo, true, true),
         None => false,
     }
 }
@@ -4753,6 +4871,9 @@ fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Acto
     if touch == Some(Q1MonsterTouch::FiendJumpTouch) {
         q1_fiend_jump_touch(ctx, actor, other.as_ref());
     }
+    if touch == Some(Q1MonsterTouch::TarJumpTouch) {
+        q1_tar_jump_touch(ctx, actor, other.as_ref());
+    }
     if ctx.behaviors.missiles.contains_key(actor) {
         q1_impact_ogre_grenade(ctx, actor, other.as_ref());
     }
@@ -4763,6 +4884,9 @@ fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Acto
         }
         if touch == Some(Q1MonsterTouch::FiendJumpTouch) {
             q1_fiend_jump_touch(ctx, &other, Some(actor));
+        }
+        if touch == Some(Q1MonsterTouch::TarJumpTouch) {
+            q1_tar_jump_touch(ctx, &other, Some(actor));
         }
         if ctx.behaviors.missiles.contains_key(&other) {
             q1_impact_ogre_grenade(ctx, &other, Some(actor));
@@ -6247,6 +6371,125 @@ fn q1_dog_jump_touch<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, acto
         monster.think = q1_th_run(monster.kind);
         monster.nextthink = ctx.now + Q1_MONSTER_THINK_STEP;
     }
+}
+
+/// Stock `Tar_JumpTouch` (`tarbaby.qc`): bodies over 400 u/s wound
+/// damageable other classes for `10 + 10 * random` with a smack;
+/// fellow spawns, the undamageable, and the world land with a splat
+/// instead (slow hits on other classes stay silent). Grounded bodies
+/// re-jump; bodies flagged grounded over an edge pop back to the run
+/// with step physics (the velocity lines stay commented out in
+/// stock); floating bodies keep their touch and wait.
+fn q1_tar_jump_touch<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, other: Option<&ActorId>) {
+    if q1_health_of(ctx.server.simulation(), actor) <= 0.0 {
+        return;
+    }
+    let woundable = other.is_some_and(|other| {
+        q1_can_take_damage(ctx.server.simulation(), other)
+            && !ctx
+                .behaviors
+                .monsters
+                .get(other)
+                .is_some_and(|monster| monster.kind == Q1MonsterKind::Tarbaby)
+    });
+    if woundable {
+        let other = other.cloned().expect("woundable touch target");
+        let speed = ctx.server.simulation().body_state(actor).map_or(0.0, |body| {
+            let v = body.velocity;
+            (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+        });
+        if speed > Q1_TARBABY_TOUCH_SPEED {
+            let damage = 10.0 + f64::from(q1_monster_random(ctx.behaviors)) * 10.0;
+            let me = actor.clone();
+            let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                ctx.behaviors,
+                simulation,
+                movers,
+                triggers,
+                &other,
+                Some(&me),
+                Some(&me),
+                damage,
+            );
+            q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_WEAPON, "blob/hit1.wav", 1.0, Q1_ATTN_NORM);
+        }
+    } else {
+        q1_monster_sound(
+            ctx.behaviors,
+            actor,
+            Q1_CHAN_WEAPON,
+            "blob/land1.wav",
+            1.0,
+            Q1_ATTN_NORM,
+        );
+    }
+    if !q1_check_bottom(ctx, actor) {
+        let grounded = ctx
+            .behaviors
+            .monsters
+            .get(actor)
+            .is_some_and(|monster| monster.flags & Q1_FLAG_ONGROUND != 0);
+        if grounded {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.touch = Q1MonsterTouch::None;
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0);
+                monster.nextthink = ctx.now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        return;
+    }
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.touch = Q1MonsterTouch::None;
+        monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0);
+        monster.nextthink = ctx.now + Q1_MONSTER_THINK_STEP;
+    }
+}
+
+/// Stock `tbaby_die2` (`tarbaby.qc`): the 120-radius blast around the
+/// corpse, the death cry, then the burst 8 units back along the
+/// flight line (`TE_TAREXPLOSION`) and removal (`BecomeExplosion`).
+fn q1_tarbaby_explode<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    {
+        let mut fire = Q1WeaponFire {
+            server: ctx.server,
+            behaviors: ctx.behaviors,
+            scene: ctx.scene,
+            player: actor.clone(),
+            view_angles: vec3(0.0, 0.0, 0.0),
+            now: ctx.now,
+        };
+        let me = actor.clone();
+        q1_t_radius_damage(&mut fire, &me, &me, Q1_TARBABY_BLAST_DAMAGE, None);
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_VOICE,
+        "blob/death1.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let shifted = ctx.server.simulation().body_state(actor).map(|body| {
+        let len =
+            (body.velocity.x * body.velocity.x + body.velocity.y * body.velocity.y + body.velocity.z * body.velocity.z)
+                .sqrt();
+        if len.is_normal() {
+            vec3(
+                body.origin.x - body.velocity.x / len * 8.0,
+                body.origin.y - body.velocity.y / len * 8.0,
+                body.origin.z - body.velocity.z / len * 8.0,
+            )
+        } else {
+            body.origin
+        }
+    });
+    if let Some(shifted) = shifted {
+        let _ignored = ctx.server.simulation_mut().set_body_origin(actor, shifted);
+        ctx.behaviors.temp_ents.push(Q1TempEnt::TarExplosion { at: shifted });
+    }
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
 }
 
 /// One dog `$frame` body (`dog.qc`): idle barks, gait calls, the bite
@@ -8052,6 +8295,99 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Shambler => q1_shambler_frame(ctx, actor, seq, index),
         Q1MonsterKind::Wizard => q1_wizard_frame(ctx, actor, seq, index),
         Q1MonsterKind::HellKnight => q1_hknight_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Tarbaby => q1_tarbaby_frame(ctx, actor, seq, index),
+    }
+}
+
+/// One spawn `$frame` body (`tarbaby.qc`): the turning walk, the
+/// facing run, the crouch-and-hurl jump, the airborne loop with its
+/// fourth-cycle re-hop, and the two-think blast death.
+fn q1_tarbaby_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::TbStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::TbWalk, 0)
+        | (Q1MonsterSeq::TbWalk, 1)
+        | (Q1MonsterSeq::TbWalk, 2)
+        | (Q1MonsterSeq::TbWalk, 3)
+        | (Q1MonsterSeq::TbWalk, 4)
+        | (Q1MonsterSeq::TbWalk, 5)
+        | (Q1MonsterSeq::TbWalk, 6)
+        | (Q1MonsterSeq::TbWalk, 7)
+        | (Q1MonsterSeq::TbWalk, 8)
+        | (Q1MonsterSeq::TbWalk, 9) => q1_ai_turn(ctx, actor),
+        (Q1MonsterSeq::TbWalk, _) => q1_ai_walk(ctx, actor, 2.0),
+        (Q1MonsterSeq::TbRun, 0)
+        | (Q1MonsterSeq::TbRun, 1)
+        | (Q1MonsterSeq::TbRun, 2)
+        | (Q1MonsterSeq::TbRun, 3)
+        | (Q1MonsterSeq::TbRun, 4)
+        | (Q1MonsterSeq::TbRun, 5)
+        | (Q1MonsterSeq::TbRun, 6)
+        | (Q1MonsterSeq::TbRun, 7)
+        | (Q1MonsterSeq::TbRun, 8)
+        | (Q1MonsterSeq::TbRun, 9) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::TbRun, _) => q1_ai_run(ctx, actor, 2.0),
+        (Q1MonsterSeq::TbJump, 0)
+        | (Q1MonsterSeq::TbJump, 1)
+        | (Q1MonsterSeq::TbJump, 2)
+        | (Q1MonsterSeq::TbJump, 3) => {
+            q1_ai_face(ctx, actor);
+        }
+        // The hurl (`tbaby_jump5`): bounce-armed, popped off the
+        // ground, flung 600 forward and 200-plus up, hop count reset.
+        (Q1MonsterSeq::TbJump, 4) => {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.touch = Q1MonsterTouch::TarJumpTouch;
+                monster.flags &= !Q1_FLAG_ONGROUND;
+                monster.cnt = 0;
+            }
+            if let Some(body) = ctx.server.simulation().body_state(actor) {
+                let forward = angle_vectors(body.angles).forward;
+                let _ignored = ctx
+                    .server
+                    .simulation_mut()
+                    .set_body_origin(actor, vec3(body.origin.x, body.origin.y, body.origin.z + 1.0));
+                let up = Q1_TARBABY_JUMP_UP + q1_monster_random(ctx.behaviors) * 150.0;
+                let _ignored = ctx.server.simulation_mut().set_body_velocity(
+                    actor,
+                    vec3(
+                        forward.x * Q1_TARBABY_JUMP_FORWARD,
+                        forward.y * Q1_TARBABY_JUMP_FORWARD,
+                        up,
+                    ),
+                );
+            }
+        }
+        (Q1MonsterSeq::TbJump, _) => {}
+        (Q1MonsterSeq::TbFly, 0) | (Q1MonsterSeq::TbFly, 1) | (Q1MonsterSeq::TbFly, 2) => {}
+        // The fourth airborne cycle re-hurls (`tbaby_fly4` heads
+        // back into `tbaby_jump5`).
+        (Q1MonsterSeq::TbFly, 3) => {
+            let hop = ctx.behaviors.monsters.get(actor).map_or(0, |monster| monster.cnt + 1);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.cnt = hop;
+            }
+            if hop == 4 {
+                if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                    monster.frame = q1_seq_frame(Q1MonsterSeq::TbJump, 4);
+                    monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 4);
+                }
+            }
+        }
+        (Q1MonsterSeq::TbFly, _) => {}
+        (Q1MonsterSeq::TbDie, 0) => {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.takedamage = Q1_DAMAGE_NO;
+            }
+        }
+        (Q1MonsterSeq::TbDie, _) => q1_tarbaby_explode(ctx, actor),
+        // Other kinds never dispatch here.
+        _ => {}
     }
 }
 
@@ -8119,6 +8455,10 @@ mod tests {
 
     fn hknight_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_hell_knight", pairs)
+    }
+
+    fn tarbaby_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_tarbaby", pairs)
     }
 
     fn spawn_monster(
@@ -8213,6 +8553,14 @@ mod tests {
     }
 
     fn spawn_hknight(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_tarbaby(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -8356,6 +8704,14 @@ mod tests {
         hknight: &ActorId,
     ) {
         arm_monster(server, behaviors, hknight);
+    }
+
+    fn arm_tarbaby(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        tarbaby: &ActorId,
+    ) {
+        arm_monster(server, behaviors, tarbaby);
     }
 
     #[test]
@@ -11358,6 +11714,150 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::HellKnight, HknDieB, 8),
             Q1MonsterThink::Frame(HknDieB, 8)
+        );
+    }
+
+    #[test]
+    fn tarbaby_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = tarbaby_fields(&[]);
+        let tarbaby = spawn_tarbaby(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(tarbaby.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_TARBABY_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_TARBABY_BOUNDS.max);
+        let combat = server.simulation().combat_state(tarbaby.id()).unwrap();
+        assert_eq!(combat.health, Q1_TARBABY_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(tarbaby.id()));
+        let monster = behaviors.monsters.get(tarbaby.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Tarbaby);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_tarbaby"),
+            Some(Q1MonsterKind::Tarbaby)
+        );
+        assert_eq!(Q1MonsterKind::Tarbaby.classname(), "monster_tarbaby");
+        // Both strokes jump.
+        assert_eq!(
+            q1_th_melee(
+                &mut behaviors,
+                tarbaby.id(),
+                Q1MonsterKind::Tarbaby,
+                q1_health_of(server.simulation(), tarbaby.id())
+            ),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0))
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Tarbaby),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0))
+        );
+    }
+
+    #[test]
+    fn tarbaby_ignores_pain() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = tarbaby_fields(&[]);
+        let tarbaby = spawn_tarbaby(&mut server, &mut behaviors, &fields);
+        arm_tarbaby(&mut server, &mut behaviors, tarbaby.id());
+        // No `th_pain`: hits never flinch and never bark.
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, tarbaby.id(), 50.0);
+        assert_eq!(
+            behaviors.monsters.get(tarbaby.id()).unwrap().think,
+            Q1MonsterThink::StartGo
+        );
+        assert!(behaviors.sounds.is_empty(), "pain stays silent");
+    }
+
+    #[test]
+    fn tarbaby_dies_into_blast_think_without_gibbing() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = tarbaby_fields(&[]);
+        let tarbaby = spawn_tarbaby(&mut server, &mut behaviors, &fields);
+        arm_tarbaby(&mut server, &mut behaviors, tarbaby.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Even a 700-damage hit runs the blast thinks, never a gib burst.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            tarbaby.id(),
+            None,
+            Some(player.id()),
+            700.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(tarbaby.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::TbDie, 0));
+        assert!(behaviors.pending_gibs.is_empty(), "spawns never gib");
+        assert!(behaviors.sounds.is_empty(), "the cry waits for the blast think");
+    }
+
+    #[test]
+    fn tarbaby_sight_barks() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = tarbaby_fields(&[]);
+        let tarbaby = spawn_tarbaby(&mut server, &mut behaviors, &fields);
+        arm_tarbaby(&mut server, &mut behaviors, tarbaby.id());
+        behaviors.monsters.get_mut(tarbaby.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, tarbaby.id());
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "blob/sight1.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(tarbaby.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0)
+        );
+    }
+
+    #[test]
+    fn tarbaby_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(TbStand), 1);
+        assert_eq!(q1_seq_len(TbWalk), 25);
+        assert_eq!(q1_seq_len(TbRun), 25);
+        assert_eq!(q1_seq_len(TbJump), 6);
+        assert_eq!(q1_seq_len(TbFly), 4);
+        assert_eq!(q1_seq_len(TbDie), 2);
+        assert_eq!(q1_seq_frame(TbStand, 0), 0);
+        assert_eq!(q1_seq_frame(TbWalk, 0), 0);
+        assert_eq!(q1_seq_frame(TbWalk, 24), 24);
+        assert_eq!(q1_seq_frame(TbRun, 0), 25);
+        assert_eq!(q1_seq_frame(TbRun, 24), 49);
+        assert_eq!(q1_seq_frame(TbJump, 0), 50);
+        assert_eq!(q1_seq_frame(TbJump, 5), 55);
+        assert_eq!(q1_seq_frame(TbFly, 0), 56);
+        assert_eq!(q1_seq_frame(TbFly, 3), 59);
+        // Both death thinks pose on the single `exp` frame.
+        assert_eq!(q1_seq_frame(TbDie, 0), 60);
+        assert_eq!(q1_seq_frame(TbDie, 1), 60);
+        // The jump tail enters the airborne loop; the loop holds;
+        // the blast tail falls back to the run.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Tarbaby, TbJump, 5),
+            Q1MonsterThink::Frame(TbFly, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Tarbaby, TbFly, 3),
+            Q1MonsterThink::Frame(TbFly, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Tarbaby, TbDie, 1),
+            q1_th_run(Q1MonsterKind::Tarbaby)
         );
     }
 }

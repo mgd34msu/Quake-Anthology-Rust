@@ -369,6 +369,11 @@ pub enum Q1TempEnt {
         /// Blast center.
         at: Vec3,
     },
+    /// `TE_TAREXPLOSION` at a spawn blast (`tbaby_die2`).
+    TarExplosion {
+        /// Blast center.
+        at: Vec3,
+    },
     /// `TE_TELEPORT` at a coop/DM respawn (`spawn_tfog`, `triggers.qc`).
     Teleport {
         /// Fog center.
@@ -2291,7 +2296,7 @@ pub(crate) fn q1_grenade_explode<L: ServerLogic>(
 /// Stock `T_RadiusDamage` (`combat.qc:224`): linear `damage - 0.5 * dist`
 /// falloff over `damage + 40` units, the attacker at half strength,
 /// `CanDamage` gating every victim, shamblers halved again.
-fn q1_t_radius_damage<L: ServerLogic>(
+pub(crate) fn q1_t_radius_damage<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     inflictor: &ActorId,
     attacker: &ActorId,
