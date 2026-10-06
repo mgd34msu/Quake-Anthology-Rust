@@ -382,9 +382,11 @@ impl PlayWorld {
         };
         let water = q1_sample_water_level(scene, server.simulation(), &player);
         let water_type = q1_sample_water_type(scene, server.simulation(), &player);
-        let mut borrowed = behaviors.borrow_mut();
-        borrowed.player_state.water_level = water;
-        borrowed.player_state.water_type = water_type;
+        {
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_state.water_level = water;
+            borrowed.player_state.water_type = water_type;
+        }
         q1_weapon_pass(
             server,
             &mut behaviors.borrow_mut(),
