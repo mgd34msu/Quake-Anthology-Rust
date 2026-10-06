@@ -159,6 +159,8 @@ pub enum Q1MonsterKind {
     Fish,
     /// `monster_knight` (`knight.qc`).
     Knight,
+    /// `monster_demon1` (`demon.qc`).
+    Fiend,
 }
 
 impl Q1MonsterKind {
@@ -173,6 +175,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Zombie => "monster_zombie",
             Q1MonsterKind::Fish => "monster_fish",
             Q1MonsterKind::Knight => "monster_knight",
+            Q1MonsterKind::Fiend => "monster_demon1",
         }
     }
 
@@ -188,6 +191,7 @@ impl Q1MonsterKind {
             "monster_zombie" => Some(Q1MonsterKind::Zombie),
             "monster_fish" => Some(Q1MonsterKind::Fish),
             "monster_knight" => Some(Q1MonsterKind::Knight),
+            "monster_demon1" => Some(Q1MonsterKind::Fiend),
             _ => None,
         }
     }
@@ -333,6 +337,20 @@ pub enum Q1MonsterSeq {
     KnightDie,
     /// Knight deathb 1-11.
     KnightDieB,
+    /// Fiend stand 1-13 (`demon.qc`).
+    FiendStand,
+    /// Fiend walk 1-8.
+    FiendWalk,
+    /// Fiend run 1-6.
+    FiendRun,
+    /// Fiend leap 1-12.
+    FiendJump,
+    /// Fiend claw attack 1-15 (over `attacka1-15`).
+    FiendAttack,
+    /// Fiend pain 1-6.
+    FiendPain,
+    /// Fiend death 1-9.
+    FiendDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -357,6 +375,10 @@ pub enum Q1MonsterTouch {
     None,
     /// `Dog_JumpTouch` (`dog.qc`).
     JumpTouch,
+    /// `Demon_JumpTouch` (`demon.qc`): harder hit, landing runs the
+    /// leap tail, and the edge popjump re-leaps with velocity (the
+    /// dog's popjump velocity stays commented out in stock).
+    FiendJumpTouch,
 }
 
 /// Live stock monster gamecode state: the entity fields `ai.qc`,
@@ -546,6 +568,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_zombie",
         "monster_fish",
         "monster_knight",
+        "monster_demon1",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -785,6 +808,70 @@ pub const Q1_KNIGHT_PAINB_STEPS: [Option<f64>; 11] = [
 /// under 80 opens the standing sword, past it the running sword.
 pub const Q1_KNIGHT_MELEE_CHOICE_RANGE: f32 = 80.0;
 
+/// Fiend body bounds (`VEC_HULL2`, `monster_demon1`, `demon.qc`).
+pub const Q1_FIEND_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -32.0,
+        y: -32.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 32.0,
+        y: 32.0,
+        z: 64.0,
+    },
+};
+
+/// Fiend spawn health (`monster_demon1`, `demon.qc`).
+pub const Q1_FIEND_HEALTH: f64 = 300.0;
+
+/// Fiend gib threshold (`demon_die`, `demon.qc`).
+pub const Q1_FIEND_GIB_HEALTH: f64 = -80.0;
+
+/// Fiend walk stride per frame (`demon1_walk1..8`, `demon.qc`).
+pub const Q1_FIEND_WALK_STEPS: [f64; 8] = [8.0, 6.0, 6.0, 7.0, 4.0, 6.0, 10.0, 10.0];
+
+/// Fiend run stride per frame (`demon1_run1..6`, `demon.qc`).
+pub const Q1_FIEND_RUN_STEPS: [f64; 6] = [20.0, 15.0, 36.0, 20.0, 15.0, 36.0];
+
+/// Fiend claw-attack charge per frame (`demon1_atta1..15`): frame 5
+/// closes 2 then rakes right, frame 11 rakes left with no close.
+pub const Q1_FIEND_ATTACK_STEPS: [Option<f64>; 15] = [
+    Some(4.0),
+    Some(0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(2.0),
+    Some(1.0),
+    Some(6.0),
+    Some(8.0),
+    Some(4.0),
+    Some(2.0),
+    None,
+    Some(5.0),
+    Some(8.0),
+    Some(4.0),
+    Some(4.0),
+];
+
+/// Fiend claw reach in units (`Demon_Melee`, `demon.qc`).
+pub const Q1_FIEND_MELEE_RANGE: f32 = 100.0;
+
+/// Fiend leap speed along facing and skyward (`demon1_jump4`).
+pub const Q1_FIEND_LEAP_SPEED: f32 = 600.0;
+/// Fiend leap speed along facing and skyward (`demon1_jump4`).
+pub const Q1_FIEND_LEAP_UP: f32 = 250.0;
+
+/// Fiend leap window (`CheckDemonJump`, `demon.qc`): flat distances
+/// under 100 never leap, past 200 only leap 10% of the checks.
+pub const Q1_FIEND_JUMP_MIN: f32 = 100.0;
+/// Fiend leap window (`CheckDemonJump`, `demon.qc`): flat distances
+/// under 100 never leap, past 200 only leap 10% of the checks.
+pub const Q1_FIEND_JUMP_FAR: f32 = 200.0;
+
+/// Fiend touch-hit speed floor (`Demon_JumpTouch`, `demon.qc`).
+pub const Q1_FIEND_TOUCH_SPEED: f32 = 400.0;
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -826,6 +913,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Zombie => (Q1_ZOMBIE_BOUNDS, Q1_ZOMBIE_HEALTH),
         Q1MonsterKind::Fish => (Q1_FISH_BOUNDS, Q1_FISH_HEALTH),
         Q1MonsterKind::Knight => (Q1_KNIGHT_BOUNDS, Q1_KNIGHT_HEALTH),
+        Q1MonsterKind::Fiend => (Q1_FIEND_BOUNDS, Q1_FIEND_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1316,6 +1404,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         // `th_sight` — which is why the knight's precached sight
         // line plays despite `monster_knight` setting no `th_sight`.
         Q1MonsterKind::Knight => Some("knight/ksight.wav"),
+        Q1MonsterKind::Fiend => Some("demon/sight2.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1404,6 +1493,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, 0),
+        Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, 0),
     }
 }
 
@@ -1418,6 +1508,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishWalk, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, 0),
+        Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, 0),
     }
 }
 
@@ -1432,6 +1523,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0),
+        Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0),
     }
 }
 
@@ -1446,6 +1538,7 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
         Q1MonsterKind::Zombie => None,
         Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
         Q1MonsterKind::Knight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0)),
+        Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0)),
         Q1MonsterKind::Ogre => {
             if q1_monster_random(behaviors) > 0.5 {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
@@ -1467,6 +1560,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Ogre => Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreNail, 0)),
         Q1MonsterKind::Fish => None,
         Q1MonsterKind::Knight => None,
+        Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1552,6 +1646,13 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::KnightPainB => 11,
         Q1MonsterSeq::KnightDie => 10,
         Q1MonsterSeq::KnightDieB => 11,
+        Q1MonsterSeq::FiendStand => 13,
+        Q1MonsterSeq::FiendWalk => 8,
+        Q1MonsterSeq::FiendRun => 6,
+        Q1MonsterSeq::FiendJump => 12,
+        Q1MonsterSeq::FiendAttack => 15,
+        Q1MonsterSeq::FiendPain => 6,
+        Q1MonsterSeq::FiendDie => 9,
     }
 }
 
@@ -1570,7 +1671,8 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// paine 162-191, cruc 192-197; fish attack 0-17, death 18-38,
 /// swim 39-56, pain 57-65; knight stand 0-8, runb 9-16, runattack
 /// 17-27, pain 28-30, painb 31-41, attackb 43-52, walk 53-66, death
-/// 76-85, deathb 86-96).
+/// 76-85, deathb 86-96; fiend stand 0-12, walk 13-20, run 21-26,
+/// leap 27-38, pain 39-44, death 45-53, attacka 54-68).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -1664,6 +1766,13 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::KnightPainB => 31,
         Q1MonsterSeq::KnightDie => 76,
         Q1MonsterSeq::KnightDieB => 86,
+        Q1MonsterSeq::FiendStand => 0,
+        Q1MonsterSeq::FiendWalk => 13,
+        Q1MonsterSeq::FiendRun => 21,
+        Q1MonsterSeq::FiendJump => 27,
+        Q1MonsterSeq::FiendAttack => 54,
+        Q1MonsterSeq::FiendPain => 39,
+        Q1MonsterSeq::FiendDie => 45,
     };
     base + i32::from(index)
 }
@@ -1672,6 +1781,11 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
 /// (the kind's `.qc`).
 #[must_use]
 pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1MonsterThink {
+    // A stuck mid-air fiend re-leaps from `leap10` after 3 s
+    // (`demon1_jump10`, `demon.qc`); the frame body holds the clock.
+    if kind == Q1MonsterKind::Fiend && seq == Q1MonsterSeq::FiendJump && index == 9 {
+        return Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0);
+    }
     let len = q1_seq_len(seq);
     if index + 1 < len {
         return Q1MonsterThink::Frame(seq, index + 1);
@@ -1752,6 +1866,16 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         // Death tails self-loop (`knight.qc`); death never exits.
         (_, Q1MonsterSeq::KnightDie) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightDie, index),
         (_, Q1MonsterSeq::KnightDieB) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightDieB, index),
+        (_, Q1MonsterSeq::FiendStand) => Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, 0),
+        (_, Q1MonsterSeq::FiendWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, 0),
+        (_, Q1MonsterSeq::FiendRun) => Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0),
+        // The leap tail runs on after the landing touch
+        // (`demon1_jump11..12`, `demon.qc`).
+        (_, Q1MonsterSeq::FiendJump) => q1_th_run(kind),
+        (_, Q1MonsterSeq::FiendAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::FiendPain) => q1_th_run(kind),
+        // The death tail self-loops (`demon.qc`); death never exits.
+        (_, Q1MonsterSeq::FiendDie) => Q1MonsterThink::Frame(Q1MonsterSeq::FiendDie, index),
     }
 }
 
@@ -1932,6 +2056,30 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.pain_finished = now + 1.0;
             }
         }
+        Q1MonsterKind::Fiend => {
+            // Mid-leap fiends ignore pain outright; otherwise the
+            // hold latches and the bark plays before the flinch roll,
+            // so unfelt hits still cost a second (`demon1_pain`,
+            // `demon.qc`).
+            if monster.touch == Q1MonsterTouch::FiendJumpTouch {
+                return;
+            }
+            if monster.pain_finished > now {
+                return;
+            }
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "demon/dpain1.wav", 1.0, Q1_ATTN_NORM);
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.pain_finished = now + 1.0;
+            }
+            if f64::from(q1_monster_random(behaviors)) * 200.0 <= take {
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::FiendPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FiendPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -1956,7 +2104,9 @@ fn q1_zombie_knockdown(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, now: 
 /// to 60, so death only arrives on a gibbing hit. The fish never
 /// gibs: stock points `th_die` at `f_death1` directly (`fish.qc`).
 /// The knight gibs below -40, else cries and drops into one of the
-/// two death sequences at random (`knight_die`, `knight.qc`).
+/// two death sequences at random (`knight_die`, `knight.qc`). The
+/// fiend gibs below -80, else opens its single death (the cry plays
+/// in the first death frame, `demon_die`, `demon.qc`).
 pub fn q1_monster_th_die(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -2093,6 +2243,21 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(seq, 0);
                 monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::Fiend => {
+            if health < Q1_FIEND_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, "progs/h_demon.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::FiendDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FiendDie, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -3368,6 +3533,73 @@ fn q1_dog_check_attack<L: ServerLogic>(
     false
 }
 
+/// Stock `CheckDemonJump` (`demon.qc`): leap when the bodies
+/// overlap vertically and the flat distance sits past 100 (past 200
+/// only 10% of the checks).
+fn q1_check_fiend_jump<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) -> bool {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return false;
+    };
+    let me = ctx.server.simulation().body_state(actor);
+    let foe = ctx.server.simulation().body_state(&enemy);
+    let (Some(me), Some(foe)) = (me, foe) else {
+        return false;
+    };
+    let foe_size_z = foe.bounds.max.z - foe.bounds.min.z;
+    if me.origin.z + me.bounds.min.z > foe.origin.z + foe.bounds.min.z + 0.75 * foe_size_z {
+        return false;
+    }
+    if me.origin.z + me.bounds.max.z < foe.origin.z + foe.bounds.min.z + 0.25 * foe_size_z {
+        return false;
+    }
+    let dx = foe.origin.x - me.origin.x;
+    let dy = foe.origin.y - me.origin.y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < Q1_FIEND_JUMP_MIN {
+        return false;
+    }
+    if dist > Q1_FIEND_JUMP_FAR && q1_monster_random(ctx.behaviors) < 0.9 {
+        return false;
+    }
+    true
+}
+
+/// Stock `DemonCheckAttack` (`demon.qc`): slash in melee range, else
+/// leap when the geometry allows (the leap cry plays on the check,
+/// not the launch).
+fn q1_fiend_check_attack<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    memo: &Q1EnemyMemo,
+) -> bool {
+    if memo.range == Q1_RANGE_MELEE {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_MELEE;
+        }
+        return true;
+    }
+    if q1_check_fiend_jump(ctx, actor) {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_MISSILE;
+        }
+        q1_monster_sound(
+            ctx.behaviors,
+            actor,
+            Q1_CHAN_VOICE,
+            "demon/djump.wav",
+            1.0,
+            Q1_ATTN_NORM,
+        );
+        return true;
+    }
+    false
+}
+
 /// Stock `SoldierCheckAttack` (`fight.qc:235`): a clear shot starts
 /// the missile attack by range and chance, holding the next one for
 /// `1 + random()` seconds and sometimes flipping the strafe side.
@@ -3505,6 +3737,7 @@ fn q1_check_any_attack<L: ServerLogic>(
         // Knights run the same generic check; the melee branch picks
         // the sword by range (`knight_attack`, `fight.qc:27`).
         Some(Q1MonsterKind::Knight) => q1_check_attack(ctx, actor, memo, true, false),
+        Some(Q1MonsterKind::Fiend) => q1_fiend_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -3719,6 +3952,9 @@ fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Acto
     if touch == Some(Q1MonsterTouch::JumpTouch) {
         q1_dog_jump_touch(ctx, actor, other.as_ref());
     }
+    if touch == Some(Q1MonsterTouch::FiendJumpTouch) {
+        q1_fiend_jump_touch(ctx, actor, other.as_ref());
+    }
     if ctx.behaviors.missiles.contains_key(actor) {
         q1_impact_ogre_grenade(ctx, actor, other.as_ref());
     }
@@ -3726,6 +3962,9 @@ fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Acto
         let touch = ctx.behaviors.monsters.get(&other).map(|monster| monster.touch);
         if touch == Some(Q1MonsterTouch::JumpTouch) {
             q1_dog_jump_touch(ctx, &other, Some(actor));
+        }
+        if touch == Some(Q1MonsterTouch::FiendJumpTouch) {
+            q1_fiend_jump_touch(ctx, &other, Some(actor));
         }
         if ctx.behaviors.missiles.contains_key(&other) {
             q1_impact_ogre_grenade(ctx, &other, Some(actor));
@@ -4442,6 +4681,139 @@ fn q1_drop_backpack<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
     };
     if build_q1_backpack(ctx.server, ctx.behaviors, &actor, velocity, ammo).is_err() {
         let _ignored = ctx.server.simulation_mut().release(&actor);
+    }
+}
+
+/// Stock `Demon_Melee` (`demon.qc`): face, close 12, then rake for
+/// `10 + 5r` inside 100 units with a clear line, spraying meat to
+/// the stroke side.
+fn q1_fiend_melee<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, side: f64) {
+    q1_ai_face(ctx, actor);
+    let yaw = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .map_or(0.0, |monster| monster.ideal_yaw);
+    q1_walkmove(ctx, actor, yaw, 12.0);
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let to = ctx.server.simulation().body_state(&enemy).map(|body| body.origin);
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let delta = vec3(from.x - to.x, from.y - to.y, from.z - to.z);
+    if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt() > Q1_FIEND_MELEE_RANGE {
+        return;
+    }
+    if !q1_can_damage(ctx, &enemy, actor) {
+        return;
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "demon/dhit2.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let damage = 10.0 + f64::from(q1_monster_random(ctx.behaviors)) * 5.0;
+    let me = actor.clone();
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_t_damage(
+        ctx.behaviors,
+        simulation,
+        movers,
+        triggers,
+        &enemy,
+        Some(&me),
+        Some(&me),
+        damage,
+    );
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let axes = angle_vectors(body.angles);
+    let org = vec3(
+        body.origin.x + axes.forward.x * 16.0,
+        body.origin.y + axes.forward.y * 16.0,
+        body.origin.z + axes.forward.z * 16.0,
+    );
+    let push = side as f32;
+    let vel = vec3(axes.right.x * push, axes.right.y * push, axes.right.z * push);
+    q1_spawn_meat_spray(ctx, org, vel);
+}
+
+/// Stock `Demon_JumpTouch` (`demon.qc`): fast bodies wound what they
+/// hit; landed fiends run the leap tail, floating fiends wait for the
+/// ground — unless flagged grounded on an edge, which popjumps them
+/// free with fresh velocity.
+fn q1_fiend_jump_touch<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    other: Option<&ActorId>,
+) {
+    if q1_health_of(ctx.server.simulation(), actor) <= 0.0 {
+        return;
+    }
+    if let Some(other) = other {
+        if q1_can_take_damage(ctx.server.simulation(), other) {
+            let speed = ctx.server.simulation().body_state(actor).map_or(0.0, |body| {
+                let v = body.velocity;
+                (v.x * v.x + v.y * v.y + v.z * v.z).sqrt()
+            });
+            if speed > Q1_FIEND_TOUCH_SPEED {
+                let damage = 40.0 + f64::from(q1_monster_random(ctx.behaviors)) * 10.0;
+                let me = actor.clone();
+                let victim = other.clone();
+                let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+                q1_t_damage(
+                    ctx.behaviors,
+                    simulation,
+                    movers,
+                    triggers,
+                    &victim,
+                    Some(&me),
+                    Some(&me),
+                    damage,
+                );
+            }
+        }
+    }
+    if !q1_check_bottom(ctx, actor) {
+        let grounded = ctx
+            .behaviors
+            .monsters
+            .get(actor)
+            .is_some_and(|monster| monster.flags & Q1_FLAG_ONGROUND != 0);
+        if grounded {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.touch = Q1MonsterTouch::None;
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0);
+                monster.nextthink = ctx.now + Q1_MONSTER_THINK_STEP;
+                monster.flags &= !Q1_FLAG_ONGROUND;
+            }
+            let _ignored = ctx.server.simulation_mut().set_body_velocity(
+                actor,
+                vec3(
+                    (f64::from(q1_monster_random(ctx.behaviors)) - 0.5) as f32 * 600.0,
+                    (f64::from(q1_monster_random(ctx.behaviors)) - 0.5) as f32 * 600.0,
+                    200.0,
+                ),
+            );
+        }
+        return;
+    }
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.touch = Q1MonsterTouch::None;
+        monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 10);
+        monster.nextthink = ctx.now + Q1_MONSTER_THINK_STEP;
     }
 }
 
@@ -5711,6 +6083,107 @@ fn q1_knight_frame<L: ServerLogic>(
     }
 }
 
+/// One fiend `$frame` body (`demon.qc`): the idle-sniffing walk and
+/// run gaits, the leap launch with its stuck re-leap hold, the two
+/// claw rakes, the still pain, and the death cry with its unsolid
+/// sixth frame.
+fn q1_fiend_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::FiendStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::FiendWalk, 0) | (Q1MonsterSeq::FiendRun, 0) => {
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "demon/idle1.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+            if seq == Q1MonsterSeq::FiendWalk {
+                q1_ai_walk(ctx, actor, Q1_FIEND_WALK_STEPS[0]);
+            } else {
+                q1_ai_run(ctx, actor, Q1_FIEND_RUN_STEPS[0]);
+            }
+        }
+        (Q1MonsterSeq::FiendWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_FIEND_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::FiendRun, _) => {
+            q1_ai_run(ctx, actor, Q1_FIEND_RUN_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::FiendJump, 0) | (Q1MonsterSeq::FiendJump, 1) | (Q1MonsterSeq::FiendJump, 2) => {
+            q1_ai_face(ctx, actor);
+        }
+        (Q1MonsterSeq::FiendJump, 3) => {
+            q1_ai_face(ctx, actor);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.touch = Q1MonsterTouch::FiendJumpTouch;
+            }
+            if let Some(body) = ctx.server.simulation().body_state(actor) {
+                let forward = angle_vectors(body.angles).forward;
+                let _ignored = ctx
+                    .server
+                    .simulation_mut()
+                    .set_body_origin(actor, vec3(body.origin.x, body.origin.y, body.origin.z + 1.0));
+                let _ignored = ctx.server.simulation_mut().set_body_velocity(
+                    actor,
+                    vec3(
+                        forward.x * Q1_FIEND_LEAP_SPEED,
+                        forward.y * Q1_FIEND_LEAP_SPEED,
+                        forward.z * Q1_FIEND_LEAP_SPEED + Q1_FIEND_LEAP_UP,
+                    ),
+                );
+            }
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.flags &= !Q1_FLAG_ONGROUND;
+            }
+        }
+        // A stuck mid-air fiend re-leaps after 3 s (`demon1_jump10`).
+        (Q1MonsterSeq::FiendJump, 9) => {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.nextthink = ctx.now + 3.0;
+            }
+        }
+        (Q1MonsterSeq::FiendJump, _) => {}
+        (Q1MonsterSeq::FiendAttack, 4) => {
+            q1_ai_charge(ctx, actor, 2.0);
+            q1_fiend_melee(ctx, actor, 200.0);
+        }
+        (Q1MonsterSeq::FiendAttack, 10) => {
+            q1_fiend_melee(ctx, actor, -200.0);
+        }
+        (Q1MonsterSeq::FiendAttack, _) => {
+            if let Some(dist) = Q1_FIEND_ATTACK_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::FiendPain, _) => {}
+        (Q1MonsterSeq::FiendDie, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "demon/ddeath.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::FiendDie, 5) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::FiendDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -5727,6 +6200,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Zombie => q1_zombie_frame(ctx, actor, seq, index),
         Q1MonsterKind::Fish => q1_fish_frame(ctx, actor, seq, index),
         Q1MonsterKind::Knight => q1_knight_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Fiend => q1_fiend_frame(ctx, actor, seq, index),
     }
 }
 
@@ -5778,6 +6252,10 @@ mod tests {
 
     fn knight_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_knight", pairs)
+    }
+
+    fn fiend_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_demon1", pairs)
     }
 
     fn spawn_monster(
@@ -5840,6 +6318,14 @@ mod tests {
     }
 
     fn spawn_knight(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_fiend(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -5951,6 +6437,14 @@ mod tests {
         knight: &ActorId,
     ) {
         arm_monster(server, behaviors, knight);
+    }
+
+    fn arm_fiend(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fiend: &ActorId,
+    ) {
+        arm_monster(server, behaviors, fiend);
     }
 
     #[test]
@@ -7815,6 +8309,220 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Knight, KnightDieB, 10),
             Q1MonsterThink::Frame(KnightDieB, 10)
+        );
+    }
+
+    #[test]
+    fn fiend_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(fiend.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_FIEND_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_FIEND_BOUNDS.max);
+        let combat = server.simulation().combat_state(fiend.id()).unwrap();
+        assert_eq!(combat.health, Q1_FIEND_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(fiend.id()));
+        let monster = behaviors.monsters.get(fiend.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Fiend);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_demon1"),
+            Some(Q1MonsterKind::Fiend)
+        );
+        assert_eq!(Q1MonsterKind::Fiend.classname(), "monster_demon1");
+        assert_eq!(
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Fiend),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0))
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Fiend),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0))
+        );
+    }
+
+    #[test]
+    fn fiend_pain_ignores_mid_leap() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        arm_fiend(&mut server, &mut behaviors, fiend.id());
+        behaviors.monsters.get_mut(fiend.id()).unwrap().touch = Q1MonsterTouch::FiendJumpTouch;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, fiend.id(), 50.0);
+        let monster = behaviors.monsters.get(fiend.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert_eq!(monster.pain_finished, 0.0);
+        assert!(behaviors.sounds.is_empty(), "mid-leap pain stays silent");
+    }
+
+    #[test]
+    fn fiend_pain_holds_and_barks_before_flinch_roll() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        arm_fiend(&mut server, &mut behaviors, fiend.id());
+        // Gated pain stays out and stays silent.
+        behaviors.monsters.get_mut(fiend.id()).unwrap().pain_finished = 10.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, fiend.id(), 5.0);
+        assert_eq!(
+            behaviors.monsters.get(fiend.id()).unwrap().think,
+            Q1MonsterThink::StartGo
+        );
+        assert!(behaviors.sounds.is_empty(), "gated pain stays silent");
+        // Open pain latches the hold and barks before the flinch
+        // roll, so unfelt hits still cost a second.
+        behaviors.monsters.get_mut(fiend.id()).unwrap().pain_finished = 0.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, fiend.id(), 5.0);
+        let monster = behaviors.monsters.get(fiend.id()).unwrap();
+        assert_eq!(monster.pain_finished, 1.0);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "demon/dpain1.wav"),
+            "pains bark"
+        );
+        assert!(
+            matches!(
+                monster.think,
+                Q1MonsterThink::StartGo | Q1MonsterThink::Frame(Q1MonsterSeq::FiendPain, 0)
+            ),
+            "light hits may not flinch, got {:?}",
+            monster.think
+        );
+    }
+
+    #[test]
+    fn fiend_dies_quiet_then_cries_in_frame() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        arm_fiend(&mut server, &mut behaviors, fiend.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            fiend.id(),
+            None,
+            Some(player.id()),
+            310.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(fiend.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FiendDie, 0));
+        // The cry plays in the first death frame, not in `th_die`.
+        assert!(behaviors.sounds.is_empty(), "th_die stays quiet");
+        assert!(behaviors.solids.contains(fiend.id()));
+    }
+
+    #[test]
+    fn fiend_gib_threshold_bursts() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        arm_fiend(&mut server, &mut behaviors, fiend.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Health -100: past the fiend's -80 gib line.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            fiend.id(),
+            None,
+            Some(player.id()),
+            400.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        assert!(behaviors.monsters.get(fiend.id()).unwrap().dead);
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(behaviors.gibs.contains_key(fiend.id()), "the head keeps the actor");
+        assert_eq!(behaviors.pending_gibs.len(), 3, "three chunks queue");
+        assert!(
+            behaviors.pending_gibs.iter().all(|gib| gib.model == "progs/gib1.mdl"),
+            "fiends burst gib1s"
+        );
+        assert!(!behaviors.solids.contains(fiend.id()), "gibs go unsolid");
+    }
+
+    #[test]
+    fn fiend_sight_barks() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fiend_fields(&[]);
+        let fiend = spawn_fiend(&mut server, &mut behaviors, &fields);
+        arm_fiend(&mut server, &mut behaviors, fiend.id());
+        behaviors.monsters.get_mut(fiend.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, fiend.id());
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "demon/sight2.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(fiend.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0)
+        );
+    }
+
+    #[test]
+    fn fiend_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(FiendStand), 13);
+        assert_eq!(q1_seq_len(FiendWalk), 8);
+        assert_eq!(q1_seq_len(FiendRun), 6);
+        assert_eq!(q1_seq_len(FiendJump), 12);
+        assert_eq!(q1_seq_len(FiendAttack), 15);
+        assert_eq!(q1_seq_len(FiendPain), 6);
+        assert_eq!(q1_seq_len(FiendDie), 9);
+        assert_eq!(q1_seq_frame(FiendStand, 0), 0);
+        assert_eq!(q1_seq_frame(FiendStand, 12), 12);
+        assert_eq!(q1_seq_frame(FiendWalk, 0), 13);
+        assert_eq!(q1_seq_frame(FiendWalk, 7), 20);
+        assert_eq!(q1_seq_frame(FiendRun, 0), 21);
+        assert_eq!(q1_seq_frame(FiendRun, 5), 26);
+        assert_eq!(q1_seq_frame(FiendJump, 0), 27);
+        assert_eq!(q1_seq_frame(FiendJump, 11), 38);
+        assert_eq!(q1_seq_frame(FiendAttack, 0), 54);
+        assert_eq!(q1_seq_frame(FiendAttack, 14), 68);
+        assert_eq!(q1_seq_frame(FiendPain, 0), 39);
+        assert_eq!(q1_seq_frame(FiendPain, 5), 44);
+        assert_eq!(q1_seq_frame(FiendDie, 0), 45);
+        assert_eq!(q1_seq_frame(FiendDie, 8), 53);
+        // The stuck re-leap redirects mid-sequence; the landed tail
+        // runs on.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fiend, FiendJump, 9),
+            Q1MonsterThink::Frame(FiendJump, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fiend, FiendJump, 11),
+            q1_th_run(Q1MonsterKind::Fiend)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fiend, FiendAttack, 14),
+            q1_th_run(Q1MonsterKind::Fiend)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fiend, FiendDie, 8),
+            Q1MonsterThink::Frame(FiendDie, 8)
         );
     }
 }
