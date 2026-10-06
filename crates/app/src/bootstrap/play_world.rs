@@ -7931,6 +7931,16 @@ mod tests {
         }
         let caster = caster.expect("a shambler casts its lightning");
         assert!(ball_seen, "the cast charges its ball first");
+        // `ShamCheckAttack` holds the next cast 2-4 s out (the generic
+        // check never latches a hold).
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let hold = behaviors
+            .borrow()
+            .monsters
+            .get(&caster)
+            .expect("caster record")
+            .attack_finished;
+        assert!(hold > live_now(&world), "casts latch the refire hold");
         // The first bolt pops the ball in its own frame; read this
         // before the wound window in case the shambler re-casts.
         let ball_popped = {

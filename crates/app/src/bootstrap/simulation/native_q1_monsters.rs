@@ -935,6 +935,9 @@ pub const Q1_SHAMBLER_GIB_HEALTH: f64 = -60.0;
 /// Shambler claw reach in units (`ShamClaw`, `shambler.qc`).
 pub const Q1_SHAMBLER_MELEE_RANGE: f32 = 100.0;
 
+/// Shambler cast range in eye units (`ShamCheckAttack`, `fight.qc:294`).
+pub const Q1_SHAMBLER_CAST_RANGE: f32 = 600.0;
+
 /// Shambler walk stride per frame (`sham_walk1..12`, `shambler.qc`).
 pub const Q1_SHAMBLER_WALK_STEPS: [f64; 12] = [10.0, 9.0, 9.0, 5.0, 6.0, 12.0, 8.0, 3.0, 13.0, 9.0, 7.0, 7.0];
 
@@ -3800,6 +3803,66 @@ fn q1_check_fiend_jump<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, ac
     true
 }
 
+/// Stock `ShamCheckAttack` (`fight.qc:294`): melee range with a
+/// damage path turns to slash; otherwise a visible enemy inside 600
+/// units with a clear shot casts, holding the next cast `2 + 2 *
+/// random()` out. (The lane's check dispatcher pre-gates invisible
+/// enemies for every kind, so the melee branch never runs blind here
+/// the way stock's CanDamage-first order allows.)
+fn q1_sham_check_attack<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    memo: &Q1EnemyMemo,
+) -> bool {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return false;
+    };
+    if memo.range == Q1_RANGE_MELEE && q1_can_damage(ctx, &enemy, actor) {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_MELEE;
+        }
+        return true;
+    }
+    let now = ctx.now;
+    let attack_finished = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .map_or(0.0, |monster| monster.attack_finished);
+    if now < attack_finished {
+        return false;
+    }
+    if !memo.vis {
+        return false;
+    }
+    let (Some(spot1), Some(spot2)) = (q1_eye_of(ctx, actor), q1_eye_of(ctx, &enemy)) else {
+        return false;
+    };
+    let dx = f64::from(spot2.x - spot1.x);
+    let dy = f64::from(spot2.y - spot1.y);
+    let dz = f64::from(spot2.z - spot1.z);
+    if (dx * dx + dy * dy + dz * dz).sqrt() > f64::from(Q1_SHAMBLER_CAST_RANGE) {
+        return false;
+    }
+    if !q1_clear_shot(ctx, actor, &enemy) {
+        return false;
+    }
+    if memo.range == Q1_RANGE_FAR {
+        return false;
+    }
+    let hold = 2.0 + f64::from(q1_monster_random(ctx.behaviors)) * 2.0;
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.attack_state = Q1_AS_MISSILE;
+        monster.attack_finished = now + hold;
+    }
+    true
+}
+
 /// Stock `DemonCheckAttack` (`demon.qc`): slash in melee range, else
 /// leap when the geometry allows (the leap cry plays on the check,
 /// not the launch).
@@ -3969,10 +4032,7 @@ fn q1_check_any_attack<L: ServerLogic>(
         // the sword by range (`knight_attack`, `fight.qc:27`).
         Some(Q1MonsterKind::Knight) => q1_check_attack(ctx, actor, memo, true, false),
         Some(Q1MonsterKind::Fiend) => q1_fiend_check_attack(ctx, actor, memo),
-        // Shamblers run the generic check with both strokes armed
-        // (`CheckAttack`, `fight.qc:49`); the melee branch picks the
-        // stroke by roll and health (`sham_melee`).
-        Some(Q1MonsterKind::Shambler) => q1_check_attack(ctx, actor, memo, true, true),
+        Some(Q1MonsterKind::Shambler) => q1_sham_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
