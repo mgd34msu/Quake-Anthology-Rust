@@ -5087,7 +5087,9 @@ fn q1_shambler_cast_lightning<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_,
         body.origin.y + dy / dist * 600.0,
         body.origin.z + dz / dist * 600.0,
     );
-    let hit = q1_traceline(ctx.scene, org, end, SceneQ1MoveRule::Normal, actor);
+    // Stock passes `TRUE` for `nomonsters`, so the beam visual runs
+    // through monsters to the wall; the damage traces below do not.
+    let hit = q1_traceline(ctx.scene, org, end, SceneQ1MoveRule::NoMonsters, actor);
     ctx.behaviors.temp_ents.push(Q1TempEnt::Lightning {
         entity: actor.clone(),
         start: org,
