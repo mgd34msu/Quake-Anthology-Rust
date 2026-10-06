@@ -2437,14 +2437,22 @@ mod tests {
     use crate::bootstrap::play_world::tests::{
         LIVE_E1M1_SKILL2_TOTAL, LIVE_E1M2_NATIVE_SKILL2_TOTAL, LIVE_E1M3_NATIVE_SKILL2_TOTAL,
         LIVE_E1M4_NATIVE_SKILL2_TOTAL, LIVE_E1M5_NATIVE_SKILL2_TOTAL, LIVE_E1M6_NATIVE_SKILL2_TOTAL,
-        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_E1M8_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL,
-        live_bosses,
-        live_changelevel_exits, live_damage, live_dogs, live_doors_by_targetname, live_expected_finale, live_fiends,
-        live_fire_use, live_fish, live_grunts, live_knights, live_monster_feet, live_now, live_ogres,
-        live_oldones, live_place_player, live_player_health, live_press_buttons, live_set_player_health,
-        live_shamblers, live_silence_door_fields, live_volume_center, live_vores, live_wizards,
-        live_zombies,
+        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_E1M8_NATIVE_SKILL2_TOTAL, LIVE_E2M1_SKILL2_TOTAL,
+        LIVE_E2M2_NATIVE_SKILL2_TOTAL, LIVE_E2M3_NATIVE_SKILL2_TOTAL, LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+        LIVE_E2M5_NATIVE_SKILL2_TOTAL, LIVE_E2M6_NATIVE_SKILL2_TOTAL, LIVE_E2M7_NATIVE_SKILL2_TOTAL,
+        LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
+        live_changelevel_exits, live_damage, live_dogs, live_doors_by_targetname, live_enforcers,
+        live_expected_finale, live_fiends, live_fire_use, live_fish, live_grunts, live_hknights,
+        live_knights, live_monster_feet, live_now, live_ogres, live_oldones, live_place_player,
+        live_player_health, live_press_buttons, live_set_player_health, live_shamblers,
+        live_silence_door_fields, live_volume_center, live_vores, live_wizards, live_zombies,
     };
+    use qa_core::math::Vec3;
+    use qa_world::body::translated_body_bounds;
+
+    use super::super::simulation::native_q1_spawns::q1_health_of;
+    use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+    use super::super::simulation::native_q1_weapons::Q1_IT_SHOTGUN;
     use crate::options::GameFamily as OptionsFamily;
     use crate::options::Network;
 
@@ -5717,7 +5725,7 @@ mod tests {
     /// Open one Q1 map in the real windowed run (window, renderer,
     /// input) at skill 2 single-player, or skip loudly without a
     /// corpus/display (panic when `QA_REQUIRE_LIVE=1`).
-    fn windowed_e1_run(map: &str) -> Option<WindowedApplication> {
+    fn windowed_q1_run(map: &str) -> Option<WindowedApplication> {
         let corpus = require_live_corpus("Steel corpus", &CORPUS_WITNESSES)?;
         let options = ApplicationOptions {
             windowed: true,
@@ -5964,7 +5972,7 @@ mod tests {
                 },
             ),
         ] {
-            let Some(mut composed) = windowed_e1_run(map) else {
+            let Some(mut composed) = windowed_q1_run(map) else {
                 return;
             };
             assert!(composed.app.active_game(), "{map} has a scene");
@@ -6005,6 +6013,211 @@ mod tests {
         }
     }
 
+    /// One episode-2 map's native census at skill 2: per-kind
+    /// live record counts plus the kill-count total.
+    struct WindowedE2Census {
+        dogs: usize,
+        grunts: usize,
+        enforcers: usize,
+        ogres: usize,
+        knights: usize,
+        hknights: usize,
+        fiends: usize,
+        shamblers: usize,
+        zombies: usize,
+        wizards: usize,
+        fish: usize,
+        vores: usize,
+        total: u32,
+    }
+
+    /// Q1 E2 windowed census run (Q1-0138-Q1-0153): every stock
+    /// episode-2 map, secret e2m7 included, opens in the real
+    /// windowed run at skill 2, and every stock monster kind
+    /// spawns through the native path: the per-kind record counts
+    /// match the authored entity lump minus skill inhibition.
+    /// Each map also presents (a non-black capture) and drives
+    /// real frames before closing.
+    ///
+    /// One sequential test (not seven parallel ones) so concurrent
+    /// SDL windows never contend: each map opens, soaks, captures,
+    /// drives, and closes in turn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2_census_run() {
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        for (map, census) in [
+            (
+                "maps/e2m1.bsp",
+                WindowedE2Census {
+                    dogs: 7,
+                    grunts: 13,
+                    enforcers: 26,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 0,
+                    fiends: 0,
+                    shamblers: 0,
+                    zombies: 0,
+                    wizards: 0,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M1_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m2.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 14,
+                    knights: 20,
+                    hknights: 0,
+                    fiends: 5,
+                    shamblers: 1,
+                    zombies: 8,
+                    wizards: 0,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M2_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m3.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 15,
+                    knights: 0,
+                    hknights: 16,
+                    fiends: 1,
+                    shamblers: 3,
+                    zombies: 7,
+                    wizards: 0,
+                    fish: 6,
+                    vores: 0,
+                    total: LIVE_E2M3_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m4.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 24,
+                    knights: 0,
+                    hknights: 8,
+                    fiends: 12,
+                    shamblers: 2,
+                    zombies: 15,
+                    wizards: 17,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m5.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 24,
+                    knights: 0,
+                    hknights: 18,
+                    fiends: 6,
+                    shamblers: 3,
+                    zombies: 0,
+                    wizards: 10,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M5_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m6.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 16,
+                    knights: 0,
+                    hknights: 14,
+                    fiends: 18,
+                    shamblers: 5,
+                    zombies: 27,
+                    wizards: 4,
+                    fish: 0,
+                    vores: 2,
+                    total: LIVE_E2M6_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m7.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 15,
+                    knights: 0,
+                    hknights: 17,
+                    fiends: 10,
+                    shamblers: 0,
+                    zombies: 20,
+                    wizards: 16,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M7_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+        ] {
+            let Some(mut composed) = windowed_q1_run(map) else {
+                return;
+            };
+            assert!(composed.app.active_game(), "{map} has a scene");
+            windowed_soak(&mut composed.app, 1.0);
+            {
+                let world = windowed_world(&composed.app);
+                assert_eq!(live_dogs(world).len(), census.dogs, "{map} dogs");
+                assert_eq!(live_grunts(world).len(), census.grunts, "{map} grunts");
+                assert_eq!(live_enforcers(world).len(), census.enforcers, "{map} enforcers");
+                assert_eq!(live_ogres(world).len(), census.ogres, "{map} ogres");
+                assert_eq!(live_knights(world).len(), census.knights, "{map} knights");
+                assert_eq!(live_hknights(world).len(), census.hknights, "{map} hell knights");
+                assert_eq!(live_fiends(world).len(), census.fiends, "{map} fiends");
+                assert_eq!(live_shamblers(world).len(), census.shamblers, "{map} shamblers");
+                assert_eq!(live_zombies(world).len(), census.zombies, "{map} zombies");
+                assert_eq!(live_wizards(world).len(), census.wizards, "{map} scrags");
+                assert_eq!(live_fish(world).len(), census.fish, "{map} rotfish");
+                assert_eq!(live_vores(world).len(), census.vores, "{map} vores");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                assert_eq!(behaviors.borrow().total_monsters, census.total, "{map} total");
+            }
+            let pixels = composed
+                .app
+                .capture_next_frame()
+                .unwrap_or_else(|error| panic!("{map} captures: {error}"));
+            // No exact-size assert: the GL readback size is driver
+            // dependent (xvfb returns a 1964600-byte readback for a
+            // 64x64 window). The presented-world proof is the lit
+            // fraction, far above black either way.
+            assert!(!pixels.is_empty(), "{map} captures pixels");
+            let lit = count_non_black(&pixels);
+            assert!(
+                lit > 1000,
+                "{map}: expected a presented world, got {lit} non-black pixels of {}",
+                pixels.len() / 4
+            );
+            let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+                .unwrap_or_else(|error| panic!("{map} drives: {error}"));
+            assert_eq!(frames, 3);
+            assert!(composed.app.is_closed());
+        }
+    }
+
     /// Q1-0139: the e1m7 Chthon fight works in the windowed run: the
     /// sigil's `use` wakes the sleeper into the rise and the missile
     /// loop hurls wounding lava balls, then three `event_lightning`
@@ -6019,7 +6232,7 @@ mod tests {
         use crate::bootstrap::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt};
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m7 has a scene");
@@ -6273,7 +6486,7 @@ mod tests {
         use qa_world::combat::{ArmorState, CombatState, RegularArmor};
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m7 has a scene");
@@ -6711,7 +6924,7 @@ mod tests {
         };
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m4.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m4.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m4 has a scene");
@@ -6789,5 +7002,926 @@ mod tests {
             .expect("e1m8 drives");
         assert_eq!(frames, 3);
         assert!(composed.app.is_closed());
+    }
+
+    /// Q1-0258: the windowed run rides the e2m3 secret exit into
+    /// e2m7 — the Underearth, the episode-2 secret level — and
+    /// back out to e2m4. e2m3 carries two slipgates (the normal
+    /// e2m4 gate plus the secret e2m7 gate); touching the secret
+    /// gate enters the intermission, pressing through travels via
+    /// the windowed frame's own `take_pending_travel` with parms
+    /// and `serverflags` carried, the arrival census is the full
+    /// e2m7 count, and the e2m7 slipgate returns to e2m4.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2m3_secret_exit_reaches_e2m7() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_q1_run("maps/e2m3.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e2m3 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted campaign loadout plus the episode flag: both
+        // arrivals must carry them.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 2, "e2m3 has two exits");
+        assert!(
+            exits.iter().any(|(_, map)| map == "e2m4"),
+            "the normal e2m4 gate stays"
+        );
+        let secret = exits
+            .iter()
+            .find(|(_, map)| map == "e2m7")
+            .map(|(exit, _)| exit.clone())
+            .expect("the secret e2m7 gate");
+        windowed_enter_intermission(&mut composed.app, &secret);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled through the secret gate: the
+        // world is e2m7 now, parms and flags carried.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e2m7.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e2m7");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_ne!(
+                borrowed.player_items & (Q1_IT_AXE | Q1_IT_SHOTGUN),
+                0,
+                "spawn arms carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        // The secret arrival census is the full e2m7 count.
+        windowed_soak(&mut composed.app, 1.0);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().total_monsters,
+                LIVE_E2M7_NATIVE_SKILL2_TOTAL
+            );
+            assert_eq!(live_ogres(world).len(), 15, "e2m7 spawns fifteen ogres");
+            assert_eq!(live_hknights(world).len(), 17, "e2m7 spawns seventeen hell knights");
+            assert_eq!(live_wizards(world).len(), 16, "e2m7 spawns sixteen scrags");
+            assert_eq!(live_zombies(world).len(), 20, "e2m7 spawns twenty zombies");
+            assert_eq!(live_fiends(world).len(), 10, "e2m7 spawns ten fiends");
+        }
+        // The e2m7 slipgate returns to e2m4 with the same carried
+        // parms and flags.
+        let back = {
+            let exits = live_changelevel_exits(windowed_world(&composed.app));
+            assert_eq!(exits.len(), 1, "e2m7 has one exit");
+            let (back, map) = exits.into_iter().next().expect("exit");
+            assert_eq!(map, "e2m4");
+            back
+        };
+        windowed_enter_intermission(&mut composed.app, &back);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e2m4.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e2m4");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+        }
+        windowed_soak(&mut composed.app, 1.0);
+        assert_eq!(
+            windowed_world(&composed.app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .total_monsters,
+            LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+            "the e2m4 return census is full"
+        );
+        let pixels = composed.app.capture_next_frame().expect("e2m4 captures");
+        assert!(!pixels.is_empty(), "e2m4 captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("e2m4 drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
+
+    /// Q1-0256 (+ Q1-0258 travel): the windowed run rides the e2m6
+    /// slipgate through the episode-2 scroll into the start map.
+    /// Touching the exit enters the intermission; pressing through
+    /// the gate raises the `running == 2` scroll state with the
+    /// stock Black Magic text (`client.qc:188`) and CD track 2
+    /// before any travel; pressing through the scroll travels via
+    /// the windowed frame's own `take_pending_travel`, keeping
+    /// `serverflags` but shedding the carry for the fresh start
+    /// loadout.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2m6_finale_reaches_start() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_q1_run("maps/e2m6.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e2m6 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted e2m6 loadout plus the episode flag: the flagged
+        // start return must keep the flag but shed the carry.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 1, "e2m6 has one exit");
+        assert_eq!(exits[0].1, "start");
+        windowed_enter_intermission(&mut composed.app, &exits[0].0.clone());
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e2")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled: the world is start now, flags
+        // kept, carry shed for the fresh loadout.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/start.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "start");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "carry shed for the fresh loadout"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        let pixels = composed.app.capture_next_frame().expect("start captures");
+        assert!(!pixels.is_empty(), "start captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("start drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
+
+    /// One episode-run leg's script: the map under proof, its
+    /// live arrival census, the spared combat target (a
+    /// monster-listing fn plus the wound that leaves it 5 hp), the
+    /// exit to ride, and the forward-run floor.
+    struct WindowedPlayLeg {
+        label: &'static str,
+        map: &'static str,
+        total: u32,
+        spare: fn(&PlayWorld) -> Vec<qa_core::identity::ActorId>,
+        spare_name: &'static str,
+        wound: f64,
+        exit_map: &'static str,
+        exit_count: usize,
+        forward_min: f64,
+        finale: Option<&'static str>,
+    }
+
+    /// Drive `n` real windowed steps, timing each into `step_ms`.
+    fn windowed_drive(
+        app: &mut StartupApplication<WindowedStartupBackend>,
+        step_ms: &mut Vec<f64>,
+        n: u32,
+    ) {
+        for _ in 0..n {
+            let start = std::time::Instant::now();
+            app.step().expect("windowed step works");
+            step_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    /// Inject one real key press or release.
+    fn windowed_press_key(
+        app: &mut StartupApplication<WindowedStartupBackend>,
+        scancode: i32,
+        keycode: i32,
+        down: bool,
+    ) {
+        app.backend_mut()
+            .handle_window_events(vec![SdlEvent::Key {
+                timestamp: 0,
+                down,
+                repeat: false,
+                scancode,
+                keycode,
+                modifiers: 0,
+            }])
+            .expect("key injects");
+    }
+
+    /// Hold or release real attack (mouse button 1).
+    fn windowed_mouse_attack(app: &mut StartupApplication<WindowedStartupBackend>, down: bool) {
+        app.backend_mut()
+            .handle_window_events(vec![SdlEvent::MouseButton {
+                timestamp: 0,
+                down,
+                button: 1,
+                clicks: 1,
+                x: 0,
+                y: 0,
+            }])
+            .expect("mouse button injects");
+    }
+
+    /// The run player's eye and angles.
+    fn windowed_eye(app: &StartupApplication<WindowedStartupBackend>) -> (Vec3, Vec3) {
+        app.backend()
+            .world
+            .as_ref()
+            .and_then(PlayWorld::player_eye)
+            .expect("Q1 world keeps its player")
+    }
+
+    /// Facing unit vector for a spawn yaw in degrees.
+    fn windowed_forward_of(yaw_deg: f32) -> (f64, f64) {
+        let yaw = f64::from(yaw_deg).to_radians();
+        (yaw.cos(), yaw.sin())
+    }
+
+    /// Temporary travel diagnostic: sim clock vs exit gate.
+    fn windowed_gate_state(app: &StartupApplication<WindowedStartupBackend>) -> String {
+        let world = windowed_world(app);
+        let now = world.server().simulation().frame().time.as_seconds_f64();
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        format!(
+            "sim={now:.2} gate={:.2} running={} buttons={} pending={:?}",
+            borrowed.intermission.exit_time_seconds,
+            borrowed.intermission.running,
+            borrowed.intermission.buttons,
+            borrowed.pending_travel
+        )
+    }
+
+    /// Pen anchor for the spared target: the farther of the spawn
+    /// eye and the exit volume from the live eye. The exit can sit
+    /// near the run path (e2m4's stall), and a spared hunter penned
+    /// next to the walk trails back mid-lateral and wedges the run.
+    fn windowed_pen_for(
+        world: &mut PlayWorld,
+        exit: &qa_core::identity::ActorId,
+        spawn: Vec3,
+    ) -> Vec3 {
+        let pen = live_volume_center(world, exit);
+        let (eye, _) = world.player_eye().expect("player eye");
+        let dist = |point: Vec3| f64::from(point.x - eye.x).hypot(f64::from(point.y - eye.y));
+        if dist(spawn) >= dist(pen) { spawn } else { pen }
+    }
+
+    /// Temporary stall diagnostic: live monsters within 400u of the eye.
+    fn windowed_near_scan(app: &StartupApplication<WindowedStartupBackend>, eye: Vec3) -> String {
+        let world = windowed_world(app);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let mut dists: Vec<(String, f64)> = Vec::new();
+        for (id, monster) in borrowed.monsters.iter() {
+            if monster.dead {
+                continue;
+            }
+            if let Some(body) = world.server().simulation().body_state(id) {
+                let dx = f64::from(body.origin.x - eye.x);
+                let dy = f64::from(body.origin.y - eye.y);
+                let dz = f64::from(body.origin.z - eye.z);
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist < 400.0 {
+                    dists.push((format!("{:?}", monster.kind), dist));
+                }
+            }
+        }
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+        format!("{} near: {dists:?}", dists.len())
+    }
+
+    /// Run one episode leg: spawn presents and counts, the walk is
+    /// cleared (one spared hunter penned far, everything else gibbed
+    /// — gibs go unsolid instantly, so no converging monster can
+    /// wedge the run), real-input forward/back/strafe
+    /// move, the spared target dies to held fire with the kill
+    /// counter climbing, and the exit rides to the next map through
+    /// the live loop (through the episode scroll when `finale` is
+    /// set). The caller asserts the arrival.
+    fn windowed_play_leg(
+        app: &mut StartupApplication<WindowedStartupBackend>,
+        step_ms: &mut Vec<f64>,
+        total_steps: &mut u64,
+        leg: &WindowedPlayLeg,
+    ) {
+        windowed_drive(app, step_ms, 30);
+        *total_steps += 30;
+        let frame = app.capture_next_frame().expect("spawn capture works");
+        let lit = count_non_black(&frame);
+        eprintln!("live-play: {} spawn frame {lit} lit pixels", leg.label);
+        assert!(lit * 100 > frame.len() / 4, "{} spawn frame is blank", leg.label);
+        // Settle deferred spawns before the census (the census run
+        // soaks the same way).
+        windowed_soak(app, 1.0);
+        {
+            let world = windowed_world(app);
+            assert_eq!(world.map(), leg.map);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().total_monsters,
+                leg.total,
+                "{} arrival census is full",
+                leg.label
+            );
+        }
+        // Top up: the legs prove input motion and held-fire kills,
+        // not survival.
+        {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            live_set_player_health(world, 500.0);
+        }
+        // Spare the nearest combat target at the far pen (exits
+        // touch players only, `client.qc:290`), then gib the walk
+        // clear: gibs go unsolid synchronously, so the run and the
+        // laterals cannot wedge on a converging monster. Totals are
+        // untouched; the combat kill is counted relatively below.
+        // The spawn eye anchors the pen: no input runs between here
+        // and the forward leg, so this is the run's start.
+        let (start_eye, start_angles) = windowed_eye(app);
+        let exit = {
+            let world = windowed_world(app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let exits: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter_map(|(id, trigger)| match &trigger.kind {
+                    Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(exits.len(), leg.exit_count, "{} exits", leg.label);
+            exits
+                .into_iter()
+                .find(|(_, map)| map == leg.exit_map)
+                .map(|(exit, _)| exit)
+                .expect("leg exit")
+        };
+        let spare = {
+            let world = windowed_world(app);
+            let (eye, _) = world.player_eye().expect("player eye");
+            let candidates = (leg.spare)(world);
+            assert!(!candidates.is_empty(), "{} keeps live {}", leg.label, leg.spare_name);
+            let mut best: Option<(qa_core::identity::ActorId, f64)> = None;
+            for id in &candidates {
+                let origin = world
+                    .server()
+                    .simulation()
+                    .body_state(id)
+                    .map(|body| {
+                        let bounds = translated_body_bounds(&body);
+                        qa_core::math::vec3(
+                            (bounds.min.x + bounds.max.x) / 2.0,
+                            (bounds.min.y + bounds.max.y) / 2.0,
+                            (bounds.min.z + bounds.max.z) / 2.0,
+                        )
+                    })
+                    .expect("monster body");
+                let dist = f64::from(origin.x - eye.x).hypot(f64::from(origin.y - eye.y));
+                if best.as_ref().is_none_or(|(_, known)| dist < *known) {
+                    best = Some((id.clone(), dist));
+                }
+            }
+            best.expect("a live spare").0
+        };
+        {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let pen = windowed_pen_for(world, &exit, start_eye);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&spare, pen)
+                .expect("spare pens far");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let victims: Vec<qa_core::identity::ActorId> = borrowed
+                .monsters
+                .keys()
+                .filter(|id| *id != &spare)
+                .cloned()
+                .collect();
+            drop(borrowed);
+            eprintln!("live-play: {} clears {} monsters, spares one {}", leg.label, victims.len(), leg.spare_name);
+            for victim in &victims {
+                live_damage(world, victim, None, 100000.0);
+            }
+        }
+        windowed_drive(app, step_ms, 10);
+        *total_steps += 10;
+        // Forward until the eye stalls, then back and both strafes
+        // from fresh spawn returns through real keys.
+        windowed_press_key(app, 26, 87, true);
+        let mut previous = start_eye;
+        let mut calm = 0;
+        let mut chunks = 0;
+        while chunks < 10 && calm < 2 {
+            windowed_drive(app, step_ms, 30);
+            *total_steps += 30;
+            chunks += 1;
+            let (current, _) = windowed_eye(app);
+            let drift = ((current.x - previous.x) as f64)
+                .hypot((current.y - previous.y) as f64)
+                .hypot((current.z - previous.z) as f64);
+            calm = if drift < 0.5 { calm + 1 } else { 0 };
+            previous = current;
+        }
+        windowed_press_key(app, 26, 87, false);
+        let (fwd_eye, _) = windowed_eye(app);
+        let (fx, fy) = windowed_forward_of(start_angles.y);
+        let along = f64::from(fwd_eye.x - start_eye.x) * fx + f64::from(fwd_eye.y - start_eye.y) * fy;
+        eprintln!("live-play: {} forward advanced {along:.1} units", leg.label);
+        assert!(along > leg.forward_min, "forward stalled immediately: {along:.1}");
+        eprintln!("live-play: {} stall eye {fwd_eye:?} after {chunks} chunks", leg.label);
+        // Back retraces the just-walked corridor, then the strafes
+        // cross it: every move starts from a spot the player reached
+        // by walking (no teleports into possibly-closed doors). The
+        // spared hunter re-pens before each lateral: left roaming it
+        // trails the run up the corridor and wedges the retreat.
+        let repen = |app: &mut StartupApplication<WindowedStartupBackend>| {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let pen = windowed_pen_for(world, &exit, start_eye);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&spare, pen)
+                .expect("spare re-pens far");
+        };
+        let (lx, ly) = (-fy, fx);
+        repen(app);
+        windowed_press_key(app, 22, 83, true);
+        windowed_drive(app, step_ms, 20);
+        *total_steps += 20;
+        windowed_press_key(app, 22, 83, false);
+        let (back_eye, _) = windowed_eye(app);
+        let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
+        eprintln!("live-play: {} back retreated {back_along:.1} units", leg.label);
+        if back_along >= -1.0 {
+            eprintln!(
+                "live-play: {} DIAG back={back_along:.1} eye={back_eye:?} {}",
+                leg.label,
+                windowed_near_scan(app, back_eye)
+            );
+        }
+        assert!(back_along < -1.0, "back did not retreat: {back_along:.1}");
+        repen(app);
+        windowed_press_key(app, 4, 65, true);
+        windowed_drive(app, step_ms, 20);
+        *total_steps += 20;
+        windowed_press_key(app, 4, 65, false);
+        let (strafe_eye, _) = windowed_eye(app);
+        let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
+        eprintln!("live-play: {} strafe-left lateral {lateral:.1} units", leg.label);
+        if lateral <= 1.0 {
+            eprintln!(
+                "live-play: {} DIAG strafeL={lateral:.1} eye={strafe_eye:?} {}",
+                leg.label,
+                windowed_near_scan(app, strafe_eye)
+            );
+        }
+        assert!(lateral > 1.0, "strafe left did not move: {lateral:.1}");
+        repen(app);
+        windowed_press_key(app, 7, 68, true);
+        windowed_drive(app, step_ms, 20);
+        *total_steps += 20;
+        windowed_press_key(app, 7, 68, false);
+        let (strafe_back, _) = windowed_eye(app);
+        let lateral_back =
+            f64::from(strafe_back.x - strafe_eye.x) * lx + f64::from(strafe_back.y - strafe_eye.y) * ly;
+        eprintln!("live-play: {} strafe-right lateral {lateral_back:.1} units", leg.label);
+        if lateral_back >= -1.0 {
+            eprintln!(
+                "live-play: {} DIAG strafeR={lateral_back:.1} eye={strafe_back:?} {}",
+                leg.label,
+                windowed_near_scan(app, strafe_back)
+            );
+        }
+        assert!(lateral_back < -1.0, "strafe right did not move: {lateral_back:.1}");
+        // Combat: the spared target, wounded to 5 hp, dies to held
+        // fire at point blank; the kill counter climbs and shells
+        // drop.
+        {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.player_state.weapon = Q1_IT_SHOTGUN;
+        }
+        let kills_before = windowed_world(app)
+            .q1_behaviors()
+            .expect("Q1 behaviors")
+            .borrow()
+            .killed_monsters;
+        let spot = {
+            let (eye, angles) = windowed_eye(app);
+            let (fx, fy) = windowed_forward_of(angles.y);
+            Vec3 {
+                x: eye.x + (fx * 56.0) as f32,
+                y: eye.y + (fy * 56.0) as f32,
+                z: eye.z - 28.0,
+            }
+        };
+        {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let player = world.player_actor().cloned().expect("player");
+            live_damage(world, &spare, Some(&player), leg.wound);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&spare, spot)
+                .expect("spare places ahead");
+        }
+        windowed_mouse_attack(app, true);
+        let mut killed = false;
+        for _ in 0..40 {
+            windowed_drive(app, step_ms, 30);
+            *total_steps += 30;
+            let kills = windowed_world(app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .killed_monsters;
+            if kills == kills_before + 1 {
+                killed = true;
+                break;
+            }
+        }
+        windowed_mouse_attack(app, false);
+        let (health, shells_left) = {
+            let world = windowed_world(app);
+            let player = world.player_actor().cloned().expect("player");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            (
+                q1_health_of(world.server().simulation(), &player),
+                borrowed.player_ammo.shells,
+            )
+        };
+        eprintln!(
+            "live-play: {} {} killed={killed} player_health={health} shells={shells_left}",
+            leg.label, leg.spare_name
+        );
+        assert!(killed, "held fire never killed the {}", leg.spare_name);
+        assert!(health > 0.0, "the {} killed the player", leg.spare_name);
+        assert!(shells_left < 50.0, "firing spent no shells");
+        // Exit: ride the slipgate through the live loop (through the
+        // episode scroll when the leg carries a finale).
+        {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&exit).expect("exit body");
+            let bounds = translated_body_bounds(&body);
+            let center = qa_core::math::vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            );
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&player, center)
+                .unwrap();
+        }
+        let mut frames = 0;
+        while app.backend().world.as_ref().is_some_and(|world| {
+            world
+                .q1_behaviors()
+                .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+        }) && frames < 1200
+        {
+            windowed_drive(app, step_ms, 10);
+            *total_steps += 10;
+            frames += 10;
+        }
+        assert!(frames < 1200, "exit never entered the intermission");
+        eprintln!("live-play: {} intermission after {frames} frames", leg.label);
+        // One continuous hold from the intermission through the
+        // scroll to travel (a release+press with no sampled step
+        // between desyncs the seat sampler): the poll is
+        // level-triggered and the re-armed gate separates the
+        // exits in time.
+        windowed_mouse_attack(app, true);
+        if let Some(finale) = leg.finale {
+            frames = 0;
+            while app.backend().world.as_ref().is_some_and(|world| {
+                world
+                    .q1_behaviors()
+                    .is_some_and(|behaviors| behaviors.borrow().intermission.running != 2)
+            }) && frames < 2400
+            {
+                windowed_drive(app, step_ms, 10);
+                *total_steps += 10;
+                frames += 10;
+            }
+            assert!(frames < 2400, "scroll never raised");
+            let world = windowed_world(app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale(finale)));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        // Single-step to the flip and release on it: the arrival
+        // world is live, so a held trigger correctly fires there —
+        // the proof releases the instant the map flips so no arrival
+        // step spends the loadout the arrival asserts prove.
+        frames = 0;
+        while app.backend().world.as_ref().is_some_and(|world| world.map() == leg.map) && frames < 2400 {
+            windowed_drive(app, step_ms, 1);
+            *total_steps += 1;
+            frames += 1;
+        }
+        windowed_mouse_attack(app, false);
+        if frames >= 2400 {
+            eprintln!(
+                "live-play: {} DIAG travel STUCK f={frames} {}",
+                leg.label,
+                windowed_gate_state(app)
+            );
+        }
+        assert!(frames < 2400, "poll never travelled off {}", leg.map);
+        eprintln!("live-play: {} travelled after {frames} frames", leg.label);
+    }
+
+    /// Arrival on an episode map: live, fresh census, settled full
+    /// count, armed, unwounded.
+    fn windowed_assert_next_map(app: &mut StartupApplication<WindowedStartupBackend>, map: &str, total: u32) {
+        let world = windowed_world(app);
+        assert_eq!(world.map(), map);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
+            assert_eq!(borrowed.killed_monsters, 0, "fresh level census");
+            eprintln!("live-play: arrived {map} with {} shells", borrowed.player_ammo.shells);
+            assert!(
+                borrowed.player_ammo.shells > 0.0,
+                "arrival is unarmed: {} shells",
+                borrowed.player_ammo.shells
+            );
+        }
+        let arrival = world.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            world
+                .server()
+                .simulation()
+                .combat_state(&arrival)
+                .map(|combat| combat.health),
+            Some(100.0)
+        );
+        // Settle deferred start-go thinks (fish count late in
+        // `swimmonster_start_go`) before the arrival census.
+        windowed_soak(app, 1.0);
+        assert_eq!(
+            windowed_world(app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .total_monsters,
+            total,
+            "{map} arrival census is full"
+        );
+    }
+
+    /// Arrival back on start through the episode scroll: flags kept,
+    /// carry shed for the fresh loadout.
+    fn windowed_assert_start_return(app: &mut StartupApplication<WindowedStartupBackend>) {
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE};
+
+        let world = windowed_world(app);
+        assert_eq!(world.map(), "maps/start.bsp");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.mapname, "start");
+        assert_eq!(borrowed.serverflags, 1, "flags persist");
+        assert_eq!(
+            borrowed.player_items & !Q1_IT_AMMO_BITS,
+            Q1_IT_AXE | Q1_IT_SHOTGUN,
+            "carry shed for the fresh loadout"
+        );
+        assert_eq!(borrowed.player_ammo.shells, 25.0);
+        assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+        let arrival = world.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+            Some(100.0)
+        );
+    }
+
+    /// Q1-0258 (episode leg): the windowed episode-2 run — one
+    /// uninterrupted pass from the e2m1 spawn through every map
+    /// exit to the e2m6 scroll and the start return, proving each
+    /// map separately: spawn presents, forward/back/strafe move
+    /// through real seat inputs, held fire spends shells and kills
+    /// a live monster with the kill counter climbing, and the exit
+    /// ride lands on the next map with carried parms.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2_episode_run() {
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e2m1.bsp".to_string();
+        options.skill = 2;
+        options.mode = GameMode::Singleplayer;
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        let mut step_ms: Vec<f64> = Vec::new();
+        let mut total_steps: u64 = 0;
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m1",
+                map: "maps/e2m1.bsp",
+                total: LIVE_E2M1_SKILL2_TOTAL,
+                spare: live_enforcers,
+                spare_name: "enforcer",
+                wound: 75.0,
+                exit_map: "e2m2",
+                exit_count: 1,
+                forward_min: 20.0,
+                finale: None,
+            },
+        );
+        windowed_assert_next_map(&mut composed.app, "maps/e2m2.bsp", LIVE_E2M2_NATIVE_SKILL2_TOTAL);
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m2",
+                map: "maps/e2m2.bsp",
+                total: LIVE_E2M2_NATIVE_SKILL2_TOTAL,
+                spare: live_knights,
+                spare_name: "knight",
+                wound: 70.0,
+                exit_map: "e2m3",
+                exit_count: 1,
+                forward_min: 20.0,
+                finale: None,
+            },
+        );
+        windowed_assert_next_map(&mut composed.app, "maps/e2m3.bsp", LIVE_E2M3_NATIVE_SKILL2_TOTAL);
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m3",
+                map: "maps/e2m3.bsp",
+                total: LIVE_E2M3_NATIVE_SKILL2_TOTAL,
+                spare: live_ogres,
+                spare_name: "ogre",
+                wound: 195.0,
+                exit_map: "e2m4",
+                exit_count: 2,
+                forward_min: 20.0,
+                finale: None,
+            },
+        );
+        windowed_assert_next_map(&mut composed.app, "maps/e2m4.bsp", LIVE_E2M4_NATIVE_SKILL2_TOTAL);
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m4",
+                map: "maps/e2m4.bsp",
+                total: LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+                spare: live_ogres,
+                spare_name: "ogre",
+                wound: 195.0,
+                exit_map: "e2m5",
+                exit_count: 1,
+                forward_min: 20.0,
+                finale: None,
+            },
+        );
+        windowed_assert_next_map(&mut composed.app, "maps/e2m5.bsp", LIVE_E2M5_NATIVE_SKILL2_TOTAL);
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m5",
+                map: "maps/e2m5.bsp",
+                total: LIVE_E2M5_NATIVE_SKILL2_TOTAL,
+                spare: live_hknights,
+                spare_name: "hell knight",
+                wound: 245.0,
+                exit_map: "e2m6",
+                exit_count: 1,
+                forward_min: 20.0,
+                finale: None,
+            },
+        );
+        windowed_assert_next_map(&mut composed.app, "maps/e2m6.bsp", LIVE_E2M6_NATIVE_SKILL2_TOTAL);
+        // Flag the episode run before the finale leg: the start
+        // return must keep the flag but shed the carry.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("run world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().serverflags = 1;
+        }
+        windowed_play_leg(
+            &mut composed.app,
+            &mut step_ms,
+            &mut total_steps,
+            &WindowedPlayLeg {
+                label: "e2m6",
+                map: "maps/e2m6.bsp",
+                total: LIVE_E2M6_NATIVE_SKILL2_TOTAL,
+                spare: live_ogres,
+                spare_name: "ogre",
+                wound: 195.0,
+                exit_map: "start",
+                exit_count: 1,
+                forward_min: 20.0,
+                finale: Some("e2"),
+            },
+        );
+        windowed_assert_start_return(&mut composed.app);
+        step_ms.sort_by(f64::total_cmp);
+        let mean = step_ms.iter().sum::<f64>() / step_ms.len() as f64;
+        let p95 = step_ms[step_ms.len() * 95 / 100];
+        let max = step_ms[step_ms.len() - 1];
+        eprintln!("live-play: e2 episode run {total_steps} steps, step ms mean {mean:.2} p95 {p95:.2} max {max:.2}");
+        composed.app.close().expect("windowed close works");
     }
 }
