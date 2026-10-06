@@ -39,7 +39,7 @@ use qa_bots::scene::{
 };
 use qa_bots::shared_scene::SharedSceneQueries;
 use qa_core::identity::{ActorId, OwnedActor};
-use qa_core::math::{angle_vectors, vec3, Bounds, Vec3};
+use qa_core::math::{angle_vectors, length3, scale3, vec3, Bounds, Vec3};
 use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
 use qa_world::body::translated_body_bounds;
 use qa_world::combat::{CombatState, RegularArmor};
@@ -169,6 +169,8 @@ pub enum Q1MonsterKind {
     HellKnight,
     /// `monster_tarbaby` (`tarbaby.qc`).
     Tarbaby,
+    /// `monster_shalrath` (`shalrath.qc`).
+    Vore,
 }
 
 impl Q1MonsterKind {
@@ -188,6 +190,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Wizard => "monster_wizard",
             Q1MonsterKind::HellKnight => "monster_hell_knight",
             Q1MonsterKind::Tarbaby => "monster_tarbaby",
+            Q1MonsterKind::Vore => "monster_shalrath",
         }
     }
 
@@ -208,6 +211,7 @@ impl Q1MonsterKind {
             "monster_wizard" => Some(Q1MonsterKind::Wizard),
             "monster_hell_knight" => Some(Q1MonsterKind::HellKnight),
             "monster_tarbaby" => Some(Q1MonsterKind::Tarbaby),
+            "monster_shalrath" => Some(Q1MonsterKind::Vore),
             _ => None,
         }
     }
@@ -444,6 +448,18 @@ pub enum Q1MonsterSeq {
     TbFly,
     /// Spawn death thinks 1-2 (both over the single `exp` frame).
     TbDie,
+    /// Vore stand (one `walk1` hold, `shalrath.qc`).
+    ShStand,
+    /// Vore walk 1-12 (over `walk2-12,walk1`).
+    ShWalk,
+    /// Vore run 1-12 (over `walk2-12,walk1`).
+    ShRun,
+    /// Vore spike cast 1-11 (over `attack1-11`).
+    ShAttack,
+    /// Vore pain 1-5.
+    ShPain,
+    /// Vore death 1-7.
+    ShDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -711,6 +727,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_wizard",
         "monster_hell_knight",
         "monster_tarbaby",
+        "monster_shalrath",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -1257,6 +1274,54 @@ pub const Q1_TARBABY_JUMP_UP: f32 = 200.0;
 /// Spawn death-blast damage (`T_RadiusDamage`, `tbaby_die2`).
 pub const Q1_TARBABY_BLAST_DAMAGE: f64 = 120.0;
 
+/// Vore collision bounds (`VEC_HULL2`, `monster_shalrath`, `shalrath.qc`).
+pub const Q1_VORE_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -32.0,
+        y: -32.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 32.0,
+        y: 32.0,
+        z: 48.0,
+    },
+};
+
+/// Vore health (`monster_shalrath`, `shalrath.qc`).
+pub const Q1_VORE_HEALTH: f64 = 400.0;
+
+/// Vore gib threshold (`shalrath_die`, `shalrath.qc`).
+pub const Q1_VORE_GIB_HEALTH: f64 = -90.0;
+
+/// Vore walk/run stride per think (`shal_walk1..12`, `shal_run1..12`).
+pub const Q1_VORE_GAIT_STEPS: [f64; 12] = [6.0, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 5.0, 0.0, 4.0, 5.0];
+
+/// Vore walk/run model frames (`shal_walk1..12`): the gait opens on
+/// `walk2` and wraps through `walk1` last.
+pub const Q1_VORE_GAIT_FRAMES: [i32; 12] = [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 23];
+
+/// Voreball launch speed (`ShalMissile`, `shalrath.qc`).
+pub const Q1_VOREBALL_SPEED: f32 = 400.0;
+
+/// Voreball homing speed (`ShalHome`).
+pub const Q1_VOREBALL_HOME_SPEED: f32 = 250.0;
+
+/// Voreball nightmare homing speed (`ShalHome`, skill 3).
+pub const Q1_VOREBALL_HOME_SPEED_NIGHTMARE: f32 = 350.0;
+
+/// Voreball homing interval in seconds (`ShalHome`).
+pub const Q1_VOREBALL_HOME_INTERVAL: f64 = 0.2;
+
+/// Voreball blast damage (`T_RadiusDamage`, `ShalMissileTouch`).
+pub const Q1_VOREBALL_BLAST_DAMAGE: f64 = 40.0;
+
+/// Voreball direct damage to zombies (`ShalMissileTouch`).
+pub const Q1_VOREBALL_ZOMBIE_DAMAGE: f64 = 110.0;
+
+/// Vore head model (`shalrath_die`, `shalrath.qc`).
+pub const Q1_VORE_HEAD_MODEL: &str = "progs/h_shal.mdl";
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -1303,6 +1368,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Wizard => (Q1_WIZARD_BOUNDS, Q1_WIZARD_HEALTH),
         Q1MonsterKind::HellKnight => (Q1_HKNIGHT_BOUNDS, Q1_HKNIGHT_HEALTH),
         Q1MonsterKind::Tarbaby => (Q1_TARBABY_BOUNDS, Q1_TARBABY_HEALTH),
+        Q1MonsterKind::Vore => (Q1_VORE_BOUNDS, Q1_VORE_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1803,6 +1869,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Wizard => Some("wizard/wsight.wav"),
         Q1MonsterKind::HellKnight => Some("hknight/sight1.wav"),
         Q1MonsterKind::Tarbaby => Some("blob/sight1.wav"),
+        Q1MonsterKind::Vore => Some("shalrath/sight.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1896,6 +1963,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, 0),
+        Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShStand, 0),
     }
 }
 
@@ -1915,6 +1983,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbWalk, 0),
+        Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShWalk, 0),
     }
 }
 
@@ -1934,6 +2003,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0),
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0),
+        Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShRun, 0),
     }
 }
 
@@ -1956,6 +2026,7 @@ pub fn q1_th_melee(
         Q1MonsterKind::Enforcer => None,
         Q1MonsterKind::Zombie => None,
         Q1MonsterKind::Wizard => None,
+        Q1MonsterKind::Vore => None,
         Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
         Q1MonsterKind::Knight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0)),
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0)),
@@ -2025,6 +2096,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Wizard => Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0)),
         Q1MonsterKind::HellKnight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknMagicC, 0)),
         Q1MonsterKind::Tarbaby => Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0)),
+        Q1MonsterKind::Vore => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShAttack, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -2153,6 +2225,12 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::TbJump => 6,
         Q1MonsterSeq::TbFly => 4,
         Q1MonsterSeq::TbDie => 2,
+        Q1MonsterSeq::ShStand => 1,
+        Q1MonsterSeq::ShWalk => 12,
+        Q1MonsterSeq::ShRun => 12,
+        Q1MonsterSeq::ShAttack => 11,
+        Q1MonsterSeq::ShPain => 5,
+        Q1MonsterSeq::ShDie => 7,
     }
 }
 
@@ -2177,7 +2255,9 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// 54-62, char_a 63-78, magica 79-92, magicb 93-105, char_b
 /// 106-111, slice 112-121, smash 122-132, w_attack 133-154, magicc
 /// 155-165; spawn walk 0-24, run 25-49, jump 50-55, fly 56-59, exp
-/// 60, with stand holding walk1 and both death thinks on exp).
+/// 60, with stand holding walk1 and both death thinks on exp; vore
+/// attack 0-10, pain 11-15, death 16-22, walk 23-34, with stand
+/// holding walk1 and the gaits opening on walk2).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -2200,6 +2280,11 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // (`tbaby_die1..2`, `tarbaby.qc`).
     if seq == Q1MonsterSeq::TbDie {
         return 60;
+    }
+    // The vore gaits open on `walk2` and wrap through `walk1` last
+    // (`shal_walk1..12`, `shalrath.qc`).
+    if seq == Q1MonsterSeq::ShWalk || seq == Q1MonsterSeq::ShRun {
+        return Q1_VORE_GAIT_FRAMES[usize::from(index.min(11))];
     }
     // The fish run skims the odd swim frames (`f_run1..9`, `fish.qc`).
     if seq == Q1MonsterSeq::FishRun {
@@ -2319,6 +2404,12 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::TbJump => 50,
         Q1MonsterSeq::TbFly => 56,
         Q1MonsterSeq::TbDie => 60,
+        Q1MonsterSeq::ShStand => 23,
+        Q1MonsterSeq::ShWalk => 24,
+        Q1MonsterSeq::ShRun => 24,
+        Q1MonsterSeq::ShAttack => 0,
+        Q1MonsterSeq::ShPain => 11,
+        Q1MonsterSeq::ShDie => 16,
     };
     // The volley rewinds `magatt5..2` over its tail (`wizard.qc`).
     if seq == Q1MonsterSeq::WizFast {
@@ -2475,6 +2566,13 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         // The blast removes the body (`BecomeExplosion`), so the
         // death tail never runs; the run is the fallback.
         (_, Q1MonsterSeq::TbDie) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShStand) => Q1MonsterThink::Frame(Q1MonsterSeq::ShStand, 0),
+        (_, Q1MonsterSeq::ShWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::ShWalk, 0),
+        (_, Q1MonsterSeq::ShRun) => Q1MonsterThink::Frame(Q1MonsterSeq::ShRun, 0),
+        (_, Q1MonsterSeq::ShAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShPain) => q1_th_run(kind),
+        // The death tail self-loops (`shalrath.qc`); death never exits.
+        (_, Q1MonsterSeq::ShDie) => Q1MonsterThink::Frame(Q1MonsterSeq::ShDie, index),
     }
 }
 
@@ -2743,6 +2841,27 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
         // Spawns set no `th_pain` (`monster_tarbaby`, `tarbaby.qc`):
         // hits never flinch them.
         Q1MonsterKind::Tarbaby => {}
+        // The hold gates first, then the hurt barks and the pain runs
+        // with a 3 s hold (`shalrath_pain`, `shalrath.qc`).
+        Q1MonsterKind::Vore => {
+            if monster.pain_finished > now {
+                return;
+            }
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shalrath/pain.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.pain_finished = now + 3.0;
+                monster.frame = q1_seq_frame(Q1MonsterSeq::ShPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -2992,6 +3111,32 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::TbDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::TbDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::Vore => {
+            if health < Q1_VORE_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, Q1_VORE_HEAD_MODEL, health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+                return;
+            }
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shalrath/death.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            // Stock drops solidity in `th_die` itself, not in a death
+            // frame (`shalrath_die`).
+            behaviors.solids.remove(actor);
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::ShDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShDie, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -3473,15 +3618,26 @@ pub fn q1_movetarget_touch(
 /// Eye position of a sight party: monsters read their record offset,
 /// the player reads the stock view height, anything else reads raw.
 fn q1_eye_of<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) -> Option<Vec3> {
-    let body = ctx.server.simulation().body_state(actor)?;
-    if let Some(monster) = ctx.behaviors.monsters.get(actor) {
+    q1_actor_eye(ctx.behaviors, ctx.server.simulation(), actor)
+}
+
+/// Shared eye position: monsters read their record offset, the player
+/// reads the stock view height, anything else reads raw. The voreball
+/// homing aims here (`ShalHome`, `shalrath.qc:159`).
+pub(crate) fn q1_actor_eye(
+    behaviors: &Q1NativeBehaviors,
+    simulation: &Simulation,
+    actor: &ActorId,
+) -> Option<Vec3> {
+    let body = simulation.body_state(actor)?;
+    if let Some(monster) = behaviors.monsters.get(actor) {
         return Some(vec3(
             body.origin.x + monster.view_ofs.x,
             body.origin.y + monster.view_ofs.y,
             body.origin.z + monster.view_ofs.z,
         ));
     }
-    if Some(actor) == ctx.behaviors.player.as_ref() {
+    if Some(actor) == behaviors.player.as_ref() {
         return Some(vec3(body.origin.x, body.origin.y, body.origin.z + Q1_VIEW_OFS_Z));
     }
     Some(body.origin)
@@ -4655,6 +4811,9 @@ fn q1_check_any_attack<L: ServerLogic>(
         // Spawns run the same generic check; both strokes jump
         // (`th_melee` and `th_missile` aim at `tbaby_jump1`).
         Some(Q1MonsterKind::Tarbaby) => q1_check_attack(ctx, actor, memo, true, true),
+        // Vores run the generic check with the missile armed and no
+        // melee (`CheckAttack`, `fight.qc:57`).
+        Some(Q1MonsterKind::Vore) => q1_check_attack(ctx, actor, memo, false, true),
         None => false,
     }
 }
@@ -5824,6 +5983,8 @@ fn q1_wiz_fast_fire<L: ServerLogic>(
             avelocity: vec3(0.0, 0.0, 0.0),
             effects: 0,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: now + Q1_WIZARD_SPIKE_LIFE,
             born_at: now,
         },
@@ -5893,6 +6054,8 @@ fn q1_hknight_shot<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor:
             avelocity: vec3(0.0, 0.0, 0.0),
             effects: 0,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: now + Q1_HKNIGHT_SPIKE_LIFE,
             born_at: now,
         },
@@ -6877,6 +7040,8 @@ fn q1_launch_laser<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, owner:
             avelocity: vec3(0.0, 0.0, 0.0),
             effects: Q1_EF_DIMLIGHT,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + Q1_LASER_LIFETIME,
             born_at: ctx.now,
         },
@@ -7206,6 +7371,8 @@ fn q1_ogre_fire_grenade<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, a
             avelocity: vec3(300.0, 300.0, 300.0),
             effects: 0,
             fuse_at: Some(ctx.now + Q1_GRENADE_FUSE),
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + Q1_GRENADE_FUSE,
             born_at: ctx.now,
         },
@@ -7292,6 +7459,8 @@ fn q1_zombie_fire_flesh<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, a
             avelocity: vec3(3000.0, 1000.0, 2000.0),
             effects: 0,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + Q1_FLESH_LIFETIME,
             born_at: ctx.now,
         },
@@ -8128,6 +8297,114 @@ fn q1_wizard_frame<L: ServerLogic>(
 /// charge, the three fan casts (only `magicc` ever fires), the
 /// three cycling sword combos, the double-barked pain, and the two
 /// deaths with their third-frame unsolid drop.
+/// Stock `ShalMissile` (`shalrath.qc:102`): snap the yaw onto the
+/// enemy, hurl one 400 u/s ball from the chest, arm its homing for
+/// the flight time out (at least 0.1 s), bark the cast, and halve the
+/// attack rate when hurt (`shal_attack7` also re-arms).
+fn q1_vore_fire<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let Some(aim) = q1_eye_of(ctx, &enemy) else {
+        return;
+    };
+    let now = ctx.now;
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.ideal_yaw = q1_vectoyaw(vec3(
+            aim.x - body.origin.x,
+            aim.y - body.origin.y,
+            aim.z - body.origin.z,
+        ));
+    }
+    let org = vec3(body.origin.x, body.origin.y, body.origin.z + 16.0);
+    let delta = vec3(aim.x - org.x, aim.y - org.y, aim.z - org.z);
+    let len = length3(delta);
+    let dir = if len > 0.0 {
+        scale3(delta, 1.0 / len)
+    } else {
+        vec3(0.0, 0.0, 1.0)
+    };
+    let flight = if len > 0.0 { len / Q1_VOREBALL_SPEED } else { 0.0 };
+    #[allow(clippy::cast_possible_truncation)]
+    let flight = flight as f64;
+    let me = actor.clone();
+    let _ignored = q1_spawn_missile(
+        &mut *ctx.server,
+        &mut *ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::VoreBall,
+            owner: me,
+            origin: org,
+            velocity: vec3(
+                dir.x * Q1_VOREBALL_SPEED,
+                dir.y * Q1_VOREBALL_SPEED,
+                dir.z * Q1_VOREBALL_SPEED,
+            ),
+            avelocity: vec3(0.0, 0.0, 0.0),
+            effects: 0,
+            fuse_at: None,
+            home_enemy: Some(enemy),
+            home_at: Some(now + flight.max(0.1)),
+            remove_at: now + 5.0,
+            born_at: now,
+        },
+    );
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "shalrath/attack.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        let hurt = ctx
+            .server
+            .simulation()
+            .combat_state(actor)
+            .is_some_and(|combat| combat.health < Q1_VORE_HEALTH);
+        monster.attack_finished = now + if hurt { 4.0 } else { 2.0 };
+    }
+}
+
+/// One vore `$frame` body (`shalrath.qc`): the turning stand, the
+/// 12-stride walk/run gaits, the face-then-hurl cast, and the quiet
+/// pain and death tails.
+#[allow(clippy::too_many_lines)]
+fn q1_vore_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::ShStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::ShWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_VORE_GAIT_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::ShRun, _) => {
+            q1_ai_run(ctx, actor, Q1_VORE_GAIT_STEPS[usize::from(index)]);
+        }
+        // The first cast frame faces the enemy, the seventh hurls the
+        // ball (`shal_attack1`, `shal_attack7`).
+        (Q1MonsterSeq::ShAttack, 0) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::ShAttack, 6) => q1_vore_fire(ctx, actor),
+        (Q1MonsterSeq::ShAttack, _) => {}
+        (Q1MonsterSeq::ShPain, _) => {}
+        (Q1MonsterSeq::ShDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 fn q1_hknight_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
     actor: &ActorId,
@@ -8296,6 +8573,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Wizard => q1_wizard_frame(ctx, actor, seq, index),
         Q1MonsterKind::HellKnight => q1_hknight_frame(ctx, actor, seq, index),
         Q1MonsterKind::Tarbaby => q1_tarbaby_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Vore => q1_vore_frame(ctx, actor, seq, index),
     }
 }
 
@@ -8461,6 +8739,10 @@ mod tests {
         monster_fields("monster_tarbaby", pairs)
     }
 
+    fn vore_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_shalrath", pairs)
+    }
+
     fn spawn_monster(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
@@ -8561,6 +8843,14 @@ mod tests {
     }
 
     fn spawn_tarbaby(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_vore(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -8712,6 +9002,14 @@ mod tests {
         tarbaby: &ActorId,
     ) {
         arm_monster(server, behaviors, tarbaby);
+    }
+
+    fn arm_vore(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        vore: &ActorId,
+    ) {
+        arm_monster(server, behaviors, vore);
     }
 
     #[test]
@@ -11858,6 +12156,209 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Tarbaby, TbDie, 1),
             q1_th_run(Q1MonsterKind::Tarbaby)
+        );
+    }
+
+    #[test]
+    fn vore_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = vore_fields(&[]);
+        let vore = spawn_vore(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(vore.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_VORE_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_VORE_BOUNDS.max);
+        let combat = server.simulation().combat_state(vore.id()).unwrap();
+        assert_eq!(combat.health, Q1_VORE_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(vore.id()));
+        let monster = behaviors.monsters.get(vore.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Vore);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_shalrath"),
+            Some(Q1MonsterKind::Vore)
+        );
+        assert_eq!(Q1MonsterKind::Vore.classname(), "monster_shalrath");
+        // No melee; the missile stroke hurls the homing ball.
+        assert_eq!(
+            q1_th_melee(
+                &mut behaviors,
+                vore.id(),
+                Q1MonsterKind::Vore,
+                q1_health_of(server.simulation(), vore.id())
+            ),
+            None
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Vore),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShAttack, 0))
+        );
+    }
+
+    #[test]
+    fn vore_pain_barks_flinches_and_holds_three_seconds() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = vore_fields(&[]);
+        let vore = spawn_vore(&mut server, &mut behaviors, &fields);
+        arm_vore(&mut server, &mut behaviors, vore.id());
+        // A live hold gates everything and stays silent.
+        behaviors.monsters.get_mut(vore.id()).unwrap().pain_finished = 10.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, vore.id(), 30.0);
+        assert_eq!(
+            behaviors.monsters.get(vore.id()).unwrap().think,
+            Q1MonsterThink::StartGo
+        );
+        assert!(behaviors.sounds.is_empty(), "held pain stays silent");
+        // Past the hold the hurt barks, flinches, and holds 3 s.
+        behaviors.monsters.get_mut(vore.id()).unwrap().pain_finished = -1.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, vore.id(), 30.0);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "shalrath/pain.wav"),
+            "felt hits bark"
+        );
+        let monster = behaviors.monsters.get(vore.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShPain, 0));
+        assert_eq!(monster.pain_finished, 3.0, "flinching holds three seconds");
+    }
+
+    #[test]
+    fn vore_dies_barking_and_drops_solid() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = vore_fields(&[]);
+        let vore = spawn_vore(&mut server, &mut behaviors, &fields);
+        arm_vore(&mut server, &mut behaviors, vore.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            vore.id(),
+            Some(player.id()),
+            Some(player.id()),
+            Q1_VORE_HEALTH,
+        );
+        assert!(q1_health_of(server.simulation(), vore.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "shalrath/death.wav"),
+            "death barks in th_die itself"
+        );
+        assert!(!behaviors.solids.contains(vore.id()), "corpses drop solid");
+        let monster = behaviors.monsters.get(vore.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShDie, 0));
+        assert!(behaviors.pending_gibs.is_empty(), "clean kills gib nothing");
+    }
+
+    #[test]
+    fn vore_gibs_past_minus_ninety() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = vore_fields(&[]);
+        let vore = spawn_vore(&mut server, &mut behaviors, &fields);
+        arm_vore(&mut server, &mut behaviors, vore.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            vore.id(),
+            Some(player.id()),
+            Some(player.id()),
+            700.0,
+        );
+        // `T_Damage` clamps the corpse at -99 like every other gib test.
+        assert_eq!(q1_health_of(server.simulation(), vore.id()), -99.0);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        let models: Vec<&str> = behaviors.pending_gibs.iter().map(|gib| gib.model.as_str()).collect();
+        assert_eq!(models, ["progs/gib1.mdl", "progs/gib2.mdl", "progs/gib3.mdl"]);
+        assert!(behaviors.gibs.contains_key(vore.id()), "the head keeps the actor");
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+    }
+
+    #[test]
+    fn vore_sight_barks() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = vore_fields(&[]);
+        let vore = spawn_vore(&mut server, &mut behaviors, &fields);
+        arm_vore(&mut server, &mut behaviors, vore.id());
+        behaviors.monsters.get_mut(vore.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, vore.id());
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "shalrath/sight.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(vore.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ShRun, 0)
+        );
+    }
+
+    #[test]
+    fn vore_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(ShStand), 1);
+        assert_eq!(q1_seq_len(ShWalk), 12);
+        assert_eq!(q1_seq_len(ShRun), 12);
+        assert_eq!(q1_seq_len(ShAttack), 11);
+        assert_eq!(q1_seq_len(ShPain), 5);
+        assert_eq!(q1_seq_len(ShDie), 7);
+        // Stand holds `walk1`; the gaits open on `walk2` and wrap
+        // through `walk1` last.
+        assert_eq!(q1_seq_frame(ShStand, 0), 23);
+        assert_eq!(q1_seq_frame(ShWalk, 0), 24);
+        assert_eq!(q1_seq_frame(ShWalk, 10), 34);
+        assert_eq!(q1_seq_frame(ShWalk, 11), 23);
+        assert_eq!(q1_seq_frame(ShRun, 0), 24);
+        assert_eq!(q1_seq_frame(ShRun, 11), 23);
+        assert_eq!(q1_seq_frame(ShAttack, 0), 0);
+        assert_eq!(q1_seq_frame(ShAttack, 10), 10);
+        assert_eq!(q1_seq_frame(ShPain, 0), 11);
+        assert_eq!(q1_seq_frame(ShPain, 4), 15);
+        assert_eq!(q1_seq_frame(ShDie, 0), 16);
+        assert_eq!(q1_seq_frame(ShDie, 6), 22);
+        // Stand and the gaits loop; the cast and pain tails run; the
+        // death tail self-loops.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShStand, 0),
+            Q1MonsterThink::Frame(ShStand, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShWalk, 11),
+            Q1MonsterThink::Frame(ShWalk, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShRun, 11),
+            Q1MonsterThink::Frame(ShRun, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShAttack, 10),
+            q1_th_run(Q1MonsterKind::Vore)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShPain, 4),
+            q1_th_run(Q1MonsterKind::Vore)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Vore, ShDie, 6),
+            Q1MonsterThink::Frame(ShDie, 6)
         );
     }
 }
