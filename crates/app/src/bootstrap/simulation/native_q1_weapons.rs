@@ -150,6 +150,13 @@ pub enum Q1PlayerAttack {
         /// Master-clock seconds of the next think shot.
         next_fire: f64,
     },
+    /// Lightning burst in flight (`player_light1`/`light2`,
+    /// `player.qc:202`): while the trigger stays held, a cell burns
+    /// every 0.1 s think down a 600-unit beam.
+    Lightning {
+        /// Master-clock seconds of the next think shot.
+        next_fire: f64,
+    },
 }
 
 /// One body-queue corpse slot (`CopyToBodyQue`, `world.qc:378`): the
@@ -834,8 +841,8 @@ pub fn q1_fire_super_shotgun<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, 
 
 /// Stock `W_Attack` (`weapons.qc:878`): the ammo gate, the monster
 /// wakeup, and the per-weapon fire. Axe damage lands 0.2 s later at
-/// the swing's frame 3 (`player.qc:152`); nailguns keep firing on
-/// their think while held; only the lightning gun still lands later.
+/// the swing's frame 3 (`player.qc:152`); nailguns and the lightning
+/// gun keep firing on their thinks while held.
 pub fn q1_w_attack<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
     if !q1_w_check_no_ammo(ctx.behaviors) {
         return;
@@ -867,7 +874,23 @@ pub fn q1_w_attack<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
         ctx.behaviors.player_state.weaponframe = 1;
         q1_fire_rocket(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.8;
+    } else if weapon == Q1_IT_LIGHTNING {
+        q1_start_light_burst(ctx);
     }
+}
+
+/// Stock lightning entry (`W_Attack`, `weapons.qc:882`): the first shot
+/// leaves through `player_light1`, the 0.1 s cadence arms, and the
+/// generator whines on `CHAN_AUTO` (`W_CheckNoAmmo` already guaranteed
+/// a cell, so entry always fires).
+fn q1_start_light_burst<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    ctx.behaviors.player_state.weaponframe = 1;
+    q1_fire_lightning(ctx);
+    ctx.behaviors.player_state.attack_finished = ctx.now + 0.1;
+    q1_monster_sound(ctx.behaviors, &ctx.player, 0, "weapons/lstart.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.attack = Q1PlayerAttack::Lightning {
+        next_fire: ctx.now + 0.1,
+    };
 }
 
 /// Stock `player_nail1` entry (`player.qc:173`): fire the first spike
@@ -890,9 +913,10 @@ fn q1_start_nail_burst<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
 }
 
 /// Run one due attack-anim think: the axe swing fires at frame 3
-/// and retires; the nail burst fires every 0.1 s while held (stock
-/// `player_nail1`/`nail2` ping-pong, `player.qc:173`) and retires on
-/// release (`player_run`).
+/// and retires; the nail and lightning bursts fire every 0.1 s while
+/// held (stock `player_nail1`/`nail2`, `player.qc:173`, and
+/// `player_light1`/`light2`, `player.qc:202`) and retire on release
+/// (`player_run`).
 fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, buttons: i32) {
     let attack = ctx.behaviors.player_state.attack;
     match attack {
@@ -917,6 +941,23 @@ fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, button
                 ctx.behaviors.player_state.nail_side = -side;
                 if ctx.behaviors.player_state.attack != Q1PlayerAttack::None {
                     ctx.behaviors.player_state.attack = Q1PlayerAttack::Nail {
+                        next_fire: ctx.now + 0.1,
+                    };
+                }
+            }
+        }
+        Q1PlayerAttack::Lightning { next_fire } => {
+            if buttons & Q1_BUTTON_ATTACK == 0 {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+                return;
+            }
+            if ctx.now >= next_fire {
+                let frame = ctx.behaviors.player_state.weaponframe + 1;
+                ctx.behaviors.player_state.weaponframe = if frame == 5 { 1 } else { frame };
+                q1_fire_lightning(ctx);
+                ctx.behaviors.player_state.attack_finished = ctx.now + 0.1;
+                if ctx.behaviors.player_state.attack != Q1PlayerAttack::None {
+                    ctx.behaviors.player_state.attack = Q1PlayerAttack::Lightning {
                         next_fire: ctx.now + 0.1,
                     };
                 }
@@ -1280,6 +1321,126 @@ pub fn q1_fire_rocket<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             born_at: ctx.now,
         },
     );
+}
+
+/// Stock `W_FireLightning` (`weapons.qc:465`): one cell down a
+/// straight 600-unit beam for 30 damage, the impact crack throttled
+/// to 0.6 s. Firing dry re-arms through the best weapon; firing
+/// past waist-deep water discharges every cell into a `35 * cells`
+/// radius blast instead (no beam, no sound, stock shows nothing).
+pub fn q1_fire_lightning<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    if ctx.behaviors.player_ammo.cells < 1.0 {
+        ctx.behaviors.player_state.weapon = q1_w_best_weapon(ctx.behaviors);
+        q1_w_set_current_ammo(ctx.behaviors);
+        return;
+    }
+    if ctx.behaviors.player_state.water_level > 1 {
+        let cells = ctx.behaviors.player_ammo.cells;
+        ctx.behaviors.player_ammo.cells = 0.0;
+        q1_w_set_current_ammo(ctx.behaviors);
+        let player = ctx.player.clone();
+        q1_t_radius_damage(ctx, &player, &player, 35.0 * cells, None);
+        return;
+    }
+    if ctx.behaviors.player_state.t_width < ctx.now {
+        q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/lhit.wav", 1.0, 1.0);
+        ctx.behaviors.player_state.t_width = ctx.now + 0.6;
+    }
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+    ctx.behaviors.player_ammo.cells -= 1.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.cells;
+    let vectors = angle_vectors(ctx.view_angles);
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    let org = vec3(body.origin.x, body.origin.y, body.origin.z + 16.0);
+    let end = vec3(
+        org.x + vectors.forward.x * 600.0,
+        org.y + vectors.forward.y * 600.0,
+        org.z + vectors.forward.z * 600.0,
+    );
+    // The beam visual ignores monsters (stock passes `TRUE` for
+    // `nomonsters`); the damage traces below do not.
+    let hit = q1_traceline(ctx.scene, org, end, SceneQ1MoveRule::NoMonsters, &ctx.player);
+    ctx.behaviors.temp_ents.push(Q1TempEnt::Lightning {
+        entity: ctx.player.clone(),
+        start: org,
+        end: hit.endpos,
+    });
+    let p2 = vec3(
+        hit.endpos.x + vectors.forward.x * 4.0,
+        hit.endpos.y + vectors.forward.y * 4.0,
+        hit.endpos.z + vectors.forward.z * 4.0,
+    );
+    let from = ctx.player.clone();
+    q1_lightning_damage(ctx, body.origin, p2, &from, 30.0);
+}
+
+/// Stock `LightningDamage` (`weapons.qc:421`): three 30-damage traces
+/// (center plus two offset copies), each new victim wounded once.
+/// The blue impact particles have no drain channel yet (stock
+/// `particle()` is not a temp entity), and the deathmatch victim
+/// launch keys off the engine-global `other` touch residue, which has
+/// no deterministic value here — both stay out with this note.
+fn q1_lightning_damage<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    p1: Vec3,
+    p2: Vec3,
+    from: &ActorId,
+    damage: f64,
+) {
+    let delta = vec3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+    let length = length3(delta);
+    if length == 0.0 {
+        return;
+    }
+    // Stock quirk (`weapons.qc:431`): the lanes assign in order, so
+    // `f_y = f_x` reads the already-negated lane — both lanes land on
+    // `-fy`, and the "parallel" traces skew instead of flanking.
+    let unit = scale3(delta, 1.0 / length);
+    let f = vec3(-unit.y * 16.0, -unit.y * 16.0, 0.0);
+    let e1 = q1_lightning_bolt(ctx, p1, p2, from, damage, None, None);
+    let e2 = q1_lightning_bolt(ctx, add3(p1, f), add3(p2, f), from, damage, e1.as_ref(), None);
+    q1_lightning_bolt(
+        ctx,
+        vec3(p1.x - f.x, p1.y - f.y, p1.z - f.z),
+        vec3(p2.x - f.x, p2.y - f.y, p2.z - f.z),
+        from,
+        damage,
+        e1.as_ref(),
+        e2.as_ref(),
+    );
+}
+
+/// One lightning damage trace: the first blocking damageable not
+/// already wounded by this shot takes the full damage.
+fn q1_lightning_bolt<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    p1: Vec3,
+    p2: Vec3,
+    from: &ActorId,
+    damage: f64,
+    skip1: Option<&ActorId>,
+    skip2: Option<&ActorId>,
+) -> Option<ActorId> {
+    let hit = q1_traceline(ctx.scene, p1, p2, SceneQ1MoveRule::Normal, from);
+    let victim = hit.hit_actor.clone();
+    if let Some(ref target) = victim {
+        if Some(target) != skip1 && Some(target) != skip2 && q1_can_take_damage(ctx.server.simulation(), target) {
+            let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                ctx.behaviors,
+                simulation,
+                movers,
+                triggers,
+                target,
+                Some(from),
+                Some(from),
+                damage,
+            );
+        }
+    }
+    victim
 }
 
 /// Stock gravity in map units per second squared (`sv_gravity`, 800):

@@ -4555,6 +4555,38 @@ mod tests {
             .count()
     }
 
+    /// Swim the player to the first waist-deep retail water found on a
+    /// coarse e1m1 grid (the discharge proof needs real map water, not a
+    /// scripted level). Leaves the player floating there; no movement
+    /// step runs, so gravity never pulls them out.
+    fn live_move_player_to_water(world: &mut PlayWorld) -> qa_core::math::Vec3 {
+        use super::super::simulation::native_q1_weapons::q1_sample_water_level;
+        use crate::bootstrap::play::PlayerClip;
+        let player = world.player_actor().cloned().expect("player");
+        let mut z = -320.0;
+        while z <= 400.0 {
+            let mut x = -1600.0;
+            while x <= 1600.0 {
+                let mut y = -1600.0;
+                while y <= 1600.0 {
+                    let point = vec3(x, y, z);
+                    live_place_player(world, point);
+                    let PlayerClip::Q1(scene) = world.clip.as_ref().expect("Q1 clip") else {
+                        panic!("live Q1 world clips on a Q1 scene");
+                    };
+                    let level = q1_sample_water_level(scene, world.server().simulation(), &player);
+                    if level > 1 {
+                        return point;
+                    }
+                    y += 160.0;
+                }
+                x += 160.0;
+            }
+            z += 80.0;
+        }
+        panic!("retail e1m1 has no waist-deep water on the scan grid");
+    }
+
     /// Hold the attack for `ticks` 60 Hz frames (the nail burst only
     /// keeps firing while the trigger stays down).
     fn live_hold_attack(world: &mut PlayWorld, ticks: u32) {
@@ -4900,5 +4932,172 @@ mod tests {
             );
             assert_eq!(borrowed.missiles.values().count(), 0, "impact retires the rocket");
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0176_lightning_kills_dog() {
+        use super::super::simulation::native_q1_weapons::{Q1PlayerAttack, Q1TempEnt, Q1_IT_LIGHTNING};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_LIGHTNING, 25.0, 0.0, 0.0, 5.0);
+        live_fire(&mut world, 0, 8);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert_eq!(borrowed.player_state.currentammo, 5.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_light.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.cells, 4.0, "one cell per shot");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.1);
+            assert_eq!(borrowed.player_state.t_width, fired_at + 0.6, "impact throttled");
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::Lightning { .. }),
+                "first shot arms the burst"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lstart.wav" && sound.channel == 0),
+                "generator whines on CHAN_AUTO"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lhit.wav" && sound.channel == 1),
+                "impact cracks on CHAN_WEAPON"
+            );
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&player).expect("player body");
+            let org = vec3(body.origin.x, body.origin.y, body.origin.z + 16.0);
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(
+                    ent,
+                    Q1TempEnt::Lightning { entity, start, .. }
+                    if entity == &player && start == &org
+                )),
+                "TE_LIGHTNING2 leaves the muzzle"
+            );
+        }
+        // Exactly one 30-damage wound: the three traces dedup on the dog.
+        assert_eq!(live_dog_health(&world, &dogs[0]), -5.0);
+        // A second shot inside the throttle burns a cell but stays quiet.
+        live_advance(&mut world, 0.2);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.cells, 3.0);
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/lhit.wav")
+                    .count(),
+                1,
+                "lhit throttles for 0.6 s"
+            );
+        }
+        live_advance(&mut world, 0.5);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/lhit.wav")
+                    .count(),
+                2,
+                "lhit returns after the throttle"
+            );
+        }
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_state.attack, Q1PlayerAttack::None);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0177_thunderbolt_discharges_underwater() {
+        use super::super::simulation::native_q1_weapons::{Q1TempEnt, Q1_IT_LIGHTNING};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_LIGHTNING, 25.0, 0.0, 0.0, 2.0);
+        live_move_player_to_water(&mut world);
+        live_fire(&mut world, 0, 8);
+        assert_eq!(
+            world.q1_behaviors().expect("Q1 behaviors").borrow().player_state.weapon,
+            Q1_IT_LIGHTNING
+        );
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 40.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.player_state.water_level > 1,
+                "the proof fires from real map water"
+            );
+            assert_eq!(borrowed.player_ammo.cells, 0.0, "discharge burns every cell");
+            assert!(
+                !borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Lightning { .. })),
+                "discharge shows no beam"
+            );
+            assert!(
+                !borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+                "discharge shows no explosion"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lstart.wav" && sound.channel == 0),
+                "entry still whines (stock plays it outside the fire)"
+            );
+            assert!(
+                !borrowed.sounds.iter().any(|sound| sound.sample == "weapons/lhit.wav"),
+                "discharge cracks nothing"
+            );
+            assert_eq!(borrowed.killed_monsters, 1, "70-radius blast kills the dog");
+        }
+        assert!(live_dog_health(&world, &dogs[0]) < 0.0);
+        // The firer takes half falloff at the blast center and lives: 2
+        // cells deal (70 - ~4) / 2.
+        let player_health = live_player_health(&world);
+        assert!(
+            player_health > 0.0 && player_health < 100.0,
+            "discharge splashes the firer, got {player_health}"
+        );
     }
 }
