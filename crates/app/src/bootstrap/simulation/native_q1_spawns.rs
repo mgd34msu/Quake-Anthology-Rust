@@ -586,6 +586,11 @@ pub struct Q1NativeBehaviors {
     pub items: Q1EdictTable<Q1Item>,
     /// Item bits the player carries (`defs.qc:296-306`).
     pub player_items: u32,
+    /// Active weapon bit (`self.weapon`, 0 until the weapons slice
+    /// deals the spawn loadout).
+    pub player_active_weapon: u32,
+    /// Player frags (`self.frags`, deathmatch scoring drives it).
+    pub player_frags: i32,
     /// Player ammo counts (stock starts 25 shells with the shotgun;
     /// the spawn loadout lands with the weapons slice).
     pub player_ammo: Q1Ammo,
