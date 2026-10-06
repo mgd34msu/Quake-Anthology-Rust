@@ -29,15 +29,20 @@ use qa_bots::scene::{
 };
 use qa_bots::shared_scene::SharedSceneQueries;
 use qa_core::identity::ActorId;
-use qa_core::math::{angle_vectors, vec3, Vec3};
-use qa_core::numeric::Q1_DONOR_PROFILE;
+use qa_core::math::{add3, angle_vectors, length3, scale3, vec3, Bounds, Vec3};
+use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
 use qa_world::body::translated_body_bounds;
+use qa_world::collision::q1::CONTENTS_SKY;
+use qa_world::movement::clip_velocity_q1;
 use qa_world::movement::q1::types::{Q1_CONTENTS_LAVA, Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER};
 use qa_world::server::{Server, ServerLogic};
+use qa_world::spawn::SpawnFields;
 
 use super::native_q1_items::Q1Sprint;
-use super::native_q1_monsters::{q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1_DAMAGE_AIM};
-use super::native_q1_spawns::{q1_can_take_damage, Q1NativeBehaviors};
+use super::native_q1_monsters::{
+    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1MonsterCtx, Q1_DAMAGE_AIM,
+};
+use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
 /// Stock weapon/item bits (`defs.qc:285-298`). Weapon bits double as
 /// `self.weapon` values; selection impulses 1-8 map to them in order.
@@ -137,6 +142,20 @@ pub enum Q1PlayerAttack {
     AxeSwing {
         /// Master-clock seconds of the frame-3 fire.
         fire_at: f64,
+    },
+    /// Nailgun/super-nailgun burst in flight (`player_nail1`/`nail2`,
+    /// `player.qc:173`): while the trigger stays held, a shot leaves
+    /// every 0.1 s think, alternating barrels.
+    Nail {
+        /// Master-clock seconds of the next think shot.
+        next_fire: f64,
+    },
+    /// Lightning burst in flight (`player_light1`/`light2`,
+    /// `player.qc:202`): while the trigger stays held, a cell burns
+    /// every 0.1 s think down a 600-unit beam.
+    Lightning {
+        /// Master-clock seconds of the next think shot.
+        next_fire: f64,
     },
 }
 
@@ -253,6 +272,13 @@ pub enum Q1TempEnt {
     SuperSpike {
         /// Impact point.
         at: Vec3,
+    },
+    /// `TE_BLOOD` at the wound (`SpawnBlood`, `combat.qc`).
+    Blood {
+        /// Wound point.
+        at: Vec3,
+        /// Particle count (stock passes the damage).
+        count: u32,
     },
     /// `TE_EXPLOSION` at the blast center.
     Explosion {
@@ -749,6 +775,7 @@ pub fn q1_fire_bullets<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, sh
             .is_some_and(|actor| q1_can_take_damage(ctx.server.simulation(), actor));
         if damageable {
             let victim = hit.hit_actor.clone().expect("damageable pellet victim");
+            ctx.behaviors.temp_ents.push(Q1TempEnt::Blood { at: org, count: 4 });
             if multi_ent.as_ref() != Some(&victim) {
                 q1_apply_multi_damage(ctx, multi_ent.take(), multi_damage);
                 multi_ent = Some(victim);
@@ -814,8 +841,8 @@ pub fn q1_fire_super_shotgun<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, 
 
 /// Stock `W_Attack` (`weapons.qc:878`): the ammo gate, the monster
 /// wakeup, and the per-weapon fire. Axe damage lands 0.2 s later at
-/// the swing's frame 3 (`player.qc:152`); the remaining five weapons
-/// land in the projectile and lightning slices.
+/// the swing's frame 3 (`player.qc:152`); nailguns and the lightning
+/// gun keep firing on their thinks while held.
 pub fn q1_w_attack<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
     if !q1_w_check_no_ammo(ctx.behaviors) {
         return;
@@ -837,12 +864,60 @@ pub fn q1_w_attack<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
         ctx.behaviors.player_state.weaponframe = 1;
         q1_fire_super_shotgun(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.7;
+    } else if weapon == Q1_IT_NAILGUN || weapon == Q1_IT_SUPER_NAILGUN {
+        q1_start_nail_burst(ctx);
+    } else if weapon == Q1_IT_GRENADE_LAUNCHER {
+        ctx.behaviors.player_state.weaponframe = 1;
+        q1_fire_grenade(ctx);
+        ctx.behaviors.player_state.attack_finished = ctx.now + 0.6;
+    } else if weapon == Q1_IT_ROCKET_LAUNCHER {
+        ctx.behaviors.player_state.weaponframe = 1;
+        q1_fire_rocket(ctx);
+        ctx.behaviors.player_state.attack_finished = ctx.now + 0.8;
+    } else if weapon == Q1_IT_LIGHTNING {
+        q1_start_light_burst(ctx);
     }
 }
 
-/// Run one due attack-anim think: the axe swing fires at frame 3 and
-/// the anim retires (`player_run`).
-fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+/// Stock lightning entry (`W_Attack`, `weapons.qc:882`): the first shot
+/// leaves through `player_light1`, the 0.1 s cadence arms, and the
+/// generator whines on `CHAN_AUTO` (`W_CheckNoAmmo` already guaranteed
+/// a cell, so entry always fires).
+fn q1_start_light_burst<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    ctx.behaviors.player_state.weaponframe = 1;
+    q1_fire_lightning(ctx);
+    ctx.behaviors.player_state.attack_finished = ctx.now + 0.1;
+    q1_monster_sound(ctx.behaviors, &ctx.player, 0, "weapons/lstart.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.attack = Q1PlayerAttack::Lightning {
+        next_fire: ctx.now + 0.1,
+    };
+}
+
+/// Stock `player_nail1` entry (`player.qc:173`): fire the first spike
+/// off the current barrel, flip barrels, and arm the 0.1 s think.
+fn q1_start_nail_burst<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    ctx.behaviors.player_state.weaponframe = 1;
+    let side = ctx.behaviors.player_state.nail_side;
+    q1_fire_spikes(ctx, side);
+    ctx.behaviors.player_state.nail_side = -side;
+    // A dry fire re-arms through the best weapon (`W_SetCurrentAmmo`
+    // retires the burst); otherwise the think owns the trigger now.
+    if ctx.behaviors.player_state.attack == Q1PlayerAttack::None
+        && (ctx.behaviors.player_state.weapon == Q1_IT_NAILGUN
+            || ctx.behaviors.player_state.weapon == Q1_IT_SUPER_NAILGUN)
+    {
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::Nail {
+            next_fire: ctx.now + 0.1,
+        };
+    }
+}
+
+/// Run one due attack-anim think: the axe swing fires at frame 3
+/// and retires; the nail and lightning bursts fire every 0.1 s while
+/// held (stock `player_nail1`/`nail2`, `player.qc:173`, and
+/// `player_light1`/`light2`, `player.qc:202`) and retire on release
+/// (`player_run`).
+fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, buttons: i32) {
     let attack = ctx.behaviors.player_state.attack;
     match attack {
         Q1PlayerAttack::None => {}
@@ -851,6 +926,41 @@ fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
                 ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
                 ctx.behaviors.player_state.weaponframe = 3;
                 q1_fire_axe(ctx);
+            }
+        }
+        Q1PlayerAttack::Nail { next_fire } => {
+            if buttons & Q1_BUTTON_ATTACK == 0 {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+                return;
+            }
+            if ctx.now >= next_fire {
+                let frame = ctx.behaviors.player_state.weaponframe + 1;
+                ctx.behaviors.player_state.weaponframe = if frame == 9 { 1 } else { frame };
+                let side = ctx.behaviors.player_state.nail_side;
+                q1_fire_spikes(ctx, side);
+                ctx.behaviors.player_state.nail_side = -side;
+                if ctx.behaviors.player_state.attack != Q1PlayerAttack::None {
+                    ctx.behaviors.player_state.attack = Q1PlayerAttack::Nail {
+                        next_fire: ctx.now + 0.1,
+                    };
+                }
+            }
+        }
+        Q1PlayerAttack::Lightning { next_fire } => {
+            if buttons & Q1_BUTTON_ATTACK == 0 {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+                return;
+            }
+            if ctx.now >= next_fire {
+                let frame = ctx.behaviors.player_state.weaponframe + 1;
+                ctx.behaviors.player_state.weaponframe = if frame == 5 { 1 } else { frame };
+                q1_fire_lightning(ctx);
+                ctx.behaviors.player_state.attack_finished = ctx.now + 0.1;
+                if ctx.behaviors.player_state.attack != Q1PlayerAttack::None {
+                    ctx.behaviors.player_state.attack = Q1PlayerAttack::Lightning {
+                        next_fire: ctx.now + 0.1,
+                    };
+                }
             }
         }
     }
@@ -905,7 +1015,8 @@ pub fn q1_weapon_pass<L: ServerLogic>(
         now,
     };
     q1_w_weapon_frame(&mut ctx, buttons, impulse);
-    q1_attack_think(&mut ctx);
+    q1_attack_think(&mut ctx, buttons);
+    q1_missile_pass(&mut ctx);
 }
 
 /// Stock water level (`SV_CheckWater` shape): the deepest of feet,
@@ -947,6 +1058,849 @@ pub fn q1_sample_water_level(
         level += 1;
     }
     level
+}
+
+/// Stock missile kinds (`launch_spike`, `W_FireGrenade`, `W_FireRocket`,
+/// `weapons.qc:607-747`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q1MissileKind {
+    /// Nailgun spike: 9 damage (`spike_touch`).
+    Spike,
+    /// Super-nailgun spike: 18 damage (`superspike_touch`).
+    SuperSpike,
+    /// Rocket: 100-120 direct plus 120 radius (`T_MissileTouch`).
+    Rocket,
+    /// Grenade: 120 radius on fuse or damageable contact (`GrenadeTouch`).
+    Grenade,
+}
+
+impl Q1MissileKind {
+    /// Stock classname for the kind.
+    #[must_use]
+    pub fn classname(self) -> &'static str {
+        match self {
+            Q1MissileKind::Spike => "spike",
+            Q1MissileKind::SuperSpike => "superspike",
+            Q1MissileKind::Rocket => "missile",
+            Q1MissileKind::Grenade => "grenade",
+        }
+    }
+}
+
+/// Live missile record: spikes, rockets, and grenades in flight.
+/// Position and velocity ride the sim body; the fuse and kind ride here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1Missile {
+    /// Missile kind.
+    pub kind: Q1MissileKind,
+    /// Firing player (touches skip the owner, stock `other == owner`).
+    pub owner: ActorId,
+    /// Angular velocity in degrees per second (grenades spin 300s).
+    pub avelocity: Vec3,
+    /// Master-clock fuse instant for grenades (`None` otherwise).
+    pub fuse_at: Option<f64>,
+    /// Master-clock removal instant (spikes 6 s, rockets 5 s).
+    pub remove_at: f64,
+    /// Whether the grenade settled (stock `FL_ONGROUND` rest).
+    pub onground: bool,
+    /// Master-clock spawn instant: stock moves missiles from the next
+    /// frame on (`SV_Physics` runs after gamecode), so the spawn pass
+    /// never moves them.
+    pub born_at: f64,
+}
+
+/// Stock `spawn()` parameters for one missile: the fire functions fill
+/// every field (stock assigns each edict field explicitly).
+pub struct Q1MissileSpawn {
+    /// Spike, super spike, grenade, or rocket.
+    pub kind: Q1MissileKind,
+    /// Firing player (touch immunity, radius credit).
+    pub owner: ActorId,
+    /// Spawn origin.
+    pub origin: Vec3,
+    /// Initial velocity.
+    pub velocity: Vec3,
+    /// Spin in degrees per second (grenades tumble at 300).
+    pub avelocity: Vec3,
+    /// Master-clock detonation for grenades (`None` flies straight).
+    pub fuse_at: Option<f64>,
+    /// Master-clock `SUB_Remove` for flyers.
+    pub remove_at: f64,
+    /// Master-clock spawn instant (no movement in the spawn pass).
+    pub born_at: f64,
+}
+
+/// Stock `spawn()` for a missile: a point-sized unsolid body with toss
+/// velocity plus its gamecode record. Drops on spawn failure (callers
+/// are infallible gamecode).
+pub fn q1_spawn_missile<L: ServerLogic>(
+    server: &mut Server<L>,
+    behaviors: &mut Q1NativeBehaviors,
+    spawn: Q1MissileSpawn,
+) -> Option<ActorId> {
+    let fields = SpawnFields {
+        classname: "q1:missile".to_string(),
+        origin: spawn.origin,
+        ..SpawnFields::default()
+    };
+    let actor = server.spawn_entity(&fields).ok()?;
+    let simulation = server.simulation_mut();
+    let point = Bounds {
+        min: vec3(0.0, 0.0, 0.0),
+        max: vec3(0.0, 0.0, 0.0),
+    };
+    if simulation.set_body_bounds(actor.id(), point).is_err()
+        || simulation.set_body_velocity(actor.id(), spawn.velocity).is_err()
+    {
+        let _ignored = simulation.release(&actor);
+        return None;
+    }
+    behaviors.missiles.insert(
+        actor.id(),
+        Q1Missile {
+            kind: spawn.kind,
+            owner: spawn.owner,
+            avelocity: spawn.avelocity,
+            fuse_at: spawn.fuse_at,
+            remove_at: spawn.remove_at,
+            onground: false,
+            born_at: spawn.born_at,
+        },
+    );
+    Some(actor.id().clone())
+}
+
+/// Stock `launch_spike` (`weapons.qc:607`): a 1000 u/s flymissile from
+/// `origin` down `dir`, living 6 s.
+pub fn q1_launch_spike<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    origin: Vec3,
+    dir: Vec3,
+    super_spike: bool,
+) {
+    let velocity = vec3(dir.x * 1000.0, dir.y * 1000.0, dir.z * 1000.0);
+    q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: if super_spike {
+                Q1MissileKind::SuperSpike
+            } else {
+                Q1MissileKind::Spike
+            },
+            owner: ctx.player.clone(),
+            origin,
+            velocity,
+            avelocity: vec3(0.0, 0.0, 0.0),
+            fuse_at: None,
+            remove_at: ctx.now + 6.0,
+            born_at: ctx.now,
+        },
+    );
+}
+
+/// Stock `W_FireSuperSpikes` (`weapons.qc:627`): two nails, an
+/// 18-damage super spike, view kick -2.
+pub fn q1_fire_super_spikes<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/spike2.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.attack_finished = ctx.now + 0.2;
+    ctx.behaviors.player_ammo.nails -= 2.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.nails;
+    let vectors = angle_vectors(ctx.view_angles);
+    let dir = q1_aim(ctx.server, ctx.behaviors, ctx.scene, &ctx.player, vectors.forward);
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    q1_launch_spike(ctx, vec3(body.origin.x, body.origin.y, body.origin.z + 16.0), dir, true);
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+}
+
+/// Stock `W_FireSpikes` (`weapons.qc:643`): the super nailgun spends
+/// two nails per shot while it can (one nail left fires the plain
+/// nailgun's single spike instead); the nailgun spends one. Firing
+/// dry re-arms through the best weapon and returns.
+pub fn q1_fire_spikes<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, side: f32) {
+    if ctx.behaviors.player_ammo.nails >= 2.0 && ctx.behaviors.player_state.weapon == Q1_IT_SUPER_NAILGUN {
+        q1_fire_super_spikes(ctx);
+        return;
+    }
+    if ctx.behaviors.player_ammo.nails < 1.0 {
+        ctx.behaviors.player_state.weapon = q1_w_best_weapon(ctx.behaviors);
+        q1_w_set_current_ammo(ctx.behaviors);
+        return;
+    }
+    q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/rocket1i.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.attack_finished = ctx.now + 0.2;
+    ctx.behaviors.player_ammo.nails -= 1.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.nails;
+    let vectors = angle_vectors(ctx.view_angles);
+    let dir = q1_aim(ctx.server, ctx.behaviors, ctx.scene, &ctx.player, vectors.forward);
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    q1_launch_spike(
+        ctx,
+        vec3(
+            body.origin.x + vectors.right.x * side,
+            body.origin.y + vectors.right.y * side,
+            body.origin.z + 16.0 + vectors.right.z * side,
+        ),
+        dir,
+        false,
+    );
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+}
+
+/// Stock `W_FireGrenade` (`weapons.qc:549`): one rocket, a bouncing
+/// grenade with a 2.5 s fuse, view kick -2. A pitched view lobs along
+/// it; a level view fires the aim direction flat with a +200 rise.
+pub fn q1_fire_grenade<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    ctx.behaviors.player_ammo.rockets -= 1.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.rockets;
+    q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/grenade.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+    let vectors = angle_vectors(ctx.view_angles);
+    let velocity = if ctx.view_angles.x != 0.0 {
+        let jx = q1_monster_crandom(ctx.behaviors);
+        let jy = q1_monster_crandom(ctx.behaviors);
+        vec3(
+            vectors.forward.x * 600.0 + vectors.up.x * 200.0 + jx * vectors.right.x * 10.0 + jy * vectors.up.x * 10.0,
+            vectors.forward.y * 600.0 + vectors.up.y * 200.0 + jx * vectors.right.y * 10.0 + jy * vectors.up.y * 10.0,
+            vectors.forward.z * 600.0 + vectors.up.z * 200.0 + jx * vectors.right.z * 10.0 + jy * vectors.up.z * 10.0,
+        )
+    } else {
+        let dir = q1_aim(ctx.server, ctx.behaviors, ctx.scene, &ctx.player, vectors.forward);
+        vec3(dir.x * 600.0, dir.y * 600.0, 200.0)
+    };
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::Grenade,
+            owner: ctx.player.clone(),
+            origin: body.origin,
+            velocity,
+            avelocity: vec3(300.0, 300.0, 300.0),
+            fuse_at: Some(ctx.now + 2.5),
+            remove_at: ctx.now + 2.5,
+            born_at: ctx.now,
+        },
+    );
+}
+
+/// Stock `W_FireRocket` (`weapons.qc:374`): one rocket, a 1000 u/s
+/// missile living 5 s, view kick -2.
+pub fn q1_fire_rocket<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    ctx.behaviors.player_ammo.rockets -= 1.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.rockets;
+    q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/sgun1.wav", 1.0, 1.0);
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+    let vectors = angle_vectors(ctx.view_angles);
+    let dir = q1_aim(ctx.server, ctx.behaviors, ctx.scene, &ctx.player, vectors.forward);
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::Rocket,
+            owner: ctx.player.clone(),
+            origin: vec3(
+                body.origin.x + vectors.forward.x * 8.0,
+                body.origin.y + vectors.forward.y * 8.0,
+                body.origin.z + vectors.forward.z * 8.0 + 16.0,
+            ),
+            velocity: vec3(dir.x * 1000.0, dir.y * 1000.0, dir.z * 1000.0),
+            avelocity: vec3(0.0, 0.0, 0.0),
+            fuse_at: None,
+            remove_at: ctx.now + 5.0,
+            born_at: ctx.now,
+        },
+    );
+}
+
+/// Stock `W_FireLightning` (`weapons.qc:465`): one cell down a
+/// straight 600-unit beam for 30 damage, the impact crack throttled
+/// to 0.6 s. Firing dry re-arms through the best weapon; firing
+/// past waist-deep water discharges every cell into a `35 * cells`
+/// radius blast instead (no beam, no sound, stock shows nothing).
+pub fn q1_fire_lightning<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    if ctx.behaviors.player_ammo.cells < 1.0 {
+        ctx.behaviors.player_state.weapon = q1_w_best_weapon(ctx.behaviors);
+        q1_w_set_current_ammo(ctx.behaviors);
+        return;
+    }
+    if ctx.behaviors.player_state.water_level > 1 {
+        let cells = ctx.behaviors.player_ammo.cells;
+        ctx.behaviors.player_ammo.cells = 0.0;
+        q1_w_set_current_ammo(ctx.behaviors);
+        let player = ctx.player.clone();
+        q1_t_radius_damage(ctx, &player, &player, 35.0 * cells, None);
+        return;
+    }
+    if ctx.behaviors.player_state.t_width < ctx.now {
+        q1_monster_sound(ctx.behaviors, &ctx.player, 1, "weapons/lhit.wav", 1.0, 1.0);
+        ctx.behaviors.player_state.t_width = ctx.now + 0.6;
+    }
+    ctx.behaviors.player_state.punchangle = vec3(-2.0, 0.0, 0.0);
+    ctx.behaviors.player_ammo.cells -= 1.0;
+    ctx.behaviors.player_state.currentammo = ctx.behaviors.player_ammo.cells;
+    let vectors = angle_vectors(ctx.view_angles);
+    let Some(body) = ctx.server.simulation().body_state(&ctx.player) else {
+        return;
+    };
+    let org = vec3(body.origin.x, body.origin.y, body.origin.z + 16.0);
+    let end = vec3(
+        org.x + vectors.forward.x * 600.0,
+        org.y + vectors.forward.y * 600.0,
+        org.z + vectors.forward.z * 600.0,
+    );
+    // The beam visual ignores monsters (stock passes `TRUE` for
+    // `nomonsters`); the damage traces below do not.
+    let hit = q1_traceline(ctx.scene, org, end, SceneQ1MoveRule::NoMonsters, &ctx.player);
+    ctx.behaviors.temp_ents.push(Q1TempEnt::Lightning {
+        entity: ctx.player.clone(),
+        start: org,
+        end: hit.endpos,
+    });
+    let p2 = vec3(
+        hit.endpos.x + vectors.forward.x * 4.0,
+        hit.endpos.y + vectors.forward.y * 4.0,
+        hit.endpos.z + vectors.forward.z * 4.0,
+    );
+    let from = ctx.player.clone();
+    q1_lightning_damage(ctx, body.origin, p2, &from, 30.0);
+}
+
+/// Stock `LightningDamage` (`weapons.qc:421`): three 30-damage traces
+/// (center plus two offset copies), each new victim wounded once.
+/// The blue impact particles have no drain channel yet (stock
+/// `particle()` is not a temp entity), and the deathmatch victim
+/// launch keys off the engine-global `other` touch residue, which has
+/// no deterministic value here — both stay out with this note.
+fn q1_lightning_damage<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    p1: Vec3,
+    p2: Vec3,
+    from: &ActorId,
+    damage: f64,
+) {
+    let delta = vec3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+    let length = length3(delta);
+    if length == 0.0 {
+        return;
+    }
+    // Stock quirk (`weapons.qc:431`): the lanes assign in order, so
+    // `f_y = f_x` reads the already-negated lane — both lanes land on
+    // `-fy`, and the "parallel" traces skew instead of flanking.
+    let unit = scale3(delta, 1.0 / length);
+    let f = vec3(-unit.y * 16.0, -unit.y * 16.0, 0.0);
+    let e1 = q1_lightning_bolt(ctx, p1, p2, from, damage, None, None);
+    let e2 = q1_lightning_bolt(ctx, add3(p1, f), add3(p2, f), from, damage, e1.as_ref(), None);
+    q1_lightning_bolt(
+        ctx,
+        vec3(p1.x - f.x, p1.y - f.y, p1.z - f.z),
+        vec3(p2.x - f.x, p2.y - f.y, p2.z - f.z),
+        from,
+        damage,
+        e1.as_ref(),
+        e2.as_ref(),
+    );
+}
+
+/// One lightning damage trace: the first blocking damageable not
+/// already wounded by this shot takes the full damage.
+fn q1_lightning_bolt<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    p1: Vec3,
+    p2: Vec3,
+    from: &ActorId,
+    damage: f64,
+    skip1: Option<&ActorId>,
+    skip2: Option<&ActorId>,
+) -> Option<ActorId> {
+    let hit = q1_traceline(ctx.scene, p1, p2, SceneQ1MoveRule::Normal, from);
+    let victim = hit.hit_actor.clone();
+    if let Some(ref target) = victim {
+        if Some(target) != skip1 && Some(target) != skip2 && q1_can_take_damage(ctx.server.simulation(), target) {
+            let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                ctx.behaviors,
+                simulation,
+                movers,
+                triggers,
+                target,
+                Some(from),
+                Some(from),
+                damage,
+            );
+        }
+    }
+    victim
+}
+
+/// Stock gravity in map units per second squared (`sv_gravity`, 800):
+/// grenades integrate it every pass (`SV_Physics_Toss`, `sv_phys.c`).
+const Q1_GRAVITY: f32 = 800.0;
+
+/// Longest single missile trace in map units: a pass subdivides longer
+/// travel so fast missiles cannot tunnel past thin targets at low tick
+/// rates (the engine moves once per frame; slices only shorten legs).
+const Q1_MISSILE_SUBSTEP: f32 = 20.0;
+
+/// Run one missile pass: fuses and lifetimes first (stock `SV_RunThink`
+/// runs before movement), then fly and bounce moves with touch dispatch.
+fn q1_missile_pass<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
+    let dt = (ctx.server.simulation().frame().elapsed.as_seconds_f64() as f32).max(0.0);
+    let actors: Vec<ActorId> = ctx.behaviors.missiles.keys().cloned().collect();
+    for actor in actors {
+        q1_missile_actor(ctx, &actor, dt);
+    }
+}
+
+/// Run one missile record: the fuse and lifetime think before movement
+/// (stock `SV_RunThink` order); settled grenades wait out their fuse.
+fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor: &ActorId, dt: f32) {
+    let Some(missile) = ctx.behaviors.missiles.get(actor).cloned() else {
+        return;
+    };
+    if missile.fuse_at.is_some_and(|at| at <= ctx.now) {
+        q1_grenade_explode(ctx, actor, None);
+        return;
+    }
+    if missile.remove_at <= ctx.now {
+        q1_remove_missile(ctx, actor);
+        return;
+    }
+    if missile.onground {
+        return;
+    }
+    if missile.born_at == ctx.now {
+        return;
+    }
+    match missile.kind {
+        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket => {
+            q1_fly_missile(ctx, actor, &missile, dt);
+        }
+        Q1MissileKind::Grenade => q1_bounce_grenade(ctx, actor, &missile, dt),
+    }
+}
+
+/// Stock fly-missile move (`SV_Physics` `MOVETYPE_FLYMISSILE`): straight
+/// travel with touch dispatch on the first blocking hit (no gravity,
+/// no bounce; `sv_phys.c`).
+fn q1_fly_missile<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    dt: f32,
+) {
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        q1_remove_missile(ctx, actor);
+        return;
+    };
+    let start = body.origin;
+    let travel = scale3(body.velocity, dt);
+    let steps = ((length3(travel) / Q1_MISSILE_SUBSTEP).ceil() as u32).max(1);
+    let mut from = start;
+    for step in 1..=steps {
+        #[allow(clippy::cast_precision_loss)]
+        let to = add3(start, scale3(travel, step as f32 / steps as f32));
+        if !q1_fly_leg(ctx, actor, missile, from, to) {
+            return;
+        }
+        from = to;
+    }
+    let _ignored = ctx.server.simulation_mut().set_body_origin(actor, from);
+}
+
+/// Trace one flight leg: `true` keeps flying past `to`, `false` means a
+/// touch consumed the flight. Owner and trigger hits never block (the
+/// engine never clips triggers, and every QC touch refuses its owner),
+/// so the leg re-traces past them.
+fn q1_fly_leg<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
+    let mut leg = from;
+    for _ in 0..5 {
+        let hit = q1_traceline(ctx.scene, leg, to, SceneQ1MoveRule::Missile, actor);
+        if hit.fraction >= 1.0 {
+            return true;
+        }
+        let _ignored = ctx.server.simulation_mut().set_body_origin(actor, hit.endpos);
+        if q1_missile_impact(ctx, actor, missile, &hit) {
+            return false;
+        }
+        leg = hit.endpos;
+    }
+    true
+}
+
+/// Stock toss move (`SV_Physics_Toss`, `sv_phys.c`): gravity integrates
+/// before the push, and the clip runs after the touch each pass.
+fn q1_bounce_grenade<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    dt: f32,
+) {
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        q1_remove_missile(ctx, actor);
+        return;
+    };
+    let velocity = vec3(body.velocity.x, body.velocity.y, body.velocity.z - Q1_GRAVITY * dt);
+    // Stock commits gravity before the push, so a touch mid-pass clips
+    // the integrated velocity, not last pass's.
+    let _ignored = ctx.server.simulation_mut().set_body_velocity(actor, velocity);
+    let start = body.origin;
+    let travel = scale3(velocity, dt);
+    let steps = ((length3(travel) / Q1_MISSILE_SUBSTEP).ceil() as u32).max(1);
+    let mut from = start;
+    for step in 1..=steps {
+        #[allow(clippy::cast_precision_loss)]
+        let to = add3(start, scale3(travel, step as f32 / steps as f32));
+        if !q1_bounce_leg(ctx, actor, missile, from, to) {
+            return;
+        }
+        from = to;
+    }
+    let _ignored = ctx.server.simulation_mut().set_body_origin(actor, from);
+}
+
+/// Trace one bounce leg: gravity already committed, so a blocking hit
+/// rewrites the velocity through the bounce clip instead.
+fn q1_bounce_leg<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
+    let mut leg = from;
+    for _ in 0..5 {
+        let hit = q1_traceline(ctx.scene, leg, to, SceneQ1MoveRule::Missile, actor);
+        if hit.fraction >= 1.0 {
+            return true;
+        }
+        let _ignored = ctx.server.simulation_mut().set_body_origin(actor, hit.endpos);
+        if q1_missile_impact(ctx, actor, missile, &hit) {
+            return false;
+        }
+        leg = hit.endpos;
+    }
+    true
+}
+
+/// Stock sky read for missile touches: `pointcontents(self.origin) ==
+/// CONTENT_SKY` (`combat.qc` spike/rocket touches).
+fn q1_point_is_sky(scene: &SharedSceneQueries, point: Vec3) -> bool {
+    let query = ScenePointContentsQuery {
+        point,
+        target: SceneQueryTarget::World,
+        policy: SceneTracePolicy::Q1 {
+            move_rule: SceneQ1MoveRule::Missile,
+            hull: None,
+        },
+        numeric: Q1_DONOR_PROFILE,
+        pass_actor: None,
+    };
+    matches!(
+        scene.point_contents(&query),
+        Ok(ScenePointContentsResult::Q1 { contents }) if contents == CONTENTS_SKY
+    )
+}
+
+/// Dispatch one missile impact: `true` ends the flight (a touch owned
+/// the hit), `false` flies on through the owner and trigger volumes.
+fn q1_missile_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) -> bool {
+    if hit.hit_actor.as_ref().is_some_and(|other| other == &missile.owner) {
+        return false;
+    }
+    if hit
+        .hit_actor
+        .as_ref()
+        .is_some_and(|other| ctx.server.simulation_and_triggers().1.is_trigger(other))
+    {
+        return false;
+    }
+    // Sky swallows spikes and rockets at the surface (`spike_touch` and
+    // `T_MissileTouch` check `pointcontents(self.origin) == CONTENT_SKY`);
+    // grenades bounce off the sky face like any other solid.
+    if missile.kind != Q1MissileKind::Grenade && q1_point_is_sky(ctx.scene, hit.endpos) {
+        q1_remove_missile(ctx, actor);
+        return true;
+    }
+    match missile.kind {
+        Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, false),
+        Q1MissileKind::SuperSpike => q1_spike_impact(ctx, actor, missile, hit, 18.0, true),
+        Q1MissileKind::Rocket => {
+            q1_rocket_impact(ctx, actor, missile, hit);
+            true
+        }
+        Q1MissileKind::Grenade => {
+            q1_grenade_impact(ctx, actor, missile, hit);
+            true
+        }
+    }
+}
+
+/// Stock `spike_touch` / `superspike_touch` (`combat.qc:414`): blood and
+/// 9 (nailgun) or 18 (super nailgun) damage to anything damageable,
+/// else a wall spark; the spike never survives the hit.
+fn q1_spike_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+    damage: f64,
+    super_spike: bool,
+) -> bool {
+    let victim = hit
+        .hit_actor
+        .clone()
+        .filter(|other| other != &missile.owner && q1_can_take_damage(ctx.server.simulation(), other));
+    if let Some(victim) = victim {
+        let velocity = ctx
+            .server
+            .simulation()
+            .body_state(actor)
+            .map(|body| body.velocity)
+            .unwrap_or(vec3(0.0, 0.0, 0.0));
+        let speed = length3(velocity);
+        let dir = if speed > 0.0 {
+            scale3(velocity, 1.0 / speed)
+        } else {
+            vec3(0.0, 0.0, 1.0)
+        };
+        let at = vec3(dir.x * 6.0, dir.y * 6.0, dir.z * 6.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Blood {
+            at,
+            count: damage as u32,
+        });
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            ctx.behaviors,
+            simulation,
+            movers,
+            triggers,
+            &victim,
+            Some(actor),
+            Some(&missile.owner),
+            damage,
+        );
+    } else if super_spike {
+        ctx.behaviors.temp_ents.push(Q1TempEnt::SuperSpike { at: hit.endpos });
+    } else {
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Spike { at: hit.endpos });
+    }
+    q1_remove_missile(ctx, actor);
+    true
+}
+
+/// Stock `T_MissileTouch` (`combat.qc:296`): the thump, direct damage to
+/// anything still standing (shamblers take half), then the 120-radius
+/// blast with the direct victim excluded from the falloff.
+fn q1_rocket_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) {
+    q1_monster_sound(ctx.behaviors, actor, 0, "weapons/r_exp3.wav", 1.0, 1.0);
+    if let Some(other) = hit.hit_actor.clone() {
+        let health = q1_health_of(ctx.server.simulation(), &other);
+        if health != 0.0 {
+            let mut damage = f64::from(100.0 + q1_monster_random(ctx.behaviors) * 20.0);
+            if q1_is_shambler(ctx.behaviors, &other) {
+                damage *= 0.5;
+            }
+            let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                ctx.behaviors,
+                simulation,
+                movers,
+                triggers,
+                &other,
+                Some(actor),
+                Some(&missile.owner),
+                damage,
+            );
+        }
+    }
+    q1_grenade_explode(ctx, actor, hit.hit_actor.as_ref());
+}
+
+/// Stock `GrenadeTouch` (`weapons.qc:714`) plus the toss clip
+/// (`SV_Physics_Toss`): a direct hit on anything damageable detonates,
+/// else the thump and a 1.5-backoff bounce, settling on flat ground
+/// under 60 upward speed.
+fn q1_grenade_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) {
+    q1_monster_sound(ctx.behaviors, actor, 0, "weapons/bounce.wav", 1.0, 1.0);
+    if hit
+        .hit_actor
+        .as_ref()
+        .is_some_and(|other| other != &missile.owner && q1_can_take_damage(ctx.server.simulation(), other))
+    {
+        q1_grenade_explode(ctx, actor, None);
+        return;
+    }
+    let velocity = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .map(|body| body.velocity)
+        .unwrap_or(vec3(0.0, 0.0, 0.0));
+    let ops = NumericOps::select(Q1_DONOR_PROFILE).expect("Q1 donor numeric profile");
+    let normal = hit.plane_normal;
+    let mut clipped = clip_velocity_q1(velocity, normal, 1.5, &ops);
+    let mut onground = false;
+    if normal.z > 0.7 && clipped.z < 60.0 {
+        clipped = vec3(0.0, 0.0, 0.0);
+        onground = true;
+    }
+    let _ignored = ctx.server.simulation_mut().set_body_velocity(actor, clipped);
+    if let Some(record) = ctx.behaviors.missiles.get_mut(actor) {
+        record.onground = onground;
+    }
+}
+
+/// Stock `BecomeExplosion` (`weapons.qc:698`): the 120-radius blast with
+/// `ignore` excluded, the flash pulled 8 units off the surface along
+/// the flight line, and the missile retired.
+fn q1_grenade_explode<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    ignore: Option<&ActorId>,
+) {
+    let attacker = ctx
+        .behaviors
+        .missiles
+        .get(actor)
+        .map(|missile| missile.owner.clone())
+        .unwrap_or_else(|| ctx.player.clone());
+    q1_monster_sound(ctx.behaviors, actor, 0, "weapons/r_exp3.wav", 1.0, 1.0);
+    q1_t_radius_damage(ctx, actor, &attacker, 120.0, ignore);
+    let (origin, velocity) = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .map(|body| (body.origin, body.velocity))
+        .unwrap_or((vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)));
+    let speed = length3(velocity);
+    let dir = if speed > 0.0 {
+        scale3(velocity, 1.0 / speed)
+    } else {
+        vec3(0.0, 0.0, 1.0)
+    };
+    let at = vec3(origin.x - dir.x * 8.0, origin.y - dir.y * 8.0, origin.z - dir.z * 8.0);
+    ctx.behaviors.temp_ents.push(Q1TempEnt::Explosion { at });
+    q1_remove_missile(ctx, actor);
+}
+
+/// Stock `T_RadiusDamage` (`combat.qc:224`): linear `damage - 0.5 * dist`
+/// falloff over `damage + 40` units, the attacker at half strength,
+/// `CanDamage` gating every victim, shamblers halved again.
+fn q1_t_radius_damage<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    inflictor: &ActorId,
+    attacker: &ActorId,
+    damage: f64,
+    ignore: Option<&ActorId>,
+) {
+    let Some(origin) = ctx.server.simulation().body_state(inflictor).map(|body| body.origin) else {
+        return;
+    };
+    let victims: Vec<ActorId> = {
+        let simulation = ctx.server.simulation();
+        simulation
+            .body_actors()
+            .into_iter()
+            .filter(|actor| Some(actor) != ignore && q1_can_take_damage(simulation, actor))
+            .collect()
+    };
+    for victim in &victims {
+        let Some(center) = ctx.server.simulation().body_state(victim).map(|body| {
+            let bounds = translated_body_bounds(&body);
+            vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            )
+        }) else {
+            continue;
+        };
+        let offset = vec3(origin.x - center.x, origin.y - center.y, origin.z - center.z);
+        let mut points = damage - 0.5 * f64::from(length3(offset));
+        if points <= 0.0 {
+            continue;
+        }
+        if victim == attacker {
+            points *= 0.5;
+        }
+        let damageable = {
+            let mut monster_ctx = Q1MonsterCtx {
+                server: &mut *ctx.server,
+                behaviors: &mut *ctx.behaviors,
+                scene: ctx.scene,
+                now: ctx.now,
+                dt: 0.0,
+            };
+            q1_can_damage(&mut monster_ctx, victim, inflictor)
+        };
+        if !damageable {
+            continue;
+        }
+        if q1_is_shambler(ctx.behaviors, victim) {
+            points *= 0.5;
+        }
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            ctx.behaviors,
+            simulation,
+            movers,
+            triggers,
+            victim,
+            Some(inflictor),
+            Some(attacker),
+            points,
+        );
+    }
+}
+
+/// Shambler check for the two half-damage paths (stock compares
+/// `classname == "monster_shambler"`): by classname string so it keeps
+/// working when the monster lane lands the kind.
+fn q1_is_shambler(behaviors: &Q1NativeBehaviors, actor: &ActorId) -> bool {
+    behaviors
+        .monsters
+        .get(actor)
+        .is_some_and(|monster| monster.kind.classname() == "monster_shambler")
+}
+
+/// Retire a missile: stock `SUB_Remove` frees the edict; here the body
+/// releases and the record drops.
+fn q1_remove_missile<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor: &ActorId) {
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
 }
 
 #[cfg(test)]

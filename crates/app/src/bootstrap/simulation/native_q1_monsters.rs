@@ -1516,7 +1516,11 @@ fn q1_visible<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, viewer: &ActorI
 /// Stock `CanDamage` (`combat.qc:18`): push targets trace to their
 /// center (a hit on the target counts); everyone else needs one clear
 /// line to the origin or a corner offset.
-fn q1_can_damage<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, targ: &ActorId, inflictor: &ActorId) -> bool {
+pub(crate) fn q1_can_damage<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    targ: &ActorId,
+    inflictor: &ActorId,
+) -> bool {
     let Some(from) = ctx.server.simulation().body_state(inflictor).map(|body| body.origin) else {
         return false;
     };
