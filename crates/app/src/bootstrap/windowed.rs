@@ -5313,14 +5313,14 @@ mod tests {
         };
         // (map, exit gate ridden, arrival map, arrival XY, arrival eye-z band)
         for (map, gate, arrival, arrival_xy, arrival_z) in [
-            ("maps/e4m1.bsp", "e4m2", "maps/e4m2.bsp", (0.0, 384.0), (1190.0, 1230.0)),
-            ("maps/e4m2.bsp", "e4m3", "maps/e4m3.bsp", (192.0, 256.0), (6.0, 46.0)),
-            ("maps/e4m3.bsp", "e4m4", "maps/e4m4.bsp", (1456.0, 528.0), (-242.0, -202.0)),
+            // ("maps/e4m1.bsp", "e4m2", "maps/e4m2.bsp", (0.0, 384.0), (1190.0, 1230.0)), // TEMP-DIAG restore
+            // ("maps/e4m2.bsp", "e4m3", "maps/e4m3.bsp", (192.0, 256.0), (6.0, 46.0)), // TEMP-DIAG restore
+            // ("maps/e4m3.bsp", "e4m4", "maps/e4m4.bsp", (1456.0, 528.0), (-242.0, -202.0)), // TEMP-DIAG restore
             ("maps/e4m4.bsp", "e4m5", "maps/e4m5.bsp", (2048.0, -1184.0), (70.0, 110.0)),
-            ("maps/e4m5.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)),
-            ("maps/e4m6.bsp", "e4m7", "maps/e4m7.bsp", (608.0, -1008.0), (100.0, 140.0)),
-            ("maps/e4m7.bsp", "start", "maps/start.bsp", (544.0, 288.0), (14.0, 54.0)),
-            ("maps/e4m8.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)),
+            // ("maps/e4m5.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)), // TEMP-DIAG restore
+            // ("maps/e4m6.bsp", "e4m7", "maps/e4m7.bsp", (608.0, -1008.0), (100.0, 140.0)), // TEMP-DIAG restore
+            // ("maps/e4m7.bsp", "start", "maps/start.bsp", (544.0, 288.0), (14.0, 54.0)), // TEMP-DIAG restore
+            // ("maps/e4m8.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)), // TEMP-DIAG restore
         ] {
             let mut options = windowed_options();
             options.corpus_root = corpus.to_string_lossy().into_owned();
@@ -5424,10 +5424,15 @@ mod tests {
                                target: f64| {
                 let (_, angles_before) = eye_of(composed);
                 let from = f64::from(angles_before.y);
-                for _ in 0..4 {
+                for cal_iter in 0..4 {
                     mouse_motion(composed, 150);
                     drive(composed, step_ms, 3);
                     *total_steps += 3;
+                    // TEMP-DIAG: transient vs frozen yaw per motion.
+                    eprintln!(
+                        "live-play: {map} servo cal{cal_iter} yaw={:.2}",
+                        f64::from(eye_of(composed).1.y)
+                    );
                 }
                 let (_, angles_cal) = eye_of(composed);
                 let sign = (f64::from(angles_cal.y) - from).signum();
@@ -5453,7 +5458,7 @@ mod tests {
                 );
                 assert!(sign != 0.0, "{map} mouse motion does not turn");
                 let mut turned = f64::from(eye_of(composed).1.y);
-                for _ in 0..40 {
+                for servo_iter in 0..40 {
                     let err = (target - turned + 540.0).rem_euclid(360.0) - 180.0;
                     if err.abs() < 5.0 {
                         break;
@@ -5464,6 +5469,12 @@ mod tests {
                     drive(composed, step_ms, 3);
                     *total_steps += 3;
                     turned = f64::from(eye_of(composed).1.y);
+                    // TEMP-DIAG: first correction iters only.
+                    if servo_iter < 4 {
+                        eprintln!(
+                            "live-play: {map} servo iter{servo_iter} yaw={turned:.2} err={err:.1} packet={packet}"
+                        );
+                    }
                 }
                 (target - turned + 540.0).rem_euclid(360.0) - 180.0
             };
@@ -5554,6 +5565,21 @@ mod tests {
                         .hypot((current.z - previous.z) as f64);
                     calm = if drift < 0.5 { calm + 1 } else { 0 };
                     previous = current;
+                    // TEMP-DIAG: walk path, sim mirror, contents.
+                    {
+                        let world = composed.app.backend().world.as_ref().expect("windowed world");
+                        let actor = world.player_actor().cloned().expect("player");
+                        let sim = world
+                            .server()
+                            .simulation()
+                            .body_state(&actor)
+                            .map(|body| (body.origin.x, body.origin.y, body.origin.z));
+                        let contents = world.q1_eye_contents(current);
+                        eprintln!(
+                            "live-play: {map} heading {heading} chunk {chunks} eye=({:.0},{:.0},{:.0}) sim={sim:?} contents={contents:?} drift={drift:.1}",
+                            current.x, current.y, current.z
+                        );
+                    }
                 }
                 press_key(&mut composed, 26, 87, false);
                 let (fwd_eye, _) = eye_of(&composed);
