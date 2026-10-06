@@ -7131,4 +7131,89 @@ mod tests {
         assert_eq!(frames, 3);
         assert!(composed.app.is_closed());
     }
+
+    /// Q1-0256 (+ Q1-0258 travel): the windowed run rides the e2m6
+    /// slipgate through the episode-2 scroll into the start map.
+    /// Touching the exit enters the intermission; pressing through
+    /// the gate raises the `running == 2` scroll state with the
+    /// stock Black Magic text (`client.qc:188`) and CD track 2
+    /// before any travel; pressing through the scroll travels via
+    /// the windowed frame's own `take_pending_travel`, keeping
+    /// `serverflags` but shedding the carry for the fresh start
+    /// loadout.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2m6_finale_reaches_start() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_q1_run("maps/e2m6.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e2m6 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted e2m6 loadout plus the episode flag: the flagged
+        // start return must keep the flag but shed the carry.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 1, "e2m6 has one exit");
+        assert_eq!(exits[0].1, "start");
+        windowed_enter_intermission(&mut composed.app, &exits[0].0.clone());
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e2")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled: the world is start now, flags
+        // kept, carry shed for the fresh loadout.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/start.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "start");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "carry shed for the fresh loadout"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        let pixels = composed.app.capture_next_frame().expect("start captures");
+        assert!(!pixels.is_empty(), "start captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("start drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
 }
