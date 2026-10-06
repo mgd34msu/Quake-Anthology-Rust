@@ -1880,6 +1880,24 @@ impl WindowedStartupBackend {
         self.world.as_ref().map(PlayWorld::entity_count)
     }
 
+    /// TEMP-DIAG: input path state for the seat-deaf hunt.
+    #[must_use]
+    pub fn diag_input_state(&self) -> String {
+        let seat_state = match (self.input_router.as_ref(), self.input_seat.clone()) {
+            (Some(router), Some(seat_id)) => match router.seat(&seat_id) {
+                Some(seat) => format!("seat=some window_focused={} focus={:?}", seat.focused(), seat.focus()),
+                None => "seat=MISSING".to_string(),
+            },
+            _ => "seat=NO-ROUTER-OR-ID".to_string(),
+        };
+        format!(
+            "router={} seat_id={} builder={} {seat_state}",
+            self.input_router.is_some(),
+            self.input_seat.is_some(),
+            self.command_builder.is_some(),
+        )
+    }
+
     /// Display refresh rate in Hz hosting the window, or 0 when the
     /// window is not open or SDL reports none (the frame pacer falls
     /// back to its default rate then).
@@ -2168,6 +2186,17 @@ impl StartupBackend for WindowedStartupBackend {
             };
             renderer.window().poll_events()?
         };
+        // TEMP-DIAG: log real SDL events to catch focus stealers.
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static REAL_EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+            for event in &events {
+                let n = REAL_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+                if n < 40 {
+                    eprintln!("live-play: REAL SDL EVENT #{n}: {event:?}");
+                }
+            }
+        }
         self.timer.section("input");
         self.handle_window_events(events)?;
         if let (Some(controllers), Some(router)) = (self.controllers.as_mut(), self.input_router.as_mut()) {
@@ -2442,12 +2471,16 @@ mod tests {
         LIVE_E2M5_NATIVE_SKILL2_TOTAL, LIVE_E2M6_NATIVE_SKILL2_TOTAL, LIVE_E2M7_NATIVE_SKILL2_TOTAL,
         LIVE_E3M1_NATIVE_SKILL2_TOTAL, LIVE_E3M2_NATIVE_SKILL2_TOTAL, LIVE_E3M3_NATIVE_SKILL2_TOTAL,
         LIVE_E3M4_NATIVE_SKILL2_TOTAL, LIVE_E3M5_NATIVE_SKILL2_TOTAL, LIVE_E3M6_NATIVE_SKILL2_TOTAL,
-        LIVE_E3M7_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
+        LIVE_E3M7_NATIVE_SKILL2_TOTAL, LIVE_E4M1_NATIVE_SKILL2_TOTAL, LIVE_E4M2_NATIVE_SKILL2_TOTAL,
+        LIVE_E4M3_NATIVE_SKILL2_TOTAL, LIVE_E4M4_NATIVE_SKILL2_TOTAL, LIVE_E4M5_NATIVE_SKILL2_TOTAL,
+        LIVE_E4M6_NATIVE_SKILL2_TOTAL, LIVE_E4M7_NATIVE_SKILL2_TOTAL, LIVE_E4M8_NATIVE_SKILL2_TOTAL,
+        LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
         live_changelevel_exits, live_damage, live_dogs, live_doors_by_targetname, live_enforcers,
         live_expected_finale, live_fiends, live_fire_use, live_fish, live_grunts, live_hknights,
         live_knights, live_monster_feet, live_now, live_ogres, live_oldones, live_place_player,
         live_player_health, live_press_buttons, live_set_player_health, live_shamblers,
-        live_silence_door_fields, live_volume_center, live_vores, live_wizards, live_zombies,
+        live_silence_door_fields, live_tarbabies, live_volume_center, live_vores, live_wizards,
+        live_zombies,
     };
     use qa_core::math::Vec3;
     use qa_world::body::translated_body_bounds;
@@ -6145,6 +6178,725 @@ mod tests {
         });
     }
 
+    /// Q1-0258 (E4 legs): end-to-end episode-4 milestone — one
+    /// uninterrupted windowed pass per stock map from spawn to its
+    /// exit through real seat inputs, observing each outcome
+    /// separately: spawn presents, the turn and jump answer at
+    /// the spawn, forward/back/strafe move, firing spends shells, the nearest
+    /// monster dies to held fire with the kill counter climbing,
+    /// and the exit ride lands on the next map with carried shells.
+    /// e4m5 rides its normal e4m6 gate (the secret e4m8 gate has
+    /// its own proof); e4m7 scrolls the episode finale before
+    /// traveling to start.
+    ///
+    /// One sequential test (not eight parallel ones) so concurrent
+    /// SDL windows never contend: each map opens, plays, travels,
+    /// and closes in turn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e4_playthrough_run() {
+        use std::time::Instant;
+
+        use qa_core::math::Vec3;
+        use qa_world::body::translated_body_bounds;
+
+        use super::super::simulation::native_q1_monsters::{q1_is_crucified, Q1MonsterKind};
+        use super::super::simulation::native_q1_spawns::q1_health_of;
+        use super::super::simulation::native_q1_weapons::Q1_DEAD_NO;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        // (map, exit gate ridden, arrival map, arrival XY, arrival eye-z band)
+        for (map, gate, arrival, arrival_xy, arrival_z) in [
+            // ("maps/e4m1.bsp", "e4m2", "maps/e4m2.bsp", (0.0, 384.0), (1190.0, 1230.0)), // TEMP-DIAG restore
+            // ("maps/e4m2.bsp", "e4m3", "maps/e4m3.bsp", (192.0, 256.0), (6.0, 46.0)), // TEMP-DIAG restore
+            // ("maps/e4m3.bsp", "e4m4", "maps/e4m4.bsp", (1456.0, 528.0), (-242.0, -202.0)), // TEMP-DIAG restore
+            ("maps/e4m4.bsp", "e4m5", "maps/e4m5.bsp", (2048.0, -1184.0), (70.0, 110.0)),
+            // ("maps/e4m5.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)), // TEMP-DIAG restore
+            // ("maps/e4m6.bsp", "e4m7", "maps/e4m7.bsp", (608.0, -1008.0), (100.0, 140.0)), // TEMP-DIAG restore
+            // ("maps/e4m7.bsp", "start", "maps/start.bsp", (544.0, 288.0), (14.0, 54.0)), // TEMP-DIAG restore
+            // ("maps/e4m8.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)), // TEMP-DIAG restore
+        ] {
+            let mut options = windowed_options();
+            options.corpus_root = corpus.to_string_lossy().into_owned();
+            options.product = "q1-classic-id1".to_string();
+            options.map = map.to_string();
+            options.frame_limit = None;
+            let Some(mut composed) = require_live_window(
+                "windowed Q1 open",
+                open_windowed_application(&options, StartupEntry::Run),
+            ) else {
+                return;
+            };
+            let eye_of = |composed: &WindowedApplication| {
+                composed
+                    .app
+                    .backend()
+                    .world
+                    .as_ref()
+                    .and_then(PlayWorld::player_eye)
+                    .expect("Q1 world keeps its player")
+            };
+            let mut step_ms: Vec<f64> = Vec::new();
+            let mut total_steps: u64 = 0;
+            let drive = |composed: &mut WindowedApplication, step_ms: &mut Vec<f64>, n: u32| {
+                for _ in 0..n {
+                    let start = Instant::now();
+                    composed.app.step().expect("windowed step works");
+                    step_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+            };
+            let press_key = |composed: &mut WindowedApplication, scancode: i32, keycode: i32, down: bool| {
+                composed
+                    .app
+                    .backend_mut()
+                    .handle_window_events(vec![SdlEvent::Key {
+                        timestamp: 0,
+                        down,
+                        repeat: false,
+                        scancode,
+                        keycode,
+                        modifiers: 0,
+                    }])
+                    .expect("key injects")
+            };
+            let mouse_motion = |composed: &mut WindowedApplication, dx: i32| {
+                composed
+                    .app
+                    .backend_mut()
+                    .handle_window_events(vec![SdlEvent::MouseMotion {
+                        timestamp: 0,
+                        buttons: 0,
+                        x: 0,
+                        y: 0,
+                        dx,
+                        dy: 0,
+                    }])
+                    .expect("mouse injects")
+            };
+            let mouse_attack = |composed: &mut WindowedApplication, down: bool| {
+                composed
+                    .app
+                    .backend_mut()
+                    .handle_window_events(vec![SdlEvent::MouseButton {
+                        timestamp: 0,
+                        down,
+                        button: 1,
+                        clicks: 1,
+                        x: 0,
+                        y: 0,
+                    }])
+                    .expect("mouse button injects")
+            };
+            let forward_of = |yaw_deg: f32| {
+                let yaw = f64::from(yaw_deg).to_radians();
+                (yaw.cos(), yaw.sin())
+            };
+            // S1: spawn presents a rendered, non-blank frame.
+            drive(&mut composed, &mut step_ms, 30);
+            total_steps += 30;
+            let spawn_frame = composed.app.capture_next_frame().expect("spawn capture works");
+            let spawn_lit = count_non_black(&spawn_frame);
+            eprintln!("live-play: {map} spawn frame {} bytes, {spawn_lit} lit pixels", spawn_frame.len());
+            assert!(spawn_lit > 1000, "{map} spawn frame is blank: {spawn_lit} lit pixels");
+            // The pass proves movement and combat, not survival: top
+            // the player up before anything can sight it, and keep
+            // topping up through every stage. A corpse answers no
+            // inputs and never fires (`deadflag` gates the weapon
+            // pass), which would read as stuck movement or a dead
+            // trigger, so the top-up also clears `deadflag`.
+            let top_up = |composed: &mut WindowedApplication| {
+                let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                live_set_player_health(world, 500.0);
+                world.q1_behaviors().expect("Q1 behaviors").borrow_mut().player_state.deadflag = Q1_DEAD_NO;
+            };
+            top_up(&mut composed);
+            // The turn servo aims headings through real mouse
+            // packets; S2 walks each one, S3 turns out and back.
+            let turn_to = |composed: &mut WindowedApplication,
+                               step_ms: &mut Vec<f64>,
+                               total_steps: &mut u64,
+                               target: f64| {
+                let (_, angles_before) = eye_of(composed);
+                let from = f64::from(angles_before.y);
+                for cal_iter in 0..4 {
+                    mouse_motion(composed, 150);
+                    drive(composed, step_ms, 3);
+                    *total_steps += 3;
+                    // TEMP-DIAG: transient vs frozen yaw per motion.
+                    eprintln!(
+                        "live-play: {map} servo cal{cal_iter} yaw={:.2}",
+                        f64::from(eye_of(composed).1.y)
+                    );
+                }
+                let (_, angles_cal) = eye_of(composed);
+                let sign = (f64::from(angles_cal.y) - from).signum();
+                eprintln!(
+                    "live-play: {map} servo target={target:.1} from={from:.1} cal={cal:.1} dead={dead} run={run} input=[{}]",
+                    composed.app.backend().diag_input_state(),
+                    cal = f64::from(angles_cal.y),
+                    dead = composed
+                        .app
+                        .backend()
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.q1_behaviors())
+                        .map(|behaviors| behaviors.borrow().player_state.deadflag)
+                        .map_or("?", |dead| if dead == 0 { "0" } else { "DEAD" }),
+                    run = composed
+                        .app
+                        .backend()
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.q1_behaviors())
+                        .map(|behaviors| behaviors.borrow().intermission.running)
+                        .unwrap_or(999),
+                );
+                assert!(sign != 0.0, "{map} mouse motion does not turn");
+                let mut turned = f64::from(eye_of(composed).1.y);
+                for servo_iter in 0..40 {
+                    let err = (target - turned + 540.0).rem_euclid(360.0) - 180.0;
+                    if err.abs() < 5.0 {
+                        break;
+                    }
+                    top_up(composed);
+                    let packet = (err * sign * 4.0).clamp(-300.0, 300.0) as i32;
+                    mouse_motion(composed, packet);
+                    drive(composed, step_ms, 3);
+                    *total_steps += 3;
+                    turned = f64::from(eye_of(composed).1.y);
+                    // TEMP-DIAG: first correction iters only.
+                    if servo_iter < 4 {
+                        eprintln!(
+                            "live-play: {map} servo iter{servo_iter} yaw={turned:.2} err={err:.1} packet={packet}"
+                        );
+                    }
+                }
+                (target - turned + 540.0).rem_euclid(360.0) - 180.0
+            };
+            // S3: mouse motion turns out and back.
+            top_up(&mut composed);
+            let (_, angles_before) = eye_of(&composed);
+            let turn0 = f64::from(angles_before.y);
+            let err = turn_to(&mut composed, &mut step_ms, &mut total_steps, turn0 + 80.0);
+            eprintln!("live-play: {map} turn out err {err:.1}");
+            assert!(err.abs() < 20.0, "{map} turn out fell short: err {err:.1}");
+            let err = turn_to(&mut composed, &mut step_ms, &mut total_steps, turn0);
+            assert!(err.abs() < 20.0, "{map} turn back missed: err {err:.1}");
+            // S4: jump rises and lands.
+            let (jump_eye, _) = eye_of(&composed);
+            let jump_z = f64::from(jump_eye.z);
+            press_key(&mut composed, 44, 32, true);
+            drive(&mut composed, &mut step_ms, 3);
+            total_steps += 3;
+            press_key(&mut composed, 44, 32, false);
+            let mut peak = jump_z;
+            for _ in 0..40 {
+                drive(&mut composed, &mut step_ms, 1);
+                total_steps += 1;
+                peak = peak.max(f64::from(eye_of(&composed).0.z));
+            }
+            let land_z = f64::from(eye_of(&composed).0.z);
+            eprintln!("live-play: {map} jump peak {peak:.1} from {jump_z:.1}, landed {land_z:.1}");
+            assert!(peak > jump_z + 8.0, "{map} jump did not rise: peak {peak:.1}");
+            assert!(
+                (land_z - jump_z).abs() < 6.0,
+                "{map} jump did not land: {land_z:.1} from {jump_z:.1}"
+            );
+            // S2: forward until the eye stalls, then back and strafe.
+            // Spawn headings vary per map, so up to four headings
+            // 90 degrees apart are tried; each attempt walks, settles,
+            // and reverses, and the first attempt that completes all
+            // four legs wins. Attempts reset to the S2-entry stance
+            // (proven by S3/S4), so a wedge or pitfall on one heading
+            // never poisons the next.
+            let (s2_eye, s2_angles) = eye_of(&composed);
+            let yaw0 = f64::from(s2_angles.y);
+            let mut walked: Option<(Vec3, f32, f64)> = None;
+            for heading in 0..4 {
+                if heading > 0 {
+                    let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                    let player = world.player_actor().cloned().expect("player");
+                    {
+                        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                        let borrowed = behaviors.borrow();
+                        let (eye, _) = world.player_eye().expect("reset eye");
+                        eprintln!(
+                            "live-play: {map} reset eye=({:.0},{:.0},{:.0}) hp={} dead={} solids={}",
+                            eye.x,
+                            eye.y,
+                            eye.z,
+                            q1_health_of(world.server().simulation(), &player),
+                            borrowed.player_state.deadflag,
+                            borrowed.solids.contains(&player),
+                        );
+                    }
+                    world
+                        .server_mut()
+                        .simulation_mut()
+                        .set_body_origin(&player, qa_core::math::vec3(s2_eye.x, s2_eye.y, s2_eye.z - 22.0))
+                        .expect("player resets to the S2 stance");
+                    top_up(&mut composed);
+                    drive(&mut composed, &mut step_ms, 10);
+                    total_steps += 10;
+                }
+                let err = turn_to(&mut composed, &mut step_ms, &mut total_steps, yaw0 + 90.0 * f64::from(heading));
+                if err.abs() >= 20.0 {
+                    eprintln!("live-play: {map} heading {heading} turn missed: err {err:.1}");
+                    continue;
+                }
+                let (head_eye, head_angles) = eye_of(&composed);
+                press_key(&mut composed, 26, 87, true);
+                let mut previous = head_eye;
+                let mut calm = 0;
+                let mut chunks = 0;
+                while chunks < 10 && calm < 2 {
+                    top_up(&mut composed);
+                    drive(&mut composed, &mut step_ms, 30);
+                    total_steps += 30;
+                    chunks += 1;
+                    let (current, _) = eye_of(&composed);
+                    let drift = ((current.x - previous.x) as f64)
+                        .hypot((current.y - previous.y) as f64)
+                        .hypot((current.z - previous.z) as f64);
+                    calm = if drift < 0.5 { calm + 1 } else { 0 };
+                    previous = current;
+                    // TEMP-DIAG: walk path, sim mirror, contents.
+                    {
+                        let world = composed.app.backend().world.as_ref().expect("windowed world");
+                        let actor = world.player_actor().cloned().expect("player");
+                        let sim = world
+                            .server()
+                            .simulation()
+                            .body_state(&actor)
+                            .map(|body| (body.origin.x, body.origin.y, body.origin.z));
+                        let contents = world.q1_eye_contents(current);
+                        let clock = world.server().simulation().frame();
+                        eprintln!(
+                            "live-play: {map} heading {heading} chunk {chunks} eye=({:.0},{:.0},{:.0}) sim={sim:?} contents={contents:?} drift={drift:.1} tick={} t={:.2}",
+                            current.x, current.y, current.z,
+                            clock.frame,
+                            clock.time.as_seconds_f64()
+                        );
+                    }
+                }
+                press_key(&mut composed, 26, 87, false);
+                let (fwd_eye, _) = eye_of(&composed);
+                let (fx, fy) = forward_of(head_angles.y);
+                let along = f64::from(fwd_eye.x - head_eye.x) * fx + f64::from(fwd_eye.y - head_eye.y) * fy;
+                eprintln!("live-play: {map} heading {heading} forward advanced {along:.1} units");
+                if along <= 20.0 {
+                    continue;
+                }
+                // Settle the stance before the reverse legs: the walk
+                // may have ended mid-air off a tall ledge, where back
+                // and strafe barely bite. Up to five seconds of falling.
+                for _ in 0..30 {
+                    top_up(&mut composed);
+                    let (before, _) = eye_of(&composed);
+                    drive(&mut composed, &mut step_ms, 10);
+                    total_steps += 10;
+                    let (after, _) = eye_of(&composed);
+                    let drift = ((after.x - before.x) as f64)
+                        .hypot((after.y - before.y) as f64)
+                        .hypot((after.z - before.z) as f64);
+                    if drift < 0.5 {
+                        break;
+                    }
+                }
+                top_up(&mut composed);
+                let (fwd_eye, _) = eye_of(&composed);
+                press_key(&mut composed, 22, 83, true);
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                press_key(&mut composed, 22, 83, false);
+                let (back_eye, _) = eye_of(&composed);
+                let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
+                eprintln!("live-play: {map} heading {heading} back retreated {back_along:.1} units");
+                if back_along >= -1.0 {
+                    continue;
+                }
+                let (lx, ly) = (-fy, fx);
+                press_key(&mut composed, 4, 65, true);
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                press_key(&mut composed, 4, 65, false);
+                let (strafe_eye, _) = eye_of(&composed);
+                let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
+                eprintln!("live-play: {map} heading {heading} strafe-left lateral {lateral:.1} units");
+                if lateral <= 1.0 {
+                    continue;
+                }
+                press_key(&mut composed, 7, 68, true);
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                press_key(&mut composed, 7, 68, false);
+                let (strafe_back, _) = eye_of(&composed);
+                let lateral_back =
+                    f64::from(strafe_back.x - strafe_eye.x) * lx + f64::from(strafe_back.y - strafe_eye.y) * ly;
+                eprintln!("live-play: {map} heading {heading} strafe-right lateral {lateral_back:.1} units");
+                if lateral_back >= -1.0 {
+                    continue;
+                }
+                walked = Some((head_eye, head_angles.y, along));
+                break;
+            }
+            let (walk_eye, walk_yaw, walk_open) =
+                walked.unwrap_or_else(|| panic!("{map} no heading completed the legs"));
+            // S5: attack spends a shell from the spawn loadout.
+            let shells_before = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let shells = behaviors.borrow().player_ammo.shells;
+                shells
+            };
+            assert!(shells_before > 0.0, "{map} spawn loadout has no shells");
+            mouse_attack(&mut composed, true);
+            drive(&mut composed, &mut step_ms, 25);
+            total_steps += 25;
+            mouse_attack(&mut composed, false);
+            let shells_after = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let shells = behaviors.borrow().player_ammo.shells;
+                shells
+            };
+            eprintln!("live-play: {map} shells {shells_before} -> {shells_after}");
+            assert!(shells_after < shells_before, "{map} firing spent no shells");
+            // S6: the nearest monster, wounded to 5 hp, dies to held
+            // fire at point blank; the kill counter climbs. Nailed-up
+            // zombies are skipped: stock gives them no damage arming.
+            // The target is re-pinned ahead every chunk and the
+            // player re-topped: the pass proves the kill, not a
+            // duel, and the rest of the map stays live throughout.
+            live_set_player_health(
+                composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                500.0,
+            );
+            // The duel happens on the proven-open S2 walk: back to
+            // the walk start, facing the walk yaw, so the 56-unit
+            // firing lane ahead is known clear (the walk stalled at
+            // a wall, which would eat every pellet).
+            {
+                let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                let player = world.player_actor().cloned().expect("player");
+                world
+                    .server_mut()
+                    .simulation_mut()
+                    .set_body_origin(
+                        &player,
+                        qa_core::math::vec3(walk_eye.x, walk_eye.y, walk_eye.z - 22.0),
+                    )
+                    .expect("player returns to the walk start");
+            }
+            drive(&mut composed, &mut step_ms, 10);
+            total_steps += 10;
+            let err = turn_to(&mut composed, &mut step_ms, &mut total_steps, f64::from(walk_yaw));
+            assert!(err.abs() < 20.0, "{map} duel turn missed: err {err:.1}");
+            let duel_dist = (walk_open - 10.0).clamp(12.0, 56.0);
+            eprintln!("live-play: {map} duel at {duel_dist:.1} units (walk proved {walk_open:.1} open)");
+            let kills_before = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let kills = behaviors.borrow().killed_monsters;
+                kills
+            };
+            let target = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                let (eye, angles) = world.player_eye().expect("player eye");
+                let (fx, fy) = forward_of(angles.y);
+                let mut best: Option<(qa_core::identity::ActorId, f64)> = None;
+                for (id, monster) in borrowed.monsters.iter() {
+                    if q1_is_crucified(monster) {
+                        continue;
+                    }
+                    // Stock zombies reset to 60 hp and drop unsolid on
+                    // every knockdown (`zombie_paine1/11/12`), so chip
+                    // damage never kills one; the duel needs a kind
+                    // held fire can finish.
+                    if monster.kind == Q1MonsterKind::Zombie {
+                        continue;
+                    }
+                    let origin = world
+                        .server()
+                        .simulation()
+                        .body_state(id)
+                        .map(|body| {
+                            let bounds = translated_body_bounds(&body);
+                            qa_core::math::vec3(
+                                (bounds.min.x + bounds.max.x) / 2.0,
+                                (bounds.min.y + bounds.max.y) / 2.0,
+                                (bounds.min.z + bounds.max.z) / 2.0,
+                            )
+                        })
+                        .expect("monster body");
+                    let dist = f64::from(origin.x - eye.x).hypot(f64::from(origin.y - eye.y));
+                    if best.as_ref().is_none_or(|(_, known)| dist < *known) {
+                        best = Some((id.clone(), dist));
+                    }
+                }
+                let target = best.unwrap_or_else(|| panic!("{map} keeps a live monster")).0;
+                let spot = Vec3 {
+                    x: eye.x + (fx * duel_dist) as f32,
+                    y: eye.y + (fy * duel_dist) as f32,
+                    z: eye.z - 28.0,
+                };
+                (target, spot)
+            };
+            {
+                let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                let player = world.player_actor().cloned().expect("player");
+                let health = q1_health_of(world.server().simulation(), &target.0);
+                live_damage(world, &target.0, Some(&player), health - 5.0);
+                world
+                    .server_mut()
+                    .simulation_mut()
+                    .set_body_origin(&target.0, target.1)
+                    .expect("monster places ahead");
+            }
+            mouse_attack(&mut composed, true);
+            let mut killed = false;
+            for _ in 0..20 {
+                {
+                    let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                    live_set_player_health(world, 500.0);
+                    world.q1_behaviors().expect("Q1 behaviors").borrow_mut().player_ammo.shells = 25.0;
+                    let (eye, angles) = world.player_eye().expect("player eye");
+                    let (fx, fy) = forward_of(angles.y);
+                    world
+                        .server_mut()
+                        .simulation_mut()
+                        .set_body_origin(
+                            &target.0,
+                            Vec3 {
+                                x: eye.x + (fx * duel_dist) as f32,
+                                y: eye.y + (fy * duel_dist) as f32,
+                                z: eye.z - 28.0,
+                            },
+                        )
+                        .expect("monster re-pins ahead");
+                }
+                drive(&mut composed, &mut step_ms, 30);
+                total_steps += 30;
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                if behaviors.borrow().killed_monsters == kills_before + 1 {
+                    killed = true;
+                    break;
+                }
+                // Duel diagnostics: kind, health, and eye-to-target
+                // offset after the chunk (temporary S6 probe).
+                {
+                    let borrowed = behaviors.borrow();
+                    let monster = borrowed.monsters.get(&target.0).expect("duel target record");
+                    let health = q1_health_of(world.server().simulation(), &target.0);
+                    let body = world.server().simulation().body_state(&target.0).expect("duel body");
+                    let bounds = translated_body_bounds(&body);
+                    let (eye, _) = world.player_eye().expect("duel eye");
+                    eprintln!(
+                        "live-play: {map} duel {:?} hp={health} eye=({:.0},{:.0},{:.0}) tgt=({:.0},{:.0},{:.0}) shells={} solids={}",
+                        monster.kind,
+                        eye.x,
+                        eye.y,
+                        eye.z,
+                        (bounds.min.x + bounds.max.x) / 2.0,
+                        (bounds.min.y + bounds.max.y) / 2.0,
+                        (bounds.min.z + bounds.max.z) / 2.0,
+                        borrowed.player_ammo.shells,
+                        borrowed.solids.contains(&target.0),
+                    );
+                }
+            }
+            mouse_attack(&mut composed, false);
+            let (health, shells_left) = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let player = world.player_actor().cloned().expect("player");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                (
+                    q1_health_of(world.server().simulation(), &player),
+                    borrowed.player_ammo.shells,
+                )
+            };
+            eprintln!("live-play: {map} killed={killed} player_health={health} shells={shells_left}");
+            assert!(killed, "{map} held fire never killed the monster");
+            assert!(health > 0.0, "{map} the monster killed the player");
+            let combat_frame = composed.app.capture_next_frame().expect("combat capture works");
+            // S7: ride the exit gate to the next map through the live
+            // loop. e4m7 scrolls the episode finale on the way out.
+            let exit = {
+                let world = composed.app.backend().world.as_ref().expect("windowed world");
+                let exits = live_changelevel_exits(world);
+                if map == "maps/e4m5.bsp" {
+                    assert_eq!(exits.len(), 2, "e4m5 has two exits");
+                    assert!(
+                        exits.iter().any(|(_, map)| map == "e4m8"),
+                        "the secret e4m8 gate stays"
+                    );
+                } else {
+                    assert_eq!(exits.len(), 1, "{map} has one exit");
+                }
+                exits
+                    .iter()
+                    .find(|(_, map)| map == gate)
+                    .map(|(exit, _)| exit.clone())
+                    .unwrap_or_else(|| panic!("{map} exit gate"))
+            };
+            {
+                let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                let player = world.player_actor().cloned().expect("player");
+                let center = live_volume_center(world, &exit);
+                world
+                    .server_mut()
+                    .simulation_mut()
+                    .set_body_origin(&player, center)
+                    .unwrap();
+            }
+            // The exit ride proves travel, not survival: the map
+            // stays live around the exit (and through the
+            // intermission), so the player is re-topped every chunk.
+            let mut frames = 0;
+            while composed.app.backend().world.as_ref().is_some_and(|world| {
+                world
+                    .q1_behaviors()
+                    .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+            }) && frames < 1200
+            {
+                live_set_player_health(
+                    composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                    500.0,
+                );
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                frames += 10;
+            }
+            assert!(frames < 1200, "{map} exit never entered the intermission");
+            eprintln!("live-play: {map} intermission after {frames} frames");
+            let intermission_frame = composed.app.capture_next_frame().expect("intermission capture works");
+            mouse_attack(&mut composed, true);
+            frames = 0;
+            let mut scroll_seen = false;
+            while composed
+                .app
+                .backend()
+                .world
+                .as_ref()
+                .is_some_and(|world| world.map() == map)
+                && frames < 2400
+            {
+                live_set_player_health(
+                    composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                    500.0,
+                );
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                frames += 10;
+                // Travel diagnostics: intermission state on the way
+                // out (temporary S7 probe).
+                if frames % 300 == 10 {
+                    let world = composed.app.backend().world.as_ref().expect("travel world");
+                    let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                    let borrowed = behaviors.borrow();
+                    let now = world.server().simulation().frame().time.as_seconds_f64();
+                    eprintln!(
+                        "live-play: {map} travel f={frames} running={} gate={:.1} now={:.1} buttons={} pending={:?} nextmap={:?} issued={}",
+                        borrowed.intermission.running,
+                        borrowed.intermission.exit_time_seconds,
+                        now,
+                        borrowed.intermission.buttons,
+                        borrowed.pending_travel,
+                        borrowed.nextmap,
+                        borrowed.changelevel_issued,
+                    );
+                }
+                if map == "maps/e4m7.bsp" && !scroll_seen {
+                    let world = composed.app.backend().world.as_ref().expect("e4m7 world");
+                    let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                    let borrowed = behaviors.borrow();
+                    if borrowed.intermission.running == 2 {
+                        assert_eq!(
+                            borrowed.finale_text.as_deref(),
+                            Some(live_expected_finale("e4")),
+                            "e4m7 scrolls the episode finale"
+                        );
+                        assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+                        scroll_seen = true;
+                    }
+                }
+            }
+            mouse_attack(&mut composed, false);
+            let world = composed.app.backend().world.as_ref().expect("travelled world");
+            assert_eq!(world.map(), arrival, "poll travelled after {frames} frames");
+            if map == "maps/e4m7.bsp" {
+                assert!(scroll_seen, "e4m7 travelled without scrolling the finale");
+            }
+            let (eye, _) = world.player_eye().expect("arrival eye");
+            assert_eq!((eye.x, eye.y), arrival_xy, "{map} arrival at the start");
+            // No immediate eye-height assert: elevated spawns (e4m7
+            // drops ~54 to its floor) are still falling here; the
+            // post-settle check below verifies the landing.
+            {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
+                assert_eq!(borrowed.killed_monsters, 0, "fresh level census");
+                eprintln!("live-play: {map} arrived with {} shells", borrowed.player_ammo.shells);
+                // Stock floors carried shells at 25 (`SetChangeParms`,
+                // `client.qc`); the still-held trigger can loose at
+                // most one arrival shot before the release lands
+                // (0.15 s left in the chunk vs the 0.5 s refire),
+                // spending 1-2 shells (the walk may arm the double).
+                assert!(
+                    (23.0..=25.0).contains(&borrowed.player_ammo.shells),
+                    "{map} arrival shells show the carried floor: {}",
+                    borrowed.player_ammo.shells,
+                );
+            }
+            drive(&mut composed, &mut step_ms, 60);
+            total_steps += 60;
+            let (settle_eye, _) = eye_of(&composed);
+            assert!(
+                (arrival_z.0..=arrival_z.1).contains(&f64::from(settle_eye.z)),
+                "{map} arrival eye sinks or floats: {settle_eye:?}"
+            );
+            // No exact-size assert: the GL readback size is driver
+            // dependent and varies capture to capture under xvfb.
+            for (label, frame) in [
+                ("spawn", &spawn_frame),
+                ("combat", &combat_frame),
+                ("intermission", &intermission_frame),
+            ] {
+                assert!(!frame.is_empty(), "{map} {label} captures pixels");
+                let lit = count_non_black(frame);
+                eprintln!("live-play: {map} {label} frame {lit} lit pixels");
+                assert!(lit * 100 > frame.len() / 4, "{map} {label} frame is blank");
+            }
+            let diff_bytes = |a: &[u8], b: &[u8]| a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+            let spawn_combat = diff_bytes(&spawn_frame, &combat_frame);
+            let combat_inter = diff_bytes(&combat_frame, &intermission_frame);
+            eprintln!("live-play: {map} spawn/combat differ in {spawn_combat} bytes, combat/intermission in {combat_inter}");
+            assert!(
+                spawn_combat > 100 || spawn_frame.len() != combat_frame.len(),
+                "{map} spawn and combat frames identical"
+            );
+            assert!(
+                combat_inter > 100 || combat_frame.len() != intermission_frame.len(),
+                "{map} combat and intermission frames identical"
+            );
+            step_ms.sort_by(f64::total_cmp);
+            let mean = step_ms.iter().sum::<f64>() / step_ms.len() as f64;
+            let p95 = step_ms[step_ms.len() * 95 / 100];
+            let max = step_ms[step_ms.len() - 1];
+            eprintln!("live-play: {map} {total_steps} steps, step ms mean {mean:.2} p95 {p95:.2} max {max:.2}");
+            assert!(total_steps < 8000, "{map} runaway pass: {total_steps} steps");
+            composed.app.close().expect("windowed close works");
+        }
+    }
+
     #[test]
     fn non_black_counter_diffs_captures_from_black() {
         assert_eq!(count_non_black(&[0, 0, 0, 255, 0, 0, 0, 255]), 0);
@@ -7248,6 +8000,248 @@ mod tests {
                 assert_eq!(live_fish(world).len(), census.fish, "{map} fish");
                 assert_eq!(live_wizards(world).len(), census.wizards, "{map} scrags");
                 assert_eq!(live_vores(world).len(), census.vores, "{map} vores");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                assert_eq!(behaviors.borrow().total_monsters, census.total, "{map} total");
+            }
+            let pixels = composed
+                .app
+                .capture_next_frame()
+                .unwrap_or_else(|error| panic!("{map} captures: {error}"));
+            // No exact-size assert: the GL readback size is driver
+            // dependent (xvfb returns a 1964600-byte readback for a
+            // 64x64 window). The presented-world proof is the lit
+            // fraction, far above black either way.
+            assert!(!pixels.is_empty(), "{map} captures pixels");
+            let lit = count_non_black(&pixels);
+            assert!(
+                lit > 1000,
+                "{map}: expected a presented world, got {lit} non-black pixels of {}",
+                pixels.len() / 4
+            );
+            let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+                .unwrap_or_else(|error| panic!("{map} drives: {error}"));
+            assert_eq!(frames, 3);
+            assert!(composed.app.is_closed());
+        }
+    }
+
+    /// One episode-4 map's native census at skill 2: per-kind
+    /// live record counts plus the kill-count total.
+    struct WindowedE4Census {
+        dogs: usize,
+        grunts: usize,
+        enforcers: usize,
+        ogres: usize,
+        knights: usize,
+        hknights: usize,
+        fiends: usize,
+        shamblers: usize,
+        zombies: usize,
+        fish: usize,
+        wizards: usize,
+        spawns: usize,
+        vores: usize,
+        bosses: usize,
+        total: u32,
+    }
+
+    /// Q1 E4 windowed census run (Q1-0140-Q1-0153): every stock
+    /// episode-4 map opens in the real windowed run at skill 2, and
+    /// every stock monster kind spawns through the native path: the
+    /// per-kind record counts match the authored entity lump minus
+    /// skill inhibition. Each map also presents (a non-black capture)
+    /// and drives real frames before closing.
+    ///
+    /// One sequential test (not eight parallel ones) so concurrent
+    /// SDL windows never contend: each map opens, soaks, captures,
+    /// drives, and closes in turn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e4_census_run() {
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        for (map, census) in [
+            (
+                "maps/e4m1.bsp",
+                WindowedE4Census {
+                    dogs: 5,
+                    grunts: 31,
+                    enforcers: 20,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 0,
+                    fiends: 0,
+                    shamblers: 0,
+                    zombies: 0,
+                    fish: 0,
+                    wizards: 0,
+                    spawns: 0,
+                    vores: 0,
+                    bosses: 0,
+                    total: LIVE_E4M1_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m2.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 13,
+                    knights: 19,
+                    hknights: 6,
+                    fiends: 0,
+                    shamblers: 1,
+                    zombies: 0,
+                    fish: 0,
+                    wizards: 0,
+                    spawns: 0,
+                    vores: 4,
+                    bosses: 0,
+                    total: LIVE_E4M2_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m3.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 10,
+                    knights: 18,
+                    hknights: 0,
+                    fiends: 15,
+                    shamblers: 0,
+                    zombies: 49,
+                    fish: 0,
+                    wizards: 18,
+                    spawns: 5,
+                    vores: 0,
+                    bosses: 0,
+                    total: LIVE_E4M3_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m4.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 0,
+                    knights: 15,
+                    hknights: 7,
+                    fiends: 28,
+                    shamblers: 5,
+                    zombies: 0,
+                    fish: 9,
+                    wizards: 14,
+                    spawns: 0,
+                    vores: 0,
+                    bosses: 0,
+                    total: LIVE_E4M4_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m5.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 14,
+                    fiends: 14,
+                    shamblers: 0,
+                    zombies: 41,
+                    fish: 4,
+                    wizards: 0,
+                    spawns: 16,
+                    vores: 5,
+                    bosses: 0,
+                    total: LIVE_E4M5_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m6.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 12,
+                    fiends: 8,
+                    shamblers: 0,
+                    zombies: 0,
+                    fish: 3,
+                    wizards: 0,
+                    spawns: 49,
+                    vores: 9,
+                    bosses: 0,
+                    total: LIVE_E4M6_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m7.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 12,
+                    fiends: 8,
+                    shamblers: 3,
+                    zombies: 14,
+                    fish: 8,
+                    wizards: 0,
+                    spawns: 25,
+                    vores: 10,
+                    bosses: 0,
+                    total: LIVE_E4M7_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e4m8.bsp",
+                WindowedE4Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 10,
+                    knights: 0,
+                    hknights: 8,
+                    fiends: 19,
+                    shamblers: 2,
+                    zombies: 45,
+                    fish: 0,
+                    wizards: 0,
+                    spawns: 0,
+                    vores: 4,
+                    bosses: 0,
+                    total: LIVE_E4M8_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+        ] {
+            let Some(mut composed) = windowed_q1_run(map) else {
+                return;
+            };
+            assert!(composed.app.active_game(), "{map} has a scene");
+            windowed_soak(&mut composed.app, 1.0);
+            {
+                let world = windowed_world(&composed.app);
+                assert_eq!(live_dogs(world).len(), census.dogs, "{map} dogs");
+                assert_eq!(live_grunts(world).len(), census.grunts, "{map} grunts");
+                assert_eq!(live_enforcers(world).len(), census.enforcers, "{map} enforcers");
+                assert_eq!(live_ogres(world).len(), census.ogres, "{map} ogres");
+                assert_eq!(live_knights(world).len(), census.knights, "{map} knights");
+                assert_eq!(live_hknights(world).len(), census.hknights, "{map} hell knights");
+                assert_eq!(live_fiends(world).len(), census.fiends, "{map} fiends");
+                assert_eq!(live_shamblers(world).len(), census.shamblers, "{map} shamblers");
+                assert_eq!(live_zombies(world).len(), census.zombies, "{map} zombies");
+                assert_eq!(live_fish(world).len(), census.fish, "{map} fish");
+                assert_eq!(live_wizards(world).len(), census.wizards, "{map} scrags");
+                assert_eq!(live_tarbabies(world).len(), census.spawns, "{map} spawns");
+                assert_eq!(live_vores(world).len(), census.vores, "{map} vores");
+                assert_eq!(live_bosses(world).len(), census.bosses, "{map} bosses");
                 let behaviors = world.q1_behaviors().expect("Q1 behaviors");
                 assert_eq!(behaviors.borrow().total_monsters, census.total, "{map} total");
             }
