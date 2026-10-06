@@ -9,11 +9,10 @@
 //! directly, delegating physics-owned behavior to [`SharedPhysics`] and
 //! joining source fields through [`Q1PusherGame`].
 
-use qa_content::q1::foundation::entity_services::Q1EntityServices;
-use qa_content::q1::foundation::gameplay::Q1ThinkFrame;
 use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::Vec3;
 use qa_core::numeric::NumericOps;
+use qa_core::time::FrameContext;
 use qa_world::movement::q1::types::{Q1PhysicsEntity, Q1PusherServices, Q1Trace};
 use qa_world::movement::types::TraceHit;
 
@@ -60,10 +59,10 @@ pub struct Q1PusherSourceView {
 
 /// Native game access for the pusher bridge (seam).
 ///
-/// This is the exact `Q1EntityServices` surface used by donor
+/// This is the exact game surface used by donor
 /// `createNativeQ1PusherServices` (`entity`, `fields`, `nextThink`,
-/// `movementFlags`, `host.bodies.link`, `blocked`, `think`). The blanket
-/// implementation below binds it to the real game; tests inject fakes. Donor
+/// `movementFlags`, link, `blocked`, `think`). The native game binding
+/// lands when the live path wires the pusher; tests inject fakes. Donor
 /// null guards live in the [`NativeQ1Pusher`] core, so every adapter method
 /// expects a live entity.
 pub trait Q1PusherGame {
@@ -76,51 +75,14 @@ pub trait Q1PusherGame {
     /// Run the blocked callback, if bound.
     fn fire_pusher_blocked(&mut self, id: &ActorId, other: &ActorId);
     /// Run the think callback with the current think frame.
-    fn fire_pusher_think(&mut self, id: &ActorId, frame: &Q1ThinkFrame);
-}
-
-impl Q1PusherGame for Q1EntityServices {
-    fn pusher_source(&self, id: &ActorId) -> Option<Q1PusherSourceView> {
-        self.entity(id).map(|source| Q1PusherSourceView {
-            ltime: source.number("ltime"),
-            next_think: source.next_think,
-            movement_flags: source.movement_flags,
-            has_think: source.think.is_some(),
-        })
-    }
-
-    fn write_pusher_source(&mut self, id: &ActorId, ltime: f64, next_think: f64, flags: i32) {
-        let text = ltime.to_string();
-        self.update_entity(id, |source| {
-            // Donor `String(ltime)`: Rust shortest-round-trip rendering only
-            // differs cosmetically at extreme magnitudes, and the field is
-            // always parsed back to a float.
-            source.fields.insert("ltime".to_string(), text);
-            source.next_think = next_think;
-            source.movement_flags = flags;
-        })
-        .expect("native Q1 pusher write target");
-    }
-
-    fn link_pusher_body(&mut self, actor: &OwnedActor) {
-        self.host.bodies.link(actor).expect("native Q1 pusher link");
-    }
-
-    fn fire_pusher_blocked(&mut self, id: &ActorId, other: &ActorId) {
-        self.invoke_blocked(id, other)
-            .expect("native Q1 pusher blocked callback");
-    }
-
-    fn fire_pusher_think(&mut self, id: &ActorId, frame: &Q1ThinkFrame) {
-        self.fire_think(id, frame).expect("native Q1 pusher think");
-    }
+    fn fire_pusher_think(&mut self, id: &ActorId, frame: &FrameContext);
 }
 
 /// Native Q1 pusher services joining source fields to shared physics.
 pub struct NativeQ1Pusher<'g, 'p, G: Q1PusherGame + ?Sized, P: SharedPhysics + ?Sized> {
     game: &'g mut G,
     physics: &'p mut P,
-    think_frame: Q1ThinkFrame,
+    think_frame: FrameContext,
 }
 
 impl<'g, 'p, G: Q1PusherGame + ?Sized, P: SharedPhysics + ?Sized> NativeQ1Pusher<'g, 'p, G, P> {
@@ -128,7 +90,7 @@ impl<'g, 'p, G: Q1PusherGame + ?Sized, P: SharedPhysics + ?Sized> NativeQ1Pusher
     ///
     /// The think frame supplies the engine time donor `think()` reads from
     /// the game clock; update it every frame with [`set_think_frame`](Self::set_think_frame).
-    pub fn new(game: &'g mut G, physics: &'p mut P, think_frame: Q1ThinkFrame) -> Self {
+    pub fn new(game: &'g mut G, physics: &'p mut P, think_frame: FrameContext) -> Self {
         Self {
             game,
             physics,
@@ -137,17 +99,17 @@ impl<'g, 'p, G: Q1PusherGame + ?Sized, P: SharedPhysics + ?Sized> NativeQ1Pusher
     }
 
     /// Replace the think frame (donor game clock).
-    pub fn set_think_frame(&mut self, frame: Q1ThinkFrame) {
+    pub fn set_think_frame(&mut self, frame: FrameContext) {
         self.think_frame = frame;
     }
 }
 
 /// Native source fields join the same pusher transaction used by raw QC.
-pub fn create_native_q1_pusher_services<'g, 'p, P: SharedPhysics>(
-    game: &'g mut Q1EntityServices,
+pub fn create_native_q1_pusher_services<'g, 'p, G: Q1PusherGame, P: SharedPhysics>(
+    game: &'g mut G,
     physics: &'p mut P,
-    think_frame: Q1ThinkFrame,
-) -> NativeQ1Pusher<'g, 'p, Q1EntityServices, P> {
+    think_frame: FrameContext,
+) -> NativeQ1Pusher<'g, 'p, G, P> {
     NativeQ1Pusher::new(game, physics, think_frame)
 }
 
@@ -237,7 +199,7 @@ mod tests {
     use qa_core::identity::{IdentityOwner, ProviderId};
     use qa_core::math::{vec3, Bounds, Plane};
     use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
-    use qa_core::time::SourceTime;
+    use qa_core::time::{FramePhase, SourceTime};
     use qa_world::movement::q1::types::{Q1MovementState, Q1Solid};
 
     use super::*;
@@ -269,7 +231,7 @@ mod tests {
             self.blocked.push((id.clone(), other.clone()));
         }
 
-        fn fire_pusher_think(&mut self, id: &ActorId, _frame: &Q1ThinkFrame) {
+        fn fire_pusher_think(&mut self, id: &ActorId, _frame: &FrameContext) {
             self.thinks.push(id.clone());
         }
     }
@@ -364,10 +326,12 @@ mod tests {
         }
     }
 
-    fn frame() -> Q1ThinkFrame {
-        Q1ThinkFrame {
+    fn frame() -> FrameContext {
+        FrameContext {
+            frame: 30,
             time: SourceTime::Seconds(3.0),
             elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::EntityThink,
         }
     }
 
@@ -529,9 +493,11 @@ mod tests {
         {
             let mut pusher = NativeQ1Pusher::new(&mut game, &mut physics, frame());
             pusher.think(&actor);
-            pusher.set_think_frame(Q1ThinkFrame {
+            pusher.set_think_frame(FrameContext {
+                frame: 90,
                 time: SourceTime::Seconds(9.0),
                 elapsed: SourceTime::Seconds(0.1),
+                phase: FramePhase::EntityThink,
             });
         }
         assert_eq!(game.thinks.len(), 1);
