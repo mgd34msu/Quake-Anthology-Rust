@@ -3378,4 +3378,55 @@ mod tests {
             "the removal touch stays silent"
         );
     }
+
+    #[test]
+    fn shambler_takes_half_grenade_blast() {
+        use super::super::native_q1_monsters::{build_q1_monster, register_q1_monster_spawns, Q1_FLAG_MONSTER};
+
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        register_q1_monster_spawns(server.spawns_mut());
+        let fields = SpawnFields::parse(&[("classname", "monster_shambler"), ("origin", "0 0 0")]).unwrap();
+        let shambler = server.spawn_entity(&fields).unwrap();
+        build_q1_monster(&mut server, &mut behaviors, &shambler, &fields).unwrap();
+        let combat = server.simulation().combat_state(shambler.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(
+                shambler.id(),
+                CombatState {
+                    can_take_damage: true,
+                    ..combat
+                },
+            )
+            .unwrap();
+        let monster = behaviors.monsters.get_mut(shambler.id()).unwrap();
+        monster.flags |= Q1_FLAG_MONSTER;
+        monster.takedamage = Q1_DAMAGE_AIM;
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let grenade = q1_spawn_missile(
+            &mut server,
+            &mut behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::Grenade,
+                owner: player.clone(),
+                // The lane's radius falloff measures to the victim's
+                // center, so park the blast on it for a full-120 hit.
+                origin: vec3(0.0, 0.0, 20.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                avelocity: vec3(0.0, 0.0, 0.0),
+                effects: 0,
+                fuse_at: None,
+                remove_at: 99.0,
+                born_at: 0.0,
+            },
+        )
+        .unwrap();
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_grenade_explode(&mut ctx, &grenade, None, 120.0, 8.0);
+        // Point-blank 120 halves to 60 (`combat.qc:236`).
+        assert_eq!(q1_health_of(ctx.server.simulation(), shambler.id()), 540.0);
+    }
 }

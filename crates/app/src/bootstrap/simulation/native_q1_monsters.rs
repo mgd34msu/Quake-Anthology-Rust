@@ -59,9 +59,8 @@ use super::native_q1_items::{build_q1_backpack, Q1Ammo, Q1ItemKind};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
 use super::native_q1_weapons::{
-    q1_client_obituary, q1_grenade_explode, q1_lightning_damage, q1_player_die, q1_player_pain,
-    q1_spawn_missile, q1_traceline, Q1MissileKind, Q1MissileSpawn, Q1TempEnt, Q1WeaponFire,
-    Q1_IT_INVISIBILITY,
+    q1_client_obituary, q1_grenade_explode, q1_lightning_damage, q1_player_die, q1_player_pain, q1_spawn_missile,
+    q1_traceline, Q1MissileKind, Q1MissileSpawn, Q1TempEnt, Q1WeaponFire, Q1_IT_INVISIBILITY,
 };
 
 /// Stock entity flags (`defs.qc:231-240`).
@@ -937,8 +936,7 @@ pub const Q1_SHAMBLER_GIB_HEALTH: f64 = -60.0;
 pub const Q1_SHAMBLER_MELEE_RANGE: f32 = 100.0;
 
 /// Shambler walk stride per frame (`sham_walk1..12`, `shambler.qc`).
-pub const Q1_SHAMBLER_WALK_STEPS: [f64; 12] =
-    [10.0, 9.0, 9.0, 5.0, 6.0, 12.0, 8.0, 3.0, 13.0, 9.0, 7.0, 7.0];
+pub const Q1_SHAMBLER_WALK_STEPS: [f64; 12] = [10.0, 9.0, 9.0, 5.0, 6.0, 12.0, 8.0, 3.0, 13.0, 9.0, 7.0, 7.0];
 
 /// Shambler run stride per frame (`sham_run1..6`, `shambler.qc`).
 pub const Q1_SHAMBLER_RUN_STEPS: [f64; 6] = [20.0, 24.0, 20.0, 20.0, 24.0, 20.0];
@@ -1660,11 +1658,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
 /// `SUB_Null`). The ogre picks its stroke at random (`ogre_melee`,
 /// `ogre.qc:405`) and the shambler picks by roll and health
 /// (`sham_melee`, `shambler.qc`), so the seed and health ride along.
-pub fn q1_th_melee(
-    behaviors: &mut Q1NativeBehaviors,
-    kind: Q1MonsterKind,
-    health: f64,
-) -> Option<Q1MonsterThink> {
+pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind, health: f64) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, 0)),
         Q1MonsterKind::Grunt => None,
@@ -2264,7 +2258,14 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
         // unfelt hit — then the flinch rolls against `random * 400`
         // before the 2 s hold latches (`sham_pain`, `shambler.qc`).
         Q1MonsterKind::Shambler => {
-            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shambler/shurt2.wav", 1.0, Q1_ATTN_NORM);
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shambler/shurt2.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
             if q1_health_of(simulation, actor) <= 0.0 {
                 return;
             }
@@ -2471,7 +2472,14 @@ pub fn q1_monster_th_die(
                 q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
                 return;
             }
-            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shambler/sdeath.wav", 1.0, Q1_ATTN_NORM);
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shambler/sdeath.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::ShamDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, 0);
@@ -6749,7 +6757,12 @@ fn q1_shambler_frame<L: ServerLogic>(
             if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
                 monster.effects |= Q1_EF_MUZZLEFLASH;
             }
-            if let Some(ball) = ctx.behaviors.sham_balls.iter_mut().rev().find(|ball| ball.shambler == *actor)
+            if let Some(ball) = ctx
+                .behaviors
+                .sham_balls
+                .iter_mut()
+                .rev()
+                .find(|ball| ball.shambler == *actor)
             {
                 ball.frame = 1;
             }
@@ -6758,14 +6771,24 @@ fn q1_shambler_frame<L: ServerLogic>(
             if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
                 monster.effects |= Q1_EF_MUZZLEFLASH;
             }
-            if let Some(ball) = ctx.behaviors.sham_balls.iter_mut().rev().find(|ball| ball.shambler == *actor)
+            if let Some(ball) = ctx
+                .behaviors
+                .sham_balls
+                .iter_mut()
+                .rev()
+                .find(|ball| ball.shambler == *actor)
             {
                 ball.frame = 2;
             }
         }
         // The first bolt pops the ball (`sham_magic6`, jumping to 9).
         (Q1MonsterSeq::ShamMagic, 5) => {
-            if let Some(slot) = ctx.behaviors.sham_balls.iter().rposition(|ball| ball.shambler == *actor) {
+            if let Some(slot) = ctx
+                .behaviors
+                .sham_balls
+                .iter()
+                .rposition(|ball| ball.shambler == *actor)
+            {
                 ctx.behaviors.sham_balls.remove(slot);
             }
             q1_shambler_cast_lightning(ctx, actor);
@@ -6874,6 +6897,10 @@ mod tests {
         monster_fields("monster_demon1", pairs)
     }
 
+    fn shambler_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_shambler", pairs)
+    }
+
     fn spawn_monster(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
@@ -6942,6 +6969,14 @@ mod tests {
     }
 
     fn spawn_fiend(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_shambler(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -7061,6 +7096,14 @@ mod tests {
         fiend: &ActorId,
     ) {
         arm_monster(server, behaviors, fiend);
+    }
+
+    fn arm_shambler(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        shambler: &ActorId,
+    ) {
+        arm_monster(server, behaviors, shambler);
     }
 
     #[test]
@@ -7984,7 +8027,11 @@ mod tests {
         assert_eq!(Q1MonsterKind::from_classname("monster_ogre"), Some(Q1MonsterKind::Ogre));
         assert_eq!(Q1MonsterKind::Ogre.classname(), "monster_ogre");
         assert!(matches!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Ogre, q1_health_of(server.simulation(), ogre.id())),
+            q1_th_melee(
+                &mut behaviors,
+                Q1MonsterKind::Ogre,
+                q1_health_of(server.simulation(), ogre.id())
+            ),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
                 | Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSwing, 0))
         ));
@@ -8587,7 +8634,11 @@ mod tests {
         assert_eq!(Q1MonsterKind::from_classname("monster_fish"), Some(Q1MonsterKind::Fish));
         assert_eq!(Q1MonsterKind::Fish.classname(), "monster_fish");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Fish, q1_health_of(server.simulation(), fish.id())),
+            q1_th_melee(
+                &mut behaviors,
+                Q1MonsterKind::Fish,
+                q1_health_of(server.simulation(), fish.id())
+            ),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0))
         );
         assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Fish).is_none());
@@ -8741,7 +8792,11 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Knight.classname(), "monster_knight");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Knight, q1_health_of(server.simulation(), knight.id())),
+            q1_th_melee(
+                &mut behaviors,
+                Q1MonsterKind::Knight,
+                q1_health_of(server.simulation(), knight.id())
+            ),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0))
         );
         assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Knight).is_none());
@@ -8955,7 +9010,11 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Fiend.classname(), "monster_demon1");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Fiend, q1_health_of(server.simulation(), fiend.id())),
+            q1_th_melee(
+                &mut behaviors,
+                Q1MonsterKind::Fiend,
+                q1_health_of(server.simulation(), fiend.id())
+            ),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0))
         );
         assert_eq!(
@@ -9142,6 +9201,272 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Fiend, FiendDie, 8),
             Q1MonsterThink::Frame(FiendDie, 8)
+        );
+    }
+
+    #[test]
+    fn shambler_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(shambler.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_SHAMBLER_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_SHAMBLER_BOUNDS.max);
+        let combat = server.simulation().combat_state(shambler.id()).unwrap();
+        assert_eq!(combat.health, Q1_SHAMBLER_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(shambler.id()));
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Shambler);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_shambler"),
+            Some(Q1MonsterKind::Shambler)
+        );
+        assert_eq!(Q1MonsterKind::Shambler.classname(), "monster_shambler");
+        // Full health always opens with the smash; the missile stroke
+        // is the lightning cast.
+        assert_eq!(
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0))
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Shambler),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 0))
+        );
+    }
+
+    #[test]
+    fn shambler_melee_picks_stroke_by_roll_and_health() {
+        // Full health smashes on every seed; hurt shamblers deal all
+        // three strokes across the seed sweep.
+        for seed in 0..8 {
+            let mut behaviors = Q1NativeBehaviors::new();
+            behaviors.monster_rand = seed;
+            assert_eq!(
+                q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH),
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0)),
+                "full health smashes on seed {seed}"
+            );
+        }
+        let mut smash = 0;
+        let mut swingr = 0;
+        let mut swingl = 0;
+        // Sequential draws from one stream: fresh tiny seeds all draw
+        // near zero on the first pull, like stock's unseeded libc.
+        let mut behaviors = Q1NativeBehaviors::new();
+        for _ in 0..512 {
+            match q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH - 1.0) {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0)) => smash += 1,
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingR, 0)) => swingr += 1,
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0)) => swingl += 1,
+                other => panic!("unexpected hurt stroke: {other:?}"),
+            }
+        }
+        assert!(smash > 0 && swingr > 0 && swingl > 0, "hurt deals all three strokes");
+    }
+
+    #[test]
+    fn shambler_pain_barks_always_flinches_on_heavy_hits() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut behaviors, &fields);
+        arm_shambler(&mut server, &mut behaviors, shambler.id());
+        // A crushing hit flinches and latches the 2 s hold.
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, shambler.id(), 500.0);
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamPain, 0));
+        assert_eq!(monster.pain_finished, 2.0);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/shurt2.wav"),
+            "pain barks the hurt line"
+        );
+        // A held shambler barks over the ignored hit but keeps its think.
+        behaviors.monsters.get_mut(shambler.id()).unwrap().think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0);
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, shambler.id(), 500.0);
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0));
+        assert_eq!(
+            behaviors
+                .sounds
+                .iter()
+                .filter(|sound| sound.sample == "shambler/shurt2.wav")
+                .count(),
+            2,
+            "held pain still barks"
+        );
+        // A light hit against a probed high roll barks without flinching.
+        behaviors.monsters.get_mut(shambler.id()).unwrap().pain_finished = 0.0;
+        let mut probe = Q1NativeBehaviors::new();
+        let seed = (1..100_000)
+            .find(|seed| {
+                probe.monster_rand = *seed;
+                f64::from(q1_monster_random(&mut probe)) * 400.0 > 1.0
+            })
+            .expect("a high roll within the sweep");
+        behaviors.monster_rand = seed;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, shambler.id(), 1.0);
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0));
+        assert_eq!(monster.pain_finished, 0.0);
+        // Dying pain barks but never flinches.
+        let combat = server.simulation().combat_state(shambler.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(shambler.id(), CombatState { health: 0.0, ..combat })
+            .unwrap();
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, shambler.id(), 500.0);
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0));
+    }
+
+    #[test]
+    fn shambler_dies_with_cry() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut behaviors, &fields);
+        arm_shambler(&mut server, &mut behaviors, shambler.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            shambler.id(),
+            Some(player.id()),
+            Some(player.id()),
+            Q1_SHAMBLER_HEALTH,
+        );
+        assert!(q1_health_of(server.simulation(), shambler.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(shambler.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, 0));
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/sdeath.wav"),
+            "death cries the death line"
+        );
+    }
+
+    #[test]
+    fn shambler_gibs_past_minus_sixty() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut behaviors, &fields);
+        arm_shambler(&mut server, &mut behaviors, shambler.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Health -100: past the shambler's -60 gib line.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            shambler.id(),
+            Some(player.id()),
+            Some(player.id()),
+            700.0,
+        );
+        // `T_Damage` clamps the corpse at -99 like every other gib test.
+        assert_eq!(q1_health_of(server.simulation(), shambler.id()), -99.0);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        let models: Vec<&str> = behaviors.pending_gibs.iter().map(|gib| gib.model.as_str()).collect();
+        assert_eq!(models, ["progs/gib1.mdl", "progs/gib2.mdl", "progs/gib3.mdl"]);
+        assert!(behaviors.gibs.contains_key(shambler.id()), "the head keeps the actor");
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+    }
+
+    #[test]
+    fn shambler_sight_barks_the_classname_line() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut behaviors, &fields);
+        arm_shambler(&mut server, &mut behaviors, shambler.id());
+        behaviors.monsters.get_mut(shambler.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, shambler.id());
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/ssight.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(shambler.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0)
+        );
+    }
+
+    #[test]
+    fn shambler_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(ShamStand), 17);
+        assert_eq!(q1_seq_len(ShamWalk), 12);
+        assert_eq!(q1_seq_len(ShamRun), 6);
+        assert_eq!(q1_seq_len(ShamSmash), 12);
+        assert_eq!(q1_seq_len(ShamSwingR), 9);
+        assert_eq!(q1_seq_len(ShamSwingL), 9);
+        assert_eq!(q1_seq_len(ShamMagic), 12);
+        assert_eq!(q1_seq_len(ShamPain), 6);
+        assert_eq!(q1_seq_len(ShamDie), 11);
+        assert_eq!(q1_seq_frame(ShamStand, 0), 0);
+        assert_eq!(q1_seq_frame(ShamStand, 16), 16);
+        assert_eq!(q1_seq_frame(ShamWalk, 0), 17);
+        assert_eq!(q1_seq_frame(ShamWalk, 11), 28);
+        assert_eq!(q1_seq_frame(ShamRun, 0), 29);
+        assert_eq!(q1_seq_frame(ShamRun, 5), 34);
+        assert_eq!(q1_seq_frame(ShamSmash, 0), 35);
+        assert_eq!(q1_seq_frame(ShamSmash, 11), 46);
+        assert_eq!(q1_seq_frame(ShamSwingR, 0), 47);
+        assert_eq!(q1_seq_frame(ShamSwingR, 8), 55);
+        assert_eq!(q1_seq_frame(ShamSwingL, 0), 56);
+        assert_eq!(q1_seq_frame(ShamSwingL, 8), 64);
+        assert_eq!(q1_seq_frame(ShamMagic, 0), 65);
+        assert_eq!(q1_seq_frame(ShamMagic, 11), 76);
+        assert_eq!(q1_seq_frame(ShamPain, 0), 77);
+        assert_eq!(q1_seq_frame(ShamPain, 5), 82);
+        assert_eq!(q1_seq_frame(ShamDie, 0), 83);
+        assert_eq!(q1_seq_frame(ShamDie, 10), 93);
+        // The cast skips `magic7..8`; the strikes and pain return to
+        // the run; death never exits.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Shambler, ShamMagic, 5),
+            Q1MonsterThink::Frame(ShamMagic, 8)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Shambler, ShamSmash, 11),
+            q1_th_run(Q1MonsterKind::Shambler)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Shambler, ShamSwingL, 8),
+            q1_th_run(Q1MonsterKind::Shambler)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Shambler, ShamDie, 10),
+            Q1MonsterThink::Frame(ShamDie, 10)
         );
     }
 }
