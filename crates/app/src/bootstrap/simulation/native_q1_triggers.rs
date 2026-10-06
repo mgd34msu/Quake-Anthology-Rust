@@ -470,7 +470,12 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
             }),
         );
     }
-    for classname in ["trigger_relay", "trigger_counter", "info_teleport_destination", "event_lightning"] {
+    for classname in [
+        "trigger_relay",
+        "trigger_counter",
+        "info_teleport_destination",
+        "event_lightning",
+    ] {
         let definition = format!("q1:{classname}");
         registry.register(
             classname,
@@ -4033,8 +4038,7 @@ mod tests {
     ) -> qa_core::identity::OwnedActor {
         let fields = trigger_fields("func_door", &[("model", "*0"), ("target", "lightning")]);
         let actor = server.spawn_entity(&fields).unwrap();
-        super::super::native_q1_spawns::build_q1_door(server, behaviors, &actor, &fields, &[trigger_model()])
-            .unwrap();
+        super::super::native_q1_spawns::build_q1_door(server, behaviors, &actor, &fields, &[trigger_model()]).unwrap();
         actor
     }
 
