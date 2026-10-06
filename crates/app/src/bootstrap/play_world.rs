@@ -4163,6 +4163,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::HellKnight)
     }
 
+    fn live_tarbabies(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Tarbaby)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4302,6 +4307,13 @@ mod tests {
     /// 12 + 1 + 3 + 16 = 54 (no `monster_*` record carries the
     /// 1024 not-hard bit). Every e2m3 monster kind is native now.
     const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 54;
+
+    /// e4m6 native census at skill 2: 8 fiends plus 3 fish counting
+    /// twice each (the classic swim double-count) plus 12 hell
+    /// knights plus 49 spawns: 8 + 6 + 12 + 49 = 75 (no `monster_*`
+    /// record carries the 1024 not-hard bit). The 9 vores keep the
+    /// generic path until their slice lands.
+    const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 75;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -8939,6 +8951,189 @@ mod tests {
                 .any(|sound| sound.sample == "hknight/death1.wav"),
             "deaths cry"
         );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0151_tarbaby_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let tarbabies = live_tarbabies(&world);
+        assert_eq!(tarbabies.len(), 49, "e4m6 spawns forty-nine spawns");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M6_NATIVE_SKILL2_TOTAL);
+        for tarbaby in &tarbabies {
+            let monster = borrowed.monsters.get(tarbaby).expect("spawn record");
+            assert_eq!(monster.flags & 32, 32, "StartGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let standing = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, _));
+            let patrolling = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::TbWalk, _));
+            assert!(
+                standing || patrolling,
+                "spawns stand or patrol, got {:?}",
+                monster.think
+            );
+            if standing {
+                assert!(monster.pausetime > 9999999.0, "targetless spawns stand down");
+            }
+            let combat = world.server().simulation().combat_state(tarbaby).expect("spawn combat");
+            assert_eq!(combat.health, 80.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0151_tarbaby_jump_touch_wounds() {
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let tarbabies = live_tarbabies(&world);
+        assert_eq!(tarbabies.len(), 49, "e4m6 spawns forty-nine spawns");
+        // Offer the player at pounce distance to each spawn until
+        // one lands its touch: 50 sits inside the melee band, so the
+        // generic check jumps instead of closing.
+        let mut touch_seen = false;
+        'offer: for candidate in tarbabies.iter() {
+            live_set_player_health(&mut world, 1000.0);
+            live_place_player_before(&mut world, candidate, 50.0);
+            for _ in 0..300 {
+                live_tick(&mut world);
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                touch_seen |= borrowed.sounds.iter().any(|sound| sound.sample == "blob/hit1.wav");
+                if touch_seen && live_player_health(&world) < 1000.0 {
+                    break 'offer;
+                }
+            }
+        }
+        assert!(touch_seen, "a spawn pounces and lands its touch");
+        assert!(live_player_health(&world) < 1000.0, "the touch wounds the player");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "blob/sight1.wav"),
+            "sightings bark"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0151_tarbaby_ignores_pain() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let tarbabies = live_tarbabies(&world);
+        let player = world.player_actor().cloned().expect("player");
+        // A heavy but survivable hit on a standing spawn wakes it
+        // (it hunts its attacker) without flinching: no `th_pain`,
+        // no pain frames.
+        let standing = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            tarbabies
+                .iter()
+                .find(|tarbaby| {
+                    matches!(
+                        borrowed.monsters.get(*tarbaby).map(|monster| monster.think),
+                        Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, _))
+                    )
+                })
+                .cloned()
+        }
+        .expect("a standing spawn");
+        live_damage(&mut world, &standing, Some(&player), 50.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let monster = borrowed.monsters.get(&standing).expect("spawn record");
+        assert!(!monster.dead);
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0),
+            "wounded spawns hunt, got {:?}",
+            monster.think
+        );
+        assert_eq!(monster.enemy, Some(player.clone()), "wounds turn the spawn");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0151_tarbaby_dies_blasts_and_removes() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+        use super::super::simulation::native_q1_weapons::Q1TempEnt;
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let tarbabies = live_tarbabies(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &tarbabies[0], Some(&player), 90.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&tarbabies[0]).expect("spawn record");
+            assert!(monster.dead);
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::TbDie, 0));
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        // The second death think blasts and removes the body.
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().monsters.contains_key(&tarbabies[0]) {
+                break;
+            }
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                !borrowed.monsters.contains_key(&tarbabies[0]),
+                "the blast removes the body"
+            );
+            assert!(!borrowed.solids.contains(&tarbabies[0]), "blasts go unsolid");
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "blob/death1.wav"),
+                "blasts cry"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::TarExplosion { .. })),
+                "blasts flash TE_TAREXPLOSION"
+            );
+        }
+        // The blast wounds the blast zone: detonate near the player
+        // until a wound lands (some facings wall the placement off).
+        let mut wounded = false;
+        for candidate in tarbabies.iter().skip(1).take(8) {
+            live_set_player_health(&mut world, 100.0);
+            live_place_player_before(&mut world, candidate, 60.0);
+            live_damage(&mut world, candidate, Some(&player), 90.0);
+            for _ in 0..12 {
+                live_tick(&mut world);
+            }
+            if live_player_health(&world) < 100.0 {
+                wounded = true;
+                break;
+            }
+        }
+        assert!(wounded, "the blast wounds the blast zone");
     }
 
     #[test]
