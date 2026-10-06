@@ -255,14 +255,15 @@ impl PlayWorld {
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
         // Stock intermission freeze (`PlayerPreThink`, `client.qc:901`):
-        // the entry move unsolids the player and snaps the view, and no
-        // step runs until the exit travels (stock `MOVETYPE_NONE`).
-        if self
-            .q1_behaviors
-            .as_ref()
-            .is_some_and(|behaviors| behaviors.borrow().intermission.running != 0)
-        {
-            return Ok(());
+        // the entry move unsolids the player and snaps the view, no step
+        // runs until the exit travels (stock `MOVETYPE_NONE`), and the
+        // live buttons latch every frame for the exit poll
+        // (`IntermissionThink`, `client.qc:242`).
+        if let Some(behaviors) = self.q1_behaviors.as_ref() {
+            if behaviors.borrow().intermission.running != 0 {
+                behaviors.borrow_mut().intermission.buttons = command.buttons() != 0;
+                return Ok(());
+            }
         }
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
@@ -2528,6 +2529,69 @@ mod tests {
             .collect()
     }
 
+    /// Latch live button state through the frozen player step (the
+    /// `PlayerPreThink` seam, `client.qc:901`): 0 releases, nonzero
+    /// presses.
+    fn live_press_buttons(world: &mut PlayWorld, buttons: i32) {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let (_, angles) = world.player_eye().expect("player eye");
+        let command = UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: live_now(world),
+            view_angles: angles,
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons,
+            impulse: 0,
+        });
+        world.step_player(command).unwrap();
+    }
+
+    /// Touch a live exit and run the 0.1s execute think: returns with
+    /// the world entered in the intermission and the buttons released.
+    fn live_enter_intermission(world: &mut PlayWorld, exit: &qa_core::identity::ActorId) {
+        let at_exit = live_volume_center(world, exit);
+        live_place_player(world, at_exit);
+        live_tick(world);
+        live_advance(world, 0.2);
+        live_press_buttons(world, 0);
+        assert_eq!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .intermission
+                .running,
+            1,
+            "exit entered the intermission"
+        );
+    }
+
+    /// Advance past the live intermission exit gate with the buttons
+    /// released (a held press would exit at the gate, like stock).
+    fn live_pass_exit_gate(world: &mut PlayWorld) {
+        let wait = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.intermission.exit_time_seconds - live_now(world) + 0.1
+        };
+        live_advance(world, wait.max(0.1));
+    }
+
+    /// Independent oracle for the stock finale scrolls (`client.qc:172-226`).
+    fn live_expected_finale(which: &str) -> &'static str {
+        match which {
+            "e1-shareware" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!",
+            "e1" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!",
+            "e2" => "The Rune of Black Magic throbs evilly in\nyour hand and whispers dark thoughts\ninto your brain. You learn the inmost\nlore of the Hell-Mother; Shub-Niggurath!\nYou now know that she is behind all the\nterrible plotting which has led to so\nmuch death and horror. But she is not\ninviolate! Armed with this Rune, you\nrealize that once all four Runes are\ncombined, the gate to Shub-Niggurath's\nPit will open, and you can face the\nWitch-Goddess herself in her frightful\notherworld cathedral.",
+            "e3" => "The charred viscera of diabolic horrors\nbubble viscously as you seize the Rune\nof Hell Magic. Its heat scorches your\nhand, and its terrible secrets blight\nyour mind. Gathering the shreds of your\ncourage, you shake the devil's shackles\nfrom your soul, and become ever more\nhard and determined to destroy the\nhideous creatures whose mere existence\nthreatens the souls and psyches of all\nthe population of Earth.",
+            "e4" => "Despite the awful might of the Elder\nWorld, you have achieved the Rune of\nElder Magic, capstone of all types of\narcane wisdom. Beyond good and evil,\nbeyond life and death, the Rune\npulsates, heavy with import. Patient and\npotent, the Elder Being Shub-Niggurath\nweaves her dire plans to clear off all\nlife from the Earth, and bring her own\nfoul offspring to our world! For all the\ndwellers in these nightmare dimensions\nare her descendants! Once all Runes of\nmagic power are united, the energy\nbehind them will blast open the Gateway\nto Shub-Niggurath, and you can travel\nthere to foil the Hell-Mother's plots\nin person.",
+            "runes" => "Now, you have all four Runes. You sense\ntremendous invisible forces moving to\nunseal ancient barriers. Shub-Niggurath\nhad hoped to use the Runes Herself to\nclear off the Earth, but now instead,\nyou will use them to enter her home and\nconfront her as an avatar of avenging\nEarth-life. If you defeat her, you will\nbe remembered forever as the savior of\nthe planet. If she conquers, it will be\nas if you had never been born.",
+            _ => panic!("unknown finale {which}"),
+        }
+    }
+
     /// Q1-0241: e1m1 slipgate exit (`trigger_changelevel`, `client.qc:290`):
     /// the touch sets `nextmap`, nulls the touch, thinks
     /// `execute_changelevel` 0.1s later, and the entry freezes the live
@@ -2731,6 +2795,249 @@ mod tests {
         );
         assert_eq!(borrowed.start_spots.len(), 1, "e1m1 has one player start");
         assert_eq!(borrowed.start_spots[0].origin, vec3(480.0, -352.0, 88.0));
+    }
+
+    /// Q1-0257: e1m1 intermission exit (`IntermissionThink`,
+    /// `client.qc:242`): a gated press does nothing, a press past the
+    /// 2s gate travels to e1m2, the tally mirrors the live counters,
+    /// and deathmatch skips every text with its 5s gate.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0257_intermission_buttons_exit_to_travel() {
+        use super::super::simulation::native_q1_triggers::q1_intermission_stats;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        // Gated press: nothing travels.
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.pending_travel, None);
+            assert_eq!(borrowed.intermission.running, 1);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().pending_travel, None, "released buttons wait");
+        }
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        let now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None, "plain level ends show no scroll");
+            let stats = q1_intermission_stats(&borrowed, now);
+            assert_eq!(stats.killed_monsters, borrowed.killed_monsters);
+            assert_eq!(stats.total_monsters, borrowed.total_monsters);
+            assert_eq!(stats.found_secrets, borrowed.found_secrets);
+            assert_eq!(stats.total_secrets, borrowed.total_secrets);
+            assert_eq!(stats.time_seconds, now);
+            assert!(stats.total_monsters > 0, "e1m1 tallies real monsters");
+            assert!(stats.total_secrets > 0, "e1m1 tallies real secrets");
+        }
+        // Deathmatch: the 5s gate, then travel with no text.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 1, "DM never counts texts");
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None);
+        }
+    }
+
+    /// Q1-0256: e1m7 episode finale (`ExitIntermission`, `client.qc:162`):
+    /// the first exit press queues the registered episode-1 scroll with
+    /// CD track 2 and no travel; the second press travels to `start`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_e1_finale_registered() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(behaviors.borrow().registered, "steel corpus is registered");
+        }
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 1, "e1m7 has one exit");
+        assert_eq!(exits[0].1, "start");
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().nextmap.as_deref(), Some("start"));
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e1")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
+    }
+
+    /// Q1-0256: episode 2-4 finales (`ExitIntermission`, `client.qc:182-212`):
+    /// each end map scrolls its exact stock text with CD track 2.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_episode_finales_e2_e3_e4() {
+        for (map, which) in [
+            ("maps/e2m6.bsp", "e2"),
+            ("maps/e3m6.bsp", "e3"),
+            ("maps/e4m7.bsp", "e4"),
+        ] {
+            let Some(mut world) = live_q1_world(map, GameMode::Singleplayer, 1) else {
+                return;
+            };
+            live_silence_door_fields(&mut world);
+            let exits = live_changelevel_exits(&world);
+            assert_eq!(exits.len(), 1, "{map} has one exit");
+            let exit = exits[0].0.clone();
+            live_enter_intermission(&mut world, &exit);
+            live_press_buttons(&mut world, 0);
+            live_pass_exit_gate(&mut world);
+            live_press_buttons(&mut world, 1);
+            live_tick(&mut world);
+            {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                assert_eq!(borrowed.intermission.running, 2, "{map} counts the scroll");
+                assert_eq!(
+                    borrowed.finale_text.as_deref(),
+                    Some(live_expected_finale(which)),
+                    "{map} scroll"
+                );
+                assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)], "{map} cues");
+                assert_eq!(borrowed.pending_travel, None, "{map} scroll shows before travel");
+            }
+        }
+    }
+
+    /// Q1-0261: shareware end (`ExitIntermission`, `client.qc:215`): an
+    /// unregistered e1m7 run shows the shareware scroll, then the sell
+    /// screen instead of traveling.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0261_shareware_sell_screen() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().registered = false;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(
+                borrowed.finale_text.as_deref(),
+                Some(live_expected_finale("e1-shareware"))
+            );
+            assert_eq!(borrowed.pending_travel, None);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert!(borrowed.sell_screen);
+            assert_eq!(borrowed.pending_travel, None, "sell screen shows before travel");
+        }
+    }
+
+    /// Q1-0255: all-runes finale (`ExitIntermission`, `client.qc:223`):
+    /// with every episode bit set, the third press scrolls the runes
+    /// text instead of traveling; the fourth press travels.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0255_all_runes_finale() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().serverflags = 15;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().finale_text.as_deref(),
+                Some(live_expected_finale("e1"))
+            );
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("runes")));
+            assert_eq!(borrowed.pending_travel, None, "runes scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 4);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
     }
 
     /// Q1-0110: e1m1 `item_health` heals a live wounded player

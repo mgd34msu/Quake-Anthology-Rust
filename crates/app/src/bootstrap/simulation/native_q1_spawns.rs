@@ -693,6 +693,28 @@ pub struct Q1NativeBehaviors {
     /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
     /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
     pub cd_tracks: Vec<(u8, u8)>,
+    /// Queued `SVC_FINALE` text for the HUD slice (`ExitIntermission`,
+    /// `client.qc:146-235`): the episode or all-runes scroll.
+    pub finale_text: Option<String>,
+    /// Queued `SVC_SELLSCREEN` for the HUD slice (`ExitIntermission`,
+    /// `client.qc:218`): shareware episode completed.
+    pub sell_screen: bool,
+}
+
+/// Intermission tally for the HUD slice (`Sbar_IntermissionOverlay`,
+/// `sbar.c:1269`): level kills, secrets, and elapsed level time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionStats {
+    /// Monsters killed (`killed_monsters`).
+    pub killed_monsters: u32,
+    /// Monsters in the map (`total_monsters`).
+    pub total_monsters: u32,
+    /// Secrets found (`found_secrets`).
+    pub found_secrets: u32,
+    /// Secrets in the map (`total_secrets`).
+    pub total_secrets: u32,
+    /// Elapsed level time in seconds (master clock at the poll).
+    pub time_seconds: f64,
 }
 
 impl Q1NativeBehaviors {
