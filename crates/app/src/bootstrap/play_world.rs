@@ -26,6 +26,10 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use qa_bots::scene::{
+    PointContentsQuery as ScenePointContentsQuery, PointContentsResult as ScenePointContentsResult,
+    Q1MoveRule as SceneQ1MoveRule, QueryTarget as SceneQueryTarget, TracePolicy as SceneTracePolicy,
+};
 use qa_client::audio::SoundFamily;
 use qa_content::bsp::{parse_q1_entities, read_q1_bsp, Q1BspOptions};
 use qa_content::bsp2::read_q2_bsp;
@@ -34,6 +38,7 @@ use qa_content::catalog::InstalledCatalog;
 use qa_content::mounts::MountedContent;
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::vec3;
+use qa_core::numeric::Q1_DONOR_PROFILE;
 use qa_guest::server::GuestServerLogic;
 use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
@@ -245,6 +250,28 @@ impl PlayWorld {
     #[must_use]
     pub fn q1_behaviors(&self) -> Option<Rc<RefCell<Q1NativeBehaviors>>> {
         self.q1_behaviors.clone()
+    }
+
+    /// Raw Q1 contents at a point (the `V_SetContentsColor` input), or
+    /// `None` without Q1 clip. Feeds the underwater view shift.
+    #[must_use]
+    pub fn q1_eye_contents(&self, eye: qa_core::math::Vec3) -> Option<i32> {
+        let Some(PlayerClip::Q1(scene)) = self.clip.as_ref() else {
+            return None;
+        };
+        match scene.point_contents(&ScenePointContentsQuery {
+            point: eye,
+            target: SceneQueryTarget::World,
+            policy: SceneTracePolicy::Q1 {
+                move_rule: SceneQ1MoveRule::Normal,
+                hull: None,
+            },
+            numeric: Q1_DONOR_PROFILE,
+            pass_actor: None,
+        }) {
+            Ok(ScenePointContentsResult::Q1 { contents }) => Some(contents),
+            _ => None,
+        }
     }
 
     /// Retained product mounts for game audio (see
@@ -1087,10 +1114,11 @@ fn load_play_world_inner(
         }
     };
     let travel_owner = owner.clone();
-    let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
-        Ok(presentation) => (Some(presentation), None),
-        Err(error) => (None, Some(error.to_string())),
-    };
+    let (presentation, presentation_error) =
+        match build_presentation(mounts, &content, &options.map, &bytes, &entities, owner) {
+            Ok(presentation) => (Some(presentation), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     Ok(PlayWorld {
         server,
         content,

@@ -263,6 +263,7 @@ pub struct PlayPresentation {
     q3_world: bool,
     q2_world: bool,
     skipped_models: Vec<SkippedModel>,
+    q1_hud: Option<super::q1_native_hud::Q1NativeHud>,
 }
 
 impl std::fmt::Debug for PlayPresentation {
@@ -274,6 +275,7 @@ impl std::fmt::Debug for PlayPresentation {
             .field("inline_models", &self.inline_models.len())
             .field("spawn", &self.spawn)
             .field("skipped_models", &self.skipped_models)
+            .field("q1_hud", &self.q1_hud.as_ref().map(|hud| hud.picture_count()))
             .finish()
     }
 }
@@ -307,6 +309,17 @@ impl PlayPresentation {
     #[must_use]
     pub fn skipped_models(&self) -> &[SkippedModel] {
         &self.skipped_models
+    }
+
+    /// Native Q1 status bar, or `None` for non-Q1 worlds and failed loads.
+    #[must_use]
+    pub fn q1_hud(&self) -> Option<&super::q1_native_hud::Q1NativeHud> {
+        self.q1_hud.as_ref()
+    }
+
+    /// Mutable Q1 status bar (per-frame blend state lives here).
+    pub fn q1_hud_mut(&mut self) -> Option<&mut super::q1_native_hud::Q1NativeHud> {
+        self.q1_hud.as_mut()
     }
 
     /// Prepare the model/sprite batches for the map's model-bearing
@@ -730,6 +743,7 @@ fn build_scene_entities(
 /// them for the presentation's lifetime.
 pub fn build_presentation(
     mounts: MountedContent,
+    content: &str,
     map: &str,
     bytes: &[u8],
     records: &[Vec<(String, String)>],
@@ -762,6 +776,15 @@ pub fn build_presentation(
         map: map.to_string(),
         reason: error.to_string(),
     })?;
+    // The native Q1 bar decodes before the mounts move into the
+    // scene reader; its pictures register into the same image
+    // registry below, so uploads ride the scene's per-frame drain.
+    let q1_hud_pictures = if matches!(kind, BspKind::Q1) {
+        let product = super::q1_native_hud::product_for_content(content);
+        super::q1_native_hud::decode_hud_pictures(&mounts, product).ok()
+    } else {
+        None
+    };
     let mut loader = SceneTextureLoader::new(
         SceneImageRegistry::new(owner),
         Box::new(CatalogSceneReader { mounts }),
@@ -773,6 +796,14 @@ pub fn build_presentation(
         map: map.to_string(),
         reason: error.to_string(),
     })?;
+    let q1_hud = match q1_hud_pictures {
+        Some((decoded, palette)) => {
+            let product = super::q1_native_hud::product_for_content(content);
+            let white = loader.white().image.clone();
+            super::q1_native_hud::Q1NativeHud::register(decoded, palette, white, loader.images_mut(), product).ok()
+        }
+        None => None,
+    };
     loader.set_decoder(Box::new(WindowedImageDecoder));
     let white = loader.white().image.clone();
     let missing = loader.missing().image.clone();
@@ -852,6 +883,7 @@ pub fn build_presentation(
         q3_world,
         q2_world,
         skipped_models,
+        q1_hud,
     })
 }
 

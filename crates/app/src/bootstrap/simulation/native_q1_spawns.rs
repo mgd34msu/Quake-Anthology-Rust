@@ -558,6 +558,23 @@ pub struct Q1IntermissionSpot {
     pub mangle: Vec3,
 }
 
+/// Latest player damage event for the view (`V_ParseDamage`,
+/// `view.c:316-379` inputs): the `q1_t_damage` funnel records the armor
+/// save, the health taken, and the inflictor center so the HUD can flash
+/// the damage shift and kick the view. `seq` edges the event: the HUD
+/// consumes each sequence number once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Q1PlayerDamage {
+    /// Event sequence, bumped per recorded hit.
+    pub seq: u64,
+    /// Armor points absorbed (`save`, `combat.qc:119`).
+    pub armor: f32,
+    /// Health taken (`take`, `combat.qc:141`).
+    pub blood: f32,
+    /// Inflictor body center, when the hit names one.
+    pub from: Option<[f32; 3]>,
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
@@ -712,6 +729,8 @@ pub struct Q1NativeBehaviors {
     /// Queued `SVC_SELLSCREEN` for the HUD slice (`ExitIntermission`,
     /// `client.qc:218`): shareware episode completed.
     pub sell_screen: bool,
+    /// Latest player damage event for the view blends.
+    pub player_damage: Q1PlayerDamage,
 }
 
 /// Intermission tally for the HUD slice (`Sbar_IntermissionOverlay`,
