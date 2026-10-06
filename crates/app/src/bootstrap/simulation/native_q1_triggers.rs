@@ -376,6 +376,10 @@ pub enum Q1ThinkKind {
     /// `train_next` (`plats.qc:248`) after a `train_wait` pause: advance
     /// the route link and roll the next leg.
     TrainNext,
+    /// `finale_2` (`oldone.qc`): the teleport splash inside Shub.
+    Finale2,
+    /// `finale_3` (`oldone.qc`): Shub starts thrashing.
+    Finale3,
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -1974,10 +1978,23 @@ fn q1_execute_changelevel(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
     behaviors.cd_tracks.push((3, 3));
     let spot = q1_find_intermission(behaviors);
     behaviors.intermission.spot = spot.clone();
-    let Some(player) = behaviors.player.clone() else {
+    let Some(spot) = spot else {
         return;
     };
-    let Some(spot) = spot else {
+    q1_freeze_player_at_spot(behaviors, simulation, &spot);
+}
+
+/// Move the admitted player onto an intermission camera and freeze
+/// them there (`execute_changelevel`/`finale_1`, `client.qc` +
+/// `oldone.qc`): the origin/angles/velocity snap, the cleared ground
+/// link, damage off, unsolid, the mirrored angles, and the catch-up
+/// force for the movement step.
+pub fn q1_freeze_player_at_spot(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    spot: &Q1IntermissionSpot,
+) {
+    let Some(player) = behaviors.player.clone() else {
         return;
     };
     let _ignored = simulation.set_body_origin(&player, spot.origin);
@@ -2153,6 +2170,12 @@ pub fn q1_trigger_think(
             }
             Q1ThinkKind::TrainNext => {
                 super::native_q1_plats::q1_train_next(behaviors, simulation, movers, &think.actor);
+            }
+            Q1ThinkKind::Finale2 => {
+                super::native_q1_monsters::q1_finale_2(behaviors, simulation, &think.actor);
+            }
+            Q1ThinkKind::Finale3 => {
+                super::native_q1_monsters::q1_finale_3(behaviors, simulation, &think.actor);
             }
         }
     }

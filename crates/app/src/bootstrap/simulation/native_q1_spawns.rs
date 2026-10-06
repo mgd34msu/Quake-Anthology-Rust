@@ -664,6 +664,9 @@ pub struct Q1NativeBehaviors {
     pub found_secrets: u32,
     /// Whether the mounts hold the registered version (`gfx/pop.lmp`).
     pub registered: bool,
+    /// Animated lightstyle patterns by style (`finale_3` sets style 0;
+    /// single-level sets clear the pattern like stock `lightstyle`).
+    pub light_patterns: HashMap<u32, String>,
     /// Worldspawn `worldtype` (0 medieval, 1 runic, 2 base).
     pub worldtype: u8,
     /// Pending skill value from `trigger_setskill` (the map transition
