@@ -169,11 +169,22 @@ impl Default for Q1SpawnParms {
 pub enum Q1PlayerAttack {
     /// No attack anim (stock `player_run`).
     None,
-    /// Axe swing in flight; `W_FireAxe` lands at `fire_at` (frame 3,
-    /// 0.2 s after `W_Attack`, `player.qc:152`).
+    /// Axe swing in flight (`player_axe1`-`4`, `player.qc:150`):
+    /// `W_FireAxe` lands at frame 3 (`fire_at`, 0.2 s after
+    /// `W_Attack`), the anim retires at frame 4 (`until`).
     AxeSwing {
         /// Master-clock seconds of the frame-3 fire.
         fire_at: f64,
+        /// Master-clock seconds of the frame-4 retire.
+        until: f64,
+    },
+    /// Shot/rocket anim in flight (`player_shot1`-`6` and
+    /// `player_rocket1`-`6`, `player.qc:142/233`): six 0.1 s frames
+    /// shared by the shotgun, super shotgun, grenade, and rocket
+    /// launchers.
+    Gun {
+        /// Master-clock seconds of the frame-1 fire.
+        fired_at: f64,
     },
     /// Nailgun/super-nailgun burst in flight (`player_nail1`/`nail2`,
     /// `player.qc:173`): while the trigger stays held, a shot leaves
@@ -614,6 +625,34 @@ pub fn q1_traceline(
     move_rule: SceneQ1MoveRule,
     pass: &ActorId,
 ) -> Q1LineHit {
+    q1_traceline_inner(scene, start, end, move_rule, pass, None)
+}
+
+/// Stock missile leg trace: like `q1_traceline`, but the owner's own
+/// body never blocks its missile (stock `spike_touch` and
+/// `T_MissileTouch` return on `other == self.owner`, so the flight
+/// continues past them; without the exclusion a downward shot starts
+/// inside the owner and the start-solid owner hit swallows the floor).
+fn q1_missile_leg_trace(
+    scene: &SharedSceneQueries,
+    start: Vec3,
+    end: Vec3,
+    missile: &ActorId,
+    owner: &ActorId,
+) -> Q1LineHit {
+    q1_traceline_inner(scene, start, end, SceneQ1MoveRule::Missile, missile, Some(owner))
+}
+
+/// Shared `traceline` core: `exclude` drops one extra body from the
+/// trace (the missile owner for fly legs, nobody otherwise).
+fn q1_traceline_inner(
+    scene: &SharedSceneQueries,
+    start: Vec3,
+    end: Vec3,
+    move_rule: SceneQ1MoveRule,
+    pass: &ActorId,
+    exclude: Option<&ActorId>,
+) -> Q1LineHit {
     let query = SceneTraceQuery {
         start,
         end,
@@ -624,7 +663,11 @@ pub fn q1_traceline(
         pass_actor: Some(pass.clone()),
     };
     let empty = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-    let Ok(trace) = scene.trace(&query) else {
+    let traced = match exclude {
+        Some(owner) => scene.trace_excluding(&query, std::slice::from_ref(owner)),
+        None => scene.trace(&query),
+    };
+    let Ok(trace) = traced else {
         return Q1LineHit {
             fraction: 0.0,
             endpos: start,
@@ -963,24 +1006,31 @@ pub fn q1_w_attack<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
         // One of four swing anims (`random()` picks); all fire frame 3.
         let _swing = q1_monster_random(ctx.behaviors);
         ctx.behaviors.player_state.weaponframe = 1;
-        ctx.behaviors.player_state.attack = Q1PlayerAttack::AxeSwing { fire_at: ctx.now + 0.2 };
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::AxeSwing {
+            fire_at: ctx.now + 0.2,
+            until: ctx.now + 0.4,
+        };
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.5;
     } else if weapon == Q1_IT_SHOTGUN {
         ctx.behaviors.player_state.weaponframe = 1;
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::Gun { fired_at: ctx.now };
         q1_fire_shotgun(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.5;
     } else if weapon == Q1_IT_SUPER_SHOTGUN {
         ctx.behaviors.player_state.weaponframe = 1;
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::Gun { fired_at: ctx.now };
         q1_fire_super_shotgun(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.7;
     } else if weapon == Q1_IT_NAILGUN || weapon == Q1_IT_SUPER_NAILGUN {
         q1_start_nail_burst(ctx);
     } else if weapon == Q1_IT_GRENADE_LAUNCHER {
         ctx.behaviors.player_state.weaponframe = 1;
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::Gun { fired_at: ctx.now };
         q1_fire_grenade(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.6;
     } else if weapon == Q1_IT_ROCKET_LAUNCHER {
         ctx.behaviors.player_state.weaponframe = 1;
+        ctx.behaviors.player_state.attack = Q1PlayerAttack::Gun { fired_at: ctx.now };
         q1_fire_rocket(ctx);
         ctx.behaviors.player_state.attack_finished = ctx.now + 0.8;
     } else if weapon == Q1_IT_LIGHTNING {
@@ -1022,19 +1072,37 @@ fn q1_start_nail_burst<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
 }
 
 /// Run one due attack-anim think: the axe swing fires at frame 3
-/// and retires; the nail and lightning bursts fire every 0.1 s while
-/// held (stock `player_nail1`/`nail2`, `player.qc:173`, and
-/// `player_light1`/`light2`, `player.qc:202`) and retire on release
-/// (`player_run`).
+/// and retires at frame 4; the shot/rocket anims run six frames;
+/// the nail and lightning bursts fire every 0.1 s while held (stock
+/// `player_nail1`/`nail2`, `player.qc:173`, and
+/// `player_light1`/`light2`, `player.qc:202`) and retire on release.
+/// Idleness clears the view-model frame (`player_run`).
 fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, buttons: i32) {
     let attack = ctx.behaviors.player_state.attack;
     match attack {
-        Q1PlayerAttack::None => {}
-        Q1PlayerAttack::AxeSwing { fire_at } => {
-            if ctx.now >= fire_at {
-                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+        // Stock `player_run`/`player_stand` clear the view-model
+        // frame every think (`player.qc:93/118`).
+        Q1PlayerAttack::None => {
+            ctx.behaviors.player_state.weaponframe = 0;
+        }
+        Q1PlayerAttack::AxeSwing { fire_at, until } => {
+            if ctx.now >= fire_at && ctx.behaviors.player_state.weaponframe < 3 {
                 ctx.behaviors.player_state.weaponframe = 3;
                 q1_fire_axe(ctx);
+            }
+            if ctx.now >= until {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+                ctx.behaviors.player_state.weaponframe = 0;
+            }
+        }
+        Q1PlayerAttack::Gun { fired_at } => {
+            #[allow(clippy::cast_possible_truncation)]
+            let step = ((ctx.now - fired_at) / 0.1).floor() as i32;
+            if step >= 6 {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+                ctx.behaviors.player_state.weaponframe = 0;
+            } else {
+                ctx.behaviors.player_state.weaponframe = step + 1;
             }
         }
         Q1PlayerAttack::Nail { next_fire } => {
@@ -1667,9 +1735,9 @@ fn q1_fly_missile<L: ServerLogic>(
 }
 
 /// Trace one flight leg: `true` keeps flying past `to`, `false` means a
-/// touch consumed the flight. Owner and trigger hits never block (the
-/// engine never clips triggers, and every QC touch refuses its owner),
-/// so the leg re-traces past them.
+/// touch consumed the flight. Trigger hits never block (the engine
+/// never clips triggers), so the leg re-traces past them; the owner
+/// never appears (the leg trace excludes it, stock touch-refusal).
 fn q1_fly_leg<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     actor: &ActorId,
@@ -1679,7 +1747,7 @@ fn q1_fly_leg<L: ServerLogic>(
 ) -> bool {
     let mut leg = from;
     for _ in 0..5 {
-        let hit = q1_traceline(ctx.scene, leg, to, SceneQ1MoveRule::Missile, actor);
+        let hit = q1_missile_leg_trace(ctx.scene, leg, to, actor, &missile.owner);
         if hit.fraction >= 1.0 {
             return true;
         }
@@ -3132,5 +3200,229 @@ mod tests {
         behaviors.player_state.weapon = Q1_IT_AXE;
         behaviors.player_state.currentammo = 0.0;
         assert!(q1_w_check_no_ammo(&mut behaviors));
+    }
+
+    fn armed_behaviors() -> (Server<qa_guest::server::GuestServerLogic>, Q1NativeBehaviors, ActorId) {
+        let mut server = test_server();
+        let player = spawn_player(&mut server);
+        let mut behaviors = loaded_behaviors();
+        behaviors.player = Some(player.clone());
+        (server, behaviors, player)
+    }
+
+    #[test]
+    fn pain_plays_and_arms_the_gate() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample.starts_with("player/pain") && sound.channel == 2),
+            "pain1-6 on CHAN_VOICE, got {:?}",
+            behaviors.sounds
+        );
+        assert!(matches!(behaviors.player_state.attack, Q1PlayerAttack::Pain { .. }));
+        assert_eq!(behaviors.player_state.weaponframe, 0);
+        assert!(behaviors.player_state.pain_finished > 0.0);
+    }
+
+    #[test]
+    fn pain_gate_suppresses_and_clears_axhitme() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        let now = server.simulation().frame().time.as_seconds_f64();
+        behaviors.player_state.pain_finished = now + 5.0;
+        behaviors.player_state.axhitme = true;
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(behaviors.sounds.is_empty(), "gated pain stays silent");
+        assert!(!behaviors.player_state.axhitme);
+    }
+
+    #[test]
+    fn pain_drowns_when_submerged() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        behaviors.player_state.water_level = 3;
+        behaviors.player_state.water_type = Q1_CONTENTS_WATER;
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "player/drown1.wav" || sound.sample == "player/drown2.wav"),
+            "submerged wound drowns, got {:?}",
+            behaviors.sounds
+        );
+        assert!(
+            behaviors
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Bubbles { count: 1, .. })),
+            "drowning bubbles once"
+        );
+    }
+
+    #[test]
+    fn pain_burns_in_slime_and_lava() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        behaviors.player_state.water_type = Q1_CONTENTS_SLIME;
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "player/lburn1.wav" || sound.sample == "player/lburn2.wav"),
+            "slime wound burns, got {:?}",
+            behaviors.sounds
+        );
+        behaviors.sounds.clear();
+        behaviors.player_state.water_type = Q1_CONTENTS_LAVA;
+        behaviors.player_state.pain_finished = 0.0;
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "player/lburn1.wav" || sound.sample == "player/lburn2.wav"),
+            "lava wound burns"
+        );
+    }
+
+    #[test]
+    fn pain_axe_mark_cries_once() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        behaviors.player_state.axhitme = true;
+        q1_player_pain(&mut behaviors, server.simulation(), &player);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "player/axhit1.wav"),
+            "axe-marked wound cries axhit1"
+        );
+        assert!(!behaviors.player_state.axhitme);
+    }
+
+    #[test]
+    fn obituary_suicide_lines() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        behaviors.player_state.weapon = Q1_IT_LIGHTNING;
+        behaviors.player_state.water_level = 2;
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, Some(&player));
+        assert_eq!(
+            behaviors.sprints.last().expect("sprint").text,
+            "Player discharges into the water.\n"
+        );
+        assert_eq!(behaviors.player_state.frags, -1.0);
+        behaviors.player_state.weapon = Q1_IT_GRENADE_LAUNCHER;
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, Some(&player));
+        assert_eq!(
+            behaviors.sprints.last().expect("sprint").text,
+            "Player tries to put the pin back in\n"
+        );
+        behaviors.player_state.weapon = Q1_IT_SHOTGUN;
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, Some(&player));
+        assert_eq!(
+            behaviors.sprints.last().expect("sprint").text,
+            "Player becomes bored with life\n"
+        );
+        assert_eq!(behaviors.player_state.frags, -3.0);
+    }
+
+    #[test]
+    fn obituary_world_lines() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, None);
+        assert_eq!(behaviors.sprints.last().expect("sprint").text, "Player died\n");
+        behaviors.player_state.deathtype = "falling".to_string();
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, None);
+        assert_eq!(
+            behaviors.sprints.last().expect("sprint").text,
+            "Player fell to his death\n"
+        );
+        assert_eq!(behaviors.player_state.deathtype, "");
+        behaviors.player_state.water_type = Q1_CONTENTS_WATER;
+        q1_client_obituary(&mut behaviors, server.simulation(), &player, None);
+        let text = behaviors.sprints.last().expect("sprint").text.clone();
+        assert!(
+            text == "Player sleeps with the fishes\n" || text == "Player sucks it down\n",
+            "water line, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn death_anim_frame_counts() {
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_AXE), 9);
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_A), 11);
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_B), 9);
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_C), 15);
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_D), 9);
+        assert_eq!(q1_death_anim_frames(Q1_DEATH_E), 9);
+    }
+
+    #[test]
+    fn die_gibs_past_minus_40() {
+        let (mut server, mut behaviors, player) = armed_behaviors();
+        server
+            .simulation_mut()
+            .set_combat(
+                &player,
+                CombatState {
+                    health: -50.0,
+                    ..CombatState::default()
+                },
+            )
+            .unwrap();
+        let (simulation, _, _) = server.simulation_movers_and_triggers_mut();
+        q1_player_die(&mut behaviors, simulation, &player);
+        assert_eq!(behaviors.player_state.deadflag, Q1_DEAD_DEAD);
+        assert!(behaviors.player_state.gibbed_head);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        assert_eq!(behaviors.pending_gibs[0].model, "progs/gib1.mdl");
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "player/gib.wav" || sound.sample == "player/udeath.wav"),
+            "gib cry, got {:?}",
+            behaviors.sounds
+        );
+    }
+
+    #[test]
+    fn die_runs_anim_above_minus_40() {
+        let (mut server, mut behaviors, player) = armed_behaviors();
+        server
+            .simulation_mut()
+            .set_combat(
+                &player,
+                CombatState {
+                    health: -10.0,
+                    ..CombatState::default()
+                },
+            )
+            .unwrap();
+        behaviors.player_state.weapon = Q1_IT_AXE;
+        let (simulation, _, _) = server.simulation_movers_and_triggers_mut();
+        q1_player_die(&mut behaviors, simulation, &player);
+        assert_eq!(behaviors.player_state.deadflag, Q1_DEAD_DYING);
+        assert_eq!(behaviors.player_state.death_anim, Q1_DEATH_AXE);
+        assert_eq!(behaviors.player_state.death_frames, 1);
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample.starts_with("player/death")),
+            "death cry, got {:?}",
+            behaviors.sounds
+        );
+    }
+
+    #[test]
+    fn body_queue_rings_past_four() {
+        let (server, mut behaviors, player) = armed_behaviors();
+        for frame in 1..=5 {
+            behaviors.player_state.death_frames = frame;
+            q1_copy_to_bodyque(&mut behaviors, server.simulation(), &player);
+        }
+        assert_eq!(behaviors.player_state.body_queue.len(), 4);
+        assert_eq!(behaviors.player_state.body_queue[0].frame, 2, "oldest dropped");
+        assert_eq!(behaviors.player_state.body_queue[3].frame, 5);
     }
 }
