@@ -54,7 +54,7 @@ use qa_world::WorldError;
 use super::super::play::{q1_blocked_trace, q1_trace_from_scene};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
-use super::native_q1_weapons::Q1_IT_INVISIBILITY;
+use super::native_q1_weapons::{Q1_IT_INVISIBILITY, q1_client_obituary, q1_player_die, q1_player_pain};
 
 /// Stock entity flags (`defs.qc:231-240`).
 pub const Q1_FLAG_FLY: i32 = 1;
@@ -674,6 +674,9 @@ pub fn q1_t_damage(
     }
     // Pain: stock runs `th_pain` unconditionally, then nightmares hold
     // pain frames for 5 s (`combat.qc:198`).
+    if Some(targ) == behaviors.player.as_ref() {
+        q1_player_pain(behaviors, simulation, targ);
+    }
     if behaviors.monsters.contains_key(targ) {
         q1_monster_th_pain(behaviors, simulation, targ);
         if behaviors.skill == 3 {
@@ -691,8 +694,9 @@ pub fn q1_t_damage(
 /// (`buttons.qc:62`); shootable doors keep stock immunity until the
 /// damage-routing slice grants them combat.
 ///
-/// The `SVC_KILLEDMONSTER` broadcast and `ClientObituary` wait for the
-/// network/HUD slices; the counters they feed are live now.
+/// The `SVC_KILLEDMONSTER` broadcast waits for the net slice; the
+/// counters it feeds are live now. Players die through
+/// `ClientObituary` plus `PlayerDie` (`combat.qc:56`).
 pub fn q1_killed(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -733,7 +737,21 @@ pub fn q1_killed(
         return;
     }
     let Some(monster) = behaviors.monsters.get(targ).cloned() else {
-        // Players die in the player slice; nothing else takes damage.
+        // Stock `Killed` order for players (`combat.qc:56`): the
+        // obituary, damage off, then `th_die`.
+        if Some(targ) == behaviors.player.as_ref() {
+            q1_client_obituary(behaviors, simulation, targ, attacker);
+            if let Some(combat) = simulation.combat_state(targ).cloned() {
+                let _ignored = simulation.set_combat(
+                    targ,
+                    CombatState {
+                        can_take_damage: false,
+                        ..combat
+                    },
+                );
+            }
+            q1_player_die(behaviors, simulation, targ);
+        }
         return;
     };
     if monster.flags & Q1_FLAG_MONSTER != 0 {

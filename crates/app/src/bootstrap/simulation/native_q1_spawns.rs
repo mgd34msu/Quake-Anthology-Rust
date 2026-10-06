@@ -575,6 +575,18 @@ pub struct Q1PlayerDamage {
     pub from: Option<[f32; 3]>,
 }
 
+/// One recorded player spawn spot (`SelectSpawnPoint`, `client.qc:407`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1SpawnSpot {
+    /// Spawn classname (`info_player_start`, `start2`, `coop`,
+    /// `deathmatch`, `testplayerstart`).
+    pub classname: String,
+    /// Spawn origin.
+    pub origin: Vec3,
+    /// Spawn facing.
+    pub angles: Vec3,
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
@@ -720,6 +732,15 @@ pub struct Q1NativeBehaviors {
     /// `info_player_start`/`testplayerstart` origins in spawn order: the
     /// `FindIntermission` fallback chain (`client.qc:123-131`).
     pub start_spots: Vec<Q1IntermissionSpot>,
+    /// Player spawn spots in spawn order (`SelectSpawnPoint`,
+    /// `client.qc:407`): every `info_player_*`/`testplayerstart`.
+    pub spawn_spots: Vec<Q1SpawnSpot>,
+    /// `SelectSpawnPoint` cursor (`lastspawn`, `client.qc:407`): index
+    /// of the last coop/DM spot handed out.
+    pub lastspawn_spot: Option<usize>,
+    /// Stock `teamplay` rule (obituary team-kill lines, `client.qc`):
+    /// the DM rules slice owns it; 0 keeps every game friendly.
+    pub teamplay: i32,
     /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
     /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
     pub cd_tracks: Vec<(u8, u8)>,

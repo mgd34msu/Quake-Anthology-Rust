@@ -60,11 +60,12 @@ use super::simulation::native_q1_spawns::{
 use super::simulation::native_q1_travel::{q1_decode_level_parms, q1_set_change_parms, Q1TravelCarry};
 use super::simulation::native_q1_triggers::{
     build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_intermission, q1_note_light,
-    q1_note_start_spot, q1_note_targetname, q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn,
-    q1_registered_version, register_q1_trigger_spawns,
+    q1_note_spawn_spot, q1_note_start_spot, q1_note_targetname, q1_note_teleport_destination, q1_note_use_point,
+    q1_note_worldspawn, q1_registered_version, register_q1_trigger_spawns,
 };
-use super::simulation::native_q1_weapons::Q1SpawnParms;
-use super::simulation::native_q1_weapons::{q1_grant_spawn_loadout, q1_sample_water_level, q1_weapon_pass};
+use super::simulation::native_q1_weapons::{
+    q1_grant_spawn_loadout, q1_sample_water_level, q1_sample_water_type, q1_weapon_pass, Q1SpawnParms,
+};
 use super::windowed_scene::{build_presentation, open_product_mounts, select_q1_spawn, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
@@ -310,6 +311,13 @@ impl PlayWorld {
                 return Ok(());
             }
         }
+        // Stock dying freeze (`PlayerPreThink`, `client.qc:921`): dead
+        // players own no input (corpses toss, respawns snap).
+        if self.q1_behaviors.as_ref().is_some_and(|behaviors| {
+            behaviors.borrow().player_state.deadflag != super::simulation::native_q1_weapons::Q1_DEAD_NO
+        }) {
+            return Ok(());
+        }
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
@@ -339,8 +347,8 @@ impl PlayWorld {
     /// due attack-anim think. `None` advances anims without new input
     /// (the trigger reads released). Non-Q1 maps (or missing scenes
     /// or players) keep the static behavior. The pass is infallible
-    /// by design: failed traces block, and dead players skip (death
-    /// thinks own them once the player slice lands).
+    /// by design: failed traces block, and dead players run the
+    /// death think instead of the weapon frame (`client.qc:921`).
     pub fn step_weapons(&mut self, command: Option<&qa_world::movement::types::UserCommand>) {
         use qa_world::movement::types::UserCommand;
         let Some(behaviors) = self.q1_behaviors.clone() else {
@@ -373,7 +381,10 @@ impl PlayWorld {
             _ => (0, 0),
         };
         let water = q1_sample_water_level(scene, server.simulation(), &player);
-        behaviors.borrow_mut().player_state.water_level = water;
+        let water_type = q1_sample_water_type(scene, server.simulation(), &player);
+        let mut borrowed = behaviors.borrow_mut();
+        borrowed.player_state.water_level = water;
+        borrowed.player_state.water_type = water_type;
         q1_weapon_pass(
             server,
             &mut behaviors.borrow_mut(),
@@ -383,6 +394,13 @@ impl PlayWorld {
             buttons,
             impulse,
         );
+        // Respawn view snap (`PutClientInServer` `fixangle`).
+        let respawn_angles = behaviors.borrow_mut().player_state.respawn_angles.take();
+        if let Some(angles) = respawn_angles {
+            if let Some(PlayerBody::Q1(body)) = self.player.as_mut() {
+                body.view_angles = angles;
+            }
+        }
     }
 
     /// Run one monster think pass for native Q1 maps: relink the
@@ -891,6 +909,14 @@ pub fn spawn_map_entities(
                     }
                     if classname == "info_player_start" || classname == "testplayerstart" {
                         q1_note_start_spot(&mut behaviors, &fields);
+                    }
+                    if classname == "info_player_start"
+                        || classname == "info_player_start2"
+                        || classname == "info_player_coop"
+                        || classname == "info_player_deathmatch"
+                        || classname == "testplayerstart"
+                    {
+                        q1_note_spawn_spot(&mut behaviors, &fields);
                     }
                     if classname == "info_teleport_destination" {
                         if let Err(error) = q1_note_teleport_destination(&mut behaviors, actor.id(), &fields) {

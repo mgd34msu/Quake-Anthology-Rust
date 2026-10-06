@@ -44,7 +44,7 @@ use qa_world::WorldError;
 
 use super::native_q1_spawns::{
     q1_can_take_damage, q1_door_fire, q1_field_or, q1_health_of, q1_model_index, q1_movedir, q1_remove,
-    Q1IntermissionSpot, Q1IntermissionStats, Q1NativeBehaviors,
+    Q1IntermissionSpot, Q1IntermissionStats, Q1NativeBehaviors, Q1SpawnSpot,
 };
 
 /// `trigger_multiple` NOTOUCH spawnflag (`triggers.qc:13`): fire only via
@@ -929,6 +929,16 @@ pub fn q1_note_intermission(behaviors: &mut Q1NativeBehaviors, fields: &SpawnFie
     behaviors.intermission_spots.push(Q1IntermissionSpot {
         origin: fields.origin,
         mangle,
+    });
+}
+
+/// Record a player spawn spot (`SelectSpawnPoint`, `client.qc:407`) in
+/// spawn order: classname plus origin and facing for respawns.
+pub fn q1_note_spawn_spot(behaviors: &mut Q1NativeBehaviors, fields: &SpawnFields) {
+    behaviors.spawn_spots.push(Q1SpawnSpot {
+        classname: fields.classname.clone(),
+        origin: fields.origin,
+        angles: fields.angles,
     });
 }
 
