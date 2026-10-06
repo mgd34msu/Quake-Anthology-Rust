@@ -9960,7 +9960,7 @@ mod tests {
         for _ in 0..3 {
             live_tick(&mut world);
         }
-        {
+        let prop_id = {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
             assert_eq!(borrowed.gibs.len(), gibs_before + 51, "fifty chunks plus the prop spawn");
@@ -9971,12 +9971,9 @@ mod tests {
                 .collect();
             assert_eq!(props.len(), 1, "one victory prop poses past the pit");
             let prop_body = world.server().simulation().body_state(props[0].0).expect("prop body");
-            assert_eq!(
-                prop_body.origin,
-                vec3(shub_origin.x - 32.0, shub_origin.y - 264.0, shub_origin.z)
-            );
             assert_eq!(prop_body.angles, vec3(0.0, 290.0, 0.0));
             assert_eq!(props[0].1.remove_at, None, "stock keeps the prop");
+            let prop_id = props[0].0.clone();
             assert_eq!(borrowed.finale_text, Some(Q1_FINALE_TEXT.to_string()));
             assert!(borrowed.cd_tracks.contains(&(3, 3)), "finale_4 cues the music");
             assert_eq!(borrowed.light_styles.get(&0), Some(&'m'), "finale_4 restores the light");
@@ -9985,6 +9982,34 @@ mod tests {
                 "the pop plays"
             );
             assert_eq!(borrowed.killed_monsters, killed_before, "the finale never counts");
+            prop_id
+        };
+        // The prop obeys gravity after spawn: tick until it settles, then
+        // require exact XY and a z at or below spawn height (it falls, never rises).
+        let mut settled = world
+            .server()
+            .simulation()
+            .body_state(&prop_id)
+            .expect("prop body")
+            .origin;
+        for _ in 0..600 {
+            live_tick(&mut world);
+            let next = world
+                .server()
+                .simulation()
+                .body_state(&prop_id)
+                .expect("prop body")
+                .origin;
+            if next == settled {
+                break;
+            }
+            settled = next;
         }
+        assert_eq!(settled.x, shub_origin.x - 32.0, "prop XY matches spawn");
+        assert_eq!(settled.y, shub_origin.y - 264.0, "prop XY matches spawn");
+        assert!(
+            settled.z <= shub_origin.z,
+            "prop settles at or below spawn height, got {settled:?}"
+        );
     }
 }
