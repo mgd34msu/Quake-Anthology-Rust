@@ -34,7 +34,7 @@ use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
-use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Sound, Q1TempEnt};
+use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Projectile, Q1Sound, Q1TempEnt};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -605,6 +605,8 @@ pub struct Q1NativeBehaviors {
     pub gibs: Q1EdictTable<Q1Gib>,
     /// Queued `ThrowGib` spawns for the monster pass to link.
     pub pending_gibs: Vec<Q1PendingGib>,
+    /// Live projectile actors by id (lasers, grenades, spikes).
+    pub projectiles: Q1EdictTable<Q1Projectile>,
     /// Queued monster sounds for the audio slice to drain.
     pub sounds: Vec<Q1Sound>,
     /// Queued stock temp entities for the presentation slice to drain.
@@ -671,7 +673,7 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
 /// destinations, buttons, lights, items, monsters, movetargets, gibs,
-/// movers, solidity), and release the actor. Stale targetname
+/// projectiles, movers, solidity), and release the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -697,6 +699,7 @@ pub(crate) fn q1_remove(
     behaviors.monsters.remove(actor);
     behaviors.movetargets.remove(actor);
     behaviors.gibs.remove(actor);
+    behaviors.projectiles.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;

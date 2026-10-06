@@ -16,6 +16,7 @@
 //! `progs106/weapons.qc:203-259` (TraceAttack, FireBullets),
 //! `progs106/items.qc:1229-1330,1332-1380` (BackpackTouch, DropBackpack),
 //! `progs106/dog.qc` (monster_dog), `progs106/soldier.qc` (monster_army),
+//! `progs106/enforcer.qc` (monster_enforcer),
 //! `progs106/player.qc:435-498` (VelocityForDamage, ThrowGib, ThrowHead),
 //! `WinQuake/sv_move.c` (movestep, chase dirs, movetogoal — via
 //! [`Q1MonsterMovement`](qa_world::movement::q1::monsters::Q1MonsterMovement)),
@@ -45,7 +46,7 @@ use qa_world::combat::{CombatState, RegularArmor};
 use qa_world::movement::q1::monsters::{
     create_q1_monster_movement, Q1MonsterMoveServices, Q1MonsterMoveState, Q1MonsterMovement, Q1MonsterTarget,
 };
-use qa_world::movement::q1::types::{Q1Trace, Q1TraceMove, Q1TraceQuery, Q1_CONTENTS_SOLID};
+use qa_world::movement::q1::types::{Q1Trace, Q1TraceMove, Q1TraceQuery, Q1_CONTENTS_SKY, Q1_CONTENTS_SOLID};
 use qa_world::movement::types::{TraceHit, TraceShape};
 use qa_world::server::{Server, ServerLogic};
 use qa_world::session::Simulation;
@@ -135,6 +136,8 @@ const GIB_LEVEL_EXTREME: f32 = 10.0;
 
 /// Stock entity effects (`defs.qc:380-383`).
 pub const Q1_EF_MUZZLEFLASH: i32 = 2;
+/// Stock entity effects (`defs.qc:380-383`).
+pub const Q1_EF_DIMLIGHT: i32 = 8;
 
 /// Implemented stock monster kinds (one slice each; the roster grows here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +146,8 @@ pub enum Q1MonsterKind {
     Dog,
     /// `monster_army` (`soldier.qc`).
     Grunt,
+    /// `monster_enforcer` (`enforcer.qc`).
+    Enforcer,
 }
 
 impl Q1MonsterKind {
@@ -152,6 +157,7 @@ impl Q1MonsterKind {
         match self {
             Q1MonsterKind::Dog => "monster_dog",
             Q1MonsterKind::Grunt => "monster_army",
+            Q1MonsterKind::Enforcer => "monster_enforcer",
         }
     }
 
@@ -162,6 +168,7 @@ impl Q1MonsterKind {
         match classname {
             "monster_dog" => Some(Q1MonsterKind::Dog),
             "monster_army" => Some(Q1MonsterKind::Grunt),
+            "monster_enforcer" => Some(Q1MonsterKind::Enforcer),
             _ => None,
         }
     }
@@ -207,6 +214,26 @@ pub enum Q1MonsterSeq {
     GruntDie,
     /// Grunt deathc 1-11.
     GruntDieC,
+    /// Enforcer stand 1-7 (`enforcer.qc`).
+    EnforcerStand,
+    /// Enforcer walk 1-16.
+    EnforcerWalk,
+    /// Enforcer run 1-8.
+    EnforcerRun,
+    /// Enforcer attack thinks 1-14 (frames reuse attack5-8 mid-volley).
+    EnforcerAttack,
+    /// Enforcer paina 1-4.
+    EnforcerPainA,
+    /// Enforcer painb 1-5.
+    EnforcerPainB,
+    /// Enforcer painc 1-8.
+    EnforcerPainC,
+    /// Enforcer paind 1-19.
+    EnforcerPainD,
+    /// Enforcer death 1-14.
+    EnforcerDie,
+    /// Enforcer fdeath 1-11.
+    EnforcerFDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -327,6 +354,29 @@ pub struct Q1PendingGib {
     pub remove_at: f64,
 }
 
+/// Implemented stock projectile kinds (one slice each; monster slices
+/// add theirs here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q1ProjectileKind {
+    /// Enforcer laser (`LaunchLaser`, `enforcer.qc`).
+    Laser,
+}
+
+/// Live stock projectile gamecode state: flying damage packets with an
+/// owner, a touch function, and a removal instant. Origin, angles, and
+/// velocity ride the sim body.
+#[derive(Debug, Clone)]
+pub struct Q1Projectile {
+    /// Stock projectile kind.
+    pub kind: Q1ProjectileKind,
+    /// Firing owner (`None` is stock `world`).
+    pub owner: Option<ActorId>,
+    /// Master-clock seconds at which the think removes it.
+    pub remove_at: f64,
+    /// Entity effects bits (`EF_*`; the presentation slice drains them).
+    pub effects: i32,
+}
+
 /// One queued monster sound for the audio slice to drain: stock `sound`
 /// plays immediately, but gamecode has no audio path yet, so every call
 /// site records its exact channel/sample/volume/attenuation instead.
@@ -416,7 +466,19 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
             })
         }),
     );
-    for classname in ["monster_dog", "monster_army", "path_corner"] {
+    // Internal laser-bolt spawn (stock `LaunchLaser` actor).
+    registry.register(
+        "q1:laser",
+        Box::new(|fields| {
+            Ok(SpawnRequest {
+                definition: "q1:laser".to_string(),
+                origin: Some(fields.origin),
+                combat: None,
+                grants: Vec::new(),
+            })
+        }),
+    );
+    for classname in ["monster_dog", "monster_army", "monster_enforcer", "path_corner"] {
         let definition = format!("q1:{classname}");
         registry.register(
             classname,
@@ -469,6 +531,39 @@ pub const Q1_GRUNT_HEALTH: f64 = 30.0;
 /// Shells a dying grunt drops (`army_die3`, `soldier.qc`).
 pub const Q1_GRUNT_DROP_SHELLS: f64 = 5.0;
 
+/// Enforcer collision bounds (`setsize`, `monster_enforcer`, `enforcer.qc`).
+pub const Q1_ENFORCER_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Enforcer health (`monster_enforcer`, `enforcer.qc`).
+pub const Q1_ENFORCER_HEALTH: f64 = 80.0;
+
+/// Cells a dying enforcer drops (`enf_die3`, `enforcer.qc`).
+pub const Q1_ENFORCER_DROP_CELLS: f64 = 5.0;
+
+/// Laser-bolt speed in units/s (`LaunchLaser`, `enforcer.qc`).
+pub const Q1_LASER_SPEED: f32 = 600.0;
+
+/// Laser-bolt lifetime in seconds (`LaunchLaser`, `enforcer.qc`).
+pub const Q1_LASER_LIFETIME: f64 = 5.0;
+
+/// Laser-bolt strike damage (`Laser_Touch`, `enforcer.qc`).
+pub const Q1_LASER_DAMAGE: f64 = 15.0;
+
+/// Enforcer attack model frames by think index: the volley reuses
+/// attack5-8 mid-sequence (`enf_atk9..12`, `enforcer.qc`).
+const ENFORCER_ATTACK_FRAMES: [i32; 14] = [31, 32, 33, 34, 35, 36, 37, 38, 35, 36, 37, 38, 39, 40];
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -505,6 +600,7 @@ pub fn build_q1_monster<L: ServerLogic>(
     let (bounds, health) = match kind {
         Q1MonsterKind::Dog => (Q1_DOG_BOUNDS, Q1_DOG_HEALTH),
         Q1MonsterKind::Grunt => (Q1_GRUNT_BOUNDS, Q1_GRUNT_HEALTH),
+        Q1MonsterKind::Enforcer => (Q1_ENFORCER_BOUNDS, Q1_ENFORCER_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -876,9 +972,22 @@ pub fn q1_monster_use(
 /// Stock `SightSound` (`ai.qc:279`): the per-classname wake bark. Kinds
 /// queue their line here as their slices land.
 fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1MonsterKind) {
+    // The enforcer barks one of four sight lines at random (`ai.qc:303`).
     let sample = match kind {
         Q1MonsterKind::Dog => "dog/dsight.wav",
         Q1MonsterKind::Grunt => "soldier/sight1.wav",
+        Q1MonsterKind::Enforcer => {
+            let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
+            if rsnd == 1 {
+                "enforcer/sight1.wav"
+            } else if rsnd == 2 {
+                "enforcer/sight2.wav"
+            } else if rsnd == 0 {
+                "enforcer/sight3.wav"
+            } else {
+                "enforcer/sight4.wav"
+            }
+        }
     };
     q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, sample, 1.0, Q1_ATTN_NORM);
 }
@@ -947,6 +1056,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
     match kind {
         Q1MonsterKind::Dog => Q1MonsterThink::Frame(Q1MonsterSeq::DogStand, 0),
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntStand, 0),
+        Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerStand, 0),
     }
 }
 
@@ -956,6 +1066,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
     match kind {
         Q1MonsterKind::Dog => Q1MonsterThink::Frame(Q1MonsterSeq::DogWalk, 0),
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntWalk, 0),
+        Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerWalk, 0),
     }
 }
 
@@ -965,6 +1076,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
     match kind {
         Q1MonsterKind::Dog => Q1MonsterThink::Frame(Q1MonsterSeq::DogRun, 0),
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntRun, 0),
+        Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerRun, 0),
     }
 }
 
@@ -975,6 +1087,7 @@ pub fn q1_th_melee(kind: Q1MonsterKind) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, 0)),
         Q1MonsterKind::Grunt => None,
+        Q1MonsterKind::Enforcer => None,
     }
 }
 
@@ -985,6 +1098,7 @@ pub fn q1_th_missile(kind: Q1MonsterKind) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogLeap, 0)),
         Q1MonsterKind::Grunt => Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0)),
+        Q1MonsterKind::Enforcer => Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0)),
     }
 }
 
@@ -1010,6 +1124,16 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::GruntPainC => 13,
         Q1MonsterSeq::GruntDie => 10,
         Q1MonsterSeq::GruntDieC => 11,
+        Q1MonsterSeq::EnforcerStand => 7,
+        Q1MonsterSeq::EnforcerWalk => 16,
+        Q1MonsterSeq::EnforcerRun => 8,
+        Q1MonsterSeq::EnforcerAttack => 14,
+        Q1MonsterSeq::EnforcerPainA => 4,
+        Q1MonsterSeq::EnforcerPainB => 5,
+        Q1MonsterSeq::EnforcerPainC => 8,
+        Q1MonsterSeq::EnforcerPainD => 19,
+        Q1MonsterSeq::EnforcerDie => 14,
+        Q1MonsterSeq::EnforcerFDie => 11,
     }
 }
 
@@ -1018,9 +1142,16 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// pain 26-31, painb 32-47, run 48-59, leap 60-68, stand 69-77, walk
 /// 78-85; grunt stand 0-7, death 8-17, deathc 18-28, load 29-39, pain
 /// 40-45, painb 46-59, painc 60-72, run 73-80, shoot 81-89, prowl
-/// 90-113).
+/// 90-113; enforcer stand 0-6, walk 7-22, run 23-30, attack 31-40,
+/// death 41-54, fdeath 55-65, paina 66-69, painb 70-74, painc 75-82,
+/// paind 83-101).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
+    // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
+    // `enforcer.qc`), so its frames ride a table, not a base.
+    if seq == Q1MonsterSeq::EnforcerAttack {
+        return ENFORCER_ATTACK_FRAMES.get(usize::from(index)).copied().unwrap_or(40);
+    }
     let base = match seq {
         Q1MonsterSeq::DogStand => 69,
         Q1MonsterSeq::DogWalk => 78,
@@ -1040,6 +1171,16 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::GruntPainC => 60,
         Q1MonsterSeq::GruntDie => 8,
         Q1MonsterSeq::GruntDieC => 18,
+        Q1MonsterSeq::EnforcerStand => 0,
+        Q1MonsterSeq::EnforcerWalk => 7,
+        Q1MonsterSeq::EnforcerRun => 23,
+        Q1MonsterSeq::EnforcerAttack => 31,
+        Q1MonsterSeq::EnforcerPainA => 66,
+        Q1MonsterSeq::EnforcerPainB => 70,
+        Q1MonsterSeq::EnforcerPainC => 75,
+        Q1MonsterSeq::EnforcerPainD => 83,
+        Q1MonsterSeq::EnforcerDie => 41,
+        Q1MonsterSeq::EnforcerFDie => 55,
     };
     base + i32::from(index)
 }
@@ -1074,6 +1215,17 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         // Death tails self-loop (`soldier.qc`); death never exits.
         (_, Q1MonsterSeq::GruntDie) => Q1MonsterThink::Frame(Q1MonsterSeq::GruntDie, index),
         (_, Q1MonsterSeq::GruntDieC) => Q1MonsterThink::Frame(Q1MonsterSeq::GruntDieC, index),
+        (_, Q1MonsterSeq::EnforcerStand) => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerStand, 0),
+        (_, Q1MonsterSeq::EnforcerWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerWalk, 0),
+        (_, Q1MonsterSeq::EnforcerRun) => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerRun, 0),
+        (_, Q1MonsterSeq::EnforcerAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::EnforcerPainA) => q1_th_run(kind),
+        (_, Q1MonsterSeq::EnforcerPainB) => q1_th_run(kind),
+        (_, Q1MonsterSeq::EnforcerPainC) => q1_th_run(kind),
+        (_, Q1MonsterSeq::EnforcerPainD) => q1_th_run(kind),
+        // Death tails self-loop (`enforcer.qc`); death never exits.
+        (_, Q1MonsterSeq::EnforcerDie) => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerDie, index),
+        (_, Q1MonsterSeq::EnforcerFDie) => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerFDie, index),
     }
 }
 
@@ -1111,6 +1263,35 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 (Q1MonsterSeq::GruntPainB, 1.1, "soldier/pain2.wav")
             } else {
                 (Q1MonsterSeq::GruntPainC, 1.1, "soldier/pain2.wav")
+            };
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, sample, 1.0, Q1_ATTN_NORM);
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+                monster.pain_finished = now + hold;
+            }
+        }
+        Q1MonsterKind::Enforcer => {
+            // Stock draws the roll before the pain gate (`enf_pain`,
+            // `enforcer.qc:219`): one roll picks the bark and the sequence.
+            let roll = q1_monster_random(behaviors);
+            if monster.pain_finished > now {
+                return;
+            }
+            let sample = if roll < 0.5 {
+                "enforcer/pain1.wav"
+            } else {
+                "enforcer/pain2.wav"
+            };
+            let (seq, hold) = if roll < 0.2 {
+                (Q1MonsterSeq::EnforcerPainA, 1.0)
+            } else if roll < 0.4 {
+                (Q1MonsterSeq::EnforcerPainB, 1.0)
+            } else if roll < 0.7 {
+                (Q1MonsterSeq::EnforcerPainC, 1.0)
+            } else {
+                (Q1MonsterSeq::EnforcerPainD, 2.0)
             };
             q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, sample, 1.0, Q1_ATTN_NORM);
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
@@ -1173,6 +1354,34 @@ pub fn q1_monster_th_die(
                 Q1MonsterSeq::GruntDie
             } else {
                 Q1MonsterSeq::GruntDieC
+            };
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::Enforcer => {
+            if health < -35.0 {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, "progs/h_mega.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+                return;
+            }
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "enforcer/death1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            let seq = if q1_monster_random(behaviors) > 0.5 {
+                Q1MonsterSeq::EnforcerDie
+            } else {
+                Q1MonsterSeq::EnforcerFDie
             };
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(seq, 0);
@@ -1449,6 +1658,10 @@ pub fn q1_monster_pass<L: ServerLogic>(
     let gibs: Vec<ActorId> = ctx.behaviors.gibs.keys().cloned().collect();
     for actor in gibs {
         q1_gib_actor(&mut ctx, &actor);
+    }
+    let bolts: Vec<ActorId> = ctx.behaviors.projectiles.keys().cloned().collect();
+    for actor in bolts {
+        q1_projectile_actor(&mut ctx, &actor);
     }
     let tossed: Vec<ActorId> = ctx
         .behaviors
@@ -2500,6 +2713,9 @@ fn q1_check_any_attack<L: ServerLogic>(
     match kind {
         Some(Q1MonsterKind::Dog) => q1_dog_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Grunt) => q1_soldier_check_attack(ctx, actor, memo),
+        // Enforcers run the generic check (`CheckAttack`,
+        // `fight.qc:57`): no `th_melee`, `th_missile` armed.
+        Some(Q1MonsterKind::Enforcer) => q1_check_attack(ctx, actor, memo, false, true),
         None => false,
     }
 }
@@ -3469,6 +3685,14 @@ const GRUNT_WALK_STEPS: [f64; 24] = [
 /// Grunt run step distances (`army_run1..8`, `soldier.qc`).
 const GRUNT_RUN_STEPS: [f64; 8] = [11.0, 15.0, 10.0, 10.0, 8.0, 15.0, 10.0, 8.0];
 
+/// Enforcer walk travel per frame (`enf_walk1..16`, `enforcer.qc`).
+const ENFORCER_WALK_STEPS: [f64; 16] = [
+    2.0, 4.0, 4.0, 3.0, 1.0, 2.0, 2.0, 1.0, 2.0, 4.0, 4.0, 1.0, 2.0, 3.0, 4.0, 2.0,
+];
+
+/// Enforcer run travel per frame (`enf_run1..8`, `enforcer.qc`).
+const ENFORCER_RUN_STEPS: [f64; 8] = [18.0, 14.0, 7.0, 12.0, 14.0, 14.0, 7.0, 11.0];
+
 /// Stock grunt death drop (`army_die3`/`army_cdie3`, `soldier.qc`):
 /// unsolid, then the 5-shell backpack.
 fn q1_grunt_death_drop<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
@@ -3569,6 +3793,336 @@ fn q1_grunt_frame<L: ServerLogic>(
     }
 }
 
+/// Stock enforcer death drop (`enf_die3`/`enf_fdie3`, `enforcer.qc`):
+/// unsolid, then the 5-cell backpack.
+fn q1_enforcer_death_drop<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    ctx.behaviors.solids.remove(actor);
+    q1_drop_backpack(
+        ctx,
+        actor,
+        Q1Ammo {
+            cells: Q1_ENFORCER_DROP_CELLS,
+            ..Q1Ammo::default()
+        },
+    );
+}
+
+/// One enforcer `$frame` body (`enforcer.qc`): idle barks, gait calls,
+/// the two-bolt volley with its muzzle flashes and nightmare refire,
+/// pain footwork, and the death drops. The firing frames launch bolts
+/// without facing (`enf_atk6`, `enf_atk10`).
+fn q1_enforcer_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::EnforcerStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::EnforcerWalk, 0) => {
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "enforcer/idle1.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+            q1_ai_walk(ctx, actor, ENFORCER_WALK_STEPS[0]);
+        }
+        (Q1MonsterSeq::EnforcerWalk, i) => {
+            q1_ai_walk(
+                ctx,
+                actor,
+                ENFORCER_WALK_STEPS.get(usize::from(i)).copied().unwrap_or(0.0),
+            );
+        }
+        (Q1MonsterSeq::EnforcerRun, 0) => {
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "enforcer/idle1.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+            q1_ai_run(ctx, actor, ENFORCER_RUN_STEPS[0]);
+        }
+        (Q1MonsterSeq::EnforcerRun, i) => {
+            q1_ai_run(
+                ctx,
+                actor,
+                ENFORCER_RUN_STEPS.get(usize::from(i)).copied().unwrap_or(0.0),
+            );
+        }
+        (Q1MonsterSeq::EnforcerAttack, 5) | (Q1MonsterSeq::EnforcerAttack, 9) => {
+            q1_enforcer_fire(ctx, actor);
+        }
+        (Q1MonsterSeq::EnforcerAttack, 13) => {
+            q1_ai_face(ctx, actor);
+            if let Some(rewind) = q1_th_missile(Q1MonsterKind::Enforcer) {
+                q1_sub_check_refire(ctx, actor, rewind);
+            }
+        }
+        (Q1MonsterSeq::EnforcerAttack, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::EnforcerPainA, _) | (Q1MonsterSeq::EnforcerPainB, _) | (Q1MonsterSeq::EnforcerPainC, _) => {}
+        (Q1MonsterSeq::EnforcerPainD, 3) => q1_ai_painforward(ctx, actor, 2.0),
+        (Q1MonsterSeq::EnforcerPainD, 4)
+        | (Q1MonsterSeq::EnforcerPainD, 10)
+        | (Q1MonsterSeq::EnforcerPainD, 11)
+        | (Q1MonsterSeq::EnforcerPainD, 12) => q1_ai_painforward(ctx, actor, 1.0),
+        (Q1MonsterSeq::EnforcerPainD, 15) | (Q1MonsterSeq::EnforcerPainD, 16) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::EnforcerPainD, _) => {}
+        (Q1MonsterSeq::EnforcerDie, 2) => q1_enforcer_death_drop(ctx, actor),
+        (Q1MonsterSeq::EnforcerDie, 3) => q1_ai_forward(ctx, actor, 14.0),
+        (Q1MonsterSeq::EnforcerDie, 4) => q1_ai_forward(ctx, actor, 2.0),
+        (Q1MonsterSeq::EnforcerDie, 8) => q1_ai_forward(ctx, actor, 3.0),
+        (Q1MonsterSeq::EnforcerDie, 9) | (Q1MonsterSeq::EnforcerDie, 10) | (Q1MonsterSeq::EnforcerDie, 11) => {
+            q1_ai_forward(ctx, actor, 5.0)
+        }
+        (Q1MonsterSeq::EnforcerDie, _) => {}
+        (Q1MonsterSeq::EnforcerFDie, 2) => q1_enforcer_death_drop(ctx, actor),
+        (Q1MonsterSeq::EnforcerFDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
+/// Stock `enforcer_fire` (`enforcer.qc:104`): flash the muzzle and
+/// launch a bolt from the gun tip at the enemy origin.
+fn q1_enforcer_fire<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.effects |= Q1_EF_MUZZLEFLASH;
+    }
+    let me = ctx.server.simulation().body_state(actor);
+    let foe = ctx.server.simulation().body_state(&enemy);
+    let (Some(me), Some(foe)) = (me, foe) else {
+        return;
+    };
+    let axes = angle_vectors(me.angles);
+    let org = vec3(
+        me.origin.x + axes.forward.x * 30.0 + axes.right.x * 8.5,
+        me.origin.y + axes.forward.y * 30.0 + axes.right.y * 8.5,
+        me.origin.z + axes.forward.z * 30.0 + axes.right.z * 8.5 + 16.0,
+    );
+    let dir = vec3(
+        foe.origin.x - me.origin.x,
+        foe.origin.y - me.origin.y,
+        foe.origin.z - me.origin.z,
+    );
+    q1_launch_laser(ctx, actor, org, dir);
+}
+
+/// Stock `vectoangles` (`pr_cmds.c:428`): integer pitch/yaw in degrees,
+/// wrapped to 0-360, roll zero. Vertical vectors yaw zero and pitch
+/// straight up (90) or down (270).
+fn q1_vectoangles(vec: Vec3) -> Vec3 {
+    if vec.x == 0.0 && vec.y == 0.0 {
+        let pitch = if vec.z > 0.0 { 90.0 } else { 270.0 };
+        return vec3(pitch, 0.0, 0.0);
+    }
+    let mut yaw = (vec.y.atan2(vec.x) * 180.0 / std::f32::consts::PI).trunc();
+    if yaw < 0.0 {
+        yaw += 360.0;
+    }
+    let forward = (vec.x * vec.x + vec.y * vec.y).sqrt();
+    let mut pitch = (vec.z.atan2(forward) * 180.0 / std::f32::consts::PI).trunc();
+    if pitch < 0.0 {
+        pitch += 360.0;
+    }
+    vec3(pitch, yaw, 0.0)
+}
+
+/// Stock `LaunchLaser` (`enforcer.qc:74`): bark the shot, then spawn a
+/// point bolt with a dim light, aimed along `dir` at 600 u/s, gone in
+/// 5 s.
+fn q1_launch_laser<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, owner: &ActorId, org: Vec3, dir: Vec3) {
+    q1_monster_sound(
+        ctx.behaviors,
+        owner,
+        Q1_CHAN_WEAPON,
+        "enforcer/enfire.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt();
+    let unit = if len == 0.0 {
+        vec3(0.0, 0.0, 0.0)
+    } else {
+        vec3(dir.x / len, dir.y / len, dir.z / len)
+    };
+    let velocity = vec3(
+        unit.x * Q1_LASER_SPEED,
+        unit.y * Q1_LASER_SPEED,
+        unit.z * Q1_LASER_SPEED,
+    );
+    let fields = SpawnFields {
+        classname: "q1:laser".to_string(),
+        origin: org,
+        ..SpawnFields::default()
+    };
+    let bolt = match ctx.server.spawn_entity(&fields) {
+        Ok(bolt) => bolt,
+        Err(_) => return,
+    };
+    let point = Bounds {
+        min: vec3(0.0, 0.0, 0.0),
+        max: vec3(0.0, 0.0, 0.0),
+    };
+    let simulation = ctx.server.simulation_mut();
+    if simulation.set_body_bounds(bolt.id(), point).is_err()
+        || simulation.set_body_velocity(bolt.id(), velocity).is_err()
+        || simulation.set_body_angles(bolt.id(), q1_vectoangles(velocity)).is_err()
+    {
+        let _ignored = simulation.release(&bolt);
+        return;
+    }
+    let _ignored = simulation.link_body(bolt.id());
+    ctx.behaviors.solids.insert(bolt.id());
+    ctx.behaviors.projectiles.insert(
+        bolt.id(),
+        Q1Projectile {
+            kind: Q1ProjectileKind::Laser,
+            owner: Some(owner.clone()),
+            remove_at: ctx.now + Q1_LASER_LIFETIME,
+            effects: Q1_EF_DIMLIGHT,
+        },
+    );
+}
+
+/// Stock `Laser_Touch` (`enforcer.qc:41`): owner touches pass through;
+/// sky bolts vanish silently; anything else stops the bolt with a
+/// crack — blood and 15 damage for the living, a wall puff for the
+/// rest — then the bolt removes.
+fn q1_laser_touch<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, other: Option<&ActorId>) {
+    let projectile = ctx.behaviors.projectiles.get(actor).cloned();
+    let Some(projectile) = projectile else {
+        return;
+    };
+    if projectile.owner.as_ref() == other {
+        return;
+    }
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    if ctx.movement().services_mut().point_contents(actor, body.origin) == Q1_CONTENTS_SKY {
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
+        return;
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "enforcer/enfstop.wav",
+        1.0,
+        Q1_ATTN_STATIC,
+    );
+    let speed =
+        (body.velocity.x * body.velocity.x + body.velocity.y * body.velocity.y + body.velocity.z * body.velocity.z)
+            .sqrt();
+    let unit = if speed == 0.0 {
+        vec3(0.0, 0.0, 0.0)
+    } else {
+        vec3(
+            body.velocity.x / speed,
+            body.velocity.y / speed,
+            body.velocity.z / speed,
+        )
+    };
+    let org = vec3(
+        body.origin.x - 8.0 * unit.x,
+        body.origin.y - 8.0 * unit.y,
+        body.origin.z - 8.0 * unit.z,
+    );
+    let living = other.is_some_and(|other| q1_can_take_damage(ctx.server.simulation(), other));
+    if living {
+        let victim = other.expect("gated victim").clone();
+        // `SpawnBlood (org, vel*0.2, 15)` sends `particle (org,
+        // vel*0.02, 73, 30)` (`weapons.qc:120`).
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Blood {
+            org,
+            vel: vec3(body.velocity.x * 0.02, body.velocity.y * 0.02, body.velocity.z * 0.02),
+            count: (Q1_LASER_DAMAGE * 2.0) as f32,
+        });
+        let me = actor.clone();
+        let owner = projectile.owner.clone();
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            ctx.behaviors,
+            simulation,
+            movers,
+            triggers,
+            &victim,
+            Some(&me),
+            owner.as_ref(),
+            Q1_LASER_DAMAGE,
+        );
+    } else {
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Gunshot { org });
+    }
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
+}
+
+/// Stock `SV_Physics_Fly` core (`sv_phys.c`): flyers keep velocity
+/// (no gravity), travel to the trace end, link, and touch whatever
+/// stopped them.
+fn q1_fly_physics<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    if ctx.dt <= 0.0 {
+        return;
+    }
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let end = vec3(
+        body.origin.x + body.velocity.x * ctx.dt as f32,
+        body.origin.y + body.velocity.y * ctx.dt as f32,
+        body.origin.z + body.velocity.z * ctx.dt as f32,
+    );
+    let trace = ctx.movement().services_mut().trace(actor, body.origin, end, None);
+    // Stock `SV_PushEntity`: land at the end position, link, and touch
+    // whatever stopped the flight.
+    let _ignored = ctx.server.simulation_mut().set_body_origin(actor, trace.end);
+    let _ignored = ctx.server.simulation_mut().link_body(actor);
+    if trace.fraction == 1.0 {
+        return;
+    }
+    let other = match &trace.hit {
+        TraceHit::Actor { actor } => Some(actor.clone()),
+        _ => None,
+    };
+    q1_laser_touch(ctx, actor, other.as_ref());
+}
+
+/// Step one projectile actor: scheduled bolts remove (`SUB_Remove`);
+/// live bolts fly.
+fn q1_projectile_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let Some(projectile) = ctx.behaviors.projectiles.get(actor).cloned() else {
+        return;
+    };
+    if projectile.remove_at <= ctx.now {
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
+        return;
+    }
+    match projectile.kind {
+        Q1ProjectileKind::Laser => q1_fly_physics(ctx, actor),
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -3580,6 +4134,7 @@ fn q1_monster_frame<L: ServerLogic>(
     match kind {
         Q1MonsterKind::Dog => q1_dog_frame(ctx, actor, seq, index),
         Q1MonsterKind::Grunt => q1_grunt_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Enforcer => q1_enforcer_frame(ctx, actor, seq, index),
     }
 }
 
@@ -3612,6 +4167,10 @@ mod tests {
         monster_fields("monster_army", pairs)
     }
 
+    fn enforcer_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_enforcer", pairs)
+    }
+
     fn spawn_monster(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
@@ -3632,6 +4191,14 @@ mod tests {
     }
 
     fn spawn_grunt(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_enforcer(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -3703,6 +4270,14 @@ mod tests {
         grunt: &ActorId,
     ) {
         arm_monster(server, behaviors, grunt);
+    }
+
+    fn arm_enforcer(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        enforcer: &ActorId,
+    ) {
+        arm_monster(server, behaviors, enforcer);
     }
 
     #[test]
@@ -4264,5 +4839,281 @@ mod tests {
             q1_seq_next(Q1MonsterKind::Grunt, GruntDieC, 10),
             Q1MonsterThink::Frame(GruntDieC, 10)
         );
+    }
+
+    #[test]
+    fn enforcer_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = enforcer_fields(&[]);
+        let enforcer = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(enforcer.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_ENFORCER_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_ENFORCER_BOUNDS.max);
+        let combat = server.simulation().combat_state(enforcer.id()).unwrap();
+        assert_eq!(combat.health, Q1_ENFORCER_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(enforcer.id()));
+        let monster = behaviors.monsters.get(enforcer.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Enforcer);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(monster.effects, 0);
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_enforcer"),
+            Some(Q1MonsterKind::Enforcer)
+        );
+        assert_eq!(Q1MonsterKind::Enforcer.classname(), "monster_enforcer");
+        assert!(q1_th_melee(Q1MonsterKind::Enforcer).is_none());
+        assert_eq!(
+            q1_th_missile(Q1MonsterKind::Enforcer),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0))
+        );
+    }
+
+    #[test]
+    fn enforcer_pain_gate_then_four_way() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = enforcer_fields(&[]);
+        let enforcer = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        arm_enforcer(&mut server, &mut behaviors, enforcer.id());
+        // A running pain hold swallows the pain entirely.
+        behaviors.monsters.get_mut(enforcer.id()).unwrap().pain_finished = 999.0;
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            enforcer.id(),
+            None,
+            Some(player.id()),
+            5.0,
+        );
+        let monster = behaviors.monsters.get(enforcer.id()).unwrap();
+        // The feud still hunts (sight bark plus run), but held pain
+        // adds no pain sequence and no pain bark.
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerRun, 0),
+            "held pain keeps the hunt think"
+        );
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .all(|sound| sound.sample != "enforcer/pain1.wav" && sound.sample != "enforcer/pain2.wav"),
+            "held pain stays pain-silent"
+        );
+        // A fresh wound takes one of the four pain sequences.
+        behaviors.monsters.get_mut(enforcer.id()).unwrap().pain_finished = 0.0;
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            enforcer.id(),
+            None,
+            Some(player.id()),
+            5.0,
+        );
+        assert_eq!(q1_health_of(server.simulation(), enforcer.id()), 70.0);
+        let monster = behaviors.monsters.get(enforcer.id()).unwrap();
+        assert!(matches!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerPainA, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerPainB, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerPainC, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerPainD, 0)
+        ));
+        assert!(monster.pain_finished > 0.0);
+        assert!(behaviors
+            .sounds
+            .iter()
+            .any(|sound| sound.sample == "enforcer/pain1.wav" || sound.sample == "enforcer/pain2.wav"));
+    }
+
+    #[test]
+    fn enforcer_dies_solid_then_drops() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = enforcer_fields(&[]);
+        let enforcer = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        arm_enforcer(&mut server, &mut behaviors, enforcer.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // 85 damage leaves -5: dead, but above the -35 gib threshold.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            enforcer.id(),
+            None,
+            Some(player.id()),
+            85.0,
+        );
+        assert!(q1_health_of(server.simulation(), enforcer.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(enforcer.id()).unwrap();
+        assert!(monster.dead);
+        assert!(matches!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerDie, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerFDie, 0)
+        ));
+        // Solidity drops in the third death frame, not in `th_die`.
+        assert!(behaviors.solids.contains(enforcer.id()));
+        assert!(!q1_can_take_damage(server.simulation(), enforcer.id()));
+        assert!(behaviors
+            .sounds
+            .iter()
+            .any(|sound| sound.sample == "enforcer/death1.wav"));
+    }
+
+    #[test]
+    fn enforcer_gib_threshold_bursts() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = enforcer_fields(&[]);
+        let enforcer = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        arm_enforcer(&mut server, &mut behaviors, enforcer.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            enforcer.id(),
+            None,
+            Some(player.id()),
+            1000.0,
+        );
+        assert_eq!(q1_health_of(server.simulation(), enforcer.id()), -99.0);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        assert!(behaviors.gibs.contains_key(enforcer.id()));
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+    }
+
+    #[test]
+    fn infighting_turns_enforcer_on_other_class() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(500.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = enforcer_fields(&[]);
+        let first = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        let second = spawn_enforcer(&mut server, &mut behaviors, &fields);
+        arm_enforcer(&mut server, &mut behaviors, first.id());
+        arm_enforcer(&mut server, &mut behaviors, second.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Same-class enforcers stay friendly: only grunts feud their
+        // own class, so no feud here, only pain (`combat.qc:185`).
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            second.id(),
+            Some(first.id()),
+            Some(first.id()),
+            5.0,
+        );
+        assert_eq!(behaviors.monsters.get(second.id()).unwrap().enemy, None);
+        let grunt_fields = grunt_fields(&[]);
+        let grunt = spawn_grunt(&mut server, &mut behaviors, &grunt_fields);
+        arm_grunt(&mut server, &mut behaviors, grunt.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // A grunt attacker turns the enforcer around with a hunt.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            second.id(),
+            Some(grunt.id()),
+            Some(grunt.id()),
+            5.0,
+        );
+        let monster = behaviors.monsters.get(second.id()).unwrap();
+        assert_eq!(monster.enemy.as_ref(), Some(grunt.id()));
+        assert!(behaviors
+            .sounds
+            .iter()
+            .any(|sound| sound.sample.starts_with("enforcer/sight")));
+    }
+
+    #[test]
+    fn enforcer_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(EnforcerStand), 7);
+        assert_eq!(q1_seq_len(EnforcerWalk), 16);
+        assert_eq!(q1_seq_len(EnforcerRun), 8);
+        assert_eq!(q1_seq_len(EnforcerAttack), 14);
+        assert_eq!(q1_seq_len(EnforcerPainA), 4);
+        assert_eq!(q1_seq_len(EnforcerPainB), 5);
+        assert_eq!(q1_seq_len(EnforcerPainC), 8);
+        assert_eq!(q1_seq_len(EnforcerPainD), 19);
+        assert_eq!(q1_seq_len(EnforcerDie), 14);
+        assert_eq!(q1_seq_len(EnforcerFDie), 11);
+        assert_eq!(q1_seq_frame(EnforcerStand, 6), 6);
+        assert_eq!(q1_seq_frame(EnforcerWalk, 15), 22);
+        assert_eq!(q1_seq_frame(EnforcerRun, 7), 30);
+        assert_eq!(q1_seq_frame(EnforcerAttack, 0), 31);
+        assert_eq!(q1_seq_frame(EnforcerAttack, 7), 38);
+        // The volley reuses attack5-8 mid-sequence.
+        assert_eq!(q1_seq_frame(EnforcerAttack, 8), 35);
+        assert_eq!(q1_seq_frame(EnforcerAttack, 11), 38);
+        assert_eq!(q1_seq_frame(EnforcerAttack, 13), 40);
+        assert_eq!(q1_seq_frame(EnforcerDie, 0), 41);
+        assert_eq!(q1_seq_frame(EnforcerDie, 13), 54);
+        assert_eq!(q1_seq_frame(EnforcerFDie, 0), 55);
+        assert_eq!(q1_seq_frame(EnforcerFDie, 10), 65);
+        assert_eq!(q1_seq_frame(EnforcerPainA, 3), 69);
+        assert_eq!(q1_seq_frame(EnforcerPainB, 4), 74);
+        assert_eq!(q1_seq_frame(EnforcerPainC, 7), 82);
+        assert_eq!(q1_seq_frame(EnforcerPainD, 0), 83);
+        assert_eq!(q1_seq_frame(EnforcerPainD, 18), 101);
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Enforcer, EnforcerAttack, 13),
+            q1_th_run(Q1MonsterKind::Enforcer)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Enforcer, EnforcerPainD, 18),
+            q1_th_run(Q1MonsterKind::Enforcer)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Enforcer, EnforcerStand, 6),
+            Q1MonsterThink::Frame(EnforcerStand, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Enforcer, EnforcerDie, 13),
+            Q1MonsterThink::Frame(EnforcerDie, 13)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Enforcer, EnforcerFDie, 10),
+            Q1MonsterThink::Frame(EnforcerFDie, 10)
+        );
+    }
+
+    #[test]
+    fn vectoangles_matches_stock() {
+        // Cardinal yaw, level pitch (`pr_cmds.c:428`).
+        assert_eq!(q1_vectoangles(vec3(600.0, 0.0, 0.0)), vec3(0.0, 0.0, 0.0));
+        assert_eq!(q1_vectoangles(vec3(0.0, 600.0, 0.0)), vec3(0.0, 90.0, 0.0));
+        // Negative yaw wraps to 0-360.
+        assert_eq!(q1_vectoangles(vec3(0.0, -600.0, 0.0)), vec3(0.0, 270.0, 0.0));
+        // Vertical vectors yaw zero, pitch straight up or down.
+        assert_eq!(q1_vectoangles(vec3(0.0, 0.0, 600.0)), vec3(90.0, 0.0, 0.0));
+        assert_eq!(q1_vectoangles(vec3(0.0, 0.0, -600.0)), vec3(270.0, 0.0, 0.0));
+        // Downward pitch wraps like stock.
+        assert_eq!(q1_vectoangles(vec3(600.0, 0.0, -600.0)), vec3(315.0, 0.0, 0.0));
     }
 }
