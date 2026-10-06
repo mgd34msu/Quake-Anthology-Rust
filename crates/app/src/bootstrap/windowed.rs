@@ -2433,7 +2433,17 @@ mod tests {
     use super::super::frame_time::register_frame_time_cvars;
     use super::super::startup_selection::StartupSelectionCollaborators;
     use super::*;
-    use crate::bootstrap::live_proof::{require_live_corpus, require_live_window};
+    use crate::bootstrap::live_proof::{CORPUS_WITNESSES, require_live_corpus, require_live_window};
+    use crate::bootstrap::play_world::tests::{
+        LIVE_E1M1_SKILL2_TOTAL, LIVE_E1M2_NATIVE_SKILL2_TOTAL, LIVE_E1M3_NATIVE_SKILL2_TOTAL,
+        LIVE_E1M4_NATIVE_SKILL2_TOTAL, LIVE_E1M5_NATIVE_SKILL2_TOTAL, LIVE_E1M6_NATIVE_SKILL2_TOTAL,
+        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
+        live_changelevel_exits, live_dogs, live_doors_by_targetname, live_expected_finale, live_fiends,
+        live_fire_use, live_fish, live_grunts, live_knights, live_monster_feet, live_now, live_ogres,
+        live_oldones, live_place_player, live_player_health, live_press_buttons, live_set_player_health,
+        live_shamblers, live_silence_door_fields, live_volume_center, live_vores, live_wizards,
+        live_zombies,
+    };
     use crate::options::GameFamily as OptionsFamily;
     use crate::options::Network;
 
@@ -5243,5 +5253,971 @@ mod tests {
         // The cvar read is f32 (`variable_value`), so compare against
         // the f32 spelling of 0.05s in milliseconds.
         assert_eq!(gate.sim_frame_ms(Dialect::Q1Netquake), f64::from(0.05f32) * 1000.0);
+    }
+
+    /// Open one Q1 map in the real windowed run (window, renderer,
+    /// input) at skill 2 single-player, or skip loudly without a
+    /// corpus/display (panic when `QA_REQUIRE_LIVE=1`).
+    fn windowed_e1_run(map: &str) -> Option<WindowedApplication> {
+        let corpus = require_live_corpus("Steel corpus", &CORPUS_WITNESSES)?;
+        let options = ApplicationOptions {
+            windowed: true,
+            width: 64,
+            height: 64,
+            frame_limit: Some(3),
+            corpus_root: corpus.to_string_lossy().into_owned(),
+            product: "q1-classic-id1".to_string(),
+            map: map.to_string(),
+            skill: 2,
+            mode: GameMode::Singleplayer,
+            ..ApplicationOptions::default()
+        };
+        require_live_window(
+            &format!("windowed open for q1-classic-id1 {map}"),
+            open_windowed_application(&options, StartupEntry::Run),
+        )
+    }
+
+    /// The windowed run's live world.
+    fn windowed_world(app: &StartupApplication<WindowedStartupBackend>) -> &PlayWorld {
+        app.backend().world.as_ref().expect("windowed world")
+    }
+
+    /// Master-clock seconds of the windowed run's world.
+    fn windowed_now(app: &StartupApplication<WindowedStartupBackend>) -> f64 {
+        live_now(windowed_world(app))
+    }
+
+    /// One windowed-run tick: the host-gate advance plus the exact
+    /// `step_play` the display frames call (server tick, player,
+    /// weapons, monsters, travel), at the 60 Hz live-proof step.
+    fn windowed_tick(app: &mut StartupApplication<WindowedStartupBackend>) {
+        app.backend_mut().host_gate.advance(1.0 / 60.0);
+        app.backend_mut().step_play(1000.0 / 60.0);
+    }
+
+    /// Soak the windowed run at least `seconds` of sim time through
+    /// `step_play` (the windowed frame's world step, not the headless
+    /// live advance): 100 ms host steps at the stock 0.1 s clamp.
+    fn windowed_soak(app: &mut StartupApplication<WindowedStartupBackend>, seconds: f64) {
+        let target = windowed_now(app) + seconds;
+        let mut guard = 0;
+        while windowed_now(app) < target {
+            app.backend_mut().host_gate.advance(0.1);
+            app.backend_mut().step_play(100.0);
+            guard += 1;
+            assert!(guard < 100_000, "windowed_soak stalled before {target}s");
+        }
+    }
+
+    /// Touch a windowed exit and run the 0.1 s execute think through
+    /// the windowed step: returns with the world entered in the
+    /// intermission and the buttons released.
+    fn windowed_enter_intermission(
+        app: &mut StartupApplication<WindowedStartupBackend>,
+        exit: &qa_core::identity::ActorId,
+    ) {
+        {
+            let world = app.backend_mut().world.as_mut().expect("windowed world");
+            let at_exit = live_volume_center(world, exit);
+            live_place_player(world, at_exit);
+        }
+        windowed_tick(app);
+        windowed_soak(app, 0.2);
+        live_press_buttons(app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        assert_eq!(
+            windowed_world(app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .intermission
+                .running,
+            1,
+            "exit entered the intermission"
+        );
+    }
+
+    /// Advance past the windowed intermission exit gate with the
+    /// buttons released (a held press would exit at the gate, like
+    /// stock).
+    fn windowed_pass_exit_gate(app: &mut StartupApplication<WindowedStartupBackend>) {
+        let wait = {
+            let world = windowed_world(app);
+            let exit_time = world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .intermission
+                .exit_time_seconds;
+            exit_time - live_now(world) + 0.1
+        };
+        windowed_soak(app, wait.max(0.1));
+    }
+
+    /// One map's native census at skill 2: per-kind live record
+    /// counts plus the kill-count total.
+    struct WindowedE1Census {
+        dogs: usize,
+        grunts: usize,
+        ogres: usize,
+        knights: usize,
+        fiends: usize,
+        shamblers: usize,
+        zombies: usize,
+        wizards: usize,
+        bosses: usize,
+        total: u32,
+    }
+
+    /// Q1 E1 windowed census run (Q1-0138-Q1-0153): every stock
+    /// episode-1 map opens in the real windowed run at skill 2, and
+    /// every stock monster kind spawns through the native path: the
+    /// per-kind record counts match the authored entity lump minus
+    /// skill inhibition. Each map also presents (a non-black capture)
+    /// and drives real frames before closing.
+    ///
+    /// One sequential test (not seven parallel ones) so concurrent
+    /// SDL windows never contend: each map opens, soaks, captures,
+    /// drives, and closes in turn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e1_census_run() {
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        for (map, census) in [
+            (
+                "maps/e1m1.bsp",
+                WindowedE1Census {
+                    dogs: 8,
+                    grunts: 34,
+                    ogres: 0,
+                    knights: 0,
+                    fiends: 0,
+                    shamblers: 0,
+                    zombies: 0,
+                    wizards: 0,
+                    bosses: 0,
+                    total: LIVE_E1M1_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m2.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 16,
+                    ogres: 12,
+                    knights: 5,
+                    fiends: 3,
+                    shamblers: 0,
+                    zombies: 0,
+                    wizards: 6,
+                    bosses: 0,
+                    total: LIVE_E1M2_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m3.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 13,
+                    knights: 0,
+                    fiends: 7,
+                    shamblers: 3,
+                    zombies: 35,
+                    wizards: 7,
+                    bosses: 0,
+                    total: LIVE_E1M3_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m4.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 21,
+                    knights: 19,
+                    fiends: 3,
+                    shamblers: 0,
+                    zombies: 0,
+                    wizards: 16,
+                    bosses: 0,
+                    total: LIVE_E1M4_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m5.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 15,
+                    knights: 25,
+                    fiends: 9,
+                    shamblers: 1,
+                    zombies: 0,
+                    wizards: 10,
+                    bosses: 0,
+                    total: LIVE_E1M5_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m6.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 18,
+                    knights: 0,
+                    fiends: 2,
+                    shamblers: 2,
+                    zombies: 6,
+                    wizards: 3,
+                    bosses: 0,
+                    total: LIVE_E1M6_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m7.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 0,
+                    knights: 0,
+                    fiends: 0,
+                    shamblers: 12,
+                    zombies: 8,
+                    wizards: 0,
+                    bosses: 1,
+                    total: LIVE_E1M7_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+        ] {
+            let Some(mut composed) = windowed_e1_run(map) else {
+                return;
+            };
+            assert!(composed.app.active_game(), "{map} has a scene");
+            windowed_soak(&mut composed.app, 1.0);
+            {
+                let world = windowed_world(&composed.app);
+                assert_eq!(live_dogs(world).len(), census.dogs, "{map} dogs");
+                assert_eq!(live_grunts(world).len(), census.grunts, "{map} grunts");
+                assert_eq!(live_ogres(world).len(), census.ogres, "{map} ogres");
+                assert_eq!(live_knights(world).len(), census.knights, "{map} knights");
+                assert_eq!(live_fiends(world).len(), census.fiends, "{map} fiends");
+                assert_eq!(live_shamblers(world).len(), census.shamblers, "{map} shamblers");
+                assert_eq!(live_zombies(world).len(), census.zombies, "{map} zombies");
+                assert_eq!(live_wizards(world).len(), census.wizards, "{map} scrags");
+                assert_eq!(live_bosses(world).len(), census.bosses, "{map} bosses");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                assert_eq!(behaviors.borrow().total_monsters, census.total, "{map} total");
+            }
+            let pixels = composed
+                .app
+                .capture_next_frame()
+                .unwrap_or_else(|error| panic!("{map} captures: {error}"));
+            // No exact-size assert: the GL readback size is driver
+            // dependent (xvfb returns a 1964600-byte readback for a
+            // 64x64 window). The presented-world proof is the lit
+            // fraction, far above black either way.
+            assert!(!pixels.is_empty(), "{map} captures pixels");
+            let lit = count_non_black(&pixels);
+            assert!(
+                lit > 1000,
+                "{map}: expected a presented world, got {lit} non-black pixels of {}",
+                pixels.len() / 4
+            );
+            let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+                .unwrap_or_else(|error| panic!("{map} drives: {error}"));
+            assert_eq!(frames, 3);
+            assert!(composed.app.is_closed());
+        }
+    }
+
+    /// Q1-0139: the e1m7 Chthon fight works in the windowed run: the
+    /// sigil's `use` wakes the sleeper into the rise and the missile
+    /// loop hurls wounding lava balls, then three `event_lightning`
+    /// electrode strikes walk the shocks into the counting death,
+    /// which fires the exit doors open — all stepped through the
+    /// windowed frame's `step_play`, with a capture witnessing the
+    /// arena.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e1m7_chthon_fight() {
+        use crate::bootstrap::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+        use crate::bootstrap::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt};
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e1m7 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        let boss = live_bosses(windowed_world(&composed.app)).into_iter().next().expect("Chthon");
+        let player = windowed_world(&composed.app).player_actor().cloned().expect("player");
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.total_monsters, LIVE_E1M7_NATIVE_SKILL2_TOTAL);
+            let monster = borrowed.monsters.get(&boss).expect("boss record");
+            assert_eq!(monster.think, Q1MonsterThink::Asleep);
+            assert!(!borrowed.solids.contains(&boss), "sleepers stay unsolid");
+            assert_eq!(borrowed.by_targetname.get("t14").map(Vec::len), Some(1));
+            assert_eq!(live_doors_by_targetname(world, "t12").len(), 1);
+            assert_eq!(live_doors_by_targetname(world, "t13").len(), 1);
+        }
+        // Probe a lava-free spot while the sleeper dreams (the arena
+        // floor burns): short windows, so nothing else can interfere.
+        let feet = live_monster_feet(windowed_world(&composed.app), &boss);
+        let mut spot = None;
+        'probe: for dist in [300.0, 400.0, 500.0] {
+            for (dx, dy) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+                let at = vec3(feet.x + dx * dist, feet.y + dy * dist, feet.z + 200.0);
+                {
+                    let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                    live_place_player(world, at);
+                    live_set_player_health(world, 1000.0);
+                }
+                for _ in 0..10 {
+                    windowed_tick(&mut composed.app);
+                }
+                if live_player_health(windowed_world(&composed.app)) >= 1000.0 {
+                    spot = Some(at);
+                    break 'probe;
+                }
+            }
+        }
+        let spot = spot.expect("a lava-free spot near the boss");
+        // The sigil's use wakes the sleeper: solid, sized, rising.
+        live_fire_use(
+            composed.app.backend_mut().world.as_mut().expect("windowed world"),
+            &boss,
+            &player,
+        );
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&boss).expect("boss record");
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0));
+            assert_eq!(monster.enemy, Some(player.clone()));
+            assert!(borrowed.solids.contains(&boss));
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(ent, Q1TempEnt::LavaSplash { .. })),
+                "wakes splash lava"
+            );
+        }
+        for _ in 0..30 {
+            windowed_tick(&mut composed.app);
+        }
+        {
+            let behaviors = windowed_world(&composed.app).q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/out1.wav"),
+                "the rise barks the breach"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/sight1.wav"),
+                "the rise barks the sight"
+            );
+        }
+        // The missile loop hurls lava balls at the player: soak until
+        // an owned ball is in flight, then attribute the wound to an
+        // owned impact (other monsters roam the map).
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            live_place_player(world, spot);
+            live_set_player_health(world, 1000.0);
+        }
+        let mut cast = false;
+        let mut owned = 0;
+        let mut impact_step = None;
+        let mut wounded = false;
+        for step in 0..900 {
+            if step % 10 == 0 {
+                live_place_player(
+                    composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                    spot,
+                );
+            }
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let flying = borrowed
+                .missiles
+                .values()
+                .filter(|missile| missile.kind == Q1MissileKind::LavaBall && missile.owner == boss)
+                .count();
+            cast |= flying > 0;
+            if flying < owned {
+                impact_step = Some(step);
+            }
+            owned = flying;
+            if cast
+                && live_player_health(world) < 1000.0
+                && impact_step.is_some_and(|at| step - at <= 5)
+            {
+                wounded = true;
+                break;
+            }
+        }
+        assert!(cast, "the missile loop hurls lava balls");
+        assert!(wounded, "a lava ball wounds the player");
+        assert!(
+            windowed_world(&composed.app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "boss1/throw.wav"),
+            "throws bark"
+        );
+        // The electrodes start open; three strikes walk the shocks.
+        let event = {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let found = behaviors.borrow().by_targetname.get("t14").cloned().unwrap_or_default();
+            found
+        }
+        .into_iter()
+        .next()
+        .expect("lightning event");
+        for (health, seq) in [
+            (2.0, Q1MonsterSeq::BossShockA),
+            (1.0, Q1MonsterSeq::BossShockB),
+            (0.0, Q1MonsterSeq::BossShockC),
+        ] {
+            for _ in 0..5 {
+                windowed_tick(&mut composed.app);
+            }
+            live_fire_use(
+                composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                &event,
+                &player,
+            );
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                world.server().simulation().combat_state(&boss).map(|combat| combat.health),
+                Some(health)
+            );
+            assert_eq!(
+                borrowed.monsters.get(&boss).map(|monster| monster.think),
+                Some(Q1MonsterThink::Frame(seq, 0))
+            );
+        }
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.monsters.get(&boss).expect("boss record").dead);
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "misc/power.wav"),
+                "strikes hum"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/pain.wav"),
+                "TOP strikes hurt"
+            );
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(ent, Q1TempEnt::Lightning3 { .. })),
+                "strikes draw TE_LIGHTNING3"
+            );
+        }
+        // The final shock runs the crying death into the counting
+        // removal, which fires the exit doors open.
+        for _ in 0..600 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if !world.q1_behaviors().expect("Q1 behaviors").borrow().monsters.contains_key(&boss) {
+                break;
+            }
+        }
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(!borrowed.monsters.contains_key(&boss), "the death removes the body");
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/death.wav"),
+                "deaths cry"
+            );
+        }
+        for _ in 0..600 {
+            windowed_tick(&mut composed.app);
+        }
+        let exits = live_doors_by_targetname(windowed_world(&composed.app), "t9");
+        assert_eq!(exits.len(), 3, "three exit doors wait on the boss");
+        for exit in &exits {
+            let phase = composed
+                .app
+                .backend_mut()
+                .world
+                .as_mut()
+                .expect("windowed world")
+                .server_mut()
+                .movers_mut()
+                .get(exit)
+                .unwrap()
+                .phase;
+            assert!(
+                matches!(
+                    phase,
+                    qa_world::movers::MoverPhase::ToPos2 | qa_world::movers::MoverPhase::AtPos2
+                ),
+                "the death opens the exit doors, got {phase:?}"
+            );
+        }
+        let pixels = composed.app.capture_next_frame().expect("e1m7 captures");
+        assert!(!pixels.is_empty(), "e1m7 captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arena presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("e1m7 drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
+
+    /// Q1-0148 (+ Q1-0241 travel): the windowed run travels e1m7 ->
+    /// start through the episode scroll, then start -> end through
+    /// the `no_intermission` slipgate — both legs via the windowed
+    /// frame's own `take_pending_travel`, carrying spawn parms and
+    /// `serverflags` — and on the end map the pit teleporter drops
+    /// the player onto the rolling spike train so the arrival
+    /// telefrag kills Shub-Niggurath (`oldone.qc:273`, "kill by
+    /// telefrag"), running `finale_1` through `finale_4`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_travel_to_end_telefrags_shub() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_KEY1, Q1_IT_NAILGUN, Q1_IT_NAILS, Q1_IT_QUAD,
+            Q1_IT_SHOTGUN,
+        };
+        use qa_world::combat::{ArmorState, CombatState, RegularArmor};
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e1m7 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted e1m7 loadout plus the episode flag: the flagged
+        // start return must keep the flag but shed the carry.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 1, "e1m7 has one exit");
+        assert_eq!(exits[0].1, "start");
+        windowed_enter_intermission(&mut composed.app, &exits[0].0.clone());
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e1")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled: the world is start now, flags
+        // kept, carry shed for the fresh loadout.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/start.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "start");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "carry shed for the fresh loadout"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        // Scripted campaign loadout on start: nailgun plus a key and
+        // a quad the capture must strip, superhealth to clamp, thin
+        // shells to floor, yellow armor to carry.
+        let player = windowed_world(&composed.app).player_actor().cloned().expect("player");
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN | Q1_IT_KEY1 | Q1_IT_QUAD;
+            borrowed.player_ammo.shells = 10.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            let worn = world.server().simulation().combat_state(&player).unwrap().armor.clone();
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_combat(
+                    &player,
+                    CombatState {
+                        health: 150.0,
+                        armor: ArmorState {
+                            regular: RegularArmor::Q1 {
+                                points: 120.0,
+                                absorption: 0.6,
+                                item: "q1:item_armor2".to_string(),
+                            },
+                            ..worn
+                        },
+                        ..CombatState::default()
+                    },
+                )
+                .unwrap();
+        }
+        let end_exit = live_changelevel_exits(windowed_world(&composed.app))
+            .into_iter()
+            .find(|(_, map)| map == "end")
+            .map(|(exit, _)| exit)
+            .expect("start has an end slipgate");
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let at_exit = live_volume_center(world, &end_exit);
+            live_place_player(world, at_exit);
+        }
+        windowed_tick(&mut composed.app);
+        // The `no_intermission` slipgate traveled at once through the
+        // windowed frame: the world is end now, parms carried.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/end.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "end");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            let items = borrowed.player_items & !Q1_IT_AMMO_BITS;
+            assert_eq!(items, Q1_IT_AXE | Q1_IT_SHOTGUN | Q1_IT_NAILGUN, "keys and quad stripped");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILS, 0, "ammo indicator refreshed");
+            assert_eq!(borrowed.player_ammo.shells, 25.0, "shells floored");
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.player_state.parms.health, 100.0, "entry parms snapshotted");
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            let combat = world.server().simulation().combat_state(&arrival).expect("arrival combat");
+            assert_eq!(combat.health, 100.0, "superhealth clamped");
+            match &combat.armor.regular {
+                RegularArmor::Q1 { points, absorption, .. } => {
+                    assert_eq!((*points, *absorption), (120.0, 0.6), "armor carried");
+                }
+                _ => panic!("arrival wears the carried armor"),
+            }
+        }
+        // The swim start runs deferred, so the rotfish double-count
+        // lands after a soak, like every fresh-load census.
+        windowed_soak(&mut composed.app, 1.0);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.total_monsters, LIVE_END_NATIVE_SKILL2_TOTAL);
+            assert_eq!(live_shamblers(world).len(), 7, "end spawns seven shamblers");
+            assert_eq!(live_vores(world).len(), 6, "end spawns six vores");
+            assert_eq!(live_wizards(world).len(), 1, "end spawns one scrag");
+            assert_eq!(live_fish(world).len(), 5, "end spawns five rotfish");
+            assert_eq!(live_oldones(world).len(), 1, "end spawns one Shub-Niggurath");
+        }
+        // The pit teleporter drops the player onto the rolling spike
+        // train, and when the train crosses Shub the arrival telefrag
+        // kills her — running `finale_1` through `finale_4`.
+        use crate::bootstrap::simulation::native_q1_monsters::{
+            Q1MonsterSeq, Q1MonsterThink, Q1_FINALE_TEXT,
+        };
+        use crate::bootstrap::simulation::native_q1_triggers::Q1TriggerKind;
+        use crate::bootstrap::simulation::native_q1_weapons::Q1TempEnt;
+
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        let shub = live_oldones(windowed_world(&composed.app)).into_iter().next().expect("Shub");
+        let player = windowed_world(&composed.app).player_actor().cloned().expect("player");
+        let (train, kill) = {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.trains.len(), 1);
+            let train = borrowed.trains.keys().next().cloned().expect("train");
+            let kills: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter(|(_, trigger)| {
+                    trigger.source.target.as_deref() == Some("t33")
+                        && matches!(trigger.kind, Q1TriggerKind::Teleport { player_only: true, .. })
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            assert_eq!(kills.len(), 1, "one player-only kill teleporter feeds the train");
+            (train, kills[0].clone())
+        };
+        // Roll the train and wait for the kill window: the t20-t21 leg
+        // crosses Shub's body.
+        live_set_player_health(
+            composed.app.backend_mut().world.as_mut().expect("windowed world"),
+            1000.0,
+        );
+        live_fire_use(
+            composed.app.backend_mut().world.as_mut().expect("windowed world"),
+            &train,
+            &player,
+        );
+        let mut window = false;
+        for _ in 0..300 {
+            windowed_soak(&mut composed.app, 0.5);
+            live_set_player_health(
+                composed.app.backend_mut().world.as_mut().expect("windowed world"),
+                1000.0,
+            );
+            let world = windowed_world(&composed.app);
+            let simulation = world.server().simulation();
+            let train_at = simulation.body_state(&train).expect("train body").origin;
+            let shub_body = simulation.body_state(&shub).expect("shub body");
+            let inside = train_at.x >= shub_body.origin.x + shub_body.bounds.min.x
+                && train_at.x <= shub_body.origin.x + shub_body.bounds.max.x
+                && train_at.y >= shub_body.origin.y + shub_body.bounds.min.y
+                && train_at.y <= shub_body.origin.y + shub_body.bounds.max.y
+                && train_at.z >= shub_body.origin.z + shub_body.bounds.min.z
+                && train_at.z <= shub_body.origin.z + shub_body.bounds.max.z;
+            if inside {
+                window = true;
+                break;
+            }
+        }
+        assert!(window, "the train crosses Shub's body on its route");
+        // The pit drop teleports the player onto the train inside Shub;
+        // the arrival telefrag kills her without counting (no FL_MONSTER).
+        let killed_before =
+            windowed_world(&composed.app).q1_behaviors().expect("Q1 behaviors").borrow().killed_monsters;
+        let gibs_before =
+            windowed_world(&composed.app).q1_behaviors().expect("Q1 behaviors").borrow().gibs.len();
+        let departure = live_volume_center(windowed_world(&composed.app), &kill);
+        live_place_player(
+            composed.app.backend_mut().world.as_mut().expect("windowed world"),
+            departure,
+        );
+        let mut dead = false;
+        for _ in 0..30 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .monsters
+                .get(&shub)
+                .is_some_and(|monster| monster.dead)
+            {
+                dead = true;
+                break;
+            }
+        }
+        assert!(dead, "the arrival telefrag kills Shub");
+        // Shub settles under step gravity onto the pit floor, so the
+        // finale asserts derive from her live origin, not the map key.
+        let shub_origin =
+            windowed_world(&composed.app).server().simulation().body_state(&shub).expect("shub body").origin;
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let combat = world.server().simulation().combat_state(&shub).expect("shub combat");
+            assert_eq!(combat.health, -99.0, "teledeath deals its stock 50000, floored");
+            assert_eq!(borrowed.killed_monsters, killed_before, "Shub never counts");
+            assert_eq!(borrowed.intermission.running, 1, "finale_1 locks the intermission");
+            assert!(
+                borrowed.intermission.exit_time_seconds > live_now(world) + 9_999_000.0,
+                "finale_1 never allows exit"
+            );
+            assert_eq!(borrowed.finale_text, Some(String::new()), "finale_1 clears the scroll");
+            assert!(borrowed.trains.is_empty(), "finale_1 removes the train");
+            assert!(world.server().simulation().body_state(&train).is_none());
+            let spot = borrowed.intermission_spots.first().expect("intermission camera").clone();
+            assert_eq!(spot.origin, vec3(-784.0, 1656.0, 56.0));
+            let player_body = world.server().simulation().body_state(&player).expect("player body");
+            assert_eq!(player_body.origin, spot.origin, "finale_1 freezes the player on the camera");
+            assert!(!borrowed.solids.contains(&player));
+            let player_combat =
+                world.server().simulation().combat_state(&player).expect("player combat");
+            assert!(!player_combat.can_take_damage, "finale_1 retires the player");
+        }
+        // finale_2 splashes inside Shub a second out.
+        let mut splashed = false;
+        for _ in 0..300 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Teleport { .. }))
+            {
+                splashed = true;
+                break;
+            }
+        }
+        assert!(splashed, "finale_2 splashes inside Shub");
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(
+                    ent,
+                    Q1TempEnt::Teleport { at }
+                        if *at == vec3(shub_origin.x, shub_origin.y - 100.0, shub_origin.z)
+                )),
+                "the splash sits 100 units south of Shub's center"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "misc/r_tele1.wav"),
+                "the arrival sound plays"
+            );
+        }
+        // finale_3 starts the thrash two seconds later: the world light
+        // flickers through the shake.
+        let mut thrashing = false;
+        for _ in 0..300 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if matches!(
+                world
+                    .q1_behaviors()
+                    .expect("Q1 behaviors")
+                    .borrow()
+                    .monsters
+                    .get(&shub)
+                    .map(|monster| monster.think),
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::OldThrash, _))
+            ) {
+                thrashing = true;
+                break;
+            }
+        }
+        assert!(thrashing, "finale_3 starts the thrash");
+        assert!(
+            windowed_world(&composed.app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "boss2/death.wav"),
+            "the thrash opens on the death cry"
+        );
+        let flicker_from = windowed_world(&composed.app)
+            .q1_behaviors()
+            .expect("Q1 behaviors")
+            .borrow()
+            .light_styles
+            .get(&0)
+            .copied();
+        let mut flickered = false;
+        for _ in 0..200 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if world.q1_behaviors().expect("Q1 behaviors").borrow().light_styles.get(&0).copied()
+                != flicker_from
+            {
+                flickered = true;
+                break;
+            }
+        }
+        assert!(flickered, "the thrash flickers the world light");
+        // The twentieth think runs finale_4: the pop, fifty chunks, the
+        // scroll, the posed prop, the removal, and the music cue.
+        let mut released = false;
+        for _ in 0..900 {
+            windowed_tick(&mut composed.app);
+            let world = windowed_world(&composed.app);
+            if !world.q1_behaviors().expect("Q1 behaviors").borrow().monsters.contains_key(&shub) {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "finale_4 removes Shub");
+        for _ in 0..3 {
+            windowed_tick(&mut composed.app);
+        }
+        let prop_id = {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.gibs.len(), gibs_before + 51, "fifty chunks plus the prop spawn");
+            let props: Vec<_> = borrowed
+                .gibs
+                .iter()
+                .filter(|(_, gib)| gib.model == "progs/player.mdl")
+                .collect();
+            assert_eq!(props.len(), 1, "one victory prop poses past the pit");
+            let prop_body = world.server().simulation().body_state(props[0].0).expect("prop body");
+            assert_eq!(prop_body.angles, vec3(0.0, 290.0, 0.0));
+            assert_eq!(props[0].1.remove_at, None, "stock keeps the prop");
+            let prop_id = props[0].0.clone();
+            assert_eq!(borrowed.finale_text, Some(Q1_FINALE_TEXT.to_string()));
+            assert!(borrowed.cd_tracks.contains(&(3, 3)), "finale_4 cues the music");
+            assert_eq!(borrowed.light_styles.get(&0), Some(&'m'), "finale_4 restores the light");
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss2/pop2.wav"),
+                "the pop plays"
+            );
+            assert_eq!(borrowed.killed_monsters, killed_before, "the finale never counts");
+            prop_id
+        };
+        // The prop obeys gravity after spawn: tick until it settles, then
+        // require exact XY and a z at or below spawn height (it falls, never rises).
+        let mut settled = windowed_world(&composed.app)
+            .server()
+            .simulation()
+            .body_state(&prop_id)
+            .expect("prop body")
+            .origin;
+        for _ in 0..600 {
+            windowed_tick(&mut composed.app);
+            let next = windowed_world(&composed.app)
+                .server()
+                .simulation()
+                .body_state(&prop_id)
+                .expect("prop body")
+                .origin;
+            if next == settled {
+                break;
+            }
+            settled = next;
+        }
+        assert_eq!(settled.x, shub_origin.x - 32.0, "prop XY matches spawn");
+        assert_eq!(settled.y, shub_origin.y - 264.0, "prop XY matches spawn");
+        assert!(settled.z <= shub_origin.z, "prop settles at or below spawn height, got {settled:?}");
+        let pixels = composed.app.capture_next_frame().expect("end captures");
+        assert!(!pixels.is_empty(), "end captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the pit presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("end drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
     }
 }
