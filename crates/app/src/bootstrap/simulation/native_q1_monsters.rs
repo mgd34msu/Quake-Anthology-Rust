@@ -1312,10 +1312,10 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Ogre => Some("ogre/ogwake.wav"),
         Q1MonsterKind::Zombie => Some("zombie/z_idle.wav"),
         Q1MonsterKind::Fish => None,
-        // Stock precaches `knight/ksight.wav` but never plays it
-        // (`monster_knight` sets no `th_sight`, `knight.qc`): knights
-        // hunt silently.
-        Q1MonsterKind::Knight => None,
+        // Stock `SightSound` barks by classname (`ai.qc:279`), not
+        // `th_sight` — which is why the knight's precached sight
+        // line plays despite `monster_knight` setting no `th_sight`.
+        Q1MonsterKind::Knight => Some("knight/ksight.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -7743,7 +7743,7 @@ mod tests {
     }
 
     #[test]
-    fn knight_sight_hunts_silently() {
+    fn knight_sight_barks() {
         let mut server = test_server();
         let mut behaviors = Q1NativeBehaviors::new();
         let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
@@ -7754,7 +7754,10 @@ mod tests {
         behaviors.monsters.get_mut(knight.id()).unwrap().enemy = Some(player.id().clone());
         let simulation = server.simulation_mut();
         q1_found_target(&mut behaviors, simulation, knight.id());
-        assert!(behaviors.sounds.is_empty(), "stock never plays the sight line");
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "knight/ksight.wav"),
+            "sight barks the classname line"
+        );
         assert_eq!(
             behaviors.monsters.get(knight.id()).unwrap().think,
             Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0)

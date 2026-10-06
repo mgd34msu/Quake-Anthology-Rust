@@ -7430,13 +7430,14 @@ mod tests {
         }
         swordsman.expect("a knight sights, hunts, and lands its sword");
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
         assert!(
-            behaviors
-                .borrow()
-                .sounds
-                .iter()
-                .any(|sound| sound.sample == "knight/sword1.wav"),
+            borrowed.sounds.iter().any(|sound| sound.sample == "knight/sword1.wav"),
             "swords swish"
+        );
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "knight/ksight.wav"),
+            "sightings bark"
         );
     }
 
