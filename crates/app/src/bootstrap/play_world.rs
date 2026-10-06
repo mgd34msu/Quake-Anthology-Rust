@@ -4173,6 +4173,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Vore)
     }
 
+    fn live_bosses(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Boss)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4319,6 +4324,11 @@ mod tests {
     /// (no `monster_*` record carries the 1024 not-hard bit). Every
     /// e4m6 monster kind is native now.
     const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 84;
+
+    /// e1m7 native census at skill 2: 12 shamblers plus 8 zombies
+    /// plus Chthon: 12 + 8 + 1 = 21 (no `monster_*` record carries
+    /// the 1024 not-hard bit). Every e1m7 monster kind is native now.
+    const LIVE_E1M7_NATIVE_SKILL2_TOTAL: u32 = 21;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
