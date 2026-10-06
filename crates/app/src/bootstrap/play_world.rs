@@ -4207,6 +4207,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Boss)
     }
 
+    fn live_oldones(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::OldOne)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4358,6 +4363,13 @@ mod tests {
     /// plus Chthon: 12 + 8 + 1 = 21 (no `monster_*` record carries
     /// the 1024 not-hard bit). Every e1m7 monster kind is native now.
     const LIVE_E1M7_NATIVE_SKILL2_TOTAL: u32 = 21;
+
+    /// end native census at skill 2: 7 shamblers plus 6 vores plus
+    /// 1 wizard plus 5 fish counting twice each (the classic swim
+    /// double-count) plus Shub-Niggurath counting once: 7 + 6 + 1 +
+    /// 10 + 1 = 25 (no `monster_*` record carries the 1024 not-hard
+    /// bit). Every end monster kind is native now.
+    const LIVE_END_NATIVE_SKILL2_TOTAL: u32 = 25;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -9634,5 +9646,374 @@ mod tests {
         assert!(borrowed.gibs.contains_key(&hknights[1]), "the head keeps the actor");
         assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
         assert!(!borrowed.solids.contains(&hknights[1]), "gibs go unsolid");
+    }
+
+    /// Q1-0148: Shub-Niggurath spawns on retail `end.bsp` at skill 2 —
+    /// sized, solid, idling with her 40000 pool, counted once — and the
+    /// native census totals 25. The spike train plants on its first
+    /// corner and holds for its `use`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0148_oldone_spawn_idles_and_counts() {
+        use super::super::simulation::native_q1_monsters::{
+            Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_MONSTER, Q1_OLDONE_HEALTH,
+        };
+
+        let Some(mut world) = live_q1_world("maps/end.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let shubs = live_oldones(&world);
+        assert_eq!(shubs.len(), 1, "end spawns one Shub-Niggurath");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_END_NATIVE_SKILL2_TOTAL);
+        let monster = borrowed.monsters.get(&shubs[0]).expect("shub record");
+        assert!(matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OldIdle, _)));
+        assert_eq!(monster.enemy, None);
+        assert_eq!(monster.flags & Q1_FLAG_MONSTER, 0, "no walkmonster_start, no flag");
+        assert!(borrowed.solids.contains(&shubs[0]));
+        let combat = world
+            .server()
+            .simulation()
+            .combat_state(&shubs[0])
+            .expect("shub combat");
+        assert_eq!(combat.health, Q1_OLDONE_HEALTH);
+        assert!(combat.can_take_damage, "DAMAGE_YES at spawn");
+        // The spike train plants on t32 minus its model mins and holds
+        // for its use: t32 sits at (-456, 696, 56), mins at -16.
+        assert_eq!(borrowed.trains.len(), 1, "end runs one teleport train");
+        let (train, record) = borrowed.trains.iter().next().expect("train record");
+        assert!(record.targeted, "t33 holds the start until fired");
+        assert!(!record.activated);
+        assert_eq!(record.target.as_deref(), Some("t3"));
+        let body = world.server().simulation().body_state(train).expect("train body");
+        assert_eq!(body.origin, vec3(-440.0, 712.0, 72.0));
+        assert_eq!(borrowed.by_targetname.get("t33").map(Vec::len), Some(1));
+    }
+
+    /// Q1-0148: firing the train's `use` rolls it off its planting
+    /// corner along the pit route (`train_next`, `plats.qc:248`).
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0148_train_runs_after_use() {
+        let Some(mut world) = live_q1_world("maps/end.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let player = world.player_actor().cloned().expect("player");
+        let train = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.trains.len(), 1);
+            let train = borrowed.trains.keys().next().cloned().expect("train");
+            train
+        };
+        let plant = vec3(-440.0, 712.0, 72.0);
+        live_fire_use(&mut world, &train, &player);
+        let mut rolled = false;
+        for _ in 0..20 {
+            live_advance(&mut world, 0.5);
+            let body = world.server().simulation().body_state(&train).expect("train body");
+            let dx = body.origin.x - plant.x;
+            let dy = body.origin.y - plant.y;
+            let dz = body.origin.z - plant.z;
+            if (dx * dx + dy * dy + dz * dz).sqrt() > 100.0 {
+                rolled = true;
+                break;
+            }
+        }
+        assert!(rolled, "the train rolls off its corner after use");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let record = borrowed.trains.get(&train).expect("train record");
+        assert!(record.activated);
+        assert!(
+            record.target.as_deref().is_some_and(|target| target != "t3"),
+            "the route link advanced past the first leg"
+        );
+    }
+
+    /// Q1-0148: wounds reset Shub's pool (`nopain`, `oldone.qc`)
+    /// without sighting, hunting, or counting.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0148_nopain_ignores_wounds() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink, Q1_OLDONE_HEALTH};
+
+        let Some(mut world) = live_q1_world("maps/end.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let shubs = live_oldones(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &shubs[0], Some(&player), 1000.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let combat = world
+            .server()
+            .simulation()
+            .combat_state(&shubs[0])
+            .expect("shub combat");
+        assert_eq!(combat.health, Q1_OLDONE_HEALTH, "nopain restores the pool");
+        let monster = borrowed.monsters.get(&shubs[0]).expect("shub record");
+        assert!(!monster.dead);
+        assert_eq!(monster.enemy, None, "no FL_MONSTER, no wound enemy");
+        assert!(
+            matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OldIdle, _)),
+            "nopain never redirects"
+        );
+        assert_eq!(borrowed.killed_monsters, 0);
+    }
+
+    /// Q1-0148: the pit teleporter drops the player onto the rolling
+    /// spike train, and when the train crosses Shub the arrival
+    /// telefrag kills her — running `finale_1` through `finale_4`
+    /// (`oldone.qc`): the lock, the splash, the thrash, the gibs, the
+    /// scroll, the prop, and the music cue.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0148_telefrag_kills_shub_and_runs_finale() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink, Q1_FINALE_TEXT};
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+        use super::super::simulation::native_q1_weapons::Q1TempEnt;
+
+        let Some(mut world) = live_q1_world("maps/end.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let shubs = live_oldones(&world);
+        assert_eq!(shubs.len(), 1);
+        let shub = shubs[0].clone();
+        let player = world.player_actor().cloned().expect("player");
+        let (train, kill) = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.trains.len(), 1);
+            let train = borrowed.trains.keys().next().cloned().expect("train");
+            let kills: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter(|(_, trigger)| {
+                    trigger.source.target.as_deref() == Some("t33")
+                        && matches!(trigger.kind, Q1TriggerKind::Teleport { player_only: true, .. })
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            assert_eq!(kills.len(), 1, "one player-only kill teleporter feeds the train");
+            (train, kills[0].clone())
+        };
+        // Roll the train and wait for the kill window: the t20-t21 leg
+        // crosses Shub's body.
+        live_set_player_health(&mut world, 1000.0);
+        live_fire_use(&mut world, &train, &player);
+        let mut window = false;
+        for _ in 0..300 {
+            live_advance(&mut world, 0.5);
+            live_set_player_health(&mut world, 1000.0);
+            let simulation = world.server().simulation();
+            let train_at = simulation.body_state(&train).expect("train body").origin;
+            let shub_body = simulation.body_state(&shub).expect("shub body");
+            let inside = train_at.x >= shub_body.origin.x + shub_body.bounds.min.x
+                && train_at.x <= shub_body.origin.x + shub_body.bounds.max.x
+                && train_at.y >= shub_body.origin.y + shub_body.bounds.min.y
+                && train_at.y <= shub_body.origin.y + shub_body.bounds.max.y
+                && train_at.z >= shub_body.origin.z + shub_body.bounds.min.z
+                && train_at.z <= shub_body.origin.z + shub_body.bounds.max.z;
+            if inside {
+                window = true;
+                break;
+            }
+        }
+        assert!(window, "the train crosses Shub's body on its route");
+        // The pit drop teleports the player onto the train inside Shub;
+        // the arrival telefrag kills her without counting (no FL_MONSTER).
+        let killed_before = world.q1_behaviors().expect("Q1 behaviors").borrow().killed_monsters;
+        let gibs_before = world.q1_behaviors().expect("Q1 behaviors").borrow().gibs.len();
+        let departure = live_volume_center(&world, &kill);
+        live_place_player(&mut world, departure);
+        let mut dead = false;
+        for _ in 0..30 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors.borrow().monsters.get(&shub).is_some_and(|monster| monster.dead) {
+                dead = true;
+                break;
+            }
+        }
+        assert!(dead, "the arrival telefrag kills Shub");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let combat = world.server().simulation().combat_state(&shub).expect("shub combat");
+            assert_eq!(combat.health, -99.0, "teledeath deals its stock 50000, floored");
+            assert_eq!(borrowed.killed_monsters, killed_before, "Shub never counts");
+            assert_eq!(borrowed.intermission.running, 1, "finale_1 locks the intermission");
+            assert!(
+                borrowed.intermission.exit_time_seconds > live_now(&world) + 9_999_000.0,
+                "finale_1 never allows exit"
+            );
+            assert_eq!(borrowed.finale_text, Some(String::new()), "finale_1 clears the scroll");
+            assert!(borrowed.trains.is_empty(), "finale_1 removes the train");
+            assert!(world.server().simulation().body_state(&train).is_none());
+            let spot = borrowed.intermission_spots.first().expect("intermission camera").clone();
+            assert_eq!(spot.origin, vec3(-784.0, 1656.0, 56.0));
+            let player_body = world.server().simulation().body_state(&player).expect("player body");
+            assert_eq!(player_body.origin, spot.origin, "finale_1 freezes the player on the camera");
+            assert!(!borrowed.solids.contains(&player));
+            let player_combat = world.server().simulation().combat_state(&player).expect("player combat");
+            assert!(!player_combat.can_take_damage, "finale_1 retires the player");
+        }
+        // finale_2 splashes inside Shub a second out.
+        let mut splashed = false;
+        for _ in 0..300 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            if borrowed.temp_ents.iter().any(|ent| matches!(ent, Q1TempEnt::Teleport { .. })) {
+                splashed = true;
+                break;
+            }
+        }
+        assert!(splashed, "finale_2 splashes inside Shub");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(
+                    ent,
+                    Q1TempEnt::Teleport { at } if *at == vec3(-752.0, 1932.0, 80.0)
+                )),
+                "the splash sits 100 units south of Shub's center"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "misc/r_tele1.wav"),
+                "the arrival sound plays"
+            );
+        }
+        // finale_3 starts the thrash two seconds later: the world light
+        // flickers through the shake.
+        let mut thrashing = false;
+        for _ in 0..300 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if matches!(
+                behaviors.borrow().monsters.get(&shub).map(|monster| monster.think),
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::OldThrash, _))
+            ) {
+                thrashing = true;
+                break;
+            }
+        }
+        assert!(thrashing, "finale_3 starts the thrash");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                behaviors.borrow().sounds.iter().any(|sound| sound.sample == "boss2/death.wav"),
+                "the thrash opens on the death cry"
+            );
+        }
+        let flicker_from = world.q1_behaviors().expect("Q1 behaviors").borrow().light_styles.get(&0).copied();
+        let mut flickered = false;
+        for _ in 0..200 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors.borrow().light_styles.get(&0).copied() != flicker_from {
+                flickered = true;
+                break;
+            }
+        }
+        assert!(flickered, "the thrash flickers the world light");
+        // The twentieth think runs finale_4: the pop, fifty chunks, the
+        // scroll, the posed prop, the removal, and the music cue.
+        let mut released = false;
+        for _ in 0..900 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().monsters.contains_key(&shub) {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "finale_4 removes Shub");
+        for _ in 0..3 {
+            live_tick(&mut world);
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.gibs.len(), gibs_before + 51, "fifty chunks plus the prop spawn");
+            let props: Vec<_> = borrowed.gibs.iter().filter(|(_, gib)| gib.model == "progs/player.mdl").collect();
+            assert_eq!(props.len(), 1, "one victory prop poses past the pit");
+            let prop_body = world.server().simulation().body_state(props[0].0).expect("prop body");
+            assert_eq!(prop_body.origin, vec3(-784.0, 1768.0, 80.0));
+            assert_eq!(prop_body.angles, vec3(0.0, 290.0, 0.0));
+            assert_eq!(props[0].1.remove_at, None, "stock keeps the prop");
+            assert_eq!(borrowed.finale_text, Some(Q1_FINALE_TEXT.to_string()));
+            assert!(borrowed.cd_tracks.contains(&(3, 3)), "finale_4 cues the music");
+            assert_eq!(borrowed.light_styles.get(&0), Some(&'m'), "finale_4 restores the light");
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "boss2/pop2.wav"), "the pop plays");
+            assert_eq!(borrowed.killed_monsters, killed_before, "the finale never counts");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0148_probe_window() {
+        let Some(mut world) = live_q1_world("maps/end.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let shubs = live_oldones(&world);
+        let shub = shubs[0].clone();
+        let player = world.player_actor().cloned().expect("player");
+        let train = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            borrowed_trains_first(&behaviors)
+        };
+        live_set_player_health(&mut world, 1000.0);
+        live_fire_use(&mut world, &train, &player);
+        for poll in 0..60 {
+            live_advance(&mut world, 0.5);
+            live_set_player_health(&mut world, 1000.0);
+            let simulation = world.server().simulation();
+            let train_at = simulation.body_state(&train).expect("train body").origin;
+            let shub_body = simulation.body_state(&shub).expect("shub body");
+            let inside = train_at.x >= shub_body.origin.x + shub_body.bounds.min.x
+                && train_at.x <= shub_body.origin.x + shub_body.bounds.max.x
+                && train_at.y >= shub_body.origin.y + shub_body.bounds.min.y
+                && train_at.y <= shub_body.origin.y + shub_body.bounds.max.y
+                && train_at.z >= shub_body.origin.z + shub_body.bounds.min.z
+                && train_at.z <= shub_body.origin.z + shub_body.bounds.max.z;
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            eprintln!(
+                "poll {poll} t={:.1} train=({:.0},{:.0},{:.0}) target={:?} shub=({:.0},{:.0},{:.0}) bounds=[{:.0},{:.0},{:.0}..{:.0},{:.0},{:.0}] inside={inside}",
+                live_now(&world),
+                train_at.x,
+                train_at.y,
+                train_at.z,
+                borrowed.trains.get(&train).and_then(|record| record.target.clone()),
+                shub_body.origin.x,
+                shub_body.origin.y,
+                shub_body.origin.z,
+                shub_body.bounds.min.x,
+                shub_body.bounds.min.y,
+                shub_body.bounds.min.z,
+                shub_body.bounds.max.x,
+                shub_body.bounds.max.y,
+                shub_body.bounds.max.z,
+            );
+            if inside {
+                break;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn borrowed_trains_first(behaviors: &std::rc::Rc<std::cell::RefCell<super::simulation::Q1NativeBehaviors>>) -> qa_core::identity::ActorId {
+        behaviors.borrow().trains.keys().next().cloned().expect("train")
     }
 }

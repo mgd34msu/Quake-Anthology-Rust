@@ -17,7 +17,7 @@ use qa_world::session::Simulation;
 use qa_world::spawn::{SpawnFields, SpawnRegistry};
 use qa_world::WorldError;
 
-use super::native_q1_spawns::{q1_redirect_mover, Q1NativeBehaviors};
+use super::native_q1_spawns::{q1_rearm_travel, q1_redirect_mover, Q1NativeBehaviors};
 use super::native_q1_triggers::Q1ThinkKind;
 
 /// Spiked-sphere model the teleport train rides (`plats.qc:355`).
@@ -263,20 +263,27 @@ pub fn q1_train_use(
     q1_train_next(behaviors, simulation, movers, actor);
 }
 
-/// Route mover arrival into `train_wait`; the arrival think fires on
-/// the completed leg only.
+/// Route mover thinks into `train_wait`: arrival runs the corner
+/// pause, while a mid-travel think without arrival re-arms the
+/// arrival think from the live origin like doors — float dust
+/// between the armed instant and the corner would otherwise consume
+/// the think and strand the train with no future think (the engine
+/// holds still without one).
 pub fn q1_train_mover_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
+    movers: &mut MoverTable,
     actor: &qa_core::identity::ActorId,
     phase: MoverPhase,
     arrived: bool,
 ) {
-    if !arrived || !matches!(phase, MoverPhase::AtPos2) {
+    if !behaviors.trains.contains_key(actor) {
         return;
     }
-    if behaviors.trains.contains_key(actor) {
-        q1_train_wait(behaviors, simulation, actor);
+    match (phase, arrived) {
+        (MoverPhase::AtPos2, true) => q1_train_wait(behaviors, simulation, actor),
+        (MoverPhase::ToPos1 | MoverPhase::ToPos2, _) => q1_rearm_travel(simulation, movers, actor),
+        _ => {}
     }
 }
 
@@ -492,24 +499,31 @@ mod tests {
         );
         run_find(&mut server, &mut behaviors, &train);
         behaviors.thinks.clear();
-        q1_train_mover_think(
-            &mut behaviors,
-            server.simulation_mut(),
-            &train,
-            MoverPhase::AtPos2,
-            true,
-        );
+        {
+            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::AtPos2, true);
+        }
         assert_eq!(behaviors.thinks.len(), 1);
         assert!(matches!(behaviors.thinks[0].kind, Q1ThinkKind::TrainNext));
         assert!((behaviors.thinks[0].due_seconds - 0.1).abs() < 1e-9);
-        q1_train_mover_think(
-            &mut behaviors,
-            server.simulation_mut(),
-            &train,
-            MoverPhase::AtPos2,
-            false,
-        );
+        {
+            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::AtPos2, false);
+        }
         assert_eq!(behaviors.thinks.len(), 1, "wait pings schedule nothing");
+        // A mid-travel think without arrival re-arms the arrival think
+        // instead of waiting: the consumed think strands the mover.
+        server.movers_mut().get_mut(&train).unwrap().next_think_seconds = 0.0;
+        {
+            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::ToPos2, false);
+        }
+        let rearmed = server.movers_mut().get(&train).unwrap();
+        assert!(
+            rearmed.next_think_seconds > rearmed.local_time_seconds,
+            "mid-travel thinks re-arm the arrival"
+        );
+        assert_eq!(behaviors.thinks.len(), 1, "re-arming schedules no leg");
         let lost = spawn_train(
             &mut server,
             &mut behaviors,
