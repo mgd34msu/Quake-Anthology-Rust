@@ -3231,6 +3231,212 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_0480_view_blends_flash_from_live_state() {
+        // Live Xvfb proof that the Q1 view blends track live state:
+        // damage through the real `q1_t_damage` funnel flashes red and
+        // arms the view kick, a fresh item bit flashes gold, and the
+        // quad bit glows blue. Color asserts read the upper frame
+        // (above the bar); sim asserts pin the funnel record, the
+        // pain-face hold, the kick stash, and the item-window stamp.
+        use super::super::simulation::native_q1_monsters::q1_t_damage;
+        use qa_client::ui::hud::q1_native::{Q1_IT_KEY1, Q1_IT_QUAD};
+
+        fn mean_rgb(pixels: &[u8]) -> (f64, f64, f64) {
+            let mut sums = [0u64; 3];
+            let mut count = 0u64;
+            for pixel in pixels.as_chunks::<4>().0 {
+                sums[0] += u64::from(pixel[0]);
+                sums[1] += u64::from(pixel[1]);
+                sums[2] += u64::from(pixel[2]);
+                count += 1;
+            }
+            (
+                sums[0] as f64 / count as f64,
+                sums[1] as f64 / count as f64,
+                sums[2] as f64 / count as f64,
+            )
+        }
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m1.bsp".to_string();
+        options.width = 320;
+        options.height = 200;
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 blends open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        for _ in 0..5 {
+            composed.app.step().expect("windowed step works");
+        }
+        let (live_w, live_h) = composed.app.backend().live_size();
+        assert!(
+            live_w >= 320 && live_h >= 48,
+            "blends need at least a 320x48 drawable, got {live_w}x{live_h}"
+        );
+        // Upper frame only, so bar pixels never vote on blends.
+        let strip_bytes = live_w as usize * 48 * 4;
+        let upper = |pixels: &[u8]| pixels[..pixels.len() - strip_bytes].to_vec();
+        let baseline = composed.app.capture_next_frame().expect("blend capture works");
+        let (base_r, base_g, base_b) = mean_rgb(&upper(&baseline));
+        // The spawn eye breathes open air (contents input, live).
+        let player = composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .and_then(|world| world.player_actor().cloned())
+            .expect("Q1 world admits a player");
+        {
+            let backend = composed.app.backend();
+            let world = backend.world.as_ref().expect("Q1 world set");
+            let (eye, _) = world.player_eye().expect("player eye");
+            assert_eq!(world.q1_eye_contents(eye), Some(-1), "spawn eye breathes air");
+        }
+        // Damage through the real funnel, from the most distant live
+        // body (a directional hit, so the kick must arm).
+        let (seq0, health0) = {
+            let backend = composed.app.backend();
+            let world = backend.world.as_ref().expect("Q1 world set");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let health = world
+                .server()
+                .simulation()
+                .combat_state(&player)
+                .cloned()
+                .unwrap_or_default()
+                .health;
+            (borrowed.player_damage.seq, health)
+        };
+        let other = {
+            let backend = composed.app.backend();
+            let world = backend.world.as_ref().expect("Q1 world set");
+            let simulation = world.server().simulation();
+            let at = simulation.body_state(&player).map(|body| body.origin);
+            let mut best: Option<(f32, qa_core::identity::ActorId)> = None;
+            for actor in simulation.body_actors() {
+                if actor == player {
+                    continue;
+                }
+                let Some(body) = simulation.body_state(&actor) else {
+                    continue;
+                };
+                let reach = at.map_or(0.0, |at| {
+                    let dx = body.origin.x - at.x;
+                    let dy = body.origin.y - at.y;
+                    dx * dx + dy * dy
+                });
+                if best.as_ref().is_none_or(|(far, _)| reach > *far) {
+                    best = Some((reach, actor));
+                }
+            }
+            best.map(|(_, actor)| actor)
+        };
+        {
+            let backend = composed.app.backend_mut();
+            let world = backend.world.as_mut().expect("Q1 world set");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            let server = world.server_mut();
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                &mut borrowed,
+                simulation,
+                movers,
+                triggers,
+                &player,
+                other.as_ref(),
+                other.as_ref(),
+                40.0,
+            );
+            // Synchronous funnel asserts (no steps between: exact).
+            assert_eq!(borrowed.player_damage.seq, seq0 + 1);
+            assert_eq!(borrowed.player_damage.armor, 0.0);
+            assert_eq!(borrowed.player_damage.blood, 40.0);
+            let combat = simulation.combat_state(&player).cloned().unwrap_or_default();
+            assert_eq!(combat.health, health0 - 40.0);
+        }
+        // Capture promptly: stock damage decays 150 percent per
+        // second, so stepping first would fade the flash. The capture
+        // presents a fresh frame, which consumes the event and draws
+        // the quad in one pass.
+        let damaged = composed.app.capture_next_frame().expect("damage capture works");
+        let (hurt_r, hurt_g, hurt_b) = mean_rgb(&upper(&damaged));
+        eprintln!("live-q1-blend: red {base_r:.1} -> {hurt_r:.1}");
+        assert!(
+            hurt_r - base_r > 3.0,
+            "damage did not flash red: {base_r:.1} -> {hurt_r:.1}"
+        );
+        // The live HUD consumed the event: kick armed, pain face held.
+        {
+            let backend = composed.app.backend();
+            let hud = backend
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .expect("Q1 world installs a status bar");
+            if other.is_some() {
+                assert_ne!(hud.pending_kick(), (0.0, 0.0), "directional hit kicks the view");
+            }
+            assert!(hud.face_anim_until() > -1.0, "damage holds the pain face");
+            assert_eq!(hud.item_gettime()[17], 0.0, "no pickup stamped yet");
+        }
+        // A fresh key bit flashes gold (green lift; red adds none).
+        {
+            let backend = composed.app.backend_mut();
+            let world = backend.world.as_mut().expect("Q1 world set");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_items |= Q1_IT_KEY1;
+        }
+        // Prompt capture again: the gold flash decays 100 per second.
+        let bonused = composed.app.capture_next_frame().expect("bonus capture works");
+        let (_, bonus_g, _) = mean_rgb(&upper(&bonused));
+        eprintln!("live-q1-blend: green {hurt_g:.1} -> {bonus_g:.1}");
+        assert!(
+            bonus_g - hurt_g > 1.0,
+            "pickup did not flash gold: {hurt_g:.1} -> {bonus_g:.1}"
+        );
+        {
+            let backend = composed.app.backend();
+            let hud = backend
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .expect("Q1 world installs a status bar");
+            assert!(hud.item_gettime()[17] > 0.0, "pickup stamps the bar item window");
+        }
+        // The quad bit glows blue over the gold.
+        {
+            let backend = composed.app.backend_mut();
+            let world = backend.world.as_mut().expect("Q1 world set");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_items |= Q1_IT_QUAD;
+        }
+        let glowed = composed.app.capture_next_frame().expect("powerup capture works");
+        let (_, _, glow_b) = mean_rgb(&upper(&glowed));
+        let (_, _, bonus_b) = mean_rgb(&upper(&bonused));
+        eprintln!("live-q1-blend: blue {bonus_b:.1} -> {glow_b:.1}");
+        assert!(
+            glow_b - bonus_b > 0.5,
+            "quad did not glow blue: {bonus_b:.1} -> {glow_b:.1}"
+        );
+        let _ = (hurt_b, base_g, base_b);
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_start_player_walks_under_host_gate() {
         // Live Xvfb proof that the Q1 walking skeleton moves and collides
         // through the real gated loop: open start.bsp in a real window,
