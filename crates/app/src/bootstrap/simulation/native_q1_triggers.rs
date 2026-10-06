@@ -370,6 +370,12 @@ pub enum Q1ThinkKind {
         /// Second electrode.
         le2: ActorId,
     },
+    /// `func_train_find` (`plats.qc:264`): plant the train on its first
+    /// corner and roll unless a targetname holds the start.
+    TrainFind,
+    /// `train_next` (`plats.qc:248`) after a `train_wait` pause: advance
+    /// the route link and roll the next leg.
+    TrainNext,
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -1342,6 +1348,9 @@ pub fn q1_fire_use(
     if behaviors.monsters.contains_key(actor) {
         super::native_q1_monsters::q1_monster_use(behaviors, simulation, actor, activator);
     }
+    if behaviors.trains.contains_key(actor) {
+        super::native_q1_plats::q1_train_use(behaviors, simulation, movers, actor);
+    }
 }
 
 /// Run `multi_trigger` (`triggers.qc:30-67`) for a touched or used
@@ -1726,13 +1735,25 @@ fn q1_teleport_touch(
     }
     // First targetname match in spawn order, like stock `find` — and it
     // must carry a destination record (a same-named relay is not one).
+    // With no destination record, stock still teleports onto the named
+    // entity itself: end.bsp's kill teleporter targets the moving
+    // `misc_teleporttrain`, so arrivals track its live origin with its
+    // unset (zero) `mangle`.
     let destination = trigger.source.target.as_deref().and_then(|target| {
-        behaviors
-            .by_targetname
-            .get(target)
-            .into_iter()
-            .flat_map(|matches| matches.iter())
+        let matches = behaviors.by_targetname.get(target)?;
+        if let Some(record) = matches
+            .iter()
             .find_map(|id| behaviors.teleport_destinations.get(id).cloned())
+        {
+            return Some(record);
+        }
+        let live = matches
+            .iter()
+            .find_map(|id| simulation.body_state(id).map(|body| body.origin))?;
+        Some(Q1TeleportDestination {
+            origin: live,
+            mangle: vec3(0.0, 0.0, 0.0),
+        })
     });
     let Some(destination) = destination else {
         return;
@@ -2126,6 +2147,12 @@ pub fn q1_trigger_think(
             }
             Q1ThinkKind::LightningFire { le1, le2 } => {
                 q1_lightning_fire_think(behaviors, simulation, movers, &think.actor, le1, le2);
+            }
+            Q1ThinkKind::TrainFind => {
+                super::native_q1_plats::q1_train_find(behaviors, simulation, movers, &think.actor);
+            }
+            Q1ThinkKind::TrainNext => {
+                super::native_q1_plats::q1_train_next(behaviors, simulation, movers, &think.actor);
             }
         }
     }
@@ -3585,6 +3612,50 @@ mod tests {
         );
         assert!(behaviors.teleport_fogs.is_empty());
         assert!(behaviors.player_forces.is_empty());
+    }
+
+    #[test]
+    fn teleport_onto_named_train_tracks_its_live_origin() {
+        let mut server = test_server();
+        register_all(&mut server);
+        super::super::native_q1_plats::register_q1_plat_spawns(server.spawns_mut());
+        let mut behaviors = Q1NativeBehaviors::new();
+        // End.bsp's kill teleporter targets the train itself (no
+        // destination record): arrivals land on its live origin.
+        let train_fields = trigger_fields(
+            "misc_teleporttrain",
+            &[("origin", "500 600 700"), ("target", "c1"), ("targetname", "t9")],
+        );
+        let train = server.spawn_entity(&train_fields).unwrap();
+        super::super::native_q1_plats::build_q1_train(&mut server, &mut behaviors, &train, &train_fields).unwrap();
+        q1_note_targetname(&mut behaviors, &train_fields, train.id());
+        let teleporter = spawn_brush_trigger(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_teleport", &[("model", "*0"), ("target", "t9")]),
+        );
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, teleporter.id(), player.id());
+        let body = server.simulation().body_state(player.id()).unwrap();
+        assert_eq!(body.origin, vec3(500.0, 600.0, 700.0));
+        assert_eq!(body.angles, vec3(0.0, 0.0, 0.0), "train mangle stays unset");
+        assert_eq!(body.velocity, vec3(300.0, 0.0, 0.0), "zero mangle faces +x");
+        assert_eq!(behaviors.teleport_fogs.len(), 2);
+        // The train rolls on: the next touch follows it.
+        server
+            .simulation_mut()
+            .set_body_origin(train.id(), vec3(100.0, 200.0, 300.0))
+            .unwrap();
+        server
+            .simulation_mut()
+            .set_body_origin(player.id(), vec3(32.0, 32.0, 32.0))
+            .unwrap();
+        touch(&mut server, &mut behaviors, teleporter.id(), player.id());
+        assert_eq!(
+            server.simulation().body_state(player.id()).unwrap().origin,
+            vec3(100.0, 200.0, 300.0)
+        );
     }
 
     #[test]

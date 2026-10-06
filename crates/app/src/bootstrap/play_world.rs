@@ -53,6 +53,7 @@ use super::simulation::native_q1_items::{build_q1_item, q1_is_item, register_q1_
 use super::simulation::native_q1_monsters::{
     build_q1_monster, build_q1_movetarget, q1_is_monster, q1_is_movetarget, q1_monster_pass, register_q1_monster_spawns,
 };
+use super::simulation::native_q1_plats::{build_q1_train, register_q1_plat_spawns};
 use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
@@ -690,6 +691,7 @@ pub fn spawn_map_entities(
         register_q1_trigger_spawns(server.spawns_mut());
         register_q1_item_spawns(server.spawns_mut());
         register_q1_monster_spawns(server.spawns_mut());
+        register_q1_plat_spawns(server.spawns_mut());
         q1.behaviors.borrow_mut().registered = q1.registered;
         q1.behaviors.borrow_mut().deathmatch = context.deathmatch;
         q1.behaviors.borrow_mut().skill = context.skill;
@@ -881,6 +883,33 @@ pub fn spawn_map_entities(
                                     index,
                                     classname,
                                     reason: format!("{source}: {build} build failed: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => summary.skipped.push(SkippedEntity {
+                        index,
+                        classname,
+                        reason: format!("{source}: spawn failed: {error}"),
+                    }),
+                }
+                continue;
+            }
+            if classname == "misc_teleporttrain" {
+                match server.spawn_entity(&fields) {
+                    Ok(actor) => {
+                        let built = build_q1_train(server, &mut q1.behaviors.borrow_mut(), &actor, &fields);
+                        match built {
+                            Ok(()) => {
+                                q1_note_targetname(&mut q1.behaviors.borrow_mut(), &fields, actor.id());
+                                summary.spawned += 1;
+                            }
+                            Err(error) => {
+                                let _ignored = server.simulation_mut().release(&actor);
+                                summary.skipped.push(SkippedEntity {
+                                    index,
+                                    classname,
+                                    reason: format!("{source}: train build failed: {error}"),
                                 });
                             }
                         }
