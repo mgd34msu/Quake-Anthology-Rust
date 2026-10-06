@@ -24,13 +24,14 @@ use qa_client::ui::hud::q1_native::{
     Q1_STAT_ARMOR, Q1_STAT_CELLS, Q1_STAT_FRAGS, Q1_STAT_HEALTH, Q1_STAT_MONSTERS, Q1_STAT_NAILS, Q1_STAT_ROCKETS,
     Q1_STAT_SECRETS, Q1_STAT_SHELLS, Q1_STAT_TOTALMONSTERS, Q1_STAT_TOTALSECRETS, Q1_STAT_WEAPON, Q1_WEAPON_STEMS,
 };
+use qa_client::ui::hud::q1_view_blend::{Q1EyeContents, Q1ViewBlends, Q1_FACE_PAIN_SECONDS};
 use qa_content::images::indexed::decode_qpic;
 use qa_content::images::palette::decode_palette;
 use qa_content::images::wad::{decode_wad, OwnedWadArchive};
 use qa_content::mounts::MountedContent;
-use qa_core::math::{vec2, vec4};
+use qa_core::math::{angle_vectors, vec2, vec4};
 
-use super::simulation::native_q1_spawns::Q1NativeBehaviors;
+use super::simulation::native_q1_spawns::{Q1NativeBehaviors, Q1PlayerDamage};
 
 /// Opaque bar plates (`Draw_Pic` keeps palette index 0 black).
 const OPAQUE_LUMPS: [&str; 8] = [
@@ -216,6 +217,24 @@ pub struct Q1NativeHud {
     uploaded: bool,
     /// Content product selecting the lump set.
     pub product: Q1SbarProduct,
+    /// Live view blends (damage/bonus/contents/powerup + kick).
+    blends: Q1ViewBlends,
+    /// Last consumed player-damage sequence number.
+    last_damage_seq: u64,
+    /// Last seen carried-items bits (pickup delta source).
+    last_items: u32,
+    /// Last seen shells/nails/rockets/cells (pickup delta source).
+    last_ammo: [f64; 4],
+    /// Per-item-bit pickup times for the bar flash window.
+    item_gettime: [f32; 32],
+    /// Pain-face hold for the bar (`face_anim_until`).
+    face_anim_until: f32,
+    /// Kick offsets for the next camera build (roll, pitch).
+    pending_kick: (f32, f32),
+    /// Whether a live snapshot has been taken yet.
+    view_seen: bool,
+    /// Last wall-clock frame time, milliseconds.
+    last_wall_ms: Option<f64>,
 }
 
 impl Q1NativeHud {
@@ -262,6 +281,15 @@ impl Q1NativeHud {
             pending_uploads: Vec::new(),
             uploaded: true,
             product,
+            blends: Q1ViewBlends::default(),
+            last_damage_seq: 0,
+            last_items: 0,
+            last_ammo: [0.0; 4],
+            item_gettime: [0.0; 32],
+            face_anim_until: -1.0,
+            pending_kick: (0.0, 0.0),
+            view_seen: false,
+            last_wall_ms: None,
         })
     }
 
@@ -316,6 +344,123 @@ impl Q1NativeHud {
     pub fn draw(&self, ops: &[NativeQ1HudOperation], width: i32, height: i32) -> Vec<DrawBatch> {
         let quads = layout_quads(ops, &self.picture_sizes(), width, &self.palette);
         quads_to_batches(&quads, &self.quad_images(), width as f32, height as f32)
+    }
+
+    /// Fold one frame of live state into the view blends and return the
+    /// combined `v_blend` rgba (or `None` without an admitted player).
+    /// Consumes fresh `q1_t_damage` events (flash + kick + pain face),
+    /// raises the bonus flash on pickup deltas (new item bits or ammo
+    /// gains), and recomputes contents/powerup every frame, like stock's
+    /// per-frame `V_CalcPowerupCshift`/`V_SetContentsColor`. `wall_dt` is
+    /// real frame time for decay; `sim_now` is the client clock the bar
+    /// compares pickup/face times against.
+    pub fn update_view_state(
+        &mut self,
+        behaviors: &Q1NativeBehaviors,
+        simulation: &qa_world::session::Simulation,
+        eye_contents: Option<i32>,
+        angles: [f32; 3],
+        wall_dt: f32,
+        sim_now: f32,
+    ) -> Option<[f32; 4]> {
+        let player = behaviors.player.as_ref()?;
+        let items = behaviors.player_items;
+        let ammo = &behaviors.player_ammo;
+        let counts = [ammo.shells, ammo.nails, ammo.rockets, ammo.cells];
+        if !self.view_seen {
+            self.view_seen = true;
+            self.last_damage_seq = behaviors.player_damage.seq;
+            self.last_items = items;
+            self.last_ammo = counts;
+        }
+        // Fresh damage events flash, kick, and hold the pain face.
+        let event: &Q1PlayerDamage = &behaviors.player_damage;
+        if event.seq != self.last_damage_seq {
+            self.last_damage_seq = event.seq;
+            let count = self.blends.damage(event.armor, event.blood);
+            if let Some(from) = event.from {
+                if let Some(body) = simulation.body_state(player) {
+                    let origin = body.origin;
+                    let axes = angle_vectors(qa_core::math::vec3(angles[0], angles[1], angles[2]));
+                    self.blends.damage_kick(
+                        [from[0] - origin.x, from[1] - origin.y, from[2] - origin.z],
+                        [axes.forward.x, axes.forward.y, axes.forward.z],
+                        [axes.right.x, axes.right.y, axes.right.z],
+                        count,
+                    );
+                }
+            }
+            self.face_anim_until = sim_now + Q1_FACE_PAIN_SECONDS;
+        }
+        // Pickup deltas flash gold and open the bar item window. Weapon
+        // switches only move the derived ammo-icon bit (not stored in
+        // `player_items`), so they never flash.
+        let fresh_items = items & !self.last_items;
+        let ammo_grew = counts.iter().zip(self.last_ammo.iter()).any(|(now, was)| now > was);
+        if fresh_items != 0 || ammo_grew {
+            self.blends.bonus();
+            let mut bits = fresh_items;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                if bit < 32 {
+                    self.item_gettime[bit] = sim_now;
+                }
+                bits &= bits - 1;
+            }
+        }
+        self.last_items = items;
+        self.last_ammo = counts;
+        self.blends.set_contents(
+            eye_contents
+                .map(Q1EyeContents::from_raw)
+                .unwrap_or(Q1EyeContents::Empty),
+        );
+        self.blends.set_powerup(items);
+        let wall_dt = wall_dt.clamp(0.0, 0.5);
+        self.blends.tick(wall_dt);
+        self.pending_kick = self.blends.kick_offsets(wall_dt);
+        Some(self.blends.blend())
+    }
+
+    /// Fullscreen blend quad over a `width`x`height` viewport, drawn
+    /// after the bar (stock tints through the palette, so the bar shifts
+    /// too). Empty while the blend is clear.
+    pub fn draw_blend(&self, rgba: [f32; 4], width: i32, height: i32) -> Vec<DrawBatch> {
+        if rgba[3] <= 0.0 {
+            return Vec::new();
+        }
+        let quads = [Q1HudQuad {
+            rect: (0.0, 0.0, width as f32, height as f32),
+            uv: (0.0, 0.0, 1.0, 1.0),
+            color: (rgba[0], rgba[1], rgba[2], rgba[3]),
+            texture: Q1QuadTexture::White,
+        }];
+        quads_to_batches(&quads, &self.quad_images(), width as f32, height as f32)
+    }
+
+    /// Kick offsets for the next camera build (roll, pitch).
+    #[must_use]
+    pub fn pending_kick(&self) -> (f32, f32) {
+        self.pending_kick
+    }
+
+    /// Per-item-bit pickup times for the bar frame.
+    #[must_use]
+    pub fn item_gettime(&self) -> [f32; 32] {
+        self.item_gettime
+    }
+
+    /// Pain-face hold for the bar frame.
+    #[must_use]
+    pub fn face_anim_until(&self) -> f32 {
+        self.face_anim_until
+    }
+
+    /// Real frame delta in seconds since the last call (0 on the first).
+    pub fn wall_dt(&mut self, time_ms: f64) -> f32 {
+        let dt = self.last_wall_ms.map_or(0.0, |last| (time_ms - last) as f32);
+        self.last_wall_ms = Some(time_ms);
+        dt
     }
 
     fn picture_sizes(&self) -> HashMap<String, (u32, u32)> {
@@ -386,6 +531,8 @@ pub fn q1_frame_from_live(
     levelname: &str,
     deathmatch: bool,
     product: Q1SbarProduct,
+    item_gettime: [f32; 32],
+    face_anim_until: f32,
 ) -> Option<NativeQ1HudFrame> {
     let player = behaviors.player.as_ref()?;
     let combat = simulation.combat_state(player).cloned().unwrap_or_default();
@@ -418,9 +565,9 @@ pub fn q1_frame_from_live(
     Some(NativeQ1HudFrame {
         stats,
         items: behaviors.player_items | ammo_bit,
-        item_gettime: [0.0; 32],
+        item_gettime,
         time: simulation.frame().time.as_seconds_f64() as f32,
-        face_anim_until: -1.0,
+        face_anim_until,
         levelname: levelname.to_string(),
         deathmatch,
         maxclients: 1,

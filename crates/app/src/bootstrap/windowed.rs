@@ -1123,6 +1123,14 @@ fn windowed_scene_view(
             },
             |(eye, angles)| ([eye.x, eye.y, eye.z], [angles.x, angles.y, angles.z]),
         );
+        // Damage view kick stashed by last frame's blend update
+        // (`view.c:817-818`).
+        let mut angles = angles;
+        if let Some(hud) = presentation.q1_hud() {
+            let (kick_roll, kick_pitch) = hud.pending_kick();
+            angles[0] += kick_pitch;
+            angles[2] += kick_roll;
+        }
         let camera = windowed_camera_for(width, height, origin, angles)?;
         let clear_color = scene.clear_color;
         let (mut view, image_operations) = presentation
@@ -1133,7 +1141,7 @@ fn windowed_scene_view(
             color: Some(clear_color),
             stencil: false,
         });
-        append_q1_hud(scene, world, width, height, &mut view);
+        append_q1_hud(scene, world, width, height, time_ms, &mut view);
         return Some((view, image_operations));
     }
     let camera = windowed_camera(width, height)?;
@@ -1180,6 +1188,7 @@ fn append_q1_hud(
     world: Option<&PlayWorld>,
     width: i32,
     height: i32,
+    time_ms: f64,
     view: &mut ClientRenderView,
 ) {
     let Some(world) = world else {
@@ -1187,8 +1196,8 @@ fn append_q1_hud(
     };
     let Some(hud) = scene
         .presentation
-        .as_ref()
-        .and_then(|presentation| presentation.q1_hud())
+        .as_mut()
+        .and_then(|presentation| presentation.q1_hud_mut())
     else {
         return;
     };
@@ -1196,12 +1205,34 @@ fn append_q1_hud(
         return;
     };
     let borrowed = behaviors.borrow();
+    let simulation = world.server().simulation();
+    // View blends track the player eye; without one the bar still draws
+    // from the last blend state.
+    let mut blend = None;
+    if let Some((eye, angles)) = world.player_eye() {
+        let contents = world.q1_eye_contents(eye);
+        let sim_now = simulation.frame().time.as_seconds_f64() as f32;
+        let wall_dt = hud.wall_dt(time_ms);
+        blend = hud.update_view_state(
+            &borrowed,
+            simulation,
+            contents,
+            [angles.x, angles.y, angles.z],
+            wall_dt,
+            sim_now,
+        );
+    }
+    let item_gettime = hud.item_gettime();
+    let face_anim_until = hud.face_anim_until();
+    let product = hud.product;
     let Some(frame) = super::q1_native_hud::q1_frame_from_live(
         &borrowed,
-        world.server().simulation(),
+        simulation,
         &super::q1_native_hud::level_short_name(world.map()),
         borrowed.deathmatch,
-        hud.product,
+        product,
+        item_gettime,
+        face_anim_until,
     ) else {
         return;
     };
@@ -1214,6 +1245,13 @@ fn append_q1_hud(
     let batches = hud.draw(&ops, width, height);
     if !batches.is_empty() {
         view.operations.push(RenderOperation::Draw(batches));
+    }
+    // The blend tints through everything, so it draws after the bar.
+    if let Some(rgba) = blend {
+        let blend_batches = hud.draw_blend(rgba, width, height);
+        if !blend_batches.is_empty() {
+            view.operations.push(RenderOperation::Draw(blend_batches));
+        }
     }
 }
 

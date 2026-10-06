@@ -579,6 +579,27 @@ pub fn q1_t_damage(
         }
     }
     let take = (damage - save).ceil();
+    // Record player hits for the view blends (`V_ParseDamage` inputs):
+    // armor save, health taken, inflictor center.
+    if Some(targ) == behaviors.player.as_ref() {
+        let from = inflictor.and_then(|inflictor| {
+            simulation.body_state(inflictor).map(|body| {
+                let bounds = qa_world::body::translated_body_bounds(&body);
+                [
+                    (bounds.min.x + bounds.max.x) / 2.0,
+                    (bounds.min.y + bounds.max.y) / 2.0,
+                    (bounds.min.z + bounds.max.z) / 2.0,
+                ]
+            })
+        });
+        let seq = behaviors.player_damage.seq.wrapping_add(1);
+        behaviors.player_damage = super::native_q1_spawns::Q1PlayerDamage {
+            seq,
+            armor: save as f32,
+            blood: take as f32,
+            from,
+        };
+    }
     // Momentum shove for walking victims (`combat.qc:141`): only the
     // admitted player walks.
     if inflictor.is_some() && Some(targ) == behaviors.player.as_ref() {
@@ -3290,6 +3311,66 @@ mod tests {
             RegularArmor::Q1 { points, .. } => assert_eq!(*points, 97.0),
             _ => panic!("armor lost its Q1 shape"),
         }
+    }
+
+    #[test]
+    fn damage_records_player_view_event() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let nail = spawn_player(&mut server, vec3(200.0, 0.0, 32.0));
+        let combat = server.simulation().combat_state(player.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(
+                player.id(),
+                CombatState {
+                    armor: ArmorState {
+                        regular: RegularArmor::Q1 {
+                            points: 100.0,
+                            absorption: 0.3,
+                            item: "q1:item_armor1".to_string(),
+                        },
+                        ..combat.armor
+                    },
+                    ..combat
+                },
+            )
+            .unwrap();
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            player.id(),
+            Some(nail.id()),
+            Some(nail.id()),
+            10.0,
+        );
+        // save = ceil(0.3 * 10) = 3, take = ceil(10 - 3) = 7, from the
+        // inflictor body center (bounds z -24..32 around origin z 32).
+        assert_eq!(behaviors.player_damage.seq, 1);
+        assert_eq!(behaviors.player_damage.armor, 3.0);
+        assert_eq!(behaviors.player_damage.blood, 7.0);
+        assert_eq!(behaviors.player_damage.from, Some([200.0, 0.0, 36.0]));
+        // Monster hits never touch the player view event.
+        let fields = dog_fields(&[]);
+        let dog = spawn_dog(&mut server, &mut behaviors, &fields);
+        arm_dog(&mut server, &mut behaviors, dog.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            dog.id(),
+            None,
+            Some(player.id()),
+            5.0,
+        );
+        assert_eq!(behaviors.player_damage.seq, 1);
     }
 
     #[test]

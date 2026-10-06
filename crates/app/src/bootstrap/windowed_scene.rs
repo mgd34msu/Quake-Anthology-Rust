@@ -317,6 +317,11 @@ impl PlayPresentation {
         self.q1_hud.as_ref()
     }
 
+    /// Mutable Q1 status bar (per-frame blend state lives here).
+    pub fn q1_hud_mut(&mut self) -> Option<&mut super::q1_native_hud::Q1NativeHud> {
+        self.q1_hud.as_mut()
+    }
+
     /// Prepare the model/sprite batches for the map's model-bearing
     /// entities at `camera` (donor `SceneModelRenderer.prepare`).
     pub fn prepare_entity_batches(&self, camera: SceneCamera, time: SourceTime) -> Result<Vec<DrawBatch>, String> {
