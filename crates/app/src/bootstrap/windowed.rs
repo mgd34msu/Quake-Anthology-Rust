@@ -7316,6 +7316,21 @@ mod tests {
         )
     }
 
+    /// Pen anchor for the spared target: the farther of the spawn
+    /// eye and the exit volume from the live eye. The exit can sit
+    /// near the run path (e2m4's stall), and a spared hunter penned
+    /// next to the walk trails back mid-lateral and wedges the run.
+    fn windowed_pen_for(
+        world: &mut PlayWorld,
+        exit: &qa_core::identity::ActorId,
+        spawn: Vec3,
+    ) -> Vec3 {
+        let pen = live_volume_center(world, exit);
+        let (eye, _) = world.player_eye().expect("player eye");
+        let dist = |point: Vec3| f64::from(point.x - eye.x).hypot(f64::from(point.y - eye.y));
+        if dist(spawn) >= dist(pen) { spawn } else { pen }
+    }
+
     /// Temporary stall diagnostic: live monsters within 400u of the eye.
     fn windowed_near_scan(app: &StartupApplication<WindowedStartupBackend>, eye: Vec3) -> String {
         let world = windowed_world(app);
@@ -7341,9 +7356,9 @@ mod tests {
     }
 
     /// Run one episode leg: spawn presents and counts, the walk is
-    /// cleared (one spared hunter penned at the exit, everything
-    /// else gibbed — gibs go unsolid instantly, so no converging
-    /// monster can wedge the run), real-input forward/back/strafe
+    /// cleared (one spared hunter penned far, everything else gibbed
+    /// — gibs go unsolid instantly, so no converging monster can
+    /// wedge the run), real-input forward/back/strafe
     /// move, the spared target dies to held fire with the kill
     /// counter climbing, and the exit rides to the next map through
     /// the live loop (through the episode scroll when `finale` is
@@ -7380,11 +7395,14 @@ mod tests {
             let world = app.backend_mut().world.as_mut().expect("run world");
             live_set_player_health(world, 500.0);
         }
-        // Spare the nearest combat target at the exit pen (exits
+        // Spare the nearest combat target at the far pen (exits
         // touch players only, `client.qc:290`), then gib the walk
         // clear: gibs go unsolid synchronously, so the run and the
         // laterals cannot wedge on a converging monster. Totals are
         // untouched; the combat kill is counted relatively below.
+        // The spawn eye anchors the pen: no input runs between here
+        // and the forward leg, so this is the run's start.
+        let (start_eye, start_angles) = windowed_eye(app);
         let exit = {
             let world = windowed_world(app);
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
@@ -7433,12 +7451,12 @@ mod tests {
         };
         {
             let world = app.backend_mut().world.as_mut().expect("run world");
-            let pen = live_volume_center(world, &exit);
+            let pen = windowed_pen_for(world, &exit, start_eye);
             world
                 .server_mut()
                 .simulation_mut()
                 .set_body_origin(&spare, pen)
-                .expect("spare pens at the exit");
+                .expect("spare pens far");
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
             let victims: Vec<qa_core::identity::ActorId> = borrowed
@@ -7457,7 +7475,6 @@ mod tests {
         *total_steps += 10;
         // Forward until the eye stalls, then back and both strafes
         // from fresh spawn returns through real keys.
-        let (start_eye, start_angles) = windowed_eye(app);
         windowed_press_key(app, 26, 87, true);
         let mut previous = start_eye;
         let mut calm = 0;
@@ -7487,12 +7504,12 @@ mod tests {
         // trails the run up the corridor and wedges the retreat.
         let repen = |app: &mut StartupApplication<WindowedStartupBackend>| {
             let world = app.backend_mut().world.as_mut().expect("run world");
-            let pen = live_volume_center(world, &exit);
+            let pen = windowed_pen_for(world, &exit, start_eye);
             world
                 .server_mut()
                 .simulation_mut()
                 .set_body_origin(&spare, pen)
-                .expect("spare re-pens at the exit");
+                .expect("spare re-pens far");
         };
         let (lx, ly) = (-fy, fx);
         repen(app);
@@ -7669,19 +7686,15 @@ mod tests {
             assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
             assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
         }
+        // Single-step to the flip and release on it: the arrival
+        // world is live, so a held trigger correctly fires there —
+        // the proof releases the instant the map flips so no arrival
+        // step spends the loadout the arrival asserts prove.
         frames = 0;
-        eprintln!("live-play: {} DIAG travel start {}", leg.label, windowed_gate_state(app));
         while app.backend().world.as_ref().is_some_and(|world| world.map() == leg.map) && frames < 2400 {
-            windowed_drive(app, step_ms, 10);
-            *total_steps += 10;
-            frames += 10;
-            if frames % 400 == 0 {
-                eprintln!(
-                    "live-play: {} DIAG travel f={frames} {}",
-                    leg.label,
-                    windowed_gate_state(app)
-                );
-            }
+            windowed_drive(app, step_ms, 1);
+            *total_steps += 1;
+            frames += 1;
         }
         windowed_mouse_attack(app, false);
         if frames >= 2400 {
