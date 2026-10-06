@@ -4136,6 +4136,12 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Fish)
     }
 
+    /// Live knights on the map, in record order.
+    fn live_knights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Knight)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4256,10 +4262,11 @@ mod tests {
     /// skill inhibition drops them).
     const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
 
-    /// e1m2 native census at skill 2: 12 ogres plus 16 grunts. The
-    /// fiends, knights, and scrags keep the generic path until their
+    /// e1m2 native census at skill 2: 12 ogres plus 16 grunts plus
+    /// 5 knights (a sixth carries the 1024 not-hard bit). The
+    /// fiends, wizards, and scrags keep the generic path until their
     /// slices land, so they stay out of the native count.
-    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 28;
+    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 33;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies (all
     /// walking; five more zombies carry the 1024 not-hard bit). The
@@ -7351,5 +7358,230 @@ mod tests {
                 .any(|sound| sound.sample == "fish/death.wav"),
             "deaths cry"
         );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_knight_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let knights = live_knights(&world);
+        assert_eq!(knights.len(), 5, "e1m2 spawns five knights");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M2_NATIVE_SKILL2_TOTAL);
+        for (slot, knight) in knights.iter().enumerate() {
+            let monster = borrowed.monsters.get(knight).expect("knight record");
+            assert_eq!(monster.flags & 512, 512, "dropped knights stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if slot == 0 {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, _)),
+                    "the t41 knight patrols, got {:?}",
+                    monster.think
+                );
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, _)),
+                    "knight stands, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
+            }
+            let combat = world.server().simulation().combat_state(knight).expect("knight combat");
+            assert_eq!(combat.health, 75.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_knight_sword_wounds() {
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let knights = live_knights(&world);
+        // Offer the player to each stander in turn until one sights
+        // and lands its standing sword (50 units sits inside the
+        // 80-unit standing choice).
+        let mut swordsman = None;
+        for candidate in knights.iter().skip(1) {
+            live_place_player_before(&mut world, candidate, 50.0);
+            let mut cut = false;
+            for _ in 0..300 {
+                live_tick(&mut world);
+                if live_player_health(&world) < 1000.0 {
+                    cut = true;
+                    break;
+                }
+            }
+            if cut {
+                swordsman = Some(candidate.clone());
+                break;
+            }
+        }
+        swordsman.expect("a knight sights, hunts, and lands its sword");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "knight/sword1.wav"),
+            "swords swish"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_knight_runattack_at_range() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let knights = live_knights(&world);
+        // At 100 units the eye distance sits past the 80-unit
+        // standing choice but inside melee range, so the first run
+        // frame opens the running sword (the check runs before the
+        // move, so the knight cannot close out of the window first).
+        let mut runner = false;
+        for candidate in knights.iter().skip(1) {
+            live_place_player_before(&mut world, candidate, 100.0);
+            for _ in 0..120 {
+                live_tick(&mut world);
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let think = behaviors.borrow().monsters.get(candidate).expect("knight record").think;
+                if matches!(think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightRunAttack, _)) {
+                    runner = true;
+                    break;
+                }
+            }
+            if runner {
+                break;
+            }
+        }
+        assert!(runner, "the mid-range knight opens its running sword");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_knight_pain_then_dies() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let knights = live_knights(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &knights[1], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&knights[1]).expect("knight record");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::KnightPain, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::KnightPainB, 0)
+                ),
+                "wounds run pain, got {:?}",
+                monster.think
+            );
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "knight/khurt.wav"));
+        }
+        live_damage(&mut world, &knights[1], Some(&player), 80.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&knights[1]).expect("knight record");
+            assert!(monster.dead);
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::KnightDie, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::KnightDieB, 0)
+                ),
+                "death runs die, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "knight/kdeath.wav"));
+        }
+        // The third death frame drops unsolid.
+        let mut unsolid = false;
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().solids.contains(&knights[1]) {
+                unsolid = true;
+                break;
+            }
+        }
+        assert!(unsolid, "the death drop goes unsolid");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_knight_patrol_walks_corners() {
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let knights = live_knights(&world);
+        let patrol = knights
+            .iter()
+            .find(|knight| {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                borrowed
+                    .monsters
+                    .get(knight)
+                    .is_some_and(|monster| monster.movetarget.is_some())
+            })
+            .cloned()
+            .expect("e1m2 routes a knight through corners");
+        let start = live_monster_feet(&world, &patrol);
+        let first = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                .expect("first corner")
+        };
+        let mut advanced = false;
+        for _ in 0..1200 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                != Some(first.clone())
+            {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(advanced, "the patrol reaches its corner and turns onward");
+        let end = live_monster_feet(&world, &patrol);
+        let moved = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        assert!(moved > 10.0, "the patrol travels, moved {moved}");
     }
 }

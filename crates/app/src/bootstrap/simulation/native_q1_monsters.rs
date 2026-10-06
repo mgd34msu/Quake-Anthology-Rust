@@ -157,6 +157,8 @@ pub enum Q1MonsterKind {
     Zombie,
     /// `monster_fish` (`fish.qc`).
     Fish,
+    /// `monster_knight` (`knight.qc`).
+    Knight,
 }
 
 impl Q1MonsterKind {
@@ -170,6 +172,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Ogre => "monster_ogre",
             Q1MonsterKind::Zombie => "monster_zombie",
             Q1MonsterKind::Fish => "monster_fish",
+            Q1MonsterKind::Knight => "monster_knight",
         }
     }
 
@@ -184,6 +187,7 @@ impl Q1MonsterKind {
             "monster_ogre" | "monster_ogre_marksman" => Some(Q1MonsterKind::Ogre),
             "monster_zombie" => Some(Q1MonsterKind::Zombie),
             "monster_fish" => Some(Q1MonsterKind::Fish),
+            "monster_knight" => Some(Q1MonsterKind::Knight),
             _ => None,
         }
     }
@@ -311,6 +315,24 @@ pub enum Q1MonsterSeq {
     FishPain,
     /// Fish death 1-21.
     FishDie,
+    /// Knight stand 1-9 (`knight.qc`).
+    KnightStand,
+    /// Knight walk 1-14.
+    KnightWalk,
+    /// Knight run 1-8 (over `runb1-8`).
+    KnightRun,
+    /// Knight standing sword attack 1-10 (over `attackb1-10`).
+    KnightAttack,
+    /// Knight running sword attack 1-11 (over `runattack1-11`).
+    KnightRunAttack,
+    /// Knight pain 1-3.
+    KnightPain,
+    /// Knight painb 1-11.
+    KnightPainB,
+    /// Knight death 1-10.
+    KnightDie,
+    /// Knight deathb 1-11.
+    KnightDieB,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -523,6 +545,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_ogre",
         "monster_zombie",
         "monster_fish",
+        "monster_knight",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -711,6 +734,57 @@ pub const Q1_FISH_BITE_RANGE: f32 = 60.0;
 /// `monsters.qc`: lower than the walker's 25).
 pub const Q1_SWIM_VIEW_OFS_Z: f32 = 10.0;
 
+/// Knight body bounds (`setsize`, `monster_knight`, `knight.qc`).
+pub const Q1_KNIGHT_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Knight spawn health (`monster_knight`, `knight.qc`).
+pub const Q1_KNIGHT_HEALTH: f64 = 75.0;
+
+/// Knight gib threshold (`knight_die`, `knight.qc`): the knight gibs
+/// below -40, harsher than the dog/grunt/enforcer -35.
+pub const Q1_KNIGHT_GIB_HEALTH: f64 = -40.0;
+
+/// Knight walk stride per frame (`knight_walk1..14`, `knight.qc`).
+pub const Q1_KNIGHT_WALK_STEPS: [f64; 14] = [3.0, 2.0, 3.0, 4.0, 3.0, 3.0, 3.0, 4.0, 3.0, 3.0, 2.0, 3.0, 4.0, 3.0];
+
+/// Knight run stride per frame (`knight_run1..8`, `knight.qc`).
+pub const Q1_KNIGHT_RUN_STEPS: [f64; 8] = [16.0, 20.0, 13.0, 7.0, 16.0, 20.0, 14.0, 6.0];
+
+/// Knight standing-sword charge per frame (`knight_atk1..10`); the
+/// slashes land on frames 6-8 (`ai_melee`, `fight.qc`).
+pub const Q1_KNIGHT_ATTACK_STEPS: [f64; 10] = [0.0, 7.0, 4.0, 0.0, 3.0, 4.0, 1.0, 3.0, 1.0, 5.0];
+
+/// Knight painb footwork per frame (`knight_painb1..11`); frames
+/// 3-4 and 11 stand still (no `ai_painforward`, `knight.qc`).
+pub const Q1_KNIGHT_PAINB_STEPS: [Option<f64>; 11] = [
+    Some(0.0),
+    Some(3.0),
+    None,
+    None,
+    Some(2.0),
+    Some(4.0),
+    Some(2.0),
+    Some(5.0),
+    Some(5.0),
+    Some(0.0),
+    None,
+];
+
+/// Knight swing choice (`knight_attack`, `fight.qc`): eye-distance
+/// under 80 opens the standing sword, past it the running sword.
+pub const Q1_KNIGHT_MELEE_CHOICE_RANGE: f32 = 80.0;
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -751,6 +825,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Ogre => (Q1_OGRE_BOUNDS, Q1_OGRE_HEALTH),
         Q1MonsterKind::Zombie => (Q1_ZOMBIE_BOUNDS, Q1_ZOMBIE_HEALTH),
         Q1MonsterKind::Fish => (Q1_FISH_BOUNDS, Q1_FISH_HEALTH),
+        Q1MonsterKind::Knight => (Q1_KNIGHT_BOUNDS, Q1_KNIGHT_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1237,6 +1312,10 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Ogre => Some("ogre/ogwake.wav"),
         Q1MonsterKind::Zombie => Some("zombie/z_idle.wav"),
         Q1MonsterKind::Fish => None,
+        // Stock precaches `knight/ksight.wav` but never plays it
+        // (`monster_knight` sets no `th_sight`, `knight.qc`): knights
+        // hunt silently.
+        Q1MonsterKind::Knight => None,
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1324,6 +1403,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, 0),
+        Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, 0),
     }
 }
 
@@ -1337,6 +1417,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishWalk, 0),
+        Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, 0),
     }
 }
 
@@ -1350,6 +1431,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreRun, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0),
+        Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0),
     }
 }
 
@@ -1363,6 +1445,7 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
         Q1MonsterKind::Enforcer => None,
         Q1MonsterKind::Zombie => None,
         Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
+        Q1MonsterKind::Knight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0)),
         Q1MonsterKind::Ogre => {
             if q1_monster_random(behaviors) > 0.5 {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
@@ -1383,6 +1466,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Enforcer => Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0)),
         Q1MonsterKind::Ogre => Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreNail, 0)),
         Q1MonsterKind::Fish => None,
+        Q1MonsterKind::Knight => None,
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1459,6 +1543,15 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::FishAttack => 18,
         Q1MonsterSeq::FishPain => 9,
         Q1MonsterSeq::FishDie => 21,
+        Q1MonsterSeq::KnightStand => 9,
+        Q1MonsterSeq::KnightWalk => 14,
+        Q1MonsterSeq::KnightRun => 8,
+        Q1MonsterSeq::KnightAttack => 10,
+        Q1MonsterSeq::KnightRunAttack => 11,
+        Q1MonsterSeq::KnightPain => 3,
+        Q1MonsterSeq::KnightPainB => 11,
+        Q1MonsterSeq::KnightDie => 10,
+        Q1MonsterSeq::KnightDieB => 11,
     }
 }
 
@@ -1475,7 +1568,9 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// stand 0-14, walk 15-33, run 34-51, atta 52-64, attb 65-78, attc
 /// 79-90, paina 91-102, painb 103-130, painc 131-148, paind 149-161,
 /// paine 162-191, cruc 192-197; fish attack 0-17, death 18-38,
-/// swim 39-56, pain 57-65).
+/// swim 39-56, pain 57-65; knight stand 0-8, runb 9-16, runattack
+/// 17-27, pain 28-30, painb 31-41, attackb 43-52, walk 53-66, death
+/// 76-85, deathb 86-96).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -1558,6 +1653,17 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::FishAttack => 0,
         Q1MonsterSeq::FishPain => 57,
         Q1MonsterSeq::FishDie => 18,
+        Q1MonsterSeq::KnightStand => 0,
+        Q1MonsterSeq::KnightWalk => 53,
+        Q1MonsterSeq::KnightRun => 9,
+        // Stock declares `attackb1` twice (`knight.qc`); the second
+        // definition wins, so the standing sword runs 43-52.
+        Q1MonsterSeq::KnightAttack => 43,
+        Q1MonsterSeq::KnightRunAttack => 17,
+        Q1MonsterSeq::KnightPain => 28,
+        Q1MonsterSeq::KnightPainB => 31,
+        Q1MonsterSeq::KnightDie => 76,
+        Q1MonsterSeq::KnightDieB => 86,
     };
     base + i32::from(index)
 }
@@ -1636,6 +1742,16 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::FishPain) => q1_th_run(kind),
         // The death tail self-loops unsolid (`f_death21`, `fish.qc`).
         (_, Q1MonsterSeq::FishDie) => Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, index),
+        (_, Q1MonsterSeq::KnightStand) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, 0),
+        (_, Q1MonsterSeq::KnightWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, 0),
+        (_, Q1MonsterSeq::KnightRun) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0),
+        (_, Q1MonsterSeq::KnightAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::KnightRunAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::KnightPain) => q1_th_run(kind),
+        (_, Q1MonsterSeq::KnightPainB) => q1_th_run(kind),
+        // Death tails self-loop (`knight.qc`); death never exits.
+        (_, Q1MonsterSeq::KnightDie) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightDie, index),
+        (_, Q1MonsterSeq::KnightDieB) => Q1MonsterThink::Frame(Q1MonsterSeq::KnightDieB, index),
     }
 }
 
@@ -1795,6 +1911,27 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        Q1MonsterKind::Knight => {
+            // Stock gates on `pain_finished`, then barks and takes
+            // the short pain 85% of the time, the long stagger
+            // otherwise; both hold pain for a second (`knight_pain`,
+            // `knight.qc`).
+            if monster.pain_finished > now {
+                return;
+            }
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "knight/khurt.wav", 1.0, Q1_ATTN_NORM);
+            let seq = if q1_monster_random(behaviors) < 0.85 {
+                Q1MonsterSeq::KnightPain
+            } else {
+                Q1MonsterSeq::KnightPainB
+            };
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+                monster.pain_finished = now + 1.0;
+            }
+        }
     }
 }
 
@@ -1818,6 +1955,8 @@ fn q1_zombie_knockdown(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, now: 
 /// zombie always gibs (`zombie_die`, `zombie.qc`): pain resets health
 /// to 60, so death only arrives on a gibbing hit. The fish never
 /// gibs: stock points `th_die` at `f_death1` directly (`fish.qc`).
+/// The knight gibs below -40, else cries and drops into one of the
+/// two death sequences at random (`knight_die`, `knight.qc`).
 pub fn q1_monster_th_die(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1933,6 +2072,27 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::FishDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::Knight => {
+            if health < Q1_KNIGHT_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, "progs/h_knight.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+                return;
+            }
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "knight/kdeath.wav", 1.0, Q1_ATTN_NORM);
+            let seq = if q1_monster_random(behaviors) < 0.5 {
+                Q1MonsterSeq::KnightDie
+            } else {
+                Q1MonsterSeq::KnightDieB
+            };
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -3016,10 +3176,31 @@ fn q1_clear_shot<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &
     })
 }
 
+/// Stock `knight_attack` (`fight.qc:27`): at melee range the eye
+/// distance picks the sword — under 80 opens the standing attack,
+/// past it the running attack.
+fn q1_knight_attack<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, enemy: &ActorId) {
+    let (Some(spot1), Some(spot2)) = (q1_eye_of(ctx, actor), q1_eye_of(ctx, enemy)) else {
+        return;
+    };
+    let dx = f64::from(spot2.x - spot1.x);
+    let dy = f64::from(spot2.y - spot1.y);
+    let dz = f64::from(spot2.z - spot1.z);
+    let seq = if (dx * dx + dy * dy + dz * dz).sqrt() < f64::from(Q1_KNIGHT_MELEE_CHOICE_RANGE) {
+        Q1MonsterSeq::KnightAttack
+    } else {
+        Q1MonsterSeq::KnightRunAttack
+    };
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.frame = q1_seq_frame(seq, 0);
+        monster.think = Q1MonsterThink::Frame(seq, 0);
+    }
+}
+
 /// Stock `CheckAttack` (`fight.qc:49`): a clear shot (monsters in the
 /// way count as blocking) starts a melee or missile attack by range
 /// and chance. `has_melee`/`has_missile` are the `th_melee`/`th_missile`
-/// presence checks; the knight swing selection lands with its slice.
+/// presence checks; knights pick their sword by range (`knight_attack`).
 pub fn q1_check_attack<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
     actor: &ActorId,
@@ -3040,6 +3221,10 @@ pub fn q1_check_attack<L: ServerLogic>(
     }
     if memo.range == Q1_RANGE_MELEE && has_melee {
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
+        if kind == Some(Q1MonsterKind::Knight) {
+            q1_knight_attack(ctx, actor, &enemy);
+            return true;
+        }
         let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind));
         let Some(think) = think else {
             return false;
@@ -3317,6 +3502,9 @@ fn q1_check_any_attack<L: ServerLogic>(
         // Fish run the generic check with melee armed and no missile
         // (`CheckAttack`, `fight.qc:57`).
         Some(Q1MonsterKind::Fish) => q1_check_attack(ctx, actor, memo, true, false),
+        // Knights run the same generic check; the melee branch picks
+        // the sword by range (`knight_attack`, `fight.qc:27`).
+        Some(Q1MonsterKind::Knight) => q1_check_attack(ctx, actor, memo, true, false),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -5438,6 +5626,91 @@ fn q1_fish_frame<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &
     }
 }
 
+/// One knight `$frame` body (`knight.qc`): the idle-sniffing walk
+/// and run gaits, the standing sword (slashes on frames 6-8) and the
+/// running sword (flyby slashes on frames 5-9), the still short pain
+/// and the staggering long pain, and the deaths going unsolid on the
+/// third frame.
+fn q1_knight_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::KnightStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::KnightWalk, 0) | (Q1MonsterSeq::KnightRun, 0) => {
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "knight/idle.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+            if seq == Q1MonsterSeq::KnightWalk {
+                q1_ai_walk(ctx, actor, Q1_KNIGHT_WALK_STEPS[0]);
+            } else {
+                q1_ai_run(ctx, actor, Q1_KNIGHT_RUN_STEPS[0]);
+            }
+        }
+        (Q1MonsterSeq::KnightWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_KNIGHT_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::KnightRun, _) => {
+            q1_ai_run(ctx, actor, Q1_KNIGHT_RUN_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::KnightAttack, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_WEAPON,
+                "knight/sword1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            q1_ai_charge(ctx, actor, Q1_KNIGHT_ATTACK_STEPS[0]);
+        }
+        (Q1MonsterSeq::KnightAttack, 5) | (Q1MonsterSeq::KnightAttack, 6) | (Q1MonsterSeq::KnightAttack, 7) => {
+            q1_ai_charge(ctx, actor, Q1_KNIGHT_ATTACK_STEPS[usize::from(index)]);
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::KnightAttack, _) => {
+            q1_ai_charge(ctx, actor, Q1_KNIGHT_ATTACK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::KnightRunAttack, 0) => {
+            // Stock rolls high for the second swish (`knight_runatk1`).
+            let sample = if q1_monster_random(ctx.behaviors) > 0.5 {
+                "knight/sword2.wav"
+            } else {
+                "knight/sword1.wav"
+            };
+            q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_WEAPON, sample, 1.0, Q1_ATTN_NORM);
+            q1_ai_charge(ctx, actor, 20.0);
+        }
+        (Q1MonsterSeq::KnightRunAttack, 1)
+        | (Q1MonsterSeq::KnightRunAttack, 2)
+        | (Q1MonsterSeq::KnightRunAttack, 3)
+        | (Q1MonsterSeq::KnightRunAttack, 9) => q1_ai_charge_side(ctx, actor),
+        (Q1MonsterSeq::KnightRunAttack, 10) => q1_ai_charge(ctx, actor, 10.0),
+        (Q1MonsterSeq::KnightRunAttack, _) => q1_ai_melee_side(ctx, actor),
+        (Q1MonsterSeq::KnightPain, _) => {}
+        (Q1MonsterSeq::KnightPainB, _) => {
+            if let Some(dist) = Q1_KNIGHT_PAINB_STEPS[usize::from(index)] {
+                q1_ai_painforward(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::KnightDie, 2) | (Q1MonsterSeq::KnightDieB, 2) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::KnightDie, _) | (Q1MonsterSeq::KnightDieB, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -5453,6 +5726,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Ogre => q1_ogre_frame(ctx, actor, seq, index),
         Q1MonsterKind::Zombie => q1_zombie_frame(ctx, actor, seq, index),
         Q1MonsterKind::Fish => q1_fish_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Knight => q1_knight_frame(ctx, actor, seq, index),
     }
 }
 
@@ -5500,6 +5774,10 @@ mod tests {
 
     fn fish_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_fish", pairs)
+    }
+
+    fn knight_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_knight", pairs)
     }
 
     fn spawn_monster(
@@ -5554,6 +5832,14 @@ mod tests {
     }
 
     fn spawn_fish(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_knight(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -5657,6 +5943,14 @@ mod tests {
         fish: &ActorId,
     ) {
         arm_monster(server, behaviors, fish);
+    }
+
+    fn arm_knight(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        knight: &ActorId,
+    ) {
+        arm_monster(server, behaviors, knight);
     }
 
     #[test]
@@ -7307,6 +7601,217 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Fish, FishDie, 20),
             Q1MonsterThink::Frame(FishDie, 20)
+        );
+    }
+
+    #[test]
+    fn knight_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = knight_fields(&[]);
+        let knight = spawn_knight(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(knight.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_KNIGHT_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_KNIGHT_BOUNDS.max);
+        let combat = server.simulation().combat_state(knight.id()).unwrap();
+        assert_eq!(combat.health, Q1_KNIGHT_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(knight.id()));
+        let monster = behaviors.monsters.get(knight.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Knight);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_knight"),
+            Some(Q1MonsterKind::Knight)
+        );
+        assert_eq!(Q1MonsterKind::Knight.classname(), "monster_knight");
+        assert_eq!(
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Knight),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0))
+        );
+        assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Knight).is_none());
+    }
+
+    #[test]
+    fn knight_pain_gates_then_splits_short_or_long() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = knight_fields(&[]);
+        let knight = spawn_knight(&mut server, &mut behaviors, &fields);
+        arm_knight(&mut server, &mut behaviors, knight.id());
+        // Gated pain stays out and stays silent.
+        behaviors.monsters.get_mut(knight.id()).unwrap().pain_finished = 10.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, knight.id(), 5.0);
+        assert_eq!(
+            behaviors.monsters.get(knight.id()).unwrap().think,
+            Q1MonsterThink::StartGo
+        );
+        assert!(behaviors.sounds.is_empty(), "gated pain stays silent");
+        // Open pain barks and takes the short stagger 85% of the
+        // time, the long one otherwise; both hold a second.
+        behaviors.monsters.get_mut(knight.id()).unwrap().pain_finished = 0.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, knight.id(), 5.0);
+        let monster = behaviors.monsters.get(knight.id()).unwrap();
+        assert!(
+            matches!(
+                monster.think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::KnightPain, 0)
+                    | Q1MonsterThink::Frame(Q1MonsterSeq::KnightPainB, 0)
+            ),
+            "pain runs, got {:?}",
+            monster.think
+        );
+        assert_eq!(monster.pain_finished, 1.0);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "knight/khurt.wav"),
+            "pains bark"
+        );
+        // The hold gates the follow-up hit.
+        let held = monster.think;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, knight.id(), 5.0);
+        assert_eq!(behaviors.monsters.get(knight.id()).unwrap().think, held);
+    }
+
+    #[test]
+    fn knight_dies_solid_then_drops_or_gibs() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = knight_fields(&[]);
+        let knight = spawn_knight(&mut server, &mut behaviors, &fields);
+        arm_knight(&mut server, &mut behaviors, knight.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            knight.id(),
+            None,
+            Some(player.id()),
+            80.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(knight.id()).unwrap();
+        assert!(monster.dead);
+        assert!(
+            matches!(
+                monster.think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::KnightDie, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::KnightDieB, 0)
+            ),
+            "death runs die, got {:?}",
+            monster.think
+        );
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "knight/kdeath.wav"));
+        // Solidity drops in the third death frame, not in `th_die`.
+        assert!(behaviors.solids.contains(knight.id()));
+    }
+
+    #[test]
+    fn knight_gib_threshold_bursts() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = knight_fields(&[]);
+        let knight = spawn_knight(&mut server, &mut behaviors, &fields);
+        arm_knight(&mut server, &mut behaviors, knight.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Health -45: past the knight's -40 gib line.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            knight.id(),
+            None,
+            Some(player.id()),
+            120.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        assert!(behaviors.monsters.get(knight.id()).unwrap().dead);
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(behaviors.gibs.contains_key(knight.id()), "the head keeps the actor");
+        assert_eq!(behaviors.pending_gibs.len(), 3, "three chunks queue");
+        assert!(!behaviors.solids.contains(knight.id()), "gibs go unsolid");
+    }
+
+    #[test]
+    fn knight_sight_hunts_silently() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = knight_fields(&[]);
+        let knight = spawn_knight(&mut server, &mut behaviors, &fields);
+        arm_knight(&mut server, &mut behaviors, knight.id());
+        behaviors.monsters.get_mut(knight.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, knight.id());
+        assert!(behaviors.sounds.is_empty(), "stock never plays the sight line");
+        assert_eq!(
+            behaviors.monsters.get(knight.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0)
+        );
+    }
+
+    #[test]
+    fn knight_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(KnightStand), 9);
+        assert_eq!(q1_seq_len(KnightWalk), 14);
+        assert_eq!(q1_seq_len(KnightRun), 8);
+        assert_eq!(q1_seq_len(KnightAttack), 10);
+        assert_eq!(q1_seq_len(KnightRunAttack), 11);
+        assert_eq!(q1_seq_len(KnightPain), 3);
+        assert_eq!(q1_seq_len(KnightPainB), 11);
+        assert_eq!(q1_seq_len(KnightDie), 10);
+        assert_eq!(q1_seq_len(KnightDieB), 11);
+        assert_eq!(q1_seq_frame(KnightStand, 0), 0);
+        assert_eq!(q1_seq_frame(KnightStand, 8), 8);
+        assert_eq!(q1_seq_frame(KnightWalk, 0), 53);
+        assert_eq!(q1_seq_frame(KnightWalk, 13), 66);
+        assert_eq!(q1_seq_frame(KnightRun, 0), 9);
+        assert_eq!(q1_seq_frame(KnightRun, 7), 16);
+        // The duplicate `attackb1` definition wins: the standing
+        // sword runs 43-52.
+        assert_eq!(q1_seq_frame(KnightAttack, 0), 43);
+        assert_eq!(q1_seq_frame(KnightAttack, 9), 52);
+        assert_eq!(q1_seq_frame(KnightRunAttack, 0), 17);
+        assert_eq!(q1_seq_frame(KnightRunAttack, 10), 27);
+        assert_eq!(q1_seq_frame(KnightPain, 0), 28);
+        assert_eq!(q1_seq_frame(KnightPain, 2), 30);
+        assert_eq!(q1_seq_frame(KnightPainB, 0), 31);
+        assert_eq!(q1_seq_frame(KnightPainB, 10), 41);
+        assert_eq!(q1_seq_frame(KnightDie, 0), 76);
+        assert_eq!(q1_seq_frame(KnightDie, 9), 85);
+        assert_eq!(q1_seq_frame(KnightDieB, 0), 86);
+        assert_eq!(q1_seq_frame(KnightDieB, 10), 96);
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Knight, KnightAttack, 9),
+            q1_th_run(Q1MonsterKind::Knight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Knight, KnightRunAttack, 10),
+            q1_th_run(Q1MonsterKind::Knight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Knight, KnightPainB, 10),
+            q1_th_run(Q1MonsterKind::Knight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Knight, KnightDie, 9),
+            Q1MonsterThink::Frame(KnightDie, 9)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Knight, KnightDieB, 10),
+            Q1MonsterThink::Frame(KnightDieB, 10)
         );
     }
 }
