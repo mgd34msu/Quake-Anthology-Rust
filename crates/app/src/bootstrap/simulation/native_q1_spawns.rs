@@ -34,9 +34,7 @@ use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
-use super::native_q1_monsters::{
-    Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1ShamBall, Q1Sound, Q1WizVolley,
-};
+use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1ShamBall, Q1Sound, Q1WizVolley};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,

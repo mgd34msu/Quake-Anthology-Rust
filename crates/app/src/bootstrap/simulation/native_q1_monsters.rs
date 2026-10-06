@@ -5342,7 +5342,14 @@ fn q1_wiz_start_fast<L: ServerLogic>(
     now: f64,
     actor: &ActorId,
 ) {
-    q1_monster_sound(behaviors, actor, Q1_CHAN_WEAPON, "wizard/wattack.wav", 1.0, Q1_ATTN_NORM);
+    q1_monster_sound(
+        behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "wizard/wattack.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
     let enemy = behaviors.monsters.get(actor).and_then(|monster| monster.enemy.clone());
     let Some(enemy) = enemy else {
         return;
@@ -5360,14 +5367,22 @@ fn q1_wiz_start_fast<L: ServerLogic>(
     behaviors.wiz_volleys.push(Q1WizVolley {
         owner: actor.clone(),
         enemy: enemy.clone(),
-        at: vec3(chest.x + right.x * 14.0, chest.y + right.y * 14.0, chest.z + right.z * 14.0),
+        at: vec3(
+            chest.x + right.x * 14.0,
+            chest.y + right.y * 14.0,
+            chest.z + right.z * 14.0,
+        ),
         movedir: right,
         fire_at: now + 0.8,
     });
     behaviors.wiz_volleys.push(Q1WizVolley {
         owner: actor.clone(),
         enemy,
-        at: vec3(chest.x - right.x * 14.0, chest.y - right.y * 14.0, chest.z - right.z * 14.0),
+        at: vec3(
+            chest.x - right.x * 14.0,
+            chest.y - right.y * 14.0,
+            chest.z - right.z * 14.0,
+        ),
         movedir: vec3(-right.x, -right.y, -right.z),
         fire_at: now + 0.3,
     });
@@ -7381,10 +7396,12 @@ fn q1_wizard_frame<L: ServerLogic>(
             }
             // `WizardAttackFinished`: mid range and beyond (or a lost
             // enemy) runs straight back in; close range strafes.
-            let enemy = ctx.behaviors.monsters.get(actor).and_then(|monster| monster.enemy.clone());
-            let range = enemy
-                .as_ref()
-                .map_or(Q1_RANGE_FAR, |enemy| q1_range(ctx, actor, enemy));
+            let enemy = ctx
+                .behaviors
+                .monsters
+                .get(actor)
+                .and_then(|monster| monster.enemy.clone());
+            let range = enemy.as_ref().map_or(Q1_RANGE_FAR, |enemy| q1_range(ctx, actor, enemy));
             let vis = enemy.as_ref().is_some_and(|enemy| q1_visible(ctx, actor, enemy));
             let (seq, state) = if range >= Q1_RANGE_MID || !vis {
                 (Q1MonsterSeq::WizRun, Q1_AS_STRAIGHT)
@@ -10158,7 +10175,10 @@ mod tests {
         assert_eq!(left.movedir, vec3(0.0, 1.0, 0.0));
         assert_eq!(left.fire_at, 10.3);
         assert!(
-            behaviors.sounds.iter().any(|sound| sound.sample == "wizard/wattack.wav"),
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "wizard/wattack.wav"),
             "casts bark once up front"
         );
     }
@@ -10188,17 +10208,20 @@ mod tests {
         assert_eq!(spike.remove_at, 16.8);
         let body = server.simulation().body_state(id).unwrap();
         assert_eq!(body.origin, vec3(14.0, -14.0, 30.0));
-        let speed = (body.velocity.x * body.velocity.x
-            + body.velocity.y * body.velocity.y
-            + body.velocity.z * body.velocity.z)
-            .sqrt();
+        let speed =
+            (body.velocity.x * body.velocity.x + body.velocity.y * body.velocity.y + body.velocity.z * body.velocity.z)
+                .sqrt();
         assert!((speed - 600.0).abs() < 0.01, "spikes fly at 600, got {speed}");
         // Aim runs at the enemy past the cast-time side: +x, +y, -z.
         assert!(body.velocity.x > 0.0 && body.velocity.y > 0.0 && body.velocity.z < 0.0);
         let monster = behaviors.monsters.get(wizard.id()).unwrap();
         assert_ne!(monster.effects & Q1_EF_MUZZLEFLASH, 0, "owners flash");
         assert_eq!(
-            behaviors.sounds.iter().filter(|sound| sound.sample == "wizard/wattack.wav").count(),
+            behaviors
+                .sounds
+                .iter()
+                .filter(|sound| sound.sample == "wizard/wattack.wav")
+                .count(),
             1,
             "each spike barks"
         );
@@ -10250,8 +10273,7 @@ mod tests {
             "pain barks the hurt line"
         );
         // A light hit against a probed high roll barks without flinching.
-        behaviors.monsters.get_mut(wizard.id()).unwrap().think =
-            Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0);
+        behaviors.monsters.get_mut(wizard.id()).unwrap().think = Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0);
         let mut probe = Q1NativeBehaviors::new();
         let seed = (1..100_000)
             .find(|seed| {
