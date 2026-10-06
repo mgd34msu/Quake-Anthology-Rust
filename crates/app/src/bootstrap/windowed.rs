@@ -7301,6 +7301,21 @@ mod tests {
         (yaw.cos(), yaw.sin())
     }
 
+    /// Temporary travel diagnostic: sim clock vs exit gate.
+    fn windowed_gate_state(app: &StartupApplication<WindowedStartupBackend>) -> String {
+        let world = windowed_world(app);
+        let now = world.server().simulation().frame().time.as_seconds_f64();
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        format!(
+            "sim={now:.2} gate={:.2} running={} buttons={} pending={:?}",
+            borrowed.intermission.exit_time_seconds,
+            borrowed.intermission.running,
+            borrowed.intermission.buttons,
+            borrowed.pending_travel
+        )
+    }
+
     /// Temporary stall diagnostic: live monsters within 400u of the eye.
     fn windowed_near_scan(app: &StartupApplication<WindowedStartupBackend>, eye: Vec3) -> String {
         let world = windowed_world(app);
@@ -7488,6 +7503,13 @@ mod tests {
         let (back_eye, _) = windowed_eye(app);
         let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
         eprintln!("live-play: {} back retreated {back_along:.1} units", leg.label);
+        if back_along >= -1.0 {
+            eprintln!(
+                "live-play: {} DIAG back={back_along:.1} eye={back_eye:?} {}",
+                leg.label,
+                windowed_near_scan(app, back_eye)
+            );
+        }
         assert!(back_along < -1.0, "back did not retreat: {back_along:.1}");
         repen(app);
         windowed_press_key(app, 4, 65, true);
@@ -7497,6 +7519,13 @@ mod tests {
         let (strafe_eye, _) = windowed_eye(app);
         let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
         eprintln!("live-play: {} strafe-left lateral {lateral:.1} units", leg.label);
+        if lateral <= 1.0 {
+            eprintln!(
+                "live-play: {} DIAG strafeL={lateral:.1} eye={strafe_eye:?} {}",
+                leg.label,
+                windowed_near_scan(app, strafe_eye)
+            );
+        }
         assert!(lateral > 1.0, "strafe left did not move: {lateral:.1}");
         repen(app);
         windowed_press_key(app, 7, 68, true);
@@ -7507,6 +7536,13 @@ mod tests {
         let lateral_back =
             f64::from(strafe_back.x - strafe_eye.x) * lx + f64::from(strafe_back.y - strafe_eye.y) * ly;
         eprintln!("live-play: {} strafe-right lateral {lateral_back:.1} units", leg.label);
+        if lateral_back >= -1.0 {
+            eprintln!(
+                "live-play: {} DIAG strafeR={lateral_back:.1} eye={strafe_back:?} {}",
+                leg.label,
+                windowed_near_scan(app, strafe_back)
+            );
+        }
         assert!(lateral_back < -1.0, "strafe right did not move: {lateral_back:.1}");
         // Combat: the spared target, wounded to 5 hp, dies to held
         // fire at point blank; the kill counter climbs and shells
@@ -7634,12 +7670,27 @@ mod tests {
             assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
         }
         frames = 0;
+        eprintln!("live-play: {} DIAG travel start {}", leg.label, windowed_gate_state(app));
         while app.backend().world.as_ref().is_some_and(|world| world.map() == leg.map) && frames < 2400 {
             windowed_drive(app, step_ms, 10);
             *total_steps += 10;
             frames += 10;
+            if frames % 400 == 0 {
+                eprintln!(
+                    "live-play: {} DIAG travel f={frames} {}",
+                    leg.label,
+                    windowed_gate_state(app)
+                );
+            }
         }
         windowed_mouse_attack(app, false);
+        if frames >= 2400 {
+            eprintln!(
+                "live-play: {} DIAG travel STUCK f={frames} {}",
+                leg.label,
+                windowed_gate_state(app)
+            );
+        }
         assert!(frames < 2400, "poll never travelled off {}", leg.map);
         eprintln!("live-play: {} travelled after {frames} frames", leg.label);
     }
