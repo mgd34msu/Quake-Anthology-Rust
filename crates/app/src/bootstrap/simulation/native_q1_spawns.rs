@@ -815,7 +815,7 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
 /// destinations, buttons, lights, items, monsters, movetargets, gibs,
-/// movers, solidity), and release the actor. Stale targetname
+/// missiles, movers, solidity), and release the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///

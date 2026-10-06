@@ -41,8 +41,9 @@ use qa_world::spawn::SpawnFields;
 
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
-    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1MonsterCtx, Q1PendingGib,
-    Q1_DAMAGE_AIM,
+    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, q1_takedamage_aim,
+    Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE, Q1_CHAN_WEAPON, Q1_DAMAGE_AIM,
+    Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -1253,7 +1254,8 @@ pub fn q1_sample_water_level(
 }
 
 /// Stock missile kinds (`launch_spike`, `W_FireGrenade`, `W_FireRocket`,
-/// `weapons.qc:607-747`).
+/// `weapons.qc:607-747`; `LaunchLaser`, `enforcer.qc:74`;
+/// `OgreFireGrenade`, `ogre.qc:90`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Q1MissileKind {
     /// Nailgun spike: 9 damage (`spike_touch`).
@@ -1264,6 +1266,12 @@ pub enum Q1MissileKind {
     Rocket,
     /// Grenade: 120 radius on fuse or damageable contact (`GrenadeTouch`).
     Grenade,
+    /// Enforcer laser: 15 damage to the living, else a wall puff
+    /// (`Laser_Touch`, `enforcer.qc:41`).
+    Laser,
+    /// Ogre grenade: 40 radius on fuse or `DAMAGE_AIM` contact
+    /// (`OgreGrenadeTouch`, `ogre.qc:71`).
+    OgreGrenade,
 }
 
 impl Q1MissileKind {
@@ -1275,11 +1283,13 @@ impl Q1MissileKind {
             Q1MissileKind::SuperSpike => "superspike",
             Q1MissileKind::Rocket => "missile",
             Q1MissileKind::Grenade => "grenade",
+            Q1MissileKind::Laser => "laser",
+            Q1MissileKind::OgreGrenade => "grenade",
         }
     }
 }
 
-/// Live missile record: spikes, rockets, and grenades in flight.
+/// Live missile record: spikes, rockets, lasers, and grenades in flight.
 /// Position and velocity ride the sim body; the fuse and kind ride here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q1Missile {
@@ -1289,6 +1299,8 @@ pub struct Q1Missile {
     pub owner: ActorId,
     /// Angular velocity in degrees per second (grenades spin 300s).
     pub avelocity: Vec3,
+    /// Entity effects bits (`EF_*`; the presentation slice drains them).
+    pub effects: i32,
     /// Master-clock fuse instant for grenades (`None` otherwise).
     pub fuse_at: Option<f64>,
     /// Master-clock removal instant (spikes 6 s, rockets 5 s).
@@ -1304,9 +1316,9 @@ pub struct Q1Missile {
 /// Stock `spawn()` parameters for one missile: the fire functions fill
 /// every field (stock assigns each edict field explicitly).
 pub struct Q1MissileSpawn {
-    /// Spike, super spike, grenade, or rocket.
+    /// Spike, super spike, grenade, rocket, laser, or ogre grenade.
     pub kind: Q1MissileKind,
-    /// Firing player (touch immunity, radius credit).
+    /// Firer (touch immunity, radius credit).
     pub owner: ActorId,
     /// Spawn origin.
     pub origin: Vec3,
@@ -1314,6 +1326,8 @@ pub struct Q1MissileSpawn {
     pub velocity: Vec3,
     /// Spin in degrees per second (grenades tumble at 300).
     pub avelocity: Vec3,
+    /// Entity effects bits (`EF_*`; lasers fly lit).
+    pub effects: i32,
     /// Master-clock detonation for grenades (`None` flies straight).
     pub fuse_at: Option<f64>,
     /// Master-clock `SUB_Remove` for flyers.
@@ -1353,6 +1367,7 @@ pub fn q1_spawn_missile<L: ServerLogic>(
             kind: spawn.kind,
             owner: spawn.owner,
             avelocity: spawn.avelocity,
+            effects: spawn.effects,
             fuse_at: spawn.fuse_at,
             remove_at: spawn.remove_at,
             onground: false,
@@ -1384,6 +1399,7 @@ pub fn q1_launch_spike<L: ServerLogic>(
             origin,
             velocity,
             avelocity: vec3(0.0, 0.0, 0.0),
+            effects: 0,
             fuse_at: None,
             remove_at: ctx.now + 6.0,
             born_at: ctx.now,
@@ -1476,6 +1492,7 @@ pub fn q1_fire_grenade<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             origin: body.origin,
             velocity,
             avelocity: vec3(300.0, 300.0, 300.0),
+            effects: 0,
             fuse_at: Some(ctx.now + 2.5),
             remove_at: ctx.now + 2.5,
             born_at: ctx.now,
@@ -1508,6 +1525,7 @@ pub fn q1_fire_rocket<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             ),
             velocity: vec3(dir.x * 1000.0, dir.y * 1000.0, dir.z * 1000.0),
             avelocity: vec3(0.0, 0.0, 0.0),
+            effects: 0,
             fuse_at: None,
             remove_at: ctx.now + 5.0,
             born_at: ctx.now,
@@ -1661,7 +1679,13 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         return;
     };
     if missile.fuse_at.is_some_and(|at| at <= ctx.now) {
-        q1_grenade_explode(ctx, actor, None);
+        // Only grenades carry fuses; the ogre's runs weaker and
+        // flashes at the origin (`OgreGrenadeExplode`, `ogre.qc:53`).
+        let (damage, backoff) = match missile.kind {
+            Q1MissileKind::OgreGrenade => (Q1_GRENADE_DAMAGE, 0.0),
+            _ => (120.0, 8.0),
+        };
+        q1_grenade_explode(ctx, actor, None, damage, backoff);
         return;
     }
     if missile.remove_at <= ctx.now {
@@ -1675,10 +1699,10 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         return;
     }
     match missile.kind {
-        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket => {
+        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket | Q1MissileKind::Laser => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
-        Q1MissileKind::Grenade => q1_bounce_grenade(ctx, actor, &missile, dt),
+        Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade => q1_bounce_grenade(ctx, actor, &missile, dt),
     }
 }
 
@@ -1828,10 +1852,14 @@ fn q1_missile_impact<L: ServerLogic>(
     {
         return false;
     }
-    // Sky swallows spikes and rockets at the surface (`spike_touch` and
-    // `T_MissileTouch` check `pointcontents(self.origin) == CONTENT_SKY`);
-    // grenades bounce off the sky face like any other solid.
-    if missile.kind != Q1MissileKind::Grenade && q1_point_is_sky(ctx.scene, hit.endpos) {
+    // Sky swallows the straight flyers at the surface (their touches
+    // check `pointcontents(self.origin) == CONTENT_SKY`); grenades
+    // bounce off the sky face like any other solid.
+    let flies_straight = matches!(
+        missile.kind,
+        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket | Q1MissileKind::Laser
+    );
+    if flies_straight && q1_point_is_sky(ctx.scene, hit.endpos) {
         q1_remove_missile(ctx, actor);
         return true;
     }
@@ -1844,6 +1872,11 @@ fn q1_missile_impact<L: ServerLogic>(
         }
         Q1MissileKind::Grenade => {
             q1_grenade_impact(ctx, actor, missile, hit);
+            true
+        }
+        Q1MissileKind::Laser => q1_laser_impact(ctx, actor, missile, hit),
+        Q1MissileKind::OgreGrenade => {
+            q1_ogre_grenade_impact(ctx, actor, missile, hit);
             true
         }
     }
@@ -1903,6 +1936,70 @@ fn q1_spike_impact<L: ServerLogic>(
     true
 }
 
+/// Stock `Laser_Touch` (`enforcer.qc:41`): the dispatcher already
+/// refused the owner and the sky, so the bolt stops here with a
+/// crack — blood and 15 damage for the living, a wall puff for the
+/// rest — then removes.
+fn q1_laser_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) -> bool {
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "enforcer/enfstop.wav",
+        1.0,
+        Q1_ATTN_STATIC,
+    );
+    let velocity = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .map(|body| body.velocity)
+        .unwrap_or(vec3(0.0, 0.0, 0.0));
+    let speed = length3(velocity);
+    let dir = if speed > 0.0 {
+        scale3(velocity, 1.0 / speed)
+    } else {
+        vec3(0.0, 0.0, 1.0)
+    };
+    let org = vec3(
+        hit.endpos.x - dir.x * 8.0,
+        hit.endpos.y - dir.y * 8.0,
+        hit.endpos.z - dir.z * 8.0,
+    );
+    let living = hit
+        .hit_actor
+        .as_ref()
+        .is_some_and(|other| other != &missile.owner && q1_health_of(ctx.server.simulation(), other) != 0.0);
+    if living {
+        let victim = hit.hit_actor.clone().expect("gated victim");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Blood {
+            at: org,
+            count: Q1_LASER_DAMAGE as u32,
+        });
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            ctx.behaviors,
+            simulation,
+            movers,
+            triggers,
+            &victim,
+            Some(actor),
+            Some(&missile.owner),
+            Q1_LASER_DAMAGE,
+        );
+    } else {
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Gunshot { at: org });
+    }
+    q1_remove_missile(ctx, actor);
+    true
+}
+
 /// Stock `T_MissileTouch` (`combat.qc:296`): the thump, direct damage to
 /// anything still standing (shamblers take half), then the 120-radius
 /// blast with the direct victim excluded from the falloff.
@@ -1933,7 +2030,7 @@ fn q1_rocket_impact<L: ServerLogic>(
             );
         }
     }
-    q1_grenade_explode(ctx, actor, hit.hit_actor.as_ref());
+    q1_grenade_explode(ctx, actor, hit.hit_actor.as_ref(), 120.0, 8.0);
 }
 
 /// Stock `GrenadeTouch` (`weapons.qc:714`) plus the toss clip
@@ -1952,9 +2049,55 @@ fn q1_grenade_impact<L: ServerLogic>(
         .as_ref()
         .is_some_and(|other| other != &missile.owner && q1_can_take_damage(ctx.server.simulation(), other))
     {
-        q1_grenade_explode(ctx, actor, None);
+        q1_grenade_explode(ctx, actor, None, 120.0, 8.0);
         return;
     }
+    q1_grenade_bounce(ctx, actor, hit);
+}
+
+/// Stock `OgreGrenadeTouch` (`ogre.qc:71`): the dispatcher already
+/// refused the owner, so aimed victims detonate the grenade and
+/// everything else bounces audibly off it, stilling the spin on
+/// dead stops.
+fn q1_ogre_grenade_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) {
+    if hit
+        .hit_actor
+        .as_ref()
+        .is_some_and(|other| other != &missile.owner && q1_takedamage_aim(ctx.behaviors, other))
+    {
+        q1_grenade_explode(ctx, actor, None, Q1_GRENADE_DAMAGE, 0.0);
+        return;
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_VOICE,
+        "weapons/bounce.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    q1_grenade_bounce(ctx, actor, hit);
+    let stopped = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .is_some_and(|body| body.velocity.x == 0.0 && body.velocity.y == 0.0 && body.velocity.z == 0.0);
+    if stopped {
+        if let Some(record) = ctx.behaviors.missiles.get_mut(actor) {
+            record.avelocity = vec3(0.0, 0.0, 0.0);
+        }
+    }
+}
+
+/// Stock toss clip (`SV_Physics_Toss`, `sv_phys.c`): the 1.5-backoff
+/// bounce, settling on flat ground under 60 upward speed. Both
+/// grenade touches share it; only their detonate rules differ.
+fn q1_grenade_bounce<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor: &ActorId, hit: &Q1LineHit) {
     let velocity = ctx
         .server
         .simulation()
@@ -1975,13 +2118,18 @@ fn q1_grenade_impact<L: ServerLogic>(
     }
 }
 
-/// Stock `BecomeExplosion` (`weapons.qc:698`): the 120-radius blast with
-/// `ignore` excluded, the flash pulled 8 units off the surface along
-/// the flight line, and the missile retired.
-fn q1_grenade_explode<L: ServerLogic>(
+/// Stock `BecomeExplosion` (`weapons.qc:698`) and `OgreGrenadeExplode`
+/// (`ogre.qc:53`): the radius blast with `ignore` excluded, the flash
+/// pulled `flash_backoff` units off the surface along the flight
+/// line (8 for player ordnance, 0 for ogre grenades), and the missile
+/// retired. Monster-vs-monster detonations outside the missile pass
+/// call in through the same shape.
+pub(crate) fn q1_grenade_explode<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     actor: &ActorId,
     ignore: Option<&ActorId>,
+    damage: f64,
+    flash_backoff: f32,
 ) {
     let attacker = ctx
         .behaviors
@@ -1990,7 +2138,7 @@ fn q1_grenade_explode<L: ServerLogic>(
         .map(|missile| missile.owner.clone())
         .unwrap_or_else(|| ctx.player.clone());
     q1_monster_sound(ctx.behaviors, actor, 0, "weapons/r_exp3.wav", 1.0, 1.0);
-    q1_t_radius_damage(ctx, actor, &attacker, 120.0, ignore);
+    q1_t_radius_damage(ctx, actor, &attacker, damage, ignore);
     let (origin, velocity) = ctx
         .server
         .simulation()
@@ -2003,7 +2151,11 @@ fn q1_grenade_explode<L: ServerLogic>(
     } else {
         vec3(0.0, 0.0, 1.0)
     };
-    let at = vec3(origin.x - dir.x * 8.0, origin.y - dir.y * 8.0, origin.z - dir.z * 8.0);
+    let at = vec3(
+        origin.x - dir.x * flash_backoff,
+        origin.y - dir.y * flash_backoff,
+        origin.z - dir.z * flash_backoff,
+    );
     ctx.behaviors.temp_ents.push(Q1TempEnt::Explosion { at });
     q1_remove_missile(ctx, actor);
 }
