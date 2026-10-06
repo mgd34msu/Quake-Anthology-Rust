@@ -4333,10 +4333,9 @@ mod tests {
     const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
 
     /// e1m2 native census at skill 2: 12 ogres plus 16 grunts plus
-    /// 5 knights plus 3 fiends plus 6 wizards (a sixth knight and a
-    /// fourth fiend carry the 1024 not-hard bit; no wizard does). The
-    /// scrags keep the generic path until their slice lands, so they
-    /// stay out of the native count.
+    /// 5 knights plus 3 fiends plus 6 wizards (a thirteenth ogre, a
+    /// sixth knight, and a fourth fiend carry the 1024 not-hard bit;
+    /// no wizard does). Every e1m2 monster kind is native now.
     const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 42;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies plus
@@ -4344,6 +4343,25 @@ mod tests {
     /// and two more fiends carry the 1024 not-hard bit; no wizard
     /// does). Every e1m3 monster kind is native now.
     const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 65;
+
+    /// e1m4 native census at skill 2: 21 ogres plus 19 knights plus
+    /// 16 wizards plus 3 fiends (two more ogres and three more
+    /// knights carry the 1024 not-hard bit; no wizard or fiend
+    /// does). Every e1m4 monster kind is native now.
+    const LIVE_E1M4_NATIVE_SKILL2_TOTAL: u32 = 59;
+
+    /// e1m5 native census at skill 2: 25 knights plus 15 ogres plus
+    /// 10 wizards plus 9 fiends plus 1 shambler (a second shambler
+    /// carries the 1024 not-hard bit; nothing else does). Every
+    /// e1m5 monster kind is native now.
+    const LIVE_E1M5_NATIVE_SKILL2_TOTAL: u32 = 60;
+
+    /// e1m6 native census at skill 2: 18 ogres plus 6 zombies plus
+    /// 3 wizards plus 2 fiends plus 2 shamblers (two more ogres and
+    /// a third fiend carry the 1024 not-hard bit; no wizard,
+    /// zombie, or shambler does). Every e1m6 monster kind is native
+    /// now.
+    const LIVE_E1M6_NATIVE_SKILL2_TOTAL: u32 = 31;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
@@ -7189,6 +7207,98 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_e1m4_ogre_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m4.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m4 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let ogres = live_ogres(&world);
+        assert_eq!(ogres.len(), 21, "e1m4 spawns twenty-one ogres");
+        assert_eq!(live_knights(&world).len(), 19, "e1m4 spawns nineteen knights");
+        assert_eq!(live_wizards(&world).len(), 16, "e1m4 spawns sixteen scrags");
+        assert_eq!(live_fiends(&world).len(), 3, "e1m4 spawns three fiends");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M4_NATIVE_SKILL2_TOTAL);
+        for ogre in &ogres {
+            let monster = borrowed.monsters.get(ogre).expect("ogre record");
+            if monster.flags & 512 != 512 {
+                let body = world.server().simulation().body_state(ogre).expect("ogre body");
+                panic!(
+                    "PROBE airborne ogre at {:?} think {:?} flags {}",
+                    body.origin, monster.think, monster.flags
+                );
+            }
+            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(ogre).expect("ogre combat");
+            assert_eq!(combat.health, 200.0);
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, _)) {
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "ogres stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless ogres stand down");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_e1m6_ogre_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m6 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let ogres = live_ogres(&world);
+        assert_eq!(ogres.len(), 18, "e1m6 spawns eighteen ogres");
+        assert_eq!(live_zombies(&world).len(), 6, "e1m6 spawns six zombies");
+        assert_eq!(live_wizards(&world).len(), 3, "e1m6 spawns three scrags");
+        assert_eq!(live_fiends(&world).len(), 2, "e1m6 spawns two fiends");
+        assert_eq!(live_shamblers(&world).len(), 2, "e1m6 spawns two shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M6_NATIVE_SKILL2_TOTAL);
+        for ogre in &ogres {
+            let monster = borrowed.monsters.get(ogre).expect("ogre record");
+            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(ogre).expect("ogre combat");
+            assert_eq!(combat.health, 200.0);
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, _)) {
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "ogres stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless ogres stand down");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0146_ogre_grenade_wounds() {
         use super::super::simulation::native_q1_monsters::Q1_EF_MUZZLEFLASH;
         use super::super::simulation::native_q1_weapons::Q1TempEnt;
@@ -7955,6 +8065,49 @@ mod tests {
                 assert!(
                     matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, _)),
                     "knight stands, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
+            }
+            let combat = world.server().simulation().combat_state(knight).expect("knight combat");
+            assert_eq!(combat.health, 75.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_e1m5_knight_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m5.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m5 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let knights = live_knights(&world);
+        assert_eq!(knights.len(), 25, "e1m5 spawns twenty-five knights");
+        assert_eq!(live_ogres(&world).len(), 15, "e1m5 spawns fifteen ogres");
+        assert_eq!(live_wizards(&world).len(), 10, "e1m5 spawns ten scrags");
+        assert_eq!(live_fiends(&world).len(), 9, "e1m5 spawns nine fiends");
+        assert_eq!(live_shamblers(&world).len(), 1, "e1m5 spawns one shambler");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M5_NATIVE_SKILL2_TOTAL);
+        for knight in &knights {
+            let monster = borrowed.monsters.get(knight).expect("knight record");
+            assert_eq!(monster.flags & 512, 512, "dropped knights stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, _)) {
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, _)),
+                    "knights stand, got {:?}",
                     monster.think
                 );
                 assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
