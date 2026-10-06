@@ -165,6 +165,8 @@ pub enum Q1MonsterKind {
     Shambler,
     /// `monster_wizard` (`wizard.qc`).
     Wizard,
+    /// `monster_hell_knight` (`hknight.qc`).
+    HellKnight,
 }
 
 impl Q1MonsterKind {
@@ -182,6 +184,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Fiend => "monster_demon1",
             Q1MonsterKind::Shambler => "monster_shambler",
             Q1MonsterKind::Wizard => "monster_wizard",
+            Q1MonsterKind::HellKnight => "monster_hell_knight",
         }
     }
 
@@ -200,6 +203,7 @@ impl Q1MonsterKind {
             "monster_demon1" => Some(Q1MonsterKind::Fiend),
             "monster_shambler" => Some(Q1MonsterKind::Shambler),
             "monster_wizard" => Some(Q1MonsterKind::Wizard),
+            "monster_hell_knight" => Some(Q1MonsterKind::HellKnight),
             _ => None,
         }
     }
@@ -391,6 +395,39 @@ pub enum Q1MonsterSeq {
     WizPain,
     /// Scrag death 1-8.
     WizDie,
+    /// Hell knight stand 1-9 (`hknight.qc`).
+    HknStand,
+    /// Hell knight walk 1-20.
+    HknWalk,
+    /// Hell knight run 1-8.
+    HknRun,
+    /// Hell knight charge 1-16 (over `char_a1-16`).
+    HknCharA,
+    /// Hell knight circling charge 1-6 (over `char_b1-6`; stock
+    /// never dispatches it — `char_b6` loops to `char_b1` but
+    /// nothing enters `char_b1`).
+    HknCharB,
+    /// Hell knight standing fan cast 1-14 (over `magica1-14`;
+    /// stock never dispatches it — `th_missile` aims at
+    /// `magicc1`).
+    HknMagicA,
+    /// Hell knight second fan cast 1-13 (over `magicb1-13`;
+    /// likewise never dispatched).
+    HknMagicB,
+    /// Hell knight live fan cast 1-11 (over `magicc1-11`).
+    HknMagicC,
+    /// Hell knight slice combo 1-10.
+    HknSlice,
+    /// Hell knight smash combo 1-11.
+    HknSmash,
+    /// Hell knight whirling combo 1-22 (over `w_attack1-22`).
+    HknWAttack,
+    /// Hell knight pain 1-5.
+    HknPain,
+    /// Hell knight death 1-12.
+    HknDie,
+    /// Hell knight deathb 1-9.
+    HknDieB,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -652,6 +689,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_demon1",
         "monster_shambler",
         "monster_wizard",
+        "monster_hell_knight",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -1079,6 +1117,96 @@ pub const Q1_WIZARD_SPIKE_LIFE: f64 = 6.0;
 /// Scrag head model (`wiz_die`, `wizard.qc`).
 pub const Q1_WIZARD_HEAD_MODEL: &str = "progs/h_wizard.mdl";
 
+/// Hell knight collision bounds (`setsize`, `monster_hell_knight`, `hknight.qc`).
+pub const Q1_HKNIGHT_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Hell knight health (`monster_hell_knight`, `hknight.qc`).
+pub const Q1_HKNIGHT_HEALTH: f64 = 250.0;
+
+/// Hell knight gib threshold (`hknight_die`, `hknight.qc`).
+pub const Q1_HKNIGHT_GIB_HEALTH: f64 = -40.0;
+
+/// Hell knight walk stride per frame (`hknight_walk1..20`).
+pub const Q1_HKNIGHT_WALK_STEPS: [f64; 20] = [
+    2.0, 5.0, 5.0, 4.0, 4.0, 2.0, 2.0, 3.0, 3.0, 4.0, 3.0, 4.0, 6.0, 2.0, 2.0, 4.0, 3.0, 3.0, 3.0, 2.0,
+];
+
+/// Hell knight run stride per frame (`hknight_run1..8`).
+pub const Q1_HKNIGHT_RUN_STEPS: [f64; 8] = [20.0, 25.0, 18.0, 16.0, 14.0, 25.0, 21.0, 13.0];
+
+/// Hell knight charge stride per frame (`hknight_char_a1..16`).
+pub const Q1_HKNIGHT_CHARA_STEPS: [f64; 16] = [
+    20.0, 25.0, 18.0, 16.0, 14.0, 20.0, 21.0, 13.0, 20.0, 20.0, 18.0, 16.0, 14.0, 25.0, 21.0, 13.0,
+];
+
+/// Hell knight circling-charge stride per frame (`hknight_char_b1..6`).
+pub const Q1_HKNIGHT_CHARB_STEPS: [f64; 6] = [23.0, 17.0, 12.0, 22.0, 18.0, 8.0];
+
+/// Hell knight slice stride per frame (`hknight_slice1..10`; the
+/// ninth stroke slashes standing still).
+pub const Q1_HKNIGHT_SLICE_STEPS: [Option<f64>; 10] = [
+    Some(9.0),
+    Some(6.0),
+    Some(13.0),
+    Some(4.0),
+    Some(7.0),
+    Some(15.0),
+    Some(8.0),
+    Some(2.0),
+    None,
+    Some(3.0),
+];
+
+/// Hell knight smash stride per frame (`hknight_smash1..11`).
+pub const Q1_HKNIGHT_SMASH_STEPS: [f64; 11] = [1.0, 13.0, 9.0, 11.0, 10.0, 7.0, 12.0, 2.0, 3.0, 0.0, 0.0];
+
+/// Hell knight whirling-combo stride per frame (`hknight_watk1..22`;
+/// the pure-slash frames hold still).
+pub const Q1_HKNIGHT_WATK_STEPS: [Option<f64>; 22] = [
+    Some(2.0),
+    Some(0.0),
+    Some(0.0),
+    None,
+    None,
+    None,
+    Some(1.0),
+    Some(4.0),
+    Some(5.0),
+    Some(3.0),
+    Some(2.0),
+    Some(2.0),
+    Some(0.0),
+    Some(0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(1.0),
+    Some(3.0),
+    Some(4.0),
+    Some(6.0),
+    Some(7.0),
+    Some(3.0),
+];
+
+/// Hell knight spike speed (`hknight_shot`, `hknight.qc`).
+pub const Q1_HKNIGHT_SPIKE_SPEED: f32 = 300.0;
+
+/// Hell knight spike life in seconds (`launch_spike`, `weapons.qc:607`).
+pub const Q1_HKNIGHT_SPIKE_LIFE: f64 = 6.0;
+
+/// Hell knight head model (`hknight_die`, `hknight.qc`).
+pub const Q1_HKNIGHT_HEAD_MODEL: &str = "progs/h_hellkn.mdl";
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -1123,6 +1251,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Fiend => (Q1_FIEND_BOUNDS, Q1_FIEND_HEALTH),
         Q1MonsterKind::Shambler => (Q1_SHAMBLER_BOUNDS, Q1_SHAMBLER_HEALTH),
         Q1MonsterKind::Wizard => (Q1_WIZARD_BOUNDS, Q1_WIZARD_HEALTH),
+        Q1MonsterKind::HellKnight => (Q1_HKNIGHT_BOUNDS, Q1_HKNIGHT_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1621,6 +1750,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Fiend => Some("demon/sight2.wav"),
         Q1MonsterKind::Shambler => Some("shambler/ssight.wav"),
         Q1MonsterKind::Wizard => Some("wizard/wsight.wav"),
+        Q1MonsterKind::HellKnight => Some("hknight/sight1.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1712,6 +1842,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, 0),
+        Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, 0),
     }
 }
 
@@ -1729,6 +1860,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamWalk, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, 0),
+        Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, 0),
     }
 }
 
@@ -1746,6 +1878,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0),
         Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0),
+        Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0),
     }
 }
 
@@ -1753,7 +1886,15 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
 /// `SUB_Null`). The ogre picks its stroke at random (`ogre_melee`,
 /// `ogre.qc:405`) and the shambler picks by roll and health
 /// (`sham_melee`, `shambler.qc`), so the seed and health ride along.
-pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind, health: f64) -> Option<Q1MonsterThink> {
+/// The hell knight cycles its three combos off the shared
+/// `hknight_type` global and barks the slash up front
+/// (`hknight_melee`, `hknight.qc`), so the actor rides along too.
+pub fn q1_th_melee(
+    behaviors: &mut Q1NativeBehaviors,
+    actor: &ActorId,
+    kind: Q1MonsterKind,
+    health: f64,
+) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, 0)),
         Q1MonsterKind::Grunt => None,
@@ -1783,6 +1924,30 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind, healt
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0))
             }
         }
+        // The shared combo counter advances first, then the slash
+        // barks, then slice/smash/whirl runs in turn (the whirl
+        // resets the counter). Past 3 stock sets no think, which
+        // cannot happen from the 0 start.
+        Q1MonsterKind::HellKnight => {
+            behaviors.hknight_type += 1;
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_WEAPON,
+                "hknight/slash1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            match behaviors.hknight_type {
+                1 => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSlice, 0)),
+                2 => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSmash, 0)),
+                3 => {
+                    behaviors.hknight_type = 0;
+                    Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknWAttack, 0))
+                }
+                _ => None,
+            }
+        }
     }
 }
 
@@ -1800,6 +1965,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0)),
         Q1MonsterKind::Shambler => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 0)),
         Q1MonsterKind::Wizard => Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0)),
+        Q1MonsterKind::HellKnight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknMagicC, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1908,6 +2074,20 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::WizFast => 10,
         Q1MonsterSeq::WizPain => 4,
         Q1MonsterSeq::WizDie => 8,
+        Q1MonsterSeq::HknStand => 9,
+        Q1MonsterSeq::HknWalk => 20,
+        Q1MonsterSeq::HknRun => 8,
+        Q1MonsterSeq::HknCharA => 16,
+        Q1MonsterSeq::HknCharB => 6,
+        Q1MonsterSeq::HknMagicA => 14,
+        Q1MonsterSeq::HknMagicB => 13,
+        Q1MonsterSeq::HknMagicC => 11,
+        Q1MonsterSeq::HknSlice => 10,
+        Q1MonsterSeq::HknSmash => 11,
+        Q1MonsterSeq::HknWAttack => 22,
+        Q1MonsterSeq::HknPain => 5,
+        Q1MonsterSeq::HknDie => 12,
+        Q1MonsterSeq::HknDieB => 9,
     }
 }
 
@@ -1927,7 +2107,11 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// swim 39-56, pain 57-65; knight stand 0-8, runb 9-16, runattack
 /// 17-27, pain 28-30, painb 31-41, attackb 43-52, walk 53-66, death
 /// 76-85, deathb 86-96; fiend stand 0-12, walk 13-20, run 21-26,
-/// leap 27-38, pain 39-44, death 45-53, attacka 54-68).
+/// leap 27-38, pain 39-44, death 45-53, attacka 54-68; hell knight
+/// stand 0-8, walk 9-28, run 29-36, pain 37-41, death 42-53, deathb
+/// 54-62, char_a 63-78, magica 79-92, magicb 93-105, char_b
+/// 106-111, slice 112-121, smash 122-132, w_attack 133-154, magicc
+/// 155-165).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -2044,6 +2228,20 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::WizFast => 29,
         Q1MonsterSeq::WizPain => 42,
         Q1MonsterSeq::WizDie => 46,
+        Q1MonsterSeq::HknStand => 0,
+        Q1MonsterSeq::HknWalk => 9,
+        Q1MonsterSeq::HknRun => 29,
+        Q1MonsterSeq::HknCharA => 63,
+        Q1MonsterSeq::HknCharB => 106,
+        Q1MonsterSeq::HknMagicA => 79,
+        Q1MonsterSeq::HknMagicB => 93,
+        Q1MonsterSeq::HknMagicC => 155,
+        Q1MonsterSeq::HknSlice => 112,
+        Q1MonsterSeq::HknSmash => 122,
+        Q1MonsterSeq::HknWAttack => 133,
+        Q1MonsterSeq::HknPain => 37,
+        Q1MonsterSeq::HknDie => 42,
+        Q1MonsterSeq::HknDieB => 54,
     };
     // The volley rewinds `magatt5..2` over its tail (`wizard.qc`).
     if seq == Q1MonsterSeq::WizFast {
@@ -2175,6 +2373,23 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::WizPain) => q1_th_run(kind),
         // The death tail self-loops (`wizard.qc`); death never exits.
         (_, Q1MonsterSeq::WizDie) => Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, index),
+        (_, Q1MonsterSeq::HknStand) => Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, 0),
+        (_, Q1MonsterSeq::HknWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, 0),
+        (_, Q1MonsterSeq::HknRun) => Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0),
+        (_, Q1MonsterSeq::HknCharA) => q1_th_run(kind),
+        // The circling charge loops to its own head (`hknight_char_b6`);
+        // stock never enters it.
+        (_, Q1MonsterSeq::HknCharB) => Q1MonsterThink::Frame(Q1MonsterSeq::HknCharB, 0),
+        (_, Q1MonsterSeq::HknMagicA) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknMagicB) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknMagicC) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknSlice) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknSmash) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknWAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::HknPain) => q1_th_run(kind),
+        // Death tails self-loop (`hknight.qc`); death never exits.
+        (_, Q1MonsterSeq::HknDie) => Q1MonsterThink::Frame(Q1MonsterSeq::HknDie, index),
+        (_, Q1MonsterSeq::HknDieB) => Q1MonsterThink::Frame(Q1MonsterSeq::HknDieB, index),
     }
 }
 
@@ -2420,6 +2635,33 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // The hold gates first, then the hurt barks — and the first
+        // pain frame barks again (`hknight_pain`, `hknight_pain1`).
+        // A stale hold (5 s past) always flinches; otherwise the
+        // flinch rolls `random * 30` against the take. Both flinch
+        // paths hold pain for a second.
+        Q1MonsterKind::HellKnight => {
+            if monster.pain_finished > now {
+                return;
+            }
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "hknight/pain1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            if now - monster.pain_finished <= 5.0 && f64::from(q1_monster_random(behaviors)) * 30.0 > take {
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.pain_finished = now + 1.0;
+                monster.frame = q1_seq_frame(Q1MonsterSeq::HknPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::HknPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -2638,6 +2880,34 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::WizDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::HellKnight => {
+            if health < Q1_HKNIGHT_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, Q1_HKNIGHT_HEAD_MODEL, health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+                return;
+            }
+            q1_monster_sound(
+                behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "hknight/death1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            let seq = if q1_monster_random(behaviors) > 0.5 {
+                Q1MonsterSeq::HknDie
+            } else {
+                Q1MonsterSeq::HknDieB
+            };
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -3649,7 +3919,7 @@ fn q1_ai_run_melee<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor:
         // one the run holds (stock would call `SUB_Null`).
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
         let health = q1_health_of(ctx.server.simulation(), actor);
-        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind, health));
+        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, actor, kind, health));
         let Some(think) = think else {
             return;
         };
@@ -3791,7 +4061,7 @@ pub fn q1_check_attack<L: ServerLogic>(
             return true;
         }
         let health = q1_health_of(ctx.server.simulation(), actor);
-        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind, health));
+        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, actor, kind, health));
         let Some(think) = think else {
             return false;
         };
@@ -4277,6 +4547,10 @@ fn q1_check_any_attack<L: ServerLogic>(
         Some(Q1MonsterKind::Shambler) => q1_sham_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Wizard) => q1_wizard_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
+        // Hell knights run the generic check with both strokes armed
+        // (`CheckAttack`, `fight.qc:57`): melee cycles the combos,
+        // missile fans the spikes.
+        Some(Q1MonsterKind::HellKnight) => q1_check_attack(ctx, actor, memo, true, true),
         None => false,
     }
 }
@@ -5444,6 +5718,172 @@ fn q1_wiz_fast_fire<L: ServerLogic>(
             born_at: now,
         },
     );
+}
+
+/// Stock `hknight_shot` (`hknight.qc`): fan one 300-speed
+/// `knightspike` from the chest center plus 20 forward, yawed
+/// `offset * 6` degrees off the enemy line, with the stock
+/// pitch-negating z plus jitter. Each shot barks the cast.
+/// Needs a live enemy body (stock reads `self.enemy.origin`).
+fn q1_hknight_shot<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, offset: f32) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let Some(foe) = ctx.server.simulation().body_state(&enemy) else {
+        return;
+    };
+    let delta = vec3(foe.origin.x - body.origin.x, foe.origin.y - body.origin.y, foe.origin.z - body.origin.z);
+    let mut offang = q1_vectoangles(delta);
+    offang.y += offset * 6.0;
+    let axes = angle_vectors(offang);
+    let center = vec3(
+        (body.bounds.min.x + body.bounds.max.x) * 0.5,
+        (body.bounds.min.y + body.bounds.max.y) * 0.5,
+        (body.bounds.min.z + body.bounds.max.z) * 0.5,
+    );
+    let org = vec3(
+        body.origin.x + center.x + axes.forward.x * 20.0,
+        body.origin.y + center.y + axes.forward.y * 20.0,
+        body.origin.z + center.z + axes.forward.z * 20.0,
+    );
+    let len = (axes.forward.x * axes.forward.x + axes.forward.y * axes.forward.y + axes.forward.z * axes.forward.z)
+        .sqrt();
+    let mut dir = if len.is_normal() {
+        vec3(axes.forward.x / len, axes.forward.y / len, axes.forward.z / len)
+    } else {
+        vec3(0.0, 0.0, 0.0)
+    };
+    dir.z = -dir.z + (q1_monster_random(ctx.behaviors) - 0.5) * 0.1;
+    let now = ctx.now;
+    let me = actor.clone();
+    let _ignored = q1_spawn_missile(
+        &mut *ctx.server,
+        &mut *ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::KnightSpike,
+            owner: me,
+            origin: org,
+            velocity: vec3(
+                dir.x * Q1_HKNIGHT_SPIKE_SPEED,
+                dir.y * Q1_HKNIGHT_SPIKE_SPEED,
+                dir.z * Q1_HKNIGHT_SPIKE_SPEED,
+            ),
+            avelocity: vec3(0.0, 0.0, 0.0),
+            effects: 0,
+            fuse_at: None,
+            remove_at: now + Q1_HKNIGHT_SPIKE_LIFE,
+            born_at: now,
+        },
+    );
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "hknight/attack1.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+}
+
+/// Stock `CheckForCharge` (`hknight.qc`): with the enemy in sight
+/// past the attack hold, on near level, and 80+ units out, hold
+/// attacks for 2 s and charge (`SUB_AttackFinished (2)` + `char_a1`;
+/// nightmares skip the hold).
+fn q1_check_for_charge<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    if !q1_visible(ctx, actor, &enemy) {
+        return;
+    };
+    let now = ctx.now;
+    let held = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .is_some_and(|monster| now < monster.attack_finished);
+    if held {
+        return;
+    };
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let to = ctx.server.simulation().body_state(&enemy).map(|body| body.origin);
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    if (from.z - to.z).abs() > 20.0 {
+        return;
+    }
+    let dx = from.x - to.x;
+    let dy = from.y - to.y;
+    let dz = from.z - to.z;
+    if (dx * dx + dy * dy + dz * dz).sqrt() < 80.0 {
+        return;
+    }
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.cnt = 0;
+        if ctx.behaviors.skill != 3 {
+            monster.attack_finished = now + 2.0;
+        }
+        monster.frame = q1_seq_frame(Q1MonsterSeq::HknCharA, 0);
+        monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::HknCharA, 0);
+    }
+}
+
+/// Stock `CheckContinueCharge` (`hknight.qc`): an expired charge
+/// holds attacks for 3 s and runs (`SUB_AttackFinished (3)` +
+/// `run1`; nightmares skip the hold), else a sword swish covers the
+/// circling slash. Only the never-dispatched `char_b1` calls it.
+fn q1_check_continue_charge<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let now = ctx.now;
+    let expired = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .is_some_and(|monster| now > monster.attack_finished);
+    if expired {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.cnt = 0;
+            if ctx.behaviors.skill != 3 {
+                monster.attack_finished = now + 3.0;
+            }
+            monster.frame = q1_seq_frame(Q1MonsterSeq::HknRun, 0);
+            monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0);
+        }
+        return;
+    }
+    let sample = if q1_monster_random(ctx.behaviors) > 0.5 {
+        "knight/sword2.wav"
+    } else {
+        "knight/sword1.wav"
+    };
+    q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_WEAPON, sample, 1.0, Q1_ATTN_NORM);
+}
+
+/// Stock `hk_idle_sound` (`hknight.qc`): idle growl on a 0.2 roll.
+fn q1_hk_idle_sound<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    if q1_monster_random(ctx.behaviors) < 0.2 {
+        q1_monster_sound(
+            ctx.behaviors,
+            actor,
+            Q1_CHAN_VOICE,
+            "hknight/idle.wav",
+            1.0,
+            Q1_ATTN_NORM,
+        );
+    }
 }
 
 /// Stock `ShamClaw` (`shambler.qc`): charge in 10, then rake the
@@ -7450,6 +7890,159 @@ fn q1_wizard_frame<L: ServerLogic>(
 }
 
 /// One monster `$frame` body, dispatched per kind.
+/// One hell knight `$frame` body (`hknight.qc`): the growling
+/// walk and run (the run head hunts for a charge), the slashing
+/// charge, the three fan casts (only `magicc` ever fires), the
+/// three cycling sword combos, the double-barked pain, and the two
+/// deaths with their third-frame unsolid drop.
+fn q1_hknight_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::HknStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::HknWalk, 0) | (Q1MonsterSeq::HknRun, 0) => {
+            q1_hk_idle_sound(ctx, actor);
+            if seq == Q1MonsterSeq::HknWalk {
+                q1_ai_walk(ctx, actor, Q1_HKNIGHT_WALK_STEPS[0]);
+            } else {
+                q1_ai_run(ctx, actor, Q1_HKNIGHT_RUN_STEPS[0]);
+                q1_check_for_charge(ctx, actor);
+            }
+        }
+        (Q1MonsterSeq::HknWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_HKNIGHT_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::HknRun, _) => {
+            q1_ai_run(ctx, actor, Q1_HKNIGHT_RUN_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::HknCharA, 5)
+        | (Q1MonsterSeq::HknCharA, 6)
+        | (Q1MonsterSeq::HknCharA, 7)
+        | (Q1MonsterSeq::HknCharA, 8)
+        | (Q1MonsterSeq::HknCharA, 9)
+        | (Q1MonsterSeq::HknCharA, 10) => {
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_CHARA_STEPS[usize::from(index)]);
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::HknCharA, _) => {
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_CHARA_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::HknCharB, 0) => {
+            q1_check_continue_charge(ctx, actor);
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_CHARB_STEPS[0]);
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::HknCharB, _) => {
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_CHARB_STEPS[usize::from(index)]);
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::HknMagicA, 6)
+        | (Q1MonsterSeq::HknMagicA, 7)
+        | (Q1MonsterSeq::HknMagicA, 8)
+        | (Q1MonsterSeq::HknMagicA, 9)
+        | (Q1MonsterSeq::HknMagicA, 10)
+        | (Q1MonsterSeq::HknMagicA, 11) => {
+            q1_hknight_shot(ctx, actor, f32::from(index) - 8.0);
+        }
+        (Q1MonsterSeq::HknMagicA, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::HknMagicB, 6)
+        | (Q1MonsterSeq::HknMagicB, 7)
+        | (Q1MonsterSeq::HknMagicB, 8)
+        | (Q1MonsterSeq::HknMagicB, 9)
+        | (Q1MonsterSeq::HknMagicB, 10)
+        | (Q1MonsterSeq::HknMagicB, 11) => {
+            q1_hknight_shot(ctx, actor, f32::from(index) - 8.0);
+        }
+        (Q1MonsterSeq::HknMagicB, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::HknMagicC, 5)
+        | (Q1MonsterSeq::HknMagicC, 6)
+        | (Q1MonsterSeq::HknMagicC, 7)
+        | (Q1MonsterSeq::HknMagicC, 8)
+        | (Q1MonsterSeq::HknMagicC, 9)
+        | (Q1MonsterSeq::HknMagicC, 10) => {
+            q1_hknight_shot(ctx, actor, f32::from(index) - 7.0);
+        }
+        (Q1MonsterSeq::HknMagicC, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::HknSlice, 4)
+        | (Q1MonsterSeq::HknSlice, 5)
+        | (Q1MonsterSeq::HknSlice, 6)
+        | (Q1MonsterSeq::HknSlice, 7) => {
+            if let Some(dist) = Q1_HKNIGHT_SLICE_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+            q1_ai_melee(ctx, actor);
+        }
+        // The ninth stroke slashes standing still (`hknight_slice9`).
+        (Q1MonsterSeq::HknSlice, 8) => q1_ai_melee(ctx, actor),
+        (Q1MonsterSeq::HknSlice, _) => {
+            if let Some(dist) = Q1_HKNIGHT_SLICE_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::HknSmash, 4)
+        | (Q1MonsterSeq::HknSmash, 5)
+        | (Q1MonsterSeq::HknSmash, 6)
+        | (Q1MonsterSeq::HknSmash, 7)
+        | (Q1MonsterSeq::HknSmash, 8) => {
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_SMASH_STEPS[usize::from(index)]);
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::HknSmash, _) => {
+            q1_ai_charge(ctx, actor, Q1_HKNIGHT_SMASH_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::HknWAttack, 3)
+        | (Q1MonsterSeq::HknWAttack, 4)
+        | (Q1MonsterSeq::HknWAttack, 5)
+        | (Q1MonsterSeq::HknWAttack, 9)
+        | (Q1MonsterSeq::HknWAttack, 10)
+        | (Q1MonsterSeq::HknWAttack, 11)
+        | (Q1MonsterSeq::HknWAttack, 16)
+        | (Q1MonsterSeq::HknWAttack, 17)
+        | (Q1MonsterSeq::HknWAttack, 18) => {
+            if let Some(dist) = Q1_HKNIGHT_WATK_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+            q1_ai_melee(ctx, actor);
+        }
+        (Q1MonsterSeq::HknWAttack, _) => {
+            if let Some(dist) = Q1_HKNIGHT_WATK_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        // The pain head barks on top of the `th_pain` bark
+        // (`hknight_pain1`).
+        (Q1MonsterSeq::HknPain, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "hknight/pain1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::HknPain, _) => {}
+        (Q1MonsterSeq::HknDie, 0) => q1_ai_forward(ctx, actor, 10.0),
+        (Q1MonsterSeq::HknDie, 1) => q1_ai_forward(ctx, actor, 8.0),
+        (Q1MonsterSeq::HknDie, 2) => {
+            ctx.behaviors.solids.remove(actor);
+            q1_ai_forward(ctx, actor, 7.0);
+        }
+        (Q1MonsterSeq::HknDie, 7) => q1_ai_forward(ctx, actor, 10.0),
+        (Q1MonsterSeq::HknDie, 8) => q1_ai_forward(ctx, actor, 11.0),
+        (Q1MonsterSeq::HknDie, _) => {}
+        (Q1MonsterSeq::HknDieB, 2) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::HknDieB, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
     actor: &ActorId,
@@ -7468,6 +8061,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Fiend => q1_fiend_frame(ctx, actor, seq, index),
         Q1MonsterKind::Shambler => q1_shambler_frame(ctx, actor, seq, index),
         Q1MonsterKind::Wizard => q1_wizard_frame(ctx, actor, seq, index),
+        Q1MonsterKind::HellKnight => q1_hknight_frame(ctx, actor, seq, index),
     }
 }
 
@@ -7531,6 +8125,10 @@ mod tests {
 
     fn wizard_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_wizard", pairs)
+    }
+
+    fn hknight_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_hell_knight", pairs)
     }
 
     fn spawn_monster(
@@ -7617,6 +8215,14 @@ mod tests {
     }
 
     fn spawn_wizard(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_hknight(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -7752,6 +8358,14 @@ mod tests {
         wizard: &ActorId,
     ) {
         arm_monster(server, behaviors, wizard);
+    }
+
+    fn arm_hknight(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        hknight: &ActorId,
+    ) {
+        arm_monster(server, behaviors, hknight);
     }
 
     #[test]
@@ -8170,7 +8784,7 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Grunt.classname(), "monster_army");
         let health = q1_health_of(server.simulation(), grunt.id());
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Grunt, health).is_none());
+        assert!(q1_th_melee(&mut behaviors, grunt.id(), Q1MonsterKind::Grunt, health).is_none());
         assert_eq!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Grunt),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0))
@@ -8401,7 +9015,7 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Enforcer.classname(), "monster_enforcer");
         let health = q1_health_of(server.simulation(), enforcer.id());
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Enforcer, health).is_none());
+        assert!(q1_th_melee(&mut behaviors, enforcer.id(), Q1MonsterKind::Enforcer, health).is_none());
         assert_eq!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Enforcer),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0))
@@ -8677,6 +9291,7 @@ mod tests {
         assert!(matches!(
             q1_th_melee(
                 &mut behaviors,
+                ogre.id(),
                 Q1MonsterKind::Ogre,
                 q1_health_of(server.simulation(), ogre.id())
             ),
@@ -8961,7 +9576,7 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Zombie.classname(), "monster_zombie");
         let health = q1_health_of(server.simulation(), zombie.id());
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Zombie, health).is_none());
+        assert!(q1_th_melee(&mut behaviors, zombie.id(), Q1MonsterKind::Zombie, health).is_none());
         assert!(matches!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Zombie),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttA, 0))
@@ -9284,6 +9899,7 @@ mod tests {
         assert_eq!(
             q1_th_melee(
                 &mut behaviors,
+                fish.id(),
                 Q1MonsterKind::Fish,
                 q1_health_of(server.simulation(), fish.id())
             ),
@@ -9442,6 +10058,7 @@ mod tests {
         assert_eq!(
             q1_th_melee(
                 &mut behaviors,
+                knight.id(),
                 Q1MonsterKind::Knight,
                 q1_health_of(server.simulation(), knight.id())
             ),
@@ -9660,6 +10277,7 @@ mod tests {
         assert_eq!(
             q1_th_melee(
                 &mut behaviors,
+                fiend.id(),
                 Q1MonsterKind::Fiend,
                 q1_health_of(server.simulation(), fiend.id())
             ),
@@ -9878,7 +10496,12 @@ mod tests {
         // Full health always opens with the smash; the missile stroke
         // is the lightning cast.
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH),
+            q1_th_melee(
+                &mut behaviors,
+                shambler.id(),
+                Q1MonsterKind::Shambler,
+                Q1_SHAMBLER_HEALTH
+            ),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0))
         );
         assert_eq!(
@@ -9889,13 +10512,23 @@ mod tests {
 
     #[test]
     fn shambler_melee_picks_stroke_by_roll_and_health() {
+        // An id for the melee call (only the hell knight barks on it).
+        let mut server = test_server();
+        let mut spawn_behaviors = Q1NativeBehaviors::new();
+        let fields = shambler_fields(&[]);
+        let shambler = spawn_shambler(&mut server, &mut spawn_behaviors, &fields);
         // Full health smashes on every seed; hurt shamblers deal all
         // three strokes across the seed sweep.
         for seed in 0..8 {
             let mut behaviors = Q1NativeBehaviors::new();
             behaviors.monster_rand = seed;
             assert_eq!(
-                q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH),
+                q1_th_melee(
+                    &mut behaviors,
+                    shambler.id(),
+                    Q1MonsterKind::Shambler,
+                    Q1_SHAMBLER_HEALTH
+                ),
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0)),
                 "full health smashes on seed {seed}"
             );
@@ -9907,7 +10540,12 @@ mod tests {
         // near zero on the first pull, like stock's unseeded libc.
         let mut behaviors = Q1NativeBehaviors::new();
         for _ in 0..512 {
-            match q1_th_melee(&mut behaviors, Q1MonsterKind::Shambler, Q1_SHAMBLER_HEALTH - 1.0) {
+            match q1_th_melee(
+                &mut behaviors,
+                shambler.id(),
+                Q1MonsterKind::Shambler,
+                Q1_SHAMBLER_HEALTH - 1.0,
+            ) {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0)) => smash += 1,
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingR, 0)) => swingr += 1,
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0)) => swingl += 1,
@@ -10143,7 +10781,7 @@ mod tests {
         assert_eq!(Q1MonsterKind::Wizard.classname(), "monster_wizard");
         // No melee stroke; the missile stroke is the spike volley.
         let health = q1_health_of(server.simulation(), wizard.id());
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Wizard, health).is_none());
+        assert!(q1_th_melee(&mut behaviors, wizard.id(), Q1MonsterKind::Wizard, health).is_none());
         assert_eq!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Wizard),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0))
@@ -10427,6 +11065,303 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Wizard, WizDie, 7),
             Q1MonsterThink::Frame(WizDie, 7)
+        );
+    }
+
+    #[test]
+    fn hknight_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = hknight_fields(&[]);
+        let hknight = spawn_hknight(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(hknight.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_HKNIGHT_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_HKNIGHT_BOUNDS.max);
+        let combat = server.simulation().combat_state(hknight.id()).unwrap();
+        assert_eq!(combat.health, Q1_HKNIGHT_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(hknight.id()));
+        let monster = behaviors.monsters.get(hknight.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::HellKnight);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_hell_knight"),
+            Some(Q1MonsterKind::HellKnight)
+        );
+        assert_eq!(Q1MonsterKind::HellKnight.classname(), "monster_hell_knight");
+        // The shared combo counter starts at 0, so the first melee
+        // opens the slice; the missile stroke is the live fan cast.
+        assert_eq!(
+            q1_th_melee(
+                &mut behaviors,
+                hknight.id(),
+                Q1MonsterKind::HellKnight,
+                q1_health_of(server.simulation(), hknight.id())
+            ),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSlice, 0))
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::HellKnight),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknMagicC, 0))
+        );
+    }
+
+    #[test]
+    fn hknight_melee_cycles_combos_off_the_shared_counter() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = hknight_fields(&[]);
+        let first = spawn_hknight(&mut server, &mut behaviors, &fields);
+        let fields = hknight_fields(&[]);
+        let second = spawn_hknight(&mut server, &mut behaviors, &fields);
+        let health = q1_health_of(server.simulation(), first.id());
+        // Slice, smash, whirl in turn; the whirl resets the counter.
+        // The counter is global: the second knight deals the combo
+        // the first knight advanced to.
+        assert_eq!(
+            q1_th_melee(&mut behaviors, first.id(), Q1MonsterKind::HellKnight, health),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSlice, 0))
+        );
+        assert_eq!(
+            q1_th_melee(&mut behaviors, second.id(), Q1MonsterKind::HellKnight, health),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSmash, 0))
+        );
+        assert_eq!(
+            q1_th_melee(&mut behaviors, first.id(), Q1MonsterKind::HellKnight, health),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknWAttack, 0))
+        );
+        assert_eq!(behaviors.hknight_type, 0, "the whirl resets the counter");
+        assert_eq!(
+            q1_th_melee(&mut behaviors, second.id(), Q1MonsterKind::HellKnight, health),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknSlice, 0))
+        );
+        assert_eq!(
+            behaviors
+                .sounds
+                .iter()
+                .filter(|sound| sound.sample == "hknight/slash1.wav")
+                .count(),
+            4,
+            "every melee barks the slash"
+        );
+    }
+
+    #[test]
+    fn hknight_pain_gates_stale_hold_and_rolls() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = hknight_fields(&[]);
+        let hknight = spawn_hknight(&mut server, &mut behaviors, &fields);
+        arm_hknight(&mut server, &mut behaviors, hknight.id());
+        // Gated pain stays out and stays silent.
+        behaviors.monsters.get_mut(hknight.id()).unwrap().pain_finished = 10.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, hknight.id(), 30.0);
+        assert_eq!(
+            behaviors.monsters.get(hknight.id()).unwrap().think,
+            Q1MonsterThink::StartGo
+        );
+        assert!(behaviors.sounds.is_empty(), "gated pain stays silent");
+        // A stale hold always flinches without drawing.
+        behaviors.monsters.get_mut(hknight.id()).unwrap().pain_finished = -10.0;
+        let rand_before = behaviors.monster_rand;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, hknight.id(), 0.0);
+        let monster = behaviors.monsters.get(hknight.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknPain, 0));
+        assert_eq!(monster.pain_finished, 1.0);
+        assert_eq!(behaviors.monster_rand, rand_before, "stale holds draw nothing");
+        // A fresh light hit barks but rolls out of the flinch: find a
+        // seed whose first draw beats 5/30.
+        let mut probe = Q1NativeBehaviors::new();
+        let seed = (1..100_000)
+            .find(|seed| {
+                probe.monster_rand = *seed;
+                q1_monster_random(&mut probe) * 30.0 > 5.0
+            })
+            .expect("a high roll exists");
+        behaviors.monster_rand = seed;
+        // A fresh hold (inside 5 s) rolls: the high seed flinches nothing.
+        behaviors.monsters.get_mut(hknight.id()).unwrap().pain_finished = -1.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, hknight.id(), 5.0);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "hknight/pain1.wav"),
+            "unfelt hits still bark"
+        );
+        assert_eq!(
+            behaviors.monsters.get(hknight.id()).unwrap().pain_finished,
+            -1.0,
+            "unfelt hits latch no hold"
+        );
+        // A crushing hit always flinches (`random * 30 <= 30`).
+        behaviors.monsters.get_mut(hknight.id()).unwrap().pain_finished = -1.0;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, hknight.id(), 30.0);
+        let monster = behaviors.monsters.get(hknight.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknPain, 0));
+        assert_eq!(monster.pain_finished, 1.0, "flinching holds a second");
+    }
+
+    #[test]
+    fn hknight_dies_into_either_death_still_solid() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = hknight_fields(&[]);
+        let hknight = spawn_hknight(&mut server, &mut behaviors, &fields);
+        arm_hknight(&mut server, &mut behaviors, hknight.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            hknight.id(),
+            None,
+            Some(player.id()),
+            260.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(hknight.id()).unwrap();
+        assert!(monster.dead);
+        assert!(
+            matches!(
+                monster.think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::HknDie, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::HknDieB, 0)
+            ),
+            "death runs die, got {:?}",
+            monster.think
+        );
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "hknight/death1.wav"));
+        // Solidity drops in the third death frame, not in `th_die`.
+        assert!(behaviors.solids.contains(hknight.id()));
+    }
+
+    #[test]
+    fn hknight_gib_threshold_bursts() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = hknight_fields(&[]);
+        let hknight = spawn_hknight(&mut server, &mut behaviors, &fields);
+        arm_hknight(&mut server, &mut behaviors, hknight.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // Health -50: past the hell knight's -40 gib line.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            hknight.id(),
+            None,
+            Some(player.id()),
+            300.0,
+        );
+        assert_eq!(behaviors.killed_monsters, 1);
+        assert!(behaviors.monsters.get(hknight.id()).unwrap().dead);
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(behaviors.gibs.contains_key(hknight.id()), "the head keeps the actor");
+        assert_eq!(behaviors.pending_gibs.len(), 3, "three chunks queue");
+        assert!(!behaviors.solids.contains(hknight.id()), "gibs go unsolid");
+    }
+
+    #[test]
+    fn hknight_sight_barks() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = hknight_fields(&[]);
+        let hknight = spawn_hknight(&mut server, &mut behaviors, &fields);
+        arm_hknight(&mut server, &mut behaviors, hknight.id());
+        behaviors.monsters.get_mut(hknight.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, hknight.id());
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "hknight/sight1.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(hknight.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0)
+        );
+    }
+
+    #[test]
+    fn hknight_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(HknStand), 9);
+        assert_eq!(q1_seq_len(HknWalk), 20);
+        assert_eq!(q1_seq_len(HknRun), 8);
+        assert_eq!(q1_seq_len(HknCharA), 16);
+        assert_eq!(q1_seq_len(HknCharB), 6);
+        assert_eq!(q1_seq_len(HknMagicA), 14);
+        assert_eq!(q1_seq_len(HknMagicB), 13);
+        assert_eq!(q1_seq_len(HknMagicC), 11);
+        assert_eq!(q1_seq_len(HknSlice), 10);
+        assert_eq!(q1_seq_len(HknSmash), 11);
+        assert_eq!(q1_seq_len(HknWAttack), 22);
+        assert_eq!(q1_seq_len(HknPain), 5);
+        assert_eq!(q1_seq_len(HknDie), 12);
+        assert_eq!(q1_seq_len(HknDieB), 9);
+        assert_eq!(q1_seq_frame(HknStand, 0), 0);
+        assert_eq!(q1_seq_frame(HknStand, 8), 8);
+        assert_eq!(q1_seq_frame(HknWalk, 0), 9);
+        assert_eq!(q1_seq_frame(HknWalk, 19), 28);
+        assert_eq!(q1_seq_frame(HknRun, 0), 29);
+        assert_eq!(q1_seq_frame(HknRun, 7), 36);
+        assert_eq!(q1_seq_frame(HknCharA, 0), 63);
+        assert_eq!(q1_seq_frame(HknCharA, 15), 78);
+        assert_eq!(q1_seq_frame(HknCharB, 0), 106);
+        assert_eq!(q1_seq_frame(HknCharB, 5), 111);
+        assert_eq!(q1_seq_frame(HknMagicA, 0), 79);
+        assert_eq!(q1_seq_frame(HknMagicA, 13), 92);
+        assert_eq!(q1_seq_frame(HknMagicB, 0), 93);
+        assert_eq!(q1_seq_frame(HknMagicB, 12), 105);
+        assert_eq!(q1_seq_frame(HknMagicC, 0), 155);
+        assert_eq!(q1_seq_frame(HknMagicC, 10), 165);
+        assert_eq!(q1_seq_frame(HknSlice, 0), 112);
+        assert_eq!(q1_seq_frame(HknSlice, 9), 121);
+        assert_eq!(q1_seq_frame(HknSmash, 0), 122);
+        assert_eq!(q1_seq_frame(HknSmash, 10), 132);
+        assert_eq!(q1_seq_frame(HknWAttack, 0), 133);
+        assert_eq!(q1_seq_frame(HknWAttack, 21), 154);
+        assert_eq!(q1_seq_frame(HknPain, 0), 37);
+        assert_eq!(q1_seq_frame(HknPain, 4), 41);
+        assert_eq!(q1_seq_frame(HknDie, 0), 42);
+        assert_eq!(q1_seq_frame(HknDie, 11), 53);
+        assert_eq!(q1_seq_frame(HknDieB, 0), 54);
+        assert_eq!(q1_seq_frame(HknDieB, 8), 62);
+        // Attack and pain tails run back in; the circling charge
+        // loops to its head; deaths never exit.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknCharA, 15),
+            q1_th_run(Q1MonsterKind::HellKnight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknMagicC, 10),
+            q1_th_run(Q1MonsterKind::HellKnight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknCharB, 5),
+            Q1MonsterThink::Frame(HknCharB, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknWAttack, 21),
+            q1_th_run(Q1MonsterKind::HellKnight)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknDie, 11),
+            Q1MonsterThink::Frame(HknDie, 11)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::HellKnight, HknDieB, 8),
+            Q1MonsterThink::Frame(HknDieB, 8)
         );
     }
 }

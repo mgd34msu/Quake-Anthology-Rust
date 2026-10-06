@@ -352,6 +352,11 @@ pub enum Q1TempEnt {
         /// Impact point.
         at: Vec3,
     },
+    /// `TE_KNIGHTSPIKE` at the impact point.
+    KnightSpike {
+        /// Impact point.
+        at: Vec3,
+    },
     /// `TE_BLOOD` at the wound (`SpawnBlood`, `combat.qc`).
     Blood {
         /// Wound point.
@@ -1285,6 +1290,10 @@ pub enum Q1MissileKind {
     /// with classname `wizspike`, `weapons.qc:675`). The green tracer
     /// rides the `w_spike.mdl` model flags, not gamecode.
     WizSpike,
+    /// Hell knight spike: 9 damage, `TE_KNIGHTSPIKE` walls
+    /// (`spike_touch` with classname `knightspike`,
+    /// `weapons.qc:675`).
+    KnightSpike,
 }
 
 impl Q1MissileKind {
@@ -1300,6 +1309,7 @@ impl Q1MissileKind {
             Q1MissileKind::OgreGrenade => "grenade",
             Q1MissileKind::ZombieFlesh => "zombie_flesh",
             Q1MissileKind::WizSpike => "wizspike",
+            Q1MissileKind::KnightSpike => "knightspike",
         }
     }
 }
@@ -1723,6 +1733,7 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         Q1MissileKind::Spike
         | Q1MissileKind::SuperSpike
         | Q1MissileKind::WizSpike
+        | Q1MissileKind::KnightSpike
         | Q1MissileKind::Rocket
         | Q1MissileKind::Laser => {
             q1_fly_missile(ctx, actor, &missile, dt);
@@ -1887,6 +1898,7 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Spike
             | Q1MissileKind::SuperSpike
             | Q1MissileKind::WizSpike
+            | Q1MissileKind::KnightSpike
             | Q1MissileKind::Rocket
             | Q1MissileKind::Laser
     );
@@ -1898,6 +1910,9 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::Spike),
         Q1MissileKind::SuperSpike => q1_spike_impact(ctx, actor, missile, hit, 18.0, Q1SpikeWall::SuperSpike),
         Q1MissileKind::WizSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike),
+        Q1MissileKind::KnightSpike => {
+            q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike)
+        }
         Q1MissileKind::Rocket => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
@@ -1929,6 +1944,8 @@ pub enum Q1SpikeWall {
     SuperSpike,
     /// `TE_WIZSPIKE`.
     WizSpike,
+    /// `TE_KNIGHTSPIKE`.
+    KnightSpike,
 }
 
 /// Stock `spike_touch` / `superspike_touch` (`weapons.qc:675`): blood
@@ -1981,6 +1998,7 @@ fn q1_spike_impact<L: ServerLogic>(
             Q1SpikeWall::Spike => Q1TempEnt::Spike { at: hit.endpos },
             Q1SpikeWall::SuperSpike => Q1TempEnt::SuperSpike { at: hit.endpos },
             Q1SpikeWall::WizSpike => Q1TempEnt::WizSpike { at: hit.endpos },
+            Q1SpikeWall::KnightSpike => Q1TempEnt::KnightSpike { at: hit.endpos },
         };
         ctx.behaviors.temp_ents.push(ent);
     }
