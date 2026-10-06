@@ -4386,6 +4386,12 @@ pub(crate) mod tests {
     /// now.
     const LIVE_E2M4_NATIVE_SKILL2_TOTAL: u32 = 78;
 
+    /// e2m5 native census at skill 2: 24 ogres plus 18 hell
+    /// knights plus 10 wizards plus 6 fiends plus 3 shamblers
+    /// (two more fiends carry the 1024 not-hard bit; nothing
+    /// else does). Every e2m5 monster kind is native now.
+    const LIVE_E2M5_NATIVE_SKILL2_TOTAL: u32 = 61;
+
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
     /// plus 1 fiend plus 3 shamblers plus 16 hell knights: 15 + 7 +
@@ -9373,6 +9379,64 @@ pub(crate) mod tests {
                 .expect("hell knight combat");
             assert_eq!(combat.health, 250.0);
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0144_e2m5_hknight_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e2m5.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e2m5 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let hknights = live_hknights(&world);
+        assert_eq!(hknights.len(), 18, "e2m5 spawns eighteen hell knights");
+        assert_eq!(live_ogres(&world).len(), 24, "e2m5 spawns twenty-four ogres");
+        assert_eq!(live_wizards(&world).len(), 10, "e2m5 spawns ten scrags");
+        assert_eq!(live_fiends(&world).len(), 6, "e2m5 spawns six fiends");
+        assert_eq!(live_shamblers(&world).len(), 3, "e2m5 spawns three shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E2M5_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for hknight in &hknights {
+            let monster = borrowed.monsters.get(hknight).expect("hell knight record");
+            assert_eq!(monster.flags & 32, 32, "StartGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, _)),
+                    "hell knights stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
+            }
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(hknight)
+                .expect("hell knight combat");
+            assert_eq!(combat.health, 250.0);
+        }
+        // Five e2m5 hell knights carry a target in the lump, and
+        // every one names a `path_corner` (t33, t36, t37, t38,
+        // t40), so stock `walkmonster_start_go` (`monsters.qc:105-108`)
+        // walks all five out.
+        assert_eq!(targeted, 5, "five e2m5 hell knights resolve a movetarget");
+        assert_eq!(walkers, 5, "five e2m5 hell knights patrol corners");
     }
 
     #[test]
