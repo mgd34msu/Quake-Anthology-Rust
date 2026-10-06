@@ -4073,7 +4073,11 @@ mod tests {
     }
 
     fn raise_electrode(server: &mut Server<qa_guest::server::GuestServerLogic>, electrode: &ActorId) {
+        // Phase and body travel together (a phase flip alone would
+        // strand the mover at pos1 with TOP claimed).
+        let pos2 = server.movers_mut().get(electrode).unwrap().pos2;
         server.movers_mut().get_mut(electrode).unwrap().phase = MoverPhase::AtPos2;
+        server.simulation_mut().set_body_origin(electrode, pos2).unwrap();
     }
 
     #[test]
@@ -4139,7 +4143,12 @@ mod tests {
         let le2 = spawn_electrode(&mut server, &mut behaviors);
         raise_electrode(&mut server, le1.id());
         raise_electrode(&mut server, le2.id());
-        // Park the second electrode 200 aside for exact bolt geometry.
+        // Park the electrodes for exact bolt geometry (no travel
+        // runs in this test, so the bodies need not sit at pos2).
+        server
+            .simulation_mut()
+            .set_body_origin(le1.id(), vec3(0.0, 0.0, 0.0))
+            .unwrap();
         server
             .simulation_mut()
             .set_body_origin(le2.id(), vec3(200.0, 0.0, 0.0))
@@ -4180,7 +4189,15 @@ mod tests {
         // A same-instant second strike refuses (the end sits 1 s out).
         fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
         assert_eq!(super::q1_health_of(server.simulation(), boss.id()), 2.0);
-        assert_eq!(behaviors.temp_ents.len(), 1);
+        assert_eq!(
+            behaviors
+                .temp_ents
+                .iter()
+                .filter(|ent| matches!(ent, Q1TempEnt::Lightning3 { .. }))
+                .count(),
+            1,
+            "refused strikes draw no new bolt"
+        );
     }
 
     #[test]
