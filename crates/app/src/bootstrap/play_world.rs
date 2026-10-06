@@ -4153,6 +4153,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Shambler)
     }
 
+    fn live_wizards(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Wizard)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4275,15 +4280,15 @@ mod tests {
 
     /// e1m2 native census at skill 2: 12 ogres plus 16 grunts plus
     /// 5 knights plus 3 fiends plus 6 wizards (a sixth knight and a
-    /// fourth fiend carry the 1024 not-hard bit). The scrags keep the
-    /// generic path until their slice lands, so they stay out of the
-    /// native count.
+    /// fourth fiend carry the 1024 not-hard bit; no wizard does). The
+    /// scrags keep the generic path until their slice lands, so they
+    /// stay out of the native count.
     const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 42;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies plus
-    /// 7 fiends plus 3 shamblers plus 7 wizards (all walking; five
-    /// more zombies and two more fiends carry the 1024 not-hard bit).
-    /// Every e1m3 monster kind is native now.
+    /// 7 fiends plus 3 shamblers plus 7 wizards (five more zombies
+    /// and two more fiends carry the 1024 not-hard bit; no wizard
+    /// does). Every e1m3 monster kind is native now.
     const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 65;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
@@ -8521,5 +8526,212 @@ mod tests {
         assert!(borrowed.gibs.contains_key(&shamblers[1]), "the head keeps the actor");
         assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
         assert!(!borrowed.solids.contains(&shamblers[1]), "gibs go unsolid");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_wizard_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let wizards = live_wizards(&world);
+        assert_eq!(wizards.len(), 6, "e1m2 spawns six wizards");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M2_NATIVE_SKILL2_TOTAL);
+        for wizard in &wizards {
+            let monster = borrowed.monsters.get(wizard).expect("wizard record");
+            assert_eq!(monster.flags & 1, 1, "StartFlyGo flags FL_FLY");
+            assert_eq!(monster.flags & 32, 32, "StartFlyGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartFlyGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let standing =
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, _));
+            let patrolling =
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, _));
+            assert!(
+                standing || patrolling,
+                "wizard hovers or patrols, got {:?}",
+                monster.think
+            );
+            if standing {
+                assert!(monster.pausetime > 9999999.0, "targetless wizards stand down");
+            }
+            let combat = world.server().simulation().combat_state(wizard).expect("wizard combat");
+            assert_eq!(combat.health, 80.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_wizard_spike_volley_wounds() {
+        use super::super::simulation::native_q1_weapons::Q1MissileKind;
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let wizards = live_wizards(&world);
+        assert_eq!(wizards.len(), 7, "e1m3 spawns seven wizards");
+        let mut caster = None;
+        let mut volley_seen = false;
+        let mut spike_seen = false;
+        // Offer the player at cast distance to each wizard until one
+        // lands a spike: 60 sits in the 0.9 melee band, 250 and 450 in
+        // the 0.6 near band.
+        'offer: for candidate in wizards.iter() {
+            for dist in [60.0, 250.0, 450.0] {
+                live_set_player_health(&mut world, 1000.0);
+                live_place_player_before(&mut world, candidate, dist);
+                for _ in 0..300 {
+                    live_tick(&mut world);
+                    let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                    let borrowed = behaviors.borrow();
+                    volley_seen |= borrowed.wiz_volleys.iter().any(|volley| volley.owner == *candidate);
+                    spike_seen |= borrowed
+                        .missiles
+                        .values()
+                        .any(|missile| missile.kind == Q1MissileKind::WizSpike && missile.owner == *candidate);
+                    if live_player_health(&world) < 1000.0 {
+                        caster = Some(candidate.clone());
+                        break 'offer;
+                    }
+                }
+            }
+        }
+        caster.expect("a wizard sights, casts, and lands a spike");
+        assert!(volley_seen, "the cast schedules its delayed volley");
+        assert!(spike_seen, "the volley looses WizSpike missiles");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "wizard/wattack.wav"),
+            "casts bark"
+        );
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "wizard/wsight.wav"),
+            "sightings bark"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_wizard_pain_then_dies() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let wizards = live_wizards(&world);
+        let player = world.player_actor().cloned().expect("player");
+        // A crushing hit always flinches (`random * 70 <= 70`) with no
+        // hold latch.
+        live_damage(&mut world, &wizards[0], Some(&player), 70.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&wizards[0]).expect("wizard record");
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "wizard/wpain.wav"));
+            assert_eq!(monster.pain_finished, 0.0, "wizard pains hold nothing");
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizPain, 0));
+        }
+        live_damage(&mut world, &wizards[0], Some(&player), 10.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&wizards[0]).expect("wizard record");
+            assert!(monster.dead);
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, 0));
+            assert_eq!(monster.flags & 1, 0, "corpses drop FL_FLY to fall");
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        // The third death frame drops unsolid.
+        let mut unsolid = false;
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().solids.contains(&wizards[0]) {
+                unsolid = true;
+                break;
+            }
+        }
+        assert!(unsolid, "the death drop goes unsolid");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "wizard/wdeath.wav"),
+            "deaths cry"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_wizard_gib_bursts() {
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let wizards = live_wizards(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &wizards[1], Some(&player), 700.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(borrowed.monsters.get(&wizards[1]).expect("wizard record").dead);
+        assert_eq!(borrowed.killed_monsters, 1);
+        assert!(borrowed.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(borrowed.gibs.contains_key(&wizards[1]), "the head keeps the actor");
+        assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
+        assert!(!borrowed.solids.contains(&wizards[1]), "gibs go unsolid");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_wizard_hover_holds_altitude() {
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let wizards = live_wizards(&world);
+        let marks: Vec<(qa_core::identity::ActorId, f32)> = wizards
+            .iter()
+            .map(|wizard| {
+                let body = world.server().simulation().body_state(wizard).expect("wizard body");
+                (wizard.clone(), body.origin.z)
+            })
+            .collect();
+        // Five idle seconds: nobody falls, nobody dies standing still.
+        live_advance(&mut world, 5.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        for (wizard, mark) in &marks {
+            let monster = borrowed.monsters.get(wizard).expect("wizard record");
+            assert_eq!(monster.flags & 1, 1, "hovering keeps FL_FLY");
+            assert!(
+                world
+                    .server()
+                    .simulation()
+                    .combat_state(wizard)
+                    .expect("wizard combat")
+                    .health
+                    > 0.0,
+                "idles take no damage"
+            );
+            if monster.enemy.is_none() {
+                let body = world.server().simulation().body_state(wizard).expect("wizard body");
+                assert!(
+                    (body.origin.z - mark).abs() < 1.0,
+                    "unprovoked wizards hold altitude ({} vs {mark})",
+                    body.origin.z
+                );
+            }
+        }
     }
 }
