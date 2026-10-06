@@ -33,7 +33,7 @@
 
 use qa_core::identity::{ActorId, ProviderId};
 use qa_core::math::{angle_vectors, vec3, Bounds, Vec3};
-use qa_world::body::BodyState;
+use qa_world::body::{translated_body_bounds, BodyState};
 use qa_world::combat::CombatState;
 use qa_world::movers::{use_mover, MoverKind, MoverPhase, MoverState, MoverTable};
 use qa_world::server::{Server, ServerLogic};
@@ -240,6 +240,9 @@ pub enum Q1TriggerKind {
     },
     /// `trigger_relay`: use-only `SUB_UseTargets` forwarder.
     Relay,
+    /// `event_lightning`: the e1m7 boss switch (`boss.qc:380`).
+    /// Use-only like a relay; touch-inert.
+    LightningEvent,
     /// `trigger_counter`: fires after `count` uses.
     Counter {
         /// Remaining uses (2 default).
@@ -357,6 +360,16 @@ pub enum Q1ThinkKind {
     /// `execute_changelevel` (`client.qc:253`): enter the intermission
     /// 0.1s after the exit touch.
     ExecuteChangelevel,
+    /// `lightning_fire` (`boss.qc:292`): draw one bolt between the
+    /// electrode feet, then re-arm 0.1s out until `lightning_end`
+    /// drops the electrodes. The think's due instant paces the bolt;
+    /// the shared end lives on behaviors like the stock global.
+    LightningFire {
+        /// First electrode (spawn order, like stock `find`).
+        le1: ActorId,
+        /// Second electrode.
+        le2: ActorId,
+    },
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -457,7 +470,7 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
             }),
         );
     }
-    for classname in ["trigger_relay", "trigger_counter", "info_teleport_destination"] {
+    for classname in ["trigger_relay", "trigger_counter", "info_teleport_destination", "event_lightning"] {
         let definition = format!("q1:{classname}");
         registry.register(
             classname,
@@ -494,7 +507,7 @@ pub fn q1_is_brush_trigger(classname: &str) -> bool {
 /// Whether a classname spawns bodiless use-only native state.
 #[must_use]
 pub fn q1_is_use_point(classname: &str) -> bool {
-    matches!(classname, "trigger_relay" | "trigger_counter")
+    matches!(classname, "trigger_relay" | "trigger_counter" | "event_lightning")
 }
 
 /// Parse one optional QC integer field: missing or unparseable reads as
@@ -844,6 +857,8 @@ pub fn q1_note_use_point(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, fie
             nomessage: fields.spawnflags & TRIGGER_NOMESSAGE != 0,
             enemy: None,
         }
+    } else if fields.classname == "event_lightning" {
+        Q1TriggerKind::LightningEvent
     } else {
         Q1TriggerKind::Relay
     };
@@ -1049,6 +1064,177 @@ pub fn q1_use_targets(
     }
 }
 
+/// Stock `lightning_use` (`boss.qc:328`): the e1m7 boss switch. A
+/// live bolt refuses; the two `lightning`-targeted electrodes must
+/// both sit settled and aligned, else the switch stays quiet.
+/// Aligned, the electrodes hold through a 1 s bolt (the first drawn
+/// at once, the rest on the fire think), and a TOP pair on a live
+/// boss spends one health into the matching shock.
+#[allow(clippy::too_many_lines)]
+fn q1_lightning_use(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+    activator: Option<&ActorId>,
+) {
+    let _ignored = triggers;
+    let now = simulation.frame().time.as_seconds_f64();
+    if behaviors.lightning_end >= now + 1.0 {
+        return;
+    }
+    // Spawn order, like stock `find` (`Q1EdictTable` iterates slots).
+    let pair: Vec<ActorId> = behaviors
+        .doors
+        .iter()
+        .filter(|(_, door)| door.use_source.target.as_deref() == Some("lightning"))
+        .take(2)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let (Some(le1), Some(le2)) = (pair.first().cloned(), pair.get(1).cloned()) else {
+        // Stock `dprint`s the missing targets; dev-only, skipped.
+        return;
+    };
+    let phase = |id: &ActorId| movers.get(id).map(|state| state.phase);
+    let (Some(first), Some(second)) = (phase(&le1), phase(&le2)) else {
+        return;
+    };
+    if !matches!(first, MoverPhase::AtPos1 | MoverPhase::AtPos2) || first != second {
+        return;
+    }
+    // Hold the electrodes through the bolt (`nextthink = -1`): push
+    // any pending wait think past the bolt end (the end drops them
+    // through `door_go_down`, re-arming travel).
+    for le in [&le1, &le2] {
+        if let Some(state) = movers.get_mut(le) {
+            let hold = state.local_time_seconds + 1.1;
+            if state.next_think_seconds < hold {
+                state.next_think_seconds = hold;
+            }
+        }
+    }
+    behaviors.lightning_end = now + 1.0;
+    super::native_q1_monsters::q1_monster_sound(
+        behaviors,
+        actor,
+        super::native_q1_monsters::Q1_CHAN_VOICE,
+        "misc/power.wav",
+        1.0,
+        super::native_q1_monsters::Q1_ATTN_NORM,
+    );
+    q1_lightning_bolt(behaviors, simulation, &le1, &le2);
+    behaviors.schedule_think(
+        actor,
+        Q1ThinkKind::LightningFire {
+            le1: le1.clone(),
+            le2: le2.clone(),
+        },
+        now + 0.1,
+    );
+    // Advance the boss pain if down.
+    let Some(boss) = behaviors
+        .monsters
+        .iter()
+        .find(|(_, monster)| monster.kind == super::native_q1_monsters::Q1MonsterKind::Boss)
+        .map(|(id, _)| id.clone())
+    else {
+        return;
+    };
+    if let Some(monster) = behaviors.monsters.get_mut(&boss) {
+        monster.enemy = activator.cloned();
+    }
+    if first == MoverPhase::AtPos2 && q1_health_of(simulation, &boss) > 0.0 {
+        super::native_q1_monsters::q1_monster_sound(
+            behaviors,
+            &boss,
+            super::native_q1_monsters::Q1_CHAN_VOICE,
+            "boss1/pain.wav",
+            1.0,
+            super::native_q1_monsters::Q1_ATTN_NORM,
+        );
+        let health = q1_health_of(simulation, &boss) - 1.0;
+        if let Some(combat) = simulation.combat_state(&boss).cloned() {
+            let _ignored = simulation.set_combat(&boss, CombatState { health, ..combat });
+        }
+        let seq = if health >= 2.0 {
+            super::native_q1_monsters::Q1MonsterSeq::BossShockA
+        } else if health == 1.0 {
+            super::native_q1_monsters::Q1MonsterSeq::BossShockB
+        } else {
+            super::native_q1_monsters::Q1MonsterSeq::BossShockC
+        };
+        if let Some(monster) = behaviors.monsters.get_mut(&boss) {
+            if health <= 0.0 {
+                monster.dead = true;
+            }
+            monster.frame = super::native_q1_monsters::q1_seq_frame(seq, 0);
+            monster.think = super::native_q1_monsters::Q1MonsterThink::Frame(seq, 0);
+            monster.nextthink = now + super::native_q1_monsters::Q1_MONSTER_THINK_STEP;
+        }
+    }
+}
+
+/// Stock `lightning_fire` bolt draw (`boss.qc:292-326`): one
+/// `TE_LIGHTNING3` between the electrode feet (center x/y, bottom
+/// face minus 16), the far foot shortened 100 units toward the near.
+fn q1_lightning_bolt(behaviors: &mut Q1NativeBehaviors, simulation: &Simulation, le1: &ActorId, le2: &ActorId) {
+    let feet = |id: &ActorId| {
+        simulation.body_state(id).map(|body| {
+            let bounds = translated_body_bounds(&body);
+            vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                bounds.min.z - 16.0,
+            )
+        })
+    };
+    let (Some(p1), Some(p2)) = (feet(le1), feet(le2)) else {
+        return;
+    };
+    let delta = vec3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+    let len = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
+    let end = if len > 0.0 {
+        vec3(
+            p2.x - delta.x / len * 100.0,
+            p2.y - delta.y / len * 100.0,
+            p2.z - delta.z / len * 100.0,
+        )
+    } else {
+        p2
+    };
+    behaviors
+        .temp_ents
+        .push(super::native_q1_weapons::Q1TempEnt::Lightning3 { start: p1, end });
+}
+
+/// Stock `lightning_fire` rethink (`boss.qc:292`): past the bolt end
+/// the electrodes drop; inside it, draw and re-arm 0.1 s out.
+fn q1_lightning_fire_think(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    event: &ActorId,
+    le1: &ActorId,
+    le2: &ActorId,
+) {
+    let now = simulation.frame().time.as_seconds_f64();
+    if now >= behaviors.lightning_end {
+        super::native_q1_spawns::q1_door_go_down(simulation, movers, le1);
+        super::native_q1_spawns::q1_door_go_down(simulation, movers, le2);
+        return;
+    }
+    q1_lightning_bolt(behaviors, simulation, le1, le2);
+    behaviors.schedule_think(
+        event,
+        Q1ThinkKind::LightningFire {
+            le1: le1.clone(),
+            le2: le2.clone(),
+        },
+        now + 0.1,
+    );
+}
+
 /// Call one fired entity's `use` function (`subs.qc:268-279`): doors
 /// (`door_use`, `doors.qc:146`), buttons (`button_use`,
 /// `buttons.qc:48`), multiples (`multi_use`, `triggers.qc:75`),
@@ -1110,6 +1296,9 @@ pub fn q1_fire_use(
             }
             Q1TriggerKind::Relay => {
                 q1_use_targets(behaviors, simulation, movers, triggers, &source, activator);
+            }
+            Q1TriggerKind::LightningEvent => {
+                q1_lightning_use(behaviors, simulation, movers, triggers, actor, activator);
             }
             Q1TriggerKind::Counter { .. } => {
                 q1_counter_use(behaviors, simulation, movers, triggers, actor, activator);
@@ -1334,7 +1523,7 @@ pub fn q1_trigger_touch(
             }
             q1_multi_trigger(behaviors, simulation, movers, triggers, &contact.trigger);
         }
-        Q1TriggerKind::Relay | Q1TriggerKind::Counter { .. } => {}
+        Q1TriggerKind::Relay | Q1TriggerKind::Counter { .. } | Q1TriggerKind::LightningEvent => {}
         Q1TriggerKind::Hurt { dmg } => {
             if !q1_can_take_damage(simulation, &contact.other) {
                 return;
@@ -1929,6 +2118,9 @@ pub fn q1_trigger_think(
             }
             Q1ThinkKind::ExecuteChangelevel => {
                 q1_execute_changelevel(behaviors, simulation, &think.actor);
+            }
+            Q1ThinkKind::LightningFire { le1, le2 } => {
+                q1_lightning_fire_think(behaviors, simulation, movers, &think.actor, le1, le2);
             }
         }
     }
@@ -3833,5 +4025,236 @@ mod tests {
         }
         assert_eq!(behaviors.intermission.running, 0);
         assert!(behaviors.cd_tracks.is_empty());
+    }
+
+    fn spawn_electrode(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+    ) -> qa_core::identity::OwnedActor {
+        let fields = trigger_fields("func_door", &[("model", "*0"), ("target", "lightning")]);
+        let actor = server.spawn_entity(&fields).unwrap();
+        super::super::native_q1_spawns::build_q1_door(server, behaviors, &actor, &fields, &[trigger_model()])
+            .unwrap();
+        actor
+    }
+
+    fn spawn_event(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+    ) -> qa_core::identity::OwnedActor {
+        spawn_use_point(
+            server,
+            behaviors,
+            &trigger_fields("event_lightning", &[("targetname", "t14")]),
+        )
+    }
+
+    fn spawn_boss(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+    ) -> qa_core::identity::OwnedActor {
+        use super::super::native_q1_monsters::{build_q1_monster, register_q1_monster_spawns};
+        register_q1_monster_spawns(server.spawns_mut());
+        let fields = SpawnFields::parse(&[("classname", "monster_boss"), ("origin", "0 0 0")]).unwrap();
+        let boss = server.spawn_entity(&fields).unwrap();
+        build_q1_monster(server, behaviors, &boss, &fields).unwrap();
+        boss
+    }
+
+    fn wake_boss(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        boss: &ActorId,
+        player: &ActorId,
+    ) {
+        behaviors.skill = 2;
+        let simulation = server.simulation_mut();
+        super::super::native_q1_monsters::q1_monster_use(behaviors, simulation, boss, Some(player));
+    }
+
+    fn raise_electrode(server: &mut Server<qa_guest::server::GuestServerLogic>, electrode: &ActorId) {
+        server.movers_mut().get_mut(electrode).unwrap().phase = MoverPhase::AtPos2;
+    }
+
+    #[test]
+    fn lightning_use_refuses_without_electrodes() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let event = spawn_event(&mut server, &mut behaviors);
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+        assert!(behaviors.sounds.is_empty(), "missing targets stay silent");
+        assert!(behaviors.temp_ents.is_empty());
+        assert!(behaviors.thinks.is_empty());
+        assert_eq!(behaviors.lightning_end, 0.0);
+    }
+
+    #[test]
+    fn lightning_use_refuses_misaligned_electrodes() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        spawn_electrode(&mut server, &mut behaviors);
+        let le2 = spawn_electrode(&mut server, &mut behaviors);
+        raise_electrode(&mut server, le2.id());
+        let event = spawn_event(&mut server, &mut behaviors);
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+        assert!(behaviors.sounds.is_empty(), "misaligned pairs stay silent");
+        assert!(behaviors.thinks.is_empty());
+        assert_eq!(behaviors.lightning_end, 0.0);
+    }
+
+    #[test]
+    fn lightning_use_refuses_a_live_bolt() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.lightning_end = 5.0;
+        let le1 = spawn_electrode(&mut server, &mut behaviors);
+        let le2 = spawn_electrode(&mut server, &mut behaviors);
+        raise_electrode(&mut server, le1.id());
+        raise_electrode(&mut server, le2.id());
+        let event = spawn_event(&mut server, &mut behaviors);
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+        assert!(behaviors.sounds.is_empty(), "live bolts refuse");
+        assert!(behaviors.thinks.is_empty());
+    }
+
+    #[test]
+    fn lightning_strike_bolts_shocks_and_schedules() {
+        use super::super::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+        use super::super::native_q1_weapons::Q1TempEnt;
+
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let boss = spawn_boss(&mut server, &mut behaviors);
+        wake_boss(&mut server, &mut behaviors, boss.id(), player.id());
+        let le1 = spawn_electrode(&mut server, &mut behaviors);
+        let le2 = spawn_electrode(&mut server, &mut behaviors);
+        raise_electrode(&mut server, le1.id());
+        raise_electrode(&mut server, le2.id());
+        // Park the second electrode 200 aside for exact bolt geometry.
+        server
+            .simulation_mut()
+            .set_body_origin(le2.id(), vec3(200.0, 0.0, 0.0))
+            .unwrap();
+        let event = spawn_event(&mut server, &mut behaviors);
+        fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "misc/power.wav"),
+            "strikes hum"
+        );
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "boss1/pain.wav"),
+            "TOP strikes hurt"
+        );
+        assert_eq!(super::q1_health_of(server.simulation(), boss.id()), 2.0);
+        let monster = behaviors.monsters.get(boss.id()).unwrap();
+        assert_eq!(monster.enemy, Some(player.id().clone()));
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::BossShockA, 0));
+        assert!(!monster.dead);
+        // Feet at center x/y, bottom face minus 16; the far foot
+        // shortens 100 toward the near.
+        assert!(
+            behaviors.temp_ents.iter().any(|ent| matches!(
+                ent,
+                Q1TempEnt::Lightning3 { start, end }
+                    if *start == vec3(32.0, 32.0, -16.0) && *end == vec3(132.0, 32.0, -16.0)
+            )),
+            "strikes draw TE_LIGHTNING3, got {:?}",
+            behaviors.temp_ents
+        );
+        assert_eq!(behaviors.lightning_end, 1.0);
+        assert_eq!(behaviors.thinks.len(), 1);
+        assert!(matches!(
+            &behaviors.thinks[0].kind,
+            Q1ThinkKind::LightningFire { le1: a, le2: b } if a == le1.id() && b == le2.id()
+        ));
+        assert!((behaviors.thinks[0].due_seconds - 0.1).abs() < 1e-9);
+        // A same-instant second strike refuses (the end sits 1 s out).
+        fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+        assert_eq!(super::q1_health_of(server.simulation(), boss.id()), 2.0);
+        assert_eq!(behaviors.temp_ents.len(), 1);
+    }
+
+    #[test]
+    fn lightning_strikes_walk_the_shock_ladder() {
+        use super::super::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let boss = spawn_boss(&mut server, &mut behaviors);
+        wake_boss(&mut server, &mut behaviors, boss.id(), player.id());
+        let le1 = spawn_electrode(&mut server, &mut behaviors);
+        let le2 = spawn_electrode(&mut server, &mut behaviors);
+        let event = spawn_event(&mut server, &mut behaviors);
+        for (strike, health, seq) in [
+            (1, 2.0, Q1MonsterSeq::BossShockA),
+            (2, 1.0, Q1MonsterSeq::BossShockB),
+            (3, 0.0, Q1MonsterSeq::BossShockC),
+        ] {
+            // Each bolt drops the electrodes; re-raise and let the
+            // bolt end pass before the next strike.
+            raise_electrode(&mut server, le1.id());
+            raise_electrode(&mut server, le2.id());
+            server.tick(SourceTime::Seconds(1.5)).unwrap();
+            fire_use(&mut server, &mut behaviors, event.id(), Some(player.id()));
+            assert_eq!(
+                super::q1_health_of(server.simulation(), boss.id()),
+                health,
+                "strike {strike} spends one health"
+            );
+            assert_eq!(
+                behaviors.monsters.get(boss.id()).unwrap().think,
+                Q1MonsterThink::Frame(seq, 0),
+                "strike {strike} runs its shock"
+            );
+        }
+        assert!(behaviors.monsters.get(boss.id()).unwrap().dead, "the third shock kills");
+        assert_eq!(behaviors.killed_monsters, 0, "the death think counts, not the shock");
+    }
+
+    #[test]
+    fn lightning_fire_think_bolts_then_drops() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let le1 = spawn_electrode(&mut server, &mut behaviors);
+        let le2 = spawn_electrode(&mut server, &mut behaviors);
+        raise_electrode(&mut server, le1.id());
+        raise_electrode(&mut server, le2.id());
+        let event = spawn_event(&mut server, &mut behaviors);
+        behaviors.lightning_end = 1.0;
+        {
+            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+            super::q1_lightning_fire_think(&mut behaviors, simulation, movers, event.id(), le1.id(), le2.id());
+        }
+        assert_eq!(behaviors.temp_ents.len(), 1, "inside the bolt draws");
+        assert_eq!(behaviors.thinks.len(), 1, "inside the bolt re-arms");
+        // Past the end the electrodes drop with no new bolt.
+        behaviors.lightning_end = 0.0;
+        {
+            let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
+            super::q1_lightning_fire_think(&mut behaviors, simulation, movers, event.id(), le1.id(), le2.id());
+        }
+        assert_eq!(behaviors.temp_ents.len(), 1, "past the end draws nothing");
+        assert_eq!(
+            server.movers_mut().get(le1.id()).map(|mover| mover.phase),
+            Some(MoverPhase::ToPos1),
+            "past the end drops the electrodes"
+        );
+        assert_eq!(
+            server.movers_mut().get(le2.id()).map(|mover| mover.phase),
+            Some(MoverPhase::ToPos1)
+        );
     }
 }

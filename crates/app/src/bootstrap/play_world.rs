@@ -4168,6 +4168,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Tarbaby)
     }
 
+    fn live_vores(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Vore)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4310,10 +4315,10 @@ mod tests {
 
     /// e4m6 native census at skill 2: 8 fiends plus 3 fish counting
     /// twice each (the classic swim double-count) plus 12 hell
-    /// knights plus 49 spawns: 8 + 6 + 12 + 49 = 75 (no `monster_*`
-    /// record carries the 1024 not-hard bit). The 9 vores keep the
-    /// generic path until their slice lands.
-    const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 75;
+    /// knights plus 49 spawns plus 9 vores: 8 + 6 + 12 + 49 + 9 = 84
+    /// (no `monster_*` record carries the 1024 not-hard bit). Every
+    /// e4m6 monster kind is native now.
+    const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 84;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -9134,6 +9139,156 @@ mod tests {
             }
         }
         assert!(wounded, "the blast wounds the blast zone");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0149_vore_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let vores = live_vores(&world);
+        assert_eq!(vores.len(), 9, "e4m6 spawns nine vores");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M6_NATIVE_SKILL2_TOTAL);
+        for vore in &vores {
+            let monster = borrowed.monsters.get(vore).expect("vore record");
+            assert_eq!(monster.flags & 32, 32, "StartGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let standing = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShStand, _));
+            let patrolling = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShWalk, _));
+            assert!(standing || patrolling, "vores stand or patrol, got {:?}", monster.think);
+            if standing {
+                assert!(monster.pausetime > 9999999.0, "targetless vores stand down");
+            }
+            let combat = world.server().simulation().combat_state(vore).expect("vore combat");
+            assert_eq!(combat.health, 400.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0149_vore_ball_cast_wounds() {
+        use super::super::simulation::native_q1_weapons::Q1MissileKind;
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let vores = live_vores(&world);
+        assert_eq!(vores.len(), 9, "e4m6 spawns nine vores");
+        let mut caster = None;
+        let mut ball_seen = false;
+        // Offer the player at cast distance to each vore until one
+        // casts and the player takes a wound: 250 clears the melee
+        // band (vores set no `th_melee`, so the generic check only
+        // fires past it), and re-pinning the range every 10 ticks
+        // keeps the vore casting instead of closing. The wound must
+        // land after the candidate's own balls are in flight.
+        'offer: for candidate in vores.iter() {
+            live_set_player_health(&mut world, 1000.0);
+            live_place_player_before(&mut world, candidate, 250.0);
+            let mut cast = false;
+            for step in 0..600 {
+                if step % 10 == 0 {
+                    live_place_player_before(&mut world, candidate, 250.0);
+                }
+                live_tick(&mut world);
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                cast |= borrowed
+                    .missiles
+                    .values()
+                    .any(|missile| missile.kind == Q1MissileKind::VoreBall && missile.owner == *candidate);
+                if cast && live_player_health(&world) < 1000.0 {
+                    caster = Some(candidate.clone());
+                    ball_seen = true;
+                    break 'offer;
+                }
+            }
+        }
+        caster.expect("a vore sights, casts, and lands a ball");
+        assert!(ball_seen, "the cast looses VoreBall missiles");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shalrath/attack.wav"),
+            "casts bark"
+        );
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "shalrath/sight.wav"),
+            "sightings bark"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0149_vore_pain_then_dies() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let vores = live_vores(&world);
+        let player = world.player_actor().cloned().expect("player");
+        // Any felt hit flinches (no chance roll gates vore pain).
+        live_damage(&mut world, &vores[0], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&vores[0]).expect("vore record");
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "shalrath/pain.wav"));
+            assert_eq!(
+                monster.pain_finished,
+                live_now(&world) + 3.0,
+                "pains hold three seconds"
+            );
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShPain, 0));
+        }
+        live_damage(&mut world, &vores[0], Some(&player), 400.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&vores[0]).expect("vore record");
+            assert!(monster.dead);
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShDie, 0));
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(!borrowed.solids.contains(&vores[0]), "th_die drops solid itself");
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "shalrath/death.wav"),
+                "deaths cry in th_die itself"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0149_vore_gib_bursts() {
+        let Some(mut world) = live_q1_world("maps/e4m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let vores = live_vores(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &vores[1], Some(&player), 700.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(borrowed.monsters.get(&vores[1]).expect("vore record").dead);
+        assert_eq!(borrowed.killed_monsters, 1);
+        assert!(borrowed.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(borrowed.gibs.contains_key(&vores[1]), "the head keeps the actor");
+        assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
+        assert!(!borrowed.solids.contains(&vores[1]), "gibs go unsolid");
     }
 
     #[test]

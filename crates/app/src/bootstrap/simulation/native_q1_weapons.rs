@@ -42,10 +42,9 @@ use qa_world::spawn::SpawnFields;
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
     q1_actor_eye, q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage,
-    q1_takedamage_aim, Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE,
-    Q1_CHAN_WEAPON, Q1_DAMAGE_AIM, Q1_FLESH_DAMAGE, Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
-    Q1_VOREBALL_BLAST_DAMAGE, Q1_VOREBALL_HOME_INTERVAL, Q1_VOREBALL_HOME_SPEED,
-    Q1_VOREBALL_HOME_SPEED_NIGHTMARE, Q1_VOREBALL_ZOMBIE_DAMAGE,
+    q1_takedamage_aim, Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE, Q1_CHAN_WEAPON,
+    Q1_DAMAGE_AIM, Q1_FLESH_DAMAGE, Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE, Q1_VOREBALL_BLAST_DAMAGE,
+    Q1_VOREBALL_HOME_INTERVAL, Q1_VOREBALL_HOME_SPEED, Q1_VOREBALL_HOME_SPEED_NIGHTMARE, Q1_VOREBALL_ZOMBIE_DAMAGE,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -396,6 +395,21 @@ pub enum Q1TempEnt {
         /// Muzzle point.
         start: Vec3,
         /// Impact point.
+        end: Vec3,
+    },
+    /// `TE_LAVASPLASH` at Chthon's rise and death (`boss_awake`,
+    /// `boss_death9`, `boss.qc`).
+    LavaSplash {
+        /// Splash origin.
+        at: Vec3,
+    },
+    /// `TE_LIGHTNING3` between the e1m7 electrodes (`lightning_fire`,
+    /// `boss.qc:292`): stock addresses it to the world edict, so no
+    /// entity rides along.
+    Lightning3 {
+        /// First electrode foot.
+        start: Vec3,
+        /// Second electrode foot, shortened 100 units toward `start`.
         end: Vec3,
     },
 }
@@ -1305,6 +1319,10 @@ pub enum Q1MissileKind {
     /// blast (`ShalMissileTouch`, `shalrath.qc:177`). Stock spawns
     /// it classless; the native tag names the only such missile.
     VoreBall,
+    /// Chthon lava ball: `launch_spike` re-skinned to
+    /// `progs/lavaball.mdl` with the rocket touch (`boss_missile`,
+    /// `boss.qc:195`), so it impacts exactly like a rocket.
+    LavaBall,
 }
 
 impl Q1MissileKind {
@@ -1322,6 +1340,7 @@ impl Q1MissileKind {
             Q1MissileKind::WizSpike => "wizspike",
             Q1MissileKind::KnightSpike => "knightspike",
             Q1MissileKind::VoreBall => "voreball",
+            Q1MissileKind::LavaBall => "lavaball",
         }
     }
 }
@@ -1770,7 +1789,8 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         | Q1MissileKind::KnightSpike
         | Q1MissileKind::Rocket
         | Q1MissileKind::Laser
-        | Q1MissileKind::VoreBall => {
+        | Q1MissileKind::VoreBall
+        | Q1MissileKind::LavaBall => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
         Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade | Q1MissileKind::ZombieFlesh => {
@@ -1782,11 +1802,7 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
 /// Stock `ShalHome` (`shalrath.qc:159`): every 0.2 s the ball turns
 /// onto its victim's eye, 250 u/s (350 on nightmare). A ball past its
 /// arming with a bodiless victim just flies on straight.
-fn q1_home_voreball<L: ServerLogic>(
-    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
-    actor: &ActorId,
-    missile: &Q1Missile,
-) {
+fn q1_home_voreball<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor: &ActorId, missile: &Q1Missile) {
     let armed = missile.home_at.is_some_and(|at| at <= ctx.now);
     let Some(enemy) = missile.home_enemy.clone().filter(|_| armed) else {
         return;
@@ -1971,6 +1987,7 @@ fn q1_missile_impact<L: ServerLogic>(
             | Q1MissileKind::Rocket
             | Q1MissileKind::Laser
             | Q1MissileKind::VoreBall
+            | Q1MissileKind::LavaBall
     );
     if flies_straight && q1_point_is_sky(ctx.scene, hit.endpos) {
         q1_remove_missile(ctx, actor);
@@ -1982,6 +1999,12 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::WizSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike),
         Q1MissileKind::KnightSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike),
         Q1MissileKind::Rocket => {
+            q1_rocket_impact(ctx, actor, missile, hit);
+            true
+        }
+        // The lava ball carries the rocket touch (`T_MissileTouch`,
+        // `boss_missile`).
+        Q1MissileKind::LavaBall => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
         }
@@ -3929,5 +3952,239 @@ mod tests {
             )),
             "walls spark TE_WIZSPIKE, not TE_SPIKE"
         );
+    }
+
+    fn spawn_voreball(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        owner: &ActorId,
+        origin: Vec3,
+        home_enemy: Option<ActorId>,
+        home_at: Option<f64>,
+    ) -> ActorId {
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        q1_spawn_missile(
+            server,
+            behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::VoreBall,
+                owner: owner.clone(),
+                origin,
+                velocity: vec3(400.0, 0.0, 0.0),
+                avelocity: vec3(0.0, 0.0, 0.0),
+                effects: 0,
+                fuse_at: None,
+                home_enemy,
+                home_at,
+                remove_at: 6.0,
+                born_at: 1.0,
+            },
+        )
+        .expect("ball spawns")
+    }
+
+    #[test]
+    fn voreball_homes_onto_victim_eye_and_rearms() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 2;
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        // The ball flies level with the player's eye (origin + 22).
+        let ball = spawn_voreball(
+            &mut server,
+            &mut behaviors,
+            &owner,
+            vec3(100.0, 0.0, 46.0),
+            Some(player.clone()),
+            Some(0.5),
+        );
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_home_voreball(&mut ctx, &ball, &missile);
+        let body = ctx.server.simulation().body_state(&ball).expect("ball body");
+        assert_eq!(body.velocity, vec3(-250.0, 0.0, 0.0), "homing turns 250 onto the eye");
+        let rearmed = ctx.behaviors.missiles.get(&ball).expect("ball record").home_at;
+        assert!((rearmed.unwrap() - 1.2).abs() < 1e-9, "homing re-arms 0.2 s out");
+    }
+
+    #[test]
+    fn voreball_homes_faster_on_nightmare() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 3;
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        let ball = spawn_voreball(
+            &mut server,
+            &mut behaviors,
+            &owner,
+            vec3(100.0, 0.0, 46.0),
+            Some(player.clone()),
+            Some(0.5),
+        );
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_home_voreball(&mut ctx, &ball, &missile);
+        let body = ctx.server.simulation().body_state(&ball).expect("ball body");
+        assert_eq!(body.velocity, vec3(-350.0, 0.0, 0.0), "nightmare homing runs 350");
+    }
+
+    #[test]
+    fn voreball_flies_straight_before_arming() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 2;
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        let ball = spawn_voreball(
+            &mut server,
+            &mut behaviors,
+            &owner,
+            vec3(100.0, 0.0, 46.0),
+            Some(player.clone()),
+            Some(5.0),
+        );
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_home_voreball(&mut ctx, &ball, &missile);
+        let body = ctx.server.simulation().body_state(&ball).expect("ball body");
+        assert_eq!(body.velocity, vec3(400.0, 0.0, 0.0), "unarmed balls hold launch speed");
+        assert_eq!(
+            ctx.behaviors.missiles.get(&ball).expect("ball record").home_at,
+            Some(5.0),
+            "unarmed balls keep their arming"
+        );
+    }
+
+    #[test]
+    fn voreball_impact_zombies_take_direct_plus_blast() {
+        use super::super::native_q1_monsters::{build_q1_monster, register_q1_monster_spawns, Q1_FLAG_MONSTER};
+
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 2;
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        register_q1_monster_spawns(server.spawns_mut());
+        let fields = SpawnFields::parse(&[("classname", "monster_zombie"), ("origin", "200 0 0")]).unwrap();
+        let zombie = server.spawn_entity(&fields).unwrap();
+        build_q1_monster(&mut server, &mut behaviors, &zombie, &fields).unwrap();
+        let combat = server.simulation().combat_state(zombie.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(
+                zombie.id(),
+                CombatState {
+                    can_take_damage: true,
+                    ..combat
+                },
+            )
+            .unwrap();
+        let monster = behaviors.monsters.get_mut(zombie.id()).unwrap();
+        monster.flags |= Q1_FLAG_MONSTER;
+        monster.takedamage = Q1_DAMAGE_AIM;
+        let ball = spawn_voreball(&mut server, &mut behaviors, &player, vec3(200.0, 0.0, 28.0), None, None);
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let hit = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(200.0, 0.0, 28.0),
+            hit_actor: Some(zombie.id().clone()),
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_voreball_impact(&mut ctx, &ball, &missile, &hit);
+        // 110 direct alone kills the 60-health zombie.
+        assert_eq!(ctx.behaviors.killed_monsters, 1);
+        assert!(!ctx.behaviors.missiles.contains_key(&ball), "struck balls remove");
+        assert!(
+            ctx.behaviors
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+            "impacts flash TE_EXPLOSION"
+        );
+    }
+
+    #[test]
+    fn lavaball_impacts_like_rocket() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let ball = q1_spawn_missile(
+            &mut server,
+            &mut behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::LavaBall,
+                owner: player.clone(),
+                origin: vec3(0.0, 0.0, 24.0),
+                velocity: vec3(300.0, 0.0, 0.0),
+                avelocity: vec3(200.0, 100.0, 300.0),
+                effects: 0,
+                fuse_at: None,
+                home_enemy: None,
+                home_at: None,
+                remove_at: 7.0,
+                born_at: 1.0,
+            },
+        )
+        .expect("ball spawns");
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let wall = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(10.0, 0.0, 24.0),
+            hit_actor: None,
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        assert!(q1_missile_impact(&mut ctx, &ball, &missile, &wall));
+        assert!(!ctx.behaviors.missiles.contains_key(&ball), "struck balls remove");
+        assert!(
+            ctx.behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "weapons/r_exp3.wav"),
+            "the rocket touch barks"
+        );
+        assert!(
+            ctx.behaviors
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+            "impacts flash TE_EXPLOSION"
+        );
+    }
+
+    #[test]
+    fn voreball_impact_non_zombie_takes_blast_only() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 2;
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        // Park the ball on the player's center for a full-40 blast.
+        let ball = spawn_voreball(&mut server, &mut behaviors, &owner, vec3(0.0, 0.0, 28.0), None, None);
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let hit = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(0.0, 0.0, 28.0),
+            hit_actor: Some(player.clone()),
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_voreball_impact(&mut ctx, &ball, &missile, &hit);
+        assert_eq!(q1_health_of(ctx.server.simulation(), &player), 60.0);
+        assert!(!ctx.behaviors.missiles.contains_key(&ball), "struck balls remove");
     }
 }
