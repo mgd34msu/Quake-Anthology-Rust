@@ -2644,14 +2644,7 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
             if monster.pain_finished > now {
                 return;
             }
-            q1_monster_sound(
-                behaviors,
-                actor,
-                Q1_CHAN_VOICE,
-                "hknight/pain1.wav",
-                1.0,
-                Q1_ATTN_NORM,
-            );
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "hknight/pain1.wav", 1.0, Q1_ATTN_NORM);
             if now - monster.pain_finished <= 5.0 && f64::from(q1_monster_random(behaviors)) * 30.0 > take {
                 return;
             }
@@ -2892,14 +2885,7 @@ pub fn q1_monster_th_die(
                 q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
                 return;
             }
-            q1_monster_sound(
-                behaviors,
-                actor,
-                Q1_CHAN_VOICE,
-                "hknight/death1.wav",
-                1.0,
-                Q1_ATTN_NORM,
-            );
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "hknight/death1.wav", 1.0, Q1_ATTN_NORM);
             let seq = if q1_monster_random(behaviors) > 0.5 {
                 Q1MonsterSeq::HknDie
             } else {
@@ -5740,7 +5726,11 @@ fn q1_hknight_shot<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor:
     let Some(foe) = ctx.server.simulation().body_state(&enemy) else {
         return;
     };
-    let delta = vec3(foe.origin.x - body.origin.x, foe.origin.y - body.origin.y, foe.origin.z - body.origin.z);
+    let delta = vec3(
+        foe.origin.x - body.origin.x,
+        foe.origin.y - body.origin.y,
+        foe.origin.z - body.origin.z,
+    );
     let mut offang = q1_vectoangles(delta);
     offang.y += offset * 6.0;
     let axes = angle_vectors(offang);
@@ -5754,8 +5744,8 @@ fn q1_hknight_shot<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor:
         body.origin.y + center.y + axes.forward.y * 20.0,
         body.origin.z + center.z + axes.forward.z * 20.0,
     );
-    let len = (axes.forward.x * axes.forward.x + axes.forward.y * axes.forward.y + axes.forward.z * axes.forward.z)
-        .sqrt();
+    let len =
+        (axes.forward.x * axes.forward.x + axes.forward.y * axes.forward.y + axes.forward.z * axes.forward.z).sqrt();
     let mut dir = if len.is_normal() {
         vec3(axes.forward.x / len, axes.forward.y / len, axes.forward.z / len)
     } else {
@@ -11236,7 +11226,10 @@ mod tests {
             "death runs die, got {:?}",
             monster.think
         );
-        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "hknight/death1.wav"));
+        assert!(behaviors
+            .sounds
+            .iter()
+            .any(|sound| sound.sample == "hknight/death1.wav"));
         // Solidity drops in the third death frame, not in `th_die`.
         assert!(behaviors.solids.contains(hknight.id()));
     }
@@ -11283,7 +11276,10 @@ mod tests {
         let simulation = server.simulation_mut();
         q1_found_target(&mut behaviors, simulation, hknight.id());
         assert!(
-            behaviors.sounds.iter().any(|sound| sound.sample == "hknight/sight1.wav"),
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "hknight/sight1.wav"),
             "sight barks the classname line"
         );
         assert_eq!(

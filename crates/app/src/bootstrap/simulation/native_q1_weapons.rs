@@ -1910,9 +1910,7 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::Spike),
         Q1MissileKind::SuperSpike => q1_spike_impact(ctx, actor, missile, hit, 18.0, Q1SpikeWall::SuperSpike),
         Q1MissileKind::WizSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike),
-        Q1MissileKind::KnightSpike => {
-            q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike)
-        }
+        Q1MissileKind::KnightSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike),
         Q1MissileKind::Rocket => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
