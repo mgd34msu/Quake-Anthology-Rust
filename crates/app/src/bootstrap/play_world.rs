@@ -9971,7 +9971,9 @@ mod tests {
         let player = world.player_actor().cloned().expect("player");
         let train = {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
-            borrowed_trains_first(&behaviors)
+            let borrowed = behaviors.borrow();
+            let train = borrowed.trains.keys().next().cloned().expect("train");
+            train
         };
         live_set_player_health(&mut world, 1000.0);
         live_fire_use(&mut world, &train, &player);
@@ -10010,10 +10012,5 @@ mod tests {
                 break;
             }
         }
-    }
-
-    #[cfg(test)]
-    fn borrowed_trains_first(behaviors: &std::rc::Rc<std::cell::RefCell<super::simulation::Q1NativeBehaviors>>) -> qa_core::identity::ActorId {
-        behaviors.borrow().trains.keys().next().cloned().expect("train")
     }
 }
