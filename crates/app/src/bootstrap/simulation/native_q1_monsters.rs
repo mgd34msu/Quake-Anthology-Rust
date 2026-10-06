@@ -54,7 +54,7 @@ use qa_world::WorldError;
 use super::super::play::{q1_blocked_trace, q1_trace_from_scene};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
-use super::native_q1_weapons::{Q1_IT_INVISIBILITY, q1_client_obituary, q1_player_die, q1_player_pain};
+use super::native_q1_weapons::{q1_client_obituary, q1_player_die, q1_player_pain, Q1_IT_INVISIBILITY};
 
 /// Stock entity flags (`defs.qc:231-240`).
 pub const Q1_FLAG_FLY: i32 = 1;

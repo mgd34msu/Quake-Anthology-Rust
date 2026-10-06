@@ -5043,7 +5043,7 @@ mod tests {
             assert!(
                 matches!(
                     borrowed.player_state.attack,
-                    Q1PlayerAttack::AxeSwing { fire_at } if fire_at == swung_at + 0.2
+                    Q1PlayerAttack::AxeSwing { fire_at, .. } if fire_at == swung_at + 0.2
                 ),
                 "frame-3 fire 0.2 s out, got {:?}",
                 borrowed.player_state.attack
@@ -5056,8 +5056,18 @@ mod tests {
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            assert_eq!(borrowed.player_state.attack, Q1PlayerAttack::None);
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::AxeSwing { .. }),
+                "frame 4 still runs"
+            );
             assert_eq!(borrowed.player_state.weaponframe, 3);
+        }
+        live_advance(&mut world, 0.2);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.attack, Q1PlayerAttack::None);
+            assert_eq!(borrowed.player_state.weaponframe, 0, "run clears the frame");
         }
         // A wall swing thunks and sparks (straight down at the floor).
         live_pitch(&mut world, 90.0);
@@ -5273,6 +5283,12 @@ mod tests {
     /// scripted level). Leaves the player floating there; no movement
     /// step runs, so gravity never pulls them out.
     fn live_move_player_to_water(world: &mut PlayWorld) -> qa_core::math::Vec3 {
+        live_move_player_to_level(world, 2)
+    }
+
+    /// Swim the player to the first retail water at least `min_level`
+    /// deep (drowning sounds need full submersion).
+    fn live_move_player_to_level(world: &mut PlayWorld, min_level: i32) -> qa_core::math::Vec3 {
         use super::super::simulation::native_q1_weapons::q1_sample_water_level;
         use crate::bootstrap::play::PlayerClip;
         let player = world.player_actor().cloned().expect("player");
@@ -5288,7 +5304,7 @@ mod tests {
                         panic!("live Q1 world clips on a Q1 scene");
                     };
                     let level = q1_sample_water_level(scene, world.server().simulation(), &player);
-                    if level > 1 {
+                    if level >= min_level {
                         return point;
                     }
                     y += 160.0;
@@ -5297,7 +5313,7 @@ mod tests {
             }
             z += 80.0;
         }
-        panic!("retail e1m1 has no waist-deep water on the scan grid");
+        panic!("retail e1m1 has no level-{min_level} water on the scan grid");
     }
 
     /// Hold the attack for `ticks` 60 Hz frames (the nail burst only
@@ -5812,5 +5828,254 @@ mod tests {
             player_health > 0.0 && player_health < 100.0,
             "discharge splashes the firer, got {player_health}"
         );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0162_pain_cries_dry_and_drowns() {
+        use super::super::simulation::native_q1_weapons::{Q1PlayerAttack, Q1_IT_GRENADE_LAUNCHER};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_GRENADE_LAUNCHER, 25.0, 0.0, 3.0, 0.0);
+        live_fire(&mut world, 0, 6);
+        // Lob one skyward: the gun anim retires long before the fuse
+        // pops, so the splash lands on an idle frame and cries out.
+        live_pitch(&mut world, -60.0);
+        live_fire(&mut world, 1, 0);
+        let mut guard = 0;
+        while live_player_health(&world) >= 100.0 {
+            live_tick(&mut world);
+            guard += 1;
+            assert!(guard < 600, "fuse splash wounds the thrower");
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample.starts_with("player/pain") && sound.channel == 2),
+                "wound cries pain1-6 on CHAN_VOICE"
+            );
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::Pain { .. }),
+                "wound runs the pain anim"
+            );
+            assert_eq!(borrowed.player_state.weaponframe, 0);
+            assert!(
+                borrowed.player_state.pain_finished > live_now(&world),
+                "pain arms the 0.5 s gate"
+            );
+        }
+        // Full submersion samples live from retail water (the drown
+        // branch itself is unit-proven: nothing wounds a swimmer with
+        // an idle frame on e1m1 — self-splash needs the gun anim).
+        live_advance(&mut world, 0.7);
+        live_move_player_to_level(&mut world, 3);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.water_level, 3);
+            assert_eq!(borrowed.player_state.water_type, -3, "submersion reads retail water");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0160_death_gib_and_obituaries() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1_DEAD_DEAD, Q1_DEAD_RESPAWNABLE, Q1_IT_GRENADE_LAUNCHER, Q1_IT_LIGHTNING, Q1_IT_ROCKET_LAUNCHER,
+        };
+
+        // Ten cells discharge into a gib: past -40 the player becomes
+        // the bouncing head with three flesh chunks.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_LIGHTNING, 25.0, 0.0, 0.0, 10.0);
+        live_move_player_to_water(&mut world);
+        live_fire(&mut world, 0, 8);
+        live_fire(&mut world, 1, 0);
+        assert!(live_player_health(&world) < -40.0, "ten cells gib");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.deadflag, Q1_DEAD_DEAD, "gibs skip dying");
+            assert!(borrowed.player_state.gibbed_head);
+            assert_eq!(borrowed.pending_gibs.len(), 3);
+            assert_eq!(borrowed.pending_gibs[0].model, "progs/gib1.mdl");
+            assert_eq!(borrowed.player_state.weaponmodel, "");
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "player/gib.wav" || sound.sample == "player/udeath.wav"),
+                "gib cry on CHAN_VOICE"
+            );
+            assert!(
+                borrowed
+                    .sprints
+                    .iter()
+                    .any(|sprint| sprint.text == "Player discharges into the water.\n"),
+                "discharge obituary"
+            );
+            assert_eq!(borrowed.player_state.frags, -1.0);
+            let player = world.player_actor().cloned().expect("player");
+            assert!(!borrowed.solids.contains(&player), "corpses unsolid");
+            assert!(
+                !world
+                    .server()
+                    .simulation()
+                    .combat_state(&player)
+                    .expect("player combat")
+                    .can_take_damage,
+                "corpses stop taking damage"
+            );
+        }
+        // Singleplayer restarts on the release-and-press.
+        live_fire(&mut world, 1, 0);
+        assert_eq!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .player_state
+                .deadflag,
+            Q1_DEAD_DEAD,
+            "held trigger waits"
+        );
+        live_tick(&mut world);
+        assert_eq!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .player_state
+                .deadflag,
+            Q1_DEAD_RESPAWNABLE,
+            "release opens respawn"
+        );
+        live_fire(&mut world, 1, 0);
+        assert!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .player_state
+                .restart_requested,
+            "singleplayer death restarts the level"
+        );
+
+        // Grenade suicide pins the pin-back-in line. Each grenade is
+        // hugged before its fuse pops: 20 units overhead is a certain
+        // ~55 splash, so two pops kill.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_GRENADE_LAUNCHER, 25.0, 0.0, 3.0, 0.0);
+        live_fire(&mut world, 0, 6);
+        live_pitch(&mut world, -60.0);
+        for _ in 0..3 {
+            if live_player_health(&world) <= 0.0 {
+                break;
+            }
+            live_fire(&mut world, 1, 0);
+            live_advance(&mut world, 2.0);
+            let grenade = {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                let id = { borrowed.missiles.keys().next().cloned() };
+                id
+            };
+            if let Some(grenade) = grenade {
+                let at = world
+                    .server()
+                    .simulation()
+                    .body_state(&grenade)
+                    .expect("grenade body")
+                    .origin;
+                live_place_player(&mut world, vec3(at.x, at.y, at.z + 20.0));
+            }
+            live_advance(&mut world, 0.6);
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(live_player_health(&world) <= 0.0, "three splashes kill");
+            assert!(
+                borrowed
+                    .sprints
+                    .iter()
+                    .any(|sprint| sprint.text == "Player tries to put the pin back in\n"),
+                "grenade suicide line"
+            );
+        }
+
+        // Rocket suicide bores the victim to death.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_ROCKET_LAUNCHER, 25.0, 0.0, 3.0, 0.0);
+        live_fire(&mut world, 0, 7);
+        live_pitch(&mut world, 90.0);
+        for _ in 0..3 {
+            live_fire(&mut world, 1, 0);
+            live_advance(&mut world, 0.9);
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let health = live_player_health(&world);
+            assert!(health <= 0.0, "three foot-rockets kill, got {health}");
+            assert!(
+                borrowed
+                    .sprints
+                    .iter()
+                    .any(|sprint| sprint.text == "Player becomes bored with life\n"),
+                "rocket suicide line"
+            );
+        }
+
+        // A dog bite at 1 health mauls.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        // One health: the wounding paths are live-proven elsewhere
+        // (0162 pain, 0177 discharge); this world proves the maul.
+        live_set_player_health(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 20.0);
+        let mut guard = 0;
+        while live_player_health(&world) > 0.0 {
+            live_tick(&mut world);
+            guard += 1;
+            assert!(guard < 1200, "dog finishes the 1-health player");
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed
+                    .sprints
+                    .iter()
+                    .any(|sprint| sprint.text == "Player was mauled by a Rottweiler\n"),
+                "dog-maul line"
+            );
+            assert_eq!(borrowed.player_state.frags, -1.0);
+        }
     }
 }
