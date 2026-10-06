@@ -1602,7 +1602,7 @@ pub fn q1_fire_lightning<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) 
 /// `particle()` is not a temp entity), and the deathmatch victim
 /// launch keys off the engine-global `other` touch residue, which has
 /// no deterministic value here — both stay out with this note.
-fn q1_lightning_damage<L: ServerLogic>(
+pub(crate) fn q1_lightning_damage<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     p1: Vec3,
     p2: Vec3,
