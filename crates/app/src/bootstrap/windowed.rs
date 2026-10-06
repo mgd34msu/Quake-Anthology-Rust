@@ -5303,7 +5303,7 @@ mod tests {
         use qa_core::math::Vec3;
         use qa_world::body::translated_body_bounds;
 
-        use super::super::simulation::native_q1_monsters::q1_is_crucified;
+        use super::super::simulation::native_q1_monsters::{q1_is_crucified, Q1MonsterKind};
         use super::super::simulation::native_q1_spawns::q1_health_of;
         use super::super::simulation::native_q1_weapons::Q1_DEAD_NO;
 
@@ -5432,8 +5432,24 @@ mod tests {
                 let (_, angles_cal) = eye_of(composed);
                 let sign = (f64::from(angles_cal.y) - from).signum();
                 eprintln!(
-                    "live-play: {map} servo target={target:.1} from={from:.1} cal={:.1}",
-                    f64::from(angles_cal.y)
+                    "live-play: {map} servo target={target:.1} from={from:.1} cal={cal:.1} dead={dead} run={run}",
+                    cal = f64::from(angles_cal.y),
+                    dead = composed
+                        .app
+                        .backend()
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.q1_behaviors())
+                        .map(|behaviors| behaviors.borrow().player_state.deadflag)
+                        .map_or("?", |dead| if dead == 0 { "0" } else { "DEAD" }),
+                    run = composed
+                        .app
+                        .backend()
+                        .world
+                        .as_ref()
+                        .and_then(|world| world.q1_behaviors())
+                        .map(|behaviors| behaviors.borrow().intermission.running)
+                        .unwrap_or(999),
                 );
                 assert!(sign != 0.0, "{map} mouse motion does not turn");
                 let mut turned = f64::from(eye_of(composed).1.y);
@@ -5494,6 +5510,20 @@ mod tests {
                 if heading > 0 {
                     let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
                     let player = world.player_actor().cloned().expect("player");
+                    {
+                        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                        let borrowed = behaviors.borrow();
+                        let (eye, _) = world.player_eye().expect("reset eye");
+                        eprintln!(
+                            "live-play: {map} reset eye=({:.0},{:.0},{:.0}) hp={} dead={} solids={}",
+                            eye.x,
+                            eye.y,
+                            eye.z,
+                            q1_health_of(world.server().simulation(), &player),
+                            borrowed.player_state.deadflag,
+                            borrowed.solids.contains(&player),
+                        );
+                    }
                     world
                         .server_mut()
                         .simulation_mut()
@@ -5655,6 +5685,13 @@ mod tests {
                 let mut best: Option<(qa_core::identity::ActorId, f64)> = None;
                 for (id, monster) in borrowed.monsters.iter() {
                     if q1_is_crucified(monster) {
+                        continue;
+                    }
+                    // Stock zombies reset to 60 hp and drop unsolid on
+                    // every knockdown (`zombie_paine1/11/12`), so chip
+                    // damage never kills one; the duel needs a kind
+                    // held fire can finish.
+                    if monster.kind == Q1MonsterKind::Zombie {
                         continue;
                     }
                     let origin = world
@@ -5882,9 +5919,14 @@ mod tests {
                 assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
                 assert_eq!(borrowed.killed_monsters, 0, "fresh level census");
                 eprintln!("live-play: {map} arrived with {} shells", borrowed.player_ammo.shells);
+                // Stock floors carried shells at 25 (`SetChangeParms`,
+                // `client.qc`); the still-held trigger can loose at
+                // most one arrival shot before the release lands
+                // (0.15 s left in the chunk vs the 0.5 s refire).
                 assert!(
-                    borrowed.player_ammo.shells > 0.0 && borrowed.player_ammo.shells < 25.0,
-                    "{map} shells show real expenditure"
+                    borrowed.player_ammo.shells == 24.0 || borrowed.player_ammo.shells == 25.0,
+                    "{map} arrival shells show the carried floor: {}",
+                    borrowed.player_ammo.shells,
                 );
             }
             drive(&mut composed, &mut step_ms, 60);
