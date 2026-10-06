@@ -171,6 +171,9 @@ pub enum Q1MonsterKind {
     Tarbaby,
     /// `monster_shalrath` (`shalrath.qc`).
     Vore,
+    /// `monster_boss` (`boss.qc`): Chthon sleeps bodiless until `use`
+    /// wakes it — no `walkmonster_start`, no start-go.
+    Boss,
 }
 
 impl Q1MonsterKind {
@@ -191,6 +194,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::HellKnight => "monster_hell_knight",
             Q1MonsterKind::Tarbaby => "monster_tarbaby",
             Q1MonsterKind::Vore => "monster_shalrath",
+            Q1MonsterKind::Boss => "monster_boss",
         }
     }
 
@@ -212,6 +216,7 @@ impl Q1MonsterKind {
             "monster_hell_knight" => Some(Q1MonsterKind::HellKnight),
             "monster_tarbaby" => Some(Q1MonsterKind::Tarbaby),
             "monster_shalrath" => Some(Q1MonsterKind::Vore),
+            "monster_boss" => Some(Q1MonsterKind::Boss),
             _ => None,
         }
     }
@@ -460,6 +465,20 @@ pub enum Q1MonsterSeq {
     ShPain,
     /// Vore death 1-7.
     ShDie,
+    /// Chthon rise 1-17 (over `rise1-17`).
+    BossRise,
+    /// Chthon idle 1-31 (over `walk1-31`).
+    BossIdle,
+    /// Chthon missile 1-23 (over `attack1-23`).
+    BossMissile,
+    /// Chthon first shock 1-10 (over `shocka1-10`).
+    BossShockA,
+    /// Chthon second shock 1-10 (over `shockb1-6,shockb1-4`).
+    BossShockB,
+    /// Chthon final shock 1-10 (over `shockc1-10`).
+    BossShockC,
+    /// Chthon death 1-10 (over `death1-9,death9`).
+    BossDeath,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -475,6 +494,10 @@ pub enum Q1MonsterThink {
     StartFlyGo,
     /// Delayed `FoundTarget` from `monster_use` (`monsters.qc:21`).
     FoundTarget,
+    /// Chthon asleep: `monster_boss` sets no think (`boss.qc`), so the
+    /// pass skips it until `boss_awake` arms the rise. Built with a
+    /// negative `nextthink`, which the pass never fires.
+    Asleep,
     /// A `$frame` function: sequence plus 0-based index.
     Frame(Q1MonsterSeq, u8),
 }
@@ -728,6 +751,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_hell_knight",
         "monster_tarbaby",
         "monster_shalrath",
+        "monster_boss",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -1322,6 +1346,42 @@ pub const Q1_VOREBALL_ZOMBIE_DAMAGE: f64 = 110.0;
 /// Vore head model (`shalrath_die`, `shalrath.qc`).
 pub const Q1_VORE_HEAD_MODEL: &str = "progs/h_shal.mdl";
 
+/// Chthon collision bounds (`boss_awake`, `boss.qc`).
+pub const Q1_BOSS_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -128.0,
+        y: -128.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 128.0,
+        y: 128.0,
+        z: 256.0,
+    },
+};
+
+/// Chthon health past skill 0 (`boss_awake`, `boss.qc`): three
+/// lightning strikes. Skill 0 wakes with 1.
+pub const Q1_BOSS_HEALTH: f64 = 3.0;
+
+/// Chthon turn rate (`boss_awake`, `boss.qc`).
+pub const Q1_BOSS_YAW_SPEED: f64 = 20.0;
+
+/// Chthon second-shock model frames: thinks 7-10 replay `shockb1-4`
+/// (`boss_shockb7..10`, `boss.qc`).
+pub const Q1_BOSS_SHOCKB_FRAMES: [i32; 10] = [90, 91, 92, 93, 94, 95, 90, 91, 92, 93];
+
+/// Chthon death model frames: the tenth think re-poses `death9`
+/// (`boss_death10`, `boss.qc`).
+pub const Q1_BOSS_DEATH_FRAMES: [i32; 10] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 56];
+
+/// Lava-ball flight speed (`boss_missile`, `boss.qc`).
+pub const Q1_LAVABALL_SPEED: f32 = 300.0;
+
+/// Lava-ball muzzle offsets: 100 forward, ±100 right, 200 up
+/// (`boss_missile9`, `boss_missile20`, `boss.qc`).
+pub const Q1_LAVABALL_ORG: (f32, f32) = (100.0, 200.0);
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -1355,6 +1415,61 @@ pub fn build_q1_monster<L: ServerLogic>(
             fields.classname
         )));
     }
+    // `monster_boss` skips `walkmonster_start` entirely (`boss.qc`):
+    // no size, no solidity, no think — only the kill-count increment
+    // and the `use` the sigil fires. `boss_awake` sizes and arms it.
+    if kind == Q1MonsterKind::Boss {
+        server.simulation_mut().set_body_bounds(
+            actor.id(),
+            Bounds {
+                min: vec3(0.0, 0.0, 0.0),
+                max: vec3(0.0, 0.0, 0.0),
+            },
+        )?;
+        server.simulation_mut().set_combat(
+            actor.id(),
+            CombatState {
+                health: 0.0,
+                can_take_damage: false,
+                ..CombatState::default()
+            },
+        )?;
+        behaviors.monsters.insert(
+            actor.id(),
+            Q1Monster {
+                kind,
+                think: Q1MonsterThink::Asleep,
+                nextthink: -1.0,
+                frame: 0,
+                enemy: None,
+                oldenemy: None,
+                goalentity: None,
+                movetarget: None,
+                ideal_yaw: 0.0,
+                yaw_speed: 0.0,
+                view_ofs: vec3(0.0, 0.0, 0.0),
+                pausetime: 0.0,
+                attack_finished: 0.0,
+                pain_finished: 0.0,
+                search_time: 0.0,
+                show_hostile: 0.0,
+                attack_state: Q1_AS_STRAIGHT,
+                lefty: false,
+                cnt: 0,
+                flags: 0,
+                spawnflags: fields.spawnflags,
+                takedamage: Q1_DAMAGE_NO,
+                touch: Q1MonsterTouch::None,
+                source: Q1UseSource::from_fields(fields),
+                effects: 0,
+                dead: false,
+                inpain: 0,
+                waitmin: 0.0,
+            },
+        );
+        behaviors.total_monsters += 1;
+        return Ok(());
+    }
     let (bounds, health) = match kind {
         Q1MonsterKind::Dog => (Q1_DOG_BOUNDS, Q1_DOG_HEALTH),
         Q1MonsterKind::Grunt => (Q1_GRUNT_BOUNDS, Q1_GRUNT_HEALTH),
@@ -1369,6 +1484,8 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::HellKnight => (Q1_HKNIGHT_BOUNDS, Q1_HKNIGHT_HEALTH),
         Q1MonsterKind::Tarbaby => (Q1_TARBABY_BOUNDS, Q1_TARBABY_HEALTH),
         Q1MonsterKind::Vore => (Q1_VORE_BOUNDS, Q1_VORE_HEALTH),
+        // Unreachable: the sleeper builds in its own block above.
+        Q1MonsterKind::Boss => (Q1_BOSS_BOUNDS, Q1_BOSS_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1826,6 +1943,12 @@ pub fn q1_monster_use(
     if q1_is_crucified(monster) {
         return;
     }
+    // Chthon's `use` is `boss_awake`, not the stock monster wake
+    // (`monster_boss`, `boss.qc:284`).
+    if monster.kind == Q1MonsterKind::Boss {
+        q1_boss_awake(behaviors, simulation, actor, activator);
+        return;
+    }
     if monster.enemy.is_some() || q1_health_of(simulation, actor) <= 0.0 {
         return;
     }
@@ -1846,6 +1969,43 @@ pub fn q1_monster_use(
         monster.enemy = Some(activator.clone());
         monster.nextthink = now + Q1_MONSTER_THINK_STEP;
         monster.think = Q1MonsterThink::FoundTarget;
+    }
+}
+
+/// Stock `boss_awake` (`boss.qc:235`): go solid, size up, take the
+/// activator as enemy, splash lava, and rise. `DAMAGE_NO` stays, so
+/// only the lightning ever wounds it. Re-using re-wakes (stock
+/// re-runs unconditionally, resetting health).
+pub fn q1_boss_awake(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    actor: &ActorId,
+    activator: Option<&ActorId>,
+) {
+    let now = simulation.frame().time.as_seconds_f64();
+    let health = if behaviors.skill == 0 { 1.0 } else { Q1_BOSS_HEALTH };
+    let _ignored = simulation.set_body_bounds(actor, Q1_BOSS_BOUNDS);
+    if let Some(combat) = simulation.combat_state(actor).cloned() {
+        let _ignored = simulation.set_combat(
+            actor,
+            CombatState {
+                health,
+                can_take_damage: false,
+                ..combat
+            },
+        );
+    }
+    behaviors.solids.insert(actor);
+    if let Some(origin) = simulation.body_state(actor).map(|body| body.origin) {
+        behaviors.temp_ents.push(Q1TempEnt::LavaSplash { at: origin });
+    }
+    if let Some(monster) = behaviors.monsters.get_mut(actor) {
+        monster.enemy = activator.cloned();
+        monster.yaw_speed = Q1_BOSS_YAW_SPEED;
+        monster.takedamage = Q1_DAMAGE_NO;
+        monster.frame = q1_seq_frame(Q1MonsterSeq::BossRise, 0);
+        monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0);
+        monster.nextthink = now + Q1_MONSTER_THINK_STEP;
     }
 }
 
@@ -1870,6 +2030,8 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::HellKnight => Some("hknight/sight1.wav"),
         Q1MonsterKind::Tarbaby => Some("blob/sight1.wav"),
         Q1MonsterKind::Vore => Some("shalrath/sight.wav"),
+        // Chthon never sights: the rise barks `sight1` itself.
+        Q1MonsterKind::Boss => None,
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1964,6 +2126,9 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, 0),
         Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShStand, 0),
+        // The sleeper never takes stock orders; the rise ends in the
+        // missile loop and the dead enemy falls back to the idle.
+        Q1MonsterKind::Boss => Q1MonsterThink::Frame(Q1MonsterSeq::BossIdle, 0),
     }
 }
 
@@ -1984,6 +2149,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbWalk, 0),
         Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShWalk, 0),
+        Q1MonsterKind::Boss => Q1MonsterThink::Frame(Q1MonsterSeq::BossIdle, 0),
     }
 }
 
@@ -2004,6 +2170,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::HellKnight => Q1MonsterThink::Frame(Q1MonsterSeq::HknRun, 0),
         Q1MonsterKind::Tarbaby => Q1MonsterThink::Frame(Q1MonsterSeq::TbRun, 0),
         Q1MonsterKind::Vore => Q1MonsterThink::Frame(Q1MonsterSeq::ShRun, 0),
+        Q1MonsterKind::Boss => Q1MonsterThink::Frame(Q1MonsterSeq::BossIdle, 0),
     }
 }
 
@@ -2027,6 +2194,7 @@ pub fn q1_th_melee(
         Q1MonsterKind::Zombie => None,
         Q1MonsterKind::Wizard => None,
         Q1MonsterKind::Vore => None,
+        Q1MonsterKind::Boss => None,
         Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
         Q1MonsterKind::Knight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0)),
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0)),
@@ -2097,6 +2265,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::HellKnight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::HknMagicC, 0)),
         Q1MonsterKind::Tarbaby => Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbJump, 0)),
         Q1MonsterKind::Vore => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShAttack, 0)),
+        Q1MonsterKind::Boss => Some(Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -2231,6 +2400,13 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::ShAttack => 11,
         Q1MonsterSeq::ShPain => 5,
         Q1MonsterSeq::ShDie => 7,
+        Q1MonsterSeq::BossRise => 17,
+        Q1MonsterSeq::BossIdle => 31,
+        Q1MonsterSeq::BossMissile => 23,
+        Q1MonsterSeq::BossShockA => 10,
+        Q1MonsterSeq::BossShockB => 10,
+        Q1MonsterSeq::BossShockC => 10,
+        Q1MonsterSeq::BossDeath => 10,
     }
 }
 
@@ -2257,7 +2433,10 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// 155-165; spawn walk 0-24, run 25-49, jump 50-55, fly 56-59, exp
 /// 60, with stand holding walk1 and both death thinks on exp; vore
 /// attack 0-10, pain 11-15, death 16-22, walk 23-34, with stand
-/// holding walk1 and the gaits opening on walk2).
+/// holding walk1 and the gaits opening on walk2; Chthon rise 0-16,
+/// walk 17-47, death 48-56, attack 57-79, shocka 80-89, shockb
+/// 90-95, shockc 96-105, with the second shock replaying shockb1-4
+/// and the tenth death think re-posing death9).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -2285,6 +2464,15 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // (`shal_walk1..12`, `shalrath.qc`).
     if seq == Q1MonsterSeq::ShWalk || seq == Q1MonsterSeq::ShRun {
         return Q1_VORE_GAIT_FRAMES[usize::from(index.min(11))];
+    }
+    // The second shock replays `shockb1-4` for thinks 7-10
+    // (`boss_shockb7..10`, `boss.qc`).
+    if seq == Q1MonsterSeq::BossShockB {
+        return Q1_BOSS_SHOCKB_FRAMES[usize::from(index.min(9))];
+    }
+    // The tenth death think re-poses `death9` (`boss_death10`).
+    if seq == Q1MonsterSeq::BossDeath {
+        return Q1_BOSS_DEATH_FRAMES[usize::from(index.min(9))];
     }
     // The fish run skims the odd swim frames (`f_run1..9`, `fish.qc`).
     if seq == Q1MonsterSeq::FishRun {
@@ -2410,6 +2598,13 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::ShAttack => 0,
         Q1MonsterSeq::ShPain => 11,
         Q1MonsterSeq::ShDie => 16,
+        Q1MonsterSeq::BossRise => 0,
+        Q1MonsterSeq::BossIdle => 17,
+        Q1MonsterSeq::BossMissile => 57,
+        Q1MonsterSeq::BossShockA => 80,
+        Q1MonsterSeq::BossShockB => 90,
+        Q1MonsterSeq::BossShockC => 96,
+        Q1MonsterSeq::BossDeath => 48,
     };
     // The volley rewinds `magatt5..2` over its tail (`wizard.qc`).
     if seq == Q1MonsterSeq::WizFast {
@@ -2573,6 +2768,17 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::ShPain) => q1_th_run(kind),
         // The death tail self-loops (`shalrath.qc`); death never exits.
         (_, Q1MonsterSeq::ShDie) => Q1MonsterThink::Frame(Q1MonsterSeq::ShDie, index),
+        // The rise ends in the missile loop, never the idle
+        // (`boss_rise17`, `boss.qc`).
+        (_, Q1MonsterSeq::BossRise) => Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0),
+        (_, Q1MonsterSeq::BossIdle) => Q1MonsterThink::Frame(Q1MonsterSeq::BossIdle, 0),
+        (_, Q1MonsterSeq::BossMissile) => Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0),
+        (_, Q1MonsterSeq::BossShockA) => Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0),
+        (_, Q1MonsterSeq::BossShockB) => Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0),
+        (_, Q1MonsterSeq::BossShockC) => Q1MonsterThink::Frame(Q1MonsterSeq::BossDeath, 0),
+        // The tenth death think removes the body; the tail re-poses
+        // it (`boss_death10`).
+        (_, Q1MonsterSeq::BossDeath) => Q1MonsterThink::Frame(Q1MonsterSeq::BossDeath, index),
     }
 }
 
@@ -2855,6 +3061,9 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // Chthon sets no `th_pain` (`monster_boss`, `boss.qc`): only
+        // the lightning advances its shocks.
+        Q1MonsterKind::Boss => {}
     }
 }
 
@@ -3126,6 +3335,9 @@ pub fn q1_monster_th_die(
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // Chthon sets no `th_die` and takes no damage (`DAMAGE_NO`):
+        // the third shock runs the death, never the damage path.
+        Q1MonsterKind::Boss => {}
     }
 }
 
@@ -3481,6 +3693,8 @@ fn q1_monster_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
                 let simulation = ctx.server.simulation_mut();
                 q1_found_target(ctx.behaviors, simulation, actor);
             }
+            // The sleeper has no think (`monster_boss`, `boss.qc`).
+            Q1MonsterThink::Asleep => {}
             Q1MonsterThink::Frame(seq, index) => {
                 let kind = monster.kind;
                 if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
@@ -4796,6 +5010,9 @@ fn q1_check_any_attack<L: ServerLogic>(
         // Vores run the generic check with the missile armed and no
         // melee (`CheckAttack`, `fight.qc:57`).
         Some(Q1MonsterKind::Vore) => q1_check_attack(ctx, actor, memo, false, true),
+        // Chthon never runs `ai_run`: the missile loop hurls on its
+        // own frames (`boss.qc`).
+        Some(Q1MonsterKind::Boss) => false,
         None => false,
     }
 }
@@ -8279,6 +8496,215 @@ fn q1_wizard_frame<L: ServerLogic>(
 /// charge, the three fan casts (only `magicc` ever fires), the
 /// three cycling sword combos, the double-barked pain, and the two
 /// deaths with their third-frame unsolid drop.
+/// Stock `boss_face` (`boss.qc:40`): re-pick the enemy past a dead
+/// one or on the 2% roll, then turn onto it. `find` does not wrap
+/// (`pr_cmds.c`), so past the last player the enemy drops to world
+/// (aimed at the map origin) and re-acquires next face.
+fn q1_boss_face<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let dead = enemy
+        .as_ref()
+        .is_none_or(|foe| q1_health_of(ctx.server.simulation(), foe) <= 0.0);
+    if dead || q1_monster_random(ctx.behaviors) < 0.02 {
+        let next = if enemy.as_ref() == ctx.behaviors.player.as_ref() {
+            None
+        } else {
+            ctx.behaviors.player.clone()
+        };
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.enemy = next;
+        }
+    }
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let foe = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let to = foe
+        .as_ref()
+        .and_then(|foe| ctx.server.simulation().body_state(foe).map(|body| body.origin));
+    // A world enemy is the map origin (`ai_face` on `world.origin`).
+    let to = to.unwrap_or(vec3(0.0, 0.0, 0.0));
+    if let Some(from) = from {
+        let yaw = q1_vectoyaw(vec3(to.x - from.x, to.y - from.y, to.z - from.z));
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.ideal_yaw = yaw;
+        }
+        q1_change_yaw(ctx, actor);
+    }
+}
+
+/// Stock `boss_missile` (`boss.qc:195`): hurl one 300 u/s lava ball
+/// from 100 forward, `right` right, 200 up, leading a moving enemy
+/// past skill 1, and bark the throw. A dead (or world) enemy drops
+/// the loop to the idle.
+fn q1_boss_missile<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, right: f32) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let foe = enemy.as_ref().and_then(|foe| ctx.server.simulation().body_state(foe));
+    let foe_origin = foe.as_ref().map_or(vec3(0.0, 0.0, 0.0), |foe| foe.origin);
+    let offang = q1_vectoangles(vec3(
+        foe_origin.x - body.origin.x,
+        foe_origin.y - body.origin.y,
+        foe_origin.z - body.origin.z,
+    ));
+    let axes = angle_vectors(offang);
+    let (forward, up) = Q1_LAVABALL_ORG;
+    let org = vec3(
+        body.origin.x + forward * axes.forward.x + right * axes.right.x,
+        body.origin.y + forward * axes.forward.y + right * axes.right.y,
+        body.origin.z + forward * axes.forward.z + right * axes.right.z + up,
+    );
+    let aim = if ctx.behaviors.skill > 1 {
+        let flight =
+            length3(vec3(foe_origin.x - org.x, foe_origin.y - org.y, foe_origin.z - org.z)) / Q1_LAVABALL_SPEED;
+        let vel = foe.as_ref().map_or(vec3(0.0, 0.0, 0.0), |foe| foe.velocity);
+        vec3(
+            foe_origin.x + flight * vel.x,
+            foe_origin.y + flight * vel.y,
+            foe_origin.z,
+        )
+    } else {
+        foe_origin
+    };
+    let delta = vec3(aim.x - org.x, aim.y - org.y, aim.z - org.z);
+    let len = length3(delta);
+    let dir = if len > 0.0 {
+        scale3(delta, 1.0 / len)
+    } else {
+        vec3(0.0, 0.0, 1.0)
+    };
+    let now = ctx.now;
+    let me = actor.clone();
+    let _ignored = q1_spawn_missile(
+        &mut *ctx.server,
+        &mut *ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::LavaBall,
+            owner: me,
+            origin: org,
+            velocity: vec3(
+                dir.x * Q1_LAVABALL_SPEED,
+                dir.y * Q1_LAVABALL_SPEED,
+                dir.z * Q1_LAVABALL_SPEED,
+            ),
+            avelocity: vec3(200.0, 100.0, 300.0),
+            effects: 0,
+            fuse_at: None,
+            home_enemy: None,
+            home_at: None,
+            remove_at: now + 6.0,
+            born_at: now,
+        },
+    );
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "boss1/throw.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let dead = enemy
+        .as_ref()
+        .is_none_or(|foe| q1_health_of(ctx.server.simulation(), foe) <= 0.0);
+    if dead {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.frame = q1_seq_frame(Q1MonsterSeq::BossIdle, 0);
+            monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::BossIdle, 0);
+            monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+        }
+    }
+}
+
+/// Stock `boss_death10` (`boss.qc:187`): count the kill, fire the
+/// death targets (the e1m7 exit doors), and remove the body.
+fn q1_boss_death_think<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    ctx.behaviors.killed_monsters += 1;
+    let source = ctx.behaviors.monsters.get(actor).map(|monster| monster.source.clone());
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    if let Some(source) = source {
+        super::native_q1_triggers::q1_use_targets(ctx.behaviors, simulation, movers, triggers, &source, None);
+    }
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
+}
+
+/// One Chthon `$frame` body (`boss.qc`): the barking rise into the
+/// missile loop, the facing idle, the two-ball missile loop, the
+/// quiet shocks, and the crying death into the counting removal.
+#[allow(clippy::too_many_lines)]
+fn q1_boss_frame<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, seq: Q1MonsterSeq, index: u8) {
+    match (seq, index) {
+        // The rise barks the breach, then the sight (`boss_rise1..2`).
+        (Q1MonsterSeq::BossRise, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_WEAPON,
+                "boss1/out1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::BossRise, 1) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "boss1/sight1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::BossRise, _) => {}
+        // The first idle frame only watches (`boss_idle1`).
+        (Q1MonsterSeq::BossIdle, 0) => {}
+        (Q1MonsterSeq::BossIdle, _) => q1_boss_face(ctx, actor),
+        // The ninth ball throws right, the twentieth left
+        // (`boss_missile9`, `boss_missile20`); the rest face.
+        (Q1MonsterSeq::BossMissile, 8) => q1_boss_missile(ctx, actor, 100.0),
+        (Q1MonsterSeq::BossMissile, 19) => q1_boss_missile(ctx, actor, -100.0),
+        (Q1MonsterSeq::BossMissile, _) => q1_boss_face(ctx, actor),
+        (Q1MonsterSeq::BossShockA, _) => {}
+        (Q1MonsterSeq::BossShockB, _) => {}
+        (Q1MonsterSeq::BossShockC, _) => {}
+        // The death cries, then the ninth death splashes lava out of
+        // the body channel (`boss_death1`, `boss_death9`).
+        (Q1MonsterSeq::BossDeath, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "boss1/death.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::BossDeath, 8) => {
+            q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_BODY, "boss1/out1.wav", 1.0, Q1_ATTN_NORM);
+            if let Some(origin) = ctx.server.simulation().body_state(actor).map(|body| body.origin) {
+                ctx.behaviors.temp_ents.push(Q1TempEnt::LavaSplash { at: origin });
+            }
+        }
+        (Q1MonsterSeq::BossDeath, 9) => q1_boss_death_think(ctx, actor),
+        (Q1MonsterSeq::BossDeath, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// Stock `ShalMissile` (`shalrath.qc:102`): snap the yaw onto the
 /// enemy, hurl one 400 u/s ball from the chest, arm its homing for
 /// the flight time out (at least 0.1 s), bark the cast, and halve the
@@ -8551,6 +8977,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::HellKnight => q1_hknight_frame(ctx, actor, seq, index),
         Q1MonsterKind::Tarbaby => q1_tarbaby_frame(ctx, actor, seq, index),
         Q1MonsterKind::Vore => q1_vore_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Boss => q1_boss_frame(ctx, actor, seq, index),
     }
 }
 
@@ -8720,6 +9147,10 @@ mod tests {
         monster_fields("monster_shalrath", pairs)
     }
 
+    fn boss_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_boss", pairs)
+    }
+
     fn spawn_monster(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
@@ -8828,6 +9259,14 @@ mod tests {
     }
 
     fn spawn_vore(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_boss(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -12342,6 +12781,180 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Vore, ShDie, 6),
             Q1MonsterThink::Frame(ShDie, 6)
+        );
+    }
+
+    #[test]
+    fn boss_spawn_sleeps_bodiless_and_counts() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = boss_fields(&[]);
+        let boss = spawn_boss(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(boss.id()).unwrap();
+        assert_eq!(body.bounds.min, vec3(0.0, 0.0, 0.0));
+        assert_eq!(body.bounds.max, vec3(0.0, 0.0, 0.0));
+        let combat = server.simulation().combat_state(boss.id()).unwrap();
+        assert_eq!(combat.health, 0.0);
+        assert!(!combat.can_take_damage);
+        assert!(!behaviors.solids.contains(boss.id()), "sleepers stay unsolid");
+        let monster = behaviors.monsters.get(boss.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Boss);
+        assert_eq!(monster.think, Q1MonsterThink::Asleep);
+        assert_eq!(monster.nextthink, -1.0, "no think until use wakes it");
+        assert_eq!(monster.takedamage, Q1_DAMAGE_NO);
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(Q1MonsterKind::from_classname("monster_boss"), Some(Q1MonsterKind::Boss));
+        assert_eq!(Q1MonsterKind::Boss.classname(), "monster_boss");
+        // No melee; the missile stroke is the lava loop.
+        assert_eq!(
+            q1_th_melee(
+                &mut behaviors,
+                boss.id(),
+                Q1MonsterKind::Boss,
+                q1_health_of(server.simulation(), boss.id())
+            ),
+            None
+        );
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Boss),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::BossMissile, 0))
+        );
+    }
+
+    #[test]
+    fn boss_awake_sizes_arms_and_rises() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = boss_fields(&[]);
+        let boss = spawn_boss(&mut server, &mut behaviors, &fields);
+        // Skill 0 wakes with a single strike of health.
+        let simulation = server.simulation_mut();
+        q1_monster_use(&mut behaviors, simulation, boss.id(), Some(player.id()));
+        assert_eq!(q1_health_of(server.simulation(), boss.id()), 1.0);
+        // Past skill 0 the re-wake resets to three.
+        behaviors.skill = 2;
+        let simulation = server.simulation_mut();
+        q1_monster_use(&mut behaviors, simulation, boss.id(), Some(player.id()));
+        let body = server.simulation().body_state(boss.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_BOSS_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_BOSS_BOUNDS.max);
+        let combat = server.simulation().combat_state(boss.id()).unwrap();
+        assert_eq!(combat.health, Q1_BOSS_HEALTH);
+        assert!(!combat.can_take_damage, "DAMAGE_NO stays");
+        assert!(behaviors.solids.contains(boss.id()));
+        assert!(
+            behaviors
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::LavaSplash { .. })),
+            "wakes splash lava"
+        );
+        let monster = behaviors.monsters.get(boss.id()).unwrap();
+        assert_eq!(monster.enemy, Some(player.id().clone()));
+        assert_eq!(monster.yaw_speed, Q1_BOSS_YAW_SPEED);
+        assert_eq!(monster.takedamage, Q1_DAMAGE_NO);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0));
+        assert_eq!(monster.frame, 0);
+        assert_eq!(monster.nextthink, Q1_MONSTER_THINK_STEP);
+    }
+
+    #[test]
+    fn boss_ignores_pain_and_damage() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.skill = 2;
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = boss_fields(&[]);
+        let boss = spawn_boss(&mut server, &mut behaviors, &fields);
+        let simulation = server.simulation_mut();
+        q1_monster_use(&mut behaviors, simulation, boss.id(), Some(player.id()));
+        // No `th_pain`: hits never flinch and never bark.
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, boss.id(), 50.0);
+        assert_eq!(
+            behaviors.monsters.get(boss.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0)
+        );
+        // `DAMAGE_NO`: even a 700-damage hit changes nothing.
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            boss.id(),
+            None,
+            Some(player.id()),
+            700.0,
+        );
+        assert_eq!(q1_health_of(server.simulation(), boss.id()), Q1_BOSS_HEALTH);
+        assert_eq!(behaviors.killed_monsters, 0);
+        assert!(!behaviors.monsters.get(boss.id()).unwrap().dead);
+        assert!(behaviors.pending_gibs.is_empty(), "Chthon never gibs");
+    }
+
+    #[test]
+    fn boss_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(BossRise), 17);
+        assert_eq!(q1_seq_len(BossIdle), 31);
+        assert_eq!(q1_seq_len(BossMissile), 23);
+        assert_eq!(q1_seq_len(BossShockA), 10);
+        assert_eq!(q1_seq_len(BossShockB), 10);
+        assert_eq!(q1_seq_len(BossShockC), 10);
+        assert_eq!(q1_seq_len(BossDeath), 10);
+        assert_eq!(q1_seq_frame(BossRise, 0), 0);
+        assert_eq!(q1_seq_frame(BossRise, 16), 16);
+        assert_eq!(q1_seq_frame(BossIdle, 0), 17);
+        assert_eq!(q1_seq_frame(BossIdle, 30), 47);
+        assert_eq!(q1_seq_frame(BossMissile, 0), 57);
+        assert_eq!(q1_seq_frame(BossMissile, 22), 79);
+        assert_eq!(q1_seq_frame(BossShockA, 0), 80);
+        assert_eq!(q1_seq_frame(BossShockA, 9), 89);
+        // The second shock replays `shockb1-4` for thinks 7-10.
+        assert_eq!(q1_seq_frame(BossShockB, 0), 90);
+        assert_eq!(q1_seq_frame(BossShockB, 5), 95);
+        assert_eq!(q1_seq_frame(BossShockB, 6), 90);
+        assert_eq!(q1_seq_frame(BossShockB, 9), 93);
+        assert_eq!(q1_seq_frame(BossShockC, 0), 96);
+        assert_eq!(q1_seq_frame(BossShockC, 9), 105);
+        // The tenth death think re-poses `death9`.
+        assert_eq!(q1_seq_frame(BossDeath, 0), 48);
+        assert_eq!(q1_seq_frame(BossDeath, 8), 56);
+        assert_eq!(q1_seq_frame(BossDeath, 9), 56);
+        // The rise ends in the missile loop; idle and missile
+        // self-loop; shocks A/B return to the missile; shock C runs
+        // the death; the death tail re-poses the removal think.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossRise, 16),
+            Q1MonsterThink::Frame(BossMissile, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossIdle, 30),
+            Q1MonsterThink::Frame(BossIdle, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossMissile, 22),
+            Q1MonsterThink::Frame(BossMissile, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossShockA, 9),
+            Q1MonsterThink::Frame(BossMissile, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossShockB, 9),
+            Q1MonsterThink::Frame(BossMissile, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossShockC, 9),
+            Q1MonsterThink::Frame(BossDeath, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Boss, BossDeath, 9),
+            Q1MonsterThink::Frame(BossDeath, 9)
         );
     }
 }

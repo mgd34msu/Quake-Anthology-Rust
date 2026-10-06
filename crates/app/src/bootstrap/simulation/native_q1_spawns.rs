@@ -698,6 +698,9 @@ pub struct Q1NativeBehaviors {
     pub killed_monsters: u32,
     /// Stock skill level (nightmare pain holds, refire counts).
     pub skill: u8,
+    /// `lightning_end` (`boss.qc:290`): master-clock instant the e1m7
+    /// bolt runs to. `lightning_use` refuses while it sits 1 s out.
+    pub lightning_end: f64,
     /// Cooperative rules (monster target re-selection).
     pub coop: bool,
     /// Latest monster to sight a player (`sight_entity`).

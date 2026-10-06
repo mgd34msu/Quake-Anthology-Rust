@@ -397,6 +397,21 @@ pub enum Q1TempEnt {
         /// Impact point.
         end: Vec3,
     },
+    /// `TE_LAVASPLASH` at Chthon's rise and death (`boss_awake`,
+    /// `boss_death9`, `boss.qc`).
+    LavaSplash {
+        /// Splash origin.
+        at: Vec3,
+    },
+    /// `TE_LIGHTNING3` between the e1m7 electrodes (`lightning_fire`,
+    /// `boss.qc:292`): stock addresses it to the world edict, so no
+    /// entity rides along.
+    Lightning3 {
+        /// First electrode foot.
+        start: Vec3,
+        /// Second electrode foot, shortened 100 units toward `start`.
+        end: Vec3,
+    },
 }
 
 /// Stock waist contents (`self.watertype`): the liquid around
@@ -1304,6 +1319,10 @@ pub enum Q1MissileKind {
     /// blast (`ShalMissileTouch`, `shalrath.qc:177`). Stock spawns
     /// it classless; the native tag names the only such missile.
     VoreBall,
+    /// Chthon lava ball: `launch_spike` re-skinned to
+    /// `progs/lavaball.mdl` with the rocket touch (`boss_missile`,
+    /// `boss.qc:195`), so it impacts exactly like a rocket.
+    LavaBall,
 }
 
 impl Q1MissileKind {
@@ -1321,6 +1340,7 @@ impl Q1MissileKind {
             Q1MissileKind::WizSpike => "wizspike",
             Q1MissileKind::KnightSpike => "knightspike",
             Q1MissileKind::VoreBall => "voreball",
+            Q1MissileKind::LavaBall => "lavaball",
         }
     }
 }
@@ -1769,7 +1789,8 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         | Q1MissileKind::KnightSpike
         | Q1MissileKind::Rocket
         | Q1MissileKind::Laser
-        | Q1MissileKind::VoreBall => {
+        | Q1MissileKind::VoreBall
+        | Q1MissileKind::LavaBall => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
         Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade | Q1MissileKind::ZombieFlesh => {
@@ -1966,6 +1987,7 @@ fn q1_missile_impact<L: ServerLogic>(
             | Q1MissileKind::Rocket
             | Q1MissileKind::Laser
             | Q1MissileKind::VoreBall
+            | Q1MissileKind::LavaBall
     );
     if flies_straight && q1_point_is_sky(ctx.scene, hit.endpos) {
         q1_remove_missile(ctx, actor);
@@ -1977,6 +1999,12 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::WizSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike),
         Q1MissileKind::KnightSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike),
         Q1MissileKind::Rocket => {
+            q1_rocket_impact(ctx, actor, missile, hit);
+            true
+        }
+        // The lava ball carries the rocket touch (`T_MissileTouch`,
+        // `boss_missile`).
+        Q1MissileKind::LavaBall => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
         }
@@ -4075,6 +4103,58 @@ mod tests {
         // 110 direct alone kills the 60-health zombie.
         assert_eq!(ctx.behaviors.killed_monsters, 1);
         assert!(!ctx.behaviors.missiles.contains_key(&ball), "struck balls remove");
+        assert!(
+            ctx.behaviors
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+            "impacts flash TE_EXPLOSION"
+        );
+    }
+
+    #[test]
+    fn lavaball_impacts_like_rocket() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let ball = q1_spawn_missile(
+            &mut server,
+            &mut behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::LavaBall,
+                owner: player.clone(),
+                origin: vec3(0.0, 0.0, 24.0),
+                velocity: vec3(300.0, 0.0, 0.0),
+                avelocity: vec3(200.0, 100.0, 300.0),
+                effects: 0,
+                fuse_at: None,
+                home_enemy: None,
+                home_at: None,
+                remove_at: 7.0,
+                born_at: 1.0,
+            },
+        )
+        .expect("ball spawns");
+        let missile = behaviors.missiles.get(&ball).cloned().expect("ball record");
+        let wall = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(10.0, 0.0, 24.0),
+            hit_actor: None,
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        assert!(q1_missile_impact(&mut ctx, &ball, &missile, &wall));
+        assert!(!ctx.behaviors.missiles.contains_key(&ball), "struck balls remove");
+        assert!(
+            ctx.behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "weapons/r_exp3.wav"),
+            "the rocket touch barks"
+        );
         assert!(
             ctx.behaviors
                 .temp_ents
