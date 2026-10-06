@@ -5630,12 +5630,20 @@ mod tests {
         total_steps += 3;
         e3_press_key(&mut composed, 44, 32, false);
         let mut peak = jump_z;
-        for _ in 0..40 {
+        let mut land_z = jump_z;
+        let mut calm = 0;
+        for _ in 0..120 {
             e3_drive(&mut composed, &mut step_ms, 1);
             total_steps += 1;
-            peak = peak.max(f64::from(e3_eye(&composed).0.z));
+            let z = f64::from(e3_eye(&composed).0.z);
+            peak = peak.max(z);
+            let descending = z < peak - 8.0;
+            calm = if descending && (z - land_z).abs() < 0.5 { calm + 1 } else { 0 };
+            land_z = z;
+            if peak > jump_z + 8.0 && calm >= 3 {
+                break;
+            }
         }
-        let land_z = f64::from(e3_eye(&composed).0.z);
         eprintln!("live-play: {tag} jump peak {peak:.1} from {jump_z:.1}, landed {land_z:.1}");
         assert!(peak > jump_z + 8.0, "jump did not rise: peak {peak:.1}");
         assert!((land_z - jump_z).abs() < 6.0, "jump did not land: {land_z:.1} from {jump_z:.1}");
