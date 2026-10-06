@@ -347,6 +347,11 @@ pub enum Q1TempEnt {
         /// Impact point.
         at: Vec3,
     },
+    /// `TE_WIZSPIKE` at the impact point.
+    WizSpike {
+        /// Impact point.
+        at: Vec3,
+    },
     /// `TE_BLOOD` at the wound (`SpawnBlood`, `combat.qc`).
     Blood {
         /// Wound point.
@@ -1276,6 +1281,10 @@ pub enum Q1MissileKind {
     /// thud and a dead stop, removing on the next touch
     /// (`ZombieGrenadeTouch`, `zombie.qc`).
     ZombieFlesh,
+    /// Scrag spike: 9 damage, `TE_WIZSPIKE` walls (`spike_touch`
+    /// with classname `wizspike`, `weapons.qc:675`). The green tracer
+    /// rides the `w_spike.mdl` model flags, not gamecode.
+    WizSpike,
 }
 
 impl Q1MissileKind {
@@ -1290,6 +1299,7 @@ impl Q1MissileKind {
             Q1MissileKind::Laser => "laser",
             Q1MissileKind::OgreGrenade => "grenade",
             Q1MissileKind::ZombieFlesh => "zombie_flesh",
+            Q1MissileKind::WizSpike => "wizspike",
         }
     }
 }
@@ -1325,7 +1335,8 @@ pub struct Q1Missile {
 /// Stock `spawn()` parameters for one missile: the fire functions fill
 /// every field (stock assigns each edict field explicitly).
 pub struct Q1MissileSpawn {
-    /// Spike, super spike, grenade, rocket, laser, or ogre grenade.
+    /// Spike, super spike, scrag spike, grenade, rocket, laser, or
+    /// ogre grenade.
     pub kind: Q1MissileKind,
     /// Firer (touch immunity, radius credit).
     pub owner: ActorId,
@@ -1709,7 +1720,11 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         return;
     }
     match missile.kind {
-        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket | Q1MissileKind::Laser => {
+        Q1MissileKind::Spike
+        | Q1MissileKind::SuperSpike
+        | Q1MissileKind::WizSpike
+        | Q1MissileKind::Rocket
+        | Q1MissileKind::Laser => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
         Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade | Q1MissileKind::ZombieFlesh => {
@@ -1869,15 +1884,24 @@ fn q1_missile_impact<L: ServerLogic>(
     // bounce off the sky face like any other solid.
     let flies_straight = matches!(
         missile.kind,
-        Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket | Q1MissileKind::Laser
+        Q1MissileKind::Spike
+            | Q1MissileKind::SuperSpike
+            | Q1MissileKind::WizSpike
+            | Q1MissileKind::Rocket
+            | Q1MissileKind::Laser
     );
     if flies_straight && q1_point_is_sky(ctx.scene, hit.endpos) {
         q1_remove_missile(ctx, actor);
         return true;
     }
     match missile.kind {
-        Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, false),
-        Q1MissileKind::SuperSpike => q1_spike_impact(ctx, actor, missile, hit, 18.0, true),
+        Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::Spike),
+        Q1MissileKind::SuperSpike => {
+            q1_spike_impact(ctx, actor, missile, hit, 18.0, Q1SpikeWall::SuperSpike)
+        }
+        Q1MissileKind::WizSpike => {
+            q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike)
+        }
         Q1MissileKind::Rocket => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
@@ -1898,16 +1922,29 @@ fn q1_missile_impact<L: ServerLogic>(
     }
 }
 
-/// Stock `spike_touch` / `superspike_touch` (`combat.qc:414`): blood and
-/// 9 (nailgun) or 18 (super nailgun) damage to anything damageable,
-/// else a wall spark; the spike never survives the hit.
+/// Wall-impact temp ent for `spike_touch` (`weapons.qc:675`): stock
+/// picks by missile classname (`wizspike`, `knightspike`, else the
+/// plain spike).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q1SpikeWall {
+    /// `TE_SPIKE`.
+    Spike,
+    /// `TE_SUPERSPIKE`.
+    SuperSpike,
+    /// `TE_WIZSPIKE`.
+    WizSpike,
+}
+
+/// Stock `spike_touch` / `superspike_touch` (`weapons.qc:675`): blood
+/// and 9 (nailgun, scrag) or 18 (super nailgun) damage to anything
+/// damageable, else a wall spark; the spike never survives the hit.
 fn q1_spike_impact<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     actor: &ActorId,
     missile: &Q1Missile,
     hit: &Q1LineHit,
     damage: f64,
-    super_spike: bool,
+    wall: Q1SpikeWall,
 ) -> bool {
     let victim = hit
         .hit_actor
@@ -1943,10 +1980,13 @@ fn q1_spike_impact<L: ServerLogic>(
             Some(&missile.owner),
             damage,
         );
-    } else if super_spike {
-        ctx.behaviors.temp_ents.push(Q1TempEnt::SuperSpike { at: hit.endpos });
     } else {
-        ctx.behaviors.temp_ents.push(Q1TempEnt::Spike { at: hit.endpos });
+        let ent = match wall {
+            Q1SpikeWall::Spike => Q1TempEnt::Spike { at: hit.endpos },
+            Q1SpikeWall::SuperSpike => Q1TempEnt::SuperSpike { at: hit.endpos },
+            Q1SpikeWall::WizSpike => Q1TempEnt::WizSpike { at: hit.endpos },
+        };
+        ctx.behaviors.temp_ents.push(ent);
     }
     q1_remove_missile(ctx, actor);
     true
@@ -3668,6 +3708,100 @@ mod tests {
                 .count(),
             1,
             "the removal touch stays silent"
+        );
+    }
+
+    #[test]
+    fn shambler_takes_half_grenade_blast() {
+        use super::super::native_q1_monsters::{build_q1_monster, register_q1_monster_spawns, Q1_FLAG_MONSTER};
+
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        register_q1_monster_spawns(server.spawns_mut());
+        let fields = SpawnFields::parse(&[("classname", "monster_shambler"), ("origin", "0 0 0")]).unwrap();
+        let shambler = server.spawn_entity(&fields).unwrap();
+        build_q1_monster(&mut server, &mut behaviors, &shambler, &fields).unwrap();
+        let combat = server.simulation().combat_state(shambler.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(
+                shambler.id(),
+                CombatState {
+                    can_take_damage: true,
+                    ..combat
+                },
+            )
+            .unwrap();
+        let monster = behaviors.monsters.get_mut(shambler.id()).unwrap();
+        monster.flags |= Q1_FLAG_MONSTER;
+        monster.takedamage = Q1_DAMAGE_AIM;
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let grenade = q1_spawn_missile(
+            &mut server,
+            &mut behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::Grenade,
+                owner: player.clone(),
+                // The lane's radius falloff measures to the victim's
+                // center, so park the blast on it for a full-120 hit.
+                origin: vec3(0.0, 0.0, 20.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                avelocity: vec3(0.0, 0.0, 0.0),
+                effects: 0,
+                fuse_at: None,
+                remove_at: 99.0,
+                born_at: 0.0,
+            },
+        )
+        .unwrap();
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_grenade_explode(&mut ctx, &grenade, None, 120.0, 8.0);
+        // Point-blank 120 halves to 60 (`combat.qc:236`).
+        assert_eq!(q1_health_of(ctx.server.simulation(), shambler.id()), 540.0);
+    }
+
+    #[test]
+    fn wizspike_wall_sparks_green() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let spike = q1_spawn_missile(
+            &mut server,
+            &mut behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::WizSpike,
+                owner: player.clone(),
+                origin: vec3(0.0, 0.0, 24.0),
+                velocity: vec3(600.0, 0.0, 0.0),
+                avelocity: vec3(0.0, 0.0, 0.0),
+                effects: 0,
+                fuse_at: None,
+                remove_at: 7.0,
+                born_at: 1.0,
+            },
+        )
+        .expect("spike spawns");
+        let missile = behaviors.missiles.get(&spike).cloned().expect("spike record");
+        let wall = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(10.0, 0.0, 24.0),
+            hit_actor: None,
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        assert!(q1_missile_impact(&mut ctx, &spike, &missile, &wall));
+        assert!(ctx.behaviors.missiles.get(&spike).is_none(), "spikes remove on walls");
+        assert!(
+            ctx.behaviors.temp_ents.iter().any(|ent| matches!(
+                ent,
+                Q1TempEnt::WizSpike { at } if *at == vec3(10.0, 0.0, 24.0)
+            )),
+            "walls spark TE_WIZSPIKE, not TE_SPIKE"
         );
     }
 }

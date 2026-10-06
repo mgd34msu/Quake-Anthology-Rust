@@ -4148,6 +4148,11 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Fiend)
     }
 
+    fn live_shamblers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Shambler)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -8276,5 +8281,246 @@ mod tests {
         assert!(borrowed.gibs.contains_key(&fiends[1]), "the head keeps the actor");
         assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
         assert!(!borrowed.solids.contains(&fiends[1]), "gibs go unsolid");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_shambler_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let shamblers = live_shamblers(&world);
+        assert_eq!(shamblers.len(), 3, "e1m3 spawns three shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M3_NATIVE_SKILL2_TOTAL);
+        for shambler in &shamblers {
+            let monster = borrowed.monsters.get(shambler).expect("shambler record");
+            assert_eq!(monster.flags & 512, 512, "dropped shamblers stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, _)),
+                "shambler stands, got {:?}",
+                monster.think
+            );
+            assert!(monster.pausetime > 9999999.0, "targetless shamblers stand down");
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(shambler)
+                .expect("shambler combat");
+            assert_eq!(combat.health, 600.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_shambler_smash_wounds() {
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let shamblers = live_shamblers(&world);
+        let mut smasher = None;
+        for candidate in shamblers.iter() {
+            live_place_player_before(&mut world, candidate, 50.0);
+            let mut cut = false;
+            for _ in 0..300 {
+                live_tick(&mut world);
+                if live_player_health(&world) < 1000.0 {
+                    cut = true;
+                    break;
+                }
+            }
+            if cut {
+                smasher = Some(candidate.clone());
+                break;
+            }
+        }
+        smasher.expect("a shambler sights, hunts, and lands its smash");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "shambler/smack.wav"),
+            "smashes smack"
+        );
+        assert!(
+            borrowed
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/melee1.wav" || sound.sample == "shambler/melee2.wav"),
+            "strokes bark their wind-up"
+        );
+        assert!(
+            borrowed
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/ssight.wav"),
+            "sightings bark"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_shambler_casts_lightning() {
+        use super::super::simulation::native_q1_weapons::Q1TempEnt;
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let shamblers = live_shamblers(&world);
+        let mut caster = None;
+        let mut ball_seen = false;
+        // Offer the player at cast distance to each shambler until one
+        // fires its bolt: far enough to pick the missile stroke over
+        // the melee, near enough to hold a clear shot.
+        'offer: for candidate in shamblers.iter() {
+            for dist in [500.0, 350.0, 250.0] {
+                live_set_player_health(&mut world, 1000.0);
+                live_place_player_before(&mut world, candidate, dist);
+                for _ in 0..300 {
+                    live_tick(&mut world);
+                    let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                    let borrowed = behaviors.borrow();
+                    ball_seen |= borrowed.sham_balls.iter().any(|ball| ball.shambler == *candidate);
+                    let fired = borrowed
+                        .temp_ents
+                        .iter()
+                        .any(|ent| matches!(ent, Q1TempEnt::Lightning { entity, .. } if entity == candidate));
+                    if fired {
+                        caster = Some(candidate.clone());
+                        break 'offer;
+                    }
+                }
+            }
+        }
+        let caster = caster.expect("a shambler casts its lightning");
+        assert!(ball_seen, "the cast charges its ball first");
+        // `ShamCheckAttack` holds the next cast 2-4 s out (the generic
+        // check never latches a hold).
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let hold = behaviors
+            .borrow()
+            .monsters
+            .get(&caster)
+            .expect("caster record")
+            .attack_finished;
+        assert!(hold > live_now(&world), "casts latch the refire hold");
+        // The first bolt pops the ball in its own frame; read this
+        // before the wound window in case the shambler re-casts.
+        let ball_popped = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.sham_balls.iter().all(|ball| ball.shambler != caster)
+        };
+        assert!(ball_popped, "the first bolt pops the charge ball");
+        // The bolt wounds within its own window.
+        let mut wounded = live_player_health(&world) < 1000.0;
+        for _ in 0..40 {
+            if wounded {
+                break;
+            }
+            live_tick(&mut world);
+            wounded = live_player_health(&world) < 1000.0;
+        }
+        assert!(wounded, "the cast bolt wounds the player");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/sattck1.wav"),
+            "casts charge"
+        );
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "shambler/sboom.wav"),
+            "bolts boom"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_shambler_pain_then_dies() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let shamblers = live_shamblers(&world);
+        let player = world.player_actor().cloned().expect("player");
+        // A crushing hit always flinches (`random * 400 <= 400`) and
+        // latches the 2 s hold.
+        live_damage(&mut world, &shamblers[0], Some(&player), 400.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&shamblers[0]).expect("shambler record");
+            assert!(borrowed
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/shurt2.wav"));
+            assert!(monster.pain_finished > 0.0, "pains hold two seconds");
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamPain, 0));
+        }
+        live_damage(&mut world, &shamblers[0], Some(&player), 200.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&shamblers[0]).expect("shambler record");
+            assert!(monster.dead);
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, 0));
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        // The third death frame drops unsolid.
+        let mut unsolid = false;
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().solids.contains(&shamblers[0]) {
+                unsolid = true;
+                break;
+            }
+        }
+        assert!(unsolid, "the death drop goes unsolid");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shambler/sdeath.wav"),
+            "deaths cry"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_shambler_gib_bursts() {
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let shamblers = live_shamblers(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &shamblers[1], Some(&player), 700.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(borrowed.monsters.get(&shamblers[1]).expect("shambler record").dead);
+        assert_eq!(borrowed.killed_monsters, 1);
+        assert!(borrowed.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+        assert!(borrowed.gibs.contains_key(&shamblers[1]), "the head keeps the actor");
+        assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
+        assert!(!borrowed.solids.contains(&shamblers[1]), "gibs go unsolid");
     }
 }
