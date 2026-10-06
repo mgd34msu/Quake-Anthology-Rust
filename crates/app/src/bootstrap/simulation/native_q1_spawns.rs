@@ -518,6 +518,35 @@ impl Q1EdictSet {
     }
 }
 
+/// Live intermission state (`client.qc:20-21`): stock `intermission_running`
+/// plus the exit gate, the latched button state the exit poll reads, and
+/// the camera spot the entry move used.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Q1Intermission {
+    /// Stock `intermission_running`: 0 live, 1 in intermission, 2/3 past
+    /// episode/all-runes texts (`ExitIntermission`, `client.qc:146-235`).
+    pub running: u32,
+    /// Stock `intermission_exittime`: master-clock seconds before which
+    /// the exit poll refuses to fire.
+    pub exit_time_seconds: f64,
+    /// Live button state latched by the frozen player step (`button0/1/2`
+    /// in `IntermissionThink`, `client.qc:242-251`).
+    pub buttons: bool,
+    /// Camera spot the entry move used, in spawn order (`FindIntermission`,
+    /// `client.qc:105-133`).
+    pub spot: Option<Q1IntermissionSpot>,
+}
+
+/// One intermission camera (`info_intermission`, `client.qc:23-28`): the
+/// spawn origin plus the `mangle` arrival facing (pitch roll yaw).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionSpot {
+    /// Camera origin.
+    pub origin: Vec3,
+    /// Arrival facing from `mangle`.
+    pub mangle: Vec3,
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
@@ -557,6 +586,11 @@ pub struct Q1NativeBehaviors {
     pub items: Q1EdictTable<Q1Item>,
     /// Item bits the player carries (`defs.qc:296-306`).
     pub player_items: u32,
+    /// Active weapon bit (`self.weapon`, 0 until the weapons slice
+    /// deals the spawn loadout).
+    pub player_active_weapon: u32,
+    /// Player frags (`self.frags`, deathmatch scoring drives it).
+    pub player_frags: i32,
     /// Player ammo counts (stock starts 25 shells with the shotgun;
     /// the spawn loadout lands with the weapons slice).
     pub player_ammo: Q1Ammo,
@@ -629,10 +663,41 @@ pub struct Q1NativeBehaviors {
     /// Queued weapon temp entities for the presentation slice to
     /// drain (stock `SVC_TEMPENTITY` broadcasts).
     pub temp_ents: Vec<Q1TempEnt>,
+    /// Stock `serverflags` (`server.h:27`): episode-completion bits that
+    /// persist across levels and saves (sigils set them, `items.qc:1021`).
+    pub serverflags: i32,
+    /// Stock `mapname` stem (`e1m1`, no directory or extension), set at
+    /// spawn for the `noexit == 2` start-map check (`client.qc:295`).
+    pub mapname: String,
+    /// Snapshot of the `noexit` cvar at load (`host.c:68`): 1 kills at
+    /// exits, 2 only outside `start` (`changelevel_touch`, `client.qc:295`).
+    pub noexit: i32,
+    /// Snapshot of the `samelevel` cvar at load (`host.c:67`): repeat the
+    /// current map instead of advancing (`GotoNextMap`, `client.qc:137`).
+    pub samelevel: bool,
+    /// Stock `nextmap` global (`client.qc:136`): the touched exit's `map`.
+    pub nextmap: Option<String>,
+    /// Stock `svs.changelevel_issued` once-guard (`pr_cmds.c:1656`): only
+    /// the first `GotoNextMap` per level issues travel.
+    pub changelevel_issued: bool,
+    /// Completed `GotoNextMap` destination (map stem) for the app-level
+    /// map transition to consume (`Host_Changelevel_f`, `host_cmd.c:311`).
+    pub pending_travel: Option<String>,
+    /// Live intermission state (`client.qc:20-21`).
+    pub intermission: Q1Intermission,
+    /// `info_intermission` cameras in spawn order (`client.qc:23-28`).
+    pub intermission_spots: Vec<Q1IntermissionSpot>,
+    /// `info_player_start`/`testplayerstart` origins in spawn order: the
+    /// `FindIntermission` fallback chain (`client.qc:123-131`).
+    pub start_spots: Vec<Q1IntermissionSpot>,
+    /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
+    /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
+    pub cd_tracks: Vec<(u8, u8)>,
 }
 
 impl Q1NativeBehaviors {
-    /// Empty behavior set (`max_health` 100, like `PutClientInServer`).
+    /// Empty behavior set (`max_health` 100, like `PutClientInServer`;
+    /// `weapon` 1, like `SetNewParms`).
     #[must_use]
     pub fn new() -> Self {
         Self {
