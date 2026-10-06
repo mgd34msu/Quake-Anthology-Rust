@@ -7213,12 +7213,16 @@ mod tests {
         let Some(mut world) = live_q1_world("maps/e1m4.bsp", GameMode::Singleplayer, 2) else {
             return;
         };
+        let ogres = live_ogres(&world);
+        let spawned: Vec<qa_core::math::Vec3> = ogres
+            .iter()
+            .map(|ogre| world.server().simulation().body_state(ogre).expect("ogre body").origin)
+            .collect();
         live_advance(&mut world, 1.0);
         // Every stock e1m4 monster kind spawns through the native
         // path: the per-kind record counts below match the authored
         // entity lump minus skill inhibition, so no monster fell
         // back to the generic spawn.
-        let ogres = live_ogres(&world);
         assert_eq!(ogres.len(), 21, "e1m4 spawns twenty-one ogres");
         assert_eq!(live_knights(&world).len(), 19, "e1m4 spawns nineteen knights");
         assert_eq!(live_wizards(&world).len(), 16, "e1m4 spawns sixteen scrags");
@@ -7226,16 +7230,41 @@ mod tests {
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         let borrowed = behaviors.borrow();
         assert_eq!(borrowed.total_monsters, LIVE_E1M4_NATIVE_SKILL2_TOTAL);
-        for ogre in &ogres {
+        // The spawn at (712, 2540, 448) hangs: its hull top clips the
+        // raised t39 start-open door (`*27`, lifted to z 499-589), so
+        // the drop trace starts solid and stock `droptofloor` fails
+        // (`pr_cmds.c`, fraction 1 refused), and every per-tick
+        // `SV_FlyMove` pins it the same way stock does (`world.c`
+        // `SV_RecursiveHullCheck` never leaves the solid). It stands
+        // ungrounded at spawn+1, like the original. The two tower
+        // spawns ((-312, 1648) and (-192, 1648), z 1372) hang over
+        // an open shaft with no floor within drop range, so they
+        // are still falling at t=1s under stock gravity.
+        let mut hangers = 0;
+        let mut fallers = 0;
+        for (ogre, at) in ogres.iter().zip(spawned.iter()) {
             let monster = borrowed.monsters.get(ogre).expect("ogre record");
-            if monster.flags & 512 != 512 {
-                let body = world.server().simulation().body_state(ogre).expect("ogre body");
-                panic!(
-                    "PROBE airborne ogre at {:?} think {:?} flags {}",
-                    body.origin, monster.think, monster.flags
+            let body = world.server().simulation().body_state(ogre).expect("ogre body");
+            let dx = body.origin.x - 712.0;
+            let dy = body.origin.y - 2540.0;
+            let dz = body.origin.z - 449.0;
+            if dx * dx + dy * dy + dz * dz < 1.0 {
+                hangers += 1;
+                assert_eq!(monster.flags & 512, 0, "the door-clipped ogre hangs ungrounded");
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "the hanger still stands, got {:?}",
+                    monster.think
                 );
+            } else if monster.flags & 512 != 512 {
+                fallers += 1;
+                assert!(
+                    body.origin.z < at.z - 1.0 && body.velocity.z < 0.0,
+                    "ungrounded ogres are mid-fall, {body:?} vs spawn {at:?}"
+                );
+            } else {
+                assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
             }
-            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
             assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
             assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
             assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
@@ -7252,6 +7281,8 @@ mod tests {
                 assert!(monster.pausetime > 9999999.0, "targetless ogres stand down");
             }
         }
+        assert_eq!(hangers, 1, "exactly the door-clipped ogre hangs");
+        assert_eq!(fallers, 2, "exactly the tower-shaft ogres fall");
     }
 
     #[test]
