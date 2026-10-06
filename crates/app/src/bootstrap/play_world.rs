@@ -4148,7 +4148,7 @@ pub(crate) mod tests {
     }
 
     /// Live enforcers on the map, in record order.
-    fn live_enforcers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_enforcers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Enforcer)
     }
@@ -4193,7 +4193,7 @@ pub(crate) mod tests {
         live_monsters(world, Q1MonsterKind::Wizard)
     }
 
-    fn live_hknights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_hknights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::HellKnight)
     }
@@ -4339,7 +4339,7 @@ pub(crate) mod tests {
     /// e2m1 monster census at skill 2: 26 enforcers plus 13 grunts and
     /// 7 dogs (one grunt and one dog carry the 1024 not-hard bit, so
     /// skill inhibition drops them).
-    const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
+    pub(crate) const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
 
     /// e1m2 native census at skill 2: 12 ogres plus 16 grunts plus
     /// 5 knights plus 3 fiends plus 6 wizards (a thirteenth ogre, a
@@ -4377,20 +4377,20 @@ pub(crate) mod tests {
     /// plus 8 zombies plus 5 fiends plus 1 shambler (a fifteenth
     /// ogre carries the 1024 not-hard bit; nothing else does).
     /// Every e2m2 monster kind is native now.
-    const LIVE_E2M2_NATIVE_SKILL2_TOTAL: u32 = 48;
+    pub(crate) const LIVE_E2M2_NATIVE_SKILL2_TOTAL: u32 = 48;
 
     /// e2m4 native census at skill 2: 24 ogres plus 8 hell
     /// knights plus 17 wizards plus 15 zombies plus 12 fiends
     /// plus 2 shamblers (one more fiend carries the 1024 not-hard
     /// bit; nothing else does). Every e2m4 monster kind is native
     /// now.
-    const LIVE_E2M4_NATIVE_SKILL2_TOTAL: u32 = 78;
+    pub(crate) const LIVE_E2M4_NATIVE_SKILL2_TOTAL: u32 = 78;
 
     /// e2m5 native census at skill 2: 24 ogres plus 18 hell
     /// knights plus 10 wizards plus 6 fiends plus 3 shamblers
     /// (two more fiends carry the 1024 not-hard bit; nothing
     /// else does). Every e2m5 monster kind is native now.
-    const LIVE_E2M5_NATIVE_SKILL2_TOTAL: u32 = 61;
+    pub(crate) const LIVE_E2M5_NATIVE_SKILL2_TOTAL: u32 = 61;
 
     /// e2m6 native census at skill 2: 16 ogres plus 14 hell
     /// knights plus 4 wizards plus 27 zombie records (one
@@ -4399,21 +4399,21 @@ pub(crate) mod tests {
     /// 18 + 5 + 2 = 85 (one more ogre and one more fiend carry
     /// the 1024 not-hard bit; nothing else does). Every e2m6
     /// monster kind is native now.
-    const LIVE_E2M6_NATIVE_SKILL2_TOTAL: u32 = 85;
+    pub(crate) const LIVE_E2M6_NATIVE_SKILL2_TOTAL: u32 = 85;
 
     /// e2m7 native census at skill 2: 15 ogres plus 17 hell
     /// knights plus 16 wizards plus 20 zombies plus 10 fiends
     /// (two more ogres and one more fiend carry the 1024
     /// not-hard bit; nothing else does). Every e2m7 monster kind
     /// is native now.
-    const LIVE_E2M7_NATIVE_SKILL2_TOTAL: u32 = 78;
+    pub(crate) const LIVE_E2M7_NATIVE_SKILL2_TOTAL: u32 = 78;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
     /// plus 1 fiend plus 3 shamblers plus 16 hell knights: 15 + 7 +
     /// 12 + 1 + 3 + 16 = 54 (no `monster_*` record carries the
     /// 1024 not-hard bit). Every e2m3 monster kind is native now.
-    const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 54;
+    pub(crate) const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 54;
 
     /// e4m6 native census at skill 2: 8 fiends plus 3 fish counting
     /// twice each (the classic swim double-count) plus 12 hell

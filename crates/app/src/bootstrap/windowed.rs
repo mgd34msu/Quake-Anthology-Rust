@@ -2437,13 +2437,15 @@ mod tests {
     use crate::bootstrap::play_world::tests::{
         LIVE_E1M1_SKILL2_TOTAL, LIVE_E1M2_NATIVE_SKILL2_TOTAL, LIVE_E1M3_NATIVE_SKILL2_TOTAL,
         LIVE_E1M4_NATIVE_SKILL2_TOTAL, LIVE_E1M5_NATIVE_SKILL2_TOTAL, LIVE_E1M6_NATIVE_SKILL2_TOTAL,
-        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_E1M8_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL,
-        live_bosses,
-        live_changelevel_exits, live_damage, live_dogs, live_doors_by_targetname, live_expected_finale, live_fiends,
-        live_fire_use, live_fish, live_grunts, live_knights, live_monster_feet, live_now, live_ogres,
-        live_oldones, live_place_player, live_player_health, live_press_buttons, live_set_player_health,
-        live_shamblers, live_silence_door_fields, live_volume_center, live_vores, live_wizards,
-        live_zombies,
+        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_E1M8_NATIVE_SKILL2_TOTAL, LIVE_E2M1_SKILL2_TOTAL,
+        LIVE_E2M2_NATIVE_SKILL2_TOTAL, LIVE_E2M3_NATIVE_SKILL2_TOTAL, LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+        LIVE_E2M5_NATIVE_SKILL2_TOTAL, LIVE_E2M6_NATIVE_SKILL2_TOTAL, LIVE_E2M7_NATIVE_SKILL2_TOTAL,
+        LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
+        live_changelevel_exits, live_damage, live_dogs, live_doors_by_targetname, live_enforcers,
+        live_expected_finale, live_fiends, live_fire_use, live_fish, live_grunts, live_hknights,
+        live_knights, live_monster_feet, live_now, live_ogres, live_oldones, live_place_player,
+        live_player_health, live_press_buttons, live_set_player_health, live_shamblers,
+        live_silence_door_fields, live_volume_center, live_vores, live_wizards, live_zombies,
     };
     use crate::options::GameFamily as OptionsFamily;
     use crate::options::Network;
@@ -5717,7 +5719,7 @@ mod tests {
     /// Open one Q1 map in the real windowed run (window, renderer,
     /// input) at skill 2 single-player, or skip loudly without a
     /// corpus/display (panic when `QA_REQUIRE_LIVE=1`).
-    fn windowed_e1_run(map: &str) -> Option<WindowedApplication> {
+    fn windowed_q1_run(map: &str) -> Option<WindowedApplication> {
         let corpus = require_live_corpus("Steel corpus", &CORPUS_WITNESSES)?;
         let options = ApplicationOptions {
             windowed: true,
@@ -5964,7 +5966,7 @@ mod tests {
                 },
             ),
         ] {
-            let Some(mut composed) = windowed_e1_run(map) else {
+            let Some(mut composed) = windowed_q1_run(map) else {
                 return;
             };
             assert!(composed.app.active_game(), "{map} has a scene");
@@ -6005,6 +6007,211 @@ mod tests {
         }
     }
 
+    /// One episode-2 map's native census at skill 2: per-kind
+    /// live record counts plus the kill-count total.
+    struct WindowedE2Census {
+        dogs: usize,
+        grunts: usize,
+        enforcers: usize,
+        ogres: usize,
+        knights: usize,
+        hknights: usize,
+        fiends: usize,
+        shamblers: usize,
+        zombies: usize,
+        wizards: usize,
+        fish: usize,
+        vores: usize,
+        total: u32,
+    }
+
+    /// Q1 E2 windowed census run (Q1-0138-Q1-0153): every stock
+    /// episode-2 map, secret e2m7 included, opens in the real
+    /// windowed run at skill 2, and every stock monster kind
+    /// spawns through the native path: the per-kind record counts
+    /// match the authored entity lump minus skill inhibition.
+    /// Each map also presents (a non-black capture) and drives
+    /// real frames before closing.
+    ///
+    /// One sequential test (not seven parallel ones) so concurrent
+    /// SDL windows never contend: each map opens, soaks, captures,
+    /// drives, and closes in turn.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2_census_run() {
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        for (map, census) in [
+            (
+                "maps/e2m1.bsp",
+                WindowedE2Census {
+                    dogs: 7,
+                    grunts: 13,
+                    enforcers: 26,
+                    ogres: 0,
+                    knights: 0,
+                    hknights: 0,
+                    fiends: 0,
+                    shamblers: 0,
+                    zombies: 0,
+                    wizards: 0,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M1_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m2.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 14,
+                    knights: 20,
+                    hknights: 0,
+                    fiends: 5,
+                    shamblers: 1,
+                    zombies: 8,
+                    wizards: 0,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M2_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m3.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 15,
+                    knights: 0,
+                    hknights: 16,
+                    fiends: 1,
+                    shamblers: 3,
+                    zombies: 7,
+                    wizards: 0,
+                    fish: 6,
+                    vores: 0,
+                    total: LIVE_E2M3_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m4.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 24,
+                    knights: 0,
+                    hknights: 8,
+                    fiends: 12,
+                    shamblers: 2,
+                    zombies: 15,
+                    wizards: 17,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m5.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 24,
+                    knights: 0,
+                    hknights: 18,
+                    fiends: 6,
+                    shamblers: 3,
+                    zombies: 0,
+                    wizards: 10,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M5_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m6.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 16,
+                    knights: 0,
+                    hknights: 14,
+                    fiends: 18,
+                    shamblers: 5,
+                    zombies: 27,
+                    wizards: 4,
+                    fish: 0,
+                    vores: 2,
+                    total: LIVE_E2M6_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e2m7.bsp",
+                WindowedE2Census {
+                    dogs: 0,
+                    grunts: 0,
+                    enforcers: 0,
+                    ogres: 15,
+                    knights: 0,
+                    hknights: 17,
+                    fiends: 10,
+                    shamblers: 0,
+                    zombies: 20,
+                    wizards: 16,
+                    fish: 0,
+                    vores: 0,
+                    total: LIVE_E2M7_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+        ] {
+            let Some(mut composed) = windowed_q1_run(map) else {
+                return;
+            };
+            assert!(composed.app.active_game(), "{map} has a scene");
+            windowed_soak(&mut composed.app, 1.0);
+            {
+                let world = windowed_world(&composed.app);
+                assert_eq!(live_dogs(world).len(), census.dogs, "{map} dogs");
+                assert_eq!(live_grunts(world).len(), census.grunts, "{map} grunts");
+                assert_eq!(live_enforcers(world).len(), census.enforcers, "{map} enforcers");
+                assert_eq!(live_ogres(world).len(), census.ogres, "{map} ogres");
+                assert_eq!(live_knights(world).len(), census.knights, "{map} knights");
+                assert_eq!(live_hknights(world).len(), census.hknights, "{map} hell knights");
+                assert_eq!(live_fiends(world).len(), census.fiends, "{map} fiends");
+                assert_eq!(live_shamblers(world).len(), census.shamblers, "{map} shamblers");
+                assert_eq!(live_zombies(world).len(), census.zombies, "{map} zombies");
+                assert_eq!(live_wizards(world).len(), census.wizards, "{map} scrags");
+                assert_eq!(live_fish(world).len(), census.fish, "{map} rotfish");
+                assert_eq!(live_vores(world).len(), census.vores, "{map} vores");
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                assert_eq!(behaviors.borrow().total_monsters, census.total, "{map} total");
+            }
+            let pixels = composed
+                .app
+                .capture_next_frame()
+                .unwrap_or_else(|error| panic!("{map} captures: {error}"));
+            // No exact-size assert: the GL readback size is driver
+            // dependent (xvfb returns a 1964600-byte readback for a
+            // 64x64 window). The presented-world proof is the lit
+            // fraction, far above black either way.
+            assert!(!pixels.is_empty(), "{map} captures pixels");
+            let lit = count_non_black(&pixels);
+            assert!(
+                lit > 1000,
+                "{map}: expected a presented world, got {lit} non-black pixels of {}",
+                pixels.len() / 4
+            );
+            let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+                .unwrap_or_else(|error| panic!("{map} drives: {error}"));
+            assert_eq!(frames, 3);
+            assert!(composed.app.is_closed());
+        }
+    }
+
     /// Q1-0139: the e1m7 Chthon fight works in the windowed run: the
     /// sigil's `use` wakes the sleeper into the rise and the missile
     /// loop hurls wounding lava balls, then three `event_lightning`
@@ -6019,7 +6226,7 @@ mod tests {
         use crate::bootstrap::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt};
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m7 has a scene");
@@ -6273,7 +6480,7 @@ mod tests {
         use qa_world::combat::{ArmorState, CombatState, RegularArmor};
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m7.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m7 has a scene");
@@ -6711,7 +6918,7 @@ mod tests {
         };
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
-        let Some(mut composed) = windowed_e1_run("maps/e1m4.bsp") else {
+        let Some(mut composed) = windowed_q1_run("maps/e1m4.bsp") else {
             return;
         };
         assert!(composed.app.active_game(), "e1m4 has a scene");
