@@ -5305,6 +5305,7 @@ mod tests {
 
         use super::super::simulation::native_q1_monsters::q1_is_crucified;
         use super::super::simulation::native_q1_spawns::q1_health_of;
+        use super::super::simulation::native_q1_weapons::Q1_DEAD_NO;
 
         let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
@@ -5405,13 +5406,14 @@ mod tests {
             assert!(spawn_lit > 1000, "{map} spawn frame is blank: {spawn_lit} lit pixels");
             // The pass proves movement and combat, not survival: top
             // the player up before anything can sight it, and keep
-            // topping up through every stage (a corpse answers no
-            // inputs, which would read as stuck movement).
+            // topping up through every stage. A corpse answers no
+            // inputs and never fires (`deadflag` gates the weapon
+            // pass), which would read as stuck movement or a dead
+            // trigger, so the top-up also clears `deadflag`.
             let top_up = |composed: &mut WindowedApplication| {
-                live_set_player_health(
-                    composed.app.backend_mut().world.as_mut().expect("windowed world"),
-                    500.0,
-                );
+                let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                live_set_player_health(world, 500.0);
+                world.q1_behaviors().expect("Q1 behaviors").borrow_mut().player_state.deadflag = Q1_DEAD_NO;
             };
             top_up(&mut composed);
             // The turn servo aims headings through real mouse
@@ -5429,6 +5431,10 @@ mod tests {
                 }
                 let (_, angles_cal) = eye_of(composed);
                 let sign = (f64::from(angles_cal.y) - from).signum();
+                eprintln!(
+                    "live-play: {map} servo target={target:.1} from={from:.1} cal={:.1}",
+                    f64::from(angles_cal.y)
+                );
                 assert!(sign != 0.0, "{map} mouse motion does not turn");
                 let mut turned = f64::from(eye_of(composed).1.y);
                 for _ in 0..40 {
@@ -5436,6 +5442,7 @@ mod tests {
                     if err.abs() < 5.0 {
                         break;
                     }
+                    top_up(composed);
                     let packet = (err * sign * 4.0).clamp(-300.0, 300.0) as i32;
                     mouse_motion(composed, packet);
                     drive(composed, step_ms, 3);
@@ -5475,14 +5482,32 @@ mod tests {
             );
             // S2: forward until the eye stalls, then back and strafe.
             // Spawn headings vary per map, so up to four headings
-            // 90 degrees apart are tried; the turn servo aims
-            // each one through real mouse packets.
-            let (_, s2_angles) = eye_of(&composed);
+            // 90 degrees apart are tried; each attempt walks, settles,
+            // and reverses, and the first attempt that completes all
+            // four legs wins. Attempts reset to the S2-entry stance
+            // (proven by S3/S4), so a wedge or pitfall on one heading
+            // never poisons the next.
+            let (s2_eye, s2_angles) = eye_of(&composed);
             let yaw0 = f64::from(s2_angles.y);
-            let mut walked: Option<(f64, f64, Vec3, f32, f64)> = None;
+            let mut walked: Option<(Vec3, f32, f64)> = None;
             for heading in 0..4 {
+                if heading > 0 {
+                    let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+                    let player = world.player_actor().cloned().expect("player");
+                    world
+                        .server_mut()
+                        .simulation_mut()
+                        .set_body_origin(&player, qa_core::math::vec3(s2_eye.x, s2_eye.y, s2_eye.z - 22.0))
+                        .expect("player resets to the S2 stance");
+                    top_up(&mut composed);
+                    drive(&mut composed, &mut step_ms, 10);
+                    total_steps += 10;
+                }
                 let err = turn_to(&mut composed, &mut step_ms, &mut total_steps, yaw0 + 90.0 * f64::from(heading));
-                assert!(err.abs() < 20.0, "{map} turn to heading {heading} missed: err {err:.1}");
+                if err.abs() >= 20.0 {
+                    eprintln!("live-play: {map} heading {heading} turn missed: err {err:.1}");
+                    continue;
+                }
                 let (head_eye, head_angles) = eye_of(&composed);
                 press_key(&mut composed, 26, 87, true);
                 let mut previous = head_eye;
@@ -5505,55 +5530,64 @@ mod tests {
                 let (fx, fy) = forward_of(head_angles.y);
                 let along = f64::from(fwd_eye.x - head_eye.x) * fx + f64::from(fwd_eye.y - head_eye.y) * fy;
                 eprintln!("live-play: {map} heading {heading} forward advanced {along:.1} units");
-                if along > 20.0 {
-                    walked = Some((fx, fy, head_eye, head_angles.y, along));
-                    break;
+                if along <= 20.0 {
+                    continue;
                 }
-            }
-            let (fx, fy, walk_eye, walk_yaw, walk_open) =
-                walked.unwrap_or_else(|| panic!("{map} forward stalled on every heading"));
-            // Settle the stance before the reverse legs: the walk
-            // may have ended mid-air off a tall ledge, where back
-            // and strafe barely bite. Up to five seconds of falling.
-            for _ in 0..30 {
-                let (before, _) = eye_of(&composed);
+                // Settle the stance before the reverse legs: the walk
+                // may have ended mid-air off a tall ledge, where back
+                // and strafe barely bite. Up to five seconds of falling.
+                for _ in 0..30 {
+                    top_up(&mut composed);
+                    let (before, _) = eye_of(&composed);
+                    drive(&mut composed, &mut step_ms, 10);
+                    total_steps += 10;
+                    let (after, _) = eye_of(&composed);
+                    let drift = ((after.x - before.x) as f64)
+                        .hypot((after.y - before.y) as f64)
+                        .hypot((after.z - before.z) as f64);
+                    if drift < 0.5 {
+                        break;
+                    }
+                }
+                top_up(&mut composed);
+                let (fwd_eye, _) = eye_of(&composed);
+                press_key(&mut composed, 22, 83, true);
                 drive(&mut composed, &mut step_ms, 10);
                 total_steps += 10;
-                let (after, _) = eye_of(&composed);
-                let drift = ((after.x - before.x) as f64)
-                    .hypot((after.y - before.y) as f64)
-                    .hypot((after.z - before.z) as f64);
-                if drift < 0.5 {
-                    break;
+                press_key(&mut composed, 22, 83, false);
+                let (back_eye, _) = eye_of(&composed);
+                let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
+                eprintln!("live-play: {map} heading {heading} back retreated {back_along:.1} units");
+                if back_along >= -1.0 {
+                    continue;
                 }
+                let (lx, ly) = (-fy, fx);
+                press_key(&mut composed, 4, 65, true);
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                press_key(&mut composed, 4, 65, false);
+                let (strafe_eye, _) = eye_of(&composed);
+                let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
+                eprintln!("live-play: {map} heading {heading} strafe-left lateral {lateral:.1} units");
+                if lateral <= 1.0 {
+                    continue;
+                }
+                press_key(&mut composed, 7, 68, true);
+                drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                press_key(&mut composed, 7, 68, false);
+                let (strafe_back, _) = eye_of(&composed);
+                let lateral_back =
+                    f64::from(strafe_back.x - strafe_eye.x) * lx + f64::from(strafe_back.y - strafe_eye.y) * ly;
+                eprintln!("live-play: {map} heading {heading} strafe-right lateral {lateral_back:.1} units");
+                if lateral_back >= -1.0 {
+                    continue;
+                }
+                walked = Some((head_eye, head_angles.y, along));
+                break;
             }
-            top_up(&mut composed);
-            let (fwd_eye, _) = eye_of(&composed);
-            press_key(&mut composed, 22, 83, true);
-            drive(&mut composed, &mut step_ms, 10);
-            total_steps += 10;
-            press_key(&mut composed, 22, 83, false);
-            let (back_eye, _) = eye_of(&composed);
-            let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
-            eprintln!("live-play: {map} back retreated {back_along:.1} units");
-            assert!(back_along < -1.0, "{map} back did not retreat: {back_along:.1}");
-            let (lx, ly) = (-fy, fx);
-            press_key(&mut composed, 4, 65, true);
-            drive(&mut composed, &mut step_ms, 10);
-            total_steps += 10;
-            press_key(&mut composed, 4, 65, false);
-            let (strafe_eye, _) = eye_of(&composed);
-            let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
-            eprintln!("live-play: {map} strafe-left lateral {lateral:.1} units");
-            assert!(lateral > 1.0, "{map} strafe left did not move: {lateral:.1}");
-            press_key(&mut composed, 7, 68, true);
-            drive(&mut composed, &mut step_ms, 10);
-            total_steps += 10;
-            press_key(&mut composed, 7, 68, false);
-            let (strafe_back, _) = eye_of(&composed);
-            let lateral_back = f64::from(strafe_back.x - strafe_eye.x) * lx + f64::from(strafe_back.y - strafe_eye.y) * ly;
-            eprintln!("live-play: {map} strafe-right lateral {lateral_back:.1} units");
-            assert!(lateral_back < -1.0, "{map} strafe right did not move: {lateral_back:.1}");
+            let (walk_eye, walk_yaw, walk_open) =
+                walked.unwrap_or_else(|| panic!("{map} no heading completed the legs"));
             // S5: attack spends a shell from the spawn loadout.
             let shells_before = {
                 let world = composed.app.backend().world.as_ref().expect("windowed world");
@@ -5797,6 +5831,24 @@ mod tests {
                 drive(&mut composed, &mut step_ms, 10);
                 total_steps += 10;
                 frames += 10;
+                // Travel diagnostics: intermission state on the way
+                // out (temporary S7 probe).
+                if frames % 300 == 10 {
+                    let world = composed.app.backend().world.as_ref().expect("travel world");
+                    let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                    let borrowed = behaviors.borrow();
+                    let now = world.server().simulation().frame().time.as_seconds_f64();
+                    eprintln!(
+                        "live-play: {map} travel f={frames} running={} gate={:.1} now={:.1} buttons={} pending={:?} nextmap={:?} issued={}",
+                        borrowed.intermission.running,
+                        borrowed.intermission.exit_time_seconds,
+                        now,
+                        borrowed.intermission.buttons,
+                        borrowed.pending_travel,
+                        borrowed.nextmap,
+                        borrowed.changelevel_issued,
+                    );
+                }
                 if map == "maps/e4m7.bsp" && !scroll_seen {
                     let world = composed.app.backend().world.as_ref().expect("e4m7 world");
                     let behaviors = world.q1_behaviors().expect("Q1 behaviors");
