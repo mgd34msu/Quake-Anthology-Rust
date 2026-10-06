@@ -2847,14 +2847,7 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
             if monster.pain_finished > now {
                 return;
             }
-            q1_monster_sound(
-                behaviors,
-                actor,
-                Q1_CHAN_VOICE,
-                "shalrath/pain.wav",
-                1.0,
-                Q1_ATTN_NORM,
-            );
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shalrath/pain.wav", 1.0, Q1_ATTN_NORM);
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.pain_finished = now + 3.0;
                 monster.frame = q1_seq_frame(Q1MonsterSeq::ShPain, 0);
@@ -3123,14 +3116,7 @@ pub fn q1_monster_th_die(
                 q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
                 return;
             }
-            q1_monster_sound(
-                behaviors,
-                actor,
-                Q1_CHAN_VOICE,
-                "shalrath/death.wav",
-                1.0,
-                Q1_ATTN_NORM,
-            );
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shalrath/death.wav", 1.0, Q1_ATTN_NORM);
             // Stock drops solidity in `th_die` itself, not in a death
             // frame (`shalrath_die`).
             behaviors.solids.remove(actor);
@@ -3624,11 +3610,7 @@ fn q1_eye_of<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId)
 /// Shared eye position: monsters read their record offset, the player
 /// reads the stock view height, anything else reads raw. The voreball
 /// homing aims here (`ShalHome`, `shalrath.qc:159`).
-pub(crate) fn q1_actor_eye(
-    behaviors: &Q1NativeBehaviors,
-    simulation: &Simulation,
-    actor: &ActorId,
-) -> Option<Vec3> {
+pub(crate) fn q1_actor_eye(behaviors: &Q1NativeBehaviors, simulation: &Simulation, actor: &ActorId) -> Option<Vec3> {
     let body = simulation.body_state(actor)?;
     if let Some(monster) = behaviors.monsters.get(actor) {
         return Some(vec3(
@@ -8379,12 +8361,7 @@ fn q1_vore_fire<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &A
 /// 12-stride walk/run gaits, the face-then-hurl cast, and the quiet
 /// pain and death tails.
 #[allow(clippy::too_many_lines)]
-fn q1_vore_frame<L: ServerLogic>(
-    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
-    actor: &ActorId,
-    seq: Q1MonsterSeq,
-    index: u8,
-) {
+fn q1_vore_frame<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, seq: Q1MonsterSeq, index: u8) {
     match (seq, index) {
         (Q1MonsterSeq::ShStand, _) => q1_ai_stand(ctx, actor),
         (Q1MonsterSeq::ShWalk, _) => {
@@ -12250,7 +12227,10 @@ mod tests {
         assert!(q1_health_of(server.simulation(), vore.id()) <= 0.0);
         assert_eq!(behaviors.killed_monsters, 1);
         assert!(
-            behaviors.sounds.iter().any(|sound| sound.sample == "shalrath/death.wav"),
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shalrath/death.wav"),
             "death barks in th_die itself"
         );
         assert!(!behaviors.solids.contains(vore.id()), "corpses drop solid");
@@ -12302,7 +12282,10 @@ mod tests {
         let simulation = server.simulation_mut();
         q1_found_target(&mut behaviors, simulation, vore.id());
         assert!(
-            behaviors.sounds.iter().any(|sound| sound.sample == "shalrath/sight.wav"),
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "shalrath/sight.wav"),
             "sight barks the classname line"
         );
         assert_eq!(
