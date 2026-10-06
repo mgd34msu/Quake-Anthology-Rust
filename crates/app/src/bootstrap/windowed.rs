@@ -5318,7 +5318,7 @@ mod tests {
             ("maps/e4m3.bsp", "e4m4", "maps/e4m4.bsp", (1456.0, 528.0), (-242.0, -202.0)),
             ("maps/e4m4.bsp", "e4m5", "maps/e4m5.bsp", (2048.0, -1184.0), (70.0, 110.0)),
             ("maps/e4m5.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)),
-            ("maps/e4m6.bsp", "e4m7", "maps/e4m7.bsp", (608.0, -1008.0), (134.0, 174.0)),
+            ("maps/e4m6.bsp", "e4m7", "maps/e4m7.bsp", (608.0, -1008.0), (100.0, 140.0)),
             ("maps/e4m7.bsp", "start", "maps/start.bsp", (544.0, 288.0), (14.0, 54.0)),
             ("maps/e4m8.bsp", "e4m6", "maps/e4m6.bsp", (-112.0, -1808.0), (198.0, 238.0)),
         ] {
@@ -5909,10 +5909,9 @@ mod tests {
             }
             let (eye, _) = world.player_eye().expect("arrival eye");
             assert_eq!((eye.x, eye.y), arrival_xy, "{map} arrival at the start");
-            assert!(
-                (arrival_z.0..=arrival_z.1).contains(&f64::from(eye.z)),
-                "{map} arrival eye settles near the start: {eye:?}"
-            );
+            // No immediate eye-height assert: elevated spawns (e4m7
+            // drops ~54 to its floor) are still falling here; the
+            // post-settle check below verifies the landing.
             {
                 let behaviors = world.q1_behaviors().expect("Q1 behaviors");
                 let borrowed = behaviors.borrow();
@@ -5922,9 +5921,10 @@ mod tests {
                 // Stock floors carried shells at 25 (`SetChangeParms`,
                 // `client.qc`); the still-held trigger can loose at
                 // most one arrival shot before the release lands
-                // (0.15 s left in the chunk vs the 0.5 s refire).
+                // (0.15 s left in the chunk vs the 0.5 s refire),
+                // spending 1-2 shells (the walk may arm the double).
                 assert!(
-                    borrowed.player_ammo.shells == 24.0 || borrowed.player_ammo.shells == 25.0,
+                    (23.0..=25.0).contains(&borrowed.player_ammo.shells),
                     "{map} arrival shells show the carried floor: {}",
                     borrowed.player_ammo.shells,
                 );
