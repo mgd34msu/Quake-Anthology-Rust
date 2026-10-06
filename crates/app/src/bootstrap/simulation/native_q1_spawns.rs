@@ -39,6 +39,9 @@ use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
+use super::native_q1_weapons::Q1Missile;
+use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
+use super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -60,10 +63,6 @@ const DOOR_SILVER_KEY: i32 = 16;
 /// Door spawnflags (`doors.qc:1-6`).
 const DOOR_TOGGLE: i32 = 32;
 
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY1: u32 = 131_072;
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY2: u32 = 262_144;
 /// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
 pub const IT_SUPERHEALTH: u32 = 65_536;
 /// Armor bits (`defs.qc:300-302`).
@@ -179,6 +178,19 @@ pub fn register_q1_spawns(registry: &mut SpawnRegistry) {
             }),
         );
     }
+    // Internal player-missile spawn (stock `spawn()` in the fire
+    // functions: spikes, grenades, rockets).
+    registry.register(
+        "q1:missile",
+        Box::new(|fields| {
+            Ok(SpawnRequest {
+                definition: "q1:missile".to_string(),
+                origin: Some(fields.origin),
+                combat: None,
+                grants: Vec::new(),
+            })
+        }),
+    );
     // Internal door trigger-field spawn (stock `spawn_field` actor).
     registry.register(
         "q1:door_field",
@@ -276,10 +288,10 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
         .unwrap_or(0.0);
     let mut items = 0u32;
     if fields.spawnflags & DOOR_SILVER_KEY != 0 {
-        items |= IT_KEY1;
+        items |= Q1_IT_KEY1;
     }
     if fields.spawnflags & DOOR_GOLD_KEY != 0 {
-        items |= IT_KEY2;
+        items |= Q1_IT_KEY2;
     }
     if items != 0 {
         wait = -1.0;
@@ -517,6 +529,35 @@ impl Q1EdictSet {
     }
 }
 
+/// Live intermission state (`client.qc:20-21`): stock `intermission_running`
+/// plus the exit gate, the latched button state the exit poll reads, and
+/// the camera spot the entry move used.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Q1Intermission {
+    /// Stock `intermission_running`: 0 live, 1 in intermission, 2/3 past
+    /// episode/all-runes texts (`ExitIntermission`, `client.qc:146-235`).
+    pub running: u32,
+    /// Stock `intermission_exittime`: master-clock seconds before which
+    /// the exit poll refuses to fire.
+    pub exit_time_seconds: f64,
+    /// Live button state latched by the frozen player step (`button0/1/2`
+    /// in `IntermissionThink`, `client.qc:242-251`).
+    pub buttons: bool,
+    /// Camera spot the entry move used, in spawn order (`FindIntermission`,
+    /// `client.qc:105-133`).
+    pub spot: Option<Q1IntermissionSpot>,
+}
+
+/// One intermission camera (`info_intermission`, `client.qc:23-28`): the
+/// spawn origin plus the `mangle` arrival facing (pitch roll yaw).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionSpot {
+    /// Camera origin.
+    pub origin: Vec3,
+    /// Arrival facing from `mangle`.
+    pub mangle: Vec3,
+}
+
 /// Latest player damage event for the view (`V_ParseDamage`,
 /// `view.c:316-379` inputs): the `q1_t_damage` funnel records the armor
 /// save, the health taken, and the inflictor center so the HUD can flash
@@ -645,12 +686,72 @@ pub struct Q1NativeBehaviors {
     pub monster_rand: u64,
     /// Last damage attacker (`damage_attacker`, `combat.qc:112`).
     pub damage_attacker: Option<ActorId>,
+    /// Live player weapon/combat state (`weapons.qc`, `client.qc`).
+    pub player_state: Q1PlayerState,
+    /// Queued weapon temp entities for the presentation slice to
+    /// drain (stock `SVC_TEMPENTITY` broadcasts).
+    pub temp_ents: Vec<Q1TempEnt>,
+    /// Live player-missile actors by id (spikes, grenades, rockets).
+    pub missiles: Q1EdictTable<Q1Missile>,
+    /// Stock `serverflags` (`server.h:27`): episode-completion bits that
+    /// persist across levels and saves (sigils set them, `items.qc:1021`).
+    pub serverflags: i32,
+    /// Stock `mapname` stem (`e1m1`, no directory or extension), set at
+    /// spawn for the `noexit == 2` start-map check (`client.qc:295`).
+    pub mapname: String,
+    /// Snapshot of the `noexit` cvar at load (`host.c:68`): 1 kills at
+    /// exits, 2 only outside `start` (`changelevel_touch`, `client.qc:295`).
+    pub noexit: i32,
+    /// Snapshot of the `samelevel` cvar at load (`host.c:67`): repeat the
+    /// current map instead of advancing (`GotoNextMap`, `client.qc:137`).
+    pub samelevel: bool,
+    /// Stock `nextmap` global (`client.qc:136`): the touched exit's `map`.
+    pub nextmap: Option<String>,
+    /// Stock `svs.changelevel_issued` once-guard (`pr_cmds.c:1656`): only
+    /// the first `GotoNextMap` per level issues travel.
+    pub changelevel_issued: bool,
+    /// Completed `GotoNextMap` destination (map stem) for the app-level
+    /// map transition to consume (`Host_Changelevel_f`, `host_cmd.c:311`).
+    pub pending_travel: Option<String>,
+    /// Live intermission state (`client.qc:20-21`).
+    pub intermission: Q1Intermission,
+    /// `info_intermission` cameras in spawn order (`client.qc:23-28`).
+    pub intermission_spots: Vec<Q1IntermissionSpot>,
+    /// `info_player_start`/`testplayerstart` origins in spawn order: the
+    /// `FindIntermission` fallback chain (`client.qc:123-131`).
+    pub start_spots: Vec<Q1IntermissionSpot>,
+    /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
+    /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
+    pub cd_tracks: Vec<(u8, u8)>,
+    /// Queued `SVC_FINALE` text for the HUD slice (`ExitIntermission`,
+    /// `client.qc:146-235`): the episode or all-runes scroll.
+    pub finale_text: Option<String>,
+    /// Queued `SVC_SELLSCREEN` for the HUD slice (`ExitIntermission`,
+    /// `client.qc:218`): shareware episode completed.
+    pub sell_screen: bool,
     /// Latest player damage event for the view blends.
     pub player_damage: Q1PlayerDamage,
 }
 
+/// Intermission tally for the HUD slice (`Sbar_IntermissionOverlay`,
+/// `sbar.c:1269`): level kills, secrets, and elapsed level time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionStats {
+    /// Monsters killed (`killed_monsters`).
+    pub killed_monsters: u32,
+    /// Monsters in the map (`total_monsters`).
+    pub total_monsters: u32,
+    /// Secrets found (`found_secrets`).
+    pub found_secrets: u32,
+    /// Secrets in the map (`total_secrets`).
+    pub total_secrets: u32,
+    /// Elapsed level time in seconds (master clock at the poll).
+    pub time_seconds: f64,
+}
+
 impl Q1NativeBehaviors {
-    /// Empty behavior set (`max_health` 100, like `PutClientInServer`).
+    /// Empty behavior set (`max_health` 100, like `PutClientInServer`;
+    /// `weapon` 1, like `SetNewParms`).
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -719,6 +820,7 @@ pub(crate) fn q1_remove(
     behaviors.monsters.remove(actor);
     behaviors.movetargets.remove(actor);
     behaviors.gibs.remove(actor);
+    behaviors.missiles.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;
@@ -1064,7 +1166,7 @@ pub(crate) fn q1_door_fire(
 /// medieval/runic/base worlds. Other worldtypes print nothing, like the
 /// stock `if` chain with no `else`.
 fn q1_key_deny_text(items: u32, worldtype: u8) -> Option<&'static str> {
-    let silver = items == IT_KEY1;
+    let silver = items == Q1_IT_KEY1;
     match (silver, worldtype) {
         (true, 2) => Some("You need the silver keycard"),
         (true, 1) => Some("You need the silver runekey"),
@@ -1322,6 +1424,7 @@ mod tests {
     use qa_core::time::SourceTime;
     use qa_world::body::BodyState;
 
+    use super::super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
     use super::*;
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
@@ -1576,11 +1679,11 @@ mod tests {
         // Key doors take key bits and wait -1.
         let fields = door_fields(&[("spawnflags", "16"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY1);
+        assert_eq!(params.items, Q1_IT_KEY1);
         assert_eq!(params.wait, -1.0);
         let fields = door_fields(&[("spawnflags", "8"), ("wait", "5"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY2);
+        assert_eq!(params.items, Q1_IT_KEY2);
         assert_eq!(params.wait, -1.0);
 
         // Explicit nonzero values survive.
@@ -1781,7 +1884,7 @@ mod tests {
             .simulation_mut()
             .set_body_origin(player.id(), vec3(32.0, 32.0, 64.0))
             .unwrap();
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         server.tick(SourceTime::Seconds(0.05)).unwrap();
         assert_eq!(shared.borrow().player_keys, 0);
         assert!(!server.triggers_mut().is_trigger(&door));
@@ -1814,7 +1917,7 @@ mod tests {
         assert_eq!(shared.borrow().doors.get(&door).unwrap().wait, -1.0);
         let player = spawn_player(&mut server, vec3(32.0, 32.0, 64.0));
         shared.borrow_mut().set_player(Some(player.id().clone()));
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         install_q1_native(&mut server, Rc::clone(&shared));
         // Touch with the key carried consumes the key and opens the door.
         server.tick(SourceTime::Seconds(0.05)).unwrap();

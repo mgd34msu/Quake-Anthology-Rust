@@ -57,12 +57,15 @@ use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
+use super::simulation::native_q1_travel::{q1_decode_level_parms, q1_set_change_parms, Q1TravelCarry};
 use super::simulation::native_q1_triggers::{
-    build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_light, q1_note_targetname,
-    q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn, q1_registered_version,
-    register_q1_trigger_spawns,
+    build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_intermission, q1_note_light,
+    q1_note_start_spot, q1_note_targetname, q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn,
+    q1_registered_version, register_q1_trigger_spawns,
 };
-use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
+use super::simulation::native_q1_weapons::Q1SpawnParms;
+use super::simulation::native_q1_weapons::{q1_grant_spawn_loadout, q1_sample_water_level, q1_weapon_pass};
+use super::windowed_scene::{build_presentation, open_product_mounts, select_q1_spawn, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
 
@@ -166,6 +169,22 @@ pub struct PlayWorld {
     speakers: Vec<MapSpeaker>,
     sound_family: SoundFamily,
     q1_behaviors: Option<Rc<RefCell<Q1NativeBehaviors>>>,
+    launch: PlayWorldLaunch,
+}
+
+/// Launch context retained for Q1 level travel (`Host_Changelevel_f`,
+/// `host_cmd.c:311`): the transition reloads through [`load_play_world`]
+/// with the destination map, so the world keeps what the load needs.
+#[derive(Debug, Clone)]
+pub struct PlayWorldLaunch {
+    /// Resolved runtime configuration.
+    pub config: StartupConfig,
+    /// Installed content catalog.
+    pub catalog: InstalledCatalog,
+    /// Launch options (the transition rewrites `map` and `skill`).
+    pub options: ApplicationOptions,
+    /// Renderer resource owner for the fresh presentation.
+    pub owner: qa_client::render::types::ResourceOwner,
 }
 
 impl std::fmt::Debug for PlayWorld {
@@ -280,6 +299,17 @@ impl PlayWorld {
     /// player (or no clip) keeps the static-spawn behavior: the world still
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
+        // Stock intermission freeze (`PlayerPreThink`, `client.qc:901`):
+        // the entry move unsolids the player and snaps the view, no step
+        // runs until the exit travels (stock `MOVETYPE_NONE`), and the
+        // live buttons latch every frame for the exit poll
+        // (`IntermissionThink`, `client.qc:242`).
+        if let Some(behaviors) = self.q1_behaviors.as_ref() {
+            if behaviors.borrow().intermission.running != 0 {
+                behaviors.borrow_mut().intermission.buttons = command.buttons() != 0;
+                return Ok(());
+            }
+        }
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
@@ -301,6 +331,58 @@ impl PlayWorld {
                 map: self.map.clone(),
                 reason,
             })
+    }
+
+    /// Run one weapon pass for native Q1 maps: relink the collision
+    /// scene, sample the player's water level, then run the stock
+    /// weapon frame (impulse selection plus the held trigger) and any
+    /// due attack-anim think. `None` advances anims without new input
+    /// (the trigger reads released). Non-Q1 maps (or missing scenes
+    /// or players) keep the static behavior. The pass is infallible
+    /// by design: failed traces block, and dead players skip (death
+    /// thinks own them once the player slice lands).
+    pub fn step_weapons(&mut self, command: Option<&qa_world::movement::types::UserCommand>) {
+        use qa_world::movement::types::UserCommand;
+        let Some(behaviors) = self.q1_behaviors.clone() else {
+            return;
+        };
+        let player = behaviors.borrow().player.clone();
+        let Some(player) = player else {
+            return;
+        };
+        let view_angles = self.player.as_ref().map(|body| body.eye().1);
+        let Some(view_angles) = view_angles else {
+            return;
+        };
+        let Self { server, clip, .. } = self;
+        let Some(PlayerClip::Q1(scene)) = clip.as_mut() else {
+            return;
+        };
+        {
+            let borrowed = behaviors.borrow();
+            let links = Q1SceneLinks {
+                door_models: &borrowed.brush_models,
+                solids: &borrowed.solids,
+            };
+            let (simulation, triggers) = server.simulation_and_triggers();
+            link_q1_scene(scene, simulation, triggers, Some(&links));
+        }
+        let (buttons, impulse) = match command {
+            Some(UserCommand::Q1Netquake(command)) => (command.buttons, command.impulse),
+            Some(UserCommand::Q1Quakeworld(command)) => (command.buttons, command.impulse),
+            _ => (0, 0),
+        };
+        let water = q1_sample_water_level(scene, server.simulation(), &player);
+        behaviors.borrow_mut().player_state.water_level = water;
+        q1_weapon_pass(
+            server,
+            &mut behaviors.borrow_mut(),
+            scene,
+            &player,
+            view_angles,
+            buttons,
+            impulse,
+        );
     }
 
     /// Run one monster think pass for native Q1 maps: relink the
@@ -386,6 +468,57 @@ impl PlayWorld {
     /// Move the scene presentation out for the windowed scene view.
     pub fn take_presentation(&mut self) -> Option<PlayPresentation> {
         self.presentation.take()
+    }
+
+    /// Run one pending Q1 level transition (`Host_Changelevel_f`,
+    /// `host_cmd.c:311`): take the completed `GotoNextMap` destination,
+    /// capture the leaver's spawn parms (`SV_SaveSpawnparms`,
+    /// `sv_main.c:1015`), consume a pending `trigger_setskill` value,
+    /// and load the destination map with the carried payload. Returns
+    /// `None` without Q1 behaviors or without pending travel; the take
+    /// is at-most-once, so a failed load logs once and the old world
+    /// keeps running (stock `Host_Error`s the session instead).
+    pub fn take_pending_travel(&mut self) -> Result<Option<PlayWorld>, PlayWorldError> {
+        let Some(behaviors) = self.q1_behaviors.clone() else {
+            return Ok(None);
+        };
+        let taken = {
+            let mut borrowed = behaviors.borrow_mut();
+            let destination = borrowed.pending_travel.take();
+            let serverflags = borrowed.serverflags;
+            let skill_override = borrowed.skill_override.take();
+            (destination, serverflags, skill_override)
+        };
+        let (Some(destination), serverflags, skill_override) = taken else {
+            return Ok(None);
+        };
+        let parms = match self.player_actor().cloned() {
+            Some(player) => {
+                let mut borrowed = behaviors.borrow_mut();
+                q1_set_change_parms(&mut borrowed, self.server.simulation_mut(), &player)
+            }
+            None => Q1SpawnParms::default(),
+        };
+        // Flagged returns to `start` shed every carried thing
+        // (`DecodeLevelParms`, `client.qc:79-83`).
+        let parms = if destination == "start" && serverflags != 0 {
+            Q1SpawnParms::default()
+        } else {
+            parms
+        };
+        let mut options = self.launch.options.clone();
+        options.map = format!("maps/{destination}.bsp");
+        if let Some(skill) = skill_override {
+            options.skill = skill.parse::<f64>().unwrap_or(0.0).clamp(0.0, 3.0) as u8;
+        }
+        let next = load_play_world_inner(
+            &self.launch.config,
+            &self.launch.catalog,
+            &options,
+            self.launch.owner.clone(),
+            Some(Q1TravelCarry { parms, serverflags }),
+        )?;
+        Ok(Some(next))
     }
 }
 
@@ -541,6 +674,7 @@ pub fn spawn_map_entities(
         q1.behaviors.borrow_mut().deathmatch = context.deathmatch;
         q1.behaviors.borrow_mut().skill = context.skill;
         q1.behaviors.borrow_mut().coop = context.coop;
+        q1.behaviors.borrow_mut().mapname = q1_mapname(source);
     }
     let mut classnames = BTreeSet::new();
     for properties in entities {
@@ -752,6 +886,12 @@ pub fn spawn_map_entities(
                     if classname == "worldspawn" {
                         q1_note_worldspawn(&mut behaviors, &fields);
                     }
+                    if classname == "info_intermission" {
+                        q1_note_intermission(&mut behaviors, &fields);
+                    }
+                    if classname == "info_player_start" || classname == "testplayerstart" {
+                        q1_note_start_spot(&mut behaviors, &fields);
+                    }
                     if classname == "info_teleport_destination" {
                         if let Err(error) = q1_note_teleport_destination(&mut behaviors, actor.id(), &fields) {
                             let _ignored = server.simulation_mut().release(&actor);
@@ -784,6 +924,14 @@ pub fn spawn_map_entities(
         install_q1_native(server, Rc::clone(&q1.behaviors));
     }
     summary
+}
+
+/// Stock `mapname` stem for a map resource path (`maps/e1m1.bsp` →
+/// `e1m1`): the leaf name without its extension (`SV_SpawnServer`
+/// names the level for `client.qc`).
+fn q1_mapname(source: &str) -> String {
+    let leaf = source.rsplit('/').next().unwrap_or(source);
+    leaf.rsplit_once('.').map_or(leaf, |(stem, _)| stem).to_string()
 }
 
 /// Selected map read through product mounts and decoded (shared by the
@@ -835,6 +983,20 @@ pub fn load_play_world(
     catalog: &InstalledCatalog,
     options: &ApplicationOptions,
     owner: qa_client::render::types::ResourceOwner,
+) -> Result<PlayWorld, PlayWorldError> {
+    load_play_world_inner(config, catalog, options, owner, None)
+}
+
+/// Load the selected map, optionally carrying a transition payload: a
+/// carried run spawns flagged (`serverflags` set, `start2` preferred)
+/// and decodes the carried inventory instead of granting the fresh
+/// spawn loadout.
+fn load_play_world_inner(
+    config: &StartupConfig,
+    catalog: &InstalledCatalog,
+    options: &ApplicationOptions,
+    owner: qa_client::render::types::ResourceOwner,
+    carry: Option<Q1TravelCarry>,
 ) -> Result<PlayWorld, PlayWorldError> {
     let content = map_content_id(options).to_string();
     let product = catalog
@@ -888,7 +1050,12 @@ pub fn load_play_world(
         map: options.map.clone(),
         reason,
     })?;
-    let player = match select_spawn(&entities, kind) {
+    let spawn = if kind == BspKind::Q1 {
+        select_q1_spawn(&entities, carry.as_ref().map_or(0, |carried| carried.serverflags))
+    } else {
+        select_spawn(&entities, kind)
+    };
+    let player = match spawn {
         Some(spawn) => {
             let feet = vec3(
                 spawn.origin.x,
@@ -922,6 +1089,18 @@ pub fn load_play_world(
         let _ignored = server
             .simulation_mut()
             .set_combat(PlayerBody::actor(player), qa_world::combat::CombatState::default());
+        if let Some(carried) = carry.as_ref() {
+            // Carried arrival (`PutClientInServer` over `DecodeLevelParms`,
+            // `client.qc:479`): the flags persist and the captured
+            // inventory replaces the fresh grant.
+            behaviors.serverflags = carried.serverflags;
+            let actor = PlayerBody::actor(player).clone();
+            q1_decode_level_parms(&mut behaviors, server.simulation_mut(), &actor, &carried.parms);
+        } else {
+            // Stock spawn loadout (`PutClientInServer` over fresh parms):
+            // axe and shotgun with 25 shells, shotgun in hand.
+            q1_grant_spawn_loadout(&mut behaviors);
+        }
         behaviors.player_angles = player.eye().1;
     }
     // The presentation consumes its mounts, so audio keeps a second open over
@@ -934,8 +1113,9 @@ pub fn load_play_world(
             None
         }
     };
+    let travel_owner = owner.clone();
     let (presentation, presentation_error) =
-        match build_presentation(mounts, &options.product, &options.map, &bytes, &entities, owner) {
+        match build_presentation(mounts, &content, &options.map, &bytes, &entities, owner) {
             Ok(presentation) => (Some(presentation), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -955,6 +1135,12 @@ pub fn load_play_world(
         speakers,
         sound_family,
         q1_behaviors: context.q1.map(|q1| q1.behaviors),
+        launch: PlayWorldLaunch {
+            config: config.clone(),
+            catalog: catalog.clone(),
+            options: options.clone(),
+            owner: travel_owner,
+        },
     })
 }
 
@@ -1635,13 +1821,17 @@ mod tests {
         }
     }
 
-    /// One live server tick at the 1/60 s host step, plus the monster
-    /// pass (the production order: tick, then steps).
+    /// One live server tick at the 1/60 s host step, plus the weapon
+    /// and monster passes (the production order: tick, then steps).
+    /// The weapon pass runs without new input (trigger released), so
+    /// it only advances anims; scenarios drive fire through
+    /// `live_fire`.
     fn live_tick(world: &mut PlayWorld) {
         world
             .server_mut()
             .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
             .unwrap();
+        world.step_weapons(None);
         world.step_monsters();
     }
 
@@ -1661,6 +1851,7 @@ mod tests {
                 .server_mut()
                 .tick(qa_core::time::SourceTime::Seconds(1.0))
                 .unwrap();
+            world.step_weapons(None);
             world.step_monsters();
             guard += 1;
             assert!(guard < 100_000, "live_advance stalled before {target}s");
@@ -2453,6 +2644,781 @@ mod tests {
         }
     }
 
+    /// Changelevel exits in a live world: actor plus destination map
+    /// stem, in spawn order.
+    fn live_changelevel_exits(world: &PlayWorld) -> Vec<(qa_core::identity::ActorId, String)> {
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed
+            .triggers
+            .iter()
+            .filter_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Latch live button state through the frozen player step (the
+    /// `PlayerPreThink` seam, `client.qc:901`): 0 releases, nonzero
+    /// presses.
+    fn live_press_buttons(world: &mut PlayWorld, buttons: i32) {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let (_, angles) = world.player_eye().expect("player eye");
+        let command = UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: live_now(world),
+            view_angles: angles,
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons,
+            impulse: 0,
+        });
+        world.step_player(command).unwrap();
+    }
+
+    /// Touch a live exit and run the 0.1s execute think: returns with
+    /// the world entered in the intermission and the buttons released.
+    fn live_enter_intermission(world: &mut PlayWorld, exit: &qa_core::identity::ActorId) {
+        let at_exit = live_volume_center(world, exit);
+        live_place_player(world, at_exit);
+        live_tick(world);
+        live_advance(world, 0.2);
+        live_press_buttons(world, 0);
+        assert_eq!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .intermission
+                .running,
+            1,
+            "exit entered the intermission"
+        );
+    }
+
+    /// Advance past the live intermission exit gate with the buttons
+    /// released (a held press would exit at the gate, like stock).
+    fn live_pass_exit_gate(world: &mut PlayWorld) {
+        let wait = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.intermission.exit_time_seconds - live_now(world) + 0.1
+        };
+        live_advance(world, wait.max(0.1));
+    }
+
+    /// Independent oracle for the stock finale scrolls (`client.qc:172-226`).
+    fn live_expected_finale(which: &str) -> &'static str {
+        match which {
+            "e1-shareware" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!",
+            "e1" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!",
+            "e2" => "The Rune of Black Magic throbs evilly in\nyour hand and whispers dark thoughts\ninto your brain. You learn the inmost\nlore of the Hell-Mother; Shub-Niggurath!\nYou now know that she is behind all the\nterrible plotting which has led to so\nmuch death and horror. But she is not\ninviolate! Armed with this Rune, you\nrealize that once all four Runes are\ncombined, the gate to Shub-Niggurath's\nPit will open, and you can face the\nWitch-Goddess herself in her frightful\notherworld cathedral.",
+            "e3" => "The charred viscera of diabolic horrors\nbubble viscously as you seize the Rune\nof Hell Magic. Its heat scorches your\nhand, and its terrible secrets blight\nyour mind. Gathering the shreds of your\ncourage, you shake the devil's shackles\nfrom your soul, and become ever more\nhard and determined to destroy the\nhideous creatures whose mere existence\nthreatens the souls and psyches of all\nthe population of Earth.",
+            "e4" => "Despite the awful might of the Elder\nWorld, you have achieved the Rune of\nElder Magic, capstone of all types of\narcane wisdom. Beyond good and evil,\nbeyond life and death, the Rune\npulsates, heavy with import. Patient and\npotent, the Elder Being Shub-Niggurath\nweaves her dire plans to clear off all\nlife from the Earth, and bring her own\nfoul offspring to our world! For all the\ndwellers in these nightmare dimensions\nare her descendants! Once all Runes of\nmagic power are united, the energy\nbehind them will blast open the Gateway\nto Shub-Niggurath, and you can travel\nthere to foil the Hell-Mother's plots\nin person.",
+            "runes" => "Now, you have all four Runes. You sense\ntremendous invisible forces moving to\nunseal ancient barriers. Shub-Niggurath\nhad hoped to use the Runes Herself to\nclear off the Earth, but now instead,\nyou will use them to enter her home and\nconfront her as an avatar of avenging\nEarth-life. If you defeat her, you will\nbe remembered forever as the savior of\nthe planet. If she conquers, it will be\nas if you had never been born.",
+            _ => panic!("unknown finale {which}"),
+        }
+    }
+
+    /// Q1-0241: e1m1 slipgate exit (`trigger_changelevel`, `client.qc:290`):
+    /// the touch sets `nextmap`, nulls the touch, thinks
+    /// `execute_changelevel` 0.1s later, and the entry freezes the live
+    /// player at one of the four map cameras with the single-player 2s
+    /// exit gate, CD track 3, and no travel yet.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0241_changelevel_touch_enters_intermission() {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().mapname, "e1m1");
+        }
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 1, "e1m1 has one exit");
+        assert_eq!(exits[0].1, "e1m2");
+        let exit = exits[0].0.clone();
+        let player = world.player_actor().cloned().expect("player");
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.nextmap.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.intermission.running, 0, "touch alone enters nothing");
+            assert_eq!(borrowed.pending_travel, None);
+        }
+        assert!(!world.server_mut().triggers_mut().is_trigger(&exit));
+        live_advance(&mut world, 0.2);
+        let now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 1);
+            assert!(
+                (borrowed.intermission.exit_time_seconds - (now + 2.0)).abs() < 0.25,
+                "single-player 2s gate: {} vs {now}",
+                borrowed.intermission.exit_time_seconds
+            );
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3)]);
+            let spot = borrowed.intermission.spot.clone().expect("camera spot");
+            assert!(borrowed.intermission_spots.contains(&spot));
+            let body = world.server().simulation().body_state(&player).expect("player body");
+            assert_eq!(body.origin, spot.origin, "entry moved the player to the camera");
+            assert_eq!(body.angles, spot.mangle);
+            assert!(!borrowed.solids.contains(&player), "entry unsolids the player");
+        }
+        assert!(
+            !world
+                .server()
+                .simulation()
+                .combat_state(&player)
+                .unwrap()
+                .can_take_damage,
+            "entry drops takedamage"
+        );
+        // Frozen: a full forward step moves nothing (`client.qc:901`).
+        let before = world
+            .server()
+            .simulation()
+            .body_state(&player)
+            .expect("player body")
+            .origin;
+        let (_, angles) = world.player_eye().expect("player eye");
+        let command = UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: now,
+            view_angles: angles,
+            forward_move: 400.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0,
+            impulse: 0,
+        });
+        world.step_player(command).unwrap();
+        let after = world
+            .server()
+            .simulation()
+            .body_state(&player)
+            .expect("player body")
+            .origin;
+        assert_eq!(before, after, "intermission player step is frozen");
+    }
+
+    /// Q1-0241: `start` NO_INTERMISSION exits (`client.qc:315`): the
+    /// e1m1 slipgate travels at once in single player — pending travel
+    /// set, no intermission entered, no execute think armed.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0241_start_exit_skips_intermission() {
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 5, "start has five episode exits");
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "start");
+            assert_eq!(borrowed.nextmap.as_deref(), Some("e1m1"));
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m1"));
+            assert!(borrowed.changelevel_issued);
+            assert_eq!(borrowed.intermission.running, 0);
+            assert!(borrowed.thinks.is_empty());
+        }
+        assert!(world.server_mut().triggers_mut().is_trigger(&exit));
+    }
+
+    /// Q1-0187: `noexit` at a live exit (`client.qc:295`): 1 kills on
+    /// e1m1, 2 kills outside `start` but spares the `start` exits.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0187_noexit_kills_at_the_exit() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 1;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), -99.0, "noexit 1 kills on e1m1");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().nextmap, None);
+        }
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 2;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), -99.0, "noexit 2 kills outside start");
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 2;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), 100.0, "noexit 2 spares start");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().pending_travel.as_deref(), Some("e1m1"));
+        }
+    }
+
+    /// Q1-0216: e1m1 `info_intermission` cameras (`client.qc:23`): all
+    /// four record in spawn order with map-exact origins and mangles,
+    /// plus the `FindIntermission` start fallback.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0216_intermission_spots_recorded() {
+        let Some(world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let spots: Vec<(qa_core::math::Vec3, qa_core::math::Vec3)> = borrowed
+            .intermission_spots
+            .iter()
+            .map(|spot| (spot.origin, spot.mangle))
+            .collect();
+        assert_eq!(
+            spots,
+            vec![
+                (vec3(-112.0, 704.0, 56.0), vec3(20.0, 45.0, 0.0)),
+                (vec3(-208.0, 2736.0, 192.0), vec3(20.0, 225.0, 0.0)),
+                (vec3(240.0, 2664.0, 104.0), vec3(20.0, 120.0, 0.0)),
+                (vec3(1376.0, 1936.0, 64.0), vec3(20.0, 135.0, 0.0)),
+            ]
+        );
+        assert_eq!(borrowed.start_spots.len(), 1, "e1m1 has one player start");
+        assert_eq!(borrowed.start_spots[0].origin, vec3(480.0, -352.0, 88.0));
+    }
+
+    /// Q1-0257: e1m1 intermission exit (`IntermissionThink`,
+    /// `client.qc:242`): a gated press does nothing, a press past the
+    /// 2s gate travels to e1m2, the tally mirrors the live counters,
+    /// and deathmatch skips every text with its 5s gate.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0257_intermission_buttons_exit_to_travel() {
+        use super::super::simulation::native_q1_triggers::q1_intermission_stats;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        // Gated press: nothing travels.
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.pending_travel, None);
+            assert_eq!(borrowed.intermission.running, 1);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().pending_travel, None, "released buttons wait");
+        }
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        let now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None, "plain level ends show no scroll");
+            let stats = q1_intermission_stats(&borrowed, now);
+            assert_eq!(stats.killed_monsters, borrowed.killed_monsters);
+            assert_eq!(stats.total_monsters, borrowed.total_monsters);
+            assert_eq!(stats.found_secrets, borrowed.found_secrets);
+            assert_eq!(stats.total_secrets, borrowed.total_secrets);
+            assert_eq!(stats.time_seconds, now);
+            assert!(stats.total_monsters > 0, "e1m1 tallies real monsters");
+            assert!(stats.total_secrets > 0, "e1m1 tallies real secrets");
+        }
+        // Deathmatch: the 5s gate, then travel with no text.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 1, "DM never counts texts");
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None);
+        }
+    }
+
+    /// Q1-0256: e1m7 episode finale (`ExitIntermission`, `client.qc:162`):
+    /// the first exit press queues the registered episode-1 scroll with
+    /// CD track 2 and no travel; the second press travels to `start`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_e1_finale_registered() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(behaviors.borrow().registered, "steel corpus is registered");
+        }
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 1, "e1m7 has one exit");
+        assert_eq!(exits[0].1, "start");
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().nextmap.as_deref(), Some("start"));
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e1")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
+    }
+
+    /// Q1-0256: episode 2-4 finales (`ExitIntermission`, `client.qc:182-212`):
+    /// each end map scrolls its exact stock text with CD track 2.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_episode_finales_e2_e3_e4() {
+        for (map, which) in [
+            ("maps/e2m6.bsp", "e2"),
+            ("maps/e3m6.bsp", "e3"),
+            ("maps/e4m7.bsp", "e4"),
+        ] {
+            let Some(mut world) = live_q1_world(map, GameMode::Singleplayer, 1) else {
+                return;
+            };
+            live_silence_door_fields(&mut world);
+            let exits = live_changelevel_exits(&world);
+            assert_eq!(exits.len(), 1, "{map} has one exit");
+            let exit = exits[0].0.clone();
+            live_enter_intermission(&mut world, &exit);
+            live_press_buttons(&mut world, 0);
+            live_pass_exit_gate(&mut world);
+            live_press_buttons(&mut world, 1);
+            live_tick(&mut world);
+            {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                assert_eq!(borrowed.intermission.running, 2, "{map} counts the scroll");
+                assert_eq!(
+                    borrowed.finale_text.as_deref(),
+                    Some(live_expected_finale(which)),
+                    "{map} scroll"
+                );
+                assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)], "{map} cues");
+                assert_eq!(borrowed.pending_travel, None, "{map} scroll shows before travel");
+            }
+        }
+    }
+
+    /// Q1-0261: shareware end (`ExitIntermission`, `client.qc:215`): an
+    /// unregistered e1m7 run shows the shareware scroll, then the sell
+    /// screen instead of traveling.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0261_shareware_sell_screen() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().registered = false;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(
+                borrowed.finale_text.as_deref(),
+                Some(live_expected_finale("e1-shareware"))
+            );
+            assert_eq!(borrowed.pending_travel, None);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert!(borrowed.sell_screen);
+            assert_eq!(borrowed.pending_travel, None, "sell screen shows before travel");
+        }
+    }
+
+    /// Q1-0255: all-runes finale (`ExitIntermission`, `client.qc:223`):
+    /// with every episode bit set, the third press scrolls the runes
+    /// text instead of traveling; the fourth press travels.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0255_all_runes_finale() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().serverflags = 15;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().finale_text.as_deref(),
+                Some(live_expected_finale("e1"))
+            );
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("runes")));
+            assert_eq!(borrowed.pending_travel, None, "runes scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 4);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
+    }
+
+    /// Q1-0258/CUS-0227: e1m1 -> e1m2 carry (`SetChangeParms`,
+    /// `client.qc:32`): the exit captures the scripted loadout, the
+    /// intermission exits to pending travel, and the arrival decodes
+    /// stripped items, clamped health, floored shells, weapon, armor,
+    /// and flags at the e1m2 start.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0258_travel_carries_parms_to_e1m2() {
+        use qa_world::combat::{ArmorState, CombatState, RegularArmor};
+
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_KEY1, Q1_IT_NAILGUN, Q1_IT_NAILS, Q1_IT_QUAD, Q1_IT_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let player = world.player_actor().cloned().expect("player");
+        // Scripted campaign loadout: nailgun plus a key and a quad the
+        // capture must strip, superhealth to clamp, thin shells to
+        // floor, yellow armor to carry.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN | Q1_IT_KEY1 | Q1_IT_QUAD;
+            borrowed.player_ammo.shells = 10.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+        }
+        let worn = world.server().simulation().combat_state(&player).unwrap().armor.clone();
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_combat(
+                &player,
+                CombatState {
+                    health: 150.0,
+                    armor: ArmorState {
+                        regular: RegularArmor::Q1 {
+                            points: 120.0,
+                            absorption: 0.6,
+                            item: "q1:item_armor2".to_string(),
+                        },
+                        ..worn
+                    },
+                    ..CombatState::default()
+                },
+            )
+            .unwrap();
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/e1m2.bsp");
+        assert!(
+            world.take_pending_travel().expect("second take").is_none(),
+            "take is at-most-once"
+        );
+        let (eye, _) = next.player_eye().expect("arrival eye");
+        assert_eq!(eye, vec3(1496.0, 1664.0, 318.0), "arrival at the e1m2 start");
+        let arrival = next.player_actor().cloned().expect("arrival player");
+        {
+            let behaviors = next.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            let items = borrowed.player_items & !Q1_IT_AMMO_BITS;
+            assert_eq!(
+                items,
+                Q1_IT_AXE | Q1_IT_SHOTGUN | Q1_IT_NAILGUN,
+                "keys and quad stripped"
+            );
+            assert_ne!(borrowed.player_items & Q1_IT_NAILS, 0, "ammo indicator refreshed");
+            assert_eq!(borrowed.player_ammo.shells, 25.0, "shells floored");
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.player_state.parms.health, 100.0, "entry parms snapshotted");
+            assert_eq!(borrowed.mapname, "e1m2");
+        }
+        let combat = next
+            .server()
+            .simulation()
+            .combat_state(&arrival)
+            .expect("arrival combat");
+        assert_eq!(combat.health, 100.0, "superhealth clamped");
+        match &combat.armor.regular {
+            RegularArmor::Q1 { points, absorption, .. } => {
+                assert_eq!((*points, *absorption), (120.0, 0.6), "armor carried");
+            }
+            _ => panic!("arrival wears the carried armor"),
+        }
+    }
+
+    /// Q1-0260: flagged `start` return (`DecodeLevelParms`, `client.qc:79`):
+    /// e1m7 -> start with flags keeps the flags but sheds the carried
+    /// inventory for the fresh loadout.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0260_flagged_start_return_sheds_parms() {
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN};
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        // Past the episode scroll, then past running 3 to travel.
+        for _ in 0..2 {
+            live_press_buttons(&mut world, 0);
+            live_pass_exit_gate(&mut world);
+            live_press_buttons(&mut world, 1);
+            live_tick(&mut world);
+        }
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/start.bsp");
+        {
+            let behaviors = next.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "carry shed for the fresh loadout"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+        }
+        let arrival = next.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            next.server()
+                .simulation()
+                .combat_state(&arrival)
+                .map(|combat| combat.health),
+            Some(100.0)
+        );
+    }
+
+    /// Q1-0222: flagged `start` prefers `info_player_start2`
+    /// (`SelectSpawnPoint`, `client.qc:454`): the same e1m7 -> start
+    /// travel spawns at start1 unflagged and start2 flagged.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0222_flagged_start_prefers_start2() {
+        for (serverflags, eye) in [(0, vec3(544.0, 288.0, 54.0)), (1, vec3(544.0, 1536.0, 54.0))] {
+            let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+                return;
+            };
+            live_silence_door_fields(&mut world);
+            world.q1_behaviors().expect("Q1 behaviors").borrow_mut().serverflags = serverflags;
+            let exits = live_changelevel_exits(&world);
+            let exit = exits[0].0.clone();
+            live_enter_intermission(&mut world, &exit);
+            for _ in 0..2 {
+                live_press_buttons(&mut world, 0);
+                live_pass_exit_gate(&mut world);
+                live_press_buttons(&mut world, 1);
+                live_tick(&mut world);
+            }
+            let next = world
+                .take_pending_travel()
+                .expect("travel loads")
+                .expect("pending travel");
+            assert_eq!(
+                next.player_eye().expect("arrival eye").0,
+                eye,
+                "flags {serverflags} selects the spawn"
+            );
+        }
+    }
+
+    /// Setskill triggers in a live world carrying `message`, in spawn order.
+    fn live_setskill_by_message(world: &PlayWorld, message: &str) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed
+            .triggers
+            .iter()
+            .filter_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::SetSkill if trigger.source.message.as_deref() == Some(message) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Q1-0251: `start` skill doors (`trigger_setskill`, `triggers.qc:475`):
+    /// touching the "2" door records the override, and the episode exit
+    /// consumes it: the e1m1 arrival runs skill 2.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0251_setskill_selects_next_map_skill() {
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let doors = live_setskill_by_message(&world, "2");
+        assert_eq!(doors.len(), 1, "start has one hard-skill door");
+        let at_door = live_volume_center(&world, &doors[0]);
+        live_place_player(&mut world, at_door);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().skill_override.as_deref(), Some("2"));
+        }
+        let exits = live_changelevel_exits(&world);
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/e1m1.bsp");
+        assert_eq!(
+            next.q1_behaviors().expect("Q1 behaviors").borrow().skill,
+            2,
+            "override consumed at travel"
+        );
+    }
+
     /// Q1-0110: e1m1 `item_health` heals a live wounded player
     /// (`items.qc:150-204`): +25 to a 50-health player, the receipt
     /// prints, the box hides and unmarks, and single player arms no
@@ -2680,7 +3646,8 @@ mod tests {
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            // 25-shell spawn loadout (`SetNewParms`) plus the 20-shell box.
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 45.0);
             assert!(borrowed.sprints.iter().any(|print| print.text == "You got the shells"));
             assert!(borrowed.items.get(&shells).is_some_and(|item| item.taken));
         }
@@ -2815,7 +3782,8 @@ mod tests {
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            // 25-shell spawn loadout (`SetNewParms`) plus the 20-shell box.
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 45.0);
             let regen = borrowed
                 .thinks
                 .iter()
@@ -3490,9 +4458,8 @@ mod tests {
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0137_dog_ignores_hidden_player() {
-        use super::super::simulation::native_q1_monsters::{
-            Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_NOTARGET, Q1_IT_INVISIBILITY,
-        };
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_NOTARGET};
+        use super::super::simulation::native_q1_weapons::Q1_IT_INVISIBILITY;
 
         let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
             return;
@@ -3774,5 +4741,1048 @@ mod tests {
             }
         }
         assert!(woke, "a sighted packmate wakes its den");
+    }
+
+    // --- Live Q1 weapons harness (slice: hitscan, impulse, loadout) ---
+
+    /// Build a NetQuake weapon command: buttons plus impulse with
+    /// zeroed movement (firing never moves the player).
+    fn live_weapon_command(buttons: i32, impulse: i32) -> qa_world::movement::types::UserCommand {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+        UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: vec3(0.0, 0.0, 0.0),
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons,
+            impulse,
+        })
+    }
+
+    /// Run the weapon pass once with buttons plus impulse (the attack
+    /// input seam; the clock does not advance).
+    fn live_fire(world: &mut PlayWorld, buttons: i32, impulse: i32) {
+        let command = live_weapon_command(buttons, impulse);
+        world.step_weapons(Some(&command));
+    }
+
+    /// Live player eye from the sim body (placement truth; the movement
+    /// state never sees scripted placements).
+    fn live_eye(world: &PlayWorld) -> qa_core::math::Vec3 {
+        let player = world.player_actor().cloned().expect("player");
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        vec3(body.origin.x, body.origin.y, body.origin.z + 22.0)
+    }
+
+    /// Aim the player body at a map point (view angles only; no step
+    /// runs, so scripted placements hold).
+    fn live_aim_at(world: &mut PlayWorld, target: qa_core::math::Vec3) {
+        use qa_core::math::vector_to_angles;
+        let eye = live_eye(world);
+        let angles = vector_to_angles(vec3(target.x - eye.x, target.y - eye.y, target.z - eye.z));
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles = angles,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Pitch the player view by degrees (negative looks up).
+    fn live_pitch(world: &mut PlayWorld, degrees: f32) {
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles.x += degrees,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Yaw the player view by degrees.
+    fn live_yaw(world: &mut PlayWorld, degrees: f32) {
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles.y += degrees,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Place a dog `dist` units ahead of the player, level, facing
+    /// whatever it faced (the dog stays stood-down until wounded).
+    fn live_place_dog_before_player(world: &mut PlayWorld, dog: &qa_core::identity::ActorId, dist: f32) {
+        use qa_core::math::angle_vectors;
+        let player = world.player_actor().cloned().expect("player");
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        let angles = world.player_eye().expect("player eye").1;
+        let forward = angle_vectors(angles).forward;
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_body_origin(
+                dog,
+                vec3(
+                    body.origin.x + forward.x * dist,
+                    body.origin.y + forward.y * dist,
+                    body.origin.z,
+                ),
+            )
+            .unwrap();
+    }
+
+    /// Live dog health.
+    fn live_dog_health(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> f64 {
+        world
+            .server()
+            .simulation()
+            .combat_state(dog)
+            .map_or(0.0, |combat| combat.health)
+    }
+
+    /// Grant a weapon bit plus an ammo pool (weapon pickups land with
+    /// the items slice; selection proves against direct grants).
+    fn live_grant_weapon(world: &mut PlayWorld, bit: u32, shells: f64, nails: f64, rockets: f64, cells: f64) {
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let mut borrowed = behaviors.borrow_mut();
+        borrowed.player_items |= bit;
+        borrowed.player_ammo.shells = shells;
+        borrowed.player_ammo.nails = nails;
+        borrowed.player_ammo.rockets = rockets;
+        borrowed.player_ammo.cells = cells;
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0173_shotgun_wounds_dog() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        // Stock spawn loadout rides admission.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, 1);
+            assert_eq!(borrowed.player_state.currentammo, 25.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_shot.mdl");
+        }
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 24.0, "one shell per shot");
+            assert_eq!(borrowed.player_state.currentammo, 24.0);
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.5);
+            assert_eq!(borrowed.player_state.show_hostile, fired_at + 1.0);
+            assert_eq!(borrowed.player_state.punchangle, vec3(-2.0, 0.0, 0.0));
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/guncock.wav" && sound.channel == 1),
+                "shotgun cocks on CHAN_WEAPON"
+            );
+        }
+        // Point-blank: all 6 pellets strike for 4 each.
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert_eq!(monster.enemy.as_ref(), Some(&player), "wounds turn the dog");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::DogPain, _) | Q1MonsterThink::Frame(Q1MonsterSeq::DogPainB, _)
+                ),
+                "survival runs th_pain, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 0);
+        }
+        // The refire gate holds: a second trigger pull fizzles.
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_ammo.shells, 24.0);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0175_supershotgun_kills_and_falls_back() {
+        use super::super::simulation::native_q1_weapons::Q1_IT_SUPER_SHOTGUN;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 3.0, 0.0, 0.0, 0.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 0, 3);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().player_state.weapon, Q1_IT_SUPER_SHOTGUN);
+        }
+        // Full double at close range: 14 pellets for 56, a clean kill.
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 1.0, "two shells per double");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.7);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/shotgn2.wav"),
+                "double booms"
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), -31.0);
+        // The last shell fires the plain 6-pellet shot, not the double
+        // (second dog, opposite lane: the corpse stays solid).
+        live_advance(&mut world, 0.8);
+        live_yaw(&mut world, 180.0);
+        live_place_dog_before_player(&mut world, &dogs[1], 56.0);
+        let center = live_volume_center(&world, &dogs[1]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 0.0);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/guncock.wav"),
+                "single shell cocks the plain shotgun"
+            );
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/shotgn2.wav")
+                    .count(),
+                1,
+                "single shell never booms again"
+            );
+        }
+        assert_eq!(live_dog_health(&world, &dogs[1]), 1.0);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0168_axe_swing_lands_late() {
+        use super::super::simulation::native_q1_weapons::{Q1PlayerAttack, Q1TempEnt, Q1_IT_AXE};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 48.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 0, 1);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_AXE);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_axe.mdl");
+            assert_eq!(borrowed.player_state.currentammo, 0.0);
+        }
+        let swung_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "weapons/ax1.wav"),
+                "swing whooshes"
+            );
+            assert!(
+                matches!(
+                    borrowed.player_state.attack,
+                    Q1PlayerAttack::AxeSwing { fire_at } if fire_at == swung_at + 0.2
+                ),
+                "frame-3 fire 0.2 s out, got {:?}",
+                borrowed.player_state.attack
+            );
+            assert_eq!(borrowed.player_state.attack_finished, swung_at + 0.5);
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), 25.0, "no instant damage");
+        live_advance(&mut world, 0.3);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 5.0, "frame 3 lands 20");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.attack, Q1PlayerAttack::None);
+            assert_eq!(borrowed.player_state.weaponframe, 3);
+        }
+        // A wall swing thunks and sparks (straight down at the floor).
+        live_pitch(&mut world, 90.0);
+        live_advance(&mut world, 0.6);
+        live_fire(&mut world, 1, 0);
+        live_advance(&mut world, 0.3);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "player/axhit2.wav"),
+                "wall thunk"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Gunshot { .. })),
+                "wall spark"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0179_impulse_selects_slot() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_GRENADE_LAUNCHER, Q1_IT_LIGHTNING, Q1_IT_NAILGUN, Q1_IT_ROCKET_LAUNCHER, Q1_IT_SHOTGUN,
+            Q1_IT_SUPER_NAILGUN, Q1_IT_SUPER_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_AXE, 0.0, 0.0, 0.0, 0.0);
+        for (impulse, bit, shells, nails, rockets, cells, model, current) in [
+            (1, Q1_IT_AXE, 0.0, 0.0, 0.0, 0.0, "progs/v_axe.mdl", 0.0),
+            (2, Q1_IT_SHOTGUN, 12.0, 0.0, 0.0, 0.0, "progs/v_shot.mdl", 12.0),
+            (3, Q1_IT_SUPER_SHOTGUN, 12.0, 0.0, 0.0, 0.0, "progs/v_shot2.mdl", 12.0),
+            (4, Q1_IT_NAILGUN, 0.0, 30.0, 0.0, 0.0, "progs/v_nail.mdl", 30.0),
+            (5, Q1_IT_SUPER_NAILGUN, 0.0, 30.0, 0.0, 0.0, "progs/v_nail2.mdl", 30.0),
+            (6, Q1_IT_GRENADE_LAUNCHER, 0.0, 0.0, 7.0, 0.0, "progs/v_rock.mdl", 7.0),
+            (7, Q1_IT_ROCKET_LAUNCHER, 0.0, 0.0, 7.0, 0.0, "progs/v_rock2.mdl", 7.0),
+            (8, Q1_IT_LIGHTNING, 0.0, 0.0, 0.0, 40.0, "progs/v_light.mdl", 40.0),
+        ] {
+            live_grant_weapon(&mut world, bit, shells, nails, rockets, cells);
+            live_fire(&mut world, 0, impulse);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, bit, "impulse {impulse} selects");
+            assert_eq!(borrowed.player_state.currentammo, current);
+            assert_eq!(borrowed.player_state.weaponmodel, model);
+        }
+        // Unowned refuses; owned-but-dry refuses; both keep the weapon.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_items &= !Q1_IT_ROCKET_LAUNCHER;
+        }
+        live_fire(&mut world, 0, 7);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "no weapon.\n"));
+        }
+        live_grant_weapon(&mut world, Q1_IT_ROCKET_LAUNCHER, 0.0, 0.0, 0.0, 40.0);
+        live_fire(&mut world, 0, 7);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "not enough ammo.\n"));
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0178_cycle_walks_roster() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN, Q1_IT_SUPER_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 25.0, 0.0, 0.0, 0.0);
+        live_grant_weapon(&mut world, Q1_IT_NAILGUN, 25.0, 9.0, 0.0, 0.0);
+        for (impulse, expect) in [
+            (10, Q1_IT_SUPER_SHOTGUN),
+            (10, Q1_IT_NAILGUN),
+            (10, Q1_IT_AXE),
+            (10, Q1_IT_SHOTGUN),
+            (12, Q1_IT_AXE),
+            (12, Q1_IT_NAILGUN),
+        ] {
+            live_fire(&mut world, 0, impulse);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(borrowed_player_weapon(&behaviors), expect, "impulse {impulse}");
+        }
+
+        fn borrowed_player_weapon(behaviors: &std::rc::Rc<std::cell::RefCell<Q1NativeBehaviors>>) -> u32 {
+            behaviors.borrow().player_state.weapon
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0169_best_fallback_on_empty() {
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AXE, Q1_IT_SUPER_SHOTGUN};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        // Fire the last shell, then the next pull drops to the axe.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_ammo.shells = 1.0;
+            behaviors.borrow_mut().player_state.currentammo = 1.0;
+        }
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        live_advance(&mut world, 0.6);
+        let sounds_before = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.sounds.len()
+        };
+        live_fire(&mut world, 1, 0);
+        {
+            // The idle path drops to the axe first, so the held trigger
+            // swings it (`W_CheckNoAmmo` always fires the axe).
+            use super::super::simulation::native_q1_weapons::Q1PlayerAttack;
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_AXE, "empty drops to best");
+            assert_eq!(borrowed.player_state.currentammo, 0.0);
+            assert_eq!(borrowed.sounds.len(), sounds_before + 1);
+            assert_eq!(borrowed.sounds.last().expect("swing").sample, "weapons/ax1.wav");
+            assert!(matches!(borrowed.player_state.attack, Q1PlayerAttack::AxeSwing { .. }));
+        }
+        // The idle path downgrades a drained held weapon without a pull.
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 0.0, 0.0, 0.0, 0.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_state.weapon = Q1_IT_SUPER_SHOTGUN;
+            borrowed.player_state.currentammo = 0.0;
+        }
+        live_advance(&mut world, 0.6);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().player_state.weapon, Q1_IT_AXE, "idle downgrades");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0167_aim_bends_within_cone() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 200.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        // Ten degrees high still wounds: the cone bends onto the dog.
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -10.0);
+        live_fire(&mut world, 1, 0);
+        assert!(
+            live_dog_health(&world, &dogs[0]) < 25.0,
+            "aim bends 10 degrees onto the dog"
+        );
+        // Thirty degrees high is past the cone: a clean miss.
+        live_advance(&mut world, 0.6);
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -30.0);
+        let before = live_dog_health(&world, &dogs[1]);
+        live_place_dog_before_player(&mut world, &dogs[1], 200.0);
+        let center = live_volume_center(&world, &dogs[1]);
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -30.0);
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[1]), before, "past-cone shots miss");
+    }
+
+    /// Count flashed `TE_EXPLOSION` temp entities.
+    fn live_explosions(world: &PlayWorld) -> usize {
+        use super::super::simulation::native_q1_weapons::Q1TempEnt;
+        world
+            .q1_behaviors()
+            .expect("Q1 behaviors")
+            .borrow()
+            .temp_ents
+            .iter()
+            .filter(|ent| matches!(ent, Q1TempEnt::Explosion { .. }))
+            .count()
+    }
+
+    /// Swim the player to the first waist-deep retail water found on a
+    /// coarse e1m1 grid (the discharge proof needs real map water, not a
+    /// scripted level). Leaves the player floating there; no movement
+    /// step runs, so gravity never pulls them out.
+    fn live_move_player_to_water(world: &mut PlayWorld) -> qa_core::math::Vec3 {
+        use super::super::simulation::native_q1_weapons::q1_sample_water_level;
+        use crate::bootstrap::play::PlayerClip;
+        let player = world.player_actor().cloned().expect("player");
+        let mut z = -320.0;
+        while z <= 400.0 {
+            let mut x = -1600.0;
+            while x <= 1600.0 {
+                let mut y = -1600.0;
+                while y <= 1600.0 {
+                    let point = vec3(x, y, z);
+                    live_place_player(world, point);
+                    let PlayerClip::Q1(scene) = world.clip.as_ref().expect("Q1 clip") else {
+                        panic!("live Q1 world clips on a Q1 scene");
+                    };
+                    let level = q1_sample_water_level(scene, world.server().simulation(), &player);
+                    if level > 1 {
+                        return point;
+                    }
+                    y += 160.0;
+                }
+                x += 160.0;
+            }
+            z += 80.0;
+        }
+        panic!("retail e1m1 has no waist-deep water on the scan grid");
+    }
+
+    /// Hold the attack for `ticks` 60 Hz frames (the nail burst only
+    /// keeps firing while the trigger stays down).
+    fn live_hold_attack(world: &mut PlayWorld, ticks: u32) {
+        for _ in 0..ticks {
+            world
+                .server_mut()
+                .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
+                .unwrap();
+            let command = live_weapon_command(1, 0);
+            world.step_weapons(Some(&command));
+            world.step_monsters();
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0171_nailgun_bursts_nails() {
+        use super::super::simulation::native_q1_weapons::{Q1MissileKind, Q1PlayerAttack, Q1TempEnt, Q1_IT_NAILGUN};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_NAILGUN, 25.0, 10.0, 0.0, 0.0);
+        live_fire(&mut world, 0, 4);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.player_state.currentammo, 10.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_nail.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.nails, 9.0, "one nail per shot");
+            assert_eq!(borrowed.player_state.currentammo, 9.0);
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.2);
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::Nail { .. }),
+                "first shot arms the burst"
+            );
+            assert_eq!(borrowed.player_state.nail_side, -4.0, "barrels alternate 4/-4");
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/rocket1i.wav" && sound.channel == 1),
+                "nailgun rasps on CHAN_WEAPON"
+            );
+            assert_eq!(borrowed.missiles.values().count(), 1);
+            assert!(
+                borrowed
+                    .missiles
+                    .values()
+                    .all(|missile| missile.kind == Q1MissileKind::Spike),
+                "plain nailgun launches spikes"
+            );
+        }
+        // Three nails in 17 held frames (t=0, 0.1, 0.2); each flies 56
+        // units home well before the next think.
+        live_hold_attack(&mut world, 17);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.nails, 7.0, "three nails spent");
+            assert_eq!(borrowed.player_state.nail_side, -4.0, "third shot flips back");
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::Nail { .. }),
+                "held trigger keeps the burst armed"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Blood { count: 9, .. })),
+                "spike wounds spray 9-blood"
+            );
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), -2.0, "three 9-damage nails");
+        // Release retires the burst (`player_run`).
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_state.attack, Q1PlayerAttack::None);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0174_super_nailgun_spends_two_then_one() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1PlayerAttack, Q1TempEnt, Q1_IT_SHOTGUN, Q1_IT_SUPER_NAILGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_SUPER_NAILGUN, 25.0, 3.0, 0.0, 0.0);
+        live_fire(&mut world, 0, 5);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SUPER_NAILGUN);
+            assert_eq!(borrowed.player_state.currentammo, 3.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_nail2.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 1, 0);
+        // First shot spends two nails on an 18-damage super spike (5
+        // frames: the spike lands, the 0.1 s think has not fired yet).
+        live_hold_attack(&mut world, 5);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.nails, 1.0, "super spike spends two");
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/spike2.wav" && sound.channel == 1),
+                "super nailgun hums on CHAN_WEAPON"
+            );
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), 7.0, "one 18-damage spike");
+        // One nail left fires the plain nailgun's single spike instead;
+        // the following dry think downgrades while still holding.
+        live_hold_attack(&mut world, 8);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.nails, 0.0, "last nail fires plain");
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/rocket1i.wav" && sound.channel == 1),
+                "fallback shot rasps like the nailgun"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Blood { count: 18, .. })),
+                "super spike sprays 18-blood"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Blood { count: 9, .. })),
+                "plain fallback sprays 9-blood"
+            );
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), -2.0, "18 + 9 kills the dog");
+        // Still holding: the dry think downgrades to the shotgun (stock
+        // keeps dry-clicking in the nail anim until release).
+        for _ in 0..12 {
+            let weapon = world.q1_behaviors().expect("Q1 behaviors").borrow().player_state.weapon;
+            if weapon == Q1_IT_SHOTGUN {
+                break;
+            }
+            live_hold_attack(&mut world, 1);
+        }
+        assert_eq!(
+            world.q1_behaviors().expect("Q1 behaviors").borrow().player_state.weapon,
+            Q1_IT_SHOTGUN,
+            "dry burst falls back to best"
+        );
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_state.attack, Q1PlayerAttack::None);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0170_grenade_detonates_on_contact_and_fuse() {
+        use super::super::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt, Q1_IT_GRENADE_LAUNCHER};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_GRENADE_LAUNCHER, 25.0, 0.0, 2.0, 0.0);
+        live_fire(&mut world, 0, 6);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_GRENADE_LAUNCHER);
+            assert_eq!(borrowed.player_state.currentammo, 2.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_rock.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.rockets, 1.0, "one rocket per grenade");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.6);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/grenade.wav" && sound.channel == 1),
+                "launcher thumps on CHAN_WEAPON"
+            );
+            assert_eq!(borrowed.missiles.values().count(), 1);
+            let missile = borrowed.missiles.values().next().expect("grenade record");
+            assert_eq!(missile.kind, Q1MissileKind::Grenade);
+            assert_eq!(missile.fuse_at, Some(fired_at + 2.5), "2.5 s fuse");
+        }
+        // Contact with the dog detonates long before the fuse: ~0.1 s
+        // of flight, then the 120-radius blast.
+        for _ in 0..12 {
+            live_tick(&mut world);
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+                "contact detonates the grenade"
+            );
+            assert_eq!(borrowed.missiles.values().count(), 0, "blast retires the grenade");
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        assert!(live_dog_health(&world, &dogs[0]) < 0.0, "radius blast kills the dog");
+        let player_health = live_player_health(&world);
+        assert!(
+            player_health > 0.0 && player_health < 100.0,
+            "the attacker takes half falloff, got {player_health}"
+        );
+        // A lobbed grenade that touches nothing still pops on its fuse.
+        live_advance(&mut world, 0.7);
+        live_pitch(&mut world, -60.0);
+        let lobbed_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        assert_eq!(
+            world.q1_behaviors().expect("Q1 behaviors").borrow().player_ammo.rockets,
+            0.0,
+            "second grenade spends the last rocket"
+        );
+        let player = world.player_actor().cloned().expect("player");
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        live_place_player(&mut world, vec3(body.origin.x + 300.0, body.origin.y, body.origin.z));
+        assert_eq!(live_explosions(&world), 1);
+        let to_go = lobbed_at + 2.4 - live_now(&world);
+        live_advance(&mut world, to_go.max(0.0));
+        assert_eq!(live_explosions(&world), 1, "no early detonation before the fuse");
+        live_advance(&mut world, 0.3);
+        assert_eq!(live_explosions(&world), 2, "the fuse pops at 2.5 s");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().missiles.values().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0172_rocket_kills_dog() {
+        use super::super::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt, Q1_IT_ROCKET_LAUNCHER};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_ROCKET_LAUNCHER, 25.0, 0.0, 1.0, 0.0);
+        live_fire(&mut world, 0, 7);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_ROCKET_LAUNCHER);
+            assert_eq!(borrowed.player_state.currentammo, 1.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_rock2.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.rockets, 0.0, "one rocket per shot");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.8);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/sgun1.wav" && sound.channel == 1),
+                "launcher whooshes on CHAN_WEAPON"
+            );
+            assert_eq!(borrowed.missiles.values().count(), 1);
+            let missile = borrowed.missiles.values().next().expect("rocket record");
+            assert_eq!(missile.kind, Q1MissileKind::Rocket);
+            assert_eq!(missile.remove_at, fired_at + 5.0, "rockets live 5 s");
+        }
+        for _ in 0..12 {
+            live_tick(&mut world);
+        }
+        // Direct 100-120 excludes the victim from the radius falloff, so
+        // the dog takes exactly the direct roll: 25 - [100, 120].
+        let health = live_dog_health(&world, &dogs[0]);
+        assert!(
+            (-95.0..=-75.0).contains(&health),
+            "direct 100-120 kills the dog, got {health}"
+        );
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+                "impact flashes TE_EXPLOSION"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/r_exp3.wav" && sound.channel == 0),
+                "impact thumps on CHAN_AUTO"
+            );
+            assert_eq!(borrowed.missiles.values().count(), 0, "impact retires the rocket");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0176_lightning_kills_dog() {
+        use super::super::simulation::native_q1_weapons::{Q1PlayerAttack, Q1TempEnt, Q1_IT_LIGHTNING};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_LIGHTNING, 25.0, 0.0, 0.0, 5.0);
+        live_fire(&mut world, 0, 8);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert_eq!(borrowed.player_state.currentammo, 5.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_light.mdl");
+        }
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.cells, 4.0, "one cell per shot");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.1);
+            assert_eq!(borrowed.player_state.t_width, fired_at + 0.6, "impact throttled");
+            assert!(
+                matches!(borrowed.player_state.attack, Q1PlayerAttack::Lightning { .. }),
+                "first shot arms the burst"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lstart.wav" && sound.channel == 0),
+                "generator whines on CHAN_AUTO"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lhit.wav" && sound.channel == 1),
+                "impact cracks on CHAN_WEAPON"
+            );
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&player).expect("player body");
+            let org = vec3(body.origin.x, body.origin.y, body.origin.z + 16.0);
+            assert!(
+                borrowed.temp_ents.iter().any(|ent| matches!(
+                    ent,
+                    Q1TempEnt::Lightning { entity, start, .. }
+                    if entity == &player && start == &org
+                )),
+                "TE_LIGHTNING2 leaves the muzzle"
+            );
+        }
+        // Exactly one 30-damage wound: the three traces dedup on the dog.
+        assert_eq!(live_dog_health(&world, &dogs[0]), -5.0);
+        // A second shot inside the throttle burns a cell but stays quiet.
+        live_advance(&mut world, 0.2);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.cells, 3.0);
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/lhit.wav")
+                    .count(),
+                1,
+                "lhit throttles for 0.6 s"
+            );
+        }
+        live_advance(&mut world, 0.5);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/lhit.wav")
+                    .count(),
+                2,
+                "lhit returns after the throttle"
+            );
+        }
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_state.attack, Q1PlayerAttack::None);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0177_thunderbolt_discharges_underwater() {
+        use super::super::simulation::native_q1_weapons::{Q1TempEnt, Q1_IT_LIGHTNING};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_LIGHTNING, 25.0, 0.0, 0.0, 2.0);
+        live_move_player_to_water(&mut world);
+        live_fire(&mut world, 0, 8);
+        assert_eq!(
+            world.q1_behaviors().expect("Q1 behaviors").borrow().player_state.weapon,
+            Q1_IT_LIGHTNING
+        );
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 40.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.player_state.water_level > 1,
+                "the proof fires from real map water"
+            );
+            assert_eq!(borrowed.player_ammo.cells, 0.0, "discharge burns every cell");
+            assert!(
+                !borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Lightning { .. })),
+                "discharge shows no beam"
+            );
+            assert!(
+                !borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+                "discharge shows no explosion"
+            );
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/lstart.wav" && sound.channel == 0),
+                "entry still whines (stock plays it outside the fire)"
+            );
+            assert!(
+                !borrowed.sounds.iter().any(|sound| sound.sample == "weapons/lhit.wav"),
+                "discharge cracks nothing"
+            );
+            assert_eq!(borrowed.killed_monsters, 1, "70-radius blast kills the dog");
+        }
+        assert!(live_dog_health(&world, &dogs[0]) < 0.0);
+        // The firer takes half falloff at the blast center and lives: 2
+        // cells deal (70 - ~4) / 2.
+        let player_health = live_player_health(&world);
+        assert!(
+            player_health > 0.0 && player_health < 100.0,
+            "discharge splashes the firer, got {player_health}"
+        );
     }
 }

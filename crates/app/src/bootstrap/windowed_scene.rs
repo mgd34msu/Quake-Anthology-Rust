@@ -371,6 +371,15 @@ impl PlayPresentation {
         }
         Ok((view, image_operations))
     }
+
+    /// Release every resident world image: close the shared image
+    /// registry (world surfaces plus model skins) and drain the queued
+    /// releases. A world swap must apply these to the backend before
+    /// the next world uploads, since ordinals restart at zero.
+    pub fn release_images(&mut self) -> Vec<ImageResourceOperation> {
+        self.scene.shaders_mut().textures_mut().images_mut().close();
+        self.scene.drain_image_operations()
+    }
 }
 
 /// Parse a space-separated triple into a vector.
@@ -479,6 +488,28 @@ pub fn select_spawn(records: &[Vec<(String, String)>], kind: BspKind) -> Option<
         ));
     }
     best.map(|(_, _, spawn)| spawn)
+}
+
+/// Select the Q1 player spawn: stock `SelectSpawnPoint` (`client.qc:454`):
+/// a flagged run (any `serverflags` bit) returns through
+/// `info_player_start2` when one parses, otherwise the generic pick.
+/// Deathmatch/coop last-spawn cycling lands with the spawn-rotation slice.
+pub fn select_q1_spawn(records: &[Vec<(String, String)>], serverflags: i32) -> Option<SpawnPoint> {
+    if serverflags != 0 {
+        for record in records {
+            if record_get(record, "classname") != Some("info_player_start2") {
+                continue;
+            }
+            let Some(feet) = record_get(record, "origin").and_then(parse_triple) else {
+                continue;
+            };
+            return Some(SpawnPoint {
+                origin: vec3(feet.x, feet.y, feet.z + eye_height(BspKind::Q1)),
+                angles: record_angles(record),
+            });
+        }
+    }
+    select_spawn(records, BspKind::Q1)
 }
 
 /// Digest model bytes for the scene-entity resource identity.
@@ -865,6 +896,35 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn q1_spawn_prefers_start2_when_flagged() {
+        let records = vec![
+            record(&[("classname", "worldspawn")]),
+            record(&[
+                ("classname", "info_player_start"),
+                ("origin", "544 288 32"),
+                ("angle", "90"),
+            ]),
+            record(&[
+                ("classname", "info_player_start2"),
+                ("origin", "544 1536 32"),
+                ("angle", "90"),
+            ]),
+        ];
+        let spawn = select_q1_spawn(&records, 0).expect("spawn");
+        assert_eq!(spawn.origin, vec3(544.0, 288.0, 54.0));
+        let spawn = select_q1_spawn(&records, 1).expect("spawn");
+        assert_eq!(spawn.origin, vec3(544.0, 1536.0, 54.0));
+        assert_eq!(spawn.angles, vec3(0.0, 90.0, 0.0));
+        // Flagged without a start2 falls back to the generic pick.
+        let records = vec![
+            record(&[("classname", "worldspawn")]),
+            record(&[("classname", "info_player_start"), ("origin", "1 2 3")]),
+        ];
+        let spawn = select_q1_spawn(&records, 8).expect("spawn");
+        assert_eq!(spawn.origin, vec3(1.0, 2.0, 25.0));
     }
 
     #[test]

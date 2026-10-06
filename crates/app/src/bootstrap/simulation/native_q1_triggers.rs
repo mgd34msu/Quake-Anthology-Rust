@@ -3,12 +3,11 @@
 //! Stock `use`/`touch`/`think` gamecode for the trigger family —
 //! `trigger_multiple`, `trigger_once`, `trigger_secret`, `trigger_relay`,
 //! `trigger_counter`, `trigger_hurt`, `trigger_push`, `trigger_setskill`,
-//! `trigger_onlyregistered`, `trigger_teleport` — plus `func_button`,
-//! targeted `light` entities, and `info_teleport_destination` records,
+//! `trigger_onlyregistered`, `trigger_teleport`, `trigger_changelevel` —
+//! plus `func_button`, targeted `light` entities,
+//! `info_teleport_destination` records, and `info_intermission` cameras,
 //! all driven from [`Q1NativeBehaviors`] through the native
-//! touch/think/mover hooks. Monster jump pads wait for monsters;
-//! `trigger_changelevel` waits for the app-level map transition; those
-//! stay generic inert spawns until then.
+//! touch/think/mover hooks. Monster jump pads wait for monsters.
 //!
 //! qsrc: `progs106/triggers.qc` (multi 16-166, relay 179, secret 196,
 //! counter 222-270, teleport 279-470, setskill 475-494, onlyregistered
@@ -16,7 +15,9 @@
 //! done 16, return 21, blocked 31, fire 36, use 48, touch 54, killed 62,
 //! `func_button` 86), `progs106/subs.qc:32` (`InitTrigger`),
 //! `progs106/subs.qc:210` (`SUB_UseTargets`), `progs106/misc.qc:19-57`
-//! (light use), `WinQuake/pr_edict.c:693` (`ED_NewString` escapes),
+//! (light use), `progs106/client.qc:253-336` (changelevel touch,
+//! `execute_changelevel`, `FindIntermission`, `GotoNextMap`),
+//! `WinQuake/pr_edict.c:693` (`ED_NewString` escapes),
 //! `WinQuake/common.c:1021` (registered `gfx/pop.lmp` check).
 //!
 //! Skeleton scope notes: trigger/talk/button/teleport noises have no sim
@@ -43,7 +44,7 @@ use qa_world::WorldError;
 
 use super::native_q1_spawns::{
     q1_can_take_damage, q1_door_fire, q1_field_or, q1_health_of, q1_model_index, q1_movedir, q1_remove,
-    Q1NativeBehaviors,
+    Q1IntermissionSpot, Q1IntermissionStats, Q1NativeBehaviors,
 };
 
 /// `trigger_multiple` NOTOUCH spawnflag (`triggers.qc:13`): fire only via
@@ -57,6 +58,9 @@ const TRIGGER_NOMESSAGE: i32 = 1;
 const TRIGGER_PUSH_ONCE: i32 = 1;
 /// `trigger_teleport` PLAYER_ONLY spawnflag (`triggers.qc:279`).
 const TELEPORT_PLAYER_ONLY: i32 = 1;
+/// `trigger_changelevel` NO_INTERMISSION spawnflag (`client.qc:327`):
+/// travel at once in single player, skipping the intermission.
+const CHANGELEVEL_NO_INTERMISSION: i32 = 1;
 /// Targeted-light START_OFF spawnflag (`misc.qc:19`): spawn dark.
 const LIGHT_START_OFF: i32 = 1;
 /// Toggle-light style floor (`misc.qc:49`): only `style >= 32` arms `use`.
@@ -284,6 +288,13 @@ pub enum Q1TriggerKind {
         /// Teleported owner, immune to its own death volume.
         owner: ActorId,
     },
+    /// `trigger_changelevel` (`client.qc:327-336`): the level exit.
+    Changelevel {
+        /// Destination map stem from the `map` key (`e1m2`).
+        map: String,
+        /// NO_INTERMISSION spawnflag: travel at once in single player.
+        no_intermission: bool,
+    },
 }
 
 /// Live Q1 trigger gamecode state (the QC fields the touch/use/think
@@ -343,6 +354,9 @@ pub enum Q1ThinkKind {
         /// Pickup owner whose health rots.
         owner: ActorId,
     },
+    /// `execute_changelevel` (`client.qc:253`): enter the intermission
+    /// 0.1s after the exit touch.
+    ExecuteChangelevel,
 }
 
 /// One scheduled think with its master-clock due instant.
@@ -412,12 +426,10 @@ pub struct Q1TeleportDestination {
     pub mangle: Vec3,
 }
 
-/// Register the native Q1 trigger, button, use-only, and inert-change
-/// spawn functions. Brush triggers and buttons spawn bodies at the map
-/// origin for [`build_q1_trigger`] and [`build_q1_button`] to size;
-/// relays, counters, and change triggers spawn bodiless (relay/counter
-/// are use-only points, and change triggers wait for the app-level map
-/// transition).
+/// Register the native Q1 trigger, button, and use-only spawn
+/// functions. Brush triggers and buttons spawn bodies at the map origin
+/// for [`build_q1_trigger`] and [`build_q1_button`] to size; relays and
+/// counters spawn bodiless (use-only points).
 pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry) {
     use qa_world::spawn::SpawnRequest;
     for classname in [
@@ -429,6 +441,7 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
         "trigger_setskill",
         "trigger_onlyregistered",
         "trigger_teleport",
+        "trigger_changelevel",
         "func_button",
     ] {
         let definition = format!("q1:{classname}");
@@ -444,12 +457,7 @@ pub fn register_q1_trigger_spawns(registry: &mut qa_world::spawn::SpawnRegistry)
             }),
         );
     }
-    for classname in [
-        "trigger_relay",
-        "trigger_counter",
-        "trigger_changelevel",
-        "info_teleport_destination",
-    ] {
+    for classname in ["trigger_relay", "trigger_counter", "info_teleport_destination"] {
         let definition = format!("q1:{classname}");
         registry.register(
             classname,
@@ -479,6 +487,7 @@ pub fn q1_is_brush_trigger(classname: &str) -> bool {
             | "trigger_setskill"
             | "trigger_onlyregistered"
             | "trigger_teleport"
+            | "trigger_changelevel"
     )
 }
 
@@ -682,6 +691,28 @@ pub fn build_q1_trigger<L: ServerLogic>(
             );
             server.mark_trigger(actor.id())?;
         }
+        "trigger_changelevel" => {
+            // Stock errors the load without a `map` key
+            // (`trigger_changelevel`, `client.qc:330-335`); the loader
+            // skips the record instead of aborting the map.
+            let Some(map) = non_empty(fields.extra.get("map").cloned()) else {
+                return Err(WorldError::BadSpawnFields(
+                    "trigger_changelevel without map".to_string(),
+                ));
+            };
+            behaviors.triggers.insert(
+                actor.id(),
+                Q1Trigger {
+                    kind: Q1TriggerKind::Changelevel {
+                        map,
+                        no_intermission: fields.spawnflags & CHANGELEVEL_NO_INTERMISSION != 0,
+                    },
+                    source,
+                    noise: None,
+                },
+            );
+            server.mark_trigger(actor.id())?;
+        }
         other => {
             return Err(WorldError::BadSpawnFields(format!("not a brush trigger: {other}")));
         }
@@ -872,6 +903,44 @@ pub fn q1_note_teleport_destination(
     Ok(())
 }
 
+/// Parse one space-separated `pitch roll yaw` triple (the
+/// `info_intermission` `mangle` key, `client.qc:23-28`).
+fn q1_parse_triple(text: &str) -> Option<Vec3> {
+    let mut parts = text.split_whitespace();
+    let (Some(x), Some(y), Some(z), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    let (Ok(x), Ok(y), Ok(z)) = (x.parse::<f32>(), y.parse::<f32>(), z.parse::<f32>()) else {
+        return None;
+    };
+    Some(vec3(x, y, z))
+}
+
+/// Record an `info_intermission` camera (`client.qc:23-28`): the spawn
+/// origin plus the `mangle` arrival facing, in spawn order. A missing
+/// or unparseable `mangle` reads as zero facing (stock leaves the
+/// unset vector at zero).
+pub fn q1_note_intermission(behaviors: &mut Q1NativeBehaviors, fields: &SpawnFields) {
+    let mangle = fields
+        .extra
+        .get("mangle")
+        .and_then(|text| q1_parse_triple(text))
+        .unwrap_or(vec3(0.0, 0.0, 0.0));
+    behaviors.intermission_spots.push(Q1IntermissionSpot {
+        origin: fields.origin,
+        mangle,
+    });
+}
+
+/// Record an `info_player_start`/`testplayerstart` origin (`client.qc:123-131`):
+/// the `FindIntermission` fallback chain, in spawn order.
+pub fn q1_note_start_spot(behaviors: &mut Q1NativeBehaviors, fields: &SpawnFields) {
+    behaviors.start_spots.push(Q1IntermissionSpot {
+        origin: fields.origin,
+        mangle: fields.angles,
+    });
+}
+
 /// Record the worldspawn `worldtype` (0 medieval, 1 runic, 2 base):
 /// key-denial messages name the key per world (`door_touch`,
 /// `doors.qc:210-246`).
@@ -977,8 +1046,8 @@ pub fn q1_use_targets(
 /// `triggers.qc:222`), teleports (`teleport_use`, `triggers.qc:436`),
 /// toggle lights (`light_use`, `misc.qc:21`), and monsters
 /// (`monster_use`, `monsters.qc:21`). Anything else is `SUB_Null`,
-/// including hurt/push/setskill/gate/teledeath triggers (no `use`
-/// function) and teleport destinations.
+/// including hurt/push/setskill/gate/teledeath/changelevel triggers
+/// (no `use` function) and teleport destinations.
 pub fn q1_fire_use(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1050,7 +1119,8 @@ pub fn q1_fire_use(
             | Q1TriggerKind::Push { .. }
             | Q1TriggerKind::SetSkill
             | Q1TriggerKind::OnlyRegistered { .. }
-            | Q1TriggerKind::Teledeath { .. } => {}
+            | Q1TriggerKind::Teledeath { .. }
+            | Q1TriggerKind::Changelevel { .. } => {}
         }
         return;
     }
@@ -1208,9 +1278,10 @@ fn q1_counter_use(
 /// gate throttles 2s (`trigger_onlyregistered_touch`,
 /// `triggers.qc:502`), teleports move living solids to their
 /// destination (`teleport_touch`, `triggers.qc:368`), teledeaths
-/// telefrag non-owners (`tdeath_touch`, `triggers.qc:323`), and buttons
-/// gate on the player (`button_touch`, `buttons.qc:54`). Relays and
-/// counters are use-only and never marked.
+/// telefrag non-owners (`tdeath_touch`, `triggers.qc:323`), exits run
+/// the changelevel touch (`changelevel_touch`, `client.qc:290`), and
+/// buttons gate on the player (`button_touch`, `buttons.qc:54`).
+/// Relays and counters are use-only and never marked.
 pub fn q1_trigger_touch(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1347,6 +1418,16 @@ pub fn q1_trigger_touch(
         }
         Q1TriggerKind::Teleport { .. } => {
             q1_teleport_touch(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                &contact.trigger,
+                &contact.other,
+            );
+        }
+        Q1TriggerKind::Changelevel { .. } => {
+            q1_changelevel_touch(
                 behaviors,
                 simulation,
                 movers,
@@ -1548,11 +1629,240 @@ fn q1_spawn_teledeath(
     behaviors.schedule_think(death.id(), Q1ThinkKind::Remove, now + 0.2);
 }
 
+/// Run `changelevel_touch` (`client.qc:290-326`): players only; the
+/// `noexit` kill; `nextmap` plus `SUB_UseTargets` with the toucher as
+/// activator; then NO_INTERMISSION single-player exits travel at once
+/// while the rest null their touch and think `execute_changelevel`
+/// 0.1s later (stock cannot move people mid-touch, `client.qc:320`).
+///
+/// The coop/deathmatch `bprint` needs broadcast netnames, so it waits
+/// for the net slice with the other broadcast prints.
+fn q1_changelevel_touch(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+    other: &ActorId,
+) {
+    if Some(other) != behaviors.player.as_ref() {
+        return;
+    }
+    let Some(trigger) = behaviors.triggers.get(actor).cloned() else {
+        return;
+    };
+    let Q1TriggerKind::Changelevel { map, no_intermission } = &trigger.kind else {
+        return;
+    };
+    if behaviors.noexit == 1 || (behaviors.noexit == 2 && behaviors.mapname != "start") {
+        super::native_q1_monsters::q1_t_damage(
+            behaviors,
+            simulation,
+            movers,
+            triggers,
+            other,
+            Some(actor),
+            Some(actor),
+            50_000.0,
+        );
+        return;
+    }
+    behaviors.nextmap = Some(map.clone());
+    q1_use_targets(behaviors, simulation, movers, triggers, &trigger.source, Some(other));
+    if *no_intermission && !behaviors.deathmatch {
+        q1_goto_next_map(behaviors);
+        return;
+    }
+    triggers.unmark(actor);
+    let now = simulation.frame().time.as_seconds_f64();
+    behaviors.schedule_think(actor, Q1ThinkKind::ExecuteChangelevel, now + 0.1);
+}
+
+/// Run `GotoNextMap` (`client.qc:137-144`): `samelevel` repeats the
+/// current map, otherwise the touched exit's `nextmap` travels. The
+/// `changelevel_issued` once-guard (`pr_cmds.c:1656`) drops repeats,
+/// and a missing `nextmap` (stock would pass a null string to the
+/// builtin) travels nowhere.
+pub fn q1_goto_next_map(behaviors: &mut Q1NativeBehaviors) {
+    if behaviors.changelevel_issued {
+        return;
+    }
+    behaviors.changelevel_issued = true;
+    if behaviors.samelevel {
+        behaviors.pending_travel = Some(behaviors.mapname.clone());
+    } else {
+        behaviors.pending_travel = behaviors.nextmap.clone();
+    }
+}
+
+/// Run `FindIntermission` (`client.qc:105-133`): a random
+/// `info_intermission` camera (stock `random() * 4` cycled over the
+/// spawn-order list with wraparound), else the first
+/// `info_player_start`, else the first `testplayerstart`. Stock
+/// `objerror`s with no spot at all; the loader records every start,
+/// so a spotless map degrades to no camera move instead of crashing
+/// the server (the dangling-teleport precedent).
+fn q1_find_intermission(behaviors: &mut Q1NativeBehaviors) -> Option<Q1IntermissionSpot> {
+    if !behaviors.intermission_spots.is_empty() {
+        let mut cyc = f64::from(super::native_q1_monsters::q1_monster_random(behaviors)) * 4.0;
+        let mut at = 0;
+        while cyc > 1.0 {
+            at += 1;
+            if at >= behaviors.intermission_spots.len() {
+                at = 0;
+            }
+            cyc -= 1.0;
+        }
+        return behaviors.intermission_spots.get(at).cloned();
+    }
+    behaviors.start_spots.first().cloned()
+}
+
+/// Episode-1 finale, shareware text (`client.qc:172`).
+const FINALE_E1_SHAREWARE: &str = "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!";
+/// Episode-1 finale, registered text (`client.qc:177`).
+const FINALE_E1_REGISTERED: &str = "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!";
+/// Episode-2 finale (`client.qc:188`).
+const FINALE_E2: &str = "The Rune of Black Magic throbs evilly in\nyour hand and whispers dark thoughts\ninto your brain. You learn the inmost\nlore of the Hell-Mother; Shub-Niggurath!\nYou now know that she is behind all the\nterrible plotting which has led to so\nmuch death and horror. But she is not\ninviolate! Armed with this Rune, you\nrealize that once all four Runes are\ncombined, the gate to Shub-Niggurath's\nPit will open, and you can face the\nWitch-Goddess herself in her frightful\notherworld cathedral.";
+/// Episode-3 finale (`client.qc:198`).
+const FINALE_E3: &str = "The charred viscera of diabolic horrors\nbubble viscously as you seize the Rune\nof Hell Magic. Its heat scorches your\nhand, and its terrible secrets blight\nyour mind. Gathering the shreds of your\ncourage, you shake the devil's shackles\nfrom your soul, and become ever more\nhard and determined to destroy the\nhideous creatures whose mere existence\nthreatens the souls and psyches of all\nthe population of Earth.";
+/// Episode-4 finale (`client.qc:208`).
+const FINALE_E4: &str = "Despite the awful might of the Elder\nWorld, you have achieved the Rune of\nElder Magic, capstone of all types of\narcane wisdom. Beyond good and evil,\nbeyond life and death, the Rune\npulsates, heavy with import. Patient and\npotent, the Elder Being Shub-Niggurath\nweaves her dire plans to clear off all\nlife from the Earth, and bring her own\nfoul offspring to our world! For all the\ndwellers in these nightmare dimensions\nare her descendants! Once all Runes of\nmagic power are united, the energy\nbehind them will blast open the Gateway\nto Shub-Niggurath, and you can travel\nthere to foil the Hell-Mother's plots\nin person.";
+/// All-four-runes finale (`client.qc:226`).
+const FINALE_ALL_RUNES: &str = "Now, you have all four Runes. You sense\ntremendous invisible forces moving to\nunseal ancient barriers. Shub-Niggurath\nhad hoped to use the Runes Herself to\nclear off the Earth, but now instead,\nyou will use them to enter her home and\nconfront her as an avatar of avenging\nEarth-life. If you defeat her, you will\nbe remembered forever as the savior of\nthe planet. If she conquers, it will be\nas if you had never been born.";
+
+/// Run `execute_changelevel` (`client.qc:253-288`): enter the
+/// intermission — `running` 1, the 5s deathmatch / 2s single-player
+/// exit gate, the CD track 3 cue, the player frozen at the
+/// intermission camera (view snapped, `takedamage` off, unsolid, zero
+/// velocity), and `SVC_INTERMISSION` for the net slice. The movement
+/// freeze lands in the player step (stock `MOVETYPE_NONE`); the model
+/// hide (`modelindex` 0) rides the presentation slice. A removed exit
+/// (killtarget before the think) runs nothing, like stock.
+fn q1_execute_changelevel(behaviors: &mut Q1NativeBehaviors, simulation: &mut Simulation, actor: &ActorId) {
+    if !behaviors.triggers.contains_key(actor) {
+        return;
+    }
+    let now = simulation.frame().time.as_seconds_f64();
+    behaviors.intermission.running = 1;
+    behaviors.intermission.exit_time_seconds = if behaviors.deathmatch { now + 5.0 } else { now + 2.0 };
+    behaviors.cd_tracks.push((3, 3));
+    let spot = q1_find_intermission(behaviors);
+    behaviors.intermission.spot = spot.clone();
+    let Some(player) = behaviors.player.clone() else {
+        return;
+    };
+    let Some(spot) = spot else {
+        return;
+    };
+    let _ignored = simulation.set_body_origin(&player, spot.origin);
+    let _ignored = simulation.set_body_angles(&player, spot.mangle);
+    let _ignored = simulation.set_body_velocity(&player, vec3(0.0, 0.0, 0.0));
+    let _ignored = simulation.clear_body_ground(&player);
+    if let Some(combat) = simulation.combat_state(&player).cloned() {
+        let _ignored = simulation.set_combat(
+            &player,
+            CombatState {
+                can_take_damage: false,
+                ..combat
+            },
+        );
+    }
+    behaviors.solids.remove(&player);
+    behaviors.player_angles = spot.mangle;
+    behaviors.player_forces.push(Q1PlayerForce {
+        actor: player,
+        origin: Some(spot.origin),
+        angles: Some(spot.mangle),
+        velocity: Some(vec3(0.0, 0.0, 0.0)),
+        teleport_time_seconds: None,
+    });
+}
+
+/// Intermission tally for the HUD slice: level kills, secrets, and the
+/// master-clock level time at the poll.
+#[must_use]
+pub fn q1_intermission_stats(behaviors: &Q1NativeBehaviors, now_seconds: f64) -> Q1IntermissionStats {
+    Q1IntermissionStats {
+        killed_monsters: behaviors.killed_monsters,
+        total_monsters: behaviors.total_monsters,
+        found_secrets: behaviors.found_secrets,
+        total_secrets: behaviors.total_secrets,
+        time_seconds: now_seconds,
+    }
+}
+
+/// Run `IntermissionThink` (`client.qc:242-251`): past the exit gate,
+/// any latched button exits the intermission. Stock runs this from
+/// `PlayerPreThink` every frame so no press falls between think tics
+/// (`client.qc:906`); the frozen player step latches the live buttons
+/// every frame and this poll reads the latch every tick, same outcome.
+pub fn q1_intermission_poll(behaviors: &mut Q1NativeBehaviors, now_seconds: f64) {
+    if behaviors.intermission.running == 0 {
+        return;
+    }
+    if now_seconds < behaviors.intermission.exit_time_seconds {
+        return;
+    }
+    if !behaviors.intermission.buttons {
+        return;
+    }
+    q1_exit_intermission(behaviors, now_seconds);
+}
+
+/// Run `ExitIntermission` (`client.qc:146-240`): deathmatch travels at
+/// once, skipping every text; single player re-arms the gate 1s out,
+/// counts past the episode scroll (`running` 2, CD track 2) and the
+/// shareware sell screen / all-runes scroll (`running` 3), then
+/// travels. Stock calls `GotoNextMap` twice for a plain level end
+/// (`client.qc:213` and `:240`); the issued guard absorbs the second
+/// call, so the double call stays verbatim.
+fn q1_exit_intermission(behaviors: &mut Q1NativeBehaviors, now_seconds: f64) {
+    if behaviors.deathmatch {
+        q1_goto_next_map(behaviors);
+        return;
+    }
+    behaviors.intermission.exit_time_seconds = now_seconds + 1.0;
+    behaviors.intermission.running += 1;
+    if behaviors.intermission.running == 2 {
+        let model = format!("maps/{}.bsp", behaviors.mapname);
+        let finale = match model.as_str() {
+            "maps/e1m7.bsp" => Some(if behaviors.registered {
+                FINALE_E1_REGISTERED
+            } else {
+                FINALE_E1_SHAREWARE
+            }),
+            "maps/e2m6.bsp" => Some(FINALE_E2),
+            "maps/e3m6.bsp" => Some(FINALE_E3),
+            "maps/e4m7.bsp" => Some(FINALE_E4),
+            _ => None,
+        };
+        if let Some(text) = finale {
+            behaviors.cd_tracks.push((2, 3));
+            behaviors.finale_text = Some(text.to_string());
+            return;
+        }
+        q1_goto_next_map(behaviors);
+    }
+    if behaviors.intermission.running == 3 {
+        if !behaviors.registered {
+            behaviors.sell_screen = true;
+            return;
+        }
+        if behaviors.serverflags & 15 == 15 {
+            behaviors.finale_text = Some(FINALE_ALL_RUNES.to_string());
+            return;
+        }
+    }
+    q1_goto_next_map(behaviors);
+}
+
 /// Native think dispatch for Q1 triggers and items: clear last tick's
 /// teleport fogs, then fire due scheduled thinks (removals, multiple
-/// re-arms, hurt re-solidifies, item regens, megahealth rots) and due
-/// delayed uses, each in schedule order. Runs after the mover pass and
-/// before the trigger sweep, so removals apply before touches and fresh
+/// re-arms, hurt re-solidifies, changelevel executes, item regens,
+/// megahealth rots) and due delayed uses, each in schedule order, then
+/// poll the intermission exit. Runs after the mover pass and before
+/// the trigger sweep, so removals apply before touches and fresh
 /// touches queue fresh fogs.
 pub fn q1_trigger_think(
     behaviors: &mut Q1NativeBehaviors,
@@ -1607,6 +1917,9 @@ pub fn q1_trigger_think(
             Q1ThinkKind::HurtOn => {
                 let _ignored = triggers.mark(simulation.registry(), &think.actor);
             }
+            Q1ThinkKind::ExecuteChangelevel => {
+                q1_execute_changelevel(behaviors, simulation, &think.actor);
+            }
         }
     }
     let delayed = std::mem::take(&mut behaviors.delayed_uses);
@@ -1623,6 +1936,7 @@ pub fn q1_trigger_think(
             pending.activator.as_ref(),
         );
     }
+    q1_intermission_poll(behaviors, now);
 }
 
 /// Fire a button (`button_fire`, `buttons.qc:36`): pressed or pressing
@@ -3109,5 +3423,405 @@ mod tests {
         }
         assert!(simulation_actor_gone(&server, &death));
         assert!(!shared.borrow().triggers.contains_key(&death));
+    }
+
+    fn changelevel_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        let mut full = vec![("classname", "trigger_changelevel"), ("model", "*0"), ("map", "e1m2")];
+        full.extend_from_slice(pairs);
+        SpawnFields::parse(&full).unwrap()
+    }
+
+    fn note_spot(behaviors: &mut Q1NativeBehaviors, origin: &str, mangle: &str) {
+        let fields = trigger_fields("info_intermission", &[("origin", origin), ("mangle", mangle)]);
+        super::q1_note_intermission(behaviors, &fields);
+    }
+
+    #[test]
+    fn changelevel_build_requires_a_map() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = trigger_fields("trigger_changelevel", &[("model", "*0")]);
+        let actor = server.spawn_entity(&fields).unwrap();
+        let error = build_q1_trigger(&mut server, &mut behaviors, &actor, &fields, &[trigger_model()]).unwrap_err();
+        assert!(error.to_string().contains("without map"), "missing map fails: {error}");
+        let empty = trigger_fields("trigger_changelevel", &[("model", "*0"), ("map", "")]);
+        let actor = server.spawn_entity(&empty).unwrap();
+        assert!(build_q1_trigger(&mut server, &mut behaviors, &actor, &empty, &[trigger_model()]).is_err());
+    }
+
+    #[test]
+    fn changelevel_touch_sets_nextmap_fires_targets_and_schedules_execute() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        spawn_use_point(
+            &mut server,
+            &mut behaviors,
+            &trigger_fields("trigger_relay", &[("targetname", "r1"), ("message", "exit fired")]),
+        );
+        let exit = spawn_brush_trigger(&mut server, &mut behaviors, &changelevel_fields(&[("target", "r1")]));
+        assert!(server.triggers_mut().is_trigger(exit.id()));
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, exit.id(), player.id());
+        assert_eq!(behaviors.nextmap.as_deref(), Some("e1m2"));
+        assert_eq!(behaviors.centerprints.len(), 1);
+        assert_eq!(behaviors.centerprints[0].text, "exit fired");
+        // Touch nulled, execute scheduled 0.1s out; no travel yet.
+        assert!(!server.triggers_mut().is_trigger(exit.id()));
+        assert_eq!(behaviors.pending_travel, None);
+        assert_eq!(behaviors.thinks.len(), 1);
+        assert!(matches!(behaviors.thinks[0].kind, Q1ThinkKind::ExecuteChangelevel));
+        assert!((behaviors.thinks[0].due_seconds - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn changelevel_execute_freezes_player_at_a_camera_with_sp_exit_gate() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        shared.borrow_mut().mapname = "e1m1".to_string();
+        note_spot(&mut shared.borrow_mut(), "-112 704 56", "20 45 0");
+        note_spot(&mut shared.borrow_mut(), "-208 2736 192", "20 225 0");
+        let exit = spawn_brush_trigger(&mut server, &mut shared.borrow_mut(), &changelevel_fields(&[]));
+        let exit_id = exit.id().clone();
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut shared.borrow_mut(), &player);
+        let player_id = player.id().clone();
+        super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert_eq!(shared.borrow().intermission.running, 0, "touch alone enters nothing");
+        for _ in 0..3 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        let borrowed = shared.borrow();
+        assert_eq!(borrowed.intermission.running, 1);
+        let now = server.simulation().frame().time.as_seconds_f64();
+        assert!((borrowed.intermission.exit_time_seconds - (now + 2.0)).abs() < 0.06);
+        assert_eq!(borrowed.cd_tracks, vec![(3, 3)]);
+        let spot = borrowed.intermission.spot.clone().expect("camera spot");
+        assert!(borrowed.intermission_spots.contains(&spot));
+        let body = server.simulation().body_state(&player_id).expect("player body");
+        assert_eq!(body.origin, spot.origin);
+        assert_eq!(body.angles, spot.mangle);
+        assert_eq!(body.velocity, vec3(0.0, 0.0, 0.0));
+        assert!(!server.simulation().combat_state(&player_id).unwrap().can_take_damage);
+        assert!(!borrowed.solids.contains(&player_id));
+        assert_eq!(borrowed.player_angles, spot.mangle);
+        let force = borrowed.player_forces.last().expect("entry queued a force");
+        assert_eq!(force.actor, player_id);
+        assert_eq!(force.origin, Some(spot.origin));
+        assert_eq!(force.angles, Some(spot.mangle));
+        assert!(server.simulation().body_state(&exit_id).is_some(), "exit stays spawned");
+    }
+
+    #[test]
+    fn changelevel_no_intermission_travels_at_once_in_single_player() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "start".to_string();
+        let exit = spawn_brush_trigger(&mut server, &mut behaviors, &changelevel_fields(&[("spawnflags", "1")]));
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, exit.id(), player.id());
+        assert_eq!(behaviors.nextmap.as_deref(), Some("e1m2"));
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("e1m2"));
+        assert!(behaviors.changelevel_issued);
+        assert_eq!(behaviors.intermission.running, 0);
+        assert!(behaviors.thinks.is_empty(), "no execute think on the direct path");
+        assert!(
+            server.triggers_mut().is_trigger(exit.id()),
+            "stock returns before the touch null"
+        );
+    }
+
+    #[test]
+    fn changelevel_no_intermission_uses_intermission_in_deathmatch() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        shared.borrow_mut().mapname = "e1m1".to_string();
+        shared.borrow_mut().deathmatch = true;
+        note_spot(&mut shared.borrow_mut(), "-112 704 56", "20 45 0");
+        spawn_brush_trigger(
+            &mut server,
+            &mut shared.borrow_mut(),
+            &changelevel_fields(&[("spawnflags", "1")]),
+        );
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut shared.borrow_mut(), &player);
+        super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
+        for _ in 0..4 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        let borrowed = shared.borrow();
+        assert_eq!(borrowed.intermission.running, 1);
+        let now = server.simulation().frame().time.as_seconds_f64();
+        assert!((borrowed.intermission.exit_time_seconds - (now + 5.0)).abs() < 0.06);
+        assert_eq!(borrowed.pending_travel, None);
+    }
+
+    #[test]
+    fn changelevel_ignores_non_players() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        let exit = spawn_brush_trigger(&mut server, &mut behaviors, &changelevel_fields(&[]));
+        let player = spawn_player(&mut server, vec3(0.0, 0.0, 200.0));
+        let other = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        behaviors.set_player(Some(player.id().clone()));
+        touch(&mut server, &mut behaviors, exit.id(), other.id());
+        assert_eq!(behaviors.nextmap, None);
+        assert!(behaviors.thinks.is_empty());
+        assert!(server.triggers_mut().is_trigger(exit.id()));
+    }
+
+    #[test]
+    fn changelevel_noexit_kills_at_the_exit() {
+        for (noexit, mapname, dies) in [
+            (1, "e1m1", true),
+            (1, "start", true),
+            (2, "e1m1", true),
+            (2, "start", false),
+            (0, "e1m1", false),
+        ] {
+            let mut server = test_server();
+            register_all(&mut server);
+            let mut behaviors = Q1NativeBehaviors::new();
+            behaviors.mapname = mapname.to_string();
+            behaviors.noexit = noexit;
+            let exit = spawn_brush_trigger(&mut server, &mut behaviors, &changelevel_fields(&[]));
+            let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+            admit_player(&mut behaviors, &player);
+            touch(&mut server, &mut behaviors, exit.id(), player.id());
+            let health = server
+                .simulation()
+                .combat_state(player.id())
+                .map(|combat| combat.health);
+            if dies {
+                assert_eq!(health, Some(-99.0), "noexit={noexit} on {mapname} kills");
+                assert_eq!(behaviors.nextmap, None);
+            } else {
+                assert_eq!(health, Some(100.0), "noexit={noexit} on {mapname} spares");
+                assert_eq!(behaviors.nextmap.as_deref(), Some("e1m2"));
+            }
+        }
+    }
+
+    #[test]
+    fn goto_next_map_honors_samelevel_and_the_once_guard() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        behaviors.nextmap = Some("e1m2".to_string());
+        super::q1_goto_next_map(&mut behaviors);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("e1m2"));
+        behaviors.nextmap = Some("e1m3".to_string());
+        super::q1_goto_next_map(&mut behaviors);
+        assert_eq!(
+            behaviors.pending_travel.as_deref(),
+            Some("e1m2"),
+            "issued guard drops repeats"
+        );
+        let mut same = Q1NativeBehaviors::new();
+        same.mapname = "e1m1".to_string();
+        same.nextmap = Some("e1m2".to_string());
+        same.samelevel = true;
+        super::q1_goto_next_map(&mut same);
+        assert_eq!(same.pending_travel.as_deref(), Some("e1m1"));
+    }
+
+    #[test]
+    fn find_intermission_falls_back_to_the_first_start() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let shared = Rc::new(RefCell::new(Q1NativeBehaviors::new()));
+        shared.borrow_mut().mapname = "e1m1".to_string();
+        let first = trigger_fields("info_player_start", &[("origin", "480 -352 88"), ("angle", "90")]);
+        super::q1_note_start_spot(&mut shared.borrow_mut(), &first);
+        let second = trigger_fields("testplayerstart", &[("origin", "0 0 64"), ("angle", "0")]);
+        super::q1_note_start_spot(&mut shared.borrow_mut(), &second);
+        spawn_brush_trigger(&mut server, &mut shared.borrow_mut(), &changelevel_fields(&[]));
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut shared.borrow_mut(), &player);
+        let player_id = player.id().clone();
+        super::super::native_q1_spawns::install_q1_native(&mut server, Rc::clone(&shared));
+        for _ in 0..4 {
+            server.tick(SourceTime::Seconds(0.05)).unwrap();
+        }
+        let borrowed = shared.borrow();
+        assert_eq!(borrowed.intermission.running, 1);
+        let spot = borrowed.intermission.spot.clone().expect("fallback spot");
+        assert_eq!(spot.origin, vec3(480.0, -352.0, 88.0));
+        assert_eq!(spot.mangle, vec3(0.0, 90.0, 0.0));
+        assert_eq!(server.simulation().body_state(&player_id).unwrap().origin, spot.origin);
+    }
+
+    #[test]
+    fn intermission_poll_gates_on_time_and_buttons() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        behaviors.nextmap = Some("e1m2".to_string());
+        // Not running: presses do nothing.
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 99.0);
+        assert_eq!(behaviors.pending_travel, None);
+        // Running but gated on time: presses do nothing.
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 10.0;
+        super::q1_intermission_poll(&mut behaviors, 9.9);
+        assert_eq!(behaviors.pending_travel, None);
+        assert_eq!(behaviors.intermission.running, 1);
+        // Past the gate without buttons: nothing.
+        behaviors.intermission.buttons = false;
+        super::q1_intermission_poll(&mut behaviors, 10.0);
+        assert_eq!(behaviors.pending_travel, None);
+        // Past the gate with buttons: plain level ends travel.
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 10.0);
+        assert_eq!(behaviors.intermission.running, 2);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("e1m2"));
+        assert_eq!(behaviors.finale_text, None);
+    }
+
+    #[test]
+    fn intermission_deathmatch_skips_every_text() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.deathmatch = true;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 5.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 5.0);
+        assert_eq!(behaviors.intermission.running, 1, "DM never counts texts");
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+        assert_eq!(behaviors.finale_text, None);
+        assert!(behaviors.cd_tracks.is_empty());
+    }
+
+    #[test]
+    fn intermission_episode_finale_counts_then_travels() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = true;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.intermission.running, 2);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E1_REGISTERED));
+        assert_eq!(behaviors.cd_tracks, vec![(2, 3)]);
+        assert_eq!(behaviors.pending_travel, None, "scroll shows before travel");
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_other_episodes_queue_their_texts() {
+        for (mapname, finale) in [
+            ("e2m6", super::FINALE_E2),
+            ("e3m6", super::FINALE_E3),
+            ("e4m7", super::FINALE_E4),
+        ] {
+            let mut behaviors = Q1NativeBehaviors::new();
+            behaviors.mapname = mapname.to_string();
+            behaviors.nextmap = Some("start".to_string());
+            behaviors.registered = true;
+            behaviors.intermission.running = 1;
+            behaviors.intermission.exit_time_seconds = 2.0;
+            behaviors.intermission.buttons = true;
+            super::q1_intermission_poll(&mut behaviors, 2.0);
+            assert_eq!(behaviors.finale_text.as_deref(), Some(finale), "{mapname} scroll");
+        }
+    }
+
+    #[test]
+    fn intermission_shareware_ends_at_the_sell_screen() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = false;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E1_SHAREWARE));
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert!(behaviors.sell_screen);
+        assert_eq!(behaviors.pending_travel, None, "sell screen shows before travel");
+        super::q1_intermission_poll(&mut behaviors, 4.0);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_all_runes_scrolls_before_travel() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e4m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = true;
+        behaviors.serverflags = 15;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E4));
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_ALL_RUNES));
+        assert_eq!(behaviors.pending_travel, None);
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 4.0);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_stats_mirror_counters_and_clock() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.total_monsters = 12;
+        behaviors.killed_monsters = 7;
+        behaviors.total_secrets = 4;
+        behaviors.found_secrets = 1;
+        let stats = super::q1_intermission_stats(&behaviors, 123.5);
+        assert_eq!(stats.killed_monsters, 7);
+        assert_eq!(stats.total_monsters, 12);
+        assert_eq!(stats.found_secrets, 1);
+        assert_eq!(stats.total_secrets, 4);
+        assert_eq!(stats.time_seconds, 123.5);
+    }
+
+    #[test]
+    fn changelevel_execute_skips_a_removed_exit() {
+        let mut server = test_server();
+        register_all(&mut server);
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        note_spot(&mut behaviors, "-112 704 56", "20 45 0");
+        let exit = spawn_brush_trigger(&mut server, &mut behaviors, &changelevel_fields(&[]));
+        let exit_id = exit.id().clone();
+        let player = spawn_player(&mut server, vec3(32.0, 32.0, 32.0));
+        admit_player(&mut behaviors, &player);
+        touch(&mut server, &mut behaviors, exit.id(), player.id());
+        assert_eq!(behaviors.thinks.len(), 1);
+        {
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            super::super::native_q1_spawns::q1_remove(&mut behaviors, simulation, movers, triggers, &exit_id);
+        }
+        server.tick(SourceTime::Seconds(0.15)).unwrap();
+        {
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            super::q1_trigger_think(&mut behaviors, simulation, movers, triggers);
+        }
+        assert_eq!(behaviors.intermission.running, 0);
+        assert!(behaviors.cd_tracks.is_empty());
     }
 }

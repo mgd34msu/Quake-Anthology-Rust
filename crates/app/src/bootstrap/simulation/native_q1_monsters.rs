@@ -54,6 +54,7 @@ use qa_world::WorldError;
 use super::super::play::{q1_blocked_trace, q1_trace_from_scene};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
+use super::native_q1_weapons::Q1_IT_INVISIBILITY;
 
 /// Stock entity flags (`defs.qc:231-240`).
 pub const Q1_FLAG_FLY: i32 = 1;
@@ -110,9 +111,6 @@ pub const Q1_ATTN_NORM: f32 = 1.0;
 pub const Q1_ATTN_IDLE: f32 = 2.0;
 /// Stock attenuations (`defs.qc:366-369`).
 pub const Q1_ATTN_STATIC: f32 = 3.0;
-
-/// Invisibility item bit (`defs.qc:308`): monsters never acquire its carrier.
-pub const Q1_IT_INVISIBILITY: u32 = 524_288;
 
 /// Stock player eye height above the feet origin (`VIEW_OFS`, 22).
 pub const Q1_VIEW_OFS_Z: f32 = 22.0;
@@ -1537,7 +1535,11 @@ fn q1_visible<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, viewer: &ActorI
 /// Stock `CanDamage` (`combat.qc:18`): push targets trace to their
 /// center (a hit on the target counts); everyone else needs one clear
 /// line to the origin or a corner offset.
-fn q1_can_damage<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, targ: &ActorId, inflictor: &ActorId) -> bool {
+pub(crate) fn q1_can_damage<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    targ: &ActorId,
+    inflictor: &ActorId,
+) -> bool {
     let Some(from) = ctx.server.simulation().body_state(inflictor).map(|body| body.origin) else {
         return false;
     };
@@ -1688,7 +1690,8 @@ fn q1_find_target<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: 
             .behaviors
             .monsters
             .get(&client)
-            .is_some_and(|monster| monster.show_hostile >= now);
+            .is_some_and(|monster| monster.show_hostile >= now)
+            || (Some(&client) == ctx.behaviors.player.as_ref() && ctx.behaviors.player_state.show_hostile >= now);
         if !hostile && !q1_infront(ctx, actor, &client) {
             return false;
         }
@@ -2935,6 +2938,7 @@ mod tests {
     use qa_world::body::BodyState;
     use qa_world::combat::ArmorState;
 
+    use super::super::native_q1_weapons::Q1_IT_INVISIBILITY;
     use super::*;
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
