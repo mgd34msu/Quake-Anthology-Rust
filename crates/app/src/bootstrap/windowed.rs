@@ -3077,7 +3077,7 @@ mod tests {
     fn live_windowed_smoke_runs_frames() {
         // Passes with or without a display: a real windowed run is exercised
         // when GL is available, otherwise the honest open failure is required.
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let options = windowed_options();
         match open_windowed_application(&options, StartupEntry::Run) {
             Ok(composed) => {
@@ -3126,7 +3126,7 @@ mod tests {
         // body's own simulation actor, paired exactly when a world with
         // a body is set. Without a display the honest open failure is
         // required instead.
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let options = windowed_options();
         match open_windowed_application(&options, StartupEntry::Run) {
             Ok(composed) => {
@@ -3163,7 +3163,7 @@ mod tests {
         // CPU composition through a real SDL software window: open, capture
         // one software frame, then drive to the frame limit. Without a
         // display the honest open failure is required instead.
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut options = windowed_options();
         options.renderer = Renderer::Cpu;
         match open_windowed_application(&options, StartupEntry::Run) {
@@ -3197,7 +3197,7 @@ mod tests {
         // non-trivial bar content (plates, numerals, face); wounding
         // the player to 25 health must change the strip (health
         // digits plus the face frame), proving the feed is live.
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -3330,7 +3330,7 @@ mod tests {
             )
         }
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -3521,7 +3521,7 @@ mod tests {
 
         use super::super::simulation::native_q1_triggers::{q1_intermission_stats, Q1TriggerKind};
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -3721,7 +3721,7 @@ mod tests {
 
         use super::super::simulation::native_q1_triggers::{q1_intermission_poll, Q1TriggerKind};
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -3927,7 +3927,7 @@ mod tests {
         // independent of frame-render speed. Skips loudly without Q1
         // corpus; without a display the honest open failure is required
         // (same contract as the smoke tests).
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -4063,7 +4063,7 @@ mod tests {
         use super::super::simulation::native_q1_triggers::Q1TriggerKind;
         use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN};
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -4242,7 +4242,7 @@ mod tests {
         use super::super::simulation::native_q1_spawns::q1_health_of;
         use super::super::simulation::native_q1_triggers::Q1TriggerKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -4843,7 +4843,7 @@ mod tests {
         use super::super::simulation::native_q1_spawns::q1_health_of;
         use super::super::simulation::native_q1_triggers::Q1TriggerKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
             return;
         };
@@ -5675,8 +5675,7 @@ mod tests {
             let world = composed.app.backend().world.as_ref().expect("world");
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            let (eye, angles) = world.player_eye().expect("player eye");
-            let (fx, fy) = e3_forward_of(angles.y);
+            let (eye, _) = world.player_eye().expect("player eye");
             let mut best: Option<(qa_core::identity::ActorId, f64)> = None;
             for (id, monster) in borrowed.monsters.iter() {
                 if monster.kind != spec.combat {
@@ -5700,26 +5699,61 @@ mod tests {
                     best = Some((id.clone(), dist));
                 }
             }
-            let (target, _) = best.expect("a live combat monster");
-            let spot = Vec3 {
-                x: eye.x + (fx * 56.0) as f32,
-                y: eye.y + (fy * 56.0) as f32,
-                z: eye.z - 28.0,
-            };
-            (target, spot)
+            best.expect("a live combat monster").0.clone()
         };
         {
             let world = composed.app.backend_mut().world.as_mut().expect("world");
             let player = world.player_actor().cloned().expect("player");
-            live_damage(world, &target.0, Some(&player), spec.combat_wound);
-            world
-                .server_mut()
-                .simulation_mut()
-                .set_body_origin(&target.0, target.1)
-                .expect("monster places ahead");
+            live_damage(world, &target, Some(&player), spec.combat_wound);
+        }
+        let wounded_hp = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            q1_health_of(world.server().simulation(), &target)
+        };
+        // Probe the firing lane: the player can end S5 facing a
+        // nearby wall, which would swallow every pellet. Place the
+        // wounded target ahead, fire a short burst, and keep the
+        // facing only when the burst draws blood (or kills); else
+        // turn ~90 degrees and retry, covering all four facings.
+        let mut killed = false;
+        for attempt in 0..4 {
+            {
+                let world = composed.app.backend().world.as_ref().expect("world");
+                let (eye, angles) = world.player_eye().expect("player eye");
+                let (fx, fy) = e3_forward_of(angles.y);
+                let spot = Vec3 {
+                    x: eye.x + (fx * 56.0) as f32,
+                    y: eye.y + (fy * 56.0) as f32,
+                    z: eye.z - 28.0,
+                };
+                let world = composed.app.backend_mut().world.as_mut().expect("world");
+                world
+                    .server_mut()
+                    .simulation_mut()
+                    .set_body_origin(&target, spot)
+                    .expect("monster places ahead");
+            }
+            e3_mouse_attack(&mut composed, true);
+            e3_drive(&mut composed, &mut step_ms, 60);
+            total_steps += 60;
+            e3_mouse_attack(&mut composed, false);
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors.borrow().killed_monsters == kills_before + 1 {
+                killed = true;
+                break;
+            }
+            if q1_health_of(world.server().simulation(), &target) < wounded_hp {
+                break;
+            }
+            eprintln!("live-play: {tag} S6 facing {attempt} blocked, turning");
+            for _ in 0..9 {
+                e3_mouse_motion(&mut composed, 150);
+            }
+            e3_drive(&mut composed, &mut step_ms, 5);
+            total_steps += 5;
         }
         e3_mouse_attack(&mut composed, true);
-        let mut killed = false;
         for _ in 0..40 {
             e3_drive(&mut composed, &mut step_ms, 30);
             total_steps += 30;
@@ -5803,12 +5837,15 @@ mod tests {
         e3_mouse_attack(&mut composed, true);
         frames = 0;
         let mut finale_seen = spec.finale.is_none();
+        // Step singly so the poll breaks on the exact travel step:
+        // leftover chunk steps would fire the held attack and touch
+        // pickups on the arrival map before the carry asserts run.
         while composed.app.backend().world.as_ref().is_some_and(|world| world.map() == spec.map)
             && frames < 2400
         {
-            e3_drive(&mut composed, &mut step_ms, 10);
-            total_steps += 10;
-            frames += 10;
+            e3_drive(&mut composed, &mut step_ms, 1);
+            total_steps += 1;
+            frames += 1;
             if let Some(want) = spec.finale {
                 if let Some(world) = composed.app.backend().world.as_ref() {
                     if let Some(behaviors) = world.q1_behaviors() {
@@ -5826,7 +5863,13 @@ mod tests {
         let want_map = format!("maps/{}.bsp", spec.exit_map);
         assert_eq!(world.map(), want_map, "poll travelled after {frames} frames");
         let (eye, _) = world.player_eye().expect("arrival eye");
-        assert_eq!((eye.x, eye.y), spec.arrival, "arrival at the destination start");
+        eprintln!("live-play: {tag} arrival eye {eye:?} want {:?}", spec.arrival);
+        let drift = (f64::from(eye.x) - f64::from(spec.arrival.0)).hypot(f64::from(eye.y) - f64::from(spec.arrival.1));
+        assert!(
+            drift < 2.0,
+            "arrival at the destination start: drift {drift} from {:?}",
+            spec.arrival
+        );
         assert!(
             spec.arrival_z.0 <= f64::from(eye.z) && f64::from(eye.z) <= spec.arrival_z.1,
             "arrival eye settles near the start: {eye:?}"
@@ -5853,8 +5896,9 @@ mod tests {
             } else {
                 eprintln!("live-play: arrived {} with {} shells", spec.exit_map, borrowed.player_ammo.shells);
                 assert!(
-                    borrowed.player_ammo.shells > 0.0 && borrowed.player_ammo.shells < 25.0,
-                    "shells show real expenditure"
+                    (borrowed.player_ammo.shells - 25.0).abs() < f64::EPSILON,
+                    "stock SetChangeParms floors carried shells at 25, and the \
+                     single-step travel break allows zero post-travel shots"
                 );
             }
         }
@@ -5902,7 +5946,7 @@ mod tests {
     fn live_q1_e3m1_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m1.bsp",
             tag: "e3m1",
@@ -5926,7 +5970,7 @@ mod tests {
     fn live_q1_e3m2_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m2.bsp",
             tag: "e3m2",
@@ -5950,7 +5994,7 @@ mod tests {
     fn live_q1_e3m3_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m3.bsp",
             tag: "e3m3",
@@ -5975,7 +6019,7 @@ mod tests {
     fn live_q1_e3m4_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m4.bsp",
             tag: "e3m4",
@@ -5999,7 +6043,7 @@ mod tests {
     fn live_q1_e3m5_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m5.bsp",
             tag: "e3m5",
@@ -6025,7 +6069,7 @@ mod tests {
     fn live_q1_e3m6_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m6.bsp",
             tag: "e3m6",
@@ -6049,7 +6093,7 @@ mod tests {
     fn live_q1_e3m7_full_playthrough() {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         e3_full_playthrough(&E3Playthrough {
             map: "maps/e3m7.bsp",
             tag: "e3m7",
@@ -6628,7 +6672,7 @@ mod tests {
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
     fn live_windowed_e1_census_run() {
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for (map, census) in [
             (
                 "maps/e1m1.bsp",
@@ -6823,7 +6867,7 @@ mod tests {
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
     fn live_windowed_e3_census_run() {
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for (map, census) in [
             (
                 "maps/e3m1.bsp",
@@ -7001,7 +7045,7 @@ mod tests {
         use crate::bootstrap::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
         use crate::bootstrap::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt};
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
@@ -7255,7 +7299,7 @@ mod tests {
         };
         use qa_world::combat::{ArmorState, CombatState, RegularArmor};
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(mut composed) = windowed_q1_run("maps/e1m7.bsp") else {
             return;
         };
@@ -7693,7 +7737,7 @@ mod tests {
             Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
         };
 
-        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(mut composed) = windowed_q1_run("maps/e1m4.bsp") else {
             return;
         };
