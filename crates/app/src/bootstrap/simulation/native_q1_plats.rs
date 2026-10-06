@@ -116,10 +116,11 @@ pub fn build_q1_train<L: ServerLogic>(
         .simulation()
         .body_state(actor.id())
         .map_or(fields.origin, |body| body.origin);
-    server.movers_mut().insert(
-        actor.id().clone(),
-        MoverState::new(MoverKind::Pusher, origin, origin, speed, 0.0),
-    );
+    // `SOLID_NOT` (`plats.qc:343`): the spike ball ghosts through
+    // Shub and the world, carrying nothing and blocked by nothing.
+    let mut mover = MoverState::new(MoverKind::Pusher, origin, origin, speed, 0.0);
+    mover.solid = false;
+    server.movers_mut().insert(actor.id().clone(), mover);
     behaviors.trains.insert(
         actor.id(),
         Q1Train {
@@ -379,6 +380,7 @@ mod tests {
         assert!(!behaviors.solids.contains(&train), "SOLID_NOT stays out of the scene");
         let mover = server.movers_mut().get(&train).unwrap();
         assert_eq!(mover.kind, MoverKind::Pusher);
+        assert!(!mover.solid, "SOLID_NOT ghosts through the world");
         assert_eq!(mover.phase, MoverPhase::AtPos1);
         assert_eq!(mover.pos1, vec3(10.0, 20.0, 30.0));
         assert_eq!(mover.pos2, vec3(10.0, 20.0, 30.0));
@@ -501,14 +503,28 @@ mod tests {
         behaviors.thinks.clear();
         {
             let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::AtPos2, true);
+            q1_train_mover_think(
+                &mut behaviors,
+                simulation,
+                movers,
+                &train,
+                MoverPhase::AtPos2,
+                true,
+            );
         }
         assert_eq!(behaviors.thinks.len(), 1);
         assert!(matches!(behaviors.thinks[0].kind, Q1ThinkKind::TrainNext));
         assert!((behaviors.thinks[0].due_seconds - 0.1).abs() < 1e-9);
         {
             let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::AtPos2, false);
+            q1_train_mover_think(
+                &mut behaviors,
+                simulation,
+                movers,
+                &train,
+                MoverPhase::AtPos2,
+                false,
+            );
         }
         assert_eq!(behaviors.thinks.len(), 1, "wait pings schedule nothing");
         // A mid-travel think without arrival re-arms the arrival think
@@ -516,7 +532,14 @@ mod tests {
         server.movers_mut().get_mut(&train).unwrap().next_think_seconds = 0.0;
         {
             let (simulation, movers, _) = server.simulation_movers_and_triggers_mut();
-            q1_train_mover_think(&mut behaviors, simulation, movers, &train, MoverPhase::ToPos2, false);
+            q1_train_mover_think(
+                &mut behaviors,
+                simulation,
+                movers,
+                &train,
+                MoverPhase::ToPos2,
+                false,
+            );
         }
         let rearmed = server.movers_mut().get(&train).unwrap();
         assert!(

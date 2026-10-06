@@ -1348,7 +1348,9 @@ pub fn q1_native_mover_think(
         return;
     }
     if behaviors.trains.contains_key(actor) {
-        super::native_q1_plats::q1_train_mover_think(behaviors, simulation, movers, actor, phase, arrived);
+        super::native_q1_plats::q1_train_mover_think(
+            behaviors, simulation, movers, actor, phase, arrived,
+        );
         return;
     }
     let Some(door) = behaviors.doors.get(actor) else {
