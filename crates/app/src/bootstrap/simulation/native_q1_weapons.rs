@@ -36,7 +36,7 @@ use qa_world::collision::q1::CONTENTS_SKY;
 use qa_world::movement::clip_velocity_q1;
 use qa_world::movement::q1::types::{Q1_CONTENTS_LAVA, Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER};
 use qa_world::server::{Server, ServerLogic};
-use qa_world::spawn::{SpawnFields, SpawnRegistry};
+use qa_world::spawn::SpawnFields;
 
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
@@ -1062,23 +1062,10 @@ pub struct Q1Missile {
     pub remove_at: f64,
     /// Whether the grenade settled (stock `FL_ONGROUND` rest).
     pub onground: bool,
-}
-
-/// Register the internal missile spawn (stock `spawn()` plus `setmodel`
-/// sizing happens in [`q1_spawn_missile`]).
-pub fn register_q1_weapon_spawns(registry: &mut SpawnRegistry) {
-    use qa_world::spawn::SpawnRequest;
-    registry.register(
-        "q1:missile",
-        Box::new(|fields| {
-            Ok(SpawnRequest {
-                definition: "q1:missile".to_string(),
-                origin: Some(fields.origin),
-                combat: None,
-                grants: Vec::new(),
-            })
-        }),
-    );
+    /// Master-clock spawn instant: stock moves missiles from the next
+    /// frame on (`SV_Physics` runs after gamecode), so the spawn pass
+    /// never moves them.
+    pub born_at: f64,
 }
 
 /// Stock `spawn()` parameters for one missile: the fire functions fill
@@ -1098,6 +1085,8 @@ pub struct Q1MissileSpawn {
     pub fuse_at: Option<f64>,
     /// Master-clock `SUB_Remove` for flyers.
     pub remove_at: f64,
+    /// Master-clock spawn instant (no movement in the spawn pass).
+    pub born_at: f64,
 }
 
 /// Stock `spawn()` for a missile: a point-sized unsolid body with toss
@@ -1134,6 +1123,7 @@ pub fn q1_spawn_missile<L: ServerLogic>(
             fuse_at: spawn.fuse_at,
             remove_at: spawn.remove_at,
             onground: false,
+            born_at: spawn.born_at,
         },
     );
     Some(actor.id().clone())
@@ -1163,6 +1153,7 @@ pub fn q1_launch_spike<L: ServerLogic>(
             avelocity: vec3(0.0, 0.0, 0.0),
             fuse_at: None,
             remove_at: ctx.now + 6.0,
+            born_at: ctx.now,
         },
     );
 }
@@ -1254,6 +1245,7 @@ pub fn q1_fire_grenade<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             avelocity: vec3(300.0, 300.0, 300.0),
             fuse_at: Some(ctx.now + 2.5),
             remove_at: ctx.now + 2.5,
+            born_at: ctx.now,
         },
     );
 }
@@ -1285,6 +1277,7 @@ pub fn q1_fire_rocket<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             avelocity: vec3(0.0, 0.0, 0.0),
             fuse_at: None,
             remove_at: ctx.now + 5.0,
+            born_at: ctx.now,
         },
     );
 }
@@ -1323,6 +1316,9 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         return;
     }
     if missile.onground {
+        return;
+    }
+    if missile.born_at == ctx.now {
         return;
     }
     match missile.kind {

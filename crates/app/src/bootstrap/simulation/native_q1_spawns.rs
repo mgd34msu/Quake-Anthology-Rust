@@ -181,6 +181,19 @@ pub fn register_q1_spawns(registry: &mut SpawnRegistry) {
             }),
         );
     }
+    // Internal player-missile spawn (stock `spawn()` in the fire
+    // functions: spikes, grenades, rockets).
+    registry.register(
+        "q1:missile",
+        Box::new(|fields| {
+            Ok(SpawnRequest {
+                definition: "q1:missile".to_string(),
+                origin: Some(fields.origin),
+                combat: None,
+                grants: Vec::new(),
+            })
+        }),
+    );
     // Internal door trigger-field spawn (stock `spawn_field` actor).
     registry.register(
         "q1:door_field",
