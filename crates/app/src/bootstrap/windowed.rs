@@ -5681,6 +5681,11 @@ mod tests {
                 if monster.kind != spec.combat {
                     continue;
                 }
+                // S5's stray pellet can drop a point-blank monster;
+                // only a live target proves the combat kill.
+                if q1_health_of(world.server().simulation(), id) <= 0.0 {
+                    continue;
+                }
                 let origin = world
                     .server()
                     .simulation()
@@ -5743,7 +5748,20 @@ mod tests {
                 killed = true;
                 break;
             }
-            if q1_health_of(world.server().simulation(), &target) < wounded_hp {
+            let probe_hp = q1_health_of(world.server().simulation(), &target);
+            let probe_spot = world
+                .server()
+                .simulation()
+                .body_state(&target)
+                .map(|body| {
+                    let bounds = translated_body_bounds(&body);
+                    ((bounds.min.x + bounds.max.x) / 2.0, (bounds.min.y + bounds.max.y) / 2.0, (bounds.min.z + bounds.max.z) / 2.0)
+                });
+            let (probe_eye, _) = world.player_eye().expect("player eye");
+            eprintln!(
+                "live-play: {tag} S6 probe {attempt} target hp {probe_hp:.0}/{wounded_hp:.0} at {probe_spot:?} eye {probe_eye:?}"
+            );
+            if probe_hp < wounded_hp {
                 break;
             }
             eprintln!("live-play: {tag} S6 facing {attempt} blocked, turning");
@@ -5963,8 +5981,12 @@ mod tests {
     }
 
     /// Q1-0258: e3m2 windowed playthrough — spawn presents, key-driven
-    /// move, mouse turn, jump, shell fire, a zombie kill, and the e3m3
-    /// exit ride, all through the live loop.
+    /// move, mouse turn, jump, shell fire, an ogre kill, and the e3m3
+    /// exit ride, all through the live loop. The ogre stands in for
+    /// the map's zombies because stock `zombie_pain` resets health to
+    /// 60 every frame: only a single-frame 60+ gib kills a zombie, so
+    /// no shotgun proof can drop one (zombies stay census-covered by
+    /// `live_q1_0153_e3m2_zombie_census_spawns_armed`).
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_e3m2_full_playthrough() {
@@ -5978,8 +6000,8 @@ mod tests {
             exits: 1,
             arrival: (576.0, -152.0),
             arrival_z: (50.0, 90.0),
-            combat: Q1MonsterKind::Zombie,
-            combat_wound: 55.0,
+            combat: Q1MonsterKind::Ogre,
+            combat_wound: 195.0,
             sigil: None,
             finale: None,
             shed: false,
@@ -7814,6 +7836,105 @@ mod tests {
         assert!(count_non_black(&pixels) > 1000, "the arrival presents");
         let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
             .expect("e1m8 drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
+
+    /// Q1-0258: the windowed run rides the e3m4 secret exit into
+    /// e3m7 — the episode-3 secret level. e3m4 carries two
+    /// slipgates (the normal e3m5 gate plus the secret e3m7
+    /// gate); touching the secret gate enters the intermission,
+    /// pressing through travels via the windowed frame's own
+    /// `take_pending_travel` with parms carried and no spurious
+    /// episode flags (E3's rune bit is 4, uncollected this
+    /// early), and the arrival census is the full e3m7 count.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e3m4_secret_exit_reaches_e3m7() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(mut composed) = windowed_q1_run("maps/e3m4.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e3m4 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted campaign loadout: the secret arrival must
+        // carry it, with flags still clear.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 2, "e3m4 has two exits");
+        assert!(
+            exits.iter().any(|(_, map)| map == "e3m5"),
+            "the normal e3m5 gate stays"
+        );
+        let secret = exits
+            .iter()
+            .find(|(_, map)| map == "e3m7")
+            .map(|(exit, _)| exit.clone())
+            .expect("the secret e3m7 gate");
+        windowed_enter_intermission(&mut composed.app, &secret);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled through the secret gate: the
+        // world is e3m7 now, parms carried, flags clear.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e3m7.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e3m7");
+            assert_eq!(borrowed.serverflags, 0, "no rune this early");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_ne!(
+                borrowed.player_items & (Q1_IT_AXE | Q1_IT_SHOTGUN),
+                0,
+                "spawn arms carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        // The arrival census is the full e3m7 count.
+        windowed_soak(&mut composed.app, 1.0);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().total_monsters,
+                LIVE_E3M7_NATIVE_SKILL2_TOTAL
+            );
+            assert_eq!(live_ogres(world).len(), 19, "e3m7 spawns nineteen ogres");
+            assert_eq!(live_zombies(world).len(), 11, "e3m7 spawns eleven zombies");
+            assert_eq!(live_wizards(world).len(), 5, "e3m7 spawns five scrags");
+            assert_eq!(live_fiends(world).len(), 2, "e3m7 spawns two fiends");
+            assert_eq!(live_hknights(world).len(), 2, "e3m7 spawns two hell knights");
+            assert_eq!(live_vores(world).len(), 2, "e3m7 spawns two vores");
+            assert_eq!(live_shamblers(world).len(), 1, "e3m7 spawns one shambler");
+        }
+        let pixels = composed.app.capture_next_frame().expect("e3m7 captures");
+        assert!(!pixels.is_empty(), "e3m7 captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("e3m7 drives");
         assert_eq!(frames, 3);
         assert!(composed.app.is_closed());
     }
