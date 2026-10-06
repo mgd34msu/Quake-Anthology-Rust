@@ -6997,4 +6997,138 @@ mod tests {
         assert_eq!(frames, 3);
         assert!(composed.app.is_closed());
     }
+
+    /// Q1-0258: the windowed run rides the e2m3 secret exit into
+    /// e2m7 — the Underearth, the episode-2 secret level — and
+    /// back out to e2m4. e2m3 carries two slipgates (the normal
+    /// e2m4 gate plus the secret e2m7 gate); touching the secret
+    /// gate enters the intermission, pressing through travels via
+    /// the windowed frame's own `take_pending_travel` with parms
+    /// and `serverflags` carried, the arrival census is the full
+    /// e2m7 count, and the e2m7 slipgate returns to e2m4.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e2m3_secret_exit_reaches_e2m7() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_q1_run("maps/e2m3.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e2m3 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted campaign loadout plus the episode flag: both
+        // arrivals must carry them.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 2, "e2m3 has two exits");
+        assert!(
+            exits.iter().any(|(_, map)| map == "e2m4"),
+            "the normal e2m4 gate stays"
+        );
+        let secret = exits
+            .iter()
+            .find(|(_, map)| map == "e2m7")
+            .map(|(exit, _)| exit.clone())
+            .expect("the secret e2m7 gate");
+        windowed_enter_intermission(&mut composed.app, &secret);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled through the secret gate: the
+        // world is e2m7 now, parms and flags carried.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e2m7.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e2m7");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_ne!(
+                borrowed.player_items & (Q1_IT_AXE | Q1_IT_SHOTGUN),
+                0,
+                "spawn arms carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        // The secret arrival census is the full e2m7 count.
+        windowed_soak(&mut composed.app, 1.0);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().total_monsters,
+                LIVE_E2M7_NATIVE_SKILL2_TOTAL
+            );
+            assert_eq!(live_ogres(world).len(), 15, "e2m7 spawns fifteen ogres");
+            assert_eq!(live_hknights(world).len(), 17, "e2m7 spawns seventeen hell knights");
+            assert_eq!(live_wizards(world).len(), 16, "e2m7 spawns sixteen scrags");
+            assert_eq!(live_zombies(world).len(), 20, "e2m7 spawns twenty zombies");
+            assert_eq!(live_fiends(world).len(), 10, "e2m7 spawns ten fiends");
+        }
+        // The e2m7 slipgate returns to e2m4 with the same carried
+        // parms and flags.
+        let back = {
+            let exits = live_changelevel_exits(windowed_world(&composed.app));
+            assert_eq!(exits.len(), 1, "e2m7 has one exit");
+            let (back, map) = exits.into_iter().next().expect("exit");
+            assert_eq!(map, "e2m4");
+            back
+        };
+        windowed_enter_intermission(&mut composed.app, &back);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e2m4.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e2m4");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+        }
+        windowed_soak(&mut composed.app, 1.0);
+        assert_eq!(
+            windowed_world(&composed.app)
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .total_monsters,
+            LIVE_E2M4_NATIVE_SKILL2_TOTAL,
+            "the e2m4 return census is full"
+        );
+        let pixels = composed.app.capture_next_frame().expect("e2m4 captures");
+        assert!(!pixels.is_empty(), "e2m4 captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("e2m4 drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
 }
