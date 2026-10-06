@@ -3783,6 +3783,70 @@ pub(crate) mod tests {
         }
     }
 
+    /// Q1-0116: the e3m6 episode rune (`item_sigil`, `items.qc:1005`):
+    /// the live touch center-prints the rune receipt, ORs the E3 bit
+    /// into `serverflags`, hides the rune, and fires the twin t168
+    /// exit doors open.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0116_sigil_touch_sets_episode_flag() {
+        use qa_world::movers::MoverPhase;
+
+        let Some(mut world) = live_q1_world("maps/e3m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let doors = live_doors_by_targetname(&world, "t168");
+        assert_eq!(doors.len(), 2, "t168 names the twin exit doors");
+        let sigil = live_item_by_origin(&world, vec3(284.0, -3432.0, 152.0));
+        let center = live_volume_center(&world, &sigil);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 4, "the E3 rune bit sets");
+            assert!(
+                borrowed
+                    .centerprints
+                    .iter()
+                    .any(|print| print.text == "You got the rune!")
+            );
+            assert!(borrowed.items.get(&sigil).is_some_and(|item| item.taken));
+        }
+        for door in &doors {
+            assert_eq!(
+                world.server_mut().movers_mut().get(door).unwrap().phase,
+                MoverPhase::ToPos2,
+                "the rune use fires the exit doors open"
+            );
+        }
+    }
+
+    /// Q1-0114: the legacy e3m7 `item_weapon` rocket box
+    /// (`items.qc:798`): spawnflags 2 rides stock `ammo_touch` and
+    /// grants 5 rockets with the stock receipt.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0114_e3m7_legacy_weapon_grants_rockets() {
+        use super::super::simulation::native_q1_items::Q1AmmoKind;
+
+        let Some(mut world) = live_q1_world("maps/e3m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let legacy = live_item_by_origin(&world, vec3(-8.0, -648.0, -104.0));
+        let center = live_volume_center(&world, &legacy);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Rockets), 5.0);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "You got the rockets"));
+        }
+    }
+
     /// Q1-0100: deathmatch item respawn (`items.qc:6-12`): a taken e1m1
     /// health box regenerates 20 s out and picks up again, an ammo box
     /// regenerates 30 s out, and a megahealth box rots to the cap,
