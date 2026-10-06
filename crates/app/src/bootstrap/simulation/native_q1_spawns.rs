@@ -39,6 +39,7 @@ use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
+use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -623,6 +624,11 @@ pub struct Q1NativeBehaviors {
     pub monster_rand: u64,
     /// Last damage attacker (`damage_attacker`, `combat.qc:112`).
     pub damage_attacker: Option<ActorId>,
+    /// Live player weapon/combat state (`weapons.qc`, `client.qc`).
+    pub player_state: Q1PlayerState,
+    /// Queued weapon temp entities for the presentation slice to
+    /// drain (stock `SVC_TEMPENTITY` broadcasts).
+    pub temp_ents: Vec<Q1TempEnt>,
 }
 
 impl Q1NativeBehaviors {

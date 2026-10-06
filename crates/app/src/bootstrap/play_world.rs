@@ -57,6 +57,7 @@ use super::simulation::native_q1_triggers::{
     q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn, q1_registered_version,
     register_q1_trigger_spawns,
 };
+use super::simulation::native_q1_weapons::{q1_grant_spawn_loadout, q1_sample_water_level, q1_weapon_pass};
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
@@ -274,6 +275,58 @@ impl PlayWorld {
                 map: self.map.clone(),
                 reason,
             })
+    }
+
+    /// Run one weapon pass for native Q1 maps: relink the collision
+    /// scene, sample the player's water level, then run the stock
+    /// weapon frame (impulse selection plus the held trigger) and any
+    /// due attack-anim think. `None` advances anims without new input
+    /// (the trigger reads released). Non-Q1 maps (or missing scenes
+    /// or players) keep the static behavior. The pass is infallible
+    /// by design: failed traces block, and dead players skip (death
+    /// thinks own them once the player slice lands).
+    pub fn step_weapons(&mut self, command: Option<&qa_world::movement::types::UserCommand>) {
+        use qa_world::movement::types::UserCommand;
+        let Some(behaviors) = self.q1_behaviors.clone() else {
+            return;
+        };
+        let player = behaviors.borrow().player.clone();
+        let Some(player) = player else {
+            return;
+        };
+        let view_angles = self.player.as_ref().map(|body| body.eye().1);
+        let Some(view_angles) = view_angles else {
+            return;
+        };
+        let Self { server, clip, .. } = self;
+        let Some(PlayerClip::Q1(scene)) = clip.as_mut() else {
+            return;
+        };
+        {
+            let borrowed = behaviors.borrow();
+            let links = Q1SceneLinks {
+                door_models: &borrowed.brush_models,
+                solids: &borrowed.solids,
+            };
+            let (simulation, triggers) = server.simulation_and_triggers();
+            link_q1_scene(scene, simulation, triggers, Some(&links));
+        }
+        let (buttons, impulse) = match command {
+            Some(UserCommand::Q1Netquake(command)) => (command.buttons, command.impulse),
+            Some(UserCommand::Q1Quakeworld(command)) => (command.buttons, command.impulse),
+            _ => (0, 0),
+        };
+        let water = q1_sample_water_level(scene, server.simulation(), &player);
+        behaviors.borrow_mut().player_state.water_level = water;
+        q1_weapon_pass(
+            server,
+            &mut behaviors.borrow_mut(),
+            scene,
+            &player,
+            view_angles,
+            buttons,
+            impulse,
+        );
     }
 
     /// Run one monster think pass for native Q1 maps: relink the
@@ -895,6 +948,9 @@ pub fn load_play_world(
         let _ignored = server
             .simulation_mut()
             .set_combat(PlayerBody::actor(player), qa_world::combat::CombatState::default());
+        // Stock spawn loadout (`PutClientInServer` over fresh parms):
+        // axe and shotgun with 25 shells, shotgun in hand.
+        q1_grant_spawn_loadout(&mut behaviors);
         behaviors.player_angles = player.eye().1;
     }
     // The presentation consumes its mounts, so audio keeps a second open over
@@ -1607,13 +1663,17 @@ mod tests {
         }
     }
 
-    /// One live server tick at the 1/60 s host step, plus the monster
-    /// pass (the production order: tick, then steps).
+    /// One live server tick at the 1/60 s host step, plus the weapon
+    /// and monster passes (the production order: tick, then steps).
+    /// The weapon pass runs without new input (trigger released), so
+    /// it only advances anims; scenarios drive fire through
+    /// `live_fire`.
     fn live_tick(world: &mut PlayWorld) {
         world
             .server_mut()
             .tick(qa_core::time::SourceTime::Seconds(1.0 / 60.0))
             .unwrap();
+        world.step_weapons(None);
         world.step_monsters();
     }
 
@@ -1633,6 +1693,7 @@ mod tests {
                 .server_mut()
                 .tick(qa_core::time::SourceTime::Seconds(1.0))
                 .unwrap();
+            world.step_weapons(None);
             world.step_monsters();
             guard += 1;
             assert!(guard < 100_000, "live_advance stalled before {target}s");
@@ -2652,7 +2713,8 @@ mod tests {
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            // 25-shell spawn loadout (`SetNewParms`) plus the 20-shell box.
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 45.0);
             assert!(borrowed.sprints.iter().any(|print| print.text == "You got the shells"));
             assert!(borrowed.items.get(&shells).is_some_and(|item| item.taken));
         }
@@ -2787,7 +2849,8 @@ mod tests {
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
             let borrowed = behaviors.borrow();
-            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 20.0);
+            // 25-shell spawn loadout (`SetNewParms`) plus the 20-shell box.
+            assert_eq!(borrowed.player_ammo.get(Q1AmmoKind::Shells), 45.0);
             let regen = borrowed
                 .thinks
                 .iter()

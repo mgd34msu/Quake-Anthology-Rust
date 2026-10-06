@@ -1667,7 +1667,8 @@ fn q1_find_target<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: 
             .behaviors
             .monsters
             .get(&client)
-            .is_some_and(|monster| monster.show_hostile >= now);
+            .is_some_and(|monster| monster.show_hostile >= now)
+            || (Some(&client) == ctx.behaviors.player.as_ref() && ctx.behaviors.player_state.show_hostile >= now);
         if !hostile && !q1_infront(ctx, actor, &client) {
             return false;
         }
