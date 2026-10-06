@@ -358,6 +358,15 @@ impl PlayPresentation {
         }
         Ok((view, image_operations))
     }
+
+    /// Release every resident world image: close the shared image
+    /// registry (world surfaces plus model skins) and drain the queued
+    /// releases. A world swap must apply these to the backend before
+    /// the next world uploads, since ordinals restart at zero.
+    pub fn release_images(&mut self) -> Vec<ImageResourceOperation> {
+        self.scene.shaders_mut().textures_mut().images_mut().close();
+        self.scene.drain_image_operations()
+    }
 }
 
 /// Parse a space-separated triple into a vector.

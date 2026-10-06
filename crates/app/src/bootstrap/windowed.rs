@@ -1703,6 +1703,20 @@ impl WindowedStartupBackend {
                     next.spawned(),
                     next.entity_records(),
                 );
+                // The next world reuses image ordinals from zero, so
+                // release the old world's resident images first (same
+                // order as the menu-launch release in
+                // `launch_menu_game`).
+                if let Some(presentation) = self.scene.as_mut().and_then(|scene| scene.presentation.as_mut()) {
+                    let releases = presentation.release_images();
+                    if !releases.is_empty() {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            for operation in &releases {
+                                renderer.backend_mut().apply_image_resource(operation);
+                            }
+                        }
+                    }
+                }
                 self.set_world(next);
             }
             Ok(None) => {}
@@ -3172,6 +3186,179 @@ mod tests {
         assert!(
             end_eye.y > 1300.0 && end_eye.y < 1400.0,
             "player stalled before the far wall: {end_eye:?}"
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e1m1_windowed_run_reaches_e1m2() {
+        // End-to-end transition through the real windowed loop: open e1m1
+        // in a real window, script the campaign loadout, touch the
+        // slipgate exit, ride the intermission, press through it, and let
+        // the per-frame poll travel: the world reloads as e1m2 with the
+        // carried parms and flags at the e1m2 start.
+        use qa_world::body::translated_body_bounds;
+
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN};
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m1.bsp".to_string();
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        // Scripted loadout plus the episode-1 flag (the rune slice sets
+        // it for real later).
+        {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 10.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+            let now = world.server().simulation().frame().time.as_seconds_f64();
+            for field in borrowed.fields.values_mut() {
+                field.throttle_until = now + 3600.0;
+            }
+        }
+        // Touch the slipgate exit.
+        let exit = {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let mut exits: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter_map(|(id, trigger)| match &trigger.kind {
+                    Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(exits.len(), 1, "e1m1 has one exit");
+            let (exit, map) = exits.pop().expect("exit");
+            assert_eq!(map, "e1m2");
+            exit
+        };
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("e1m1 world");
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&exit).expect("exit body");
+            let bounds = translated_body_bounds(&body);
+            let center = qa_core::math::vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            );
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&player, center)
+                .unwrap();
+        }
+        // Drive until the execute think enters the intermission.
+        let mut frames = 0;
+        while composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .is_some_and(|world| world.map() == "maps/e1m1.bsp")
+            && composed
+                .app
+                .backend()
+                .world
+                .as_ref()
+                .and_then(|world| world.q1_behaviors())
+                .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+            && frames < 600
+        {
+            composed.app.step().expect("windowed step works");
+            frames += 1;
+        }
+        {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            assert_eq!(world.map(), "maps/e1m1.bsp");
+            assert_eq!(
+                world
+                    .q1_behaviors()
+                    .expect("Q1 behaviors")
+                    .borrow()
+                    .intermission
+                    .running,
+                1,
+                "exit entered the intermission after {frames} frames"
+            );
+        }
+        // Press through the exit gate with a real held key: SPACE is bound
+        // to Jump (bit 1, an exit button), held down exactly as a player
+        // pressing it. Scancode 44 is SDL_SCANCODE_SPACE, keycode 32.
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::Key {
+                timestamp: 0,
+                down: true,
+                repeat: false,
+                scancode: 44,
+                keycode: 32,
+                modifiers: 0,
+            }])
+            .expect("jump key injects");
+        frames = 0;
+        while composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .is_some_and(|world| world.map() == "maps/e1m1.bsp")
+            && frames < 2400
+        {
+            composed.app.step().expect("windowed step works");
+            frames += 1;
+        }
+        let world = composed.app.backend().world.as_ref().expect("travelled world");
+        assert_eq!(world.map(), "maps/e1m2.bsp", "poll travelled after {frames} frames");
+        let (eye, _) = world.player_eye().expect("arrival eye");
+        assert_eq!(
+            eye,
+            qa_core::math::vec3(1496.0, 1664.0, 318.0),
+            "arrival at the e1m2 start"
+        );
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN | Q1_IT_NAILGUN,
+                "weapons carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0, "shells floored");
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
+        }
+        let arrival = world.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            world
+                .server()
+                .simulation()
+                .combat_state(&arrival)
+                .map(|combat| combat.health),
+            Some(100.0)
         );
         composed.app.close().expect("windowed close works");
     }
