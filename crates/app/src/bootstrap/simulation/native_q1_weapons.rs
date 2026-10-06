@@ -33,14 +33,16 @@ use qa_core::math::{add3, angle_vectors, length3, scale3, vec3, Bounds, Vec3};
 use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
 use qa_world::body::translated_body_bounds;
 use qa_world::collision::q1::CONTENTS_SKY;
+use qa_world::combat::{ArmorState, CombatState, RegularArmor};
 use qa_world::movement::clip_velocity_q1;
-use qa_world::movement::q1::types::{Q1_CONTENTS_LAVA, Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER};
+use qa_world::movement::q1::types::{Q1_CONTENTS_EMPTY, Q1_CONTENTS_LAVA, Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER};
 use qa_world::server::{Server, ServerLogic};
 use qa_world::spawn::SpawnFields;
 
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
-    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1MonsterCtx, Q1_DAMAGE_AIM,
+    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1MonsterCtx, Q1PendingGib,
+    Q1_DAMAGE_AIM, Q1_IT_INVISIBILITY,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -80,6 +82,22 @@ pub const Q1_DEAD_DYING: u8 = 1;
 pub const Q1_DEAD_DEAD: u8 = 2;
 /// Stock deadflag values (`defs.qc:273-276`).
 pub const Q1_DEAD_RESPAWNABLE: u8 = 3;
+/// Player death anim ids (`PlayerDie`, `player.qc:524`): the axe death
+/// plus the five random falls, with stock frame counts.
+pub const Q1_DEATH_AXE: u8 = 0;
+/// `player_diea1`: 11 frames.
+pub const Q1_DEATH_A: u8 = 1;
+/// `player_dieb1`: 9 frames.
+pub const Q1_DEATH_B: u8 = 2;
+/// `player_diec1`: 15 frames.
+pub const Q1_DEATH_C: u8 = 3;
+/// `player_died1`: 9 frames.
+pub const Q1_DEATH_D: u8 = 4;
+/// `player_diee1`: 9 frames.
+pub const Q1_DEATH_E: u8 = 5;
+/// Stock local-player fallback name (`netname` until the client slice
+/// owns names; the engine defaults to "Player").
+pub const Q1_PLAYER_NETNAME: &str = "Player";
 
 /// Stock attack button (`button0`, bit 0 of the button word).
 pub const Q1_BUTTON_ATTACK: i32 = 1;
@@ -157,6 +175,13 @@ pub enum Q1PlayerAttack {
         /// Master-clock seconds of the next think shot.
         next_fire: f64,
     },
+    /// Pain anim in flight (`player_pain1`/`player_axpain1`,
+    /// `player.qc:337`): six 0.1 s frames that yield to the next
+    /// attack like any replaced think.
+    Pain {
+        /// Master-clock seconds when the sixth frame lands.
+        until: f64,
+    },
 }
 
 /// One body-queue corpse slot (`CopyToBodyQue`, `world.qc:378`): the
@@ -197,6 +222,17 @@ pub struct Q1PlayerState {
     pub dead_until: f64,
     /// Death-anim frame count, for the body-queue frame.
     pub death_frames: u8,
+    /// Death-anim id (`Q1_DEATH_AXE`/`A`-`E`, `PlayerDie`).
+    pub death_anim: u8,
+    /// Cause tag for the fall obituary (`self.deathtype`: "falling"
+    /// or empty; the fall-damage slice owns it).
+    pub deathtype: String,
+    /// Frags (`self.frags`, kept as float like stock).
+    pub frags: f64,
+    /// Team id (`self.team`; the DM rules slice owns it, 0 is none).
+    pub team: i32,
+    /// Axe-marked this wound (`self.axhitme`, `weapons.qc:52`).
+    pub axhitme: bool,
     /// Whether the corpse became a bouncing head (`ThrowHead`).
     pub gibbed_head: bool,
     /// Pain anims resume after this (nightmare hold reads it).
@@ -215,6 +251,12 @@ pub struct Q1PlayerState {
     pub parms: Q1SpawnParms,
     /// Water level 0-3 (stock `self.waterlevel`, sampled per step).
     pub water_level: i32,
+    /// Water contents at the waist (`self.watertype`, sampled per
+    /// step: -3 water, -4 slime, -5 lava).
+    pub water_type: i32,
+    /// Respawn facing for the pass to snap (`PutClientInServer`
+    /// `fixangle`; `step_weapons` applies and clears it).
+    pub respawn_angles: Option<Vec3>,
     /// Body-queue corpses, oldest first (at most four).
     pub body_queue: Vec<Q1Corpse>,
     /// Singleplayer death asks the app to restart the level
@@ -236,6 +278,11 @@ impl Default for Q1PlayerState {
             attack_finished: 0.0,
             deadflag: Q1_DEAD_NO,
             dead_until: 0.0,
+            death_anim: Q1_DEATH_A,
+            deathtype: String::new(),
+            frags: 0.0,
+            team: 0,
+            axhitme: false,
             death_frames: 0,
             gibbed_head: false,
             pain_finished: 0.0,
@@ -246,6 +293,8 @@ impl Default for Q1PlayerState {
             prev_buttons: 0,
             parms: Q1SpawnParms::default(),
             water_level: 0,
+            water_type: Q1_CONTENTS_EMPTY,
+            respawn_angles: None,
             body_queue: Vec::new(),
             restart_requested: false,
             punchangle: vec3(0.0, 0.0, 0.0),
@@ -285,6 +334,19 @@ pub enum Q1TempEnt {
         /// Blast center.
         at: Vec3,
     },
+    /// `TE_TELEPORT` at a coop/DM respawn (`spawn_tfog`, `triggers.qc`).
+    Teleport {
+        /// Fog center.
+        at: Vec3,
+    },
+    /// Death-bubble presentation (`DeathBubbles`, `player.qc:356`):
+    /// stock spawns bubble entities; this queues their visuals.
+    Bubbles {
+        /// Water point.
+        at: Vec3,
+        /// Bubble count.
+        count: u32,
+    },
     /// `TE_LIGHTNING2` from muzzle to impact.
     Lightning {
         /// Firing player.
@@ -294,6 +356,34 @@ pub enum Q1TempEnt {
         /// Impact point.
         end: Vec3,
     },
+}
+
+/// Stock waist contents (`self.watertype`): the liquid around
+/// `origin + 10`, or empty (`q1_sample_water_level` counts the wet
+/// samples; this names the wettest one for pain and obituaries).
+pub fn q1_sample_water_type(
+    scene: &SharedSceneQueries,
+    simulation: &qa_world::session::Simulation,
+    player: &ActorId,
+) -> i32 {
+    let Some(body) = simulation.body_state(player) else {
+        return Q1_CONTENTS_EMPTY;
+    };
+    let query = ScenePointContentsQuery {
+        point: vec3(body.origin.x, body.origin.y, body.origin.z + 10.0),
+        target: SceneQueryTarget::World,
+        policy: SceneTracePolicy::Q1 {
+            move_rule: SceneQ1MoveRule::Normal,
+            hull: None,
+        },
+        numeric: Q1_DONOR_PROFILE,
+        pass_actor: Some(player.clone()),
+    };
+    if let Ok(ScenePointContentsResult::Q1 { contents }) = scene.point_contents(&query) {
+        contents
+    } else {
+        Q1_CONTENTS_EMPTY
+    }
 }
 
 /// Stock view-model paths by weapon bit (`W_SetCurrentAmmo`).
@@ -706,6 +796,11 @@ pub fn q1_fire_axe<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
         .is_some_and(|actor| q1_can_take_damage(ctx.server.simulation(), actor));
     if damageable {
         let victim = hit.hit_actor.clone().expect("damageable hit actor");
+        // Stock marks axe victims for the pain sound (`weapons.qc:52`);
+        // only players read the mark (`PainSound`, `player.qc:287`).
+        if Some(&victim) == ctx.behaviors.player.as_ref() {
+            ctx.behaviors.player_state.axhitme = true;
+        }
         let player = ctx.player.clone();
         let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
         q1_t_damage(
@@ -946,6 +1041,11 @@ fn q1_attack_think<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, button
                 }
             }
         }
+        Q1PlayerAttack::Pain { until } => {
+            if ctx.now >= until {
+                ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
+            }
+        }
         Q1PlayerAttack::Lightning { next_fire } => {
             if buttons & Q1_BUTTON_ATTACK == 0 {
                 ctx.behaviors.player_state.attack = Q1PlayerAttack::None;
@@ -995,10 +1095,21 @@ pub fn q1_weapon_pass<L: ServerLogic>(
     buttons: i32,
     impulse: i32,
 ) {
+    let now = server.simulation().frame().time.as_seconds_f64();
     if behaviors.player_state.deadflag != Q1_DEAD_NO {
+        let (simulation, _, _) = server.simulation_movers_and_triggers_mut();
+        q1_player_death_think(behaviors, simulation, player, now, buttons);
+        let mut ctx = Q1WeaponFire {
+            server,
+            behaviors,
+            scene,
+            player: player.clone(),
+            view_angles,
+            now,
+        };
+        q1_missile_pass(&mut ctx);
         return;
     }
-    let now = server.simulation().frame().time.as_seconds_f64();
     if now > behaviors.player_state.attack_finished
         && behaviors.player_state.currentammo == 0.0
         && behaviors.player_state.weapon != Q1_IT_AXE
@@ -1901,6 +2012,746 @@ fn q1_is_shambler(behaviors: &Q1NativeBehaviors, actor: &ActorId) -> bool {
 fn q1_remove_missile<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor: &ActorId) {
     let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
     q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
+}
+
+/// Stock QuakeC `rint`: round half up (`floor(x + 0.5)`; stock
+/// only ever rounds non-negative rolls).
+fn q1_rint(value: f32) -> i32 {
+    (value + 0.5).floor() as i32
+}
+
+/// Resolve an attacker for pain and obituary branches: the player,
+/// a monster kind, a door, or empty for the world and the unbuilt
+/// (missiles never attack directly — stock credits their owner).
+fn q1_attacker_classname<'b>(behaviors: &'b Q1NativeBehaviors, actor: &ActorId) -> &'b str {
+    if Some(actor) == behaviors.player.as_ref() {
+        return "player";
+    }
+    if let Some(monster) = behaviors.monsters.get(actor) {
+        return monster.kind.classname();
+    }
+    if behaviors.doors.contains_key(actor) {
+        return "door";
+    }
+    ""
+}
+
+/// Stock `player_pain` (`player.qc:337`): the wound anim and sound,
+/// gated while a weapon anim owns the frames or invisibility hides
+/// the eyes. Called from `T_Damage`'s pain tail for live players.
+pub(crate) fn q1_player_pain(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &qa_world::session::Simulation,
+    targ: &ActorId,
+) {
+    if Some(targ) != behaviors.player.as_ref() {
+        return;
+    }
+    if behaviors.player_state.weaponframe != 0 {
+        return;
+    }
+    if behaviors.player_items & Q1_IT_INVISIBILITY != 0 {
+        return;
+    }
+    let now = simulation.frame().time.as_seconds_f64();
+    q1_pain_sound(behaviors, simulation, targ);
+    behaviors.player_state.weaponframe = 0;
+    behaviors.player_state.attack = Q1PlayerAttack::Pain { until: now + 0.6 };
+}
+
+/// Stock `PainSound` (`player.qc:269`): teleport sizzle, drowning and
+/// burn gurgles, the 0.5 s gate, the axe-hit cry, then pain1-6.
+fn q1_pain_sound(behaviors: &mut Q1NativeBehaviors, simulation: &qa_world::session::Simulation, targ: &ActorId) {
+    let now = simulation.frame().time.as_seconds_f64();
+    if q1_health_of(simulation, targ) < 0.0 {
+        return;
+    }
+    let attacker_class = behaviors
+        .damage_attacker
+        .as_ref()
+        .map(|attacker| q1_attacker_classname(behaviors, attacker))
+        .unwrap_or("");
+    if attacker_class == "teledeath" {
+        q1_monster_sound(behaviors, targ, 2, "player/teledth1.wav", 1.0, 0.0);
+        return;
+    }
+    let water_level = behaviors.player_state.water_level;
+    let water_type = behaviors.player_state.water_type;
+    if water_type == Q1_CONTENTS_WATER && water_level == 3 {
+        q1_death_bubbles(behaviors, simulation, targ, 1);
+        let drown = q1_monster_random(behaviors) > 0.5;
+        q1_monster_sound(
+            behaviors,
+            targ,
+            2,
+            if drown {
+                "player/drown1.wav"
+            } else {
+                "player/drown2.wav"
+            },
+            1.0,
+            1.0,
+        );
+        return;
+    }
+    if water_type == Q1_CONTENTS_SLIME || water_type == Q1_CONTENTS_LAVA {
+        let burn = q1_monster_random(behaviors) > 0.5;
+        q1_monster_sound(
+            behaviors,
+            targ,
+            2,
+            if burn { "player/lburn1.wav" } else { "player/lburn2.wav" },
+            1.0,
+            1.0,
+        );
+        return;
+    }
+    if behaviors.player_state.pain_finished > now {
+        behaviors.player_state.axhitme = false;
+        return;
+    }
+    behaviors.player_state.pain_finished = now + 0.5;
+    if behaviors.player_state.axhitme {
+        behaviors.player_state.axhitme = false;
+        q1_monster_sound(behaviors, targ, 2, "player/axhit1.wav", 1.0, 1.0);
+        return;
+    }
+    let rs = q1_rint(q1_monster_random(behaviors) * 5.0 + 1.0);
+    let sample = match rs {
+        1 => "player/pain1.wav",
+        2 => "player/pain2.wav",
+        3 => "player/pain3.wav",
+        4 => "player/pain4.wav",
+        5 => "player/pain5.wav",
+        _ => "player/pain6.wav",
+    };
+    q1_monster_sound(behaviors, targ, 2, sample, 1.0, 1.0);
+}
+
+/// Stock gib velocity (`VelocityForDamage`, `player.qc:435`): wide
+/// random toss, scaled up as the killing wound deepens.
+fn q1_velocity_for_damage(behaviors: &mut Q1NativeBehaviors, dm: f64) -> Vec3 {
+    let v = vec3(
+        100.0 * q1_monster_crandom(behaviors),
+        100.0 * q1_monster_crandom(behaviors),
+        200.0 + 100.0 * q1_monster_random(behaviors),
+    );
+    let scale = if dm > -50.0 {
+        0.7
+    } else if dm > -200.0 {
+        2.0
+    } else {
+        10.0
+    };
+    scale3(v, scale)
+}
+
+/// Stock `DeathBubbles` (`player.qc:381`): the bubble-spawner entity
+/// has no runtime here, so the visual count queues directly.
+fn q1_death_bubbles(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &qa_world::session::Simulation,
+    targ: &ActorId,
+    count: u32,
+) {
+    let Some(body) = simulation.body_state(targ) else {
+        return;
+    };
+    behaviors.temp_ents.push(Q1TempEnt::Bubbles {
+        at: vec3(body.origin.x, body.origin.y, body.origin.z + 24.0),
+        count,
+    });
+}
+
+/// Stock `DeathSound` (`player.qc:399`): underwater burbling, else one
+/// of death1-5 on the voice channel, audible everywhere.
+fn q1_death_sound(behaviors: &mut Q1NativeBehaviors, simulation: &qa_world::session::Simulation, targ: &ActorId) {
+    if behaviors.player_state.water_level == 3 {
+        q1_death_bubbles(behaviors, simulation, targ, 20);
+        q1_monster_sound(behaviors, targ, 2, "player/h2odeath.wav", 1.0, 0.0);
+        return;
+    }
+    let rs = q1_rint(q1_monster_random(behaviors) * 4.0 + 1.0);
+    let sample = match rs {
+        1 => "player/death1.wav",
+        2 => "player/death2.wav",
+        3 => "player/death3.wav",
+        4 => "player/death4.wav",
+        _ => "player/death5.wav",
+    };
+    q1_monster_sound(behaviors, targ, 2, sample, 1.0, 0.0);
+}
+
+/// Stock `PlayerDie` (`player.qc:524`): strip the powerup state, drop
+/// the view model, pop the corpse, and gib past -40 health or run a
+/// death anim. Called from `Killed` after the obituary with damage
+/// already off. Powerup timers live with the powerup slice (nothing
+/// to clear yet); the coop/DM backpack waits for the items slice,
+/// which owns item entities.
+pub(crate) fn q1_player_die(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut qa_world::session::Simulation,
+    targ: &ActorId,
+) {
+    behaviors.player_items &= !Q1_IT_INVISIBILITY;
+    behaviors.player_state.weaponmodel.clear();
+    behaviors.player_state.deadflag = Q1_DEAD_DYING;
+    behaviors.solids.remove(targ);
+    behaviors.player_state.attack = Q1PlayerAttack::None;
+    if let Some(body) = simulation.body_state(targ) {
+        let mut vz = body.velocity.z;
+        if vz < 10.0 {
+            vz += q1_monster_random(behaviors) * 300.0;
+        }
+        let _ignored = simulation.set_body_velocity(targ, vec3(body.velocity.x, body.velocity.y, vz));
+    }
+    let health = q1_health_of(simulation, targ);
+    if health < -40.0 {
+        q1_gib_player(behaviors, simulation, targ, health);
+        return;
+    }
+    q1_death_sound(behaviors, simulation, targ);
+    if let Some(body) = simulation.body_state(targ) {
+        let _ignored = simulation.set_body_angles(targ, vec3(0.0, body.angles.y, 0.0));
+    }
+    let now = simulation.frame().time.as_seconds_f64();
+    if behaviors.player_state.weapon == Q1_IT_AXE {
+        behaviors.player_state.death_anim = Q1_DEATH_AXE;
+    } else {
+        // The `temp1` cvar does not exist here; death always rolls.
+        #[allow(clippy::cast_possible_truncation)]
+        let roll = 1 + (q1_monster_random(behaviors) * 6.0).floor() as i32;
+        behaviors.player_state.death_anim = match roll {
+            1 => Q1_DEATH_A,
+            2 => Q1_DEATH_B,
+            3 => Q1_DEATH_C,
+            4 => Q1_DEATH_D,
+            _ => Q1_DEATH_E,
+        };
+    }
+    behaviors.player_state.death_frames = 1;
+    behaviors.player_state.dead_until = now + 0.1;
+}
+
+/// Stock `GibPlayer` (`player.qc:497`): the player becomes the
+/// bouncing head, three flesh chunks fly, and the gib cry sounds.
+/// The head spin has no angular channel on bodies (noted); the
+/// teledeath sizzles stay live for the teleporter slice.
+fn q1_gib_player(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut qa_world::session::Simulation,
+    targ: &ActorId,
+    health: f64,
+) {
+    behaviors.player_state.gibbed_head = true;
+    let point = Bounds {
+        min: vec3(-16.0, -16.0, 0.0),
+        max: vec3(16.0, 16.0, 56.0),
+    };
+    let _ignored = simulation.set_body_bounds(targ, point);
+    let Some(body) = simulation.body_state(targ) else {
+        return;
+    };
+    let at = vec3(body.origin.x, body.origin.y, body.origin.z - 24.0);
+    let _ignored = simulation.set_body_origin(targ, at);
+    let _ignored = simulation.set_body_velocity(targ, q1_velocity_for_damage(behaviors, health));
+    behaviors.player_state.deadflag = Q1_DEAD_DEAD;
+    let now = simulation.frame().time.as_seconds_f64();
+    for model in ["progs/gib1.mdl", "progs/gib2.mdl", "progs/gib3.mdl"] {
+        let velocity = q1_velocity_for_damage(behaviors, health);
+        let avelocity = vec3(
+            q1_monster_random(behaviors) * 600.0,
+            q1_monster_random(behaviors) * 600.0,
+            q1_monster_random(behaviors) * 600.0,
+        );
+        let remove_at = now + 10.0 + f64::from(q1_monster_random(behaviors)) * 10.0;
+        behaviors.pending_gibs.push(Q1PendingGib {
+            model: model.to_string(),
+            at,
+            velocity,
+            avelocity,
+            remove_at,
+        });
+    }
+    let attacker_class = behaviors
+        .damage_attacker
+        .as_ref()
+        .map(|attacker| q1_attacker_classname(behaviors, attacker))
+        .unwrap_or("");
+    if attacker_class == "teledeath" || attacker_class == "teledeath2" {
+        q1_monster_sound(behaviors, targ, 2, "player/teledth1.wav", 1.0, 0.0);
+        return;
+    }
+    if q1_monster_random(behaviors) < 0.5 {
+        q1_monster_sound(behaviors, targ, 2, "player/gib.wav", 1.0, 0.0);
+    } else {
+        q1_monster_sound(behaviors, targ, 2, "player/udeath.wav", 1.0, 0.0);
+    }
+}
+
+/// Stock `ClientObituary` (`client.qc:1197`): the death line plus
+/// frag credit, composed into one `sprint` (stock `bprint`s the same
+/// pieces; broadcast and targeted prints coincide in singleplayer).
+/// Called from `Killed` before `th_die`, so the victim's weapon,
+/// water, and health still read pre-death. Telefrag lines wait for
+/// the teleporter slice (no owner tracking yet); killer weapon and
+/// water read the shared player state until deathmatch clients land.
+pub(crate) fn q1_client_obituary(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &qa_world::session::Simulation,
+    targ: &ActorId,
+    attacker: Option<&ActorId>,
+) {
+    let rnum = q1_monster_random(behaviors);
+    let name = Q1_PLAYER_NETNAME.to_string();
+    let attacker_class = attacker
+        .map(|actor| q1_attacker_classname(behaviors, actor).to_string())
+        .unwrap_or_default();
+    let line;
+    if attacker_class == "player" {
+        if attacker == Some(targ) {
+            behaviors.player_state.frags -= 1.0;
+            if behaviors.player_state.weapon == Q1_IT_LIGHTNING && behaviors.player_state.water_level > 1 {
+                line = format!("{name} discharges into the water.\n");
+            } else if behaviors.player_state.weapon == Q1_IT_GRENADE_LAUNCHER {
+                line = format!("{name} tries to put the pin back in\n");
+            } else {
+                line = format!("{name} becomes bored with life\n");
+            }
+        } else if behaviors.teamplay == 2
+            && behaviors.player_state.team > 0
+            && Some(behaviors.player_state.team) == attacker.map(|_| behaviors.player_state.team)
+        {
+            // Teams collapse onto the one player state until
+            // deathmatch clients land; the rule itself is live.
+            if rnum < 0.25 {
+                line = format!("{name} mows down a teammate\n");
+            } else if rnum < 0.50 {
+                line = format!("{name} checks his glasses\n");
+            } else if rnum < 0.75 {
+                line = format!("{name} gets a frag for the other team\n");
+            } else {
+                line = format!("{name} loses another friend\n");
+            }
+            behaviors.player_state.frags -= 1.0;
+        } else {
+            behaviors.player_state.frags += 1.0;
+            let health = q1_health_of(simulation, targ);
+            let weapon = behaviors.player_state.weapon;
+            let (death, death2) = if weapon == Q1_IT_AXE {
+                (" was ax-murdered by ", "\n")
+            } else if weapon == Q1_IT_SHOTGUN {
+                (" chewed on ", "'s boomstick\n")
+            } else if weapon == Q1_IT_SUPER_SHOTGUN {
+                (" ate 2 loads of ", "'s buckshot\n")
+            } else if weapon == Q1_IT_NAILGUN {
+                (" was nailed by ", "\n")
+            } else if weapon == Q1_IT_SUPER_NAILGUN {
+                (" was punctured by ", "\n")
+            } else if weapon == Q1_IT_GRENADE_LAUNCHER {
+                if health < -40.0 {
+                    (" was gibbed by ", "'s grenade\n")
+                } else {
+                    (" eats ", "'s pineapple\n")
+                }
+            } else if weapon == Q1_IT_ROCKET_LAUNCHER {
+                if health < -40.0 {
+                    (" was gibbed by ", "'s rocket\n")
+                } else {
+                    (" rides ", "'s rocket\n")
+                }
+            } else if weapon == Q1_IT_LIGHTNING {
+                if behaviors.player_state.water_level > 1 {
+                    (" accepts ", "'s discharge\n")
+                } else {
+                    (" accepts ", "'s shaft\n")
+                }
+            } else {
+                (" was killed by ", "\n")
+            };
+            line = format!("{name}{death}{name}{death2}");
+        }
+    } else {
+        behaviors.player_state.frags -= 1.0;
+        if behaviors.monsters.contains_key(attacker.unwrap_or(targ)) {
+            let class = q1_attacker_classname(behaviors, attacker.unwrap_or(targ));
+            let suffix = match class {
+                "monster_army" => " was shot by a Grunt\n",
+                "monster_demon1" => " was eviscerated by a Fiend\n",
+                "monster_dog" => " was mauled by a Rottweiler\n",
+                "monster_dragon" => " was fried by a Dragon\n",
+                "monster_enforcer" => " was blasted by an Enforcer\n",
+                "monster_fish" => " was fed to the Rotfish\n",
+                "monster_hell_knight" => " was slain by a Death Knight\n",
+                "monster_knight" => " was slashed by a Knight\n",
+                "monster_ogre" => " was destroyed by an Ogre\n",
+                "monster_oldone" => " became one with Shub-Niggurath\n",
+                "monster_shalrath" => " was exploded by a Vore\n",
+                "monster_shambler" => " was smashed by a Shambler\n",
+                "monster_tarbaby" => " was slimed by a Spawn\n",
+                "monster_vomit" => " was vomited on by a Vomitus\n",
+                "monster_wizard" => " was scragged by a Scrag\n",
+                "monster_zombie" => " joins the Zombies\n",
+                // Stock prints the bare name for unmatched kinds.
+                _ => "",
+            };
+            line = format!("{name}{suffix}");
+        } else if attacker_class == "explo_box" {
+            line = format!("{name} blew up\n");
+        } else if attacker.is_some() && attacker_class == "door" {
+            line = format!("{name} was squished\n");
+        } else if attacker_class == "trap_shooter" || attacker_class == "trap_spikeshooter" {
+            line = format!("{name} was spiked\n");
+        } else if attacker_class == "fireball" {
+            line = format!("{name} ate a lavaball\n");
+        } else if attacker_class == "trigger_changelevel" {
+            line = format!("{name} tried to leave\n");
+        } else if behaviors.player_state.water_type == Q1_CONTENTS_WATER {
+            if rnum < 0.5 {
+                line = format!("{name} sleeps with the fishes\n");
+            } else {
+                line = format!("{name} sucks it down\n");
+            }
+        } else if behaviors.player_state.water_type == Q1_CONTENTS_SLIME {
+            if rnum < 0.5 {
+                line = format!("{name} gulped a load of slime\n");
+            } else {
+                line = format!("{name} can't exist on slime alone\n");
+            }
+        } else if behaviors.player_state.water_type == Q1_CONTENTS_LAVA {
+            let health = q1_health_of(simulation, targ);
+            if health < -15.0 {
+                line = format!("{name} burst into flames\n");
+            } else if rnum < 0.5 {
+                line = format!("{name} turned into hot slag\n");
+            } else {
+                line = format!("{name} visits the Volcano God\n");
+            }
+        } else if behaviors.player_state.deathtype == "falling" {
+            behaviors.player_state.deathtype.clear();
+            line = format!("{name} fell to his death\n");
+        } else {
+            line = format!("{name} died\n");
+        }
+    }
+    q1_sprint(behaviors, targ, &line);
+}
+
+/// Death-anim frame counts by anim id (`player.qc:602-659`).
+fn q1_death_anim_frames(anim: u8) -> u8 {
+    match anim {
+        Q1_DEATH_A => 11,
+        Q1_DEATH_C => 15,
+        _ => 9,
+    }
+}
+
+/// Stock `PlayerDead` (`player.qc:428`): the last death frame retires
+/// the think and opens the respawn wait.
+fn q1_player_dead(behaviors: &mut Q1NativeBehaviors) {
+    behaviors.player_state.deadflag = Q1_DEAD_DEAD;
+}
+
+/// Stock `PlayerDeathThink` (`client.qc:692`): corpse friction, the
+/// death-anim advance, then the release-and-press respawn wait.
+/// Owns the weapon pass while `deadflag` is set (`client.qc:921`).
+fn q1_player_death_think(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut qa_world::session::Simulation,
+    player: &ActorId,
+    now: f64,
+    buttons: i32,
+) {
+    if let Some(body) = simulation.body_state(player) {
+        if body.ground.is_some() {
+            let dt = (simulation.frame().elapsed.as_seconds_f64() as f32).max(0.0);
+            let speed = length3(body.velocity);
+            // Stock sheds 20 units per 0.1 s think; scale to the step.
+            let updated = speed - 200.0 * dt;
+            let _ignored = simulation.set_body_velocity(
+                player,
+                if updated <= 0.0 {
+                    vec3(0.0, 0.0, 0.0)
+                } else {
+                    scale3(body.velocity, updated / speed)
+                },
+            );
+        }
+    }
+    match behaviors.player_state.deadflag {
+        Q1_DEAD_DYING => {
+            if now >= behaviors.player_state.dead_until {
+                let frames = q1_death_anim_frames(behaviors.player_state.death_anim);
+                if behaviors.player_state.death_frames >= frames {
+                    q1_player_dead(behaviors);
+                } else {
+                    behaviors.player_state.death_frames += 1;
+                    behaviors.player_state.dead_until = now + 0.1;
+                }
+            }
+        }
+        Q1_DEAD_DEAD => {
+            if buttons != 0 {
+                return;
+            }
+            behaviors.player_state.deadflag = Q1_DEAD_RESPAWNABLE;
+        }
+        Q1_DEAD_RESPAWNABLE => {
+            if buttons == 0 {
+                return;
+            }
+            // Stock clears the latched buttons before respawning; ours
+            // arrive fresh per pass, so there is nothing to clear.
+            q1_respawn(behaviors, simulation, player, now);
+        }
+        _ => {}
+    }
+}
+
+/// Stock `respawn` (`client.qc:353`): coop restores the level-start
+/// parms, deathmatch deals fresh ones, singleplayer restarts the
+/// level. Both multiplayer modes keep a body-queue copy first.
+fn q1_respawn(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut qa_world::session::Simulation,
+    player: &ActorId,
+    now: f64,
+) {
+    if behaviors.coop {
+        q1_copy_to_bodyque(behaviors, simulation, player);
+        q1_put_client_in_server(behaviors, simulation, player, now);
+    } else if behaviors.deathmatch {
+        q1_copy_to_bodyque(behaviors, simulation, player);
+        behaviors.player_state.parms = Q1SpawnParms::default();
+        q1_put_client_in_server(behaviors, simulation, player, now);
+    } else {
+        behaviors.player_state.restart_requested = true;
+    }
+}
+
+/// Stock `CopyToBodyQue` (`world.qc:378`): the four-slot corpse ring,
+/// oldest dropped. Gibbed players leave their head behind.
+fn q1_copy_to_bodyque(behaviors: &mut Q1NativeBehaviors, simulation: &qa_world::session::Simulation, player: &ActorId) {
+    let Some(body) = simulation.body_state(player) else {
+        return;
+    };
+    if behaviors.player_state.body_queue.len() >= 4 {
+        behaviors.player_state.body_queue.remove(0);
+    }
+    behaviors.player_state.body_queue.push(Q1Corpse {
+        origin: body.origin,
+        angles: body.angles,
+        frame: i32::from(behaviors.player_state.death_frames),
+        model: if behaviors.player_state.gibbed_head {
+            "progs/h_player.mdl".to_string()
+        } else {
+            "progs/player.mdl".to_string()
+        },
+    });
+}
+
+/// Stock `SelectSpawnPoint` (`client.qc:407`): test starts win,
+/// coop/DM cycle their spots from the cursor (DM skips occupied
+/// ones), singleplayer prefers `start2` past episode breaks. A map
+/// with no usable spot keeps the corpse position (stock `error()`s;
+/// gamecode never panics).
+fn q1_select_spawn_point(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &qa_world::session::Simulation,
+) -> Option<super::native_q1_spawns::Q1SpawnSpot> {
+    if let Some(spot) = behaviors
+        .spawn_spots
+        .iter()
+        .find(|spot| spot.classname == "testplayerstart")
+    {
+        return Some(spot.clone());
+    }
+    if behaviors.coop {
+        if let Some(spot) = q1_next_spawn_spot(behaviors, "info_player_coop") {
+            return Some(spot);
+        }
+        if let Some(spot) = q1_next_spawn_spot(behaviors, "info_player_start") {
+            return Some(spot);
+        }
+    } else if behaviors.deathmatch {
+        if let Some(spot) = q1_next_open_deathmatch_spot(behaviors, simulation) {
+            return Some(spot);
+        }
+    }
+    if behaviors.serverflags != 0 {
+        if let Some(spot) = behaviors
+            .spawn_spots
+            .iter()
+            .find(|spot| spot.classname == "info_player_start2")
+        {
+            return Some(spot.clone());
+        }
+    }
+    behaviors
+        .spawn_spots
+        .iter()
+        .find(|spot| spot.classname == "info_player_start")
+        .cloned()
+}
+
+/// Stock `find` from the cursor: the next spot of a class in spawn
+/// order, wrapping once, with the cursor advanced past it.
+fn q1_next_spawn_spot(
+    behaviors: &mut Q1NativeBehaviors,
+    classname: &str,
+) -> Option<super::native_q1_spawns::Q1SpawnSpot> {
+    let count = behaviors.spawn_spots.len();
+    if count == 0 {
+        return None;
+    }
+    let start = behaviors.lastspawn_spot.map_or(0, |index| (index + 1) % count);
+    for step in 0..count {
+        let index = (start + step) % count;
+        if behaviors.spawn_spots[index].classname == classname {
+            behaviors.lastspawn_spot = Some(index);
+            return Some(behaviors.spawn_spots[index].clone());
+        }
+    }
+    None
+}
+
+/// Stock deathmatch cycling: the next `info_player_deathmatch` spot
+/// with no player within 32 units, else the cycle-start spot even
+/// occupied (stock returns `lastspawn` after a full loop).
+fn q1_next_open_deathmatch_spot(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &qa_world::session::Simulation,
+) -> Option<super::native_q1_spawns::Q1SpawnSpot> {
+    let count = behaviors.spawn_spots.len();
+    if count == 0 {
+        return None;
+    }
+    let start = behaviors.lastspawn_spot.map_or(0, |index| (index + 1) % count);
+    let player_origin = behaviors
+        .player
+        .as_ref()
+        .and_then(|player| simulation.body_state(player))
+        .map(|body| body.origin);
+    let mut fallback = None;
+    for step in 0..count {
+        let index = (start + step) % count;
+        if behaviors.spawn_spots[index].classname != "info_player_deathmatch" {
+            continue;
+        }
+        if fallback.is_none() {
+            fallback = Some((index, behaviors.spawn_spots[index].clone()));
+        }
+        let clear = player_origin.is_none_or(|origin| {
+            let offset = vec3(
+                origin.x - behaviors.spawn_spots[index].origin.x,
+                origin.y - behaviors.spawn_spots[index].origin.y,
+                origin.z - behaviors.spawn_spots[index].origin.z,
+            );
+            length3(offset) >= 32.0
+        });
+        if clear {
+            behaviors.lastspawn_spot = Some(index);
+            return Some(behaviors.spawn_spots[index].clone());
+        }
+    }
+    if let Some((index, spot)) = fallback {
+        behaviors.lastspawn_spot = Some(index);
+        return Some(spot);
+    }
+    None
+}
+
+/// Stock `PutClientInServer` (`client.qc:479`): full health, solid and
+/// damageable again, decoded parms in hand, placed on the spawn
+/// spot with the view snapped (`fixangle` rides `respawn_angles`;
+/// `step_weapons` applies it). Air, powerup, and effect timers live
+/// with their slices; the respawn fog cracker plays at once (stock
+/// delays it 0.2 s on a temp entity with no channel here).
+#[allow(clippy::too_many_lines)]
+fn q1_put_client_in_server(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut qa_world::session::Simulation,
+    player: &ActorId,
+    now: f64,
+) {
+    if behaviors.serverflags != 0 && behaviors.mapname == "start" {
+        behaviors.player_state.parms = Q1SpawnParms::default();
+    }
+    let parms = behaviors.player_state.parms.clone();
+    behaviors.player_items = parms.items;
+    behaviors.player_ammo.shells = parms.shells;
+    behaviors.player_ammo.nails = parms.nails;
+    behaviors.player_ammo.rockets = parms.rockets;
+    behaviors.player_ammo.cells = parms.cells;
+    behaviors.player_state.weapon = parms.weapon;
+    behaviors.player_max_health = 100.0;
+    if let Some(combat) = simulation.combat_state(player).cloned() {
+        let armor = if parms.armorvalue > 0.0 {
+            let item = if parms.armortype >= 0.8 {
+                "q1:item_armorInv"
+            } else if parms.armortype >= 0.6 {
+                "q1:item_armor2"
+            } else {
+                "q1:item_armor1"
+            };
+            RegularArmor::Q1 {
+                points: parms.armorvalue,
+                absorption: parms.armortype,
+                item: item.to_string(),
+            }
+        } else {
+            RegularArmor::None
+        };
+        let _ignored = simulation.set_combat(
+            player,
+            CombatState {
+                health: parms.health,
+                can_take_damage: true,
+                armor: ArmorState {
+                    regular: armor,
+                    ..combat.armor
+                },
+                ..combat
+            },
+        );
+    }
+    q1_w_set_current_ammo(behaviors);
+    behaviors.player_state.attack_finished = now;
+    behaviors.player_state.deadflag = Q1_DEAD_NO;
+    behaviors.player_state.death_frames = 0;
+    behaviors.player_state.gibbed_head = false;
+    behaviors.player_state.attack = Q1PlayerAttack::None;
+    behaviors.player_state.show_hostile = 0.0;
+    behaviors.solids.insert(player);
+    if let Some(spot) = q1_select_spawn_point(behaviors, simulation) {
+        let _ignored = simulation.set_body_origin(player, vec3(spot.origin.x, spot.origin.y, spot.origin.z + 1.0));
+        let _ignored = simulation.set_body_angles(player, spot.angles);
+        let _ignored = simulation.set_body_velocity(player, vec3(0.0, 0.0, 0.0));
+        behaviors.player_angles = spot.angles;
+        behaviors.player_state.respawn_angles = Some(spot.angles);
+        if behaviors.coop || behaviors.deathmatch {
+            let vectors = angle_vectors(spot.angles);
+            let fog = vec3(
+                spot.origin.x + vectors.forward.x * 20.0,
+                spot.origin.y + vectors.forward.y * 20.0,
+                spot.origin.z + vectors.forward.z * 20.0 + 1.0,
+            );
+            behaviors.temp_ents.push(Q1TempEnt::Teleport { at: fog });
+            let roll = q1_monster_random(behaviors) * 5.0;
+            let sample = if roll < 1.0 {
+                "misc/r_tele1.wav"
+            } else if roll < 2.0 {
+                "misc/r_tele2.wav"
+            } else if roll < 3.0 {
+                "misc/r_tele3.wav"
+            } else if roll < 4.0 {
+                "misc/r_tele4.wav"
+            } else {
+                "misc/r_tele5.wav"
+            };
+            q1_monster_sound(behaviors, player, 2, sample, 1.0, 1.0);
+        }
+    }
 }
 
 #[cfg(test)]
