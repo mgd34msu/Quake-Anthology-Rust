@@ -6236,4 +6236,100 @@ mod tests {
         assert_eq!(frames, 3);
         assert!(composed.app.is_closed());
     }
+
+    /// Q1-0258: the windowed run rides the e1m4 secret exit into
+    /// e1m8 — Ziggurat Vertigo, the episode-1 secret level. e1m4
+    /// carries two slipgates (the normal e1m5 gate plus the secret
+    /// e1m8 gate); touching the secret gate enters the
+    /// intermission, pressing through travels via the windowed
+    /// frame's own `take_pending_travel` with parms and
+    /// `serverflags` carried, and the arrival census is the full
+    /// e1m8 count.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_windowed_e1m4_secret_exit_reaches_e1m8() {
+        use crate::bootstrap::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN,
+        };
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(mut composed) = windowed_e1_run("maps/e1m4.bsp") else {
+            return;
+        };
+        assert!(composed.app.active_game(), "e1m4 has a scene");
+        live_silence_door_fields(composed.app.backend_mut().world.as_mut().expect("windowed world"));
+        windowed_soak(&mut composed.app, 1.0);
+        // Scripted campaign loadout plus the episode flag: the
+        // secret arrival must carry both.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("windowed world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(windowed_world(&composed.app));
+        assert_eq!(exits.len(), 2, "e1m4 has two exits");
+        assert!(
+            exits.iter().any(|(_, map)| map == "e1m5"),
+            "the normal e1m5 gate stays"
+        );
+        let secret = exits
+            .iter()
+            .find(|(_, map)| map == "e1m8")
+            .map(|(exit, _)| exit.clone())
+            .expect("the secret e1m8 gate");
+        windowed_enter_intermission(&mut composed.app, &secret);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 0);
+        windowed_pass_exit_gate(&mut composed.app);
+        live_press_buttons(composed.app.backend_mut().world.as_mut().expect("windowed world"), 1);
+        windowed_tick(&mut composed.app);
+        // The windowed frame traveled through the secret gate: the
+        // world is e1m8 now, parms and flags carried.
+        {
+            let world = windowed_world(&composed.app);
+            assert_eq!(world.map(), "maps/e1m8.bsp");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "e1m8");
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_ne!(borrowed.player_items & Q1_IT_NAILGUN, 0, "nailgun carried");
+            assert_ne!(
+                borrowed.player_items & (Q1_IT_AXE | Q1_IT_SHOTGUN),
+                0,
+                "spawn arms carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 50.0);
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            let arrival = world.player_actor().cloned().expect("arrival player");
+            assert_eq!(
+                world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                Some(100.0)
+            );
+        }
+        // The arrival census is the full e1m8 count.
+        windowed_soak(&mut composed.app, 1.0);
+        {
+            let world = windowed_world(&composed.app);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().total_monsters,
+                LIVE_E1M8_NATIVE_SKILL2_TOTAL
+            );
+            assert_eq!(live_ogres(world).len(), 24, "e1m8 spawns twenty-four ogres");
+            assert_eq!(live_wizards(world).len(), 7, "e1m8 spawns seven scrags");
+            assert_eq!(live_shamblers(world).len(), 3, "e1m8 spawns three shamblers");
+        }
+        let pixels = composed.app.capture_next_frame().expect("e1m8 captures");
+        assert!(!pixels.is_empty(), "e1m8 captures pixels");
+        assert!(count_non_black(&pixels) > 1000, "the arrival presents");
+        let frames = drive_windowed_application(&mut composed.app, &composed.quit, Some(3))
+            .expect("e1m8 drives");
+        assert_eq!(frames, 3);
+        assert!(composed.app.is_closed());
+    }
 }
