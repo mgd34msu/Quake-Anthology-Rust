@@ -4274,18 +4274,17 @@ mod tests {
     const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
 
     /// e1m2 native census at skill 2: 12 ogres plus 16 grunts plus
-    /// 5 knights plus 3 fiends (a sixth knight and a fourth fiend
-    /// carry the 1024 not-hard bit). The wizards and scrags keep the
-    /// generic path until their slices land, so they stay out of the
+    /// 5 knights plus 3 fiends plus 6 wizards (a sixth knight and a
+    /// fourth fiend carry the 1024 not-hard bit). The scrags keep the
+    /// generic path until their slice lands, so they stay out of the
     /// native count.
-    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 36;
+    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 42;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies plus
-    /// 7 fiends plus 3 shamblers (all walking; five more zombies and
-    /// two more fiends carry the 1024 not-hard bit). The wizards keep
-    /// the generic path until their slice lands, so they stay out of
-    /// the native count.
-    const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 58;
+    /// 7 fiends plus 3 shamblers plus 7 wizards (all walking; five
+    /// more zombies and two more fiends carry the 1024 not-hard bit).
+    /// Every e1m3 monster kind is native now.
+    const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 65;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
