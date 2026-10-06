@@ -1559,12 +1559,7 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
 /// at random (`army_pain`, `soldier.qc`). `take` is the ceiled
 /// post-armor damage (`T_Damage`, `combat.qc`); only the zombie reads
 /// it.
-pub fn q1_monster_th_pain(
-    behaviors: &mut Q1NativeBehaviors,
-    simulation: &mut Simulation,
-    actor: &ActorId,
-    take: f64,
-) {
+pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Simulation, actor: &ActorId, take: f64) {
     let now = simulation.frame().time.as_seconds_f64();
     let Some(monster) = behaviors.monsters.get(actor).cloned() else {
         return;
@@ -5013,7 +5008,11 @@ fn q1_zombie_frame<L: ServerLogic>(
             }
         }
         (Q1MonsterSeq::ZombieWalk, i) => {
-            q1_ai_walk(ctx, actor, ZOMBIE_WALK_STEPS.get(usize::from(i)).copied().unwrap_or(0.0));
+            q1_ai_walk(
+                ctx,
+                actor,
+                ZOMBIE_WALK_STEPS.get(usize::from(i)).copied().unwrap_or(0.0),
+            );
         }
         (Q1MonsterSeq::ZombieRun, 0) => {
             q1_ai_run(ctx, actor, ZOMBIE_RUN_STEPS[0]);
@@ -6582,10 +6581,7 @@ mod tests {
         assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Zombie).is_none());
         assert!(matches!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Zombie),
-            Some(Q1MonsterThink::Frame(
-                Q1MonsterSeq::ZombieAttA,
-                0
-            ))
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttA, 0))
                 | Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttB, 0))
                 | Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttC, 0))
         ));
@@ -6647,8 +6643,10 @@ mod tests {
             "ignored pain keeps the hunt think"
         );
         assert!(
-            behaviors.sounds.iter().all(|sound| sound.sample != "zombie/z_pain.wav"
-                && sound.sample != "zombie/z_pain1.wav"),
+            behaviors
+                .sounds
+                .iter()
+                .all(|sound| sound.sample != "zombie/z_pain.wav" && sound.sample != "zombie/z_pain1.wav"),
             "ignored pain stays pain-silent"
         );
     }
@@ -6676,10 +6674,7 @@ mod tests {
         assert_eq!(q1_health_of(server.simulation(), zombie.id()), 60.0);
         let monster = behaviors.monsters.get(zombie.id()).unwrap();
         assert_eq!(monster.inpain, 2);
-        assert_eq!(
-            monster.think,
-            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
-        );
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0));
     }
 
     #[test]
@@ -6691,8 +6686,7 @@ mod tests {
         let fields = zombie_fields(&[]);
         let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
         arm_zombie(&mut server, &mut behaviors, zombie.id());
-        let wound = |server: &mut Server<qa_guest::server::GuestServerLogic>,
-                     behaviors: &mut Q1NativeBehaviors| {
+        let wound = |server: &mut Server<qa_guest::server::GuestServerLogic>, behaviors: &mut Q1NativeBehaviors| {
             let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
             q1_t_damage(
                 behaviors,
@@ -6733,10 +6727,7 @@ mod tests {
         wound(&mut server, &mut behaviors);
         let monster = behaviors.monsters.get(zombie.id()).unwrap();
         assert_eq!(monster.inpain, 2);
-        assert_eq!(
-            monster.think,
-            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
-        );
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0));
     }
 
     #[test]
@@ -6765,10 +6756,7 @@ mod tests {
         assert_eq!(q1_health_of(server.simulation(), zombie.id()), 60.0);
         let monster = behaviors.monsters.get(zombie.id()).unwrap();
         assert_eq!(monster.inpain, 2);
-        assert_eq!(
-            monster.think,
-            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
-        );
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0));
     }
 
     #[test]

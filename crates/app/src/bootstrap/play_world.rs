@@ -6901,11 +6901,7 @@ mod tests {
             assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
             assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
             assert_eq!(monster.inpain, 0);
-            let combat = world
-                .server()
-                .simulation()
-                .combat_state(zombie)
-                .expect("zombie combat");
+            let combat = world.server().simulation().combat_state(zombie).expect("zombie combat");
             assert_eq!(combat.health, 60.0);
             if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, _)) {
                 walkers += 1;
@@ -6974,9 +6970,12 @@ mod tests {
             for _ in 0..300 {
                 live_tick(&mut world);
                 let behaviors = world.q1_behaviors().expect("Q1 behaviors");
-                if behaviors.borrow().sounds.iter().any(|sound| {
-                    sound.entity == *candidate && sound.sample == "zombie/z_shot1.wav"
-                }) {
+                if behaviors
+                    .borrow()
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.entity == *candidate && sound.sample == "zombie/z_shot1.wav")
+                {
                     fired = true;
                     break;
                 }
@@ -7094,7 +7093,10 @@ mod tests {
         live_tick(&mut world);
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         assert_eq!(behaviors.borrow().gibs.len(), 4, "three chunks plus the head");
-        assert!(behaviors.borrow().pending_gibs.is_empty(), "the pass spawns queued chunks");
+        assert!(
+            behaviors.borrow().pending_gibs.is_empty(),
+            "the pass spawns queued chunks"
+        );
     }
 
     #[test]

@@ -150,7 +150,11 @@ pub fn quake_atof(text: &str) -> f64 {
     if at(offset) == b'\'' {
         // WinQuake `Q_atof` returns `sign * str[1]` where `char` is signed
         // (common.c), so high bytes go negative.
-        let code = if offset + 1 < bytes.len() { bytes[offset + 1] as i8 } else { 0 };
+        let code = if offset + 1 < bytes.len() {
+            bytes[offset + 1] as i8
+        } else {
+            0
+        };
         return sign * f64::from(code);
     }
     let mut value = 0.0;
