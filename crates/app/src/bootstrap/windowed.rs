@@ -2437,7 +2437,8 @@ mod tests {
     use crate::bootstrap::play_world::tests::{
         LIVE_E1M1_SKILL2_TOTAL, LIVE_E1M2_NATIVE_SKILL2_TOTAL, LIVE_E1M3_NATIVE_SKILL2_TOTAL,
         LIVE_E1M4_NATIVE_SKILL2_TOTAL, LIVE_E1M5_NATIVE_SKILL2_TOTAL, LIVE_E1M6_NATIVE_SKILL2_TOTAL,
-        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL, live_bosses,
+        LIVE_E1M7_NATIVE_SKILL2_TOTAL, LIVE_E1M8_NATIVE_SKILL2_TOTAL, LIVE_END_NATIVE_SKILL2_TOTAL,
+        live_bosses,
         live_changelevel_exits, live_dogs, live_doors_by_targetname, live_expected_finale, live_fiends,
         live_fire_use, live_fish, live_grunts, live_knights, live_monster_feet, live_now, live_ogres,
         live_oldones, live_place_player, live_player_health, live_press_buttons, live_set_player_health,
@@ -5376,7 +5377,7 @@ mod tests {
     /// skill inhibition. Each map also presents (a non-black capture)
     /// and drives real frames before closing.
     ///
-    /// One sequential test (not seven parallel ones) so concurrent
+    /// One sequential test (not eight parallel ones) so concurrent
     /// SDL windows never contend: each map opens, soaks, captures,
     /// drives, and closes in turn.
     #[test]
@@ -5487,6 +5488,21 @@ mod tests {
                     wizards: 0,
                     bosses: 1,
                     total: LIVE_E1M7_NATIVE_SKILL2_TOTAL,
+                },
+            ),
+            (
+                "maps/e1m8.bsp",
+                WindowedE1Census {
+                    dogs: 0,
+                    grunts: 0,
+                    ogres: 24,
+                    knights: 0,
+                    fiends: 0,
+                    shamblers: 3,
+                    zombies: 0,
+                    wizards: 7,
+                    bosses: 0,
+                    total: LIVE_E1M8_NATIVE_SKILL2_TOTAL,
                 },
             ),
         ] {
