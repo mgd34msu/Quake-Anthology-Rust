@@ -3094,6 +3094,12 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Enforcer)
     }
 
+    /// Live ogres on the map, in record order.
+    fn live_ogres(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Ogre)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -3213,6 +3219,11 @@ mod tests {
     /// 7 dogs (one grunt and one dog carry the 1024 not-hard bit, so
     /// skill inhibition drops them).
     const LIVE_E2M1_SKILL2_TOTAL: u32 = 46;
+
+    /// e1m2 native census at skill 2: 12 ogres plus 16 grunts. The
+    /// fiends, knights, and scrags keep the generic path until their
+    /// slices land, so they stay out of the native count.
+    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 28;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -4465,5 +4476,320 @@ mod tests {
             .iter()
             .filter(|sound| sound.entity == *enforcer && sound.sample == "enforcer/enfire.wav")
             .count()
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_ogre_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let ogres = live_ogres(&world);
+        assert_eq!(ogres.len(), 12, "e1m2 spawns twelve ogres");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M2_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        for ogre in &ogres {
+            let monster = borrowed.monsters.get(ogre).expect("ogre record");
+            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(ogre).expect("ogre combat");
+            assert_eq!(combat.health, 200.0);
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "ogres stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless ogres stand down");
+            }
+        }
+        // A seventh ogre routes t99 but carries the 1024 not-hard bit,
+        // so skill inhibition drops it.
+        assert_eq!(walkers, 6, "six e1m2 ogres patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_ogre_grenade_wounds() {
+        use super::super::simulation::native_q1_monsters::{Q1TempEnt, Q1_EF_MUZZLEFLASH};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let ogres = live_ogres(&world);
+        // Offer the player to each ogre in turn until one sights and
+        // lobs. The 350-unit stand keeps mid range past the 1 s hunt
+        // hold, so the ogre lobs instead of closing to the saw.
+        let mut gunner = None;
+        for candidate in ogres.iter().take(8) {
+            live_place_player_before(&mut world, candidate, 350.0);
+            let mut fired = false;
+            for _ in 0..150 {
+                live_tick(&mut world);
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                let monster = borrowed.monsters.get(candidate).expect("ogre record");
+                if monster.effects & Q1_EF_MUZZLEFLASH != 0
+                    && borrowed
+                        .sounds
+                        .iter()
+                        .any(|sound| sound.entity == *candidate && sound.sample == "weapons/grenade.wav")
+                {
+                    fired = true;
+                    break;
+                }
+            }
+            if fired {
+                gunner = Some(candidate.clone());
+                break;
+            }
+        }
+        gunner.expect("an ogre sights, hunts, and lobs its grenade");
+        // Hold every think: no fresh attacks launch, while in-flight
+        // grenades still bounce and burst on their own records.
+        live_hold_monsters(&mut world);
+        // The lob arcs, bounces, and bursts on contact or fuse; only
+        // grenade blasts can wound from here.
+        let mut wounded = false;
+        for _ in 0..240 {
+            live_tick(&mut world);
+            if live_player_health(&world) < 1000.0 {
+                wounded = true;
+                break;
+            }
+        }
+        assert!(wounded, "the grenade blast wounds");
+        // Every grenade bursts on contact or at its 2.5 s fuse; drain
+        // past the fuse so no stray grenade outlives the proof.
+        for _ in 0..400 {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors.borrow().projectiles.is_empty() {
+                break;
+            }
+            live_tick(&mut world);
+        }
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Explosion { .. })),
+            "bursts queue the explosion flash"
+        );
+        assert!(
+            borrowed.sounds.iter().any(|sound| sound.sample == "weapons/r_exp3.wav"),
+            "bursts crack"
+        );
+        assert!(
+            borrowed.projectiles.is_empty(),
+            "burst grenades remove, {} still bouncing",
+            borrowed.projectiles.len()
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_ogre_melee_wounds() {
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let ogres = live_ogres(&world);
+        // Stand inside chainsaw reach of each ogre in turn until one
+        // starts its stroke and rips.
+        let mut ripper = None;
+        for candidate in ogres.iter().take(8) {
+            live_place_player_before(&mut world, candidate, 80.0);
+            let mut stroked = false;
+            for _ in 0..150 {
+                live_tick(&mut world);
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                if behaviors
+                    .borrow()
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.entity == *candidate && sound.sample == "ogre/ogsawatk.wav")
+                {
+                    stroked = true;
+                    break;
+                }
+            }
+            if stroked {
+                ripper = Some(candidate.clone());
+                break;
+            }
+        }
+        ripper.expect("an ogre starts its chainsaw stroke");
+        let mut wounded = false;
+        for _ in 0..120 {
+            live_tick(&mut world);
+            if live_player_health(&world) < 1000.0 {
+                wounded = true;
+                break;
+            }
+        }
+        assert!(wounded, "the chainsaw stroke rips");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_ogre_pain_then_dies_drops_rockets() {
+        use super::super::simulation::native_q1_items::Q1ItemKind;
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let ogres = live_ogres(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &ogres[0], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&ogres[0]).expect("ogre record");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::OgrePain, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::OgrePainB, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::OgrePainC, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::OgrePainD, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::OgrePainE, 0)
+                ),
+                "wounds run pain, got {:?}",
+                monster.think
+            );
+        }
+        live_damage(&mut world, &ogres[0], Some(&player), 200.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&ogres[0]).expect("ogre record");
+            assert!(monster.dead);
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::OgreDie, 0) | Q1MonsterThink::Frame(Q1MonsterSeq::OgreBDie, 0)
+                ),
+                "death runs die, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "ogre/ogdth.wav"));
+        }
+        // The third death frame drops the pack unsolid.
+        let mut pack = None;
+        for _ in 0..60 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            pack = borrowed.items.iter().find_map(|(id, item)| match &item.kind {
+                Q1ItemKind::Backpack { rockets, .. } => Some((id.clone(), *rockets)),
+                _ => None,
+            });
+            if pack.is_some() {
+                break;
+            }
+        }
+        let Some((pack, rockets)) = pack else {
+            panic!("the death drop leaves a backpack");
+        };
+        assert_eq!(rockets, 2.0, "ogres drop 2 rockets");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                !behaviors.borrow().solids.contains(&ogres[0]),
+                "the death drop goes unsolid"
+            );
+        }
+        // The pack settles, then the player takes it for 2 rockets.
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let settled = borrowed_settled(&behaviors.borrow(), &pack);
+            if settled {
+                break;
+            }
+        }
+        let center = live_volume_center(&world, &pack);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.player_ammo.rockets, 2.0, "the pack grants its rockets");
+        assert!(!borrowed.items.keys().any(|id| id == &pack), "taken packs remove");
+        assert!(
+            borrowed.sprints.iter().any(|sprint| sprint.text == "You get 2 rockets"),
+            "the pack prints its receipt"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_ogre_patrol_walks_corners() {
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let ogres = live_ogres(&world);
+        let patrol = ogres
+            .iter()
+            .find(|ogre| {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                borrowed
+                    .monsters
+                    .get(ogre)
+                    .is_some_and(|monster| monster.movetarget.is_some())
+            })
+            .cloned()
+            .expect("e1m2 routes an ogre through corners");
+        let start = live_monster_feet(&world, &patrol);
+        let first = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                .expect("first corner")
+        };
+        let mut advanced = false;
+        for _ in 0..1200 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                != Some(first.clone())
+            {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(advanced, "the patrol reaches its corner and turns onward");
+        let end = live_monster_feet(&world, &patrol);
+        let moved = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        assert!(moved > 10.0, "the patrol travels, moved {moved}");
     }
 }
