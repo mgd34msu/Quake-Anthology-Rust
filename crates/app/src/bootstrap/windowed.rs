@@ -1692,6 +1692,22 @@ impl WindowedStartupBackend {
             world.step_weapons(Some(&command));
         }
         world.step_monsters();
+        // Q1 level travel: a completed `GotoNextMap` reloads the world
+        // through the same install as a menu launch (scene, input,
+        // audio, cvars), carrying spawn parms and `serverflags`.
+        match world.take_pending_travel() {
+            Ok(Some(next)) => {
+                eprintln!(
+                    "windowed: changelevel to {} ({} of {} map entities)",
+                    next.map(),
+                    next.spawned(),
+                    next.entity_records(),
+                );
+                self.set_world(next);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("windowed: changelevel failed ({error})"),
+        }
     }
 
     /// Sample the live seat and build one world user command, or `None`

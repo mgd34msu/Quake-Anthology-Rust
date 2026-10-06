@@ -40,6 +40,7 @@ use super::native_q1_triggers::{
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
 use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
+use super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -61,10 +62,6 @@ const DOOR_SILVER_KEY: i32 = 16;
 /// Door spawnflags (`doors.qc:1-6`).
 const DOOR_TOGGLE: i32 = 32;
 
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY1: u32 = 131_072;
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY2: u32 = 262_144;
 /// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
 pub const IT_SUPERHEALTH: u32 = 65_536;
 /// Armor bits (`defs.qc:300-302`).
@@ -277,10 +274,10 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
         .unwrap_or(0.0);
     let mut items = 0u32;
     if fields.spawnflags & DOOR_SILVER_KEY != 0 {
-        items |= IT_KEY1;
+        items |= Q1_IT_KEY1;
     }
     if fields.spawnflags & DOOR_GOLD_KEY != 0 {
-        items |= IT_KEY2;
+        items |= Q1_IT_KEY2;
     }
     if items != 0 {
         wait = -1.0;
@@ -1133,7 +1130,7 @@ pub(crate) fn q1_door_fire(
 /// medieval/runic/base worlds. Other worldtypes print nothing, like the
 /// stock `if` chain with no `else`.
 fn q1_key_deny_text(items: u32, worldtype: u8) -> Option<&'static str> {
-    let silver = items == IT_KEY1;
+    let silver = items == Q1_IT_KEY1;
     match (silver, worldtype) {
         (true, 2) => Some("You need the silver keycard"),
         (true, 1) => Some("You need the silver runekey"),
@@ -1391,6 +1388,7 @@ mod tests {
     use qa_core::time::SourceTime;
     use qa_world::body::BodyState;
 
+    use super::super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
     use super::*;
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
@@ -1645,11 +1643,11 @@ mod tests {
         // Key doors take key bits and wait -1.
         let fields = door_fields(&[("spawnflags", "16"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY1);
+        assert_eq!(params.items, Q1_IT_KEY1);
         assert_eq!(params.wait, -1.0);
         let fields = door_fields(&[("spawnflags", "8"), ("wait", "5"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY2);
+        assert_eq!(params.items, Q1_IT_KEY2);
         assert_eq!(params.wait, -1.0);
 
         // Explicit nonzero values survive.
@@ -1850,7 +1848,7 @@ mod tests {
             .simulation_mut()
             .set_body_origin(player.id(), vec3(32.0, 32.0, 64.0))
             .unwrap();
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         server.tick(SourceTime::Seconds(0.05)).unwrap();
         assert_eq!(shared.borrow().player_keys, 0);
         assert!(!server.triggers_mut().is_trigger(&door));
@@ -1883,7 +1881,7 @@ mod tests {
         assert_eq!(shared.borrow().doors.get(&door).unwrap().wait, -1.0);
         let player = spawn_player(&mut server, vec3(32.0, 32.0, 64.0));
         shared.borrow_mut().set_player(Some(player.id().clone()));
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         install_q1_native(&mut server, Rc::clone(&shared));
         // Touch with the key carried consumes the key and opens the door.
         server.tick(SourceTime::Seconds(0.05)).unwrap();
