@@ -4392,6 +4392,15 @@ pub(crate) mod tests {
     /// else does). Every e2m5 monster kind is native now.
     const LIVE_E2M5_NATIVE_SKILL2_TOTAL: u32 = 61;
 
+    /// e2m6 native census at skill 2: 16 ogres plus 14 hell
+    /// knights plus 4 wizards plus 27 zombie records (one
+    /// crucified, uncounted per `zombie.qc:508-515`) plus 18
+    /// fiends plus 5 shamblers plus 2 vores: 16 + 14 + 4 + 26 +
+    /// 18 + 5 + 2 = 85 (one more ogre and one more fiend carry
+    /// the 1024 not-hard bit; nothing else does). Every e2m6
+    /// monster kind is native now.
+    const LIVE_E2M6_NATIVE_SKILL2_TOTAL: u32 = 85;
+
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
     /// plus 1 fiend plus 3 shamblers plus 16 hell knights: 15 + 7 +
@@ -9814,6 +9823,69 @@ pub(crate) mod tests {
             let combat = world.server().simulation().combat_state(vore).expect("vore combat");
             assert_eq!(combat.health, 400.0);
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0149_e2m6_vore_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e2m6.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e2m6 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let vores = live_vores(&world);
+        assert_eq!(vores.len(), 2, "e2m6 spawns two vores");
+        assert_eq!(live_ogres(&world).len(), 16, "e2m6 spawns sixteen ogres");
+        assert_eq!(live_hknights(&world).len(), 14, "e2m6 spawns fourteen hell knights");
+        assert_eq!(live_wizards(&world).len(), 4, "e2m6 spawns four scrags");
+        assert_eq!(live_zombies(&world).len(), 27, "e2m6 spawns twenty-seven zombies");
+        assert_eq!(live_fiends(&world).len(), 18, "e2m6 spawns eighteen fiends");
+        assert_eq!(live_shamblers(&world).len(), 5, "e2m6 spawns five shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E2M6_NATIVE_SKILL2_TOTAL);
+        // One e2m6 zombie hangs crucified (`SPAWN_CRUCIFIED`):
+        // stock `zombie.qc:508-515` routes it to `zombie_cruc1`
+        // with no `walkmonster_start`, so it holds a record but
+        // never counts toward the 85.
+        let crucified = live_zombies(&world)
+            .iter()
+            .filter(|zombie| {
+                borrowed.monsters.get(zombie).is_some_and(|monster| {
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieCruc, _))
+                })
+            })
+            .count();
+        assert_eq!(crucified, 1, "one e2m6 zombie hangs crucified");
+        let mut targeted = 0;
+        for vore in &vores {
+            let monster = borrowed.monsters.get(vore).expect("vore record");
+            assert_eq!(monster.flags & 32, 32, "StartGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShStand, _)),
+                "vores stand, got {:?}",
+                monster.think
+            );
+            assert!(monster.pausetime > 9999999.0, "standing vores stand down");
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            let combat = world.server().simulation().combat_state(vore).expect("vore combat");
+            assert_eq!(combat.health, 400.0);
+        }
+        // One e2m6 vore carries a target in the lump, but t51 names
+        // a `func_door`, not a `path_corner`, so stock
+        // `walkmonster_start_go` (`monsters.qc:105-108`) keeps its
+        // movetarget and stands down with `pausetime`, like the
+        // original.
+        assert_eq!(targeted, 1, "one e2m6 vore resolves a movetarget");
     }
 
     #[test]
