@@ -44,7 +44,7 @@ use qa_world::WorldError;
 
 use super::native_q1_spawns::{
     q1_can_take_damage, q1_door_fire, q1_field_or, q1_health_of, q1_model_index, q1_movedir, q1_remove,
-    Q1IntermissionSpot, Q1NativeBehaviors, Q1SpawnSpot,
+    Q1IntermissionSpot, Q1IntermissionStats, Q1NativeBehaviors, Q1SpawnSpot,
 };
 
 /// `trigger_multiple` NOTOUCH spawnflag (`triggers.qc:13`): fire only via
@@ -1728,6 +1728,19 @@ fn q1_find_intermission(behaviors: &mut Q1NativeBehaviors) -> Option<Q1Intermiss
     behaviors.start_spots.first().cloned()
 }
 
+/// Episode-1 finale, shareware text (`client.qc:172`).
+const FINALE_E1_SHAREWARE: &str = "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!";
+/// Episode-1 finale, registered text (`client.qc:177`).
+const FINALE_E1_REGISTERED: &str = "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!";
+/// Episode-2 finale (`client.qc:188`).
+const FINALE_E2: &str = "The Rune of Black Magic throbs evilly in\nyour hand and whispers dark thoughts\ninto your brain. You learn the inmost\nlore of the Hell-Mother; Shub-Niggurath!\nYou now know that she is behind all the\nterrible plotting which has led to so\nmuch death and horror. But she is not\ninviolate! Armed with this Rune, you\nrealize that once all four Runes are\ncombined, the gate to Shub-Niggurath's\nPit will open, and you can face the\nWitch-Goddess herself in her frightful\notherworld cathedral.";
+/// Episode-3 finale (`client.qc:198`).
+const FINALE_E3: &str = "The charred viscera of diabolic horrors\nbubble viscously as you seize the Rune\nof Hell Magic. Its heat scorches your\nhand, and its terrible secrets blight\nyour mind. Gathering the shreds of your\ncourage, you shake the devil's shackles\nfrom your soul, and become ever more\nhard and determined to destroy the\nhideous creatures whose mere existence\nthreatens the souls and psyches of all\nthe population of Earth.";
+/// Episode-4 finale (`client.qc:208`).
+const FINALE_E4: &str = "Despite the awful might of the Elder\nWorld, you have achieved the Rune of\nElder Magic, capstone of all types of\narcane wisdom. Beyond good and evil,\nbeyond life and death, the Rune\npulsates, heavy with import. Patient and\npotent, the Elder Being Shub-Niggurath\nweaves her dire plans to clear off all\nlife from the Earth, and bring her own\nfoul offspring to our world! For all the\ndwellers in these nightmare dimensions\nare her descendants! Once all Runes of\nmagic power are united, the energy\nbehind them will blast open the Gateway\nto Shub-Niggurath, and you can travel\nthere to foil the Hell-Mother's plots\nin person.";
+/// All-four-runes finale (`client.qc:226`).
+const FINALE_ALL_RUNES: &str = "Now, you have all four Runes. You sense\ntremendous invisible forces moving to\nunseal ancient barriers. Shub-Niggurath\nhad hoped to use the Runes Herself to\nclear off the Earth, but now instead,\nyou will use them to enter her home and\nconfront her as an avatar of avenging\nEarth-life. If you defeat her, you will\nbe remembered forever as the savior of\nthe planet. If she conquers, it will be\nas if you had never been born.";
+
 /// Run `execute_changelevel` (`client.qc:253-288`): enter the
 /// intermission — `running` 1, the 5s deathmatch / 2s single-player
 /// exit gate, the CD track 3 cue, the player frozen at the
@@ -1776,12 +1789,91 @@ fn q1_execute_changelevel(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
     });
 }
 
+/// Intermission tally for the HUD slice: level kills, secrets, and the
+/// master-clock level time at the poll.
+#[must_use]
+pub fn q1_intermission_stats(behaviors: &Q1NativeBehaviors, now_seconds: f64) -> Q1IntermissionStats {
+    Q1IntermissionStats {
+        killed_monsters: behaviors.killed_monsters,
+        total_monsters: behaviors.total_monsters,
+        found_secrets: behaviors.found_secrets,
+        total_secrets: behaviors.total_secrets,
+        time_seconds: now_seconds,
+    }
+}
+
+/// Run `IntermissionThink` (`client.qc:242-251`): past the exit gate,
+/// any latched button exits the intermission. Stock runs this from
+/// `PlayerPreThink` every frame so no press falls between think tics
+/// (`client.qc:906`); the frozen player step latches the live buttons
+/// every frame and this poll reads the latch every tick, same outcome.
+pub fn q1_intermission_poll(behaviors: &mut Q1NativeBehaviors, now_seconds: f64) {
+    if behaviors.intermission.running == 0 {
+        return;
+    }
+    if now_seconds < behaviors.intermission.exit_time_seconds {
+        return;
+    }
+    if !behaviors.intermission.buttons {
+        return;
+    }
+    q1_exit_intermission(behaviors, now_seconds);
+}
+
+/// Run `ExitIntermission` (`client.qc:146-240`): deathmatch travels at
+/// once, skipping every text; single player re-arms the gate 1s out,
+/// counts past the episode scroll (`running` 2, CD track 2) and the
+/// shareware sell screen / all-runes scroll (`running` 3), then
+/// travels. Stock calls `GotoNextMap` twice for a plain level end
+/// (`client.qc:213` and `:240`); the issued guard absorbs the second
+/// call, so the double call stays verbatim.
+fn q1_exit_intermission(behaviors: &mut Q1NativeBehaviors, now_seconds: f64) {
+    if behaviors.deathmatch {
+        q1_goto_next_map(behaviors);
+        return;
+    }
+    behaviors.intermission.exit_time_seconds = now_seconds + 1.0;
+    behaviors.intermission.running += 1;
+    if behaviors.intermission.running == 2 {
+        let model = format!("maps/{}.bsp", behaviors.mapname);
+        let finale = match model.as_str() {
+            "maps/e1m7.bsp" => Some(if behaviors.registered {
+                FINALE_E1_REGISTERED
+            } else {
+                FINALE_E1_SHAREWARE
+            }),
+            "maps/e2m6.bsp" => Some(FINALE_E2),
+            "maps/e3m6.bsp" => Some(FINALE_E3),
+            "maps/e4m7.bsp" => Some(FINALE_E4),
+            _ => None,
+        };
+        if let Some(text) = finale {
+            behaviors.cd_tracks.push((2, 3));
+            behaviors.finale_text = Some(text.to_string());
+            return;
+        }
+        q1_goto_next_map(behaviors);
+    }
+    if behaviors.intermission.running == 3 {
+        if !behaviors.registered {
+            behaviors.sell_screen = true;
+            return;
+        }
+        if behaviors.serverflags & 15 == 15 {
+            behaviors.finale_text = Some(FINALE_ALL_RUNES.to_string());
+            return;
+        }
+    }
+    q1_goto_next_map(behaviors);
+}
+
 /// Native think dispatch for Q1 triggers and items: clear last tick's
 /// teleport fogs, then fire due scheduled thinks (removals, multiple
 /// re-arms, hurt re-solidifies, changelevel executes, item regens,
-/// megahealth rots) and due delayed uses, each in schedule order. Runs
-/// after the mover pass and before the trigger sweep, so removals apply
-/// before touches and fresh touches queue fresh fogs.
+/// megahealth rots) and due delayed uses, each in schedule order, then
+/// poll the intermission exit. Runs after the mover pass and before
+/// the trigger sweep, so removals apply before touches and fresh
+/// touches queue fresh fogs.
 pub fn q1_trigger_think(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1854,6 +1946,7 @@ pub fn q1_trigger_think(
             pending.activator.as_ref(),
         );
     }
+    q1_intermission_poll(behaviors, now);
 }
 
 /// Fire a button (`button_fire`, `buttons.qc:36`): pressed or pressing
@@ -3575,6 +3668,145 @@ mod tests {
         assert_eq!(spot.origin, vec3(480.0, -352.0, 88.0));
         assert_eq!(spot.mangle, vec3(0.0, 90.0, 0.0));
         assert_eq!(server.simulation().body_state(&player_id).unwrap().origin, spot.origin);
+    }
+
+    #[test]
+    fn intermission_poll_gates_on_time_and_buttons() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m1".to_string();
+        behaviors.nextmap = Some("e1m2".to_string());
+        // Not running: presses do nothing.
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 99.0);
+        assert_eq!(behaviors.pending_travel, None);
+        // Running but gated on time: presses do nothing.
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 10.0;
+        super::q1_intermission_poll(&mut behaviors, 9.9);
+        assert_eq!(behaviors.pending_travel, None);
+        assert_eq!(behaviors.intermission.running, 1);
+        // Past the gate without buttons: nothing.
+        behaviors.intermission.buttons = false;
+        super::q1_intermission_poll(&mut behaviors, 10.0);
+        assert_eq!(behaviors.pending_travel, None);
+        // Past the gate with buttons: plain level ends travel.
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 10.0);
+        assert_eq!(behaviors.intermission.running, 2);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("e1m2"));
+        assert_eq!(behaviors.finale_text, None);
+    }
+
+    #[test]
+    fn intermission_deathmatch_skips_every_text() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.deathmatch = true;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 5.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 5.0);
+        assert_eq!(behaviors.intermission.running, 1, "DM never counts texts");
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+        assert_eq!(behaviors.finale_text, None);
+        assert!(behaviors.cd_tracks.is_empty());
+    }
+
+    #[test]
+    fn intermission_episode_finale_counts_then_travels() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = true;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.intermission.running, 2);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E1_REGISTERED));
+        assert_eq!(behaviors.cd_tracks, vec![(2, 3)]);
+        assert_eq!(behaviors.pending_travel, None, "scroll shows before travel");
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_other_episodes_queue_their_texts() {
+        for (mapname, finale) in [
+            ("e2m6", super::FINALE_E2),
+            ("e3m6", super::FINALE_E3),
+            ("e4m7", super::FINALE_E4),
+        ] {
+            let mut behaviors = Q1NativeBehaviors::new();
+            behaviors.mapname = mapname.to_string();
+            behaviors.nextmap = Some("start".to_string());
+            behaviors.registered = true;
+            behaviors.intermission.running = 1;
+            behaviors.intermission.exit_time_seconds = 2.0;
+            behaviors.intermission.buttons = true;
+            super::q1_intermission_poll(&mut behaviors, 2.0);
+            assert_eq!(behaviors.finale_text.as_deref(), Some(finale), "{mapname} scroll");
+        }
+    }
+
+    #[test]
+    fn intermission_shareware_ends_at_the_sell_screen() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e1m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = false;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E1_SHAREWARE));
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert!(behaviors.sell_screen);
+        assert_eq!(behaviors.pending_travel, None, "sell screen shows before travel");
+        super::q1_intermission_poll(&mut behaviors, 4.0);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_all_runes_scrolls_before_travel() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.mapname = "e4m7".to_string();
+        behaviors.nextmap = Some("start".to_string());
+        behaviors.registered = true;
+        behaviors.serverflags = 15;
+        behaviors.intermission.running = 1;
+        behaviors.intermission.exit_time_seconds = 2.0;
+        behaviors.intermission.buttons = true;
+        super::q1_intermission_poll(&mut behaviors, 2.0);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_E4));
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 3.0);
+        assert_eq!(behaviors.intermission.running, 3);
+        assert_eq!(behaviors.finale_text.as_deref(), Some(super::FINALE_ALL_RUNES));
+        assert_eq!(behaviors.pending_travel, None);
+        behaviors.finale_text = None;
+        super::q1_intermission_poll(&mut behaviors, 4.0);
+        assert_eq!(behaviors.pending_travel.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn intermission_stats_mirror_counters_and_clock() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        behaviors.total_monsters = 12;
+        behaviors.killed_monsters = 7;
+        behaviors.total_secrets = 4;
+        behaviors.found_secrets = 1;
+        let stats = super::q1_intermission_stats(&behaviors, 123.5);
+        assert_eq!(stats.killed_monsters, 7);
+        assert_eq!(stats.total_monsters, 12);
+        assert_eq!(stats.found_secrets, 1);
+        assert_eq!(stats.total_secrets, 4);
+        assert_eq!(stats.time_seconds, 123.5);
     }
 
     #[test]

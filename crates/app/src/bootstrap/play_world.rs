@@ -26,6 +26,10 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use qa_bots::scene::{
+    PointContentsQuery as ScenePointContentsQuery, PointContentsResult as ScenePointContentsResult,
+    Q1MoveRule as SceneQ1MoveRule, QueryTarget as SceneQueryTarget, TracePolicy as SceneTracePolicy,
+};
 use qa_client::audio::SoundFamily;
 use qa_content::bsp::{parse_q1_entities, read_q1_bsp, Q1BspOptions};
 use qa_content::bsp2::read_q2_bsp;
@@ -34,6 +38,7 @@ use qa_content::catalog::InstalledCatalog;
 use qa_content::mounts::MountedContent;
 use qa_content::{classify_bsp, BspKind};
 use qa_core::math::vec3;
+use qa_core::numeric::Q1_DONOR_PROFILE;
 use qa_guest::server::GuestServerLogic;
 use qa_world::server::Server;
 use qa_world::spawn::{SpawnFields, SpawnRequest};
@@ -52,6 +57,7 @@ use super::simulation::native_q1_spawns::{
     build_q1_door, install_q1_native, link_q1_doors, q1_note_solid, q1_pre_spawn, register_q1_spawns,
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
+use super::simulation::native_q1_travel::{q1_decode_level_parms, q1_set_change_parms, Q1TravelCarry};
 use super::simulation::native_q1_triggers::{
     build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_intermission, q1_note_light,
     q1_note_spawn_spot, q1_note_start_spot, q1_note_targetname, q1_note_teleport_destination, q1_note_use_point,
@@ -60,7 +66,8 @@ use super::simulation::native_q1_triggers::{
 use super::simulation::native_q1_weapons::{
     q1_grant_spawn_loadout, q1_sample_water_level, q1_sample_water_type, q1_weapon_pass,
 };
-use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
+use super::simulation::native_q1_weapons::Q1SpawnParms;
+use super::windowed_scene::{build_presentation, open_product_mounts, select_q1_spawn, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
 
@@ -164,6 +171,22 @@ pub struct PlayWorld {
     speakers: Vec<MapSpeaker>,
     sound_family: SoundFamily,
     q1_behaviors: Option<Rc<RefCell<Q1NativeBehaviors>>>,
+    launch: PlayWorldLaunch,
+}
+
+/// Launch context retained for Q1 level travel (`Host_Changelevel_f`,
+/// `host_cmd.c:311`): the transition reloads through [`load_play_world`]
+/// with the destination map, so the world keeps what the load needs.
+#[derive(Debug, Clone)]
+pub struct PlayWorldLaunch {
+    /// Resolved runtime configuration.
+    pub config: StartupConfig,
+    /// Installed content catalog.
+    pub catalog: InstalledCatalog,
+    /// Launch options (the transition rewrites `map` and `skill`).
+    pub options: ApplicationOptions,
+    /// Renderer resource owner for the fresh presentation.
+    pub owner: qa_client::render::types::ResourceOwner,
 }
 
 impl std::fmt::Debug for PlayWorld {
@@ -231,6 +254,28 @@ impl PlayWorld {
         self.q1_behaviors.clone()
     }
 
+    /// Raw Q1 contents at a point (the `V_SetContentsColor` input), or
+    /// `None` without Q1 clip. Feeds the underwater view shift.
+    #[must_use]
+    pub fn q1_eye_contents(&self, eye: qa_core::math::Vec3) -> Option<i32> {
+        let Some(PlayerClip::Q1(scene)) = self.clip.as_ref() else {
+            return None;
+        };
+        match scene.point_contents(&ScenePointContentsQuery {
+            point: eye,
+            target: SceneQueryTarget::World,
+            policy: SceneTracePolicy::Q1 {
+                move_rule: SceneQ1MoveRule::Normal,
+                hull: None,
+            },
+            numeric: Q1_DONOR_PROFILE,
+            pass_actor: None,
+        }) {
+            Ok(ScenePointContentsResult::Q1 { contents }) => Some(contents),
+            _ => None,
+        }
+    }
+
     /// Retained product mounts for game audio (see
     /// [`MountsSoundContent`](super::audio_bridge::MountsSoundContent)), or
     /// `None` when the audio open failed (the run stays silent).
@@ -257,14 +302,15 @@ impl PlayWorld {
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
         // Stock intermission freeze (`PlayerPreThink`, `client.qc:901`):
-        // the entry move unsolids the player and snaps the view, and no
-        // step runs until the exit travels (stock `MOVETYPE_NONE`).
-        if self
-            .q1_behaviors
-            .as_ref()
-            .is_some_and(|behaviors| behaviors.borrow().intermission.running != 0)
-        {
-            return Ok(());
+        // the entry move unsolids the player and snaps the view, no step
+        // runs until the exit travels (stock `MOVETYPE_NONE`), and the
+        // live buttons latch every frame for the exit poll
+        // (`IntermissionThink`, `client.qc:242`).
+        if let Some(behaviors) = self.q1_behaviors.as_ref() {
+            if behaviors.borrow().intermission.running != 0 {
+                behaviors.borrow_mut().intermission.buttons = command.buttons() != 0;
+                return Ok(());
+            }
         }
         // Stock dying freeze (`PlayerPreThink`, `client.qc:921`): dead
         // players own no input (corpses toss, respawns snap).
@@ -441,6 +487,57 @@ impl PlayWorld {
     /// Move the scene presentation out for the windowed scene view.
     pub fn take_presentation(&mut self) -> Option<PlayPresentation> {
         self.presentation.take()
+    }
+
+    /// Run one pending Q1 level transition (`Host_Changelevel_f`,
+    /// `host_cmd.c:311`): take the completed `GotoNextMap` destination,
+    /// capture the leaver's spawn parms (`SV_SaveSpawnparms`,
+    /// `sv_main.c:1015`), consume a pending `trigger_setskill` value,
+    /// and load the destination map with the carried payload. Returns
+    /// `None` without Q1 behaviors or without pending travel; the take
+    /// is at-most-once, so a failed load logs once and the old world
+    /// keeps running (stock `Host_Error`s the session instead).
+    pub fn take_pending_travel(&mut self) -> Result<Option<PlayWorld>, PlayWorldError> {
+        let Some(behaviors) = self.q1_behaviors.clone() else {
+            return Ok(None);
+        };
+        let taken = {
+            let mut borrowed = behaviors.borrow_mut();
+            let destination = borrowed.pending_travel.take();
+            let serverflags = borrowed.serverflags;
+            let skill_override = borrowed.skill_override.take();
+            (destination, serverflags, skill_override)
+        };
+        let (Some(destination), serverflags, skill_override) = taken else {
+            return Ok(None);
+        };
+        let parms = match self.player_actor().cloned() {
+            Some(player) => {
+                let mut borrowed = behaviors.borrow_mut();
+                q1_set_change_parms(&mut borrowed, self.server.simulation_mut(), &player)
+            }
+            None => Q1SpawnParms::default(),
+        };
+        // Flagged returns to `start` shed every carried thing
+        // (`DecodeLevelParms`, `client.qc:79-83`).
+        let parms = if destination == "start" && serverflags != 0 {
+            Q1SpawnParms::default()
+        } else {
+            parms
+        };
+        let mut options = self.launch.options.clone();
+        options.map = format!("maps/{destination}.bsp");
+        if let Some(skill) = skill_override {
+            options.skill = skill.parse::<f64>().unwrap_or(0.0).clamp(0.0, 3.0) as u8;
+        }
+        let next = load_play_world_inner(
+            &self.launch.config,
+            &self.launch.catalog,
+            &options,
+            self.launch.owner.clone(),
+            Some(Q1TravelCarry { parms, serverflags }),
+        )?;
+        Ok(Some(next))
     }
 }
 
@@ -914,6 +1011,20 @@ pub fn load_play_world(
     options: &ApplicationOptions,
     owner: qa_client::render::types::ResourceOwner,
 ) -> Result<PlayWorld, PlayWorldError> {
+    load_play_world_inner(config, catalog, options, owner, None)
+}
+
+/// Load the selected map, optionally carrying a transition payload: a
+/// carried run spawns flagged (`serverflags` set, `start2` preferred)
+/// and decodes the carried inventory instead of granting the fresh
+/// spawn loadout.
+fn load_play_world_inner(
+    config: &StartupConfig,
+    catalog: &InstalledCatalog,
+    options: &ApplicationOptions,
+    owner: qa_client::render::types::ResourceOwner,
+    carry: Option<Q1TravelCarry>,
+) -> Result<PlayWorld, PlayWorldError> {
     let content = map_content_id(options).to_string();
     let product = catalog
         .require(&content)
@@ -966,7 +1077,12 @@ pub fn load_play_world(
         map: options.map.clone(),
         reason,
     })?;
-    let player = match select_spawn(&entities, kind) {
+    let spawn = if kind == BspKind::Q1 {
+        select_q1_spawn(&entities, carry.as_ref().map_or(0, |carried| carried.serverflags))
+    } else {
+        select_spawn(&entities, kind)
+    };
+    let player = match spawn {
         Some(spawn) => {
             let feet = vec3(
                 spawn.origin.x,
@@ -1000,9 +1116,18 @@ pub fn load_play_world(
         let _ignored = server
             .simulation_mut()
             .set_combat(PlayerBody::actor(player), qa_world::combat::CombatState::default());
-        // Stock spawn loadout (`PutClientInServer` over fresh parms):
-        // axe and shotgun with 25 shells, shotgun in hand.
-        q1_grant_spawn_loadout(&mut behaviors);
+        if let Some(carried) = carry.as_ref() {
+            // Carried arrival (`PutClientInServer` over `DecodeLevelParms`,
+            // `client.qc:479`): the flags persist and the captured
+            // inventory replaces the fresh grant.
+            behaviors.serverflags = carried.serverflags;
+            let actor = PlayerBody::actor(player).clone();
+            q1_decode_level_parms(&mut behaviors, server.simulation_mut(), &actor, &carried.parms);
+        } else {
+            // Stock spawn loadout (`PutClientInServer` over fresh parms):
+            // axe and shotgun with 25 shells, shotgun in hand.
+            q1_grant_spawn_loadout(&mut behaviors);
+        }
         behaviors.player_angles = player.eye().1;
     }
     // The presentation consumes its mounts, so audio keeps a second open over
@@ -1015,10 +1140,12 @@ pub fn load_play_world(
             None
         }
     };
-    let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
-        Ok(presentation) => (Some(presentation), None),
-        Err(error) => (None, Some(error.to_string())),
-    };
+    let travel_owner = owner.clone();
+    let (presentation, presentation_error) =
+        match build_presentation(mounts, &content, &options.map, &bytes, &entities, owner) {
+            Ok(presentation) => (Some(presentation), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     Ok(PlayWorld {
         server,
         content,
@@ -1035,6 +1162,12 @@ pub fn load_play_world(
         speakers,
         sound_family,
         q1_behaviors: context.q1.map(|q1| q1.behaviors),
+        launch: PlayWorldLaunch {
+            config: config.clone(),
+            catalog: catalog.clone(),
+            options: options.clone(),
+            owner: travel_owner,
+        },
     })
 }
 
@@ -2555,6 +2688,69 @@ mod tests {
             .collect()
     }
 
+    /// Latch live button state through the frozen player step (the
+    /// `PlayerPreThink` seam, `client.qc:901`): 0 releases, nonzero
+    /// presses.
+    fn live_press_buttons(world: &mut PlayWorld, buttons: i32) {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let (_, angles) = world.player_eye().expect("player eye");
+        let command = UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: live_now(world),
+            view_angles: angles,
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons,
+            impulse: 0,
+        });
+        world.step_player(command).unwrap();
+    }
+
+    /// Touch a live exit and run the 0.1s execute think: returns with
+    /// the world entered in the intermission and the buttons released.
+    fn live_enter_intermission(world: &mut PlayWorld, exit: &qa_core::identity::ActorId) {
+        let at_exit = live_volume_center(world, exit);
+        live_place_player(world, at_exit);
+        live_tick(world);
+        live_advance(world, 0.2);
+        live_press_buttons(world, 0);
+        assert_eq!(
+            world
+                .q1_behaviors()
+                .expect("Q1 behaviors")
+                .borrow()
+                .intermission
+                .running,
+            1,
+            "exit entered the intermission"
+        );
+    }
+
+    /// Advance past the live intermission exit gate with the buttons
+    /// released (a held press would exit at the gate, like stock).
+    fn live_pass_exit_gate(world: &mut PlayWorld) {
+        let wait = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.intermission.exit_time_seconds - live_now(world) + 0.1
+        };
+        live_advance(world, wait.max(0.1));
+    }
+
+    /// Independent oracle for the stock finale scrolls (`client.qc:172-226`).
+    fn live_expected_finale(which: &str) -> &'static str {
+        match which {
+            "e1-shareware" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!",
+            "e1" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!",
+            "e2" => "The Rune of Black Magic throbs evilly in\nyour hand and whispers dark thoughts\ninto your brain. You learn the inmost\nlore of the Hell-Mother; Shub-Niggurath!\nYou now know that she is behind all the\nterrible plotting which has led to so\nmuch death and horror. But she is not\ninviolate! Armed with this Rune, you\nrealize that once all four Runes are\ncombined, the gate to Shub-Niggurath's\nPit will open, and you can face the\nWitch-Goddess herself in her frightful\notherworld cathedral.",
+            "e3" => "The charred viscera of diabolic horrors\nbubble viscously as you seize the Rune\nof Hell Magic. Its heat scorches your\nhand, and its terrible secrets blight\nyour mind. Gathering the shreds of your\ncourage, you shake the devil's shackles\nfrom your soul, and become ever more\nhard and determined to destroy the\nhideous creatures whose mere existence\nthreatens the souls and psyches of all\nthe population of Earth.",
+            "e4" => "Despite the awful might of the Elder\nWorld, you have achieved the Rune of\nElder Magic, capstone of all types of\narcane wisdom. Beyond good and evil,\nbeyond life and death, the Rune\npulsates, heavy with import. Patient and\npotent, the Elder Being Shub-Niggurath\nweaves her dire plans to clear off all\nlife from the Earth, and bring her own\nfoul offspring to our world! For all the\ndwellers in these nightmare dimensions\nare her descendants! Once all Runes of\nmagic power are united, the energy\nbehind them will blast open the Gateway\nto Shub-Niggurath, and you can travel\nthere to foil the Hell-Mother's plots\nin person.",
+            "runes" => "Now, you have all four Runes. You sense\ntremendous invisible forces moving to\nunseal ancient barriers. Shub-Niggurath\nhad hoped to use the Runes Herself to\nclear off the Earth, but now instead,\nyou will use them to enter her home and\nconfront her as an avatar of avenging\nEarth-life. If you defeat her, you will\nbe remembered forever as the savior of\nthe planet. If she conquers, it will be\nas if you had never been born.",
+            _ => panic!("unknown finale {which}"),
+        }
+    }
+
     /// Q1-0241: e1m1 slipgate exit (`trigger_changelevel`, `client.qc:290`):
     /// the touch sets `nextmap`, nulls the touch, thinks
     /// `execute_changelevel` 0.1s later, and the entry freezes the live
@@ -2758,6 +2954,496 @@ mod tests {
         );
         assert_eq!(borrowed.start_spots.len(), 1, "e1m1 has one player start");
         assert_eq!(borrowed.start_spots[0].origin, vec3(480.0, -352.0, 88.0));
+    }
+
+    /// Q1-0257: e1m1 intermission exit (`IntermissionThink`,
+    /// `client.qc:242`): a gated press does nothing, a press past the
+    /// 2s gate travels to e1m2, the tally mirrors the live counters,
+    /// and deathmatch skips every text with its 5s gate.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0257_intermission_buttons_exit_to_travel() {
+        use super::super::simulation::native_q1_triggers::q1_intermission_stats;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        // Gated press: nothing travels.
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.pending_travel, None);
+            assert_eq!(borrowed.intermission.running, 1);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().pending_travel, None, "released buttons wait");
+        }
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        let now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None, "plain level ends show no scroll");
+            let stats = q1_intermission_stats(&borrowed, now);
+            assert_eq!(stats.killed_monsters, borrowed.killed_monsters);
+            assert_eq!(stats.total_monsters, borrowed.total_monsters);
+            assert_eq!(stats.found_secrets, borrowed.found_secrets);
+            assert_eq!(stats.total_secrets, borrowed.total_secrets);
+            assert_eq!(stats.time_seconds, now);
+            assert!(stats.total_monsters > 0, "e1m1 tallies real monsters");
+            assert!(stats.total_secrets > 0, "e1m1 tallies real secrets");
+        }
+        // Deathmatch: the 5s gate, then travel with no text.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 1, "DM never counts texts");
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.finale_text, None);
+        }
+    }
+
+    /// Q1-0256: e1m7 episode finale (`ExitIntermission`, `client.qc:162`):
+    /// the first exit press queues the registered episode-1 scroll with
+    /// CD track 2 and no travel; the second press travels to `start`.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_e1_finale_registered() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(behaviors.borrow().registered, "steel corpus is registered");
+        }
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 1, "e1m7 has one exit");
+        assert_eq!(exits[0].1, "start");
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().nextmap.as_deref(), Some("start"));
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("e1")));
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
+            assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
+    }
+
+    /// Q1-0256: episode 2-4 finales (`ExitIntermission`, `client.qc:182-212`):
+    /// each end map scrolls its exact stock text with CD track 2.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0256_episode_finales_e2_e3_e4() {
+        for (map, which) in [
+            ("maps/e2m6.bsp", "e2"),
+            ("maps/e3m6.bsp", "e3"),
+            ("maps/e4m7.bsp", "e4"),
+        ] {
+            let Some(mut world) = live_q1_world(map, GameMode::Singleplayer, 1) else {
+                return;
+            };
+            live_silence_door_fields(&mut world);
+            let exits = live_changelevel_exits(&world);
+            assert_eq!(exits.len(), 1, "{map} has one exit");
+            let exit = exits[0].0.clone();
+            live_enter_intermission(&mut world, &exit);
+            live_press_buttons(&mut world, 0);
+            live_pass_exit_gate(&mut world);
+            live_press_buttons(&mut world, 1);
+            live_tick(&mut world);
+            {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                assert_eq!(borrowed.intermission.running, 2, "{map} counts the scroll");
+                assert_eq!(
+                    borrowed.finale_text.as_deref(),
+                    Some(live_expected_finale(which)),
+                    "{map} scroll"
+                );
+                assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)], "{map} cues");
+                assert_eq!(borrowed.pending_travel, None, "{map} scroll shows before travel");
+            }
+        }
+    }
+
+    /// Q1-0261: shareware end (`ExitIntermission`, `client.qc:215`): an
+    /// unregistered e1m7 run shows the shareware scroll, then the sell
+    /// screen instead of traveling.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0261_shareware_sell_screen() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().registered = false;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 2);
+            assert_eq!(
+                borrowed.finale_text.as_deref(),
+                Some(live_expected_finale("e1-shareware"))
+            );
+            assert_eq!(borrowed.pending_travel, None);
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert!(borrowed.sell_screen);
+            assert_eq!(borrowed.pending_travel, None, "sell screen shows before travel");
+        }
+    }
+
+    /// Q1-0255: all-runes finale (`ExitIntermission`, `client.qc:223`):
+    /// with every episode bit set, the third press scrolls the runes
+    /// text instead of traveling; the fourth press travels.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0255_all_runes_finale() {
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().serverflags = 15;
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(
+                behaviors.borrow().finale_text.as_deref(),
+                Some(live_expected_finale("e1"))
+            );
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 3);
+            assert_eq!(borrowed.finale_text.as_deref(), Some(live_expected_finale("runes")));
+            assert_eq!(borrowed.pending_travel, None, "runes scroll shows before travel");
+        }
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 4);
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("start"));
+        }
+    }
+
+    /// Q1-0258/CUS-0227: e1m1 -> e1m2 carry (`SetChangeParms`,
+    /// `client.qc:32`): the exit captures the scripted loadout, the
+    /// intermission exits to pending travel, and the arrival decodes
+    /// stripped items, clamped health, floored shells, weapon, armor,
+    /// and flags at the e1m2 start.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0258_travel_carries_parms_to_e1m2() {
+        use qa_world::combat::{ArmorState, CombatState, RegularArmor};
+
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_KEY1, Q1_IT_NAILGUN, Q1_IT_NAILS, Q1_IT_QUAD, Q1_IT_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let player = world.player_actor().cloned().expect("player");
+        // Scripted campaign loadout: nailgun plus a key and a quad the
+        // capture must strip, superhealth to clamp, thin shells to
+        // floor, yellow armor to carry.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN | Q1_IT_KEY1 | Q1_IT_QUAD;
+            borrowed.player_ammo.shells = 10.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+        }
+        let worn = world.server().simulation().combat_state(&player).unwrap().armor.clone();
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_combat(
+                &player,
+                CombatState {
+                    health: 150.0,
+                    armor: ArmorState {
+                        regular: RegularArmor::Q1 {
+                            points: 120.0,
+                            absorption: 0.6,
+                            item: "q1:item_armor2".to_string(),
+                        },
+                        ..worn
+                    },
+                    ..CombatState::default()
+                },
+            )
+            .unwrap();
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        live_press_buttons(&mut world, 0);
+        live_pass_exit_gate(&mut world);
+        live_press_buttons(&mut world, 1);
+        live_tick(&mut world);
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/e1m2.bsp");
+        assert!(
+            world.take_pending_travel().expect("second take").is_none(),
+            "take is at-most-once"
+        );
+        let (eye, _) = next.player_eye().expect("arrival eye");
+        assert_eq!(eye, vec3(1496.0, 1664.0, 318.0), "arrival at the e1m2 start");
+        let arrival = next.player_actor().cloned().expect("arrival player");
+        {
+            let behaviors = next.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            let items = borrowed.player_items & !Q1_IT_AMMO_BITS;
+            assert_eq!(
+                items,
+                Q1_IT_AXE | Q1_IT_SHOTGUN | Q1_IT_NAILGUN,
+                "keys and quad stripped"
+            );
+            assert_ne!(borrowed.player_items & Q1_IT_NAILS, 0, "ammo indicator refreshed");
+            assert_eq!(borrowed.player_ammo.shells, 25.0, "shells floored");
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.player_state.parms.health, 100.0, "entry parms snapshotted");
+            assert_eq!(borrowed.mapname, "e1m2");
+        }
+        let combat = next
+            .server()
+            .simulation()
+            .combat_state(&arrival)
+            .expect("arrival combat");
+        assert_eq!(combat.health, 100.0, "superhealth clamped");
+        match &combat.armor.regular {
+            RegularArmor::Q1 { points, absorption, .. } => {
+                assert_eq!((*points, *absorption), (120.0, 0.6), "armor carried");
+            }
+            _ => panic!("arrival wears the carried armor"),
+        }
+    }
+
+    /// Q1-0260: flagged `start` return (`DecodeLevelParms`, `client.qc:79`):
+    /// e1m7 -> start with flags keeps the flags but sheds the carried
+    /// inventory for the fresh loadout.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0260_flagged_start_return_sheds_parms() {
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN};
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 50.0;
+            borrowed.serverflags = 1;
+        }
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        live_enter_intermission(&mut world, &exit);
+        // Past the episode scroll, then past running 3 to travel.
+        for _ in 0..2 {
+            live_press_buttons(&mut world, 0);
+            live_pass_exit_gate(&mut world);
+            live_press_buttons(&mut world, 1);
+            live_tick(&mut world);
+        }
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/start.bsp");
+        {
+            let behaviors = next.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "carry shed for the fresh loadout"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+        }
+        let arrival = next.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            next.server()
+                .simulation()
+                .combat_state(&arrival)
+                .map(|combat| combat.health),
+            Some(100.0)
+        );
+    }
+
+    /// Q1-0222: flagged `start` prefers `info_player_start2`
+    /// (`SelectSpawnPoint`, `client.qc:454`): the same e1m7 -> start
+    /// travel spawns at start1 unflagged and start2 flagged.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0222_flagged_start_prefers_start2() {
+        for (serverflags, eye) in [(0, vec3(544.0, 288.0, 54.0)), (1, vec3(544.0, 1536.0, 54.0))] {
+            let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 1) else {
+                return;
+            };
+            live_silence_door_fields(&mut world);
+            world.q1_behaviors().expect("Q1 behaviors").borrow_mut().serverflags = serverflags;
+            let exits = live_changelevel_exits(&world);
+            let exit = exits[0].0.clone();
+            live_enter_intermission(&mut world, &exit);
+            for _ in 0..2 {
+                live_press_buttons(&mut world, 0);
+                live_pass_exit_gate(&mut world);
+                live_press_buttons(&mut world, 1);
+                live_tick(&mut world);
+            }
+            let next = world
+                .take_pending_travel()
+                .expect("travel loads")
+                .expect("pending travel");
+            assert_eq!(
+                next.player_eye().expect("arrival eye").0,
+                eye,
+                "flags {serverflags} selects the spawn"
+            );
+        }
+    }
+
+    /// Setskill triggers in a live world carrying `message`, in spawn order.
+    fn live_setskill_by_message(world: &PlayWorld, message: &str) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed
+            .triggers
+            .iter()
+            .filter_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::SetSkill if trigger.source.message.as_deref() == Some(message) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Q1-0251: `start` skill doors (`trigger_setskill`, `triggers.qc:475`):
+    /// touching the "2" door records the override, and the episode exit
+    /// consumes it: the e1m1 arrival runs skill 2.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0251_setskill_selects_next_map_skill() {
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let doors = live_setskill_by_message(&world, "2");
+        assert_eq!(doors.len(), 1, "start has one hard-skill door");
+        let at_door = live_volume_center(&world, &doors[0]);
+        live_place_player(&mut world, at_door);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().skill_override.as_deref(), Some("2"));
+        }
+        let exits = live_changelevel_exits(&world);
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        let next = world
+            .take_pending_travel()
+            .expect("travel loads")
+            .expect("pending travel");
+        assert_eq!(next.map(), "maps/e1m1.bsp");
+        assert_eq!(
+            next.q1_behaviors().expect("Q1 behaviors").borrow().skill,
+            2,
+            "override consumed at travel"
+        );
     }
 
     /// Q1-0110: e1m1 `item_health` heals a live wounded player
@@ -3799,9 +4485,8 @@ mod tests {
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0137_dog_ignores_hidden_player() {
-        use super::super::simulation::native_q1_monsters::{
-            Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_NOTARGET, Q1_IT_INVISIBILITY,
-        };
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink, Q1_FLAG_NOTARGET};
+        use super::super::simulation::native_q1_weapons::Q1_IT_INVISIBILITY;
 
         let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
             return;

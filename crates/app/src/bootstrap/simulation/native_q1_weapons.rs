@@ -42,7 +42,7 @@ use qa_world::spawn::SpawnFields;
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
     q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, Q1MonsterCtx, Q1PendingGib,
-    Q1_DAMAGE_AIM, Q1_IT_INVISIBILITY,
+    Q1_DAMAGE_AIM,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -73,6 +73,19 @@ pub const Q1_IT_CELLS: u32 = 2048;
 pub const Q1_IT_AXE: u32 = 4096;
 /// Stock ammo-indicator bits cleared and reset by `W_SetCurrentAmmo`.
 pub const Q1_IT_AMMO_BITS: u32 = Q1_IT_SHELLS | Q1_IT_NAILS | Q1_IT_ROCKETS | Q1_IT_CELLS;
+/// Stock key and powerup bits (`defs.qc:305-311`): stripped by
+/// `SetChangeParms`, never carried across a level transition.
+pub const Q1_IT_KEY1: u32 = 131_072;
+/// Stock key and powerup bits (`defs.qc:305-311`).
+pub const Q1_IT_KEY2: u32 = 262_144;
+/// Stock key and powerup bits (`defs.qc:308`).
+pub const Q1_IT_INVISIBILITY: u32 = 524_288;
+/// Stock key and powerup bits (`defs.qc:309`).
+pub const Q1_IT_INVULNERABILITY: u32 = 1_048_576;
+/// Stock key and powerup bits (`defs.qc:310`).
+pub const Q1_IT_SUIT: u32 = 2_097_152;
+/// Stock key and powerup bits (`defs.qc:311`).
+pub const Q1_IT_QUAD: u32 = 4_194_304;
 
 /// Stock deadflag values (`defs.qc:273-276`).
 pub const Q1_DEAD_NO: u8 = 0;

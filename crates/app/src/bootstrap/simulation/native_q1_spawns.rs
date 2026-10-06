@@ -41,6 +41,7 @@ use super::native_q1_triggers::{
 };
 use super::native_q1_weapons::Q1Missile;
 use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
+use super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -62,10 +63,6 @@ const DOOR_SILVER_KEY: i32 = 16;
 /// Door spawnflags (`doors.qc:1-6`).
 const DOOR_TOGGLE: i32 = 32;
 
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY1: u32 = 131_072;
-/// Key item bits (`defs.qc:305-306`).
-const IT_KEY2: u32 = 262_144;
 /// Superhealth bit (`defs.qc:303`): set while megahealth rots down.
 pub const IT_SUPERHEALTH: u32 = 65_536;
 /// Armor bits (`defs.qc:300-302`).
@@ -291,10 +288,10 @@ pub fn q1_door_params(fields: &SpawnFields, model: &Bounds) -> Result<Q1DoorPara
         .unwrap_or(0.0);
     let mut items = 0u32;
     if fields.spawnflags & DOOR_SILVER_KEY != 0 {
-        items |= IT_KEY1;
+        items |= Q1_IT_KEY1;
     }
     if fields.spawnflags & DOOR_GOLD_KEY != 0 {
-        items |= IT_KEY2;
+        items |= Q1_IT_KEY2;
     }
     if items != 0 {
         wait = -1.0;
@@ -573,6 +570,23 @@ pub struct Q1SpawnSpot {
     pub angles: Vec3,
 }
 
+/// Latest player damage event for the view (`V_ParseDamage`,
+/// `view.c:316-379` inputs): the `q1_t_damage` funnel records the armor
+/// save, the health taken, and the inflictor center so the HUD can flash
+/// the damage shift and kick the view. `seq` edges the event: the HUD
+/// consumes each sequence number once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Q1PlayerDamage {
+    /// Event sequence, bumped per recorded hit.
+    pub seq: u64,
+    /// Armor points absorbed (`save`, `combat.qc:119`).
+    pub armor: f32,
+    /// Health taken (`take`, `combat.qc:141`).
+    pub blood: f32,
+    /// Inflictor body center, when the hit names one.
+    pub from: Option<[f32; 3]>,
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
@@ -730,6 +744,30 @@ pub struct Q1NativeBehaviors {
     /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
     /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
     pub cd_tracks: Vec<(u8, u8)>,
+    /// Queued `SVC_FINALE` text for the HUD slice (`ExitIntermission`,
+    /// `client.qc:146-235`): the episode or all-runes scroll.
+    pub finale_text: Option<String>,
+    /// Queued `SVC_SELLSCREEN` for the HUD slice (`ExitIntermission`,
+    /// `client.qc:218`): shareware episode completed.
+    pub sell_screen: bool,
+    /// Latest player damage event for the view blends.
+    pub player_damage: Q1PlayerDamage,
+}
+
+/// Intermission tally for the HUD slice (`Sbar_IntermissionOverlay`,
+/// `sbar.c:1269`): level kills, secrets, and elapsed level time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionStats {
+    /// Monsters killed (`killed_monsters`).
+    pub killed_monsters: u32,
+    /// Monsters in the map (`total_monsters`).
+    pub total_monsters: u32,
+    /// Secrets found (`found_secrets`).
+    pub found_secrets: u32,
+    /// Secrets in the map (`total_secrets`).
+    pub total_secrets: u32,
+    /// Elapsed level time in seconds (master clock at the poll).
+    pub time_seconds: f64,
 }
 
 impl Q1NativeBehaviors {
@@ -1149,7 +1187,7 @@ pub(crate) fn q1_door_fire(
 /// medieval/runic/base worlds. Other worldtypes print nothing, like the
 /// stock `if` chain with no `else`.
 fn q1_key_deny_text(items: u32, worldtype: u8) -> Option<&'static str> {
-    let silver = items == IT_KEY1;
+    let silver = items == Q1_IT_KEY1;
     match (silver, worldtype) {
         (true, 2) => Some("You need the silver keycard"),
         (true, 1) => Some("You need the silver runekey"),
@@ -1407,6 +1445,7 @@ mod tests {
     use qa_core::time::SourceTime;
     use qa_world::body::BodyState;
 
+    use super::super::native_q1_weapons::{Q1_IT_KEY1, Q1_IT_KEY2};
     use super::*;
     use crate::options::ApplicationOptions;
     use crate::startup::{open_server, StartupConfig};
@@ -1661,11 +1700,11 @@ mod tests {
         // Key doors take key bits and wait -1.
         let fields = door_fields(&[("spawnflags", "16"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY1);
+        assert_eq!(params.items, Q1_IT_KEY1);
         assert_eq!(params.wait, -1.0);
         let fields = door_fields(&[("spawnflags", "8"), ("wait", "5"), ("model", "*0")]);
         let params = q1_door_params(&fields, &door_model()).unwrap();
-        assert_eq!(params.items, IT_KEY2);
+        assert_eq!(params.items, Q1_IT_KEY2);
         assert_eq!(params.wait, -1.0);
 
         // Explicit nonzero values survive.
@@ -1866,7 +1905,7 @@ mod tests {
             .simulation_mut()
             .set_body_origin(player.id(), vec3(32.0, 32.0, 64.0))
             .unwrap();
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         server.tick(SourceTime::Seconds(0.05)).unwrap();
         assert_eq!(shared.borrow().player_keys, 0);
         assert!(!server.triggers_mut().is_trigger(&door));
@@ -1899,7 +1938,7 @@ mod tests {
         assert_eq!(shared.borrow().doors.get(&door).unwrap().wait, -1.0);
         let player = spawn_player(&mut server, vec3(32.0, 32.0, 64.0));
         shared.borrow_mut().set_player(Some(player.id().clone()));
-        shared.borrow_mut().player_keys = IT_KEY1;
+        shared.borrow_mut().player_keys = Q1_IT_KEY1;
         install_q1_native(&mut server, Rc::clone(&shared));
         // Touch with the key carried consumes the key and opens the door.
         server.tick(SourceTime::Seconds(0.05)).unwrap();

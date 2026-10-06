@@ -1103,6 +1103,7 @@ fn windowed_scene_view(
     time_ms: f64,
     scene: &mut WindowedScene,
     player: Option<(Vec3, Vec3)>,
+    world: Option<&PlayWorld>,
 ) -> Option<(ClientRenderView, Vec<ImageResourceOperation>)> {
     let target = match seat {
         Some(seat) => ViewTarget::Seat(seat.clone()),
@@ -1122,6 +1123,14 @@ fn windowed_scene_view(
             },
             |(eye, angles)| ([eye.x, eye.y, eye.z], [angles.x, angles.y, angles.z]),
         );
+        // Damage view kick stashed by last frame's blend update
+        // (`view.c:817-818`).
+        let mut angles = angles;
+        if let Some(hud) = presentation.q1_hud() {
+            let (kick_roll, kick_pitch) = hud.pending_kick();
+            angles[0] += kick_pitch;
+            angles[2] += kick_roll;
+        }
         let camera = windowed_camera_for(width, height, origin, angles)?;
         let clear_color = scene.clear_color;
         let (mut view, image_operations) = presentation
@@ -1132,6 +1141,7 @@ fn windowed_scene_view(
             color: Some(clear_color),
             stencil: false,
         });
+        append_q1_hud(scene, world, width, height, time_ms, &mut view);
         return Some((view, image_operations));
     }
     let camera = windowed_camera(width, height)?;
@@ -1169,6 +1179,82 @@ fn windowed_scene_view(
     ))
 }
 
+/// Append the native Q1 status bar to a scene view: fold the live
+/// world into a bar frame, lay out the stock bar, and submit its
+/// batches as one trailing draw. No Q1 behaviors, no HUD, or no live
+/// player leaves the view untouched.
+fn append_q1_hud(
+    scene: &mut WindowedScene,
+    world: Option<&PlayWorld>,
+    width: i32,
+    height: i32,
+    time_ms: f64,
+    view: &mut ClientRenderView,
+) {
+    let Some(world) = world else {
+        return;
+    };
+    let Some(hud) = scene
+        .presentation
+        .as_mut()
+        .and_then(|presentation| presentation.q1_hud_mut())
+    else {
+        return;
+    };
+    let Some(behaviors) = world.q1_behaviors() else {
+        return;
+    };
+    let borrowed = behaviors.borrow();
+    let simulation = world.server().simulation();
+    // View blends track the player eye; without one the bar still draws
+    // from the last blend state.
+    let mut blend = None;
+    if let Some((eye, angles)) = world.player_eye() {
+        let contents = world.q1_eye_contents(eye);
+        let sim_now = simulation.frame().time.as_seconds_f64() as f32;
+        let wall_dt = hud.wall_dt(time_ms);
+        blend = hud.update_view_state(
+            &borrowed,
+            simulation,
+            contents,
+            [angles.x, angles.y, angles.z],
+            wall_dt,
+            sim_now,
+        );
+    }
+    let item_gettime = hud.item_gettime();
+    let face_anim_until = hud.face_anim_until();
+    let product = hud.product;
+    let Some(frame) = super::q1_native_hud::q1_frame_from_live(
+        &borrowed,
+        simulation,
+        &super::q1_native_hud::level_short_name(world.map()),
+        borrowed.deathmatch,
+        product,
+        item_gettime,
+        face_anim_until,
+    ) else {
+        return;
+    };
+    let ops = qa_client::ui::hud::q1_native::q1_sbar_operations(
+        &frame,
+        width,
+        height,
+        qa_client::ui::hud::q1_native::q1_sb_lines(100),
+    );
+    let batches = hud.draw(&ops, width, height);
+    if !batches.is_empty() {
+        view.operations.push(RenderOperation::Draw(batches));
+    }
+    // The blend tints through everything, so it draws after the bar.
+    if let Some(rgba) = blend {
+        let blend_batches = hud.draw_blend(rgba, width, height);
+        if !blend_batches.is_empty() {
+            view.operations.push(RenderOperation::Draw(blend_batches));
+        }
+    }
+}
+
 /// Faithful frame commands (donor `SceneFrameBuilder` shape): draw-buffer
 /// selection, one scene view when a scene is loaded, then the buffer swap,
 /// plus the image uploads the backend must apply before executing the
@@ -1180,6 +1266,7 @@ fn build_windowed_commands(
     time_ms: f64,
     scene: Option<&mut WindowedScene>,
     player: Option<(Vec3, Vec3)>,
+    world: Option<&PlayWorld>,
 ) -> (Vec<RenderCommand>, Vec<ImageResourceOperation>) {
     match scene {
         None => (
@@ -1192,7 +1279,7 @@ fn build_windowed_commands(
             ],
             Vec::new(),
         ),
-        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene, player) {
+        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene, player, world) {
             Some((view, image_operations)) => (
                 vec![
                     RenderCommand::DrawBuffer {
@@ -1692,6 +1779,36 @@ impl WindowedStartupBackend {
             world.step_weapons(Some(&command));
         }
         world.step_monsters();
+        // Q1 level travel: a completed `GotoNextMap` reloads the world
+        // through the same install as a menu launch (scene, input,
+        // audio, cvars), carrying spawn parms and `serverflags`.
+        match world.take_pending_travel() {
+            Ok(Some(next)) => {
+                eprintln!(
+                    "windowed: changelevel to {} ({} of {} map entities)",
+                    next.map(),
+                    next.spawned(),
+                    next.entity_records(),
+                );
+                // The next world reuses image ordinals from zero, so
+                // release the old world's resident images first (same
+                // order as the menu-launch release in
+                // `launch_menu_game`).
+                if let Some(presentation) = self.scene.as_mut().and_then(|scene| scene.presentation.as_mut()) {
+                    let releases = presentation.release_images();
+                    if !releases.is_empty() {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            for operation in &releases {
+                                renderer.backend_mut().apply_image_resource(operation);
+                            }
+                        }
+                    }
+                }
+                self.set_world(next);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("windowed: changelevel failed ({error})"),
+        }
     }
 
     /// Sample the live seat and build one world user command, or `None`
@@ -1914,7 +2031,15 @@ impl WindowedStartupBackend {
             );
         }
         let player = self.world.as_ref().and_then(PlayWorld::player_eye);
-        build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut(), player)
+        build_windowed_commands(
+            width,
+            height,
+            seat.as_ref(),
+            time_ms,
+            self.scene.as_mut(),
+            player,
+            self.world.as_ref(),
+        )
     }
 
     /// Apply image uploads to the live backend before executing a view.
@@ -3025,6 +3150,120 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_0479_sbar_presents_and_tracks_health() {
+        // Live Xvfb proof that the native Q1 status bar presents from
+        // live state: open e1m1 at exactly 320x200 (1:1 bar space), step
+        // frames, and capture. The bottom 48 rows must carry
+        // non-trivial bar content (plates, numerals, face); wounding
+        // the player to 25 health must change the strip (health
+        // digits plus the face frame), proving the feed is live.
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m1.bsp".to_string();
+        options.width = 320;
+        options.height = 200;
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 sbar open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        assert!(
+            composed
+                .app
+                .backend()
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .is_some(),
+            "Q1 world installs a status bar"
+        );
+        for _ in 0..5 {
+            composed.app.step().expect("windowed step works");
+        }
+        let (live_w, live_h) = composed.app.backend().live_size();
+        eprintln!("live-q1-sbar: live size {live_w}x{live_h}");
+        assert!(
+            live_w >= 320 && live_h >= 48,
+            "the bar needs at least a 320x48 drawable, got {live_w}x{live_h}"
+        );
+        let before = composed.app.capture_next_frame().expect("sbar capture works");
+        assert_eq!(
+            before.len(),
+            live_w as usize * live_h as usize * 4,
+            "capture matches the live drawable"
+        );
+        let strip_bytes = live_w as usize * 48 * 4;
+        let lit = count_non_black(&before[before.len() - strip_bytes..]);
+        let strip_pixels = live_w as usize * 48;
+        eprintln!("live-q1-sbar: {lit} non-black pixels in the bottom 48 rows");
+        assert!(
+            lit * 100 > strip_pixels * 15,
+            "expected a presented bar, got {lit} lit pixels of {strip_pixels}"
+        );
+        // Wound the player through the live server (health 100 -> 25)
+        // and prove the strip re-presents: the health numerals and the
+        // face frame both change.
+        {
+            let backend = composed.app.backend_mut();
+            let world = backend.world.as_mut().expect("Q1 world set");
+            let player = world.player_actor().cloned().expect("Q1 world admits a player");
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(&player)
+                .cloned()
+                .unwrap_or_default();
+            eprintln!("live-q1-sbar: health {} -> 25", combat.health);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_combat(&player, qa_world::combat::CombatState { health: 25.0, ..combat })
+                .expect("wound applies");
+        }
+        for _ in 0..5 {
+            composed.app.step().expect("windowed step works");
+        }
+        let after = composed.app.capture_next_frame().expect("second capture works");
+        // Restrict the diff to the centered 320 bar columns so 3D-view
+        // margin flicker (torch flames) cannot masquerade as bar motion.
+        let xofs = (live_w as usize - 320) / 2;
+        let changed = before[before.len() - strip_bytes..]
+            .as_chunks::<4>()
+            .0
+            .chunks(live_w as usize)
+            .zip(
+                after[after.len() - strip_bytes..]
+                    .as_chunks::<4>()
+                    .0
+                    .chunks(live_w as usize),
+            )
+            .map(|(row_a, row_b)| {
+                row_a[xofs..xofs + 320]
+                    .iter()
+                    .zip(row_b[xofs..xofs + 320].iter())
+                    .filter(|(a, b)| a[0] != b[0] || a[1] != b[1] || a[2] != b[2])
+                    .count()
+            })
+            .sum::<usize>();
+        eprintln!("live-q1-sbar: {changed} strip pixels changed after the wound");
+        eprintln!("live-q1-sbar: bar-columns diff {changed} of {}", 320 * 48);
+        assert!(
+            changed > 100,
+            "the bar did not track health: {changed} changed bar pixels"
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_start_player_walks_under_host_gate() {
         // Live Xvfb proof that the Q1 walking skeleton moves and collides
         // through the real gated loop: open start.bsp in a real window,
@@ -3161,6 +3400,179 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e1m1_windowed_run_reaches_e1m2() {
+        // End-to-end transition through the real windowed loop: open e1m1
+        // in a real window, script the campaign loadout, touch the
+        // slipgate exit, ride the intermission, press through it, and let
+        // the per-frame poll travel: the world reloads as e1m2 with the
+        // carried parms and flags at the e1m2 start.
+        use qa_world::body::translated_body_bounds;
+
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN};
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m1.bsp".to_string();
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        // Scripted loadout plus the episode-1 flag (the rune slice sets
+        // it for real later).
+        {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_items |= Q1_IT_NAILGUN;
+            borrowed.player_ammo.shells = 10.0;
+            borrowed.player_ammo.nails = 40.0;
+            borrowed.player_state.weapon = Q1_IT_NAILGUN;
+            borrowed.serverflags = 1;
+            let now = world.server().simulation().frame().time.as_seconds_f64();
+            for field in borrowed.fields.values_mut() {
+                field.throttle_until = now + 3600.0;
+            }
+        }
+        // Touch the slipgate exit.
+        let exit = {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let mut exits: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter_map(|(id, trigger)| match &trigger.kind {
+                    Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(exits.len(), 1, "e1m1 has one exit");
+            let (exit, map) = exits.pop().expect("exit");
+            assert_eq!(map, "e1m2");
+            exit
+        };
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("e1m1 world");
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&exit).expect("exit body");
+            let bounds = translated_body_bounds(&body);
+            let center = qa_core::math::vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            );
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&player, center)
+                .unwrap();
+        }
+        // Drive until the execute think enters the intermission.
+        let mut frames = 0;
+        while composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .is_some_and(|world| world.map() == "maps/e1m1.bsp")
+            && composed
+                .app
+                .backend()
+                .world
+                .as_ref()
+                .and_then(|world| world.q1_behaviors())
+                .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+            && frames < 600
+        {
+            composed.app.step().expect("windowed step works");
+            frames += 1;
+        }
+        {
+            let world = composed.app.backend().world.as_ref().expect("e1m1 world");
+            assert_eq!(world.map(), "maps/e1m1.bsp");
+            assert_eq!(
+                world
+                    .q1_behaviors()
+                    .expect("Q1 behaviors")
+                    .borrow()
+                    .intermission
+                    .running,
+                1,
+                "exit entered the intermission after {frames} frames"
+            );
+        }
+        // Press through the exit gate with a real held key: SPACE is bound
+        // to Jump (bit 1, an exit button), held down exactly as a player
+        // pressing it. Scancode 44 is SDL_SCANCODE_SPACE, keycode 32.
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::Key {
+                timestamp: 0,
+                down: true,
+                repeat: false,
+                scancode: 44,
+                keycode: 32,
+                modifiers: 0,
+            }])
+            .expect("jump key injects");
+        frames = 0;
+        while composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .is_some_and(|world| world.map() == "maps/e1m1.bsp")
+            && frames < 2400
+        {
+            composed.app.step().expect("windowed step works");
+            frames += 1;
+        }
+        let world = composed.app.backend().world.as_ref().expect("travelled world");
+        assert_eq!(world.map(), "maps/e1m2.bsp", "poll travelled after {frames} frames");
+        let (eye, _) = world.player_eye().expect("arrival eye");
+        assert_eq!(
+            eye,
+            qa_core::math::vec3(1496.0, 1664.0, 318.0),
+            "arrival at the e1m2 start"
+        );
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.serverflags, 1, "flags persist");
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN | Q1_IT_NAILGUN,
+                "weapons carried"
+            );
+            assert_eq!(borrowed.player_ammo.shells, 25.0, "shells floored");
+            assert_eq!(borrowed.player_ammo.nails, 40.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_NAILGUN);
+            assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
+        }
+        let arrival = world.player_actor().cloned().expect("arrival player");
+        assert_eq!(
+            world
+                .server()
+                .simulation()
+                .combat_state(&arrival)
+                .map(|combat| combat.health),
+            Some(100.0)
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
     fn non_black_counter_diffs_captures_from_black() {
         assert_eq!(count_non_black(&[0, 0, 0, 255, 0, 0, 0, 255]), 0);
         assert_eq!(count_non_black(&[0, 0, 0, 255, 1, 0, 0, 255, 0, 0, 5, 0]), 2);
@@ -3212,7 +3624,7 @@ mod tests {
 
     #[test]
     fn windowed_commands_degrade_without_scene() {
-        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None, None);
+        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None, None, None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 2);
         assert!(matches!(
@@ -3230,7 +3642,8 @@ mod tests {
         let owner = IdentityOwner::create("windowed-scene-test").unwrap();
         let seat = owner.seat(0);
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        let (commands, image_operations) = build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene), None);
+        let (commands, image_operations) =
+            build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene), None, None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 3);
         assert!(matches!(
@@ -3258,7 +3671,8 @@ mod tests {
     #[test]
     fn windowed_scene_view_uses_preview_without_seat_and_live_size() {
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.1, 0.2, 0.3, 1.0));
-        let (view, image_operations) = windowed_scene_view(128, 96, None, 7.0, &mut scene, None).expect("preview view");
+        let (view, image_operations) =
+            windowed_scene_view(128, 96, None, 7.0, &mut scene, None, None).expect("preview view");
         assert!(image_operations.is_empty());
         assert_eq!((view.state.viewport.width, view.state.viewport.height), (128.0, 96.0));
         assert!(matches!(view.target, ViewTarget::Preview(_)));
@@ -3266,15 +3680,15 @@ mod tests {
         let clear = view.state.clear.expect("view clears");
         assert_eq!(clear.depth, 1.0);
         assert_eq!(clear.color, Some(vec4(0.1, 0.2, 0.3, 1.0)));
-        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene, None).expect("other size");
+        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene, None, None).expect("other size");
         assert_eq!((other.state.viewport.width, other.state.viewport.height), (32.0, 32.0));
     }
 
     #[test]
     fn windowed_invalid_size_degrades_even_with_scene() {
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene, None).is_none());
-        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene), None);
+        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene, None, None).is_none());
+        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene), None, None);
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], RenderCommand::DrawBuffer { clear: true, .. }));
         assert!(matches!(commands[1], RenderCommand::SwapBuffers));
@@ -3317,7 +3731,7 @@ mod tests {
             clear: true,
         });
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.0, 0.0, 0.0, 1.0));
-        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene, None).unwrap();
+        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene, None, None).unwrap();
         backend.execute_serial_command(&RenderCommand::View(view));
         backend.execute_serial_command(&RenderCommand::Draw);
         backend.execute_serial_command(&RenderCommand::SwapBuffers);
