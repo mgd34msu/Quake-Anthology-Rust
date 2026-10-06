@@ -154,21 +154,14 @@ pub const Q1_HIPWEAPONS: [u32; 4] = [23, 7, 4, 16];
 
 /// Weapon inventory lump stems (`sbar.c:127-152`).
 pub const Q1_WEAPON_STEMS: [&str; 7] = [
-    "shotgun",
-    "sshotgun",
-    "nailgun",
-    "snailgun",
-    "rlaunch",
-    "srlaunch",
-    "lightng",
+    "shotgun", "sshotgun", "nailgun", "snailgun", "rlaunch", "srlaunch", "lightng",
 ];
 
 /// Hipnotic weapon lump stems (`sbar.c:201-220`).
 pub const Q1_HIPNOTIC_STEMS: [&str; 5] = ["laser", "mjolnir", "gren_prox", "prox_gren", "prox"];
 
 /// Rogue powered-weapon lumps (`sbar.c:231-235`).
-pub const Q1_ROGUE_WEAPONS: [&str; 5] =
-    ["r_lava", "r_superlava", "r_gren", "r_multirock", "r_plasma"];
+pub const Q1_ROGUE_WEAPONS: [&str; 5] = ["r_lava", "r_superlava", "r_gren", "r_multirock", "r_plasma"];
 
 /// Ammo icon lumps (`sbar.c:154-157`).
 pub const Q1_AMMO_LUMPS: [&str; 4] = ["sb_shells", "sb_nails", "sb_rocket", "sb_cells"];
@@ -180,8 +173,7 @@ pub const Q1_ROGUE_AMMO_LUMPS: [&str; 3] = ["r_ammolava", "r_ammomulti", "r_ammo
 pub const Q1_ARMOR_LUMPS: [&str; 3] = ["sb_armor1", "sb_armor2", "sb_armor3"];
 
 /// Item icon lumps (`sbar.c:163-168`): keys, ring, pent, suit, quad.
-pub const Q1_ITEM_LUMPS: [&str; 6] =
-    ["sb_key1", "sb_key2", "sb_invis", "sb_invuln", "sb_suit", "sb_quad"];
+pub const Q1_ITEM_LUMPS: [&str; 6] = ["sb_key1", "sb_key2", "sb_invis", "sb_invuln", "sb_suit", "sb_quad"];
 
 /// Sigil lumps (`sbar.c:170-173`).
 pub const Q1_SIGIL_LUMPS: [&str; 4] = ["sb_sigil1", "sb_sigil2", "sb_sigil3", "sb_sigil4"];
@@ -291,6 +283,8 @@ pub enum NativeQ1HudOperation {
     },
     /// Picture centered in the 320-wide playfield (`M_DrawPic`).
     CenteredPicture {
+        /// Playfield left edge (the bar x offset).
+        x_base: i32,
         /// Top edge.
         y: i32,
         /// WAD lump name.
@@ -352,29 +346,72 @@ fn sbar_itoa(num: i32) -> String {
     text
 }
 
-/// Stock `Sbar_DrawNum` (`sbar.c:350-374`): right-aligned `digits`
-/// field of 24 px numerals, truncating leading (most significant)
-/// digits past the field width. `color` selects `num_` (0) or `anum_`
-/// (1).
-fn draw_num(out: &mut Vec<NativeQ1HudOperation>, xofs: i32, base_y: i32, x: i32, y: i32, num: i32, digits: usize, color: usize) {
-    let text = sbar_itoa(num);
+/// Stock `Sbar_DrawNum` field (`sbar.c:350-374`): right-aligned
+/// `digits` field of 24 px numerals, truncating leading (most
+/// significant) digits past the field width. `color` selects `num_`
+/// (0) or `anum_` (1); `xofs`/`base_y` anchor the bar.
+struct Q1NumField {
+    /// Bar x offset.
+    xofs: i32,
+    /// Bar top edge.
+    base_y: i32,
+    /// Field left edge.
+    x: i32,
+    /// Field top edge.
+    y: i32,
+    /// Value.
+    num: i32,
+    /// Field width in digits.
+    digits: usize,
+    /// Numeral set.
+    color: usize,
+}
+
+fn draw_num(out: &mut Vec<NativeQ1HudOperation>, field: Q1NumField) {
+    let text = sbar_itoa(field.num);
     let chars: Vec<char> = text.chars().collect();
-    let start = chars.len().saturating_sub(digits);
+    let start = chars.len().saturating_sub(field.digits);
     let shown = &chars[start..];
-    let mut x = x + (digits.saturating_sub(shown.len()) as i32) * 24;
+    let mut x = field.x + (field.digits.saturating_sub(shown.len()) as i32) * 24;
     for ch in shown {
         let lump = if *ch == '-' {
-            format!("{}_minus", if color == 0 { "num" } else { "anum" })
+            format!("{}_minus", if field.color == 0 { "num" } else { "anum" })
         } else {
-            format!("{}_{}", if color == 0 { "num" } else { "anum" }, ch)
+            format!("{}_{}", if field.color == 0 { "num" } else { "anum" }, ch)
         };
         out.push(NativeQ1HudOperation::TransPicture {
-            x: xofs + x,
-            y: base_y + y,
+            x: field.xofs + x,
+            y: field.base_y + field.y,
             lump,
         });
         x += 24;
     }
+}
+
+/// Short `Sbar_DrawNum` call over an explicit field.
+#[allow(clippy::too_many_arguments)]
+fn draw_num_at(
+    out: &mut Vec<NativeQ1HudOperation>,
+    xofs: i32,
+    base_y: i32,
+    x: i32,
+    y: i32,
+    num: i32,
+    digits: usize,
+    color: usize,
+) {
+    draw_num(
+        out,
+        Q1NumField {
+            xofs,
+            base_y,
+            x,
+            y,
+            num,
+            digits,
+            color,
+        },
+    )
 }
 
 /// Stock `Sbar_DrawString` body (`sbar.c:301-307`): 8 px characters.
@@ -583,18 +620,13 @@ fn draw_inventory(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame,
 /// Hipnotic weapons (`sbar.c:591-644`): laser and mjolnir ride the
 /// right end, grenade/proximity share slot 96 with the stock
 /// grenade-launcher presence deciding which lump shows.
-fn draw_hipnotic_weapons(
-    out: &mut Vec<NativeQ1HudOperation>,
-    frame: &NativeQ1HudFrame,
-    xofs: i32,
-    base_y: i32,
-) {
+fn draw_hipnotic_weapons(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
     let mut grenade_flashing = false;
     for (slot, bit) in Q1_HIPWEAPONS.iter().enumerate() {
         if frame.items & (1 << bit) == 0 {
             continue;
         }
-        let active = frame.stats[Q1_STAT_ACTIVEWEAPON] == (1 << bit) as i32;
+        let active = frame.stats[Q1_STAT_ACTIVEWEAPON] == 1 << bit;
         let row = weapon_flash_row(frame, *bit, active);
         if slot == 2 {
             if frame.items & Q1_IT_GRENADE_LAUNCHER != 0 && row != 0 {
@@ -638,12 +670,7 @@ fn draw_hipnotic_weapons(
 }
 
 /// Rogue powered weapons (`sbar.c:646-659`).
-fn draw_rogue_weapons(
-    out: &mut Vec<NativeQ1HudOperation>,
-    frame: &NativeQ1HudFrame,
-    xofs: i32,
-    base_y: i32,
-) {
+fn draw_rogue_weapons(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
     if frame.stats[Q1_STAT_ACTIVEWEAPON] < Q1_RIT_LAVA_NAILGUN as i32 {
         return;
     }
@@ -660,13 +687,7 @@ fn draw_rogue_weapons(
 
 /// Frag strip (`Sbar_DrawFrags`, `sbar.c:766-818`): the top four
 /// scores above the inventory, with brackets around the viewer.
-fn draw_frags(
-    out: &mut Vec<NativeQ1HudOperation>,
-    frame: &NativeQ1HudFrame,
-    xofs: i32,
-    base_y: i32,
-    height: i32,
-) {
+fn draw_frags(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32, height: i32) {
     let order = q1_sort_frags(frame);
     let y = height - Q1_SBAR_HEIGHT - 23;
     for (row, slot) in order.iter().take(4).enumerate() {
@@ -714,11 +735,7 @@ fn draw_frags(
 /// Face row (`Sbar_DrawFace`, `sbar.c:828-919`), including the rogue
 /// team-color branch (`teamplay` 4-6 in multiplayer).
 fn draw_face(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
-    if frame.product == Q1SbarProduct::Rogue
-        && frame.maxclients != 1
-        && frame.teamplay > 3.0
-        && frame.teamplay < 7.0
-    {
+    if frame.product == Q1SbarProduct::Rogue && frame.maxclients != 1 && frame.teamplay > 3.0 && frame.teamplay < 7.0 {
         let slot = (frame.viewentity - 1).max(0) as usize;
         if let Some(entry) = frame.scores.get(slot) {
             let top = q1_color_for_map(entry.colors & 0xf0);
@@ -769,7 +786,7 @@ fn draw_face(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs
 /// 666 plus the disc, otherwise the value plus the strongest icon.
 fn draw_armor(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
     if frame.items & Q1_IT_INVULNERABILITY != 0 {
-        draw_num(out, xofs, base_y, 24, 0, 666, 3, 1);
+        draw_num_at(out, xofs, base_y, 24, 0, 666, 3, 1);
         out.push(NativeQ1HudOperation::Picture {
             x: xofs,
             y: base_y,
@@ -778,7 +795,7 @@ fn draw_armor(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xof
         return;
     }
     let armor = frame.stats[Q1_STAT_ARMOR];
-    draw_num(out, xofs, base_y, 24, 0, armor, 3, usize::from(armor <= 25));
+    draw_num_at(out, xofs, base_y, 24, 0, armor, 3, usize::from(armor <= 25));
     let (low, mid, high) = if frame.product == Q1SbarProduct::Rogue {
         (Q1_RIT_ARMOR1, Q1_RIT_ARMOR2, Q1_RIT_ARMOR3)
     } else {
@@ -842,17 +859,12 @@ fn draw_ammo(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs
         });
     }
     let ammo = frame.stats[Q1_STAT_AMMO];
-    draw_num(out, xofs, base_y, 248, 0, ammo, 3, usize::from(ammo <= 10));
+    draw_num_at(out, xofs, base_y, 248, 0, ammo, 3, usize::from(ammo <= 10));
 }
 
 /// Solo scoreboard (`Sbar_SoloScoreboard`, `sbar.c:457-480`): monster
 /// and secret tallies, level time, and the level name.
-fn draw_solo_scoreboard(
-    out: &mut Vec<NativeQ1HudOperation>,
-    frame: &NativeQ1HudFrame,
-    xofs: i32,
-    base_y: i32,
-) {
+fn draw_solo_scoreboard(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
     draw_string(
         out,
         xofs,
@@ -861,8 +873,7 @@ fn draw_solo_scoreboard(
         4,
         &format!(
             "Monsters:{:3} /{:3}",
-            frame.stats[Q1_STAT_MONSTERS],
-            frame.stats[Q1_STAT_TOTALMONSTERS]
+            frame.stats[Q1_STAT_MONSTERS], frame.stats[Q1_STAT_TOTALMONSTERS]
         ),
     );
     draw_string(
@@ -873,8 +884,7 @@ fn draw_solo_scoreboard(
         12,
         &format!(
             "Secrets :{:3} /{:3}",
-            frame.stats[Q1_STAT_SECRETS],
-            frame.stats[Q1_STAT_TOTALSECRETS]
+            frame.stats[Q1_STAT_SECRETS], frame.stats[Q1_STAT_TOTALSECRETS]
         ),
     );
     let minutes = (frame.time / 60.0) as i32;
@@ -894,12 +904,9 @@ fn draw_solo_scoreboard(
 /// Deathmatch scoreboard overlay (`Sbar_DeathmatchOverlay`,
 /// `sbar.c:1086-1159`): ranking header plus every score with its
 /// team-color swatch, centered in the 320-wide playfield.
-fn draw_deathmatch_overlay(
-    out: &mut Vec<NativeQ1HudOperation>,
-    frame: &NativeQ1HudFrame,
-    xofs: i32,
-) {
+fn draw_deathmatch_overlay(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32) {
     out.push(NativeQ1HudOperation::CenteredPicture {
+        x_base: xofs,
         y: 8,
         lump: "gfx/ranking.lmp".to_string(),
     });
@@ -1031,7 +1038,11 @@ pub fn q1_sbar_operations(
     sb_lines: i32,
 ) -> Vec<NativeQ1HudOperation> {
     let mut out = Vec::new();
-    let xofs = if frame.deathmatch { 0 } else { (width - Q1_SBAR_WIDTH) >> 1 };
+    let xofs = if frame.deathmatch {
+        0
+    } else {
+        (width - Q1_SBAR_WIDTH) >> 1
+    };
     let base_y = height - Q1_SBAR_HEIGHT;
     if sb_lines > 24 {
         draw_inventory(&mut out, frame, xofs, base_y);
@@ -1074,7 +1085,7 @@ pub fn q1_sbar_operations(
         draw_armor(&mut out, frame, xofs, base_y);
         draw_face(&mut out, frame, xofs, base_y);
         let health = frame.stats[Q1_STAT_HEALTH];
-        draw_num(&mut out, xofs, base_y, 136, 0, health, 3, usize::from(health <= 25));
+        draw_num_at(&mut out, xofs, base_y, 136, 0, health, 3, usize::from(health <= 25));
         draw_ammo(&mut out, frame, xofs, base_y);
     }
     if width > Q1_SBAR_WIDTH && frame.deathmatch {
@@ -1088,7 +1099,11 @@ pub fn q1_sbar_operations(
 /// plates with time, secrets, and monster counts.
 pub fn q1_intermission_operations(frame: &NativeQ1HudFrame, width: i32) -> Vec<NativeQ1HudOperation> {
     let mut out = Vec::new();
-    let xofs = if frame.deathmatch { 0 } else { (width - Q1_SBAR_WIDTH) >> 1 };
+    let xofs = if frame.deathmatch {
+        0
+    } else {
+        (width - Q1_SBAR_WIDTH) >> 1
+    };
     if frame.deathmatch {
         draw_deathmatch_overlay(&mut out, frame, xofs);
         return out;
@@ -1105,7 +1120,7 @@ pub fn q1_intermission_operations(frame: &NativeQ1HudFrame, width: i32) -> Vec<N
     });
     let minutes = (frame.completed_time / 60.0) as i32;
     let seconds = (frame.completed_time - 60.0 * minutes as f32) as i32;
-    draw_num(&mut out, xofs, 0, 160, 64, minutes, 3, 0);
+    draw_num_at(&mut out, xofs, 0, 160, 64, minutes, 3, 0);
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 234,
         y: 64,
@@ -1121,20 +1136,20 @@ pub fn q1_intermission_operations(frame: &NativeQ1HudFrame, width: i32) -> Vec<N
         y: 64,
         lump: format!("num_{}", seconds % 10),
     });
-    draw_num(&mut out, xofs, 0, 160, 104, frame.stats[Q1_STAT_SECRETS], 3, 0);
+    draw_num_at(&mut out, xofs, 0, 160, 104, frame.stats[Q1_STAT_SECRETS], 3, 0);
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 232,
         y: 104,
         lump: "num_slash".to_string(),
     });
-    draw_num(&mut out, xofs, 0, 240, 104, frame.stats[Q1_STAT_TOTALSECRETS], 3, 0);
-    draw_num(&mut out, xofs, 0, 160, 144, frame.stats[Q1_STAT_MONSTERS], 3, 0);
+    draw_num_at(&mut out, xofs, 0, 240, 104, frame.stats[Q1_STAT_TOTALSECRETS], 3, 0);
+    draw_num_at(&mut out, xofs, 0, 160, 144, frame.stats[Q1_STAT_MONSTERS], 3, 0);
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 232,
         y: 144,
         lump: "num_slash".to_string(),
     });
-    draw_num(&mut out, xofs, 0, 240, 144, frame.stats[Q1_STAT_TOTALMONSTERS], 3, 0);
+    draw_num_at(&mut out, xofs, 0, 240, 144, frame.stats[Q1_STAT_TOTALMONSTERS], 3, 0);
     out
 }
 
@@ -1163,8 +1178,9 @@ mod tests {
     fn pictures(ops: &[NativeQ1HudOperation]) -> Vec<(i32, i32, &str)> {
         ops.iter()
             .filter_map(|op| match op {
-                NativeQ1HudOperation::Picture { x, y, lump }
-                | NativeQ1HudOperation::TransPicture { x, y, lump } => Some((*x, *y, lump.as_str())),
+                NativeQ1HudOperation::Picture { x, y, lump } | NativeQ1HudOperation::TransPicture { x, y, lump } => {
+                    Some((*x, *y, lump.as_str()))
+                }
                 _ => None,
             })
             .collect()
@@ -1339,10 +1355,26 @@ mod tests {
         frame.maxclients = 4;
         frame.viewentity = 2;
         frame.scores = vec![
-            Q1ScoreEntry { name: "a".to_string(), frags: 5, colors: 0x10 },
-            Q1ScoreEntry { name: "b".to_string(), frags: 9, colors: 0x21 },
-            Q1ScoreEntry { name: String::new(), frags: 99, colors: 0 },
-            Q1ScoreEntry { name: "d".to_string(), frags: 5, colors: 0x32 },
+            Q1ScoreEntry {
+                name: "a".to_string(),
+                frags: 5,
+                colors: 0x10,
+            },
+            Q1ScoreEntry {
+                name: "b".to_string(),
+                frags: 9,
+                colors: 0x21,
+            },
+            Q1ScoreEntry {
+                name: String::new(),
+                frags: 99,
+                colors: 0,
+            },
+            Q1ScoreEntry {
+                name: "d".to_string(),
+                frags: 5,
+                colors: 0x32,
+            },
         ];
         assert_eq!(q1_sort_frags(&frame), vec![1, 0, 3]);
         let ops = q1_sbar_operations(&frame, 320, 200, 48);
@@ -1410,7 +1442,10 @@ mod tests {
         let ops = q1_sbar_operations(&frame, 320, 200, 48);
         let pics = pictures(&ops);
         assert!(pics.contains(&(209, 179, "sb_key1")), "{pics:?}");
-        assert!(!pics.iter().any(|(x, y, l)| (*x, *y) == (192, 160) && *l == "sb_key1"), "{pics:?}");
+        assert!(
+            !pics.iter().any(|(x, y, l)| (*x, *y) == (192, 160) && *l == "sb_key1"),
+            "{pics:?}"
+        );
         assert!(pics.contains(&(176, 160, "inv2_laser")), "{pics:?}");
     }
 

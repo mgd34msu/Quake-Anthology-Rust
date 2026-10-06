@@ -90,6 +90,7 @@ pub mod q1_client_commands;
 pub mod q1_client_settings;
 pub mod q1_fog;
 pub mod q1_localization;
+pub mod q1_native_hud;
 pub mod q1_service_presentation;
 pub mod q1_session_actions;
 pub mod q1_source_cvars;

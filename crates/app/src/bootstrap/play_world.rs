@@ -907,10 +907,11 @@ pub fn load_play_world(
             None
         }
     };
-    let (presentation, presentation_error) = match build_presentation(mounts, &options.map, &bytes, &entities, owner) {
-        Ok(presentation) => (Some(presentation), None),
-        Err(error) => (None, Some(error.to_string())),
-    };
+    let (presentation, presentation_error) =
+        match build_presentation(mounts, &options.product, &options.map, &bytes, &entities, owner) {
+            Ok(presentation) => (Some(presentation), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     Ok(PlayWorld {
         server,
         content,

@@ -1103,6 +1103,7 @@ fn windowed_scene_view(
     time_ms: f64,
     scene: &mut WindowedScene,
     player: Option<(Vec3, Vec3)>,
+    world: Option<&PlayWorld>,
 ) -> Option<(ClientRenderView, Vec<ImageResourceOperation>)> {
     let target = match seat {
         Some(seat) => ViewTarget::Seat(seat.clone()),
@@ -1132,6 +1133,7 @@ fn windowed_scene_view(
             color: Some(clear_color),
             stencil: false,
         });
+        append_q1_hud(scene, world, width, height, &mut view);
         return Some((view, image_operations));
     }
     let camera = windowed_camera(width, height)?;
@@ -1169,6 +1171,52 @@ fn windowed_scene_view(
     ))
 }
 
+/// Append the native Q1 status bar to a scene view: fold the live
+/// world into a bar frame, lay out the stock bar, and submit its
+/// batches as one trailing draw. No Q1 behaviors, no HUD, or no live
+/// player leaves the view untouched.
+fn append_q1_hud(
+    scene: &mut WindowedScene,
+    world: Option<&PlayWorld>,
+    width: i32,
+    height: i32,
+    view: &mut ClientRenderView,
+) {
+    let Some(world) = world else {
+        return;
+    };
+    let Some(hud) = scene
+        .presentation
+        .as_ref()
+        .and_then(|presentation| presentation.q1_hud())
+    else {
+        return;
+    };
+    let Some(behaviors) = world.q1_behaviors() else {
+        return;
+    };
+    let borrowed = behaviors.borrow();
+    let Some(frame) = super::q1_native_hud::q1_frame_from_live(
+        &borrowed,
+        world.server().simulation(),
+        &super::q1_native_hud::level_short_name(world.map()),
+        borrowed.deathmatch,
+        hud.product,
+    ) else {
+        return;
+    };
+    let ops = qa_client::ui::hud::q1_native::q1_sbar_operations(
+        &frame,
+        width,
+        height,
+        qa_client::ui::hud::q1_native::q1_sb_lines(100),
+    );
+    let batches = hud.draw(&ops, width, height);
+    if !batches.is_empty() {
+        view.operations.push(RenderOperation::Draw(batches));
+    }
+}
+
 /// Faithful frame commands (donor `SceneFrameBuilder` shape): draw-buffer
 /// selection, one scene view when a scene is loaded, then the buffer swap,
 /// plus the image uploads the backend must apply before executing the
@@ -1180,6 +1228,7 @@ fn build_windowed_commands(
     time_ms: f64,
     scene: Option<&mut WindowedScene>,
     player: Option<(Vec3, Vec3)>,
+    world: Option<&PlayWorld>,
 ) -> (Vec<RenderCommand>, Vec<ImageResourceOperation>) {
     match scene {
         None => (
@@ -1192,7 +1241,7 @@ fn build_windowed_commands(
             ],
             Vec::new(),
         ),
-        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene, player) {
+        Some(scene) => match windowed_scene_view(width, height, seat, time_ms, scene, player, world) {
             Some((view, image_operations)) => (
                 vec![
                     RenderCommand::DrawBuffer {
@@ -1911,7 +1960,15 @@ impl WindowedStartupBackend {
             );
         }
         let player = self.world.as_ref().and_then(PlayWorld::player_eye);
-        build_windowed_commands(width, height, seat.as_ref(), time_ms, self.scene.as_mut(), player)
+        build_windowed_commands(
+            width,
+            height,
+            seat.as_ref(),
+            time_ms,
+            self.scene.as_mut(),
+            player,
+            self.world.as_ref(),
+        )
     }
 
     /// Apply image uploads to the live backend before executing a view.
@@ -3022,6 +3079,120 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_0479_sbar_presents_and_tracks_health() {
+        // Live Xvfb proof that the native Q1 status bar presents from
+        // live state: open e1m1 at exactly 320x200 (1:1 bar space), step
+        // frames, and capture. The bottom 48 rows must carry
+        // non-trivial bar content (plates, numerals, face); wounding
+        // the player to 25 health must change the strip (health
+        // digits plus the face frame), proving the feed is live.
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m1.bsp".to_string();
+        options.width = 320;
+        options.height = 200;
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 sbar open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        assert!(
+            composed
+                .app
+                .backend()
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .is_some(),
+            "Q1 world installs a status bar"
+        );
+        for _ in 0..5 {
+            composed.app.step().expect("windowed step works");
+        }
+        let (live_w, live_h) = composed.app.backend().live_size();
+        eprintln!("live-q1-sbar: live size {live_w}x{live_h}");
+        assert!(
+            live_w >= 320 && live_h >= 48,
+            "the bar needs at least a 320x48 drawable, got {live_w}x{live_h}"
+        );
+        let before = composed.app.capture_next_frame().expect("sbar capture works");
+        assert_eq!(
+            before.len(),
+            live_w as usize * live_h as usize * 4,
+            "capture matches the live drawable"
+        );
+        let strip_bytes = live_w as usize * 48 * 4;
+        let lit = count_non_black(&before[before.len() - strip_bytes..]);
+        let strip_pixels = live_w as usize * 48;
+        eprintln!("live-q1-sbar: {lit} non-black pixels in the bottom 48 rows");
+        assert!(
+            lit * 100 > strip_pixels * 15,
+            "expected a presented bar, got {lit} lit pixels of {strip_pixels}"
+        );
+        // Wound the player through the live server (health 100 -> 25)
+        // and prove the strip re-presents: the health numerals and the
+        // face frame both change.
+        {
+            let backend = composed.app.backend_mut();
+            let world = backend.world.as_mut().expect("Q1 world set");
+            let player = world.player_actor().cloned().expect("Q1 world admits a player");
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(&player)
+                .cloned()
+                .unwrap_or_default();
+            eprintln!("live-q1-sbar: health {} -> 25", combat.health);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_combat(&player, qa_world::combat::CombatState { health: 25.0, ..combat })
+                .expect("wound applies");
+        }
+        for _ in 0..5 {
+            composed.app.step().expect("windowed step works");
+        }
+        let after = composed.app.capture_next_frame().expect("second capture works");
+        // Restrict the diff to the centered 320 bar columns so 3D-view
+        // margin flicker (torch flames) cannot masquerade as bar motion.
+        let xofs = (live_w as usize - 320) / 2;
+        let changed = before[before.len() - strip_bytes..]
+            .as_chunks::<4>()
+            .0
+            .chunks(live_w as usize)
+            .zip(
+                after[after.len() - strip_bytes..]
+                    .as_chunks::<4>()
+                    .0
+                    .chunks(live_w as usize),
+            )
+            .map(|(row_a, row_b)| {
+                row_a[xofs..xofs + 320]
+                    .iter()
+                    .zip(row_b[xofs..xofs + 320].iter())
+                    .filter(|(a, b)| a[0] != b[0] || a[1] != b[1] || a[2] != b[2])
+                    .count()
+            })
+            .sum::<usize>();
+        eprintln!("live-q1-sbar: {changed} strip pixels changed after the wound");
+        eprintln!("live-q1-sbar: bar-columns diff {changed} of {}", 320 * 48);
+        assert!(
+            changed > 100,
+            "the bar did not track health: {changed} changed bar pixels"
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_start_player_walks_under_host_gate() {
         // Live Xvfb proof that the Q1 walking skeleton moves and collides
         // through the real gated loop: open start.bsp in a real window,
@@ -3209,7 +3380,7 @@ mod tests {
 
     #[test]
     fn windowed_commands_degrade_without_scene() {
-        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None, None);
+        let (commands, image_operations) = build_windowed_commands(64, 64, None, 12.0, None, None, None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 2);
         assert!(matches!(
@@ -3227,7 +3398,8 @@ mod tests {
         let owner = IdentityOwner::create("windowed-scene-test").unwrap();
         let seat = owner.seat(0);
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        let (commands, image_operations) = build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene), None);
+        let (commands, image_operations) =
+            build_windowed_commands(64, 48, Some(&seat), 33.0, Some(&mut scene), None, None);
         assert!(image_operations.is_empty());
         assert_eq!(commands.len(), 3);
         assert!(matches!(
@@ -3255,7 +3427,8 @@ mod tests {
     #[test]
     fn windowed_scene_view_uses_preview_without_seat_and_live_size() {
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.1, 0.2, 0.3, 1.0));
-        let (view, image_operations) = windowed_scene_view(128, 96, None, 7.0, &mut scene, None).expect("preview view");
+        let (view, image_operations) =
+            windowed_scene_view(128, 96, None, 7.0, &mut scene, None, None).expect("preview view");
         assert!(image_operations.is_empty());
         assert_eq!((view.state.viewport.width, view.state.viewport.height), (128.0, 96.0));
         assert!(matches!(view.target, ViewTarget::Preview(_)));
@@ -3263,15 +3436,15 @@ mod tests {
         let clear = view.state.clear.expect("view clears");
         assert_eq!(clear.depth, 1.0);
         assert_eq!(clear.color, Some(vec4(0.1, 0.2, 0.3, 1.0)));
-        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene, None).expect("other size");
+        let (other, _) = windowed_scene_view(32, 32, None, 7.0, &mut scene, None, None).expect("other size");
         assert_eq!((other.state.viewport.width, other.state.viewport.height), (32.0, 32.0));
     }
 
     #[test]
     fn windowed_invalid_size_degrades_even_with_scene() {
         let mut scene = WindowedScene::new(vec![test_batch()], vec4(0.0, 0.0, 0.0, 1.0));
-        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene, None).is_none());
-        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene), None);
+        assert!(windowed_scene_view(0, 64, None, 0.0, &mut scene, None, None).is_none());
+        let (commands, _) = build_windowed_commands(0, 64, None, 0.0, Some(&mut scene), None, None);
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], RenderCommand::DrawBuffer { clear: true, .. }));
         assert!(matches!(commands[1], RenderCommand::SwapBuffers));
@@ -3314,7 +3487,7 @@ mod tests {
             clear: true,
         });
         let mut scene = WindowedScene::new(Vec::new(), vec4(0.0, 0.0, 0.0, 1.0));
-        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene, None).unwrap();
+        let (view, _) = windowed_scene_view(64, 64, None, 0.0, &mut scene, None, None).unwrap();
         backend.execute_serial_command(&RenderCommand::View(view));
         backend.execute_serial_command(&RenderCommand::Draw);
         backend.execute_serial_command(&RenderCommand::SwapBuffers);
