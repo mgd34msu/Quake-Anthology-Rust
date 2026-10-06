@@ -54,8 +54,6 @@ pub const Q1_CONTENTS_WATER: i32 = -3;
 pub const Q1_CONTENTS_SLIME: i32 = -4;
 /// Lava contents.
 pub const Q1_CONTENTS_LAVA: i32 = -5;
-/// Sky contents (`bspfile.h:142`).
-pub const Q1_CONTENTS_SKY: i32 = -6;
 /// Step height.
 pub const Q1_STEP_HEIGHT: f64 = 18.0;
 

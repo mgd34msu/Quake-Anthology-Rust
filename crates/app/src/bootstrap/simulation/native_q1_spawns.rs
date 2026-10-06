@@ -34,11 +34,13 @@ use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
-use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Projectile, Q1Sound, Q1TempEnt};
+use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Sound};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
+use super::native_q1_weapons::Q1Missile;
+use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
 const SPAWNFLAG_NOT_EASY: i32 = 256;
@@ -179,6 +181,19 @@ pub fn register_q1_spawns(registry: &mut SpawnRegistry) {
             }),
         );
     }
+    // Internal player-missile spawn (stock `spawn()` in the fire
+    // functions: spikes, grenades, rockets).
+    registry.register(
+        "q1:missile",
+        Box::new(|fields| {
+            Ok(SpawnRequest {
+                definition: "q1:missile".to_string(),
+                origin: Some(fields.origin),
+                combat: None,
+                grants: Vec::new(),
+            })
+        }),
+    );
     // Internal door trigger-field spawn (stock `spawn_field` actor).
     registry.register(
         "q1:door_field",
@@ -517,6 +532,47 @@ impl Q1EdictSet {
     }
 }
 
+/// Live intermission state (`client.qc:20-21`): stock `intermission_running`
+/// plus the exit gate, the latched button state the exit poll reads, and
+/// the camera spot the entry move used.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Q1Intermission {
+    /// Stock `intermission_running`: 0 live, 1 in intermission, 2/3 past
+    /// episode/all-runes texts (`ExitIntermission`, `client.qc:146-235`).
+    pub running: u32,
+    /// Stock `intermission_exittime`: master-clock seconds before which
+    /// the exit poll refuses to fire.
+    pub exit_time_seconds: f64,
+    /// Live button state latched by the frozen player step (`button0/1/2`
+    /// in `IntermissionThink`, `client.qc:242-251`).
+    pub buttons: bool,
+    /// Camera spot the entry move used, in spawn order (`FindIntermission`,
+    /// `client.qc:105-133`).
+    pub spot: Option<Q1IntermissionSpot>,
+}
+
+/// One intermission camera (`info_intermission`, `client.qc:23-28`): the
+/// spawn origin plus the `mangle` arrival facing (pitch roll yaw).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1IntermissionSpot {
+    /// Camera origin.
+    pub origin: Vec3,
+    /// Arrival facing from `mangle`.
+    pub mangle: Vec3,
+}
+
+/// One recorded player spawn spot (`SelectSpawnPoint`, `client.qc:407`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1SpawnSpot {
+    /// Spawn classname (`info_player_start`, `start2`, `coop`,
+    /// `deathmatch`, `testplayerstart`).
+    pub classname: String,
+    /// Spawn origin.
+    pub origin: Vec3,
+    /// Spawn facing.
+    pub angles: Vec3,
+}
+
 /// Live native Q1 gamecode state, shared between the spawn path and the
 /// native hooks behind one [`Rc`]`<`[`RefCell`]`>`.
 #[derive(Debug, Default)]
@@ -556,6 +612,11 @@ pub struct Q1NativeBehaviors {
     pub items: Q1EdictTable<Q1Item>,
     /// Item bits the player carries (`defs.qc:296-306`).
     pub player_items: u32,
+    /// Active weapon bit (`self.weapon`, 0 until the weapons slice
+    /// deals the spawn loadout).
+    pub player_active_weapon: u32,
+    /// Player frags (`self.frags`, deathmatch scoring drives it).
+    pub player_frags: i32,
     /// Player ammo counts (stock starts 25 shells with the shotgun;
     /// the spawn loadout lands with the weapons slice).
     pub player_ammo: Q1Ammo,
@@ -605,12 +666,8 @@ pub struct Q1NativeBehaviors {
     pub gibs: Q1EdictTable<Q1Gib>,
     /// Queued `ThrowGib` spawns for the monster pass to link.
     pub pending_gibs: Vec<Q1PendingGib>,
-    /// Live projectile actors by id (lasers, grenades, spikes).
-    pub projectiles: Q1EdictTable<Q1Projectile>,
     /// Queued monster sounds for the audio slice to drain.
     pub sounds: Vec<Q1Sound>,
-    /// Queued stock temp entities for the presentation slice to drain.
-    pub temp_ents: Vec<Q1TempEnt>,
     /// Monsters in the map (`total_monsters`).
     pub total_monsters: u32,
     /// Monsters killed (`killed_monsters`).
@@ -627,10 +684,57 @@ pub struct Q1NativeBehaviors {
     pub monster_rand: u64,
     /// Last damage attacker (`damage_attacker`, `combat.qc:112`).
     pub damage_attacker: Option<ActorId>,
+    /// Live player weapon/combat state (`weapons.qc`, `client.qc`).
+    pub player_state: Q1PlayerState,
+    /// Queued weapon temp entities for the presentation slice to
+    /// drain (stock `SVC_TEMPENTITY` broadcasts).
+    pub temp_ents: Vec<Q1TempEnt>,
+    /// Live player-missile actors by id (spikes, grenades, rockets).
+    pub missiles: Q1EdictTable<Q1Missile>,
+    /// Stock `serverflags` (`server.h:27`): episode-completion bits that
+    /// persist across levels and saves (sigils set them, `items.qc:1021`).
+    pub serverflags: i32,
+    /// Stock `mapname` stem (`e1m1`, no directory or extension), set at
+    /// spawn for the `noexit == 2` start-map check (`client.qc:295`).
+    pub mapname: String,
+    /// Snapshot of the `noexit` cvar at load (`host.c:68`): 1 kills at
+    /// exits, 2 only outside `start` (`changelevel_touch`, `client.qc:295`).
+    pub noexit: i32,
+    /// Snapshot of the `samelevel` cvar at load (`host.c:67`): repeat the
+    /// current map instead of advancing (`GotoNextMap`, `client.qc:137`).
+    pub samelevel: bool,
+    /// Stock `nextmap` global (`client.qc:136`): the touched exit's `map`.
+    pub nextmap: Option<String>,
+    /// Stock `svs.changelevel_issued` once-guard (`pr_cmds.c:1656`): only
+    /// the first `GotoNextMap` per level issues travel.
+    pub changelevel_issued: bool,
+    /// Completed `GotoNextMap` destination (map stem) for the app-level
+    /// map transition to consume (`Host_Changelevel_f`, `host_cmd.c:311`).
+    pub pending_travel: Option<String>,
+    /// Live intermission state (`client.qc:20-21`).
+    pub intermission: Q1Intermission,
+    /// `info_intermission` cameras in spawn order (`client.qc:23-28`).
+    pub intermission_spots: Vec<Q1IntermissionSpot>,
+    /// `info_player_start`/`testplayerstart` origins in spawn order: the
+    /// `FindIntermission` fallback chain (`client.qc:123-131`).
+    pub start_spots: Vec<Q1IntermissionSpot>,
+    /// Player spawn spots in spawn order (`SelectSpawnPoint`,
+    /// `client.qc:407`): every `info_player_*`/`testplayerstart`.
+    pub spawn_spots: Vec<Q1SpawnSpot>,
+    /// `SelectSpawnPoint` cursor (`lastspawn`, `client.qc:407`): index
+    /// of the last coop/DM spot handed out.
+    pub lastspawn_spot: Option<usize>,
+    /// Stock `teamplay` rule (obituary team-kill lines, `client.qc`):
+    /// the DM rules slice owns it; 0 keeps every game friendly.
+    pub teamplay: i32,
+    /// Queued CD tracks for the audio slice (`SVC_CDTRACK` in
+    /// `execute_changelevel`/`ExitIntermission`, `client.qc:265/167`).
+    pub cd_tracks: Vec<(u8, u8)>,
 }
 
 impl Q1NativeBehaviors {
-    /// Empty behavior set (`max_health` 100, like `PutClientInServer`).
+    /// Empty behavior set (`max_health` 100, like `PutClientInServer`;
+    /// `weapon` 1, like `SetNewParms`).
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -673,7 +777,7 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
 /// destinations, buttons, lights, items, monsters, movetargets, gibs,
-/// projectiles, movers, solidity), and release the actor. Stale targetname
+/// missiles, movers, solidity), and release the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -699,7 +803,7 @@ pub(crate) fn q1_remove(
     behaviors.monsters.remove(actor);
     behaviors.movetargets.remove(actor);
     behaviors.gibs.remove(actor);
-    behaviors.projectiles.remove(actor);
+    behaviors.missiles.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;

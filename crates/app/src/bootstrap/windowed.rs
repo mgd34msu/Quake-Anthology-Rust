@@ -1687,6 +1687,9 @@ impl WindowedStartupBackend {
             if let Err(error) = world.step_player(command) {
                 eprintln!("windowed: player step failed ({error})");
             }
+            // Stock `PlayerPostThink` order: weapons run after physics
+            // on the same command (impulse plus the held trigger).
+            world.step_weapons(Some(&command));
         }
         world.step_monsters();
     }

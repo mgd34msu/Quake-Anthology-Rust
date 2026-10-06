@@ -46,7 +46,7 @@ use qa_world::combat::{CombatState, RegularArmor};
 use qa_world::movement::q1::monsters::{
     create_q1_monster_movement, Q1MonsterMoveServices, Q1MonsterMoveState, Q1MonsterMovement, Q1MonsterTarget,
 };
-use qa_world::movement::q1::types::{Q1Trace, Q1TraceMove, Q1TraceQuery, Q1_CONTENTS_SKY, Q1_CONTENTS_SOLID};
+use qa_world::movement::q1::types::{Q1Trace, Q1TraceMove, Q1TraceQuery, Q1_CONTENTS_SOLID};
 use qa_world::movement::types::{TraceHit, TraceShape};
 use qa_world::server::{Server, ServerLogic};
 use qa_world::session::Simulation;
@@ -58,6 +58,10 @@ use super::super::play::{q1_blocked_trace, q1_trace_from_scene};
 use super::native_q1_items::{build_q1_backpack, Q1Ammo, Q1ItemKind};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
+use super::native_q1_weapons::{
+    q1_client_obituary, q1_grenade_explode, q1_player_die, q1_player_pain, q1_spawn_missile, Q1MissileKind,
+    Q1MissileSpawn, Q1TempEnt, Q1WeaponFire,
+};
 
 /// Stock entity flags (`defs.qc:231-240`).
 pub const Q1_FLAG_FLY: i32 = 1;
@@ -384,34 +388,6 @@ pub struct Q1PendingGib {
     pub remove_at: f64,
 }
 
-/// Implemented stock projectile kinds (one slice each; monster slices
-/// add theirs here).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Q1ProjectileKind {
-    /// Enforcer laser (`LaunchLaser`, `enforcer.qc`).
-    Laser,
-    /// Ogre grenade (`OgreFireGrenade`, `ogre.qc`).
-    Grenade,
-}
-
-/// Live stock projectile gamecode state: flying damage packets with an
-/// owner, a touch function, and a removal instant. Origin, angles, and
-/// velocity ride the sim body.
-#[derive(Debug, Clone)]
-pub struct Q1Projectile {
-    /// Stock projectile kind.
-    pub kind: Q1ProjectileKind,
-    /// Firing owner (`None` is stock `world`).
-    pub owner: Option<ActorId>,
-    /// Master-clock seconds at which the think fires (bolts remove,
-    /// grenades explode).
-    pub remove_at: f64,
-    /// Entity effects bits (`EF_*`; the presentation slice drains them).
-    pub effects: i32,
-    /// Angular velocity in degrees per second (tumbling grenades).
-    pub avelocity: Vec3,
-}
-
 /// One queued monster sound for the audio slice to drain: stock `sound`
 /// plays immediately, but gamecode has no audio path yet, so every call
 /// site records its exact channel/sample/volume/attenuation instead.
@@ -427,37 +403,6 @@ pub struct Q1Sound {
     pub volume: f32,
     /// Stock attenuation (`ATTN_*`).
     pub attenuation: f32,
-}
-
-/// One queued stock temp entity for the presentation slice to drain:
-/// gamecode records the exact broadcast parameters instead of writing
-/// the message.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Q1TempEnt {
-    /// `particle` blood from `TraceAttack` (`weapons.qc:203`): puff at
-    /// `org` drifting along `vel` (stock `vel * 0.02`), color 73, `count`
-    /// particles (`damage * 2`).
-    Blood {
-        /// Puff origin (`trace_endpos - dir * 4`).
-        org: Vec3,
-        /// Drift velocity.
-        vel: Vec3,
-        /// Particle count.
-        count: f32,
-    },
-    /// `TE_GUNSHOT` from `TraceAttack` (`weapons.qc:203`): a wall puff.
-    Gunshot {
-        /// Puff origin (`trace_endpos - dir * 4`).
-        org: Vec3,
-    },
-    /// `TE_EXPLOSION` from `OgreGrenadeExplode` (`ogre.qc:58`): a
-    /// grenade blast. Stock also keeps the bolt alive as a cycling
-    /// `s_explod` sprite for 0.6 s; the broadcast carries the visual,
-    /// so the bolt removes at once.
-    Explosion {
-        /// Blast origin (the grenade origin).
-        org: Vec3,
-    },
 }
 
 /// Stock `random()` over the behavior seed: Quake never seeds the C
@@ -503,30 +448,6 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         Box::new(|fields| {
             Ok(SpawnRequest {
                 definition: "q1:gib".to_string(),
-                origin: Some(fields.origin),
-                combat: None,
-                grants: Vec::new(),
-            })
-        }),
-    );
-    // Internal laser-bolt spawn (stock `LaunchLaser` actor).
-    registry.register(
-        "q1:laser",
-        Box::new(|fields| {
-            Ok(SpawnRequest {
-                definition: "q1:laser".to_string(),
-                origin: Some(fields.origin),
-                combat: None,
-                grants: Vec::new(),
-            })
-        }),
-    );
-    // Internal grenade spawn (stock `OgreFireGrenade` actor).
-    registry.register(
-        "q1:grenade",
-        Box::new(|fields| {
-            Ok(SpawnRequest {
-                definition: "q1:grenade".to_string(),
                 origin: Some(fields.origin),
                 combat: None,
                 grants: Vec::new(),
@@ -941,6 +862,9 @@ pub fn q1_t_damage(
     }
     // Pain: stock runs `th_pain` unconditionally, then nightmares hold
     // pain frames for 5 s (`combat.qc:198`).
+    if Some(targ) == behaviors.player.as_ref() {
+        q1_player_pain(behaviors, simulation, targ);
+    }
     if behaviors.monsters.contains_key(targ) {
         q1_monster_th_pain(behaviors, simulation, targ);
         if behaviors.skill == 3 {
@@ -958,8 +882,9 @@ pub fn q1_t_damage(
 /// (`buttons.qc:62`); shootable doors keep stock immunity until the
 /// damage-routing slice grants them combat.
 ///
-/// The `SVC_KILLEDMONSTER` broadcast and `ClientObituary` wait for the
-/// network/HUD slices; the counters they feed are live now.
+/// The `SVC_KILLEDMONSTER` broadcast waits for the net slice; the
+/// counters it feeds are live now. Players die through
+/// `ClientObituary` plus `PlayerDie` (`combat.qc:56`).
 pub fn q1_killed(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1000,7 +925,21 @@ pub fn q1_killed(
         return;
     }
     let Some(monster) = behaviors.monsters.get(targ).cloned() else {
-        // Players die in the player slice; nothing else takes damage.
+        // Stock `Killed` order for players (`combat.qc:56`): the
+        // obituary, damage off, then `th_die`.
+        if Some(targ) == behaviors.player.as_ref() {
+            q1_client_obituary(behaviors, simulation, targ, attacker);
+            if let Some(combat) = simulation.combat_state(targ).cloned() {
+                let _ignored = simulation.set_combat(
+                    targ,
+                    CombatState {
+                        can_take_damage: false,
+                        ..combat
+                    },
+                );
+            }
+            q1_player_die(behaviors, simulation, targ);
+        }
         return;
     };
     if monster.flags & Q1_FLAG_MONSTER != 0 {
@@ -1877,10 +1816,6 @@ pub fn q1_monster_pass<L: ServerLogic>(
     for actor in gibs {
         q1_gib_actor(&mut ctx, &actor);
     }
-    let bolts: Vec<ActorId> = ctx.behaviors.projectiles.keys().cloned().collect();
-    for actor in bolts {
-        q1_projectile_actor(&mut ctx, &actor);
-    }
     let tossed: Vec<ActorId> = ctx
         .behaviors
         .items
@@ -2123,7 +2058,11 @@ fn q1_visible<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, viewer: &ActorI
 /// Stock `CanDamage` (`combat.qc:18`): push targets trace to their
 /// center (a hit on the target counts); everyone else needs one clear
 /// line to the origin or a corner offset.
-fn q1_can_damage<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, targ: &ActorId, inflictor: &ActorId) -> bool {
+pub(crate) fn q1_can_damage<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    targ: &ActorId,
+    inflictor: &ActorId,
+) -> bool {
     let Some(from) = ctx.server.simulation().body_state(inflictor).map(|body| body.origin) else {
         return false;
     };
@@ -2274,7 +2213,8 @@ fn q1_find_target<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: 
             .behaviors
             .monsters
             .get(&client)
-            .is_some_and(|monster| monster.show_hostile >= now);
+            .is_some_and(|monster| monster.show_hostile >= now)
+            || (Some(&client) == ctx.behaviors.player.as_ref() && ctx.behaviors.player_state.show_hostile >= now);
         if !hostile && !q1_infront(ctx, actor, &client) {
             return false;
         }
@@ -3150,6 +3090,43 @@ fn q1_hit_is_bsp(behaviors: &Q1NativeBehaviors, hit: &TraceHit) -> bool {
     }
 }
 
+/// Stock `SV_Impact` grenade arm (`sv_phys.c`): a mover running into a
+/// live ogre grenade trips its touch — aimed victims detonate it,
+/// everything else bounces audibly off it. The missile pass owns
+/// flight touches; this covers bodies walking into settled grenades.
+fn q1_impact_ogre_grenade<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    grenade: &ActorId,
+    other: Option<&ActorId>,
+) {
+    let Some(missile) = ctx.behaviors.missiles.get(grenade).cloned() else {
+        return;
+    };
+    if missile.kind != Q1MissileKind::OgreGrenade || Some(&missile.owner) == other {
+        return;
+    }
+    if other.is_some_and(|other| q1_takedamage_aim(ctx.behaviors, other)) {
+        let mut fire = Q1WeaponFire {
+            server: ctx.server,
+            behaviors: ctx.behaviors,
+            scene: ctx.scene,
+            player: missile.owner.clone(),
+            view_angles: vec3(0.0, 0.0, 0.0),
+            now: ctx.now,
+        };
+        q1_grenade_explode(&mut fire, grenade, None, Q1_GRENADE_DAMAGE, 0.0);
+        return;
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        grenade,
+        Q1_CHAN_VOICE,
+        "weapons/bounce.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+}
+
 /// Stock `SV_Impact` (`sv_phys.c`): run both parties' touch functions —
 /// the mover's, then the victim's (a mid-leap victim leaps on).
 fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, hit: &TraceHit) {
@@ -3161,26 +3138,16 @@ fn q1_impact<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Acto
     if touch == Some(Q1MonsterTouch::JumpTouch) {
         q1_dog_jump_touch(ctx, actor, other.as_ref());
     }
-    if ctx
-        .behaviors
-        .projectiles
-        .get(actor)
-        .is_some_and(|projectile| projectile.kind == Q1ProjectileKind::Grenade)
-    {
-        q1_ogre_grenade_touch(ctx, actor, other.as_ref());
+    if ctx.behaviors.missiles.contains_key(actor) {
+        q1_impact_ogre_grenade(ctx, actor, other.as_ref());
     }
     if let Some(other) = other {
         let touch = ctx.behaviors.monsters.get(&other).map(|monster| monster.touch);
         if touch == Some(Q1MonsterTouch::JumpTouch) {
             q1_dog_jump_touch(ctx, &other, Some(actor));
         }
-        if ctx
-            .behaviors
-            .projectiles
-            .get(&other)
-            .is_some_and(|projectile| projectile.kind == Q1ProjectileKind::Grenade)
-        {
-            q1_ogre_grenade_touch(ctx, &other, Some(actor));
+        if ctx.behaviors.missiles.contains_key(&other) {
+            q1_impact_ogre_grenade(ctx, &other, Some(actor));
         }
     }
 }
@@ -3636,27 +3603,13 @@ fn q1_trace_attack<L: ServerLogic>(
     up: Vec3,
     damage: f64,
 ) {
-    // `normalize (dir + v_up*crandom() + v_right*crandom())`: the up
-    // jitter draws first, exactly like stock.
+    // `normalize (dir + v_up*crandom() + v_right*crandom())`: stock
+    // draws the spread pair per pellet (`weapons.qc:203`); the shared
+    // blood broadcast carries no drift vector, so the draws only
+    // advance the seed.
     let up_jitter = q1_monster_crandom(ctx.behaviors);
     let right_jitter = q1_monster_crandom(ctx.behaviors);
-    let raw = vec3(
-        dir.x + up.x * up_jitter + right.x * right_jitter,
-        dir.y + up.y * up_jitter + right.y * right_jitter,
-        dir.z + up.z * up_jitter + right.z * right_jitter,
-    );
-    let len = (raw.x * raw.x + raw.y * raw.y + raw.z * raw.z).sqrt();
-    let unit = if len == 0.0 {
-        vec3(0.0, 0.0, 0.0)
-    } else {
-        vec3(raw.x / len, raw.y / len, raw.z / len)
-    };
-    let normal = q1_trace_normal(trace);
-    let vel = vec3(
-        (unit.x + 2.0 * normal.x) * 200.0,
-        (unit.y + 2.0 * normal.y) * 200.0,
-        (unit.z + 2.0 * normal.z) * 200.0,
-    );
+    let _ = (right, up, up_jitter, right_jitter);
     let org = vec3(
         trace.end.x - dir.x * 4.0,
         trace.end.y - dir.y * 4.0,
@@ -3671,16 +3624,16 @@ fn q1_trace_attack<L: ServerLogic>(
         .is_some_and(|victim| q1_can_take_damage(ctx.server.simulation(), victim))
     {
         let victim = victim.expect("gated victim");
-        // `SpawnBlood (org, vel*0.2, damage)` sends `particle (org,
-        // vel*0.1, 73, damage*2)`, so the puff drifts at `vel * 0.02`.
+        // `SpawnBlood (org, vel, damage)` (`weapons.qc:203`): the shared
+        // broadcast records the wound and the damage, not the drift.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         ctx.behaviors.temp_ents.push(Q1TempEnt::Blood {
-            org,
-            vel: vec3(vel.x * 0.02, vel.y * 0.02, vel.z * 0.02),
-            count: (damage * 2.0) as f32,
+            at: org,
+            count: damage as u32,
         });
         q1_add_multi_damage(ctx, multi, firer, &victim, damage);
     } else {
-        ctx.behaviors.temp_ents.push(Q1TempEnt::Gunshot { org });
+        ctx.behaviors.temp_ents.push(Q1TempEnt::Gunshot { at: org });
     }
 }
 
@@ -4239,8 +4192,8 @@ fn q1_vectoangles(vec: Vec3) -> Vec3 {
 }
 
 /// Stock `LaunchLaser` (`enforcer.qc:74`): bark the shot, then spawn a
-/// point bolt with a dim light, aimed along `dir` at 600 u/s, gone in
-/// 5 s.
+/// shared point-bolt missile with a dim light, aimed along `dir` at
+/// 600 u/s, gone in 5 s. The missile pass flies it.
 fn q1_launch_laser<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, owner: &ActorId, org: Vec3, dir: Vec3) {
     q1_monster_sound(
         ctx.behaviors,
@@ -4261,169 +4214,28 @@ fn q1_launch_laser<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, owner:
         unit.y * Q1_LASER_SPEED,
         unit.z * Q1_LASER_SPEED,
     );
-    let fields = SpawnFields {
-        classname: "q1:laser".to_string(),
-        origin: org,
-        ..SpawnFields::default()
-    };
-    let bolt = match ctx.server.spawn_entity(&fields) {
-        Ok(bolt) => bolt,
-        Err(_) => return,
-    };
-    let point = Bounds {
-        min: vec3(0.0, 0.0, 0.0),
-        max: vec3(0.0, 0.0, 0.0),
-    };
-    let simulation = ctx.server.simulation_mut();
-    if simulation.set_body_bounds(bolt.id(), point).is_err()
-        || simulation.set_body_velocity(bolt.id(), velocity).is_err()
-        || simulation.set_body_angles(bolt.id(), q1_vectoangles(velocity)).is_err()
-    {
-        let _ignored = simulation.release(&bolt);
-        return;
-    }
-    let _ignored = simulation.link_body(bolt.id());
-    ctx.behaviors.solids.insert(bolt.id());
-    ctx.behaviors.projectiles.insert(
-        bolt.id(),
-        Q1Projectile {
-            kind: Q1ProjectileKind::Laser,
-            owner: Some(owner.clone()),
-            remove_at: ctx.now + Q1_LASER_LIFETIME,
-            effects: Q1_EF_DIMLIGHT,
+    let bolt = q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::Laser,
+            owner: owner.clone(),
+            origin: org,
+            velocity,
             avelocity: vec3(0.0, 0.0, 0.0),
+            effects: Q1_EF_DIMLIGHT,
+            fuse_at: None,
+            remove_at: ctx.now + Q1_LASER_LIFETIME,
+            born_at: ctx.now,
         },
     );
-}
-
-/// Stock `Laser_Touch` (`enforcer.qc:41`): owner touches pass through;
-/// sky bolts vanish silently; anything else stops the bolt with a
-/// crack — blood and 15 damage for the living, a wall puff for the
-/// rest — then the bolt removes.
-fn q1_laser_touch<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, other: Option<&ActorId>) {
-    let projectile = ctx.behaviors.projectiles.get(actor).cloned();
-    let Some(projectile) = projectile else {
-        return;
-    };
-    if projectile.owner.as_ref() == other {
-        return;
-    }
-    let Some(body) = ctx.server.simulation().body_state(actor) else {
-        return;
-    };
-    if ctx.movement().services_mut().point_contents(actor, body.origin) == Q1_CONTENTS_SKY {
-        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-        q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
-        return;
-    }
-    q1_monster_sound(
-        ctx.behaviors,
-        actor,
-        Q1_CHAN_WEAPON,
-        "enforcer/enfstop.wav",
-        1.0,
-        Q1_ATTN_STATIC,
-    );
-    let speed =
-        (body.velocity.x * body.velocity.x + body.velocity.y * body.velocity.y + body.velocity.z * body.velocity.z)
-            .sqrt();
-    let unit = if speed == 0.0 {
-        vec3(0.0, 0.0, 0.0)
-    } else {
-        vec3(
-            body.velocity.x / speed,
-            body.velocity.y / speed,
-            body.velocity.z / speed,
-        )
-    };
-    let org = vec3(
-        body.origin.x - 8.0 * unit.x,
-        body.origin.y - 8.0 * unit.y,
-        body.origin.z - 8.0 * unit.z,
-    );
-    let living = other.is_some_and(|other| q1_can_take_damage(ctx.server.simulation(), other));
-    if living {
-        let victim = other.expect("gated victim").clone();
-        // `SpawnBlood (org, vel*0.2, 15)` sends `particle (org,
-        // vel*0.02, 73, 30)` (`weapons.qc:120`).
-        ctx.behaviors.temp_ents.push(Q1TempEnt::Blood {
-            org,
-            vel: vec3(body.velocity.x * 0.02, body.velocity.y * 0.02, body.velocity.z * 0.02),
-            count: (Q1_LASER_DAMAGE * 2.0) as f32,
-        });
-        let me = actor.clone();
-        let owner = projectile.owner.clone();
-        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-        q1_t_damage(
-            ctx.behaviors,
-            simulation,
-            movers,
-            triggers,
-            &victim,
-            Some(&me),
-            owner.as_ref(),
-            Q1_LASER_DAMAGE,
-        );
-    } else {
-        ctx.behaviors.temp_ents.push(Q1TempEnt::Gunshot { org });
-    }
-    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
-}
-
-/// Stock `SV_Physics_Fly` core (`sv_phys.c`): flyers keep velocity
-/// (no gravity), travel to the trace end, link, and touch whatever
-/// stopped them.
-fn q1_fly_physics<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
-    if ctx.dt <= 0.0 {
-        return;
-    }
-    let Some(body) = ctx.server.simulation().body_state(actor) else {
-        return;
-    };
-    let end = vec3(
-        body.origin.x + body.velocity.x * ctx.dt as f32,
-        body.origin.y + body.velocity.y * ctx.dt as f32,
-        body.origin.z + body.velocity.z * ctx.dt as f32,
-    );
-    let trace = ctx.movement().services_mut().trace(actor, body.origin, end, None);
-    // Stock `SV_PushEntity`: land at the end position, link, and touch
-    // whatever stopped the flight.
-    let _ignored = ctx.server.simulation_mut().set_body_origin(actor, trace.end);
-    let _ignored = ctx.server.simulation_mut().link_body(actor);
-    if trace.fraction == 1.0 {
-        return;
-    }
-    let other = match &trace.hit {
-        TraceHit::Actor { actor } => Some(actor.clone()),
-        _ => None,
-    };
-    q1_laser_touch(ctx, actor, other.as_ref());
-}
-
-/// Step one projectile actor: bolts remove on schedule (`SUB_Remove`)
-/// and fly while live; grenades explode on schedule
-/// (`OgreGrenadeExplode`) and bounce while live.
-fn q1_projectile_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
-    let Some(projectile) = ctx.behaviors.projectiles.get(actor).cloned() else {
-        return;
-    };
-    match projectile.kind {
-        Q1ProjectileKind::Laser => {
-            if projectile.remove_at <= ctx.now {
-                let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-                q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
-                return;
-            }
-            q1_fly_physics(ctx, actor);
-        }
-        Q1ProjectileKind::Grenade => {
-            if projectile.remove_at <= ctx.now {
-                q1_ogre_grenade_explode(ctx, actor);
-                return;
-            }
-            q1_grenade_physics(ctx, actor);
-        }
+    // Stock aims the bolt model down the flight line; the shared
+    // spawn leaves angles zero.
+    if let Some(bolt) = bolt {
+        let _ignored = ctx
+            .server
+            .simulation_mut()
+            .set_body_angles(&bolt, q1_vectoangles(velocity));
     }
 }
 
@@ -4679,96 +4491,21 @@ fn q1_ogre_frame<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &
     }
 }
 
-/// Stock `T_RadiusDamage` (`combat.qc:212`): wound every solid
-/// damageable within `damage + 40` of the inflictor, falling off half
-/// a point per unit from the victim center, halved on the attacker,
-/// gated on a damage line. The sim's damageables are the player, the
-/// monsters, and the shootable buttons. (The shambler half-damage
-/// exception lands with its slice.)
-pub fn q1_radius_damage<L: ServerLogic>(
-    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
-    inflictor: &ActorId,
-    attacker: Option<&ActorId>,
-    damage: f64,
-    ignore: Option<&ActorId>,
-) {
-    let Some(from) = ctx.server.simulation().body_state(inflictor).map(|body| body.origin) else {
-        return;
-    };
-    let radius = (damage + 40.0) as f32;
-    let mut victims: Vec<ActorId> = Vec::new();
-    if let Some(player) = ctx.behaviors.player.clone() {
-        victims.push(player);
-    }
-    victims.extend(ctx.behaviors.monsters.keys().cloned());
-    victims.extend(ctx.behaviors.buttons.keys().cloned());
-    for victim in victims {
-        if Some(&victim) == ignore {
-            continue;
-        }
-        // Stock `findradius` skips the unsolid.
-        if !ctx.behaviors.solids.contains(&victim) {
-            continue;
-        }
-        if !q1_can_take_damage(ctx.server.simulation(), &victim) {
-            continue;
-        }
-        let Some(body) = ctx.server.simulation().body_state(&victim) else {
-            continue;
-        };
-        let bounds = translated_body_bounds(&body);
-        let center = vec3(
-            (bounds.min.x + bounds.max.x) / 2.0,
-            (bounds.min.y + bounds.max.y) / 2.0,
-            (bounds.min.z + bounds.max.z) / 2.0,
-        );
-        let delta = vec3(from.x - center.x, from.y - center.y, from.z - center.z);
-        let dist = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
-        if dist > radius {
-            continue;
-        }
-        let mut points = damage - 0.5 * f64::from(dist);
-        if points < 0.0 {
-            points = 0.0;
-        }
-        if Some(&victim) == attacker {
-            points *= 0.5;
-        }
-        if points <= 0.0 {
-            continue;
-        }
-        if !q1_can_damage(ctx, &victim, inflictor) {
-            continue;
-        }
-        let me = inflictor.clone();
-        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-        q1_t_damage(
-            ctx.behaviors,
-            simulation,
-            movers,
-            triggers,
-            &victim,
-            Some(&me),
-            attacker,
-            points,
-        );
-    }
-}
-
 /// Whether stock would read `DAMAGE_AIM` off an entity: players always
 /// aim, monsters read their armed record (`OgreGrenadeTouch`, `ogre.qc:75`).
-fn q1_takedamage_aim<L: ServerLogic>(ctx: &Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) -> bool {
-    if Some(actor) == ctx.behaviors.player.as_ref() {
+pub(crate) fn q1_takedamage_aim(behaviors: &Q1NativeBehaviors, actor: &ActorId) -> bool {
+    if Some(actor) == behaviors.player.as_ref() {
         return true;
     }
-    ctx.behaviors
+    behaviors
         .monsters
         .get(actor)
         .is_some_and(|monster| monster.takedamage == Q1_DAMAGE_AIM)
 }
 
 /// Stock `OgreFireGrenade` (`ogre.qc:90`): flash the muzzle, bark, and
-/// lob a tumbling grenade from the feet at the enemy, fused 2.5 s.
+/// lob a shared tumbling-grenade missile from the feet at the enemy,
+/// fused 2.5 s. The missile pass bounces and detonates it.
 fn q1_ogre_fire_grenade<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
     let enemy = ctx
         .behaviors
@@ -4806,121 +4543,26 @@ fn q1_ogre_fire_grenade<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, a
         vec3(raw.x / len, raw.y / len, raw.z / len)
     };
     let velocity = vec3(unit.x * Q1_GRENADE_SPEED, unit.y * Q1_GRENADE_SPEED, Q1_GRENADE_UP);
-    let fields = SpawnFields {
-        classname: "q1:grenade".to_string(),
-        origin: me.origin,
-        ..SpawnFields::default()
-    };
-    let grenade = match ctx.server.spawn_entity(&fields) {
-        Ok(grenade) => grenade,
-        Err(_) => return,
-    };
-    let point = Bounds {
-        min: vec3(0.0, 0.0, 0.0),
-        max: vec3(0.0, 0.0, 0.0),
-    };
-    let simulation = ctx.server.simulation_mut();
-    if simulation.set_body_bounds(grenade.id(), point).is_err()
-        || simulation.set_body_velocity(grenade.id(), velocity).is_err()
-        || simulation
-            .set_body_angles(grenade.id(), q1_vectoangles(velocity))
-            .is_err()
-    {
-        let _ignored = simulation.release(&grenade);
-        return;
-    }
-    let _ignored = simulation.link_body(grenade.id());
-    ctx.behaviors.solids.insert(grenade.id());
-    ctx.behaviors.projectiles.insert(
-        grenade.id(),
-        Q1Projectile {
-            kind: Q1ProjectileKind::Grenade,
-            owner: Some(actor.clone()),
-            remove_at: ctx.now + Q1_GRENADE_FUSE,
-            effects: 0,
+    let grenade = q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::OgreGrenade,
+            owner: actor.clone(),
+            origin: me.origin,
+            velocity,
             avelocity: vec3(300.0, 300.0, 300.0),
+            effects: 0,
+            fuse_at: Some(ctx.now + Q1_GRENADE_FUSE),
+            remove_at: ctx.now + Q1_GRENADE_FUSE,
+            born_at: ctx.now,
         },
     );
-}
-
-/// Stock `OgreGrenadeTouch` (`ogre.qc:71`): owner touches pass through;
-/// aimed victims detonate; everything else bounces audibly, stilling
-/// the spin on dead stops.
-fn q1_ogre_grenade_touch<L: ServerLogic>(
-    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
-    actor: &ActorId,
-    other: Option<&ActorId>,
-) {
-    let projectile = ctx.behaviors.projectiles.get(actor).cloned();
-    let Some(projectile) = projectile else {
-        return;
-    };
-    if projectile.owner.as_ref() == other {
-        return;
-    }
-    if other.is_some_and(|other| q1_takedamage_aim(ctx, other)) {
-        q1_ogre_grenade_explode(ctx, actor);
-        return;
-    }
-    q1_monster_sound(
-        ctx.behaviors,
-        actor,
-        Q1_CHAN_VOICE,
-        "weapons/bounce.wav",
-        1.0,
-        Q1_ATTN_NORM,
-    );
-    let stopped = ctx
-        .server
-        .simulation()
-        .body_state(actor)
-        .is_some_and(|body| body.velocity.x == 0.0 && body.velocity.y == 0.0 && body.velocity.z == 0.0);
-    if stopped {
-        if let Some(projectile) = ctx.behaviors.projectiles.get_mut(actor) {
-            projectile.avelocity = vec3(0.0, 0.0, 0.0);
-        }
-    }
-}
-
-/// Stock `OgreGrenadeExplode` (`ogre.qc:53`): radius damage around the
-/// grenade, the blast crack and flash, then the grenade removes (the
-/// `s_explode` sprite ride collapses into the broadcast).
-fn q1_ogre_grenade_explode<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
-    let projectile = ctx.behaviors.projectiles.get(actor).cloned();
-    let Some(projectile) = projectile else {
-        return;
-    };
-    let owner = projectile.owner.clone();
-    q1_radius_damage(ctx, actor, owner.as_ref(), Q1_GRENADE_DAMAGE, None);
-    q1_monster_sound(
-        ctx.behaviors,
-        actor,
-        Q1_CHAN_VOICE,
-        "weapons/r_exp3.wav",
-        1.0,
-        Q1_ATTN_NORM,
-    );
-    if let Some(body) = ctx.server.simulation().body_state(actor) {
-        ctx.behaviors.temp_ents.push(Q1TempEnt::Explosion { org: body.origin });
-    }
-    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
-    q1_remove(ctx.behaviors, simulation, movers, triggers, actor);
-}
-
-/// Step one bouncing grenade (`SV_Physics_Toss` with the stock 1.5
-/// bounce backoff, `sv_phys.c`): tumble, fall, bounce, and rest the
-/// spin on quiet landings. Touches dispatch through `SV_Impact`.
-fn q1_grenade_physics<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
-    let spin = ctx
-        .behaviors
-        .projectiles
-        .get(actor)
-        .map_or(vec3(0.0, 0.0, 0.0), |projectile| projectile.avelocity);
-    if !q1_toss_step(ctx, actor, spin, 1.5) {
-        return;
-    }
-    if let Some(projectile) = ctx.behaviors.projectiles.get_mut(actor) {
-        projectile.avelocity = vec3(0.0, 0.0, 0.0);
+    if let Some(grenade) = grenade {
+        let _ignored = ctx
+            .server
+            .simulation_mut()
+            .set_body_angles(&grenade, q1_vectoangles(velocity));
     }
 }
 
