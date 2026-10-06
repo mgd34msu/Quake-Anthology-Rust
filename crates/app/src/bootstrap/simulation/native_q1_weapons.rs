@@ -43,7 +43,7 @@ use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
     q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, q1_takedamage_aim,
     Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE, Q1_CHAN_WEAPON, Q1_DAMAGE_AIM,
-    Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
+    Q1_FLESH_DAMAGE, Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -1187,7 +1187,7 @@ pub fn q1_sample_water_level(
 
 /// Stock missile kinds (`launch_spike`, `W_FireGrenade`, `W_FireRocket`,
 /// `weapons.qc:607-747`; `LaunchLaser`, `enforcer.qc:74`;
-/// `OgreFireGrenade`, `ogre.qc:90`).
+/// `OgreFireGrenade`, `ogre.qc:90`; `ZombieFireGrenade`, `zombie.qc`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Q1MissileKind {
     /// Nailgun spike: 9 damage (`spike_touch`).
@@ -1204,6 +1204,10 @@ pub enum Q1MissileKind {
     /// Ogre grenade: 40 radius on fuse or `DAMAGE_AIM` contact
     /// (`OgreGrenadeTouch`, `ogre.qc:71`).
     OgreGrenade,
+    /// Zombie flesh chunk: 10 damage to the damageable, else a miss
+    /// thud and a dead stop, removing on the next touch
+    /// (`ZombieGrenadeTouch`, `zombie.qc`).
+    ZombieFlesh,
 }
 
 impl Q1MissileKind {
@@ -1217,6 +1221,7 @@ impl Q1MissileKind {
             Q1MissileKind::Grenade => "grenade",
             Q1MissileKind::Laser => "laser",
             Q1MissileKind::OgreGrenade => "grenade",
+            Q1MissileKind::ZombieFlesh => "zombie_flesh",
         }
     }
 }
@@ -1243,6 +1248,10 @@ pub struct Q1Missile {
     /// frame on (`SV_Physics` runs after gamecode), so the spawn pass
     /// never moves them.
     pub born_at: f64,
+    /// Whether a flesh chunk already missed once (`touch = SUB_Remove`,
+    /// `zombie.qc`): the next touch removes it. Other kinds leave this
+    /// false.
+    pub spent: bool,
 }
 
 /// Stock `spawn()` parameters for one missile: the fire functions fill
@@ -1304,6 +1313,7 @@ pub fn q1_spawn_missile<L: ServerLogic>(
             remove_at: spawn.remove_at,
             onground: false,
             born_at: spawn.born_at,
+            spent: false,
         },
     );
     Some(actor.id().clone())
@@ -1634,7 +1644,9 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
         Q1MissileKind::Spike | Q1MissileKind::SuperSpike | Q1MissileKind::Rocket | Q1MissileKind::Laser => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
-        Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade => q1_bounce_grenade(ctx, actor, &missile, dt),
+        Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade | Q1MissileKind::ZombieFlesh => {
+            q1_bounce_grenade(ctx, actor, &missile, dt);
+        }
     }
 }
 
@@ -1809,6 +1821,10 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Laser => q1_laser_impact(ctx, actor, missile, hit),
         Q1MissileKind::OgreGrenade => {
             q1_ogre_grenade_impact(ctx, actor, missile, hit);
+            true
+        }
+        Q1MissileKind::ZombieFlesh => {
+            q1_zombie_flesh_impact(ctx, actor, missile, hit);
             true
         }
     }
@@ -2023,6 +2039,66 @@ fn q1_ogre_grenade_impact<L: ServerLogic>(
         if let Some(record) = ctx.behaviors.missiles.get_mut(actor) {
             record.avelocity = vec3(0.0, 0.0, 0.0);
         }
+    }
+}
+
+/// Stock `ZombieGrenadeTouch` (`zombie.qc`): the dispatcher already
+/// refused the owner, so the damageable takes 10 with a wet thump and
+/// the chunk removes; anything else thuds a miss and stops dead with
+/// `touch = SUB_Remove`, so the next touch removes it silently.
+fn q1_zombie_flesh_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) {
+    if hit
+        .hit_actor
+        .as_ref()
+        .is_some_and(|other| other != &missile.owner && q1_can_take_damage(ctx.server.simulation(), other))
+    {
+        let victim = hit.hit_actor.clone().expect("gated victim");
+        let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            ctx.behaviors,
+            simulation,
+            movers,
+            triggers,
+            &victim,
+            Some(actor),
+            Some(&missile.owner),
+            Q1_FLESH_DAMAGE,
+        );
+        q1_monster_sound(
+            ctx.behaviors,
+            actor,
+            Q1_CHAN_WEAPON,
+            "zombie/z_hit.wav",
+            1.0,
+            Q1_ATTN_NORM,
+        );
+        q1_remove_missile(ctx, actor);
+        return;
+    }
+    if missile.spent {
+        q1_remove_missile(ctx, actor);
+        return;
+    }
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "zombie/z_miss.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let _ignored = ctx
+        .server
+        .simulation_mut()
+        .set_body_velocity(actor, vec3(0.0, 0.0, 0.0));
+    if let Some(record) = ctx.behaviors.missiles.get_mut(actor) {
+        record.avelocity = vec3(0.0, 0.0, 0.0);
+        record.spent = true;
     }
 }
 
@@ -3132,5 +3208,174 @@ mod tests {
         behaviors.player_state.weapon = Q1_IT_AXE;
         behaviors.player_state.currentammo = 0.0;
         assert!(q1_w_check_no_ammo(&mut behaviors));
+    }
+
+    fn test_scene() -> SharedSceneQueries {
+        use qa_bots::q1_collision::{
+            Q1BspChild, Q1CollisionGeometry, Q1CollisionLeaf, Q1CollisionModel, Q1CollisionNode,
+        };
+        use qa_bots::scene::{BspPlane, IndexRange};
+        use qa_bots::shared_scene::DecodedCollisionWorld;
+        use qa_world::hull::{ClipChild, ClipNode};
+
+        let geometry = Q1CollisionGeometry {
+            models: vec![Q1CollisionModel {
+                bounds: qa_core::math::Bounds {
+                    min: vec3(-64.0, -64.0, -64.0),
+                    max: vec3(64.0, 64.0, 64.0),
+                },
+                headnodes: vec![0, 0, 0],
+                visible_leaves: 0,
+                faces: IndexRange { first: 0, count: 0 },
+            }],
+            nodes: vec![Q1CollisionNode {
+                plane: 0,
+                children: [Q1BspChild::Leaf(0), Q1BspChild::Leaf(1)],
+            }],
+            clipnodes: vec![ClipNode {
+                plane: 0,
+                children: [ClipChild::Contents(-2), ClipChild::Contents(-1)],
+            }],
+            planes: vec![BspPlane {
+                normal: vec3(1.0, 0.0, 0.0),
+                distance: 0.0,
+                plane_type: 0,
+                signbits: 0,
+            }],
+            leaves: vec![
+                Q1CollisionLeaf {
+                    contents: -2,
+                    visibility_offset: None,
+                },
+                Q1CollisionLeaf {
+                    contents: -1,
+                    visibility_offset: None,
+                },
+            ],
+            faces: vec![],
+            texture_info: vec![],
+            textures: vec![],
+            vertices: vec![],
+            edges: vec![],
+            surface_edges: vec![],
+            visibility: vec![],
+            brush_list: vec![],
+        };
+        SharedSceneQueries::new(DecodedCollisionWorld::Q1(geometry)).unwrap()
+    }
+
+    fn flesh_ctx<'a>(
+        server: &'a mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &'a mut Q1NativeBehaviors,
+        scene: &'a SharedSceneQueries,
+        player: &ActorId,
+    ) -> Q1WeaponFire<'a, 'a, 'a, qa_guest::server::GuestServerLogic> {
+        Q1WeaponFire {
+            server,
+            behaviors,
+            scene,
+            player: player.clone(),
+            view_angles: vec3(0.0, 0.0, 0.0),
+            now: 1.0,
+        }
+    }
+
+    fn spawn_flesh(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        owner: &ActorId,
+    ) -> ActorId {
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        q1_spawn_missile(
+            server,
+            behaviors,
+            Q1MissileSpawn {
+                kind: Q1MissileKind::ZombieFlesh,
+                owner: owner.clone(),
+                origin: vec3(0.0, 0.0, 24.0),
+                velocity: vec3(600.0, 0.0, 200.0),
+                avelocity: vec3(3000.0, 1000.0, 2000.0),
+                effects: 0,
+                fuse_at: None,
+                remove_at: 3.5,
+                born_at: 1.0,
+            },
+        )
+        .expect("flesh spawns")
+    }
+
+    #[test]
+    fn zombie_flesh_wounds_and_removes() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        let flesh = spawn_flesh(&mut server, &mut behaviors, &owner);
+        let missile = behaviors.missiles.get(&flesh).cloned().expect("flesh record");
+        let hit = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(10.0, 0.0, 24.0),
+            hit_actor: Some(player.clone()),
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_zombie_flesh_impact(&mut ctx, &flesh, &missile, &hit);
+        assert_eq!(q1_health_of(ctx.server.simulation(), &player), 90.0);
+        assert!(
+            ctx.behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "zombie/z_hit.wav"),
+            "strikes thump wet"
+        );
+        assert!(!ctx.behaviors.missiles.contains_key(&flesh), "struck flesh removes");
+    }
+
+    #[test]
+    fn zombie_flesh_miss_stops_then_removes() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let scene = test_scene();
+        let player = spawn_player(&mut server);
+        behaviors.set_player(Some(player.clone()));
+        let owner = spawn_player(&mut server);
+        let flesh = spawn_flesh(&mut server, &mut behaviors, &owner);
+        let wall = Q1LineHit {
+            fraction: 0.5,
+            endpos: vec3(10.0, 0.0, 24.0),
+            hit_actor: None,
+            plane_normal: vec3(-1.0, 0.0, 0.0),
+        };
+        let missile = behaviors.missiles.get(&flesh).cloned().expect("flesh record");
+        let mut ctx = flesh_ctx(&mut server, &mut behaviors, &scene, &player);
+        q1_zombie_flesh_impact(&mut ctx, &flesh, &missile, &wall);
+        // First miss: thud, dead stop, still flying with `touch = Remove` armed.
+        assert!(
+            ctx.behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "zombie/z_miss.wav"),
+            "misses thud"
+        );
+        let body = ctx.server.simulation().body_state(&flesh).expect("flesh body");
+        assert_eq!(body.velocity, vec3(0.0, 0.0, 0.0));
+        let record = ctx.behaviors.missiles.get(&flesh).expect("spent flesh still flies");
+        assert_eq!(record.avelocity, vec3(0.0, 0.0, 0.0));
+        assert!(record.spent);
+        // Second touch removes silently.
+        let missile = record.clone();
+        q1_zombie_flesh_impact(&mut ctx, &flesh, &missile, &wall);
+        assert!(!ctx.behaviors.missiles.contains_key(&flesh), "re-touched flesh removes");
+        assert_eq!(
+            ctx.behaviors
+                .sounds
+                .iter()
+                .filter(|sound| sound.sample == "zombie/z_miss.wav")
+                .count(),
+            1,
+            "the removal touch stays silent"
+        );
     }
 }

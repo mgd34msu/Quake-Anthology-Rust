@@ -109,6 +109,8 @@ pub const Q1_CHAN_WEAPON: u8 = 1;
 pub const Q1_CHAN_VOICE: u8 = 2;
 /// Stock sound channels (`defs.qc:360-363`).
 pub const Q1_CHAN_ITEM: u8 = 3;
+/// Stock sound channels (`defs.qc:364`: zombie falls thump here).
+pub const Q1_CHAN_BODY: u8 = 4;
 
 /// Stock attenuations (`defs.qc:366-369`).
 pub const Q1_ATTN_NONE: f32 = 0.0;
@@ -151,6 +153,8 @@ pub enum Q1MonsterKind {
     Enforcer,
     /// `monster_ogre` and `monster_ogre_marksman` (`ogre.qc`).
     Ogre,
+    /// `monster_zombie` (`zombie.qc`).
+    Zombie,
 }
 
 impl Q1MonsterKind {
@@ -162,6 +166,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Grunt => "monster_army",
             Q1MonsterKind::Enforcer => "monster_enforcer",
             Q1MonsterKind::Ogre => "monster_ogre",
+            Q1MonsterKind::Zombie => "monster_zombie",
         }
     }
 
@@ -174,6 +179,7 @@ impl Q1MonsterKind {
             "monster_army" => Some(Q1MonsterKind::Grunt),
             "monster_enforcer" => Some(Q1MonsterKind::Enforcer),
             "monster_ogre" | "monster_ogre_marksman" => Some(Q1MonsterKind::Ogre),
+            "monster_zombie" => Some(Q1MonsterKind::Zombie),
             _ => None,
         }
     }
@@ -265,6 +271,30 @@ pub enum Q1MonsterSeq {
     OgreDie,
     /// Ogre bdeath 1-10.
     OgreBDie,
+    /// Zombie stand 1-15 (`zombie.qc`).
+    ZombieStand,
+    /// Zombie crucified hang 1-6.
+    ZombieCruc,
+    /// Zombie walk 1-19.
+    ZombieWalk,
+    /// Zombie run 1-18.
+    ZombieRun,
+    /// Zombie flesh throw A 1-13.
+    ZombieAttA,
+    /// Zombie flesh throw B thinks 1-14 (frame 14 reuses attb13).
+    ZombieAttB,
+    /// Zombie flesh throw C 1-12.
+    ZombieAttC,
+    /// Zombie fast pain A 1-12.
+    ZombiePainA,
+    /// Zombie knockdown pain B 1-28.
+    ZombiePainB,
+    /// Zombie knockdown pain C 1-18.
+    ZombiePainC,
+    /// Zombie fast pain D 1-13.
+    ZombiePainD,
+    /// Zombie knockdown/revive pain E 1-30.
+    ZombiePainE,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -346,6 +376,9 @@ pub struct Q1Monster {
     pub effects: i32,
     /// Whether `th_die` ran (stock keys off health/takedamage).
     pub dead: bool,
+    /// Zombie pain state (`self.inpain`, `zombie.qc`): 0 idle, 1 in a
+    /// fast pain, 2 knocked down. Other kinds leave it 0.
+    pub inpain: u8,
 }
 
 /// Live `path_corner` record (`ai.qc:87`): the body holds the corner
@@ -469,6 +502,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_army",
         "monster_enforcer",
         "monster_ogre",
+        "monster_zombie",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -595,6 +629,44 @@ pub const Q1_GRENADE_DAMAGE: f64 = 40.0;
 /// Chainsaw strike reach in units (`chainsaw`, `ogre.qc`).
 pub const Q1_CHAINSAW_RANGE: f32 = 100.0;
 
+/// Zombie collision bounds (`setsize`, `monster_zombie`, `zombie.qc`).
+pub const Q1_ZOMBIE_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Zombie health (`monster_zombie`, `zombie.qc`): pain always resets to
+/// this, so only a single-frame 60+ hit gibs.
+pub const Q1_ZOMBIE_HEALTH: f64 = 60.0;
+
+/// Crucified spawnflag (`SPAWN_CRUCIFIED`, `zombie.qc`): nailed-up
+/// zombies hang on walls instead of walking.
+pub const Q1_ZOMBIE_SPAWN_CRUCIFIED: i32 = 1;
+
+/// Flesh-chunk flight speed in units/s (`ZombieFireGrenade`, `zombie.qc`).
+pub const Q1_FLESH_SPEED: f32 = 600.0;
+
+/// Flesh-chunk upward velocity (`ZombieFireGrenade`, `zombie.qc`).
+pub const Q1_FLESH_UP: f32 = 200.0;
+
+/// Flesh-chunk lifetime in seconds (`SUB_Remove`, `zombie.qc`).
+pub const Q1_FLESH_LIFETIME: f64 = 2.5;
+
+/// Flesh-chunk strike damage (`ZombieGrenadeTouch`, `zombie.qc`).
+pub const Q1_FLESH_DAMAGE: f64 = 10.0;
+
+/// Flesh-throw muzzle offsets per attack (`ZombieFireGrenade` stock
+/// vectors): atta, attb, attc.
+pub const Q1_FLESH_OFFSETS: [[f32; 3]; 3] = [[-10.0, -22.0, 30.0], [-10.0, -24.0, 29.0], [-12.0, -19.0, 29.0]];
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -633,6 +705,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Grunt => (Q1_GRUNT_BOUNDS, Q1_GRUNT_HEALTH),
         Q1MonsterKind::Enforcer => (Q1_ENFORCER_BOUNDS, Q1_ENFORCER_HEALTH),
         Q1MonsterKind::Ogre => (Q1_OGRE_BOUNDS, Q1_OGRE_HEALTH),
+        Q1MonsterKind::Zombie => (Q1_ZOMBIE_BOUNDS, Q1_ZOMBIE_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -645,6 +718,55 @@ pub fn build_q1_monster<L: ServerLogic>(
         },
     )?;
     behaviors.solids.insert(actor.id());
+    // Crucified zombies skip `walkmonster_start` entirely (`monster_zombie`,
+    // `zombie.qc`): `zombie_cruc1` runs at spawn (frame hung, think armed
+    // 0.1 s out, idle roll drawn), with no floor drop, no damage arming,
+    // and no kill-count increment.
+    if kind == Q1MonsterKind::Zombie && fields.spawnflags & Q1_ZOMBIE_SPAWN_CRUCIFIED != 0 {
+        if q1_monster_random(behaviors) < 0.1 {
+            q1_monster_sound(
+                behaviors,
+                actor.id(),
+                Q1_CHAN_VOICE,
+                "zombie/idle_w2.wav",
+                1.0,
+                Q1_ATTN_STATIC,
+            );
+        }
+        behaviors.monsters.insert(
+            actor.id(),
+            Q1Monster {
+                kind,
+                think: Q1MonsterThink::Frame(Q1MonsterSeq::ZombieCruc, 1),
+                nextthink: now + Q1_MONSTER_THINK_STEP,
+                frame: q1_seq_frame(Q1MonsterSeq::ZombieCruc, 0),
+                enemy: None,
+                oldenemy: None,
+                goalentity: None,
+                movetarget: None,
+                ideal_yaw: 0.0,
+                yaw_speed: 0.0,
+                view_ofs: vec3(0.0, 0.0, 0.0),
+                pausetime: 0.0,
+                attack_finished: 0.0,
+                pain_finished: 0.0,
+                search_time: 0.0,
+                show_hostile: 0.0,
+                attack_state: Q1_AS_STRAIGHT,
+                lefty: false,
+                cnt: 0,
+                flags: 0,
+                spawnflags: fields.spawnflags,
+                takedamage: Q1_DAMAGE_NO,
+                touch: Q1MonsterTouch::None,
+                source: Q1UseSource::from_fields(fields),
+                effects: 0,
+                dead: false,
+                inpain: 0,
+            },
+        );
+        return Ok(());
+    }
     // `walkmonster_start`: delay the floor drop past door spawns and
     // spread think times so monsters never share a think instant.
     let nextthink = now + f64::from(q1_monster_random(behaviors)) * 0.5;
@@ -677,10 +799,19 @@ pub fn build_q1_monster<L: ServerLogic>(
             source: Q1UseSource::from_fields(fields),
             effects: 0,
             dead: false,
+            inpain: 0,
         },
     );
     behaviors.total_monsters += 1;
     Ok(())
+}
+
+/// Whether a monster record is a nailed-up zombie (`SPAWN_CRUCIFIED`,
+/// `zombie.qc`): stock assigns it no physics, no damage arming, and no
+/// `use`, so the pass and the touch paths skip all three.
+#[must_use]
+pub fn q1_is_crucified(monster: &Q1Monster) -> bool {
+    monster.kind == Q1MonsterKind::Zombie && monster.spawnflags & Q1_ZOMBIE_SPAWN_CRUCIFIED != 0
 }
 
 /// Finish a spawned `path_corner` actor: size its touch volume, mark it
@@ -884,7 +1015,7 @@ pub fn q1_t_damage(
         q1_player_pain(behaviors, simulation, targ);
     }
     if behaviors.monsters.contains_key(targ) {
-        q1_monster_th_pain(behaviors, simulation, targ);
+        q1_monster_th_pain(behaviors, simulation, targ, take);
         if behaviors.skill == 3 {
             let now = simulation.frame().time.as_seconds_f64();
             if let Some(monster) = behaviors.monsters.get_mut(targ) {
@@ -1017,6 +1148,9 @@ pub fn q1_monster_use(
     let Some(monster) = behaviors.monsters.get(actor) else {
         return;
     };
+    if q1_is_crucified(monster) {
+        return;
+    }
     if monster.enemy.is_some() || q1_health_of(simulation, actor) <= 0.0 {
         return;
     }
@@ -1048,6 +1182,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Dog => "dog/dsight.wav",
         Q1MonsterKind::Grunt => "soldier/sight1.wav",
         Q1MonsterKind::Ogre => "ogre/ogwake.wav",
+        Q1MonsterKind::Zombie => "zombie/z_idle.wav",
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1130,6 +1265,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntStand, 0),
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerStand, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, 0),
+        Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, 0),
     }
 }
 
@@ -1141,6 +1277,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntWalk, 0),
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerWalk, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, 0),
+        Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, 0),
     }
 }
 
@@ -1152,6 +1289,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Grunt => Q1MonsterThink::Frame(Q1MonsterSeq::GruntRun, 0),
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerRun, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreRun, 0),
+        Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
     }
 }
 
@@ -1163,6 +1301,7 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, 0)),
         Q1MonsterKind::Grunt => None,
         Q1MonsterKind::Enforcer => None,
+        Q1MonsterKind::Zombie => None,
         Q1MonsterKind::Ogre => {
             if q1_monster_random(behaviors) > 0.5 {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
@@ -1174,14 +1313,24 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
 }
 
 /// Stock `th_missile` per kind (the first missile frame; `None` is stock
-/// `SUB_Null`).
-#[must_use]
-pub fn q1_th_missile(kind: Q1MonsterKind) -> Option<Q1MonsterThink> {
+/// `SUB_Null`). The zombie picks one of its three flesh throws at
+/// random (`zombie_missile`, `zombie.qc`), so the seed rides along.
+pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogLeap, 0)),
         Q1MonsterKind::Grunt => Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0)),
         Q1MonsterKind::Enforcer => Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0)),
         Q1MonsterKind::Ogre => Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreNail, 0)),
+        Q1MonsterKind::Zombie => {
+            let roll = q1_monster_random(behaviors);
+            if roll < 0.3 {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttA, 0))
+            } else if roll < 0.6 {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttB, 0))
+            } else {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttC, 0))
+            }
+        }
     }
 }
 
@@ -1230,6 +1379,18 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::OgrePainE => 15,
         Q1MonsterSeq::OgreDie => 14,
         Q1MonsterSeq::OgreBDie => 10,
+        Q1MonsterSeq::ZombieStand => 15,
+        Q1MonsterSeq::ZombieCruc => 6,
+        Q1MonsterSeq::ZombieWalk => 19,
+        Q1MonsterSeq::ZombieRun => 18,
+        Q1MonsterSeq::ZombieAttA => 13,
+        Q1MonsterSeq::ZombieAttB => 14,
+        Q1MonsterSeq::ZombieAttC => 12,
+        Q1MonsterSeq::ZombiePainA => 12,
+        Q1MonsterSeq::ZombiePainB => 28,
+        Q1MonsterSeq::ZombiePainC => 18,
+        Q1MonsterSeq::ZombiePainD => 13,
+        Q1MonsterSeq::ZombiePainE => 30,
     }
 }
 
@@ -1242,7 +1403,10 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// death 41-54, fdeath 55-65, paina 66-69, painb 70-74, painc 75-82,
 /// paind 83-101; ogre stand 0-8, walk 9-24, run 25-32, swing 33-46,
 /// smash 47-60, shoot 61-66, pain 67-71, painb 72-74, painc 75-80,
-/// paind 81-96, paine 97-111, death 112-125, bdeath 126-135).
+/// paind 81-96, paine 97-111, death 112-125, bdeath 126-135; zombie
+/// stand 0-14, walk 15-33, run 34-51, atta 52-64, attb 65-78, attc
+/// 79-90, paina 91-102, painb 103-130, painc 131-148, paind 149-161,
+/// paine 162-191, cruc 192-197).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -1254,6 +1418,12 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // its frames ride a table too.
     if seq == Q1MonsterSeq::OgreNail {
         return OGRE_NAIL_FRAMES.get(usize::from(index)).copied().unwrap_or(66);
+    }
+    // The second flesh throw repeats attb13 for its last think
+    // (`zombie_attb14`, `zombie.qc`).
+    if seq == Q1MonsterSeq::ZombieAttB {
+        let clamped = index.min(12);
+        return 65 + i32::from(clamped);
     }
     let base = match seq {
         Q1MonsterSeq::DogStand => 69,
@@ -1297,6 +1467,18 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::OgrePainE => 97,
         Q1MonsterSeq::OgreDie => 112,
         Q1MonsterSeq::OgreBDie => 126,
+        Q1MonsterSeq::ZombieStand => 0,
+        Q1MonsterSeq::ZombieCruc => 192,
+        Q1MonsterSeq::ZombieWalk => 15,
+        Q1MonsterSeq::ZombieRun => 34,
+        Q1MonsterSeq::ZombieAttA => 52,
+        Q1MonsterSeq::ZombieAttB => 65,
+        Q1MonsterSeq::ZombieAttC => 79,
+        Q1MonsterSeq::ZombiePainA => 91,
+        Q1MonsterSeq::ZombiePainB => 103,
+        Q1MonsterSeq::ZombiePainC => 131,
+        Q1MonsterSeq::ZombiePainD => 149,
+        Q1MonsterSeq::ZombiePainE => 162,
     };
     base + i32::from(index)
 }
@@ -1356,14 +1538,33 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         // Death tails self-loop (`ogre.qc`); death never exits.
         (_, Q1MonsterSeq::OgreDie) => Q1MonsterThink::Frame(Q1MonsterSeq::OgreDie, index),
         (_, Q1MonsterSeq::OgreBDie) => Q1MonsterThink::Frame(Q1MonsterSeq::OgreBDie, index),
+        (_, Q1MonsterSeq::ZombieStand) => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, 0),
+        (_, Q1MonsterSeq::ZombieCruc) => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieCruc, 0),
+        (_, Q1MonsterSeq::ZombieWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, 0),
+        (_, Q1MonsterSeq::ZombieRun) => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
+        (_, Q1MonsterSeq::ZombieAttA) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombieAttB) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombieAttC) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombiePainA) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombiePainB) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombiePainC) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombiePainD) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ZombiePainE) => q1_th_run(kind),
     }
 }
 
 /// Stock `th_pain` per kind: the dog barks and takes one of the two
 /// pain sequences at random (`dog_pain`, `dog.qc`); the grunt holds
 /// pain while `pain_finished` runs, then takes one of three sequences
-/// at random (`army_pain`, `soldier.qc`).
-pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Simulation, actor: &ActorId) {
+/// at random (`army_pain`, `soldier.qc`). `take` is the ceiled
+/// post-armor damage (`T_Damage`, `combat.qc`); only the zombie reads
+/// it.
+pub fn q1_monster_th_pain(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    actor: &ActorId,
+    take: f64,
+) {
     let now = simulation.frame().time.as_seconds_f64();
     let Some(monster) = behaviors.monsters.get(actor).cloned() else {
         return;
@@ -1455,6 +1656,67 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.pain_finished = now + hold;
             }
         }
+        Q1MonsterKind::Zombie => {
+            // Stock always resets health first (`zombie_pain`,
+            // `zombie.qc`): only a single-frame 60+ hit reaches `Killed`.
+            if let Some(combat) = simulation.combat_state(actor).cloned() {
+                let _ignored = simulation.set_combat(
+                    actor,
+                    CombatState {
+                        health: Q1_ZOMBIE_HEALTH,
+                        ..combat
+                    },
+                );
+            }
+            if take < 9.0 {
+                return;
+            }
+            if monster.inpain == 2 {
+                return;
+            }
+            if take >= 25.0 {
+                q1_zombie_knockdown(behaviors, actor, now);
+                return;
+            }
+            if monster.inpain != 0 {
+                if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                    monster.pain_finished = now + 3.0;
+                }
+                return;
+            }
+            if monster.pain_finished > now {
+                q1_zombie_knockdown(behaviors, actor, now);
+                return;
+            }
+            let roll = q1_monster_random(behaviors);
+            let seq = if roll < 0.25 {
+                Q1MonsterSeq::ZombiePainA
+            } else if roll < 0.5 {
+                Q1MonsterSeq::ZombiePainB
+            } else if roll < 0.75 {
+                Q1MonsterSeq::ZombiePainC
+            } else {
+                Q1MonsterSeq::ZombiePainD
+            };
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.inpain = 1;
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+    }
+}
+
+/// Stock zombie knockdown (`zombie_pain` → `zombie_paine1`, `zombie.qc`):
+/// down on the ground (`inpain = 2`) into the long fall/lie/revive
+/// sequence.
+fn q1_zombie_knockdown(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, now: f64) {
+    if let Some(monster) = behaviors.monsters.get_mut(actor) {
+        monster.inpain = 2;
+        monster.frame = q1_seq_frame(Q1MonsterSeq::ZombiePainE, 0);
+        monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0);
+        monster.nextthink = now + Q1_MONSTER_THINK_STEP;
     }
 }
 
@@ -1462,7 +1724,9 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
 /// (chunks plus the head); otherwise the dog drops unsolid into one of
 /// the two death sequences at random (`dog_die`, `dog.qc`), while the
 /// grunt stays solid into one of its two death sequences — solidity
-/// drops in the third death frame (`army_die`, `soldier.qc`).
+/// drops in the third death frame (`army_die`, `soldier.qc`). The
+/// zombie always gibs (`zombie_die`, `zombie.qc`): pain resets health
+/// to 60, so death only arrives on a gibbing hit.
 pub fn q1_monster_th_die(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1563,6 +1827,13 @@ pub fn q1_monster_th_die(
                 monster.think = Q1MonsterThink::Frame(seq, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
+        }
+        Q1MonsterKind::Zombie => {
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "zombie/z_gib.wav", 1.0, Q1_ATTN_NORM);
+            q1_throw_head(behaviors, simulation, actor, "progs/h_zombie.mdl", health);
+            q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+            q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+            q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
         }
     }
 }
@@ -1910,11 +2181,9 @@ fn q1_monster_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
             }
         }
     }
-    let airborne = ctx
-        .behaviors
-        .monsters
-        .get(actor)
-        .is_some_and(|monster| monster.flags & (Q1_FLAG_ONGROUND | Q1_FLAG_FLY | Q1_FLAG_SWIM) == 0);
+    let airborne = ctx.behaviors.monsters.get(actor).is_some_and(|monster| {
+        !q1_is_crucified(monster) && monster.flags & (Q1_FLAG_ONGROUND | Q1_FLAG_FLY | Q1_FLAG_SWIM) == 0
+    });
     if airborne {
         q1_step_physics(ctx, actor);
     }
@@ -2579,7 +2848,7 @@ fn q1_ai_run_missile<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, acto
         // `AS_MISSILE` is only ever set where `th_missile` exists;
         // without one the run holds (stock would call `SUB_Null`).
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
-        let Some(think) = kind.and_then(q1_th_missile) else {
+        let Some(think) = kind.and_then(|kind| q1_th_missile(ctx.behaviors, kind)) else {
             return;
         };
         if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
@@ -2722,7 +2991,7 @@ pub fn q1_check_attack<L: ServerLogic>(
         let hold = f64::from(q1_monster_random(ctx.behaviors)) * 2.0;
         let nightmare = ctx.behaviors.skill == 3;
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
-        let Some(think) = kind.and_then(q1_th_missile) else {
+        let Some(think) = kind.and_then(|kind| q1_th_missile(ctx.behaviors, kind)) else {
             return false;
         };
         if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
@@ -2848,7 +3117,7 @@ fn q1_soldier_check_attack<L: ServerLogic>(
     };
     if f64::from(q1_monster_random(ctx.behaviors)) < chance {
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
-        let Some(think) = kind.and_then(q1_th_missile) else {
+        let Some(think) = kind.and_then(|kind| q1_th_missile(ctx.behaviors, kind)) else {
             return false;
         };
         // `SUB_AttackFinished (1 + random())`: nightmares skip the hold.
@@ -2942,6 +3211,7 @@ fn q1_check_any_attack<L: ServerLogic>(
         // Enforcers run the generic check (`CheckAttack`,
         // `fight.qc:57`): no `th_melee`, `th_missile` armed.
         Some(Q1MonsterKind::Enforcer) => q1_check_attack(ctx, actor, memo, false, true),
+        Some(Q1MonsterKind::Zombie) => q1_check_attack(ctx, actor, memo, false, true),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -3840,7 +4110,7 @@ fn q1_dog_jump_touch<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, acto
         if grounded {
             // Only leapers re-leap (the dog always has `th_missile`).
             let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
-            let Some(think) = kind.and_then(q1_th_missile) else {
+            let Some(think) = kind.and_then(|kind| q1_th_missile(ctx.behaviors, kind)) else {
                 return;
             };
             if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
@@ -4023,7 +4293,7 @@ fn q1_grunt_frame<L: ServerLogic>(
         }
         (Q1MonsterSeq::GruntAttack, 6) => {
             q1_ai_face(ctx, actor);
-            if let Some(rewind) = q1_th_missile(Q1MonsterKind::Grunt) {
+            if let Some(rewind) = q1_th_missile(ctx.behaviors, Q1MonsterKind::Grunt) {
                 q1_sub_check_refire(ctx, actor, rewind);
             }
         }
@@ -4128,7 +4398,7 @@ fn q1_enforcer_frame<L: ServerLogic>(
         }
         (Q1MonsterSeq::EnforcerAttack, 13) => {
             q1_ai_face(ctx, actor);
-            if let Some(rewind) = q1_th_missile(Q1MonsterKind::Enforcer) {
+            if let Some(rewind) = q1_th_missile(ctx.behaviors, Q1MonsterKind::Enforcer) {
                 q1_sub_check_refire(ctx, actor, rewind);
             }
         }
@@ -4596,6 +4866,319 @@ fn q1_ogre_swing_yaw<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, acto
     }
 }
 
+/// Zombie walk stride per frame (`zombie_walk1..19`, `zombie.qc`).
+const ZOMBIE_WALK_STEPS: [f64; 19] = [
+    0.0, 2.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+];
+
+/// Zombie run stride per frame (`zombie_run1..18`, `zombie.qc`).
+const ZOMBIE_RUN_STEPS: [f64; 18] = [
+    1.0, 1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 2.0, 0.0, 0.0, 0.0, 2.0, 4.0, 6.0, 7.0, 3.0, 8.0,
+];
+
+/// Stock `ZombieFireGrenade` (`zombie.qc`): bark, then lob a shared
+/// flesh-chunk missile at the enemy from the attack's muzzle offset
+/// (forward/right/up off the monster's angles, 24 down off the stock
+/// view height). The missile pass flies and touches it.
+fn q1_zombie_fire_flesh<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, shot: usize) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_WEAPON,
+        "zombie/z_shot1.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let me = ctx.server.simulation().body_state(actor);
+    let foe = ctx.server.simulation().body_state(&enemy);
+    let (Some(me), Some(foe)) = (me, foe) else {
+        return;
+    };
+    let offset = Q1_FLESH_OFFSETS.get(shot).copied().unwrap_or(Q1_FLESH_OFFSETS[0]);
+    let aim = angle_vectors(me.angles);
+    let org = vec3(
+        me.origin.x + offset[0] * aim.forward.x + offset[1] * aim.right.x + (offset[2] - 24.0) * aim.up.x,
+        me.origin.y + offset[0] * aim.forward.y + offset[1] * aim.right.y + (offset[2] - 24.0) * aim.up.y,
+        me.origin.z + offset[0] * aim.forward.z + offset[1] * aim.right.z + (offset[2] - 24.0) * aim.up.z,
+    );
+    let raw = vec3(foe.origin.x - org.x, foe.origin.y - org.y, foe.origin.z - org.z);
+    let len = (raw.x * raw.x + raw.y * raw.y + raw.z * raw.z).sqrt();
+    let unit = if len == 0.0 {
+        vec3(0.0, 0.0, 0.0)
+    } else {
+        vec3(raw.x / len, raw.y / len, raw.z / len)
+    };
+    let velocity = vec3(unit.x * Q1_FLESH_SPEED, unit.y * Q1_FLESH_SPEED, Q1_FLESH_UP);
+    q1_spawn_missile(
+        ctx.server,
+        ctx.behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::ZombieFlesh,
+            owner: actor.clone(),
+            origin: org,
+            velocity,
+            avelocity: vec3(3000.0, 1000.0, 2000.0),
+            effects: 0,
+            fuse_at: None,
+            remove_at: ctx.now + Q1_FLESH_LIFETIME,
+            born_at: ctx.now,
+        },
+    );
+}
+
+/// Stock `zombie_paine12` (`zombie.qc`): the downed zombie tests the
+/// floor — solid again and standing when the step is free, otherwise
+/// back to lying down (`paine11`) unsolid.
+fn q1_zombie_revive_stand<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    q1_zombie_reset_health(ctx, actor);
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_VOICE,
+        "zombie/z_idle.wav",
+        1.0,
+        Q1_ATTN_IDLE,
+    );
+    ctx.behaviors.solids.insert(actor);
+    if !q1_walkmove(ctx, actor, 0.0, 0.0) {
+        ctx.behaviors.solids.remove(actor);
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 10);
+        }
+    }
+}
+
+/// Stock zombie health reset (`zombie_paine1/11/12`, `zombie.qc`): the
+/// knockdown sequence holds 60 throughout.
+fn q1_zombie_reset_health<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    if let Some(combat) = ctx.server.simulation().combat_state(actor).cloned() {
+        let _ignored = ctx.server.simulation_mut().set_combat(
+            actor,
+            CombatState {
+                health: Q1_ZOMBIE_HEALTH,
+                ..combat
+            },
+        );
+    }
+}
+
+/// One zombie `$frame` body (`zombie.qc`): idle groans, the crucified
+/// hang, gait calls, the three flesh throws, the fast pains, and the
+/// knockdown/revive sequence.
+fn q1_zombie_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::ZombieStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::ZombieCruc, 0) => {
+            if q1_monster_random(ctx.behaviors) < 0.1 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "zombie/idle_w2.wav",
+                    1.0,
+                    Q1_ATTN_STATIC,
+                );
+            }
+        }
+        (Q1MonsterSeq::ZombieCruc, _) => {
+            let jitter = f64::from(q1_monster_random(ctx.behaviors)) * 0.1;
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.nextthink += jitter;
+            }
+        }
+        (Q1MonsterSeq::ZombieWalk, 18) => {
+            q1_ai_walk(ctx, actor, ZOMBIE_WALK_STEPS[18]);
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "zombie/z_idle.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+        }
+        (Q1MonsterSeq::ZombieWalk, i) => {
+            q1_ai_walk(ctx, actor, ZOMBIE_WALK_STEPS.get(usize::from(i)).copied().unwrap_or(0.0));
+        }
+        (Q1MonsterSeq::ZombieRun, 0) => {
+            q1_ai_run(ctx, actor, ZOMBIE_RUN_STEPS[0]);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.inpain = 0;
+            }
+        }
+        (Q1MonsterSeq::ZombieRun, 17) => {
+            q1_ai_run(ctx, actor, ZOMBIE_RUN_STEPS[17]);
+            if q1_monster_random(ctx.behaviors) < 0.2 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "zombie/z_idle.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+            if q1_monster_random(ctx.behaviors) > 0.8 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "zombie/z_idle1.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+        }
+        (Q1MonsterSeq::ZombieRun, i) => {
+            q1_ai_run(ctx, actor, ZOMBIE_RUN_STEPS.get(usize::from(i)).copied().unwrap_or(0.0));
+        }
+        (Q1MonsterSeq::ZombieAttA, 12) => {
+            q1_ai_face(ctx, actor);
+            q1_zombie_fire_flesh(ctx, actor, 0);
+        }
+        (Q1MonsterSeq::ZombieAttA, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::ZombieAttB, 13) => {
+            q1_ai_face(ctx, actor);
+            q1_zombie_fire_flesh(ctx, actor, 1);
+        }
+        (Q1MonsterSeq::ZombieAttB, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::ZombieAttC, 11) => {
+            q1_ai_face(ctx, actor);
+            q1_zombie_fire_flesh(ctx, actor, 2);
+        }
+        (Q1MonsterSeq::ZombieAttC, _) => q1_ai_face(ctx, actor),
+        (Q1MonsterSeq::ZombiePainA, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "zombie/z_pain.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ZombiePainA, 1) => q1_ai_painforward(ctx, actor, 3.0),
+        (Q1MonsterSeq::ZombiePainA, 2) => q1_ai_painforward(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainA, 3) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainA, 4) => q1_ai_pain(ctx, actor, 3.0),
+        (Q1MonsterSeq::ZombiePainA, 5) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainA, _) => {}
+        (Q1MonsterSeq::ZombiePainB, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "zombie/z_pain1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ZombiePainB, 1) => q1_ai_pain(ctx, actor, 2.0),
+        (Q1MonsterSeq::ZombiePainB, 2) => q1_ai_pain(ctx, actor, 8.0),
+        (Q1MonsterSeq::ZombiePainB, 3) => q1_ai_pain(ctx, actor, 6.0),
+        (Q1MonsterSeq::ZombiePainB, 4) => q1_ai_pain(ctx, actor, 2.0),
+        (Q1MonsterSeq::ZombiePainB, 8) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_BODY,
+                "zombie/z_fall.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ZombiePainB, 24) => q1_ai_painforward(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainB, _) => {}
+        (Q1MonsterSeq::ZombiePainC, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "zombie/z_pain1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ZombiePainC, 2) => q1_ai_pain(ctx, actor, 3.0),
+        (Q1MonsterSeq::ZombiePainC, 3) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainC, 10) | (Q1MonsterSeq::ZombiePainC, 11) => {
+            q1_ai_painforward(ctx, actor, 1.0);
+        }
+        (Q1MonsterSeq::ZombiePainC, _) => {}
+        (Q1MonsterSeq::ZombiePainD, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "zombie/z_pain.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ZombiePainD, 8) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainD, _) => {}
+        (Q1MonsterSeq::ZombiePainE, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "zombie/z_pain.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            q1_zombie_reset_health(ctx, actor);
+        }
+        (Q1MonsterSeq::ZombiePainE, 1) => q1_ai_pain(ctx, actor, 8.0),
+        (Q1MonsterSeq::ZombiePainE, 2) => q1_ai_pain(ctx, actor, 5.0),
+        (Q1MonsterSeq::ZombiePainE, 3) => q1_ai_pain(ctx, actor, 3.0),
+        (Q1MonsterSeq::ZombiePainE, 4) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainE, 5) => q1_ai_pain(ctx, actor, 2.0),
+        (Q1MonsterSeq::ZombiePainE, 6) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainE, 7) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainE, 8) => q1_ai_pain(ctx, actor, 2.0),
+        (Q1MonsterSeq::ZombiePainE, 9) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_BODY,
+                "zombie/z_fall.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::ZombiePainE, 10) => {
+            q1_zombie_reset_health(ctx, actor);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.nextthink += 5.0;
+            }
+        }
+        (Q1MonsterSeq::ZombiePainE, 11) => q1_zombie_revive_stand(ctx, actor),
+        (Q1MonsterSeq::ZombiePainE, 24) => q1_ai_painforward(ctx, actor, 5.0),
+        (Q1MonsterSeq::ZombiePainE, 25) => q1_ai_painforward(ctx, actor, 3.0),
+        (Q1MonsterSeq::ZombiePainE, 26) => q1_ai_painforward(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainE, 27) => q1_ai_pain(ctx, actor, 1.0),
+        (Q1MonsterSeq::ZombiePainE, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -4609,6 +5192,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Grunt => q1_grunt_frame(ctx, actor, seq, index),
         Q1MonsterKind::Enforcer => q1_enforcer_frame(ctx, actor, seq, index),
         Q1MonsterKind::Ogre => q1_ogre_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Zombie => q1_zombie_frame(ctx, actor, seq, index),
     }
 }
 
@@ -4650,6 +5234,10 @@ mod tests {
         monster_fields("monster_ogre", pairs)
     }
 
+    fn zombie_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_zombie", pairs)
+    }
+
     fn spawn_monster(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
@@ -4686,6 +5274,14 @@ mod tests {
     }
 
     fn spawn_ogre(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_zombie(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -4773,6 +5369,14 @@ mod tests {
         ogre: &ActorId,
     ) {
         arm_monster(server, behaviors, ogre);
+    }
+
+    fn arm_zombie(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        zombie: &ActorId,
+    ) {
+        arm_monster(server, behaviors, zombie);
     }
 
     #[test]
@@ -5192,7 +5796,7 @@ mod tests {
         assert_eq!(Q1MonsterKind::Grunt.classname(), "monster_army");
         assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Grunt).is_none());
         assert_eq!(
-            q1_th_missile(Q1MonsterKind::Grunt),
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Grunt),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0))
         );
     }
@@ -5422,7 +6026,7 @@ mod tests {
         assert_eq!(Q1MonsterKind::Enforcer.classname(), "monster_enforcer");
         assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Enforcer).is_none());
         assert_eq!(
-            q1_th_missile(Q1MonsterKind::Enforcer),
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Enforcer),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0))
         );
     }
@@ -5699,7 +6303,7 @@ mod tests {
                 | Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSwing, 0))
         ));
         assert_eq!(
-            q1_th_missile(Q1MonsterKind::Ogre),
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Ogre),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreNail, 0))
         );
     }
@@ -5948,6 +6552,339 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Ogre, OgreBDie, 9),
             Q1MonsterThink::Frame(OgreBDie, 9)
+        );
+    }
+
+    #[test]
+    fn zombie_spawn_sizes_counts_and_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(zombie.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_ZOMBIE_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_ZOMBIE_BOUNDS.max);
+        let combat = server.simulation().combat_state(zombie.id()).unwrap();
+        assert_eq!(combat.health, Q1_ZOMBIE_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(zombie.id()));
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Zombie);
+        assert_eq!(monster.think, Q1MonsterThink::StartGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(monster.inpain, 0);
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_zombie"),
+            Some(Q1MonsterKind::Zombie)
+        );
+        assert_eq!(Q1MonsterKind::Zombie.classname(), "monster_zombie");
+        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Zombie).is_none());
+        assert!(matches!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Zombie),
+            Some(Q1MonsterThink::Frame(
+                Q1MonsterSeq::ZombieAttA,
+                0
+            ))
+                | Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttB, 0))
+                | Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttC, 0))
+        ));
+    }
+
+    #[test]
+    fn zombie_crucified_hangs_uncounted_and_ignores_use() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[("spawnflags", "1")]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        // `zombie_cruc1` ran at spawn: hung frame, second hang armed,
+        // solid but unarmed, unflagged, and uncounted.
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieCruc, 1));
+        assert_eq!(monster.frame, 192);
+        assert_eq!(monster.nextthink, Q1_MONSTER_THINK_STEP);
+        assert_eq!(monster.takedamage, Q1_DAMAGE_NO);
+        assert_eq!(monster.flags, 0);
+        assert!(behaviors.solids.contains(zombie.id()));
+        assert_eq!(behaviors.total_monsters, 0);
+        assert!(!q1_can_take_damage(server.simulation(), zombie.id()));
+        // Stock assigns crucified zombies no `use`, so firing one wakes nothing.
+        let simulation = server.simulation_mut();
+        q1_monster_use(&mut behaviors, simulation, zombie.id(), Some(player.id()));
+        assert_eq!(behaviors.monsters.get(zombie.id()).unwrap().enemy, None);
+    }
+
+    #[test]
+    fn zombie_pain_ignores_scratches() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            zombie.id(),
+            None,
+            Some(player.id()),
+            5.0,
+        );
+        // Health resets to 60 even on an ignored scratch.
+        assert_eq!(q1_health_of(server.simulation(), zombie.id()), 60.0);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 0);
+        // The feud still hunts, but the ignored pain adds no sequence.
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
+            "ignored pain keeps the hunt think"
+        );
+        assert!(
+            behaviors.sounds.iter().all(|sound| sound.sample != "zombie/z_pain.wav"
+                && sound.sample != "zombie/z_pain1.wav"),
+            "ignored pain stays pain-silent"
+        );
+    }
+
+    #[test]
+    fn zombie_pain_big_hit_knocks_down() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            zombie.id(),
+            None,
+            Some(player.id()),
+            30.0,
+        );
+        assert_eq!(q1_health_of(server.simulation(), zombie.id()), 60.0);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 2);
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
+        );
+    }
+
+    #[test]
+    fn zombie_pain_double_tap_knocks_down() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        let wound = |server: &mut Server<qa_guest::server::GuestServerLogic>,
+                     behaviors: &mut Q1NativeBehaviors| {
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                zombie.id(),
+                None,
+                Some(player.id()),
+                15.0,
+            );
+        };
+        // First mid hit: one of the four fast pains.
+        wound(&mut server, &mut behaviors);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 1);
+        assert!(matches!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainA, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainB, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainC, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainD, 0)
+        ));
+        // Second mid hit mid-animation: the sequence holds, the window arms.
+        wound(&mut server, &mut behaviors);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 1);
+        assert_eq!(monster.pain_finished, 3.0);
+        assert!(matches!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainA, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainB, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainC, 0)
+                | Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainD, 0)
+        ));
+        // A hit after the run clears `inpain` but inside the window drops it.
+        behaviors.monsters.get_mut(zombie.id()).unwrap().inpain = 0;
+        wound(&mut server, &mut behaviors);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 2);
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
+        );
+    }
+
+    #[test]
+    fn zombie_knocked_down_ignores_pain() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        for _ in 0..2 {
+            let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                &mut behaviors,
+                simulation,
+                movers,
+                triggers,
+                zombie.id(),
+                None,
+                Some(player.id()),
+                30.0,
+            );
+        }
+        // Down on the ground: counters frozen, sequence unmoved, health held.
+        assert_eq!(q1_health_of(server.simulation(), zombie.id()), 60.0);
+        let monster = behaviors.monsters.get(zombie.id()).unwrap();
+        assert_eq!(monster.inpain, 2);
+        assert_eq!(
+            monster.think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombiePainE, 0)
+        );
+    }
+
+    #[test]
+    fn zombie_dies_only_by_gibbing() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            zombie.id(),
+            None,
+            Some(player.id()),
+            60.0,
+        );
+        assert!(q1_health_of(server.simulation(), zombie.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        assert!(behaviors.monsters.get(zombie.id()).unwrap().dead);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        assert!(behaviors.gibs.contains_key(zombie.id()));
+        assert_eq!(behaviors.gibs.get(zombie.id()).unwrap().remove_at, None);
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "zombie/z_gib.wav"));
+    }
+
+    #[test]
+    fn zombie_missile_picks_all_three_throws() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        let mut seen = [false; 3];
+        for _ in 0..30 {
+            match q1_th_missile(&mut behaviors, Q1MonsterKind::Zombie) {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttA, 0)) => seen[0] = true,
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttB, 0)) => seen[1] = true,
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttC, 0)) => seen[2] = true,
+                other => panic!("unexpected zombie missile pick: {other:?}"),
+            }
+        }
+        assert_eq!(seen, [true, true, true]);
+    }
+
+    #[test]
+    fn zombie_sight_barks_idle() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = zombie_fields(&[]);
+        let zombie = spawn_zombie(&mut server, &mut behaviors, &fields);
+        arm_zombie(&mut server, &mut behaviors, zombie.id());
+        behaviors.monsters.get_mut(zombie.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, zombie.id());
+        assert!(
+            behaviors
+                .sounds
+                .iter()
+                .any(|sound| sound.entity == *zombie.id() && sound.sample == "zombie/z_idle.wav"),
+            "sight barks the idle groan"
+        );
+        assert_eq!(
+            behaviors.monsters.get(zombie.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0)
+        );
+    }
+
+    #[test]
+    fn zombie_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(ZombieStand), 15);
+        assert_eq!(q1_seq_len(ZombieCruc), 6);
+        assert_eq!(q1_seq_len(ZombieWalk), 19);
+        assert_eq!(q1_seq_len(ZombieRun), 18);
+        assert_eq!(q1_seq_len(ZombieAttA), 13);
+        assert_eq!(q1_seq_len(ZombieAttB), 14);
+        assert_eq!(q1_seq_len(ZombieAttC), 12);
+        assert_eq!(q1_seq_len(ZombiePainA), 12);
+        assert_eq!(q1_seq_len(ZombiePainB), 28);
+        assert_eq!(q1_seq_len(ZombiePainC), 18);
+        assert_eq!(q1_seq_len(ZombiePainD), 13);
+        assert_eq!(q1_seq_len(ZombiePainE), 30);
+        assert_eq!(q1_seq_frame(ZombieStand, 14), 14);
+        assert_eq!(q1_seq_frame(ZombieCruc, 0), 192);
+        assert_eq!(q1_seq_frame(ZombieCruc, 5), 197);
+        assert_eq!(q1_seq_frame(ZombieWalk, 18), 33);
+        assert_eq!(q1_seq_frame(ZombieRun, 17), 51);
+        assert_eq!(q1_seq_frame(ZombieAttA, 12), 64);
+        // The second throw repeats attb13 for its last think.
+        assert_eq!(q1_seq_frame(ZombieAttB, 12), 77);
+        assert_eq!(q1_seq_frame(ZombieAttB, 13), 77);
+        assert_eq!(q1_seq_frame(ZombieAttC, 11), 90);
+        assert_eq!(q1_seq_frame(ZombiePainA, 11), 102);
+        assert_eq!(q1_seq_frame(ZombiePainB, 27), 130);
+        assert_eq!(q1_seq_frame(ZombiePainC, 17), 148);
+        assert_eq!(q1_seq_frame(ZombiePainD, 12), 161);
+        assert_eq!(q1_seq_frame(ZombiePainE, 29), 191);
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Zombie, ZombieAttA, 12),
+            q1_th_run(Q1MonsterKind::Zombie)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Zombie, ZombiePainE, 29),
+            q1_th_run(Q1MonsterKind::Zombie)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Zombie, ZombieCruc, 5),
+            Q1MonsterThink::Frame(ZombieCruc, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Zombie, ZombieStand, 14),
+            Q1MonsterThink::Frame(ZombieStand, 0)
         );
     }
 }
