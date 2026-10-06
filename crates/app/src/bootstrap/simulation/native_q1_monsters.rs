@@ -59,8 +59,9 @@ use super::native_q1_items::{build_q1_backpack, Q1Ammo, Q1ItemKind};
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 use super::native_q1_triggers::{q1_button_fire, q1_use_targets, Q1UseSource};
 use super::native_q1_weapons::{
-    q1_client_obituary, q1_grenade_explode, q1_player_die, q1_player_pain, q1_spawn_missile, Q1MissileKind,
-    Q1MissileSpawn, Q1TempEnt, Q1WeaponFire, Q1_IT_INVISIBILITY,
+    q1_client_obituary, q1_grenade_explode, q1_lightning_damage, q1_player_die, q1_player_pain,
+    q1_spawn_missile, q1_traceline, Q1MissileKind, Q1MissileSpawn, Q1TempEnt, Q1WeaponFire,
+    Q1_IT_INVISIBILITY,
 };
 
 /// Stock entity flags (`defs.qc:231-240`).
@@ -161,6 +162,8 @@ pub enum Q1MonsterKind {
     Knight,
     /// `monster_demon1` (`demon.qc`).
     Fiend,
+    /// `monster_shambler` (`shambler.qc`).
+    Shambler,
 }
 
 impl Q1MonsterKind {
@@ -176,6 +179,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Fish => "monster_fish",
             Q1MonsterKind::Knight => "monster_knight",
             Q1MonsterKind::Fiend => "monster_demon1",
+            Q1MonsterKind::Shambler => "monster_shambler",
         }
     }
 
@@ -192,6 +196,7 @@ impl Q1MonsterKind {
             "monster_fish" => Some(Q1MonsterKind::Fish),
             "monster_knight" => Some(Q1MonsterKind::Knight),
             "monster_demon1" => Some(Q1MonsterKind::Fiend),
+            "monster_shambler" => Some(Q1MonsterKind::Shambler),
             _ => None,
         }
     }
@@ -351,6 +356,24 @@ pub enum Q1MonsterSeq {
     FiendPain,
     /// Fiend death 1-9.
     FiendDie,
+    /// Shambler stand 1-17 (`shambler.qc`).
+    ShamStand,
+    /// Shambler walk 1-12.
+    ShamWalk,
+    /// Shambler run 1-6.
+    ShamRun,
+    /// Shambler overhead smash 1-12.
+    ShamSmash,
+    /// Shambler right swing 1-9.
+    ShamSwingR,
+    /// Shambler left swing 1-9.
+    ShamSwingL,
+    /// Shambler lightning cast 1-12 (6 jumps to 9).
+    ShamMagic,
+    /// Shambler pain 1-6.
+    ShamPain,
+    /// Shambler death 1-11.
+    ShamDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -481,6 +504,23 @@ pub struct Q1PendingGib {
     pub remove_at: f64,
 }
 
+/// One shambler lightning charge ball (`self.owner`, `sham_magic3`,
+/// `shambler.qc`): stock spawns a real `progs/s_light.mdl` edict at the
+/// caster's feet that grows over frames 0-2 and dies with the first
+/// bolt. The pass only retires expired balls; the magic bodies own the
+/// spawn, frame steps, and early removal.
+#[derive(Debug, Clone)]
+pub struct Q1ShamBall {
+    /// Casting shambler.
+    pub shambler: ActorId,
+    /// Spawn origin (the caster's feet).
+    pub at: Vec3,
+    /// Charge frame 0-2 (`sham_magic3..5`).
+    pub frame: i32,
+    /// Master-clock removal instant (0.7 s out, stock `SUB_Remove`).
+    pub remove_at: f64,
+}
+
 /// One queued monster sound for the audio slice to drain: stock `sound`
 /// plays immediately, but gamecode has no audio path yet, so every call
 /// site records its exact channel/sample/volume/attenuation instead.
@@ -569,6 +609,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_fish",
         "monster_knight",
         "monster_demon1",
+        "monster_shambler",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -872,6 +913,89 @@ pub const Q1_FIEND_JUMP_FAR: f32 = 200.0;
 /// Fiend touch-hit speed floor (`Demon_JumpTouch`, `demon.qc`).
 pub const Q1_FIEND_TOUCH_SPEED: f32 = 400.0;
 
+/// Shambler hull (`VEC_HULL2`, `monster_shambler`, `shambler.qc`).
+pub const Q1_SHAMBLER_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -32.0,
+        y: -32.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 32.0,
+        y: 32.0,
+        z: 64.0,
+    },
+};
+
+/// Shambler spawn health (`monster_shambler`, `shambler.qc`).
+pub const Q1_SHAMBLER_HEALTH: f64 = 600.0;
+
+/// Shambler gib threshold (`sham_die`, `shambler.qc`).
+pub const Q1_SHAMBLER_GIB_HEALTH: f64 = -60.0;
+
+/// Shambler claw reach in units (`ShamClaw`, `shambler.qc`).
+pub const Q1_SHAMBLER_MELEE_RANGE: f32 = 100.0;
+
+/// Shambler walk stride per frame (`sham_walk1..12`, `shambler.qc`).
+pub const Q1_SHAMBLER_WALK_STEPS: [f64; 12] =
+    [10.0, 9.0, 9.0, 5.0, 6.0, 12.0, 8.0, 3.0, 13.0, 9.0, 7.0, 7.0];
+
+/// Shambler run stride per frame (`sham_run1..6`, `shambler.qc`).
+pub const Q1_SHAMBLER_RUN_STEPS: [f64; 6] = [20.0, 24.0, 20.0, 20.0, 24.0, 20.0];
+
+/// Shambler smash charge per frame (`sham_smash1..12`): frame 1 barks
+/// the wind-up, frame 10 lands the overhead (`None`), frame 12 returns
+/// to the run.
+pub const Q1_SHAMBLER_SMASH_STEPS: [Option<f64>; 12] = [
+    Some(2.0),
+    Some(6.0),
+    Some(6.0),
+    Some(5.0),
+    Some(4.0),
+    Some(1.0),
+    Some(0.0),
+    Some(0.0),
+    Some(0.0),
+    None,
+    Some(5.0),
+    Some(4.0),
+];
+
+/// Shambler left-swing charge per frame (`sham_swingl1..9`): frame 1
+/// barks, frame 7 claws (`None`), frame 9 may chain the right swing.
+pub const Q1_SHAMBLER_SWINGL_STEPS: [Option<f64>; 9] = [
+    Some(5.0),
+    Some(3.0),
+    Some(7.0),
+    Some(3.0),
+    Some(7.0),
+    Some(9.0),
+    None,
+    Some(4.0),
+    Some(8.0),
+];
+
+/// Shambler right-swing charge per frame (`sham_swingr1..9`): frame 1
+/// barks, frame 7 claws (`None`), frame 9 charges twice and may chain
+/// the left swing.
+pub const Q1_SHAMBLER_SWINGR_STEPS: [Option<f64>; 9] = [
+    Some(1.0),
+    Some(8.0),
+    Some(14.0),
+    Some(7.0),
+    Some(3.0),
+    Some(6.0),
+    None,
+    Some(3.0),
+    Some(1.0),
+];
+
+/// Shambler charge-ball model (`sham_magic3`, `shambler.qc`).
+pub const Q1_SHAMBLER_BALL_MODEL: &str = "progs/s_light.mdl";
+
+/// Shambler head model (`sham_die`, `shambler.qc`).
+pub const Q1_SHAMBLER_HEAD_MODEL: &str = "progs/h_shams.mdl";
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -914,6 +1038,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Fish => (Q1_FISH_BOUNDS, Q1_FISH_HEALTH),
         Q1MonsterKind::Knight => (Q1_KNIGHT_BOUNDS, Q1_KNIGHT_HEALTH),
         Q1MonsterKind::Fiend => (Q1_FIEND_BOUNDS, Q1_FIEND_HEALTH),
+        Q1MonsterKind::Shambler => (Q1_SHAMBLER_BOUNDS, Q1_SHAMBLER_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1405,6 +1530,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         // line plays despite `monster_knight` setting no `th_sight`.
         Q1MonsterKind::Knight => Some("knight/ksight.wav"),
         Q1MonsterKind::Fiend => Some("demon/sight2.wav"),
+        Q1MonsterKind::Shambler => Some("shambler/ssight.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1494,6 +1620,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, 0),
+        Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, 0),
     }
 }
 
@@ -1509,6 +1636,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishWalk, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, 0),
+        Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamWalk, 0),
     }
 }
 
@@ -1524,13 +1652,19 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0),
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0),
+        Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0),
     }
 }
 
 /// Stock `th_melee` per kind (the first melee frame; `None` is stock
 /// `SUB_Null`). The ogre picks its stroke at random (`ogre_melee`,
-/// `ogre.qc:405`), so the seed rides along.
-pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Option<Q1MonsterThink> {
+/// `ogre.qc:405`) and the shambler picks by roll and health
+/// (`sham_melee`, `shambler.qc`), so the seed and health ride along.
+pub fn q1_th_melee(
+    behaviors: &mut Q1NativeBehaviors,
+    kind: Q1MonsterKind,
+    health: f64,
+) -> Option<Q1MonsterThink> {
     match kind {
         Q1MonsterKind::Dog => Some(Q1MonsterThink::Frame(Q1MonsterSeq::DogAttack, 0)),
         Q1MonsterKind::Grunt => None,
@@ -1544,6 +1678,19 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
             } else {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSwing, 0))
+            }
+        }
+        // Full-health shamblers always smash; hurt ones smash over
+        // 0.6, swing right over 0.3, else swing left. The draw fires
+        // first even when health decides, like stock.
+        Q1MonsterKind::Shambler => {
+            let chance = q1_monster_random(behaviors);
+            if chance > 0.6 || health == Q1_SHAMBLER_HEALTH {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSmash, 0))
+            } else if chance > 0.3 {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingR, 0))
+            } else {
+                Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0))
             }
         }
     }
@@ -1561,6 +1708,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Fish => None,
         Q1MonsterKind::Knight => None,
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0)),
+        Q1MonsterKind::Shambler => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1653,6 +1801,15 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::FiendAttack => 15,
         Q1MonsterSeq::FiendPain => 6,
         Q1MonsterSeq::FiendDie => 9,
+        Q1MonsterSeq::ShamStand => 17,
+        Q1MonsterSeq::ShamWalk => 12,
+        Q1MonsterSeq::ShamRun => 6,
+        Q1MonsterSeq::ShamSmash => 12,
+        Q1MonsterSeq::ShamSwingR => 9,
+        Q1MonsterSeq::ShamSwingL => 9,
+        Q1MonsterSeq::ShamMagic => 12,
+        Q1MonsterSeq::ShamPain => 6,
+        Q1MonsterSeq::ShamDie => 11,
     }
 }
 
@@ -1773,6 +1930,15 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::FiendAttack => 54,
         Q1MonsterSeq::FiendPain => 39,
         Q1MonsterSeq::FiendDie => 45,
+        Q1MonsterSeq::ShamStand => 0,
+        Q1MonsterSeq::ShamWalk => 17,
+        Q1MonsterSeq::ShamRun => 29,
+        Q1MonsterSeq::ShamSmash => 35,
+        Q1MonsterSeq::ShamSwingR => 47,
+        Q1MonsterSeq::ShamSwingL => 56,
+        Q1MonsterSeq::ShamMagic => 65,
+        Q1MonsterSeq::ShamPain => 77,
+        Q1MonsterSeq::ShamDie => 83,
     };
     base + i32::from(index)
 }
@@ -1785,6 +1951,10 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
     // (`demon1_jump10`, `demon.qc`); the frame body holds the clock.
     if kind == Q1MonsterKind::Fiend && seq == Q1MonsterSeq::FiendJump && index == 9 {
         return Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0);
+    }
+    // The cast skips `magic7..8` (`sham_magic6`, `shambler.qc`).
+    if kind == Q1MonsterKind::Shambler && seq == Q1MonsterSeq::ShamMagic && index == 5 {
+        return Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 8);
     }
     let len = q1_seq_len(seq);
     if index + 1 < len {
@@ -1876,6 +2046,16 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::FiendPain) => q1_th_run(kind),
         // The death tail self-loops (`demon.qc`); death never exits.
         (_, Q1MonsterSeq::FiendDie) => Q1MonsterThink::Frame(Q1MonsterSeq::FiendDie, index),
+        (_, Q1MonsterSeq::ShamStand) => Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, 0),
+        (_, Q1MonsterSeq::ShamWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::ShamWalk, 0),
+        (_, Q1MonsterSeq::ShamRun) => Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0),
+        (_, Q1MonsterSeq::ShamSmash) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShamSwingR) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShamSwingL) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShamMagic) => q1_th_run(kind),
+        (_, Q1MonsterSeq::ShamPain) => q1_th_run(kind),
+        // The death tail self-loops (`shambler.qc`); death never exits.
+        (_, Q1MonsterSeq::ShamDie) => Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, index),
     }
 }
 
@@ -2080,6 +2260,27 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // The hurt bark plays first, always — even over a dying or
+        // unfelt hit — then the flinch rolls against `random * 400`
+        // before the 2 s hold latches (`sham_pain`, `shambler.qc`).
+        Q1MonsterKind::Shambler => {
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shambler/shurt2.wav", 1.0, Q1_ATTN_NORM);
+            if q1_health_of(simulation, actor) <= 0.0 {
+                return;
+            }
+            if f64::from(q1_monster_random(behaviors)) * 400.0 > take {
+                return;
+            }
+            if monster.pain_finished > now {
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.pain_finished = now + 2.0;
+                monster.frame = q1_seq_frame(Q1MonsterSeq::ShamPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -2258,6 +2459,22 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::FiendDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FiendDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        Q1MonsterKind::Shambler => {
+            if health < Q1_SHAMBLER_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, Q1_SHAMBLER_HEAD_MODEL, health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+                return;
+            }
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "shambler/sdeath.wav", 1.0, Q1_ATTN_NORM);
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::ShamDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -2518,6 +2735,10 @@ pub fn q1_monster_pass<L: ServerLogic>(
         dt: frame.elapsed.as_seconds_f64().max(0.0),
     };
     q1_spawn_pending_gibs(&mut ctx);
+    // Stock `sham_magic3` arms each charge ball's `SUB_Remove` 0.7 s
+    // out; expired balls retire even when their caster died mid-cast.
+    let now = ctx.now;
+    ctx.behaviors.sham_balls.retain(|ball| ball.remove_at > now);
     // Stock `SV_CleanupEnts` (`sv_main.c:554`): muzzle flashes live one
     // server frame, so last pass's flashes clear before thinks run.
     for monster in ctx.behaviors.monsters.values_mut() {
@@ -3249,7 +3470,8 @@ fn q1_ai_run_melee<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor:
         // `AS_MELEE` is only ever set where `th_melee` exists; without
         // one the run holds (stock would call `SUB_Null`).
         let kind = ctx.behaviors.monsters.get(actor).map(|monster| monster.kind);
-        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind));
+        let health = q1_health_of(ctx.server.simulation(), actor);
+        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind, health));
         let Some(think) = think else {
             return;
         };
@@ -3390,7 +3612,8 @@ pub fn q1_check_attack<L: ServerLogic>(
             q1_knight_attack(ctx, actor, &enemy);
             return true;
         }
-        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind));
+        let health = q1_health_of(ctx.server.simulation(), actor);
+        let think = kind.and_then(|kind| q1_th_melee(ctx.behaviors, kind, health));
         let Some(think) = think else {
             return false;
         };
@@ -3738,6 +3961,10 @@ fn q1_check_any_attack<L: ServerLogic>(
         // the sword by range (`knight_attack`, `fight.qc:27`).
         Some(Q1MonsterKind::Knight) => q1_check_attack(ctx, actor, memo, true, false),
         Some(Q1MonsterKind::Fiend) => q1_fiend_check_attack(ctx, actor, memo),
+        // Shamblers run the generic check with both strokes armed
+        // (`CheckAttack`, `fight.qc:49`); the melee branch picks the
+        // stroke by roll and health (`sham_melee`).
+        Some(Q1MonsterKind::Shambler) => q1_check_attack(ctx, actor, memo, true, true),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -4687,6 +4914,189 @@ fn q1_drop_backpack<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
 /// Stock `Demon_Melee` (`demon.qc`): face, close 12, then rake for
 /// `10 + 5r` inside 100 units with a clear line, spraying meat to
 /// the stroke side.
+/// Stock `ShamClaw` (`shambler.qc`): charge in 10, then rake the
+/// enemy within 100 units for `(random + random + random) * 20` — with
+/// no `CanDamage` gate, unlike the overhead smash — flinging a meat
+/// spray sideways when `side` is set.
+fn q1_sham_claw<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, side: f64) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    q1_ai_charge(ctx, actor, 10.0);
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let to = ctx.server.simulation().body_state(&enemy).map(|body| body.origin);
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let delta = vec3(from.x - to.x, from.y - to.y, from.z - to.z);
+    if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt() > Q1_SHAMBLER_MELEE_RANGE {
+        return;
+    }
+    let damage = f64::from(
+        q1_monster_random(ctx.behaviors) + q1_monster_random(ctx.behaviors) + q1_monster_random(ctx.behaviors),
+    ) * 20.0;
+    let me = actor.clone();
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_t_damage(
+        ctx.behaviors,
+        simulation,
+        movers,
+        triggers,
+        &enemy,
+        Some(&me),
+        Some(&me),
+        damage,
+    );
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_VOICE,
+        "shambler/smack.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    if side != 0.0 {
+        let Some(body) = ctx.server.simulation().body_state(actor) else {
+            return;
+        };
+        let axes = angle_vectors(body.angles);
+        let org = vec3(
+            body.origin.x + axes.forward.x * 16.0,
+            body.origin.y + axes.forward.y * 16.0,
+            body.origin.z + axes.forward.z * 16.0,
+        );
+        let push = side as f32;
+        let vel = vec3(axes.right.x * push, axes.right.y * push, axes.right.z * push);
+        q1_spawn_meat_spray(ctx, org, vel);
+    }
+}
+
+/// Stock `sham_smash10` (`shambler.qc`): the overhead slam lands in
+/// place for `(random + random + random) * 40` behind a `CanDamage`
+/// gate, with two meat sprays on a hit.
+fn q1_sham_smash_hit<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    q1_ai_charge(ctx, actor, 0.0);
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let to = ctx.server.simulation().body_state(&enemy).map(|body| body.origin);
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let delta = vec3(from.x - to.x, from.y - to.y, from.z - to.z);
+    if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt() > Q1_SHAMBLER_MELEE_RANGE {
+        return;
+    }
+    if !q1_can_damage(ctx, &enemy, actor) {
+        return;
+    }
+    let damage = f64::from(
+        q1_monster_random(ctx.behaviors) + q1_monster_random(ctx.behaviors) + q1_monster_random(ctx.behaviors),
+    ) * 40.0;
+    let me = actor.clone();
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_t_damage(
+        ctx.behaviors,
+        simulation,
+        movers,
+        triggers,
+        &enemy,
+        Some(&me),
+        Some(&me),
+        damage,
+    );
+    q1_monster_sound(
+        ctx.behaviors,
+        actor,
+        Q1_CHAN_VOICE,
+        "shambler/smack.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let axes = angle_vectors(body.angles);
+    let org = vec3(
+        body.origin.x + axes.forward.x * 16.0,
+        body.origin.y + axes.forward.y * 16.0,
+        body.origin.z + axes.forward.z * 16.0,
+    );
+    for _ in 0..2 {
+        let fling = q1_monster_crandom(ctx.behaviors) * 100.0;
+        let vel = vec3(axes.right.x * fling, axes.right.y * fling, axes.right.z * fling);
+        q1_spawn_meat_spray(ctx, org, vel);
+    }
+}
+
+/// Stock `CastLightning` (`shambler.qc`): face the enemy, trace one
+/// 600-unit bolt from 40 above the feet at the enemy's waist, flash
+/// the shared bolt temp ent down the trace, and run 10-damage
+/// `LightningDamage` over it. Stock writes `TE_LIGHTNING1`; the lane's
+/// shared bolt channel carries it without a variant tag.
+fn q1_shambler_cast_lightning<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.effects |= Q1_EF_MUZZLEFLASH;
+    }
+    q1_ai_face(ctx, actor);
+    let Some(body) = ctx.server.simulation().body_state(actor) else {
+        return;
+    };
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let Some(foe) = ctx.server.simulation().body_state(&enemy) else {
+        return;
+    };
+    let org = vec3(body.origin.x, body.origin.y, body.origin.z + 40.0);
+    let dx = foe.origin.x - org.x;
+    let dy = foe.origin.y - org.y;
+    let dz = foe.origin.z + 16.0 - org.z;
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    if !dist.is_normal() {
+        return;
+    }
+    // Stock traces from the chest but aims from the feet (`self.origin
+    // + dir * 600`, `shambler.qc`).
+    let end = vec3(
+        body.origin.x + dx / dist * 600.0,
+        body.origin.y + dy / dist * 600.0,
+        body.origin.z + dz / dist * 600.0,
+    );
+    let hit = q1_traceline(ctx.scene, org, end, SceneQ1MoveRule::Normal, actor);
+    ctx.behaviors.temp_ents.push(Q1TempEnt::Lightning {
+        entity: actor.clone(),
+        start: org,
+        end: hit.endpos,
+    });
+    let me = actor.clone();
+    let mut fire = Q1WeaponFire {
+        server: &mut *ctx.server,
+        behaviors: &mut *ctx.behaviors,
+        scene: ctx.scene,
+        player: me.clone(),
+        view_angles: body.angles,
+        now: ctx.now,
+    };
+    q1_lightning_damage(&mut fire, org, hit.endpos, &me, 10.0);
+}
+
 fn q1_fiend_melee<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, side: f64) {
     q1_ai_face(ctx, actor);
     let yaw = ctx
@@ -6184,6 +6594,211 @@ fn q1_fiend_frame<L: ServerLogic>(
     }
 }
 
+/// One shambler `$frame` body (`shambler.qc`): the gait calls with
+/// their tail idle rolls, the smash and chained swings, the lightning
+/// cast with its charge ball, frozen pain, and the unsolid death drop.
+fn q1_shambler_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::ShamStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::ShamWalk, 11) => {
+            q1_ai_walk(ctx, actor, Q1_SHAMBLER_WALK_STEPS[11]);
+            if q1_monster_random(ctx.behaviors) > 0.8 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "shambler/sidle.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+        }
+        (Q1MonsterSeq::ShamWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_SHAMBLER_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::ShamRun, 5) => {
+            q1_ai_run(ctx, actor, Q1_SHAMBLER_RUN_STEPS[5]);
+            if q1_monster_random(ctx.behaviors) > 0.8 {
+                q1_monster_sound(
+                    ctx.behaviors,
+                    actor,
+                    Q1_CHAN_VOICE,
+                    "shambler/sidle.wav",
+                    1.0,
+                    Q1_ATTN_IDLE,
+                );
+            }
+        }
+        (Q1MonsterSeq::ShamRun, _) => {
+            q1_ai_run(ctx, actor, Q1_SHAMBLER_RUN_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::ShamSmash, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shambler/melee1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            q1_ai_charge(ctx, actor, 2.0);
+        }
+        (Q1MonsterSeq::ShamSmash, 9) => q1_sham_smash_hit(ctx, actor),
+        (Q1MonsterSeq::ShamSmash, _) => {
+            if let Some(dist) = Q1_SHAMBLER_SMASH_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::ShamSwingL, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shambler/melee2.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            q1_ai_charge(ctx, actor, 5.0);
+        }
+        (Q1MonsterSeq::ShamSwingL, 6) => {
+            q1_ai_charge(ctx, actor, 5.0);
+            q1_sham_claw(ctx, actor, 250.0);
+        }
+        // The whirling follow-through chains into the right swing half
+        // the time (`sham_swingl9`).
+        (Q1MonsterSeq::ShamSwingL, 8) => {
+            q1_ai_charge(ctx, actor, 8.0);
+            if q1_monster_random(ctx.behaviors) < 0.5 {
+                if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                    monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingR, 0);
+                }
+            }
+        }
+        (Q1MonsterSeq::ShamSwingL, _) => {
+            if let Some(dist) = Q1_SHAMBLER_SWINGL_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::ShamSwingR, 0) => {
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "shambler/melee1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+            q1_ai_charge(ctx, actor, 1.0);
+        }
+        (Q1MonsterSeq::ShamSwingR, 6) => {
+            q1_ai_charge(ctx, actor, 6.0);
+            q1_sham_claw(ctx, actor, -250.0);
+        }
+        // The right tail charges twice, then may whirl back left
+        // (`sham_swingr9`).
+        (Q1MonsterSeq::ShamSwingR, 8) => {
+            q1_ai_charge(ctx, actor, 1.0);
+            q1_ai_charge(ctx, actor, 10.0);
+            if q1_monster_random(ctx.behaviors) < 0.5 {
+                if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                    monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamSwingL, 0);
+                }
+            }
+        }
+        (Q1MonsterSeq::ShamSwingR, _) => {
+            if let Some(dist) = Q1_SHAMBLER_SWINGR_STEPS[usize::from(index)] {
+                q1_ai_charge(ctx, actor, dist);
+            }
+        }
+        (Q1MonsterSeq::ShamMagic, 0) => {
+            q1_ai_face(ctx, actor);
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_WEAPON,
+                "shambler/sattck1.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::ShamMagic, 1) => q1_ai_face(ctx, actor),
+        // The charge hold: face twice, flash, hold the think 0.2 s,
+        // and drop the `s_light` ball at the feet (`sham_magic3`).
+        (Q1MonsterSeq::ShamMagic, 2) => {
+            q1_ai_face(ctx, actor);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.nextthink += 0.2;
+                monster.effects |= Q1_EF_MUZZLEFLASH;
+            }
+            q1_ai_face(ctx, actor);
+            if let Some(body) = ctx.server.simulation().body_state(actor) {
+                ctx.behaviors.sham_balls.push(Q1ShamBall {
+                    shambler: actor.clone(),
+                    at: body.origin,
+                    frame: 0,
+                    remove_at: ctx.now + 0.7,
+                });
+            }
+        }
+        (Q1MonsterSeq::ShamMagic, 3) => {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.effects |= Q1_EF_MUZZLEFLASH;
+            }
+            if let Some(ball) = ctx.behaviors.sham_balls.iter_mut().rev().find(|ball| ball.shambler == *actor)
+            {
+                ball.frame = 1;
+            }
+        }
+        (Q1MonsterSeq::ShamMagic, 4) => {
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.effects |= Q1_EF_MUZZLEFLASH;
+            }
+            if let Some(ball) = ctx.behaviors.sham_balls.iter_mut().rev().find(|ball| ball.shambler == *actor)
+            {
+                ball.frame = 2;
+            }
+        }
+        // The first bolt pops the ball (`sham_magic6`, jumping to 9).
+        (Q1MonsterSeq::ShamMagic, 5) => {
+            if let Some(slot) = ctx.behaviors.sham_balls.iter().rposition(|ball| ball.shambler == *actor) {
+                ctx.behaviors.sham_balls.remove(slot);
+            }
+            q1_shambler_cast_lightning(ctx, actor);
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_WEAPON,
+                "shambler/sboom.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        // `magic7..8` never play: `magic6` jumps to `magic9`.
+        (Q1MonsterSeq::ShamMagic, 6) | (Q1MonsterSeq::ShamMagic, 7) => {}
+        (Q1MonsterSeq::ShamMagic, 8) | (Q1MonsterSeq::ShamMagic, 9) => {
+            q1_shambler_cast_lightning(ctx, actor);
+        }
+        (Q1MonsterSeq::ShamMagic, 10) => {
+            if ctx.behaviors.skill == 3 {
+                q1_shambler_cast_lightning(ctx, actor);
+            }
+        }
+        (Q1MonsterSeq::ShamMagic, 11) => {}
+        (Q1MonsterSeq::ShamPain, _) => {}
+        (Q1MonsterSeq::ShamDie, 2) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::ShamDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -6201,6 +6816,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Fish => q1_fish_frame(ctx, actor, seq, index),
         Q1MonsterKind::Knight => q1_knight_frame(ctx, actor, seq, index),
         Q1MonsterKind::Fiend => q1_fiend_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Shambler => q1_shambler_frame(ctx, actor, seq, index),
     }
 }
 
@@ -6862,7 +7478,8 @@ mod tests {
             Some(Q1MonsterKind::Grunt)
         );
         assert_eq!(Q1MonsterKind::Grunt.classname(), "monster_army");
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Grunt).is_none());
+        let health = q1_health_of(server.simulation(), grunt.id());
+        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Grunt, health).is_none());
         assert_eq!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Grunt),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0))
@@ -7092,7 +7709,8 @@ mod tests {
             Some(Q1MonsterKind::Enforcer)
         );
         assert_eq!(Q1MonsterKind::Enforcer.classname(), "monster_enforcer");
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Enforcer).is_none());
+        let health = q1_health_of(server.simulation(), enforcer.id());
+        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Enforcer, health).is_none());
         assert_eq!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Enforcer),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0))
@@ -7366,7 +7984,7 @@ mod tests {
         assert_eq!(Q1MonsterKind::from_classname("monster_ogre"), Some(Q1MonsterKind::Ogre));
         assert_eq!(Q1MonsterKind::Ogre.classname(), "monster_ogre");
         assert!(matches!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Ogre),
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Ogre, q1_health_of(server.simulation(), ogre.id())),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
                 | Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSwing, 0))
         ));
@@ -7647,7 +8265,8 @@ mod tests {
             Some(Q1MonsterKind::Zombie)
         );
         assert_eq!(Q1MonsterKind::Zombie.classname(), "monster_zombie");
-        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Zombie).is_none());
+        let health = q1_health_of(server.simulation(), zombie.id());
+        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Zombie, health).is_none());
         assert!(matches!(
             q1_th_missile(&mut behaviors, Q1MonsterKind::Zombie),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::ZombieAttA, 0))
@@ -7968,7 +8587,7 @@ mod tests {
         assert_eq!(Q1MonsterKind::from_classname("monster_fish"), Some(Q1MonsterKind::Fish));
         assert_eq!(Q1MonsterKind::Fish.classname(), "monster_fish");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Fish),
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Fish, q1_health_of(server.simulation(), fish.id())),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0))
         );
         assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Fish).is_none());
@@ -8122,7 +8741,7 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Knight.classname(), "monster_knight");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Knight),
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Knight, q1_health_of(server.simulation(), knight.id())),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0))
         );
         assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Knight).is_none());
@@ -8336,7 +8955,7 @@ mod tests {
         );
         assert_eq!(Q1MonsterKind::Fiend.classname(), "monster_demon1");
         assert_eq!(
-            q1_th_melee(&mut behaviors, Q1MonsterKind::Fiend),
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Fiend, q1_health_of(server.simulation(), fiend.id())),
             Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0))
         );
         assert_eq!(

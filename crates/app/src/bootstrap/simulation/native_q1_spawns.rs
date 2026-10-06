@@ -34,7 +34,7 @@ use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
-use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1Sound};
+use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1ShamBall, Q1Sound};
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -680,6 +680,9 @@ pub struct Q1NativeBehaviors {
     pub gibs: Q1EdictTable<Q1Gib>,
     /// Queued `ThrowGib` spawns for the monster pass to link.
     pub pending_gibs: Vec<Q1PendingGib>,
+    /// Live shambler charge balls (`self.owner`, `sham_magic3`): the
+    /// presentation slice drains these like temp ents.
+    pub sham_balls: Vec<Q1ShamBall>,
     /// Queued monster sounds for the audio slice to drain.
     pub sounds: Vec<Q1Sound>,
     /// Monsters in the map (`total_monsters`).
