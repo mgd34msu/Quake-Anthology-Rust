@@ -167,6 +167,18 @@ impl UserCommand {
             UserCommand::Q3(_) => MovementDialect::Q3,
         }
     }
+
+    /// Button bitmask carried by the command (stock `button0/1/2`).
+    #[must_use]
+    pub fn buttons(&self) -> i32 {
+        match self {
+            UserCommand::Q1Netquake(command) => command.buttons,
+            UserCommand::Q1Quakeworld(command) => command.buttons,
+            UserCommand::Q2Classic(command) => command.buttons,
+            UserCommand::Q2Rerelease(command) => command.buttons,
+            UserCommand::Q3(command) => command.buttons,
+        }
+    }
 }
 
 /// Trace shape, mirroring donor `TraceShape`.

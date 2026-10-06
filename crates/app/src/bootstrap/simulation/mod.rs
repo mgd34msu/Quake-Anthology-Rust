@@ -45,6 +45,7 @@ pub mod native_q1_items;
 pub mod native_q1_monsters;
 pub mod native_q1_pusher;
 pub mod native_q1_spawns;
+pub mod native_q1_travel;
 pub mod native_q1_triggers;
 pub mod native_q1_weapons;
 pub mod native_q2_map;
