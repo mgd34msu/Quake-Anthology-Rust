@@ -3810,4 +3810,488 @@ mod tests {
         }
         assert!(woke, "a sighted packmate wakes its den");
     }
+
+    // --- Live Q1 weapons harness (slice: hitscan, impulse, loadout) ---
+
+    /// Build a NetQuake weapon command: buttons plus impulse with
+    /// zeroed movement (firing never moves the player).
+    fn live_weapon_command(buttons: i32, impulse: i32) -> qa_world::movement::types::UserCommand {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+        UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: 0.0,
+            view_angles: vec3(0.0, 0.0, 0.0),
+            forward_move: 0.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons,
+            impulse,
+        })
+    }
+
+    /// Run the weapon pass once with buttons plus impulse (the attack
+    /// input seam; the clock does not advance).
+    fn live_fire(world: &mut PlayWorld, buttons: i32, impulse: i32) {
+        let command = live_weapon_command(buttons, impulse);
+        world.step_weapons(Some(&command));
+    }
+
+    /// Live player eye from the sim body (placement truth; the movement
+    /// state never sees scripted placements).
+    fn live_eye(world: &PlayWorld) -> qa_core::math::Vec3 {
+        let player = world.player_actor().cloned().expect("player");
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        vec3(body.origin.x, body.origin.y, body.origin.z + 22.0)
+    }
+
+    /// Aim the player body at a map point (view angles only; no step
+    /// runs, so scripted placements hold).
+    fn live_aim_at(world: &mut PlayWorld, target: qa_core::math::Vec3) {
+        use qa_core::math::vector_to_angles;
+        let eye = live_eye(world);
+        let angles = vector_to_angles(vec3(target.x - eye.x, target.y - eye.y, target.z - eye.z));
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles = angles,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Pitch the player view by degrees (negative looks up).
+    fn live_pitch(world: &mut PlayWorld, degrees: f32) {
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles.x += degrees,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Yaw the player view by degrees.
+    fn live_yaw(world: &mut PlayWorld, degrees: f32) {
+        match world.player.as_mut().expect("player body") {
+            PlayerBody::Q1(body) => body.view_angles.y += degrees,
+            _ => panic!("live Q1 world admits a Q1 body"),
+        }
+    }
+
+    /// Place a dog `dist` units ahead of the player, level, facing
+    /// whatever it faced (the dog stays stood-down until wounded).
+    fn live_place_dog_before_player(world: &mut PlayWorld, dog: &qa_core::identity::ActorId, dist: f32) {
+        use qa_core::math::angle_vectors;
+        let player = world.player_actor().cloned().expect("player");
+        let body = world.server().simulation().body_state(&player).expect("player body");
+        let angles = world.player_eye().expect("player eye").1;
+        let forward = angle_vectors(angles).forward;
+        world
+            .server_mut()
+            .simulation_mut()
+            .set_body_origin(
+                dog,
+                vec3(
+                    body.origin.x + forward.x * dist,
+                    body.origin.y + forward.y * dist,
+                    body.origin.z,
+                ),
+            )
+            .unwrap();
+    }
+
+    /// Live dog health.
+    fn live_dog_health(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> f64 {
+        world
+            .server()
+            .simulation()
+            .combat_state(dog)
+            .map_or(0.0, |combat| combat.health)
+    }
+
+    /// Grant a weapon bit plus an ammo pool (weapon pickups land with
+    /// the items slice; selection proves against direct grants).
+    fn live_grant_weapon(world: &mut PlayWorld, bit: u32, shells: f64, nails: f64, rockets: f64, cells: f64) {
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let mut borrowed = behaviors.borrow_mut();
+        borrowed.player_items |= bit;
+        borrowed.player_ammo.shells = shells;
+        borrowed.player_ammo.nails = nails;
+        borrowed.player_ammo.rockets = rockets;
+        borrowed.player_ammo.cells = cells;
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0173_shotgun_wounds_dog() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        // Stock spawn loadout rides admission.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, 1);
+            assert_eq!(borrowed.player_state.currentammo, 25.0);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_shot.mdl");
+        }
+        let dogs = live_dogs(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 24.0, "one shell per shot");
+            assert_eq!(borrowed.player_state.currentammo, 24.0);
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.5);
+            assert_eq!(borrowed.player_state.show_hostile, fired_at + 1.0);
+            assert_eq!(borrowed.player_state.punchangle, vec3(-2.0, 0.0, 0.0));
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/guncock.wav" && sound.channel == 1),
+                "shotgun cocks on CHAN_WEAPON"
+            );
+        }
+        // Point-blank: all 6 pellets strike for 4 each.
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&dogs[0]).expect("dog record");
+            assert_eq!(monster.enemy.as_ref(), Some(&player), "wounds turn the dog");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::DogPain, _) | Q1MonsterThink::Frame(Q1MonsterSeq::DogPainB, _)
+                ),
+                "survival runs th_pain, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 0);
+        }
+        // The refire gate holds: a second trigger pull fizzles.
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert_eq!(behaviors.borrow().player_ammo.shells, 24.0);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0175_supershotgun_kills_and_falls_back() {
+        use super::super::simulation::native_q1_weapons::Q1_IT_SUPER_SHOTGUN;
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 3.0, 0.0, 0.0, 0.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 0, 3);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().player_state.weapon, Q1_IT_SUPER_SHOTGUN);
+        }
+        // Full double at close range: 14 pellets for 56, a clean kill.
+        let fired_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 1.0, "two shells per double");
+            assert_eq!(borrowed.player_state.attack_finished, fired_at + 0.7);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/shotgn2.wav"),
+                "double booms"
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), -31.0);
+        // The last shell fires the plain 6-pellet shot, not the double
+        // (second dog, opposite lane: the corpse stays solid).
+        live_advance(&mut world, 0.8);
+        live_yaw(&mut world, 180.0);
+        live_place_dog_before_player(&mut world, &dogs[1], 56.0);
+        let center = live_volume_center(&world, &dogs[1]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_ammo.shells, 0.0);
+            assert!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.sample == "weapons/guncock.wav"),
+                "single shell cocks the plain shotgun"
+            );
+            assert_eq!(
+                borrowed
+                    .sounds
+                    .iter()
+                    .filter(|sound| sound.sample == "weapons/shotgn2.wav")
+                    .count(),
+                1,
+                "single shell never booms again"
+            );
+        }
+        assert_eq!(live_dog_health(&world, &dogs[1]), 1.0);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0168_axe_swing_lands_late() {
+        use super::super::simulation::native_q1_weapons::{Q1PlayerAttack, Q1TempEnt, Q1_IT_AXE};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 48.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        live_fire(&mut world, 0, 1);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_AXE);
+            assert_eq!(borrowed.player_state.weaponmodel, "progs/v_axe.mdl");
+            assert_eq!(borrowed.player_state.currentammo, 0.0);
+        }
+        let swung_at = live_now(&world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "weapons/ax1.wav"),
+                "swing whooshes"
+            );
+            assert!(
+                matches!(
+                    borrowed.player_state.attack,
+                    Q1PlayerAttack::AxeSwing { fire_at } if fire_at == swung_at + 0.2
+                ),
+                "frame-3 fire 0.2 s out, got {:?}",
+                borrowed.player_state.attack
+            );
+            assert_eq!(borrowed.player_state.attack_finished, swung_at + 0.5);
+        }
+        assert_eq!(live_dog_health(&world, &dogs[0]), 25.0, "no instant damage");
+        live_advance(&mut world, 0.3);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 5.0, "frame 3 lands 20");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.attack, Q1PlayerAttack::None);
+            assert_eq!(borrowed.player_state.weaponframe, 3);
+        }
+        // A wall swing thunks and sparks (straight down at the floor).
+        live_pitch(&mut world, 90.0);
+        live_advance(&mut world, 0.6);
+        live_fire(&mut world, 1, 0);
+        live_advance(&mut world, 0.3);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "player/axhit2.wav"),
+                "wall thunk"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Gunshot { .. })),
+                "wall spark"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0179_impulse_selects_slot() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_GRENADE_LAUNCHER, Q1_IT_LIGHTNING, Q1_IT_NAILGUN, Q1_IT_ROCKET_LAUNCHER, Q1_IT_SHOTGUN,
+            Q1_IT_SUPER_NAILGUN, Q1_IT_SUPER_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_AXE, 0.0, 0.0, 0.0, 0.0);
+        for (impulse, bit, shells, nails, rockets, cells, model, current) in [
+            (1, Q1_IT_AXE, 0.0, 0.0, 0.0, 0.0, "progs/v_axe.mdl", 0.0),
+            (2, Q1_IT_SHOTGUN, 12.0, 0.0, 0.0, 0.0, "progs/v_shot.mdl", 12.0),
+            (3, Q1_IT_SUPER_SHOTGUN, 12.0, 0.0, 0.0, 0.0, "progs/v_shot2.mdl", 12.0),
+            (4, Q1_IT_NAILGUN, 0.0, 30.0, 0.0, 0.0, "progs/v_nail.mdl", 30.0),
+            (5, Q1_IT_SUPER_NAILGUN, 0.0, 30.0, 0.0, 0.0, "progs/v_nail2.mdl", 30.0),
+            (6, Q1_IT_GRENADE_LAUNCHER, 0.0, 0.0, 7.0, 0.0, "progs/v_rock.mdl", 7.0),
+            (7, Q1_IT_ROCKET_LAUNCHER, 0.0, 0.0, 7.0, 0.0, "progs/v_rock2.mdl", 7.0),
+            (8, Q1_IT_LIGHTNING, 0.0, 0.0, 0.0, 40.0, "progs/v_light.mdl", 40.0),
+        ] {
+            live_grant_weapon(&mut world, bit, shells, nails, rockets, cells);
+            live_fire(&mut world, 0, impulse);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, bit, "impulse {impulse} selects");
+            assert_eq!(borrowed.player_state.currentammo, current);
+            assert_eq!(borrowed.player_state.weaponmodel, model);
+        }
+        // Unowned refuses; owned-but-dry refuses; both keep the weapon.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_items &= !Q1_IT_ROCKET_LAUNCHER;
+        }
+        live_fire(&mut world, 0, 7);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "no weapon.\n"));
+        }
+        live_grant_weapon(&mut world, Q1_IT_ROCKET_LAUNCHER, 0.0, 0.0, 0.0, 40.0);
+        live_fire(&mut world, 0, 7);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_LIGHTNING);
+            assert!(borrowed.sprints.iter().any(|print| print.text == "not enough ammo.\n"));
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0178_cycle_walks_roster() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1_IT_AXE, Q1_IT_NAILGUN, Q1_IT_SHOTGUN, Q1_IT_SUPER_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 25.0, 0.0, 0.0, 0.0);
+        live_grant_weapon(&mut world, Q1_IT_NAILGUN, 25.0, 9.0, 0.0, 0.0);
+        for (impulse, expect) in [
+            (10, Q1_IT_SUPER_SHOTGUN),
+            (10, Q1_IT_NAILGUN),
+            (10, Q1_IT_AXE),
+            (10, Q1_IT_SHOTGUN),
+            (12, Q1_IT_AXE),
+            (12, Q1_IT_NAILGUN),
+        ] {
+            live_fire(&mut world, 0, impulse);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(borrowed_player_weapon(&behaviors), expect, "impulse {impulse}");
+        }
+
+        fn borrowed_player_weapon(behaviors: &std::rc::Rc<std::cell::RefCell<Q1NativeBehaviors>>) -> u32 {
+            behaviors.borrow().player_state.weapon
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0169_best_fallback_on_empty() {
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AXE, Q1_IT_SUPER_SHOTGUN};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 56.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        live_aim_at(&mut world, center);
+        // Fire the last shell, then the next pull drops to the axe.
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            behaviors.borrow_mut().player_ammo.shells = 1.0;
+            behaviors.borrow_mut().player_state.currentammo = 1.0;
+        }
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[0]), 1.0);
+        live_advance(&mut world, 0.6);
+        let sounds_before = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed.sounds.len()
+        };
+        live_fire(&mut world, 1, 0);
+        {
+            // The idle path drops to the axe first, so the held trigger
+            // swings it (`W_CheckNoAmmo` always fires the axe).
+            use super::super::simulation::native_q1_weapons::Q1PlayerAttack;
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_AXE, "empty drops to best");
+            assert_eq!(borrowed.player_state.currentammo, 0.0);
+            assert_eq!(borrowed.sounds.len(), sounds_before + 1);
+            assert_eq!(borrowed.sounds.last().expect("swing").sample, "weapons/ax1.wav");
+            assert!(matches!(borrowed.player_state.attack, Q1PlayerAttack::AxeSwing { .. }));
+        }
+        // The idle path downgrades a drained held weapon without a pull.
+        live_grant_weapon(&mut world, Q1_IT_SUPER_SHOTGUN, 0.0, 0.0, 0.0, 0.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_state.weapon = Q1_IT_SUPER_SHOTGUN;
+            borrowed.player_state.currentammo = 0.0;
+        }
+        live_advance(&mut world, 0.6);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().player_state.weapon, Q1_IT_AXE, "idle downgrades");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0167_aim_bends_within_cone() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let dogs = live_dogs(&world);
+        live_place_dog_before_player(&mut world, &dogs[0], 200.0);
+        let center = live_volume_center(&world, &dogs[0]);
+        // Ten degrees high still wounds: the cone bends onto the dog.
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -10.0);
+        live_fire(&mut world, 1, 0);
+        assert!(
+            live_dog_health(&world, &dogs[0]) < 25.0,
+            "aim bends 10 degrees onto the dog"
+        );
+        // Thirty degrees high is past the cone: a clean miss.
+        live_advance(&mut world, 0.6);
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -30.0);
+        let before = live_dog_health(&world, &dogs[1]);
+        live_place_dog_before_player(&mut world, &dogs[1], 200.0);
+        let center = live_volume_center(&world, &dogs[1]);
+        live_aim_at(&mut world, center);
+        live_pitch(&mut world, -30.0);
+        live_fire(&mut world, 1, 0);
+        assert_eq!(live_dog_health(&world, &dogs[1]), before, "past-cone shots miss");
+    }
 }
