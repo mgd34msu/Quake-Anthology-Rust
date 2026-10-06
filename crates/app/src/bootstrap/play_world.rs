@@ -3061,17 +3061,31 @@ mod tests {
         steel_presentation_batches("q2-classic-baseq2", "maps/base1.bsp");
     }
 
-    /// Live dogs on the map, in record order.
-    fn live_dogs(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
-        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+    /// Live monsters of one kind on the map, in record order.
+    fn live_monsters(
+        world: &PlayWorld,
+        kind: super::super::simulation::native_q1_monsters::Q1MonsterKind,
+    ) -> Vec<qa_core::identity::ActorId> {
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         let borrowed = behaviors.borrow();
         borrowed
             .monsters
             .iter()
-            .filter(|(_, monster)| monster.kind == Q1MonsterKind::Dog)
+            .filter(|(_, monster)| monster.kind == kind)
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// Live dogs on the map, in record order.
+    fn live_dogs(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Dog)
+    }
+
+    /// Live grunts on the map, in record order.
+    fn live_grunts(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Grunt)
     }
 
     /// Two dogs denning within earshot (< 500 units), if the map dens
@@ -3091,23 +3105,28 @@ mod tests {
         })
     }
 
-    /// Dog feet position (placement handle for facing offsets).
-    fn live_dog_feet(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
-        let body = world.server().simulation().body_state(dog).expect("dog body");
+    /// Monster feet position (placement handle for facing offsets).
+    fn live_monster_feet(world: &PlayWorld, monster: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
+        let body = world.server().simulation().body_state(monster).expect("monster body");
         vec3(body.origin.x, body.origin.y, body.origin.z + body.bounds.min.z)
     }
 
-    /// Dog facing yaw in degrees (live ideal yaw).
-    fn live_dog_yaw(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> f64 {
-        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
-        let borrowed = behaviors.borrow();
-        borrowed.monsters.get(dog).expect("dog record").ideal_yaw
+    /// Dog feet position (placement handle for facing offsets).
+    fn live_dog_feet(world: &PlayWorld, dog: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
+        live_monster_feet(world, dog)
     }
 
-    /// Stand the player `dist` units along the dog's facing, feet to feet.
-    fn live_place_player_before_dog(world: &mut PlayWorld, dog: &qa_core::identity::ActorId, dist: f32) {
-        let feet = live_dog_feet(world, dog);
-        let yaw = live_dog_yaw(world, dog).to_radians();
+    /// Monster facing yaw in degrees (live ideal yaw).
+    fn live_monster_yaw(world: &PlayWorld, monster: &qa_core::identity::ActorId) -> f64 {
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed.monsters.get(monster).expect("monster record").ideal_yaw
+    }
+
+    /// Stand the player `dist` units along a monster's facing, feet to feet.
+    fn live_place_player_before(world: &mut PlayWorld, monster: &qa_core::identity::ActorId, dist: f32) {
+        let feet = live_monster_feet(world, monster);
+        let yaw = live_monster_yaw(world, monster).to_radians();
         live_place_player(
             world,
             vec3(
@@ -3116,6 +3135,11 @@ mod tests {
                 feet.z,
             ),
         );
+    }
+
+    /// Stand the player `dist` units along the dog's facing, feet to feet.
+    fn live_place_player_before_dog(world: &mut PlayWorld, dog: &qa_core::identity::ActorId, dist: f32) {
+        live_place_player_before(world, dog, dist)
     }
 
     /// Wound something through the real `T_Damage` (weapons stand-in
@@ -3160,6 +3184,11 @@ mod tests {
         );
     }
 
+    /// e1m1 monster census at skill 2: 8 dogs plus 34 grunts (no
+    /// `monster_*` record carries the 1024 not-hard bit, so every
+    /// authored monster spawns).
+    const LIVE_E1M1_SKILL2_TOTAL: u32 = 42;
+
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0141_dog_spawn_stands_armed() {
@@ -3173,7 +3202,7 @@ mod tests {
         assert_eq!(dogs.len(), 8, "e1m1 spawns eight dogs");
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         let borrowed = behaviors.borrow();
-        assert_eq!(borrowed.total_monsters, 8);
+        assert_eq!(borrowed.total_monsters, LIVE_E1M1_SKILL2_TOTAL);
         for dog in &dogs {
             let monster = borrowed.monsters.get(dog).expect("dog record");
             assert!(
@@ -3187,14 +3216,14 @@ mod tests {
             assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
             assert!(monster.pausetime > 9999999.0, "targetless dogs stand down");
         }
-        // Pass cost on a live map (8 standing dogs, relink included).
+        // Pass cost on a live map (42 standing monsters, relink included).
         drop(borrowed);
         let start = std::time::Instant::now();
         for _ in 0..120 {
             world.step_monsters();
         }
         let per_pass = start.elapsed().as_secs_f64() * 1000.0 / 120.0;
-        eprintln!("live: step_monsters on e1m1 = {per_pass:.3} ms/pass (8 dogs)");
+        eprintln!("live: step_monsters on e1m1 = {per_pass:.3} ms/pass (42 monsters)");
     }
 
     #[test]
@@ -3235,7 +3264,9 @@ mod tests {
             monster.think
         );
         assert!(monster.attack_finished > live_now(&world), "HuntTarget holds missiles");
-        assert_eq!(borrowed.sight_entity.as_ref(), Some(&dogs[0]));
+        // The shared sighting publishes (last sighter wins the slot, so
+        // with a full map it may name a packmate instead).
+        assert!(borrowed.sight_entity.is_some(), "the sighting publishes");
         assert!(
             borrowed.sounds.iter().any(|sound| sound.sample == "dog/dsight.wav"),
             "sight barks"
@@ -3570,7 +3601,7 @@ mod tests {
         live_advance(&mut world, 1.0);
         {
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
-            assert_eq!(behaviors.borrow().total_monsters, 8);
+            assert_eq!(behaviors.borrow().total_monsters, LIVE_E1M1_SKILL2_TOTAL);
             assert_eq!(behaviors.borrow().killed_monsters, 0);
         }
         let dogs = live_dogs(&world);
@@ -3729,6 +3760,22 @@ mod tests {
             }
             live_tick(&mut world);
         }
+        // Hold every other monster's think: the shared sighting slot
+        // is stock last-writer-wins, so a full map would steal the
+        // denmate's sighting before the packmate's think runs.
+        {
+            let now = live_now(&world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            let ids: Vec<qa_core::identity::ActorId> = borrowed.monsters.keys().cloned().collect();
+            for id in ids {
+                if id != first && id != second {
+                    if let Some(monster) = borrowed.monsters.get_mut(&id) {
+                        monster.nextthink = now + 3600.0;
+                    }
+                }
+            }
+        }
         live_damage(&mut world, &first, Some(&player), 1.0);
         let mut woke = false;
         for _ in 0..12 {
@@ -3746,5 +3793,306 @@ mod tests {
             }
         }
         assert!(woke, "a sighted packmate wakes its den");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_grunt_spawn_stands_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let grunts = live_grunts(&world);
+        assert_eq!(grunts.len(), 34, "e1m1 spawns thirty-four grunts");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M1_SKILL2_TOTAL);
+        let mut walkers = 0;
+        for grunt in &grunts {
+            let monster = borrowed.monsters.get(grunt).expect("grunt record");
+            assert_eq!(monster.flags & 512, 512, "dropped grunts stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(grunt).expect("grunt combat");
+            assert_eq!(combat.health, 30.0);
+            if monster.movetarget.is_some() {
+                walkers += 1;
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntWalk, _)),
+                    "targeted grunts walk out, got {:?}",
+                    monster.think
+                );
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntStand, _)),
+                    "grunts stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless grunts stand down");
+            }
+        }
+        assert_eq!(walkers, 7, "seven e1m1 grunts patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_grunt_shotgun_wounds() {
+        use super::super::simulation::native_q1_monsters::{Q1TempEnt, Q1_EF_MUZZLEFLASH};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let grunts = live_grunts(&world);
+        live_place_player_before(&mut world, &grunts[0], 200.0);
+        let mut fired = false;
+        for _ in 0..600 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&grunts[0]).expect("grunt record");
+            if monster.effects & Q1_EF_MUZZLEFLASH != 0
+                && borrowed
+                    .sounds
+                    .iter()
+                    .any(|sound| sound.entity == grunts[0] && sound.sample == "soldier/sattck1.wav")
+            {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "the grunt sights, hunts, and fires its shotgun");
+        assert!(live_player_health(&world) < 100.0, "the shotgun burst wounds");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert!(
+            borrowed
+                .temp_ents
+                .iter()
+                .any(|ent| matches!(ent, Q1TempEnt::Blood { .. })),
+            "pellet strikes queue blood"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_grunt_pain_then_dies_drops_backpack() {
+        use super::super::simulation::native_q1_items::Q1ItemKind;
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let grunts = live_grunts(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &grunts[0], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&grunts[0]).expect("grunt record");
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::GruntPain, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::GruntPainB, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::GruntPainC, 0)
+                ),
+                "wounds run pain, got {:?}",
+                monster.think
+            );
+        }
+        live_damage(&mut world, &grunts[0], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&grunts[0]).expect("grunt record");
+            assert!(monster.dead);
+            assert!(
+                matches!(
+                    monster.think,
+                    Q1MonsterThink::Frame(Q1MonsterSeq::GruntDie, 0)
+                        | Q1MonsterThink::Frame(Q1MonsterSeq::GruntDieC, 0)
+                ),
+                "death runs die, got {:?}",
+                monster.think
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(borrowed.sounds.iter().any(|sound| sound.sample == "soldier/death1.wav"));
+        }
+        // The third death frame drops the pack unsolid.
+        let mut pack = None;
+        for _ in 0..60 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            pack = borrowed.items.iter().find_map(|(id, item)| match &item.kind {
+                Q1ItemKind::Backpack { shells, .. } => Some((id.clone(), *shells)),
+                _ => None,
+            });
+            if pack.is_some() {
+                break;
+            }
+        }
+        let Some((pack, shells)) = pack else {
+            panic!("the death drop leaves a backpack");
+        };
+        assert_eq!(shells, 5.0, "grunts drop 5 shells");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert!(
+                !behaviors.borrow().solids.contains(&grunts[0]),
+                "the death drop goes unsolid"
+            );
+        }
+        // The pack settles, then the player takes it for 5 shells.
+        for _ in 0..120 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let settled = borrowed_settled(&behaviors.borrow(), &pack);
+            if settled {
+                break;
+            }
+        }
+        let center = live_volume_center(&world, &pack);
+        live_place_player(&mut world, center);
+        live_tick(&mut world);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.player_ammo.shells, 5.0, "the pack grants its shells");
+        assert!(!borrowed.items.keys().any(|id| id == &pack), "taken packs remove");
+        assert!(
+            borrowed.sprints.iter().any(|sprint| sprint.text == "You get 5 shells"),
+            "the pack prints its receipt"
+        );
+    }
+
+    /// Whether a backpack item has settled (toss physics retired it).
+    fn borrowed_settled(
+        behaviors: &std::cell::Ref<'_, super::super::simulation::native_q1_spawns::Q1NativeBehaviors>,
+        pack: &qa_core::identity::ActorId,
+    ) -> bool {
+        use super::super::simulation::native_q1_items::Q1ItemKind;
+        behaviors.items.get(pack).is_some_and(|item| match &item.kind {
+            Q1ItemKind::Backpack { settled, .. } => *settled,
+            _ => false,
+        })
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_grunt_patrol_walks_corners() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let grunts = live_grunts(&world);
+        let patrol = grunts
+            .iter()
+            .find(|grunt| {
+                let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+                let borrowed = behaviors.borrow();
+                borrowed
+                    .monsters
+                    .get(grunt)
+                    .is_some_and(|monster| monster.movetarget.is_some())
+            })
+            .cloned()
+            .expect("e1m1 routes a grunt through corners");
+        let start = live_monster_feet(&world, &patrol);
+        let first = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            borrowed
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                .expect("first corner")
+        };
+        let mut advanced = false;
+        for _ in 0..1200 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors
+                .borrow()
+                .monsters
+                .get(&patrol)
+                .and_then(|monster| monster.movetarget.clone())
+                != Some(first.clone())
+            {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(advanced, "the patrol reaches its corner and turns onward");
+        let end = live_monster_feet(&world, &patrol);
+        let moved = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
+        assert!(moved > 10.0, "the patrol travels, moved {moved}");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_grunt_nightmare_refires() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 3) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let grunts = live_grunts(&world);
+        live_place_player_before(&mut world, &grunts[0], 200.0);
+        // The attack starts (any attack frame), then the nightmare
+        // refire rewinds it to the first attack frame for a second
+        // volley.
+        let mut started = false;
+        let mut rewound = false;
+        for _ in 0..900 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&grunts[0]).expect("grunt record");
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 4..)) {
+                started = true;
+            }
+            if started && matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0)) {
+                rewound = true;
+                break;
+            }
+            if started && matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntRun, _)) && !rewound {
+                break;
+            }
+        }
+        assert!(started, "the grunt starts its attack on nightmare");
+        assert!(rewound, "nightmare rewinds the attack for a second volley");
+        // The rewind lands back on the first attack frame; the second
+        // volley fires five frames later.
+        let mut shots = 0;
+        for _ in 0..60 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            shots = borrowed_shots(&behaviors.borrow(), &grunts[0]);
+            if shots >= 2 {
+                break;
+            }
+        }
+        assert!(shots >= 2, "the refire volleys twice, got {shots} shots");
+    }
+
+    /// Shots one grunt has fired (its shotgun barks).
+    fn borrowed_shots(
+        behaviors: &std::cell::Ref<'_, super::super::simulation::native_q1_spawns::Q1NativeBehaviors>,
+        grunt: &qa_core::identity::ActorId,
+    ) -> usize {
+        behaviors
+            .sounds
+            .iter()
+            .filter(|sound| sound.entity == *grunt && sound.sample == "soldier/sattck1.wav")
+            .count()
     }
 }

@@ -1,18 +1,18 @@
 //! Native Quake I items for the reachable server.
 //!
 //! Stock spawn/touch/think gamecode for `item_health` (rotten, normal,
-//! megahealth), `item_armor1`/`item_armor2`/`item_armorInv`, and the
+//! megahealth), `item_armor1`/`item_armor2`/`item_armorInv`, the
 //! `item_shells`/`item_spikes`/`item_rockets`/`item_cells` ammo boxes,
-//! driven from [`Q1NativeBehaviors`] through the native touch hook.
-//! Weapons, keys, sigils, powerups, and backpacks follow in later
-//! slices; each stays a generic inert spawn until then.
+//! and dropped backpacks, driven from [`Q1NativeBehaviors`] through the
+//! native touch hook. Weapons, keys, sigils, and powerups follow in
+//! later slices; each stays a generic inert spawn until then.
 //!
 //! qsrc: `progs106/items.qc` (`SUB_regen` 6, `PlaceItem` 36, `StartItem`
 //! 64, `T_Heal` 81, `item_health` 112, `health_touch` 150,
 //! `item_megahealth_rot` 206, `item_armor1/2/Inv` 291-317, `armor_touch`
 //! 238, `bound_other_ammo` 335, `item_shells/spikes/rockets/cells`
-//! 691-797, `ammo_touch` 597), `progs106/defs.qc:300-303` (armor and
-//! superhealth bits).
+//! 691-797, `ammo_touch` 597, `BackpackTouch` 1229, `DropBackpack`
+//! 1332), `progs106/defs.qc:300-303` (armor and superhealth bits).
 //!
 //! Skeleton scope notes: pickup/respawn/rot sounds have no sim audio
 //! path yet (the parsed noise rides the state for the audio slice);
@@ -36,7 +36,9 @@ use qa_world::spawn::SpawnFields;
 use qa_world::triggers::{TouchContact, TriggerTable};
 use qa_world::WorldError;
 
-use super::native_q1_spawns::{q1_health_of, Q1NativeBehaviors, IT_ARMOR1, IT_ARMOR2, IT_ARMOR3, IT_SUPERHEALTH};
+use super::native_q1_spawns::{
+    q1_health_of, q1_remove, Q1NativeBehaviors, IT_ARMOR1, IT_ARMOR2, IT_ARMOR3, IT_SUPERHEALTH,
+};
 use super::native_q1_triggers::{q1_use_targets, Q1ThinkKind, Q1UseSource};
 
 /// `item_health` H_ROTTEN spawnflag (`items.qc:106`): 15-health box.
@@ -106,6 +108,24 @@ const AMMO_BOUNDS: Bounds = Bounds {
         z: 56.0,
     },
 };
+
+/// Fixed backpack touch volume (`DropBackpack`, `items.qc:1375`).
+const BACKPACK_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: 0.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 56.0,
+    },
+};
+
+/// Backpack lifetime in seconds (`DropBackpack`, `items.qc:1378`):
+/// removed after 2 minutes.
+const BACKPACK_LIFETIME_SECONDS: f64 = 120.0;
 
 /// Player ammo counts (stock `ammo_shells/nails/rockets/cells`).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -201,6 +221,23 @@ pub enum Q1ItemKind {
         /// Receipt name (`netname`: shells/nails/rockets/cells).
         netname: &'static str,
     },
+    /// Dropped backpacks: grant every carried ammo kind, bounded at
+    /// the caps. Monster drops never carry a weapon (`self.weapon` is
+    /// unset, so `item.items` is 0); player-death weapon payloads land
+    /// with the weapons slice.
+    Backpack {
+        /// Carried shells.
+        shells: f64,
+        /// Carried nails.
+        nails: f64,
+        /// Carried rockets.
+        rockets: f64,
+        /// Carried cells.
+        cells: f64,
+        /// Whether the tossed pack has settled (the monster pass
+        /// steps unsettled packs through toss physics).
+        settled: bool,
+    },
 }
 
 /// Live Q1 item gamecode state.
@@ -228,9 +265,22 @@ pub struct Q1Sprint {
 }
 
 /// Register the native Q1 item spawn functions. Items spawn bodies at
-/// the map origin for [`build_q1_item`] to size.
+/// the map origin for [`build_q1_item`] to size; dropped backpacks
+/// spawn through the internal `q1:backpack` definition for
+/// [`build_q1_backpack`] to size.
 pub fn register_q1_item_spawns(registry: &mut qa_world::spawn::SpawnRegistry) {
     use qa_world::spawn::SpawnRequest;
+    registry.register(
+        "q1:backpack",
+        Box::new(|fields| {
+            Ok(SpawnRequest {
+                definition: "q1:backpack".to_string(),
+                origin: Some(fields.origin),
+                combat: None,
+                grants: Vec::new(),
+            })
+        }),
+    );
     for classname in [
         "item_health",
         "item_armor1",
@@ -355,6 +405,40 @@ pub fn build_q1_item<L: ServerLogic>(
     Ok(())
 }
 
+/// Finish a spawned backpack actor: size its touch volume, record its
+/// tossed velocity and ammo, mark its touch, and schedule its removal
+/// (`DropBackpack`, `items.qc:1367-1379`). The toss settles through
+/// the monster pass; the pack never respawns.
+pub fn build_q1_backpack<L: ServerLogic>(
+    server: &mut Server<L>,
+    behaviors: &mut Q1NativeBehaviors,
+    actor: &qa_core::identity::OwnedActor,
+    velocity: Vec3,
+    ammo: Q1Ammo,
+) -> Result<(), WorldError> {
+    server.simulation_mut().set_body_bounds(actor.id(), BACKPACK_BOUNDS)?;
+    server.simulation_mut().set_body_velocity(actor.id(), velocity)?;
+    behaviors.items.insert(
+        actor.id(),
+        Q1Item {
+            kind: Q1ItemKind::Backpack {
+                shells: ammo.shells,
+                nails: ammo.nails,
+                rockets: ammo.rockets,
+                cells: ammo.cells,
+                settled: false,
+            },
+            source: Q1UseSource::default(),
+            noise: "weapons/lock4.wav",
+            taken: false,
+        },
+    );
+    server.mark_trigger(actor.id())?;
+    let now = server.simulation().frame().time.as_seconds_f64();
+    behaviors.schedule_think(actor.id(), Q1ThinkKind::Remove, now + BACKPACK_LIFETIME_SECONDS);
+    Ok(())
+}
+
 /// Run `T_Heal` (`items.qc:81-96`): heal a living toucher by the
 /// ceiled amount, capped at the health cap (skipped when `ignore`) and
 /// the absolute 250 cap. Stock reads the cap off the global `other`
@@ -449,6 +533,26 @@ pub fn q1_item_touch(
                 *kind,
                 *amount,
                 netname,
+            );
+        }
+        Q1ItemKind::Backpack {
+            shells,
+            nails,
+            rockets,
+            cells,
+            ..
+        } => {
+            q1_backpack_touch(
+                behaviors,
+                simulation,
+                movers,
+                triggers,
+                &contact.trigger,
+                &contact.other,
+                *shells,
+                *nails,
+                *rockets,
+                *cells,
             );
         }
     }
@@ -623,6 +727,54 @@ fn q1_ammo_touch(
         behaviors.schedule_think(actor, Q1ThinkKind::Regen, now + AMMO_RESPAWN_SECONDS);
     }
     q1_use_targets(behaviors, simulation, movers, triggers, source, Some(other));
+}
+
+/// Run `BackpackTouch` (`items.qc:1229-1330`): living players take the
+/// whole pack — every carried ammo kind bounded at the caps, one
+/// receipt, then the pack removes. Monster drops never carry a weapon
+/// (`item.items` is 0), so the weapon grant and switch (`W_BestWeapon`,
+/// `W_SetCurrentAmmo`) land with the weapons slice. Stock plays the
+/// pickup noise and `bf` screen flash here; the audio and presentation
+/// slices own them. Backpacks fire no targets.
+#[allow(clippy::too_many_arguments)]
+fn q1_backpack_touch(
+    behaviors: &mut Q1NativeBehaviors,
+    simulation: &mut Simulation,
+    movers: &mut MoverTable,
+    triggers: &mut TriggerTable,
+    actor: &ActorId,
+    other: &ActorId,
+    shells: f64,
+    nails: f64,
+    rockets: f64,
+    cells: f64,
+) {
+    if Some(other) != behaviors.player.as_ref() {
+        return;
+    }
+    if q1_health_of(simulation, other) <= 0.0 {
+        return;
+    }
+    behaviors.player_ammo.add(Q1AmmoKind::Shells, shells);
+    behaviors.player_ammo.add(Q1AmmoKind::Nails, nails);
+    behaviors.player_ammo.add(Q1AmmoKind::Rockets, rockets);
+    behaviors.player_ammo.add(Q1AmmoKind::Cells, cells);
+    let mut parts: Vec<String> = Vec::new();
+    for (amount, name) in [
+        (shells, "shells"),
+        (nails, "nails"),
+        (rockets, "rockets"),
+        (cells, "cells"),
+    ] {
+        if amount != 0.0 {
+            parts.push(format!("{} {name}", amount as i64));
+        }
+    }
+    behaviors.sprints.push(Q1Sprint {
+        target: other.clone(),
+        text: format!("You get {}", parts.join(", ")),
+    });
+    q1_remove(behaviors, simulation, movers, triggers, actor);
 }
 
 /// Run `SUB_regen` (`items.qc:6-12`): restore a taken item's model and
