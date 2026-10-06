@@ -3695,6 +3695,211 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_0482_finale_overlay_presents_scroll() {
+        // Live Xvfb proof that the episode finale draws from the
+        // transition lane's exit data: ride the real e1m7 exit into
+        // the intermission, poll past the exit gate, and capture. The
+        // finale plate must present, the queued E1 scroll must contain
+        // Chthon, and the typewriter must reveal more text over sim
+        // time.
+        use qa_world::body::translated_body_bounds;
+
+        use super::super::simulation::native_q1_triggers::{q1_intermission_poll, Q1TriggerKind};
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = "maps/e1m7.bsp".to_string();
+        options.width = 320;
+        options.height = 200;
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 finale open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        {
+            let world = composed.app.backend().world.as_ref().expect("e1m7 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            let now = world.server().simulation().frame().time.as_seconds_f64();
+            for field in borrowed.fields.values_mut() {
+                field.throttle_until = now + 3600.0;
+            }
+        }
+        let exit = {
+            let world = composed.app.backend().world.as_ref().expect("e1m7 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let exits: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter_map(|(id, trigger)| match &trigger.kind {
+                    Q1TriggerKind::Changelevel { map, no_intermission } if !no_intermission => {
+                        Some((id.clone(), map.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(!exits.is_empty(), "e1m7 has an exit");
+            exits[0].0.clone()
+        };
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("e1m7 world");
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&exit).expect("exit body");
+            let bounds = translated_body_bounds(&body);
+            let center = qa_core::math::vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            );
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&player, center)
+                .unwrap();
+        }
+        let mut frames = 0;
+        while composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .and_then(|world| world.q1_behaviors())
+            .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+            && frames < 600
+        {
+            composed.app.step().expect("windowed step works");
+            frames += 1;
+        }
+        let (live_w, live_h) = composed.app.backend().live_size();
+        assert!(
+            live_w >= 320 && live_h >= 140,
+            "finale needs at least a 320x140 drawable, got {live_w}x{live_h}"
+        );
+        let xofs = (live_w as usize - 320) / 2;
+        let band_diff = |a: &[u8], b: &[u8], rows: std::ops::Range<usize>| -> usize {
+            a.as_chunks::<4>()
+                .0
+                .chunks(live_w as usize)
+                .zip(b.as_chunks::<4>().0.chunks(live_w as usize))
+                .enumerate()
+                .filter(|(row, _)| rows.contains(row))
+                .map(|(_, (row_a, row_b))| {
+                    row_a[xofs..xofs + 320]
+                        .iter()
+                        .zip(row_b[xofs..xofs + 320].iter())
+                        .filter(|(a, b)| a != b)
+                        .count()
+                })
+                .sum()
+        };
+        let inter = composed.app.capture_next_frame().expect("intermission capture works");
+        // Poll past the exit gate through the real exit function.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("e1m7 world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let mut borrowed = behaviors.borrow_mut();
+            assert_eq!(borrowed.intermission.running, 1, "exit entered after {frames} frames");
+            borrowed.intermission.buttons = true;
+            borrowed.intermission.exit_time_seconds = 0.0;
+            let now = world.server().simulation().frame().time.as_seconds_f64();
+            q1_intermission_poll(&mut borrowed, now);
+            assert_eq!(borrowed.intermission.running, 2, "poll exits to the finale");
+            let text = borrowed.finale_text.clone().expect("E1 scroll queued");
+            assert!(text.contains("Chthon"), "E1 scroll text");
+            assert!(!borrowed.sell_screen, "registered skips the sell screen");
+            borrowed.intermission.buttons = false;
+        }
+        {
+            let backend = composed.app.backend();
+            let hud = backend
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .expect("hud");
+            for lump in ["conchars", "gfx/finale.lmp", "gfx/complete.lmp", "gfx/inter.lmp"] {
+                assert!(hud.has_picture(lump), "finale lump loads: {lump}");
+            }
+        }
+        let early = composed.app.capture_next_frame().expect("finale capture works");
+        // The finale plaque replaces the intermission plates up top.
+        let plate_swap = band_diff(&inter, &early, 16..48);
+        eprintln!("live-q1-finale: {plate_swap} plate-band pixels changed");
+        assert!(plate_swap > 1500, "finale plate missing: {plate_swap}");
+        // The scroll reveals over sim time (printspeed typewriter):
+        // the reveal count grows, and the text band changes beyond what
+        // scene flicker alone explains (control band below the text).
+        let reveal_now = |backend: &super::WindowedStartupBackend| {
+            backend
+                .scene
+                .as_ref()
+                .and_then(|scene| scene.presentation.as_ref())
+                .and_then(|presentation| presentation.q1_hud())
+                .expect("Q1 world installs a status bar")
+                .finale_reveal(
+                    backend
+                        .world
+                        .as_ref()
+                        .expect("e1m7 world")
+                        .server()
+                        .simulation()
+                        .frame()
+                        .time
+                        .as_seconds_f64() as f32,
+                )
+        };
+        let reveal_early = reveal_now(composed.app.backend());
+        for _ in 0..30 {
+            composed.app.step().expect("windowed step works");
+        }
+        let late = composed.app.capture_next_frame().expect("late capture works");
+        let reveal_late = reveal_now(composed.app.backend());
+        eprintln!("live-q1-finale: reveal {reveal_early:?} -> {reveal_late:?}");
+        assert!(
+            reveal_late > reveal_early,
+            "typewriter did not advance: {reveal_early:?} -> {reveal_late:?}"
+        );
+        // ...and the revealed glyphs draw bright conchars at their
+        // computed cells (first scroll line, viewport-centered).
+        let first_line = "As the corpse of the monstrous entity";
+        let shown = reveal_late.unwrap_or(0).min(first_line.len());
+        assert!(shown > 0, "typewriter revealed text");
+        let cell_x0 = (live_w as usize - first_line.len() * 8) / 2;
+        let bright_in_cells = |pixels: &[u8]| -> usize {
+            pixels
+                .as_chunks::<4>()
+                .0
+                .chunks(live_w as usize)
+                .enumerate()
+                .filter(|(row, _)| (48..56).contains(row))
+                .map(|(_, row)| {
+                    row[cell_x0..cell_x0 + shown * 8]
+                        .iter()
+                        .filter(|pixel| pixel[0] > 100 && pixel[1] > 100 && pixel[2] > 100)
+                        .count()
+                })
+                .sum()
+        };
+        let bright_early = bright_in_cells(&early);
+        let bright_late = bright_in_cells(&late);
+        eprintln!("live-q1-finale: glyph cells bright {bright_early} -> {bright_late}");
+        assert!(
+            bright_late > bright_early + 50,
+            "revealed glyphs did not draw: {bright_early} -> {bright_late}"
+        );
+        composed.app.close().expect("windowed close works");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
     fn live_q1_start_player_walks_under_host_gate() {
         // Live Xvfb proof that the Q1 walking skeleton moves and collides
         // through the real gated loop: open start.bsp in a real window,
