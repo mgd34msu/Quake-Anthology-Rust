@@ -53,9 +53,9 @@ use super::simulation::native_q1_spawns::{
     Q1NativeBehaviors, Q1PendingDoor, Q1PreSpawn,
 };
 use super::simulation::native_q1_triggers::{
-    build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_light, q1_note_targetname,
-    q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn, q1_registered_version,
-    register_q1_trigger_spawns,
+    build_q1_button, build_q1_trigger, q1_is_brush_trigger, q1_is_use_point, q1_note_intermission, q1_note_light,
+    q1_note_start_spot, q1_note_targetname, q1_note_teleport_destination, q1_note_use_point, q1_note_worldspawn,
+    q1_registered_version, register_q1_trigger_spawns,
 };
 use super::windowed_scene::{build_presentation, open_product_mounts, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
@@ -253,6 +253,16 @@ impl PlayWorld {
     /// player (or no clip) keeps the static-spawn behavior: the world still
     /// ticks, the camera just does not follow.
     pub fn step_player(&mut self, command: qa_world::movement::types::UserCommand) -> Result<(), PlayWorldError> {
+        // Stock intermission freeze (`PlayerPreThink`, `client.qc:901`):
+        // the entry move unsolids the player and snaps the view, and no
+        // step runs until the exit travels (stock `MOVETYPE_NONE`).
+        if self
+            .q1_behaviors
+            .as_ref()
+            .is_some_and(|behaviors| behaviors.borrow().intermission.running != 0)
+        {
+            return Ok(());
+        }
         let (Some(player), Some(clip)) = (self.player.as_mut(), self.clip.as_mut()) else {
             return Ok(());
         };
@@ -514,6 +524,7 @@ pub fn spawn_map_entities(
         q1.behaviors.borrow_mut().deathmatch = context.deathmatch;
         q1.behaviors.borrow_mut().skill = context.skill;
         q1.behaviors.borrow_mut().coop = context.coop;
+        q1.behaviors.borrow_mut().mapname = q1_mapname(source);
     }
     let mut classnames = BTreeSet::new();
     for properties in entities {
@@ -725,6 +736,12 @@ pub fn spawn_map_entities(
                     if classname == "worldspawn" {
                         q1_note_worldspawn(&mut behaviors, &fields);
                     }
+                    if classname == "info_intermission" {
+                        q1_note_intermission(&mut behaviors, &fields);
+                    }
+                    if classname == "info_player_start" || classname == "testplayerstart" {
+                        q1_note_start_spot(&mut behaviors, &fields);
+                    }
                     if classname == "info_teleport_destination" {
                         if let Err(error) = q1_note_teleport_destination(&mut behaviors, actor.id(), &fields) {
                             let _ignored = server.simulation_mut().release(&actor);
@@ -757,6 +774,14 @@ pub fn spawn_map_entities(
         install_q1_native(server, Rc::clone(&q1.behaviors));
     }
     summary
+}
+
+/// Stock `mapname` stem for a map resource path (`maps/e1m1.bsp` →
+/// `e1m1`): the leaf name without its extension (`SV_SpawnServer`
+/// names the level for `client.qc`).
+fn q1_mapname(source: &str) -> String {
+    let leaf = source.rsplit('/').next().unwrap_or(source);
+    leaf.rsplit_once('.').map_or(leaf, |(stem, _)| stem).to_string()
 }
 
 /// Selected map read through product mounts and decoded (shared by the
@@ -2423,6 +2448,228 @@ mod tests {
                 "teledeath removed itself after 0.2 s"
             );
         }
+    }
+
+    /// Changelevel exits in a live world: actor plus destination map
+    /// stem, in spawn order.
+    fn live_changelevel_exits(world: &PlayWorld) -> Vec<(qa_core::identity::ActorId, String)> {
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        borrowed
+            .triggers
+            .iter()
+            .filter_map(|(id, trigger)| match &trigger.kind {
+                Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Q1-0241: e1m1 slipgate exit (`trigger_changelevel`, `client.qc:290`):
+    /// the touch sets `nextmap`, nulls the touch, thinks
+    /// `execute_changelevel` 0.1s later, and the entry freezes the live
+    /// player at one of the four map cameras with the single-player 2s
+    /// exit gate, CD track 3, and no travel yet.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0241_changelevel_touch_enters_intermission() {
+        use qa_world::movement::types::{Q1UserCommand, UserCommand};
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().mapname, "e1m1");
+        }
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 1, "e1m1 has one exit");
+        assert_eq!(exits[0].1, "e1m2");
+        let exit = exits[0].0.clone();
+        let player = world.player_actor().cloned().expect("player");
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.nextmap.as_deref(), Some("e1m2"));
+            assert_eq!(borrowed.intermission.running, 0, "touch alone enters nothing");
+            assert_eq!(borrowed.pending_travel, None);
+        }
+        assert!(!world.server_mut().triggers_mut().is_trigger(&exit));
+        live_advance(&mut world, 0.2);
+        let now = live_now(&world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 1);
+            assert!(
+                (borrowed.intermission.exit_time_seconds - (now + 2.0)).abs() < 0.25,
+                "single-player 2s gate: {} vs {now}",
+                borrowed.intermission.exit_time_seconds
+            );
+            assert_eq!(borrowed.cd_tracks, vec![(3, 3)]);
+            let spot = borrowed.intermission.spot.clone().expect("camera spot");
+            assert!(borrowed.intermission_spots.contains(&spot));
+            let body = world.server().simulation().body_state(&player).expect("player body");
+            assert_eq!(body.origin, spot.origin, "entry moved the player to the camera");
+            assert_eq!(body.angles, spot.mangle);
+            assert!(!borrowed.solids.contains(&player), "entry unsolids the player");
+        }
+        assert!(
+            !world
+                .server()
+                .simulation()
+                .combat_state(&player)
+                .unwrap()
+                .can_take_damage,
+            "entry drops takedamage"
+        );
+        // Frozen: a full forward step moves nothing (`client.qc:901`).
+        let before = world
+            .server()
+            .simulation()
+            .body_state(&player)
+            .expect("player body")
+            .origin;
+        let (_, angles) = world.player_eye().expect("player eye");
+        let command = UserCommand::Q1Netquake(Q1UserCommand {
+            acknowledged_server_time_seconds: now,
+            view_angles: angles,
+            forward_move: 400.0,
+            side_move: 0.0,
+            up_move: 0.0,
+            buttons: 0,
+            impulse: 0,
+        });
+        world.step_player(command).unwrap();
+        let after = world
+            .server()
+            .simulation()
+            .body_state(&player)
+            .expect("player body")
+            .origin;
+        assert_eq!(before, after, "intermission player step is frozen");
+    }
+
+    /// Q1-0241: `start` NO_INTERMISSION exits (`client.qc:315`): the
+    /// e1m1 slipgate travels at once in single player — pending travel
+    /// set, no intermission entered, no execute think armed.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0241_start_exit_skips_intermission() {
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        assert_eq!(exits.len(), 5, "start has five episode exits");
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.mapname, "start");
+            assert_eq!(borrowed.nextmap.as_deref(), Some("e1m1"));
+            assert_eq!(borrowed.pending_travel.as_deref(), Some("e1m1"));
+            assert!(borrowed.changelevel_issued);
+            assert_eq!(borrowed.intermission.running, 0);
+            assert!(borrowed.thinks.is_empty());
+        }
+        assert!(world.server_mut().triggers_mut().is_trigger(&exit));
+    }
+
+    /// Q1-0187: `noexit` at a live exit (`client.qc:295`): 1 kills on
+    /// e1m1, 2 kills outside `start` but spares the `start` exits.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0187_noexit_kills_at_the_exit() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 1;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), -99.0, "noexit 1 kills on e1m1");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().nextmap, None);
+        }
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits[0].0.clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 2;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), -99.0, "noexit 2 kills outside start");
+        let Some(mut world) = live_q1_world("maps/start.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        let exits = live_changelevel_exits(&world);
+        let exit = exits
+            .iter()
+            .find(|(_, map)| map == "e1m1")
+            .expect("start e1m1 exit")
+            .0
+            .clone();
+        world.q1_behaviors().expect("Q1 behaviors").borrow_mut().noexit = 2;
+        let at_exit = live_volume_center(&world, &exit);
+        live_place_player(&mut world, at_exit);
+        live_tick(&mut world);
+        assert_eq!(live_player_health(&world), 100.0, "noexit 2 spares start");
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            assert_eq!(behaviors.borrow().pending_travel.as_deref(), Some("e1m1"));
+        }
+    }
+
+    /// Q1-0216: e1m1 `info_intermission` cameras (`client.qc:23`): all
+    /// four record in spawn order with map-exact origins and mangles,
+    /// plus the `FindIntermission` start fallback.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0216_intermission_spots_recorded() {
+        let Some(world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 1) else {
+            return;
+        };
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let spots: Vec<(qa_core::math::Vec3, qa_core::math::Vec3)> = borrowed
+            .intermission_spots
+            .iter()
+            .map(|spot| (spot.origin, spot.mangle))
+            .collect();
+        assert_eq!(
+            spots,
+            vec![
+                (vec3(-112.0, 704.0, 56.0), vec3(20.0, 45.0, 0.0)),
+                (vec3(-208.0, 2736.0, 192.0), vec3(20.0, 225.0, 0.0)),
+                (vec3(240.0, 2664.0, 104.0), vec3(20.0, 120.0, 0.0)),
+                (vec3(1376.0, 1936.0, 64.0), vec3(20.0, 135.0, 0.0)),
+            ]
+        );
+        assert_eq!(borrowed.start_spots.len(), 1, "e1m1 has one player start");
+        assert_eq!(borrowed.start_spots[0].origin, vec3(480.0, -352.0, 88.0));
     }
 
     /// Q1-0110: e1m1 `item_health` heals a live wounded player
