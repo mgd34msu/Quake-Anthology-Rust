@@ -16,6 +16,7 @@ use qa_client::render::types::{
     BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest, DrawBatch, ImageLevel,
     ImageResourceOperation, RenderState, RenderVertex, ResourceOwner, TextureBinding, TextureFilter, TextureSampling,
 };
+use qa_client::ui::hud::q1_native::Q1_PRINTSPEED_CHARS_PER_SECOND;
 use qa_client::ui::hud::q1_native::{
     NativeQ1HudFrame, NativeQ1HudOperation, Q1SbarProduct, Q1_AMMO_LUMPS, Q1_ARMOR_LUMPS, Q1_HIPNOTIC_ITEM_LUMPS,
     Q1_HIPNOTIC_STEMS, Q1_ITEM_LUMPS, Q1_IT_CELLS, Q1_IT_GRENADE_LAUNCHER, Q1_IT_LIGHTNING, Q1_IT_NAILGUN, Q1_IT_NAILS,
@@ -235,6 +236,11 @@ pub struct Q1NativeHud {
     view_seen: bool,
     /// Last wall-clock frame time, milliseconds.
     last_wall_ms: Option<f64>,
+    /// Latched level-completion time (`cl.completed_time`, frozen at
+    /// intermission entry).
+    completed_time: f32,
+    /// Sim time the finale text first appeared (typewriter start).
+    finale_seen_at: Option<f32>,
 }
 
 impl Q1NativeHud {
@@ -290,6 +296,8 @@ impl Q1NativeHud {
             pending_kick: (0.0, 0.0),
             view_seen: false,
             last_wall_ms: None,
+            completed_time: 0.0,
+            finale_seen_at: None,
         })
     }
 
@@ -454,6 +462,38 @@ impl Q1NativeHud {
     #[must_use]
     pub fn face_anim_until(&self) -> f32 {
         self.face_anim_until
+    }
+
+    /// Track intermission edges: latch the completion tally the
+    /// first frame `running` reads 1 (stock freezes `completed_time` at
+    /// entry, `cl_parse.c:939`), stamp the finale typewriter start when
+    /// text first appears, and release both back at `running` 0.
+    pub fn note_intermission(&mut self, running: u32, completed_now: f32, finale: Option<&str>, sim_now: f32) {
+        if running == 0 {
+            self.completed_time = 0.0;
+            self.finale_seen_at = None;
+            return;
+        }
+        if running == 1 && self.completed_time == 0.0 {
+            self.completed_time = completed_now;
+        }
+        if finale.is_some() && self.finale_seen_at.is_none() {
+            self.finale_seen_at = Some(sim_now);
+        }
+    }
+
+    /// Latched level-completion tally for the overlay.
+    #[must_use]
+    pub fn completed_time(&self) -> f32 {
+        self.completed_time
+    }
+
+    /// Typewriter reveal count for the finale text at `sim_now`
+    /// (`scr_printspeed` 8 chars per second from first sight).
+    #[must_use]
+    pub fn finale_reveal(&self, sim_now: f32) -> Option<usize> {
+        self.finale_seen_at
+            .map(|start| ((sim_now - start).max(0.0) * Q1_PRINTSPEED_CHARS_PER_SECOND) as usize)
     }
 
     /// Real frame delta in seconds since the last call (0 on the first).

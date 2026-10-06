@@ -1162,6 +1162,49 @@ pub fn q1_finale_operations() -> Vec<NativeQ1HudOperation> {
     }]
 }
 
+/// Stock print speed for the intermission typewriter
+/// (`scr_printspeed`, `screen.c` default 8 chars per second).
+pub const Q1_PRINTSPEED_CHARS_PER_SECOND: f32 = 8.0;
+
+/// Stock center string (`SCR_DrawCenterString`, `screen.c:134-174`):
+/// lines centered in the viewport at 8 px per glyph, starting at 35%
+/// of the height for short strings and row 48 for long ones. `reveal`
+/// caps the drawn characters (the intermission typewriter); `None`
+/// draws everything.
+pub fn q1_center_string_operations(
+    text: &str,
+    width: i32,
+    height: i32,
+    reveal: Option<usize>,
+) -> Vec<NativeQ1HudOperation> {
+    let mut out = Vec::new();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut y = if lines.len() <= 4 {
+        (height as f32 * 0.35) as i32
+    } else {
+        48
+    };
+    let mut remaining = reveal.unwrap_or(usize::MAX);
+    for line in &lines {
+        let glyphs: Vec<char> = line.chars().take(40).collect();
+        let mut x = (width - glyphs.len() as i32 * 8) / 2;
+        for glyph in glyphs {
+            if remaining == 0 {
+                return out;
+            }
+            remaining -= 1;
+            out.push(NativeQ1HudOperation::Char {
+                x,
+                y,
+                code: glyph as i32,
+            });
+            x += 8;
+        }
+        y += 8;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,6 +1505,30 @@ mod tests {
         assert!(pics.contains(&(48, 160, "r_lava")), "{pics:?}");
         assert!(pics.contains(&(0, 176, "sb_armor2")), "{pics:?}");
         assert!(pics.contains(&(224, 176, "sb_shells")), "{pics:?}");
+    }
+
+    #[test]
+    fn center_string_centers_caps_and_reveals() {
+        // Short strings start at 35% of the height, centered per line.
+        let ops = q1_center_string_operations("AB\nC", 320, 200, None);
+        let chars: Vec<(i32, i32, i32)> = ops
+            .iter()
+            .map(|op| match op {
+                NativeQ1HudOperation::Char { x, y, code } => (*x, *y, *code),
+                _ => panic!("center string draws only chars"),
+            })
+            .collect();
+        assert_eq!(chars, vec![(152, 70, 65), (160, 70, 66), (156, 78, 67)]);
+        // Long strings start at row 48 and cap at 40 columns.
+        let long = "x".repeat(50);
+        let ops = q1_center_string_operations(&format!("1\n2\n3\n4\n{long}"), 320, 200, None);
+        assert_eq!(ops.len(), 4 + 40);
+        assert!(matches!(ops[4], NativeQ1HudOperation::Char { x: 0, y: 80, .. }));
+        // The typewriter reveals a prefix and then stops.
+        let ops = q1_center_string_operations("AB\nC", 320, 200, Some(2));
+        assert_eq!(ops.len(), 2);
+        let ops = q1_center_string_operations("AB\nC", 320, 200, Some(0));
+        assert!(ops.is_empty());
     }
 
     #[test]
