@@ -4148,7 +4148,7 @@ pub(crate) mod tests {
     }
 
     /// Live enforcers on the map, in record order.
-    fn live_enforcers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_enforcers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Enforcer)
     }
@@ -4193,12 +4193,12 @@ pub(crate) mod tests {
         live_monsters(world, Q1MonsterKind::Wizard)
     }
 
-    fn live_hknights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_hknights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::HellKnight)
     }
 
-    fn live_tarbabies(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_tarbabies(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Tarbaby)
     }
