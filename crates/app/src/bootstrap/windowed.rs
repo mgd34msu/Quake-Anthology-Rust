@@ -5282,6 +5282,789 @@ mod tests {
         composed.app.close().expect("windowed close works");
     }
 
+    /// Drive the live windowed loop `n` steps, timing each step.
+    fn e3_drive(composed: &mut WindowedApplication, step_ms: &mut Vec<f64>, n: u32) {
+        for _ in 0..n {
+            let start = std::time::Instant::now();
+            composed.app.step().expect("windowed step works");
+            step_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    /// Inject a key press or release into the windowed run.
+    fn e3_press_key(composed: &mut WindowedApplication, scancode: i32, keycode: i32, down: bool) {
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::Key {
+                timestamp: 0,
+                down,
+                repeat: false,
+                scancode,
+                keycode,
+                modifiers: 0,
+            }])
+            .expect("key injects");
+    }
+
+    /// Inject relative mouse motion into the windowed run.
+    fn e3_mouse_motion(composed: &mut WindowedApplication, dx: i32) {
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::MouseMotion {
+                timestamp: 0,
+                buttons: 0,
+                x: 0,
+                y: 0,
+                dx,
+                dy: 0,
+            }])
+            .expect("mouse injects");
+    }
+
+    /// Inject the attack button into the windowed run.
+    fn e3_mouse_attack(composed: &mut WindowedApplication, down: bool) {
+        composed
+            .app
+            .backend_mut()
+            .handle_window_events(vec![SdlEvent::MouseButton {
+                timestamp: 0,
+                down,
+                button: 1,
+                clicks: 1,
+                x: 0,
+                y: 0,
+            }])
+            .expect("mouse button injects");
+    }
+
+    /// Forward unit (x, y) for a yaw in degrees.
+    fn e3_forward_of(yaw_deg: f32) -> (f64, f64) {
+        let yaw = f64::from(yaw_deg).to_radians();
+        (yaw.cos(), yaw.sin())
+    }
+
+    /// Jab one direction key until the eye displaces past `want`
+    /// along `axis` (sign included), settling and retrying past
+    /// transient monster blocks. Returns the displacement from the
+    /// jab start.
+    fn e3_jab(
+        composed: &mut WindowedApplication,
+        step_ms: &mut Vec<f64>,
+        total_steps: &mut u64,
+        scancode: i32,
+        keycode: i32,
+        axis: (f64, f64),
+        want: f64,
+    ) -> f64 {
+        let (ax, ay) = axis;
+        let origin = e3_eye(composed).0;
+        let mut displaced = 0.0;
+        for _ in 0..6 {
+            e3_press_key(composed, scancode, keycode, true);
+            e3_drive(composed, step_ms, 10);
+            *total_steps += 10;
+            e3_press_key(composed, scancode, keycode, false);
+            let (eye, _) = e3_eye(composed);
+            displaced = f64::from(eye.x - origin.x) * ax + f64::from(eye.y - origin.y) * ay;
+            if (want > 0.0 && displaced > want) || (want < 0.0 && displaced < want) {
+                break;
+            }
+            *total_steps += e3_settle(composed, step_ms);
+        }
+        displaced
+    }
+
+    /// Settle the player onto ground: drive unstopped until the eye
+    /// height calms, so each directional assert starts grounded.
+    /// Returns the steps driven.
+    fn e3_settle(composed: &mut WindowedApplication, step_ms: &mut Vec<f64>) -> u64 {
+        let mut driven = 0;
+        let mut previous_z = f64::from(e3_eye(composed).0.z);
+        let mut calm = 0;
+        for _ in 0..10 {
+            e3_drive(composed, step_ms, 10);
+            driven += 10;
+            let z = f64::from(e3_eye(composed).0.z);
+            calm = if (z - previous_z).abs() < 1.0 { calm + 1 } else { 0 };
+            previous_z = z;
+            if calm >= 2 {
+                break;
+            }
+        }
+        driven
+    }
+
+    /// Player eye plus view angles from the windowed run.
+    fn e3_eye(composed: &WindowedApplication) -> (qa_core::math::Vec3, qa_core::math::Vec3) {
+        composed
+            .app
+            .backend()
+            .world
+            .as_ref()
+            .and_then(PlayWorld::player_eye)
+            .expect("Q1 world keeps its player")
+    }
+
+    /// One E3 map's windowed playthrough: spawn, move, combat, and the
+    /// exit ride, all through the live loop.
+    struct E3Playthrough {
+        /// Map under test (`maps/e3m1.bsp`).
+        map: &'static str,
+        /// Short tag for the live-play log (`e3m1`).
+        tag: &'static str,
+        /// Changelevel destination the exit ride must reach (`e3m2`).
+        exit_map: &'static str,
+        /// Expected changelevel count (2 on e3m4: normal plus secret).
+        exits: usize,
+        /// Arrival eye x/y on the destination (the spawn spot origin).
+        arrival: (f32, f32),
+        /// Arrival eye z range (spot height plus view offset, settled).
+        arrival_z: (f64, f64),
+        /// Monster kind the combat stage kills.
+        combat: super::super::simulation::native_q1_monsters::Q1MonsterKind,
+        /// Damage that wounds the combat target to 5 hp.
+        combat_wound: f64,
+        /// Rune origin: touched before the exit ride (episode end).
+        sigil: Option<(f32, f32, f32)>,
+        /// Episode finale the intermission must scroll (episode end).
+        finale: Option<&'static str>,
+        /// Arrival sheds the carry for the fresh loadout (start map).
+        shed: bool,
+    }
+
+    /// Run one E3 playthrough: S1 spawn presents, S2 key-driven move,
+    /// S3 mouse turn, S4 jump, S5 firing spends a shell, S6 held fire
+    /// kills a wounded monster of the map's kind, S7 rides the exit
+    /// through the intermission into the next map.
+    fn e3_full_playthrough(spec: &E3Playthrough) {
+        use qa_core::math::Vec3;
+        use qa_world::body::translated_body_bounds;
+
+        use super::super::simulation::native_q1_spawns::q1_health_of;
+        use super::super::simulation::native_q1_triggers::Q1TriggerKind;
+        use super::super::simulation::native_q1_weapons::{Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_SHOTGUN};
+
+        let tag = spec.tag;
+        let Some(corpus) = require_live_corpus("Q1 Steel data", &["q1"]) else {
+            return;
+        };
+        let mut options = windowed_options();
+        options.corpus_root = corpus.to_string_lossy().into_owned();
+        options.product = "q1-classic-id1".to_string();
+        options.map = spec.map.to_string();
+        options.frame_limit = None;
+        let Some(mut composed) = require_live_window(
+            "windowed Q1 open",
+            open_windowed_application(&options, StartupEntry::Run),
+        ) else {
+            return;
+        };
+        let mut step_ms: Vec<f64> = Vec::new();
+        let mut total_steps: u64 = 0;
+        // S1: spawn presents a rendered, non-blank frame.
+        e3_drive(&mut composed, &mut step_ms, 30);
+        total_steps += 30;
+        let spawn_frame = composed.app.capture_next_frame().expect("spawn capture works");
+        let spawn_lit = count_non_black(&spawn_frame);
+        eprintln!("live-play: {tag} spawn frame {} bytes, {spawn_lit} lit pixels", spawn_frame.len());
+        assert!(spawn_lit * 100 > spawn_frame.len() / 4, "spawn frame is blank: {spawn_lit} lit pixels");
+        // The movement proof tops the player up first: wandering an
+        // unknown map is not a survival proof.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("world");
+            live_set_player_health(world, 5000.0);
+        }
+        // S2: forward until the eye advances or stalls, then back
+        // and strafe. Spawn may face a wall, so up to four facings
+        // are tried; the advance stops past 60 units so the walk
+        // stays near the spawn instead of wandering into hazards.
+        // Each reverse jabs and retries past transient blocks.
+        let (start_eye, _) = e3_eye(&composed);
+        let mut advanced = 0.0;
+        for facing in 0..4 {
+            let (face_eye, face_angles) = e3_eye(&composed);
+            let (fx, fy) = e3_forward_of(face_angles.y);
+            e3_press_key(&mut composed, 26, 87, true);
+            let mut previous = face_eye;
+            let mut calm = 0;
+            let mut chunks = 0;
+            let mut along = 0.0;
+            while chunks < 30 && calm < 2 && along < 60.0 {
+                e3_drive(&mut composed, &mut step_ms, 10);
+                total_steps += 10;
+                chunks += 1;
+                let (current, _) = e3_eye(&composed);
+                let drift = ((current.x - previous.x) as f64)
+                    .hypot((current.y - previous.y) as f64)
+                    .hypot((current.z - previous.z) as f64);
+                calm = if drift < 0.5 { calm + 1 } else { 0 };
+                previous = current;
+                along = f64::from(current.x - face_eye.x) * fx
+                    + f64::from(current.y - face_eye.y) * fy;
+            }
+            e3_press_key(&mut composed, 26, 87, false);
+            eprintln!("live-play: {tag} facing {facing} forward advanced {along:.1} units");
+            if along > 20.0 {
+                advanced = along;
+                break;
+            }
+            for _ in 0..8 {
+                e3_mouse_motion(&mut composed, 150);
+                e3_drive(&mut composed, &mut step_ms, 3);
+                total_steps += 3;
+            }
+        }
+        assert!(advanced > 20.0, "forward stalled on every facing");
+        // Settle before the reverse: the forward run may have ended
+        // mid-air off a ledge, where air control barely answers.
+        total_steps += e3_settle(&mut composed, &mut step_ms);
+        {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let eye = world.player_eye().map(|(eye, _)| eye);
+            let mut near = 0;
+            if let Some(eye) = eye {
+                for id in borrowed.monsters.keys() {
+                    if let Some(body) = world.server().simulation().body_state(id) {
+                        let dx = f64::from(body.origin.x - eye.x);
+                        let dy = f64::from(body.origin.y - eye.y);
+                        let dz = f64::from(body.origin.z - eye.z);
+                        if dx.hypot(dy).hypot(dz) < 120.0 {
+                            near += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "live-play: {tag} post-move health={} intermission={} eye={eye:?} monsters_within_120={near}",
+                q1_health_of(world.server().simulation(), &player),
+                borrowed.intermission.running,
+            );
+        }
+        let (_, fwd_angles) = e3_eye(&composed);
+        let (fx, fy) = e3_forward_of(fwd_angles.y);
+        let back_along = e3_jab(&mut composed, &mut step_ms, &mut total_steps, 22, 83, (fx, fy), -1.0);
+        eprintln!("live-play: {tag} back retreated {back_along:.1} units");
+        assert!(back_along < -1.0, "back did not retreat: {back_along:.1}");
+        let (lx, ly) = (-fy, fx);
+        let lateral = e3_jab(&mut composed, &mut step_ms, &mut total_steps, 4, 65, (lx, ly), 1.0);
+        eprintln!("live-play: {tag} strafe-left lateral {lateral:.1} units");
+        assert!(lateral > 1.0, "strafe left did not move: {lateral:.1}");
+        let lateral_back =
+            e3_jab(&mut composed, &mut step_ms, &mut total_steps, 7, 68, (lx, ly), -1.0);
+        eprintln!("live-play: {tag} strafe-right lateral {lateral_back:.1} units");
+        assert!(lateral_back < -1.0, "strafe right did not move: {lateral_back:.1}");
+        // Back to the spawn for the turn and jump: the S2 walk may
+        // have ended mid-air off a ledge.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&player, qa_core::math::vec3(start_eye.x, start_eye.y, start_eye.z - 22.0))
+                .expect("player returns to the spawn");
+        }
+        e3_drive(&mut composed, &mut step_ms, 20);
+        total_steps += 20;
+        // S3: mouse motion turns both ways.
+        {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            eprintln!(
+                "live-play: {tag} pre-turn health={} intermission={} eye={:?} angles={:?}",
+                q1_health_of(world.server().simulation(), &player),
+                borrowed.intermission.running,
+                world.player_eye().map(|(eye, _)| eye),
+                world.player_eye().map(|(_, angles)| angles),
+            );
+        }
+        let (_, angles_before) = e3_eye(&composed);
+        let yaw0 = f64::from(angles_before.y);
+        for _ in 0..4 {
+            e3_mouse_motion(&mut composed, 150);
+            e3_drive(&mut composed, &mut step_ms, 3);
+            total_steps += 3;
+        }
+        let (_, angles_cal) = e3_eye(&composed);
+        let yaw1 = f64::from(angles_cal.y);
+        let cal_delta = yaw1 - yaw0;
+        eprintln!("live-play: {tag} mouse +150 x4 turned yaw {yaw0:.1} -> {yaw1:.1}");
+        assert!(cal_delta.abs() > 2.0, "mouse motion does not turn: {cal_delta:.2}");
+        let sign = cal_delta.signum();
+        let mut turned = yaw1;
+        for _ in 0..20 {
+            if (turned - yaw0).abs() >= 80.0 {
+                break;
+            }
+            e3_mouse_motion(&mut composed, 150);
+            e3_drive(&mut composed, &mut step_ms, 3);
+            total_steps += 3;
+            turned = f64::from(e3_eye(&composed).1.y);
+        }
+        assert!((turned - yaw0).abs() >= 80.0, "turn out fell short: {turned:.1} from {yaw0:.1}");
+        for _ in 0..40 {
+            let err = (yaw0 - turned + 540.0).rem_euclid(360.0) - 180.0;
+            if err.abs() < 5.0 {
+                break;
+            }
+            let packet = (err * sign * 4.0).clamp(-300.0, 300.0) as i32;
+            e3_mouse_motion(&mut composed, packet);
+            e3_drive(&mut composed, &mut step_ms, 3);
+            total_steps += 3;
+            turned = f64::from(e3_eye(&composed).1.y);
+        }
+        let yaw_err = (yaw0 - turned + 540.0).rem_euclid(360.0) - 180.0;
+        assert!(yaw_err.abs() < 20.0, "turn back missed: err {yaw_err:.1}");
+        // S4: jump rises and lands.
+        let (jump_eye, _) = e3_eye(&composed);
+        let jump_z = f64::from(jump_eye.z);
+        e3_press_key(&mut composed, 44, 32, true);
+        e3_drive(&mut composed, &mut step_ms, 3);
+        total_steps += 3;
+        e3_press_key(&mut composed, 44, 32, false);
+        let mut peak = jump_z;
+        for _ in 0..40 {
+            e3_drive(&mut composed, &mut step_ms, 1);
+            total_steps += 1;
+            peak = peak.max(f64::from(e3_eye(&composed).0.z));
+        }
+        let land_z = f64::from(e3_eye(&composed).0.z);
+        eprintln!("live-play: {tag} jump peak {peak:.1} from {jump_z:.1}, landed {land_z:.1}");
+        assert!(peak > jump_z + 8.0, "jump did not rise: peak {peak:.1}");
+        assert!((land_z - jump_z).abs() < 6.0, "jump did not land: {land_z:.1} from {jump_z:.1}");
+        // S5: attack spends a shell from the spawn loadout.
+        let shells_before = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let shells = behaviors.borrow().player_ammo.shells;
+            shells
+        };
+        assert!(shells_before > 0.0, "spawn loadout has no shells");
+        e3_mouse_attack(&mut composed, true);
+        e3_drive(&mut composed, &mut step_ms, 25);
+        total_steps += 25;
+        e3_mouse_attack(&mut composed, false);
+        let shells_after = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let shells = behaviors.borrow().player_ammo.shells;
+            shells
+        };
+        eprintln!("live-play: {tag} shells {shells_before} -> {shells_after}");
+        assert!(shells_after < shells_before, "firing spent no shells");
+        // S6: the nearest combat monster, wounded to 5 hp, dies to
+        // held fire at point blank; the kill counter climbs.
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("world");
+            live_set_player_health(world, 500.0);
+        }
+        let kills_before = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let kills = behaviors.borrow().killed_monsters;
+            kills
+        };
+        let target = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let (eye, angles) = world.player_eye().expect("player eye");
+            let (fx, fy) = e3_forward_of(angles.y);
+            let mut best: Option<(qa_core::identity::ActorId, f64)> = None;
+            for (id, monster) in borrowed.monsters.iter() {
+                if monster.kind != spec.combat {
+                    continue;
+                }
+                let origin = world
+                    .server()
+                    .simulation()
+                    .body_state(id)
+                    .map(|body| {
+                        let bounds = translated_body_bounds(&body);
+                        qa_core::math::vec3(
+                            (bounds.min.x + bounds.max.x) / 2.0,
+                            (bounds.min.y + bounds.max.y) / 2.0,
+                            (bounds.min.z + bounds.max.z) / 2.0,
+                        )
+                    })
+                    .expect("monster body");
+                let dist = f64::from(origin.x - eye.x).hypot(f64::from(origin.y - eye.y));
+                if best.as_ref().is_none_or(|(_, known)| dist < *known) {
+                    best = Some((id.clone(), dist));
+                }
+            }
+            let (target, _) = best.expect("a live combat monster");
+            let spot = Vec3 {
+                x: eye.x + (fx * 56.0) as f32,
+                y: eye.y + (fy * 56.0) as f32,
+                z: eye.z - 28.0,
+            };
+            (target, spot)
+        };
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            live_damage(world, &target.0, Some(&player), spec.combat_wound);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&target.0, target.1)
+                .expect("monster places ahead");
+        }
+        e3_mouse_attack(&mut composed, true);
+        let mut killed = false;
+        for _ in 0..40 {
+            e3_drive(&mut composed, &mut step_ms, 30);
+            total_steps += 30;
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if behaviors.borrow().killed_monsters == kills_before + 1 {
+                killed = true;
+                break;
+            }
+        }
+        e3_mouse_attack(&mut composed, false);
+        let (health, shells_left) = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            (q1_health_of(world.server().simulation(), &player), borrowed.player_ammo.shells)
+        };
+        eprintln!("live-play: {tag} kill killed={killed} player_health={health} shells={shells_left}");
+        assert!(killed, "held fire never killed the monster");
+        assert!(health > 0.0, "the monster killed the player");
+        let combat_frame = composed.app.capture_next_frame().expect("combat capture works");
+        // Episode end: take the rune before the exit ride.
+        if let Some((sx, sy, sz)) = spec.sigil {
+            {
+                let world = composed.app.backend_mut().world.as_mut().expect("world");
+                live_place_player(world, qa_core::math::vec3(sx, sy, sz));
+            }
+            e3_drive(&mut composed, &mut step_ms, 30);
+            total_steps += 30;
+            let flags = {
+                let world = composed.app.backend().world.as_ref().expect("world");
+                world.q1_behaviors().expect("Q1 behaviors").borrow().serverflags
+            };
+            eprintln!("live-play: {tag} rune touch sets serverflags {flags}");
+            assert_eq!(flags, 4, "the E3 rune bit sets");
+        }
+        // S7: ride the exit through the intermission into the next map.
+        let exit = {
+            let world = composed.app.backend().world.as_ref().expect("world");
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let mut exits: Vec<_> = borrowed
+                .triggers
+                .iter()
+                .filter_map(|(id, trigger)| match &trigger.kind {
+                    Q1TriggerKind::Changelevel { map, .. } => Some((id.clone(), map.clone())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(exits.len(), spec.exits, "{tag} exit count");
+            let found = exits.iter().position(|(_, map)| map == spec.exit_map).expect("exit map");
+            exits.swap_remove(found).0
+        };
+        {
+            let world = composed.app.backend_mut().world.as_mut().expect("world");
+            let player = world.player_actor().cloned().expect("player");
+            let body = world.server().simulation().body_state(&exit).expect("exit body");
+            let bounds = translated_body_bounds(&body);
+            let center = qa_core::math::vec3(
+                (bounds.min.x + bounds.max.x) / 2.0,
+                (bounds.min.y + bounds.max.y) / 2.0,
+                (bounds.min.z + bounds.max.z) / 2.0,
+            );
+            world.server_mut().simulation_mut().set_body_origin(&player, center).unwrap();
+        }
+        let mut frames = 0;
+        while composed.app.backend().world.as_ref().is_some_and(|world| {
+            world
+                .q1_behaviors()
+                .is_some_and(|behaviors| behaviors.borrow().intermission.running == 0)
+        }) && frames < 1200
+        {
+            e3_drive(&mut composed, &mut step_ms, 10);
+            total_steps += 10;
+            frames += 10;
+        }
+        assert!(frames < 1200, "exit never entered the intermission");
+        eprintln!("live-play: {tag} intermission after {frames} frames");
+        let intermission_frame = composed.app.capture_next_frame().expect("intermission capture works");
+        e3_mouse_attack(&mut composed, true);
+        frames = 0;
+        let mut finale_seen = spec.finale.is_none();
+        while composed.app.backend().world.as_ref().is_some_and(|world| world.map() == spec.map)
+            && frames < 2400
+        {
+            e3_drive(&mut composed, &mut step_ms, 10);
+            total_steps += 10;
+            frames += 10;
+            if let Some(want) = spec.finale {
+                if let Some(world) = composed.app.backend().world.as_ref() {
+                    if let Some(behaviors) = world.q1_behaviors() {
+                        let borrowed = behaviors.borrow();
+                        if borrowed.finale_text.as_deref() == Some(live_expected_finale(want)) {
+                            finale_seen = true;
+                        }
+                    }
+                }
+            }
+        }
+        e3_mouse_attack(&mut composed, false);
+        assert!(finale_seen, "the episode finale never scrolled");
+        let world = composed.app.backend().world.as_ref().expect("travelled world");
+        let want_map = format!("maps/{}.bsp", spec.exit_map);
+        assert_eq!(world.map(), want_map, "poll travelled after {frames} frames");
+        let (eye, _) = world.player_eye().expect("arrival eye");
+        assert_eq!((eye.x, eye.y), spec.arrival, "arrival at the destination start");
+        assert!(
+            spec.arrival_z.0 <= f64::from(eye.z) && f64::from(eye.z) <= spec.arrival_z.1,
+            "arrival eye settles near the start: {eye:?}"
+        );
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.intermission.running, 0, "arrival runs live");
+            assert_eq!(borrowed.killed_monsters, 0, "fresh level census");
+            if spec.shed {
+                assert_eq!(borrowed.serverflags, 4, "rune flags persist");
+                assert_eq!(
+                    borrowed.player_items & !Q1_IT_AMMO_BITS,
+                    Q1_IT_AXE | Q1_IT_SHOTGUN,
+                    "carry shed for the fresh loadout"
+                );
+                assert_eq!(borrowed.player_ammo.shells, 25.0);
+                assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+                let arrival = world.player_actor().cloned().expect("arrival player");
+                assert_eq!(
+                    world.server().simulation().combat_state(&arrival).map(|combat| combat.health),
+                    Some(100.0)
+                );
+            } else {
+                eprintln!("live-play: arrived {} with {} shells", spec.exit_map, borrowed.player_ammo.shells);
+                assert!(
+                    borrowed.player_ammo.shells > 0.0 && borrowed.player_ammo.shells < 25.0,
+                    "shells show real expenditure"
+                );
+            }
+        }
+        e3_drive(&mut composed, &mut step_ms, 60);
+        total_steps += 60;
+        let (settle_eye, _) = e3_eye(&composed);
+        assert!(
+            spec.arrival_z.0 <= f64::from(settle_eye.z) && f64::from(settle_eye.z) <= spec.arrival_z.1,
+            "arrival eye sinks or floats: {settle_eye:?}"
+        );
+        for (label, frame) in [
+            ("spawn", &spawn_frame),
+            ("combat", &combat_frame),
+            ("intermission", &intermission_frame),
+        ] {
+            // No size assert: the GL readback size is driver
+            // dependent and varies frame to frame. The proof is the
+            // lit fraction, far above black either way.
+            let lit = count_non_black(frame);
+            eprintln!("live-play: {tag} {label} frame {lit} lit pixels");
+            assert!(lit * 100 > frame.len() / 4, "{label} frame is blank");
+        }
+        let diff_bytes = |a: &[u8], b: &[u8]| a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+        let spawn_combat = diff_bytes(&spawn_frame, &combat_frame);
+        let combat_inter = diff_bytes(&combat_frame, &intermission_frame);
+        eprintln!(
+            "live-play: {tag} spawn/combat differ in {spawn_combat} bytes, combat/intermission in {combat_inter}"
+        );
+        assert!(spawn_combat > 100, "spawn and combat frames identical");
+        assert!(combat_inter > 100, "combat and intermission frames identical");
+        step_ms.sort_by(f64::total_cmp);
+        let mean = step_ms.iter().sum::<f64>() / step_ms.len() as f64;
+        let p95 = step_ms[step_ms.len() * 95 / 100];
+        let max = step_ms[step_ms.len() - 1];
+        eprintln!("live-play: {tag} {total_steps} steps, step ms mean {mean:.2} p95 {p95:.2} max {max:.2}");
+        assert!(total_steps < 8000, "runaway pass: {total_steps} steps");
+        composed.app.close().expect("windowed close works");
+    }
+
+    /// Q1-0258: e3m1 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, a grunt kill, and the e3m2
+    /// exit ride, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m1_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m1.bsp",
+            tag: "e3m1",
+            exit_map: "e3m2",
+            exits: 1,
+            arrival: (192.0, 1120.0),
+            arrival_z: (42.0, 82.0),
+            combat: Q1MonsterKind::Grunt,
+            combat_wound: 25.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
+    /// Q1-0258: e3m2 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, a zombie kill, and the e3m3
+    /// exit ride, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m2_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m2.bsp",
+            tag: "e3m2",
+            exit_map: "e3m3",
+            exits: 1,
+            arrival: (576.0, -152.0),
+            arrival_z: (50.0, 90.0),
+            combat: Q1MonsterKind::Zombie,
+            combat_wound: 55.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
+    /// Q1-0258: e3m3 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, a hell knight kill, and the
+    /// e3m4 exit ride, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m3_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m3.bsp",
+            tag: "e3m3",
+            exit_map: "e3m4",
+            exits: 1,
+            arrival: (672.0, -40.0),
+            arrival_z: (-94.0, -54.0),
+            combat: Q1MonsterKind::HellKnight,
+            combat_wound: 245.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
+    /// Q1-0258: e3m4 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, an ogre kill, and the
+    /// normal e3m5 exit ride past the secret e3m7 gate, all through
+    /// the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m4_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m4.bsp",
+            tag: "e3m4",
+            exit_map: "e3m5",
+            exits: 2,
+            arrival: (608.0, -3128.0),
+            arrival_z: (-1302.0, -1262.0),
+            combat: Q1MonsterKind::Ogre,
+            combat_wound: 195.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
+    /// Q1-0258: e3m5 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, a scrag kill, and the e3m6
+    /// exit ride, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m5_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m5.bsp",
+            tag: "e3m5",
+            exit_map: "e3m6",
+            exits: 1,
+            arrival: (-1088.0, -288.0),
+            arrival_z: (34.0, 74.0),
+            combat: Q1MonsterKind::Wizard,
+            combat_wound: 75.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
+    /// Q1-0258: e3m6 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, a vore kill, the live rune
+    /// pickup, and the episode-end exit ride: the intermission
+    /// scrolls the E3 finale, then travel lands flagged on start2
+    /// with the carry shed, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m6_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m6.bsp",
+            tag: "e3m6",
+            exit_map: "start",
+            exits: 1,
+            arrival: (544.0, 1536.0),
+            arrival_z: (34.0, 74.0),
+            combat: Q1MonsterKind::Vore,
+            combat_wound: 395.0,
+            sigil: Some((284.0, -3432.0, 152.0)),
+            finale: Some("e3"),
+            shed: true,
+        });
+    }
+
+    /// Q1-0258: e3m7 windowed playthrough — spawn presents, key-driven
+    /// move, mouse turn, jump, shell fire, an ogre kill, and the
+    /// return e3m5 exit ride, all through the live loop.
+    #[test]
+    #[ignore = "live proof: needs Steel corpus/display"]
+    fn live_q1_e3m7_full_playthrough() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+
+        let _gl_guard = super::WINDOWED_GL_TEST_LOCK.lock().unwrap();
+        e3_full_playthrough(&E3Playthrough {
+            map: "maps/e3m7.bsp",
+            tag: "e3m7",
+            exit_map: "e3m5",
+            exits: 1,
+            arrival: (608.0, -3128.0),
+            arrival_z: (-1302.0, -1262.0),
+            combat: Q1MonsterKind::Ogre,
+            combat_wound: 195.0,
+            sigil: None,
+            finale: None,
+            shed: false,
+        });
+    }
+
     #[test]
     fn non_black_counter_diffs_captures_from_black() {
         assert_eq!(count_non_black(&[0, 0, 0, 255, 0, 0, 0, 255]), 0);
