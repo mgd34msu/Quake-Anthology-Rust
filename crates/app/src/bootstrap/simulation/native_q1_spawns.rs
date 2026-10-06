@@ -39,6 +39,7 @@ use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
 };
+use super::native_q1_weapons::Q1Missile;
 use super::native_q1_weapons::{Q1PlayerState, Q1TempEnt};
 
 /// Stock spawnflag inhibition bits (`server.h:180-183`).
@@ -663,6 +664,8 @@ pub struct Q1NativeBehaviors {
     /// Queued weapon temp entities for the presentation slice to
     /// drain (stock `SVC_TEMPENTITY` broadcasts).
     pub temp_ents: Vec<Q1TempEnt>,
+    /// Live player-missile actors by id (spikes, grenades, rockets).
+    pub missiles: Q1EdictTable<Q1Missile>,
     /// Stock `serverflags` (`server.h:27`): episode-completion bits that
     /// persist across levels and saves (sigils set them, `items.qc:1021`).
     pub serverflags: i32,
@@ -766,6 +769,7 @@ pub(crate) fn q1_remove(
     behaviors.monsters.remove(actor);
     behaviors.movetargets.remove(actor);
     behaviors.gibs.remove(actor);
+    behaviors.missiles.remove(actor);
     movers.remove(actor);
     if behaviors.player.as_ref() == Some(actor) {
         behaviors.player = None;
