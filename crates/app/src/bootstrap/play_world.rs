@@ -1202,7 +1202,7 @@ fn load_play_world_inner(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
 
     use qa_content::catalog::DiscoverContentOptions;
@@ -1893,7 +1893,7 @@ mod tests {
     }
 
     /// Master-clock seconds of the live simulation.
-    fn live_now(world: &PlayWorld) -> f64 {
+    pub(crate) fn live_now(world: &PlayWorld) -> f64 {
         world.server().simulation().frame().time.as_seconds_f64()
     }
 
@@ -1918,7 +1918,7 @@ mod tests {
     /// Script the player to a map point: the input seam's movement half
     /// (future console teleports land here). No movement step runs, so
     /// the body floats exactly where placed until gamecode moves it.
-    fn live_place_player(world: &mut PlayWorld, point: qa_core::math::Vec3) {
+    pub(crate) fn live_place_player(world: &mut PlayWorld, point: qa_core::math::Vec3) {
         let player = world.player_actor().cloned().expect("scenario world admits a player");
         world
             .server_mut()
@@ -1933,7 +1933,10 @@ mod tests {
     }
 
     /// Center of an actor's absolute touch volume.
-    fn live_volume_center(world: &PlayWorld, actor: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
+    pub(crate) fn live_volume_center(
+        world: &PlayWorld,
+        actor: &qa_core::identity::ActorId,
+    ) -> qa_core::math::Vec3 {
         use qa_world::body::translated_body_bounds;
         let body = world
             .server()
@@ -1951,7 +1954,7 @@ mod tests {
     /// Silence door trigger fields for scenarios that do not test
     /// doors (the crush proof uses the same isolation): teleported
     /// players must not re-fire doors while the scenario asserts.
-    fn live_silence_door_fields(world: &mut PlayWorld) {
+    pub(crate) fn live_silence_door_fields(world: &mut PlayWorld) {
         let now = live_now(world);
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         for field in behaviors.borrow_mut().fields.values_mut() {
@@ -1960,7 +1963,7 @@ mod tests {
     }
 
     /// Live player health (stock `PutClientInServer` grants 100).
-    fn live_player_health(world: &PlayWorld) -> f64 {
+    pub(crate) fn live_player_health(world: &PlayWorld) -> f64 {
         let player = world.player_actor().cloned().expect("player");
         world
             .server()
@@ -1970,7 +1973,7 @@ mod tests {
     }
 
     /// Set live player health (wounds the player for pickup proofs).
-    fn live_set_player_health(world: &mut PlayWorld, health: f64) {
+    pub(crate) fn live_set_player_health(world: &mut PlayWorld, health: f64) {
         use qa_world::combat::CombatState;
         let player = world.player_actor().cloned().expect("player");
         let combat = world
@@ -2021,7 +2024,10 @@ mod tests {
     }
 
     /// Door actors indexed under `targetname`.
-    fn live_doors_by_targetname(world: &PlayWorld, targetname: &str) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_doors_by_targetname(
+        world: &PlayWorld,
+        targetname: &str,
+    ) -> Vec<qa_core::identity::ActorId> {
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
         let borrowed = behaviors.borrow();
         let found: Vec<qa_core::identity::ActorId> = borrowed
@@ -2703,7 +2709,7 @@ mod tests {
 
     /// Changelevel exits in a live world: actor plus destination map
     /// stem, in spawn order.
-    fn live_changelevel_exits(world: &PlayWorld) -> Vec<(qa_core::identity::ActorId, String)> {
+    pub(crate) fn live_changelevel_exits(world: &PlayWorld) -> Vec<(qa_core::identity::ActorId, String)> {
         use super::super::simulation::native_q1_triggers::Q1TriggerKind;
 
         let behaviors = world.q1_behaviors().expect("Q1 behaviors");
@@ -2721,7 +2727,7 @@ mod tests {
     /// Latch live button state through the frozen player step (the
     /// `PlayerPreThink` seam, `client.qc:901`): 0 releases, nonzero
     /// presses.
-    fn live_press_buttons(world: &mut PlayWorld, buttons: i32) {
+    pub(crate) fn live_press_buttons(world: &mut PlayWorld, buttons: i32) {
         use qa_world::movement::types::{Q1UserCommand, UserCommand};
 
         let (_, angles) = world.player_eye().expect("player eye");
@@ -2769,7 +2775,7 @@ mod tests {
     }
 
     /// Independent oracle for the stock finale scrolls (`client.qc:172-226`).
-    fn live_expected_finale(which: &str) -> &'static str {
+    pub(crate) fn live_expected_finale(which: &str) -> &'static str {
         match which {
             "e1-shareware" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task in the other three\nhaunted lands of Quake. Or are you? If\nyou don't register Quake, you'll never\nknow what awaits you in the Realm of\nBlack Magic, the Netherworld, and the\nElder World!",
             "e1" => "As the corpse of the monstrous entity\nChthon sinks back into the lava whence\nit rose, you grip the Rune of Earth\nMagic tightly. Now that you have\nconquered the Dimension of the Doomed,\nrealm of Earth Magic, you are ready to\ncomplete your task. A Rune of magic\npower lies at the end of each haunted\nland of Quake. Go forth, seek the\ntotality of the four Runes!",
@@ -4115,7 +4121,7 @@ mod tests {
     }
 
     /// Live monsters of one kind on the map, in record order.
-    fn live_monsters(
+    pub(crate) fn live_monsters(
         world: &PlayWorld,
         kind: super::super::simulation::native_q1_monsters::Q1MonsterKind,
     ) -> Vec<qa_core::identity::ActorId> {
@@ -4130,13 +4136,13 @@ mod tests {
     }
 
     /// Live dogs on the map, in record order.
-    fn live_dogs(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_dogs(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Dog)
     }
 
     /// Live grunts on the map, in record order.
-    fn live_grunts(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_grunts(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Grunt)
     }
@@ -4148,41 +4154,41 @@ mod tests {
     }
 
     /// Live ogres on the map, in record order.
-    fn live_ogres(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_ogres(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Ogre)
     }
 
     /// Live zombies on the map, in record order.
-    fn live_zombies(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_zombies(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Zombie)
     }
 
     /// Live fish on the map, in record order.
-    fn live_fish(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_fish(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Fish)
     }
 
     /// Live knights on the map, in record order.
-    fn live_knights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_knights(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Knight)
     }
 
     /// Live fiends on the map, in record order.
-    fn live_fiends(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_fiends(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Fiend)
     }
 
-    fn live_shamblers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_shamblers(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Shambler)
     }
 
-    fn live_wizards(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_wizards(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Wizard)
     }
@@ -4197,17 +4203,17 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Tarbaby)
     }
 
-    fn live_vores(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_vores(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Vore)
     }
 
-    fn live_bosses(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_bosses(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::Boss)
     }
 
-    fn live_oldones(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+    pub(crate) fn live_oldones(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
         use super::super::simulation::native_q1_monsters::Q1MonsterKind;
         live_monsters(world, Q1MonsterKind::OldOne)
     }
@@ -4230,7 +4236,10 @@ mod tests {
     }
 
     /// Monster feet position (placement handle for facing offsets).
-    fn live_monster_feet(world: &PlayWorld, monster: &qa_core::identity::ActorId) -> qa_core::math::Vec3 {
+    pub(crate) fn live_monster_feet(
+        world: &PlayWorld,
+        monster: &qa_core::identity::ActorId,
+    ) -> qa_core::math::Vec3 {
         let body = world.server().simulation().body_state(monster).expect("monster body");
         vec3(body.origin.x, body.origin.y, body.origin.z + body.bounds.min.z)
     }
@@ -4282,7 +4291,7 @@ mod tests {
 
     /// Wound something through the real `T_Damage` (weapons stand-in
     /// until the weapons slice fires it).
-    fn live_damage(
+    pub(crate) fn live_damage(
         world: &mut PlayWorld,
         targ: &qa_core::identity::ActorId,
         attacker: Option<&qa_core::identity::ActorId>,
@@ -4304,7 +4313,7 @@ mod tests {
     }
 
     /// Fire one `use` at an actor (trigger stand-in).
-    fn live_fire_use(
+    pub(crate) fn live_fire_use(
         world: &mut PlayWorld,
         target: &qa_core::identity::ActorId,
         activator: &qa_core::identity::ActorId,
@@ -4325,7 +4334,7 @@ mod tests {
     /// e1m1 monster census at skill 2: 8 dogs plus 34 grunts (no
     /// `monster_*` record carries the 1024 not-hard bit, so every
     /// authored monster spawns).
-    const LIVE_E1M1_SKILL2_TOTAL: u32 = 42;
+    pub(crate) const LIVE_E1M1_SKILL2_TOTAL: u32 = 42;
 
     /// e2m1 monster census at skill 2: 26 enforcers plus 13 grunts and
     /// 7 dogs (one grunt and one dog carry the 1024 not-hard bit, so
@@ -4336,32 +4345,33 @@ mod tests {
     /// 5 knights plus 3 fiends plus 6 wizards (a thirteenth ogre, a
     /// sixth knight, and a fourth fiend carry the 1024 not-hard bit;
     /// no wizard does). Every e1m2 monster kind is native now.
-    const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 42;
+    pub(crate) const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 42;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies plus
-    /// 7 fiends plus 3 shamblers plus 7 wizards (five more zombies
-    /// and two more fiends carry the 1024 not-hard bit; no wizard
-    /// does). Every e1m3 monster kind is native now.
-    const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 65;
+    /// 7 fiends plus 3 shamblers plus 7 wizards (two more ogres,
+    /// five more zombies, and two more fiends carry the 1024
+    /// not-hard bit; no wizard or shambler does). Every e1m3
+    /// monster kind is native now.
+    pub(crate) const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 65;
 
     /// e1m4 native census at skill 2: 21 ogres plus 19 knights plus
     /// 16 wizards plus 3 fiends (two more ogres and three more
     /// knights carry the 1024 not-hard bit; no wizard or fiend
     /// does). Every e1m4 monster kind is native now.
-    const LIVE_E1M4_NATIVE_SKILL2_TOTAL: u32 = 59;
+    pub(crate) const LIVE_E1M4_NATIVE_SKILL2_TOTAL: u32 = 59;
 
     /// e1m5 native census at skill 2: 25 knights plus 15 ogres plus
     /// 10 wizards plus 9 fiends plus 1 shambler (a second shambler
     /// carries the 1024 not-hard bit; nothing else does). Every
     /// e1m5 monster kind is native now.
-    const LIVE_E1M5_NATIVE_SKILL2_TOTAL: u32 = 60;
+    pub(crate) const LIVE_E1M5_NATIVE_SKILL2_TOTAL: u32 = 60;
 
     /// e1m6 native census at skill 2: 18 ogres plus 6 zombies plus
     /// 3 wizards plus 2 fiends plus 2 shamblers (two more ogres and
     /// a third fiend carry the 1024 not-hard bit; no wizard,
     /// zombie, or shambler does). Every e1m6 monster kind is native
     /// now.
-    const LIVE_E1M6_NATIVE_SKILL2_TOTAL: u32 = 31;
+    pub(crate) const LIVE_E1M6_NATIVE_SKILL2_TOTAL: u32 = 31;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
@@ -4380,14 +4390,14 @@ mod tests {
     /// e1m7 native census at skill 2: 12 shamblers plus 8 zombies
     /// plus Chthon: 12 + 8 + 1 = 21 (no `monster_*` record carries
     /// the 1024 not-hard bit). Every e1m7 monster kind is native now.
-    const LIVE_E1M7_NATIVE_SKILL2_TOTAL: u32 = 21;
+    pub(crate) const LIVE_E1M7_NATIVE_SKILL2_TOTAL: u32 = 21;
 
     /// end native census at skill 2: 7 shamblers plus 6 vores plus
     /// 1 wizard plus 5 fish counting twice each (the classic swim
     /// double-count) plus Shub-Niggurath counting once: 7 + 6 + 1 +
     /// 10 + 1 = 25 (no `monster_*` record carries the 1024 not-hard
     /// bit). Every end monster kind is native now.
-    const LIVE_END_NATIVE_SKILL2_TOTAL: u32 = 25;
+    pub(crate) const LIVE_END_NATIVE_SKILL2_TOTAL: u32 = 25;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -6820,6 +6830,58 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0138_e1m2_grunt_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m2 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let grunts = live_grunts(&world);
+        assert_eq!(grunts.len(), 16, "e1m2 spawns sixteen grunts");
+        assert_eq!(live_ogres(&world).len(), 12, "e1m2 spawns twelve ogres");
+        assert_eq!(live_knights(&world).len(), 5, "e1m2 spawns five knights");
+        assert_eq!(live_fiends(&world).len(), 3, "e1m2 spawns three fiends");
+        assert_eq!(live_wizards(&world).len(), 6, "e1m2 spawns six scrags");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M2_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        for grunt in &grunts {
+            let monster = borrowed.monsters.get(grunt).expect("grunt record");
+            assert_eq!(monster.flags & 512, 512, "dropped grunts stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(grunt).expect("grunt combat");
+            assert_eq!(combat.health, 30.0);
+            if monster.movetarget.is_some() {
+                walkers += 1;
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntWalk, _)),
+                    "targeted grunts walk out, got {:?}",
+                    monster.think
+                );
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::GruntStand, _)),
+                    "grunts stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless grunts stand down");
+            }
+        }
+        // Nine e1m2 grunts carry a path_corner target in the lump
+        // (none with the 1024 not-hard bit), so nine patrol.
+        assert_eq!(walkers, 9, "nine e1m2 grunts patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0142_enforcer_spawn_stands_armed() {
         use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
 
@@ -7326,6 +7388,65 @@ mod tests {
                 assert!(monster.pausetime > 9999999.0, "targetless ogres stand down");
             }
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_e1m3_ogre_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m3 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let ogres = live_ogres(&world);
+        assert_eq!(ogres.len(), 13, "e1m3 spawns thirteen ogres");
+        assert_eq!(live_zombies(&world).len(), 35, "e1m3 spawns thirty-five zombies");
+        assert_eq!(live_fiends(&world).len(), 7, "e1m3 spawns seven fiends");
+        assert_eq!(live_shamblers(&world).len(), 3, "e1m3 spawns three shamblers");
+        assert_eq!(live_wizards(&world).len(), 7, "e1m3 spawns seven scrags");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M3_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for ogre in &ogres {
+            let monster = borrowed.monsters.get(ogre).expect("ogre record");
+            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(ogre).expect("ogre combat");
+            assert_eq!(combat.health, 200.0);
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "ogres stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "standing ogres stand down");
+            }
+        }
+        // Six e1m3 ogres carry a target in the lump, but stock
+        // `walkmonster_start_go` (`monsters.qc:105-108`) only walks
+        // `path_corner` targets: the t117, t124, and t159 ogres
+        // patrol, while the two t135 ogres (their deaths feed the
+        // t135 `trigger_counter` pair via `monster_death_use`) and
+        // the t157 ogre (a `func_door` shares the targetname) keep
+        // their movetarget but stand down with `pausetime`, like
+        // the original.
+        assert_eq!(targeted, 6, "six e1m3 ogres resolve a movetarget");
+        assert_eq!(walkers, 3, "three e1m3 ogres patrol corners");
     }
 
     #[test]
@@ -8784,6 +8905,47 @@ mod tests {
         assert!(borrowed.gibs.contains_key(&shamblers[1]), "the head keeps the actor");
         assert_eq!(borrowed.pending_gibs.len(), 3, "three chunks queue");
         assert!(!borrowed.solids.contains(&shamblers[1]), "gibs go unsolid");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0150_e1m7_shambler_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m7 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let shamblers = live_shamblers(&world);
+        assert_eq!(shamblers.len(), 12, "e1m7 spawns twelve shamblers");
+        assert_eq!(live_zombies(&world).len(), 8, "e1m7 spawns eight zombies");
+        assert_eq!(live_bosses(&world).len(), 1, "e1m7 spawns one Chthon");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M7_NATIVE_SKILL2_TOTAL);
+        for shambler in &shamblers {
+            let monster = borrowed.monsters.get(shambler).expect("shambler record");
+            assert_eq!(monster.flags & 512, 512, "dropped shamblers stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, _)),
+                "shambler stands, got {:?}",
+                monster.think
+            );
+            assert!(monster.pausetime > 9999999.0, "targetless shamblers stand down");
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(shambler)
+                .expect("shambler combat");
+            assert_eq!(combat.health, 600.0);
+        }
     }
 
     #[test]
