@@ -7301,6 +7301,30 @@ mod tests {
         (yaw.cos(), yaw.sin())
     }
 
+    /// Temporary stall diagnostic: live monsters within 400u of the eye.
+    fn windowed_near_scan(app: &StartupApplication<WindowedStartupBackend>, eye: Vec3) -> String {
+        let world = windowed_world(app);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        let mut dists: Vec<(String, f64)> = Vec::new();
+        for (id, monster) in borrowed.monsters.iter() {
+            if monster.dead {
+                continue;
+            }
+            if let Some(body) = world.server().simulation().body_state(id) {
+                let dx = f64::from(body.origin.x - eye.x);
+                let dy = f64::from(body.origin.y - eye.y);
+                let dz = f64::from(body.origin.z - eye.z);
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist < 400.0 {
+                    dists.push((format!("{:?}", monster.kind), dist));
+                }
+            }
+        }
+        dists.sort_by(|a, b| a.1.total_cmp(&b.1));
+        format!("{} near: {dists:?}", dists.len())
+    }
+
     /// Run one episode leg: spawn presents and counts, the walk is
     /// cleared (one spared hunter penned at the exit, everything
     /// else gibbed — gibs go unsolid instantly, so no converging
@@ -7443,8 +7467,20 @@ mod tests {
         eprintln!("live-play: {} stall eye {fwd_eye:?} after {chunks} chunks", leg.label);
         // Back retraces the just-walked corridor, then the strafes
         // cross it: every move starts from a spot the player reached
-        // by walking (no teleports into possibly-closed doors).
+        // by walking (no teleports into possibly-closed doors). The
+        // spared hunter re-pens before each lateral: left roaming it
+        // trails the run up the corridor and wedges the retreat.
+        let repen = |app: &mut StartupApplication<WindowedStartupBackend>| {
+            let world = app.backend_mut().world.as_mut().expect("run world");
+            let pen = live_volume_center(world, &exit);
+            world
+                .server_mut()
+                .simulation_mut()
+                .set_body_origin(&spare, pen)
+                .expect("spare re-pens at the exit");
+        };
         let (lx, ly) = (-fy, fx);
+        repen(app);
         windowed_press_key(app, 22, 83, true);
         windowed_drive(app, step_ms, 20);
         *total_steps += 20;
@@ -7453,6 +7489,7 @@ mod tests {
         let back_along = f64::from(back_eye.x - fwd_eye.x) * fx + f64::from(back_eye.y - fwd_eye.y) * fy;
         eprintln!("live-play: {} back retreated {back_along:.1} units", leg.label);
         assert!(back_along < -1.0, "back did not retreat: {back_along:.1}");
+        repen(app);
         windowed_press_key(app, 4, 65, true);
         windowed_drive(app, step_ms, 20);
         *total_steps += 20;
@@ -7461,6 +7498,7 @@ mod tests {
         let lateral = f64::from(strafe_eye.x - back_eye.x) * lx + f64::from(strafe_eye.y - back_eye.y) * ly;
         eprintln!("live-play: {} strafe-left lateral {lateral:.1} units", leg.label);
         assert!(lateral > 1.0, "strafe left did not move: {lateral:.1}");
+        repen(app);
         windowed_press_key(app, 7, 68, true);
         windowed_drive(app, step_ms, 20);
         *total_steps += 20;
@@ -7568,8 +7606,13 @@ mod tests {
         }
         assert!(frames < 1200, "exit never entered the intermission");
         eprintln!("live-play: {} intermission after {frames} frames", leg.label);
+        // One continuous hold from the intermission through the
+        // scroll to travel (a release+press with no sampled step
+        // between desyncs the seat sampler): the poll is
+        // level-triggered and the re-armed gate separates the
+        // exits in time.
+        windowed_mouse_attack(app, true);
         if let Some(finale) = leg.finale {
-            windowed_mouse_attack(app, true);
             frames = 0;
             while app.backend().world.as_ref().is_some_and(|world| {
                 world
@@ -7581,7 +7624,6 @@ mod tests {
                 *total_steps += 10;
                 frames += 10;
             }
-            windowed_mouse_attack(app, false);
             assert!(frames < 2400, "scroll never raised");
             let world = windowed_world(app);
             let behaviors = world.q1_behaviors().expect("Q1 behaviors");
@@ -7591,7 +7633,6 @@ mod tests {
             assert_eq!(borrowed.cd_tracks, vec![(3, 3), (2, 3)]);
             assert_eq!(borrowed.pending_travel, None, "scroll shows before travel");
         }
-        windowed_mouse_attack(app, true);
         frames = 0;
         while app.backend().world.as_ref().is_some_and(|world| world.map() == leg.map) && frames < 2400 {
             windowed_drive(app, step_ms, 10);
