@@ -4380,12 +4380,62 @@ pub(crate) mod tests {
     /// 1024 not-hard bit). Every e2m3 monster kind is native now.
     const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 54;
 
+    /// e4m1 native census at skill 2: 5 dogs plus 20 enforcers
+    /// plus 31 grunts (one more enforcer and four more grunts
+    /// carry the 1024 not-hard bit). Every e4m1 monster kind is
+    /// native now.
+    pub(crate) const LIVE_E4M1_NATIVE_SKILL2_TOTAL: u32 = 56;
+
+    /// e4m2 native census at skill 2: 6 hell knights plus 19
+    /// knights plus 13 ogres plus 1 shambler plus 4 vores (no
+    /// `monster_*` record carries the 1024 not-hard bit). Every
+    /// e4m2 monster kind is native now.
+    pub(crate) const LIVE_E4M2_NATIVE_SKILL2_TOTAL: u32 = 43;
+
+    /// e4m3 native census at skill 2: 15 fiends plus 18 knights
+    /// plus 10 ogres plus 18 scrags plus 5 spawns plus 49 zombie
+    /// records, but ten of those zombies carry the crucified bit
+    /// and skip `walkmonster_start` (`zombie.qc:508-514`), so the
+    /// kill total is 105 (no `monster_*` record carries the 1024
+    /// not-hard bit). Every e4m3 monster kind is native now.
+    pub(crate) const LIVE_E4M3_NATIVE_SKILL2_TOTAL: u32 = 105;
+
+    /// e4m4 native census at skill 2: 28 fiends plus 9 fish counting
+    /// twice each (the classic swim double-count) plus 7 hell
+    /// knights plus 15 knights plus 14 scrags plus 5 shamblers:
+    /// 28 + 18 + 7 + 15 + 14 + 5 = 87 (three more fiends carry
+    /// the 1024 not-hard bit). Every e4m4 monster kind is native
+    /// now.
+    pub(crate) const LIVE_E4M4_NATIVE_SKILL2_TOTAL: u32 = 87;
+
+    /// e4m5 native census at skill 2: 14 fiends plus 4 fish counting
+    /// twice each (the classic swim double-count) plus 14 hell
+    /// knights plus 16 spawns plus 5 vores plus 41 zombies: 14 +
+    /// 8 + 14 + 16 + 5 + 41 = 98 (no `monster_*` record carries
+    /// the 1024 not-hard bit). Every e4m5 monster kind is native
+    /// now.
+    pub(crate) const LIVE_E4M5_NATIVE_SKILL2_TOTAL: u32 = 98;
+
     /// e4m6 native census at skill 2: 8 fiends plus 3 fish counting
     /// twice each (the classic swim double-count) plus 12 hell
     /// knights plus 49 spawns plus 9 vores: 8 + 6 + 12 + 49 + 9 = 84
     /// (no `monster_*` record carries the 1024 not-hard bit). Every
     /// e4m6 monster kind is native now.
-    const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 84;
+    pub(crate) const LIVE_E4M6_NATIVE_SKILL2_TOTAL: u32 = 84;
+
+    /// e4m7 native census at skill 2: 8 fiends plus 8 fish counting
+    /// twice each (the classic swim double-count) plus 12 hell
+    /// knights plus 3 shamblers plus 25 spawns plus 10 vores plus
+    /// 14 zombies: 8 + 16 + 12 + 3 + 25 + 10 + 14 = 88 (no
+    /// `monster_*` record carries the 1024 not-hard bit). Every
+    /// e4m7 monster kind is native now.
+    pub(crate) const LIVE_E4M7_NATIVE_SKILL2_TOTAL: u32 = 88;
+
+    /// e4m8 native census at skill 2: 19 fiends plus 8 hell knights
+    /// plus 10 ogres plus 2 shamblers plus 4 vores plus 45 zombies
+    /// (one more ogre carries the 1024 not-hard bit). Every e4m8
+    /// monster kind is native now.
+    pub(crate) const LIVE_E4M8_NATIVE_SKILL2_TOTAL: u32 = 88;
 
     /// e1m7 native census at skill 2: 12 shamblers plus 8 zombies
     /// plus Chthon: 12 + 8 + 1 = 21 (no `monster_*` record carries
@@ -6930,6 +6980,64 @@ pub(crate) mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0142_e4m1_enforcer_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m1 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let enforcers = live_enforcers(&world);
+        assert_eq!(enforcers.len(), 20, "e4m1 spawns twenty enforcers");
+        assert_eq!(live_grunts(&world).len(), 31, "e4m1 spawns thirty-one grunts");
+        assert_eq!(live_dogs(&world).len(), 5, "e4m1 spawns five dogs");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M1_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for enforcer in &enforcers {
+            let monster = borrowed.monsters.get(enforcer).expect("enforcer record");
+            assert_eq!(monster.flags & 512, 512, "dropped enforcers stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(enforcer)
+                .expect("enforcer combat");
+            assert_eq!(combat.health, 80.0);
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerStand, _)),
+                    "enforcers stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless enforcers stand down");
+            }
+        }
+        // Seven e4m1 enforcers carry a target in the lump: five
+        // name a `path_corner` and patrol, while the t61 and t103
+        // enforcers (each paired with a `trigger_teleport` on the
+        // same targetname) keep their movetarget but stand down,
+        // like the original.
+        assert_eq!(targeted, 7, "seven e4m1 enforcers resolve a movetarget");
+        assert_eq!(walkers, 5, "five e4m1 enforcers patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0142_enforcer_laser_wounds() {
         use super::super::simulation::native_q1_monsters::Q1_EF_MUZZLEFLASH;
         use super::super::simulation::native_q1_weapons::Q1TempEnt;
@@ -7826,6 +7934,121 @@ pub(crate) mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0153_e4m7_zombie_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m7 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let zombies = live_zombies(&world);
+        assert_eq!(zombies.len(), 14, "e4m7 spawns fourteen zombies");
+        assert_eq!(live_fiends(&world).len(), 8, "e4m7 spawns eight fiends");
+        assert_eq!(live_fish(&world).len(), 8, "e4m7 spawns eight fish");
+        assert_eq!(live_hknights(&world).len(), 12, "e4m7 spawns twelve hell knights");
+        assert_eq!(live_shamblers(&world).len(), 3, "e4m7 spawns three shamblers");
+        assert_eq!(live_tarbabies(&world).len(), 25, "e4m7 spawns twenty-five spawns");
+        assert_eq!(live_vores(&world).len(), 10, "e4m7 spawns ten vores");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M7_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for zombie in &zombies {
+            let monster = borrowed.monsters.get(zombie).expect("zombie record");
+            assert_eq!(monster.flags & 512, 512, "dropped zombies stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert_eq!(monster.inpain, 0);
+            let combat = world.server().simulation().combat_state(zombie).expect("zombie combat");
+            assert_eq!(combat.health, 60.0);
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, _)),
+                    "zombies stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless zombies stand down");
+            }
+        }
+        // Every e4m7 zombie carries a target in the lump: ten name
+        // a `path_corner` and patrol, while the four t125 zombies
+        // feed a `trigger_counter` and stand down with their
+        // movetarget kept, like the original.
+        assert_eq!(targeted, 14, "fourteen e4m7 zombies resolve a movetarget");
+        assert_eq!(walkers, 10, "ten e4m7 zombies patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0153_e4m8_zombie_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m8.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m8 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let zombies = live_zombies(&world);
+        assert_eq!(zombies.len(), 45, "e4m8 spawns forty-five zombies");
+        assert_eq!(live_fiends(&world).len(), 19, "e4m8 spawns nineteen fiends");
+        assert_eq!(live_hknights(&world).len(), 8, "e4m8 spawns eight hell knights");
+        assert_eq!(live_ogres(&world).len(), 10, "e4m8 spawns ten ogres");
+        assert_eq!(live_shamblers(&world).len(), 2, "e4m8 spawns two shamblers");
+        assert_eq!(live_vores(&world).len(), 4, "e4m8 spawns four vores");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M8_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for zombie in &zombies {
+            let monster = borrowed.monsters.get(zombie).expect("zombie record");
+            assert_eq!(monster.flags & 512, 512, "dropped zombies stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            assert_eq!(monster.inpain, 0);
+            let combat = world.server().simulation().combat_state(zombie).expect("zombie combat");
+            assert_eq!(combat.health, 60.0);
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, _)),
+                    "zombies stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless zombies stand down");
+            }
+        }
+        // Five e4m8 zombies carry a target in the lump, and every
+        // one names a `path_corner`, so stock
+        // `walkmonster_start_go` (`monsters.qc:105-108`) walks all
+        // five out.
+        assert_eq!(targeted, 5, "five e4m8 zombies resolve a movetarget");
+        assert_eq!(walkers, 5, "five e4m8 zombies patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0153_zombie_flesh_wounds() {
         use super::super::simulation::native_q1_weapons::Q1MissileKind;
 
@@ -8331,6 +8554,61 @@ pub(crate) mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0145_e4m2_knight_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m2.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m2 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let knights = live_knights(&world);
+        assert_eq!(knights.len(), 19, "e4m2 spawns nineteen knights");
+        assert_eq!(live_ogres(&world).len(), 13, "e4m2 spawns thirteen ogres");
+        assert_eq!(live_hknights(&world).len(), 6, "e4m2 spawns six hell knights");
+        assert_eq!(live_vores(&world).len(), 4, "e4m2 spawns four vores");
+        assert_eq!(live_shamblers(&world).len(), 1, "e4m2 spawns one shambler");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M2_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for knight in &knights {
+            let monster = borrowed.monsters.get(knight).expect("knight record");
+            assert_eq!(monster.flags & 512, 512, "dropped knights stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, _)),
+                    "knights stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
+            }
+            let combat = world.server().simulation().combat_state(knight).expect("knight combat");
+            assert_eq!(combat.health, 75.0);
+        }
+        // Ten e4m2 knights carry a target in the lump, and every
+        // one names a `path_corner`, so stock
+        // `walkmonster_start_go` (`monsters.qc:105-108`) walks all
+        // ten out.
+        assert_eq!(targeted, 10, "ten e4m2 knights resolve a movetarget");
+        assert_eq!(walkers, 10, "ten e4m2 knights patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0145_knight_sword_wounds() {
         let Some(mut world) = live_q1_world("maps/e1m2.bsp", GameMode::Singleplayer, 2) else {
             return;
@@ -8545,6 +8823,64 @@ pub(crate) mod tests {
             let combat = world.server().simulation().combat_state(fiend).expect("fiend combat");
             assert_eq!(combat.health, 300.0);
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0140_e4m4_fiend_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m4.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m4 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let fiends = live_fiends(&world);
+        assert_eq!(fiends.len(), 28, "e4m4 spawns twenty-eight fiends");
+        assert_eq!(live_fish(&world).len(), 9, "e4m4 spawns nine fish");
+        assert_eq!(live_hknights(&world).len(), 7, "e4m4 spawns seven hell knights");
+        assert_eq!(live_knights(&world).len(), 15, "e4m4 spawns fifteen knights");
+        assert_eq!(live_wizards(&world).len(), 14, "e4m4 spawns fourteen scrags");
+        assert_eq!(live_shamblers(&world).len(), 5, "e4m4 spawns five shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M4_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for fiend in &fiends {
+            let monster = borrowed.monsters.get(fiend).expect("fiend record");
+            assert_eq!(monster.flags & 512, 512, "dropped fiends stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, _)),
+                    "fiends stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "targetless fiends stand down");
+            }
+            let combat = world.server().simulation().combat_state(fiend).expect("fiend combat");
+            assert_eq!(combat.health, 300.0);
+        }
+        // Fifteen e4m4 fiends carry a target in the lump: three
+        // name a `path_corner` and patrol, while the other twelve
+        // pair with teleports, relays, or fellow fiends and stand
+        // down with their movetarget kept, like the original. The
+        // three corner-targeted fiends carrying the 1024 not-hard
+        // bit never spawn at skill 2.
+        assert_eq!(targeted, 15, "fifteen e4m4 fiends resolve a movetarget");
+        assert_eq!(walkers, 3, "three e4m4 fiends patrol corners");
     }
 
     #[test]
@@ -9045,6 +9381,65 @@ pub(crate) mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0152_e4m3_scrag_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m3 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let wizards = live_wizards(&world);
+        assert_eq!(wizards.len(), 18, "e4m3 spawns eighteen scrags");
+        assert_eq!(live_fiends(&world).len(), 15, "e4m3 spawns fifteen fiends");
+        assert_eq!(live_knights(&world).len(), 18, "e4m3 spawns eighteen knights");
+        assert_eq!(live_ogres(&world).len(), 10, "e4m3 spawns ten ogres");
+        assert_eq!(live_tarbabies(&world).len(), 5, "e4m3 spawns five spawns");
+        assert_eq!(live_zombies(&world).len(), 49, "e4m3 spawns forty-nine zombies");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M3_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for wizard in &wizards {
+            let monster = borrowed.monsters.get(wizard).expect("wizard record");
+            assert_eq!(monster.flags & 1, 1, "StartFlyGo flags FL_FLY");
+            assert_eq!(monster.flags & 32, 32, "StartFlyGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartFlyGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            let standing = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, _));
+            let patrolling = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, _));
+            assert!(
+                standing || patrolling,
+                "wizard hovers or patrols, got {:?}",
+                monster.think
+            );
+            if patrolling {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(monster.pausetime > 9999999.0, "targetless wizards stand down");
+            }
+            let combat = world.server().simulation().combat_state(wizard).expect("wizard combat");
+            assert_eq!(combat.health, 80.0);
+        }
+        // Thirteen e4m3 scrags carry a target in the lump: three
+        // name a `path_corner` and patrol, while the other ten
+        // feed a door or a `trigger_counter`/`trigger_once` pair
+        // and hover down with their movetarget kept, like the
+        // original.
+        assert_eq!(targeted, 13, "thirteen e4m3 scrags resolve a movetarget");
+        assert_eq!(walkers, 3, "three e4m3 scrags patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0152_wizard_spike_volley_wounds() {
         use super::super::simulation::native_q1_weapons::Q1MissileKind;
 
@@ -9249,6 +9644,67 @@ pub(crate) mod tests {
                 .expect("hell knight combat");
             assert_eq!(combat.health, 250.0);
         }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0144_e4m5_hknight_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e4m5.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e4m5 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let hknights = live_hknights(&world);
+        assert_eq!(hknights.len(), 14, "e4m5 spawns fourteen hell knights");
+        assert_eq!(live_fiends(&world).len(), 14, "e4m5 spawns fourteen fiends");
+        assert_eq!(live_fish(&world).len(), 4, "e4m5 spawns four fish");
+        assert_eq!(live_tarbabies(&world).len(), 16, "e4m5 spawns sixteen spawns");
+        assert_eq!(live_vores(&world).len(), 5, "e4m5 spawns five vores");
+        assert_eq!(live_zombies(&world).len(), 41, "e4m5 spawns forty-one zombies");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E4M5_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for hknight in &hknights {
+            let monster = borrowed.monsters.get(hknight).expect("hell knight record");
+            assert_eq!(monster.flags & 32, 32, "StartGo flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "StartGo arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            let standing = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknStand, _));
+            let patrolling = matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::HknWalk, _));
+            assert!(
+                standing || patrolling,
+                "hell knights stand or patrol, got {:?}",
+                monster.think
+            );
+            if patrolling {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(monster.pausetime > 9999999.0, "targetless knights stand down");
+            }
+            let combat = world
+                .server()
+                .simulation()
+                .combat_state(hknight)
+                .expect("hell knight combat");
+            assert_eq!(combat.health, 250.0);
+        }
+        // Three e4m5 hell knights carry a target in the lump, and
+        // every one names a `path_corner`, so stock
+        // `walkmonster_start_go` (`monsters.qc:105-108`) walks all
+        // three out.
+        assert_eq!(targeted, 3, "three e4m5 hell knights resolve a movetarget");
+        assert_eq!(walkers, 3, "three e4m5 hell knights patrol corners");
     }
 
     #[test]
