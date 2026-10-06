@@ -1880,6 +1880,24 @@ impl WindowedStartupBackend {
         self.world.as_ref().map(PlayWorld::entity_count)
     }
 
+    /// TEMP-DIAG: input path state for the seat-deaf hunt.
+    #[must_use]
+    pub fn diag_input_state(&self) -> String {
+        let seat_state = match (self.input_router.as_ref(), self.input_seat.clone()) {
+            (Some(router), Some(seat_id)) => match router.seat(&seat_id) {
+                Some(seat) => format!("seat=some window_focused={} focus={:?}", seat.focused(), seat.focus()),
+                None => "seat=MISSING".to_string(),
+            },
+            _ => "seat=NO-ROUTER-OR-ID".to_string(),
+        };
+        format!(
+            "router={} seat_id={} builder={} {seat_state}",
+            self.input_router.is_some(),
+            self.input_seat.is_some(),
+            self.command_builder.is_some(),
+        )
+    }
+
     /// Display refresh rate in Hz hosting the window, or 0 when the
     /// window is not open or SDL reports none (the frame pacer falls
     /// back to its default rate then).
@@ -2168,6 +2186,17 @@ impl StartupBackend for WindowedStartupBackend {
             };
             renderer.window().poll_events()?
         };
+        // TEMP-DIAG: log real SDL events to catch focus stealers.
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static REAL_EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+            for event in &events {
+                let n = REAL_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+                if n < 40 {
+                    eprintln!("live-play: REAL SDL EVENT #{n}: {event:?}");
+                }
+            }
+        }
         self.timer.section("input");
         self.handle_window_events(events)?;
         if let (Some(controllers), Some(router)) = (self.controllers.as_mut(), self.input_router.as_mut()) {
@@ -5437,7 +5466,8 @@ mod tests {
                 let (_, angles_cal) = eye_of(composed);
                 let sign = (f64::from(angles_cal.y) - from).signum();
                 eprintln!(
-                    "live-play: {map} servo target={target:.1} from={from:.1} cal={cal:.1} dead={dead} run={run}",
+                    "live-play: {map} servo target={target:.1} from={from:.1} cal={cal:.1} dead={dead} run={run} input=[{}]",
+                    composed.app.backend().diag_input_state(),
                     cal = f64::from(angles_cal.y),
                     dead = composed
                         .app
@@ -5575,9 +5605,12 @@ mod tests {
                             .body_state(&actor)
                             .map(|body| (body.origin.x, body.origin.y, body.origin.z));
                         let contents = world.q1_eye_contents(current);
+                        let clock = world.server().simulation().frame();
                         eprintln!(
-                            "live-play: {map} heading {heading} chunk {chunks} eye=({:.0},{:.0},{:.0}) sim={sim:?} contents={contents:?} drift={drift:.1}",
-                            current.x, current.y, current.z
+                            "live-play: {map} heading {heading} chunk {chunks} eye=({:.0},{:.0},{:.0}) sim={sim:?} contents={contents:?} drift={drift:.1} tick={} t={:.2}",
+                            current.x, current.y, current.z,
+                            clock.frame,
+                            clock.time.as_seconds_f64()
                         );
                     }
                 }
