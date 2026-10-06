@@ -4392,6 +4392,12 @@ pub(crate) mod tests {
     /// the 1024 not-hard bit). Every e1m7 monster kind is native now.
     pub(crate) const LIVE_E1M7_NATIVE_SKILL2_TOTAL: u32 = 21;
 
+    /// e1m8 native census at skill 2: 24 ogres plus 7 wizards plus
+    /// 3 shamblers (a twenty-fifth ogre carries the 1024 not-hard
+    /// bit, `pr_edict.c` `ED_LoadFromFile` drops it; nothing else
+    /// does). Every e1m8 monster kind is native now.
+    pub(crate) const LIVE_E1M8_NATIVE_SKILL2_TOTAL: u32 = 34;
+
     /// end native census at skill 2: 7 shamblers plus 6 vores plus
     /// 1 wizard plus 5 fish counting twice each (the classic swim
     /// double-count) plus Shub-Niggurath counting once: 7 + 6 + 1 +
@@ -7447,6 +7453,60 @@ pub(crate) mod tests {
         // the original.
         assert_eq!(targeted, 6, "six e1m3 ogres resolve a movetarget");
         assert_eq!(walkers, 3, "three e1m3 ogres patrol corners");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0146_e1m8_ogre_census_spawns_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m8.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        // Every stock e1m8 monster kind spawns through the native
+        // path: the per-kind record counts below match the authored
+        // entity lump minus skill inhibition, so no monster fell
+        // back to the generic spawn.
+        let ogres = live_ogres(&world);
+        assert_eq!(ogres.len(), 24, "e1m8 spawns twenty-four ogres");
+        assert_eq!(live_wizards(&world).len(), 7, "e1m8 spawns seven scrags");
+        assert_eq!(live_shamblers(&world).len(), 3, "e1m8 spawns three shamblers");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M8_NATIVE_SKILL2_TOTAL);
+        let mut walkers = 0;
+        let mut targeted = 0;
+        for ogre in &ogres {
+            let monster = borrowed.monsters.get(ogre).expect("ogre record");
+            assert_eq!(monster.flags & 512, 512, "dropped ogres stand on ground");
+            assert_eq!(monster.flags & 32, 32, "start_go flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "start_go arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 25.0));
+            let combat = world.server().simulation().combat_state(ogre).expect("ogre combat");
+            assert_eq!(combat.health, 200.0);
+            if monster.movetarget.is_some() {
+                targeted += 1;
+            }
+            if matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, _)) {
+                walkers += 1;
+                assert!(monster.movetarget.is_some(), "walkers route through corners");
+            } else {
+                assert!(
+                    matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, _)),
+                    "ogres stand, got {:?}",
+                    monster.think
+                );
+                assert!(monster.pausetime > 9999999.0, "standing ogres stand down");
+            }
+        }
+        // Eight e1m8 ogres carry a target in the lump, and every one
+        // names a `path_corner`, so stock `walkmonster_start_go`
+        // (`monsters.qc:105-108`) walks all eight out. The ninth
+        // targeted ogre carries the 1024 not-hard bit and never
+        // spawns at skill 2.
+        assert_eq!(targeted, 8, "eight e1m8 ogres resolve a movetarget");
+        assert_eq!(walkers, 8, "eight e1m8 ogres patrol corners");
     }
 
     #[test]
