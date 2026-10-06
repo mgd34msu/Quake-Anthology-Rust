@@ -6078,4 +6078,188 @@ mod tests {
             assert_eq!(borrowed.player_state.frags, -1.0);
         }
     }
+
+    /// Tick a dead player until the corpse turns respawnable (death
+    /// anims run up to 15 frames at 0.1 s, then one released tick
+    /// opens the wait).
+    fn live_wait_respawnable(world: &mut PlayWorld) {
+        use super::super::simulation::native_q1_weapons::Q1_DEAD_RESPAWNABLE;
+        let mut guard = 0;
+        while world
+            .q1_behaviors()
+            .expect("Q1 behaviors")
+            .borrow()
+            .player_state
+            .deadflag
+            != Q1_DEAD_RESPAWNABLE
+        {
+            live_tick(world);
+            guard += 1;
+            assert!(guard < 1200, "corpse turns respawnable");
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0163_respawn_after_death() {
+        use super::super::simulation::native_q1_weapons::{Q1TempEnt, Q1_DEAD_NO, Q1_IT_SHOTGUN};
+
+        // Singleplayer restarts the level on the post-death press.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let player = world.player_actor().cloned().expect("player");
+        live_set_player_health(&mut world, 100.0);
+        live_damage(&mut world, &player, None, 100.0);
+        assert!(live_player_health(&world) <= 0.0, "exact 100 kills clean");
+        live_wait_respawnable(&mut world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.player_state.restart_requested, "SP press restarts");
+        }
+
+        // Deathmatch respawns on the press: full health, fresh parms,
+        // a corpse copy, and fog on a deathmatch spot.
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &player, None, 500.0);
+        live_wait_respawnable(&mut world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.deadflag, Q1_DEAD_NO);
+            assert!(!borrowed.player_state.restart_requested, "DM never restarts");
+            assert_eq!(live_player_health(&world), 100.0);
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN, "fresh parms arm");
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_state.body_queue.len(), 1, "one corpse copy");
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Teleport { .. })),
+                "respawn fog cracker"
+            );
+            let spots: Vec<_> = borrowed
+                .spawn_spots
+                .iter()
+                .filter(|spot| spot.classname == "info_player_deathmatch")
+                .collect();
+            assert!(!spots.is_empty(), "retail e1m1 admits DM spots");
+            let at = world.server().simulation().body_state(&player).expect("body").origin;
+            assert!(
+                spots
+                    .iter()
+                    .any(|spot| { spot.origin.x == at.x && spot.origin.y == at.y && spot.origin.z + 1.0 == at.z }),
+                "respawn lands on a DM spot, got {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0181_coop_respawn_restores_parms() {
+        use super::super::simulation::native_q1_weapons::{
+            Q1TempEnt, Q1_DEAD_NO, Q1_IT_AMMO_BITS, Q1_IT_AXE, Q1_IT_ROCKET_LAUNCHER, Q1_IT_SHELLS, Q1_IT_SHOTGUN,
+        };
+
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Coop, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.coop, "coop world flags coop");
+            assert_eq!(borrowed.player_state.parms.items, Q1_IT_AXE | Q1_IT_SHOTGUN);
+            assert_eq!(borrowed.player_state.parms.weapon, Q1_IT_SHOTGUN);
+        }
+        // A mid-level pickup changes the live loadout, never the
+        // level-entry parms.
+        live_grant_weapon(&mut world, Q1_IT_ROCKET_LAUNCHER, 25.0, 0.0, 3.0, 0.0);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &player, None, 500.0);
+        live_wait_respawnable(&mut world);
+        live_fire(&mut world, 1, 0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(borrowed.player_state.deadflag, Q1_DEAD_NO);
+            assert_eq!(live_player_health(&world), 100.0);
+            assert_eq!(
+                borrowed.player_items & !Q1_IT_AMMO_BITS,
+                Q1_IT_AXE | Q1_IT_SHOTGUN,
+                "entry parms drop the mid-level launcher"
+            );
+            assert_eq!(
+                borrowed.player_items & Q1_IT_AMMO_BITS,
+                Q1_IT_SHELLS,
+                "stock ammo indicator for the held shotgun"
+            );
+            assert_eq!(borrowed.player_state.weapon, Q1_IT_SHOTGUN);
+            assert_eq!(borrowed.player_ammo.shells, 25.0);
+            assert_eq!(borrowed.player_ammo.rockets, 0.0);
+            assert_eq!(borrowed.player_state.body_queue.len(), 1, "coop keeps a corpse");
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Teleport { .. })),
+                "respawn fog cracker"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0155_body_queue_ring() {
+        let Some(mut world) = live_q1_world("maps/e1m1.bsp", GameMode::Deathmatch, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let player = world.player_actor().cloned().expect("player");
+        // Five deaths: gib, gib, clean, gib, gib. The clean one keeps
+        // the player model; gibs leave the head behind.
+        let mut graves: Vec<(qa_core::math::Vec3, String)> = Vec::new();
+        for round in 0..5 {
+            if round == 2 {
+                live_set_player_health(&mut world, 100.0);
+                live_damage(&mut world, &player, None, 100.0);
+            } else {
+                live_damage(&mut world, &player, None, 500.0);
+            }
+            live_wait_respawnable(&mut world);
+            live_fire(&mut world, 1, 0);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let fresh = borrowed.player_state.body_queue.last().expect("fresh corpse");
+            graves.push((fresh.origin, fresh.model.clone()));
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let queue = &borrowed.player_state.body_queue;
+            assert_eq!(queue.len(), 4, "four-slot ring");
+            for (slot, grave) in queue.iter().zip(graves.iter().skip(1)) {
+                assert_eq!(slot.origin, grave.0, "oldest dropped, order kept");
+                assert_eq!(slot.model, grave.1);
+            }
+            assert_eq!(queue[1].model, "progs/player.mdl", "clean death keeps the body");
+            assert!(
+                queue.iter().filter(|slot| slot.model == "progs/h_player.mdl").count() == 3,
+                "gibs leave heads"
+            );
+        }
+    }
 }
