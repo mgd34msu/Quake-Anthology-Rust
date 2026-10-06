@@ -4276,17 +4276,17 @@ mod tests {
     const LIVE_E1M2_NATIVE_SKILL2_TOTAL: u32 = 36;
 
     /// e1m3 native census at skill 2: 13 ogres plus 35 zombies plus
-    /// 7 fiends (all walking; five more zombies and two more fiends
-    /// carry the 1024 not-hard bit). The wizards and shamblers keep
-    /// the generic path until their slices land, so they stay out of
+    /// 7 fiends plus 3 shamblers (all walking; five more zombies and
+    /// two more fiends carry the 1024 not-hard bit). The wizards keep
+    /// the generic path until their slice lands, so they stay out of
     /// the native count.
-    const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 55;
+    const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 58;
 
     /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus
     /// 6 fish counting twice each (the classic swim double-count)
-    /// plus 1 fiend: 15 + 7 + 12 + 1 = 35. The hell knights and
-    /// shamblers keep the generic path until their slices land.
-    const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 35;
+    /// plus 1 fiend plus 3 shamblers: 15 + 7 + 12 + 1 + 3 = 38.
+    /// The hell knights keep the generic path until their slice lands.
+    const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 38;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
