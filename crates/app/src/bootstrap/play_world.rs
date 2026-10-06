@@ -64,9 +64,8 @@ use super::simulation::native_q1_triggers::{
     q1_note_worldspawn, q1_registered_version, register_q1_trigger_spawns,
 };
 use super::simulation::native_q1_weapons::{
-    q1_grant_spawn_loadout, q1_sample_water_level, q1_sample_water_type, q1_weapon_pass,
+    q1_grant_spawn_loadout, q1_sample_water_level, q1_sample_water_type, q1_weapon_pass, Q1SpawnParms,
 };
-use super::simulation::native_q1_weapons::Q1SpawnParms;
 use super::windowed_scene::{build_presentation, open_product_mounts, select_q1_spawn, select_spawn, PlayPresentation};
 use crate::options::{ApplicationOptions, GameMode};
 use crate::startup::{open_server, StartupConfig};
@@ -383,9 +382,11 @@ impl PlayWorld {
         };
         let water = q1_sample_water_level(scene, server.simulation(), &player);
         let water_type = q1_sample_water_type(scene, server.simulation(), &player);
-        let mut borrowed = behaviors.borrow_mut();
-        borrowed.player_state.water_level = water;
-        borrowed.player_state.water_type = water_type;
+        {
+            let mut borrowed = behaviors.borrow_mut();
+            borrowed.player_state.water_level = water;
+            borrowed.player_state.water_type = water_type;
+        }
         q1_weapon_pass(
             server,
             &mut behaviors.borrow_mut(),

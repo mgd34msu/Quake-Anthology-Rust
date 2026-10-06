@@ -16,6 +16,7 @@ use qa_client::render::types::{
     BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DepthTest, DrawBatch, ImageLevel,
     ImageResourceOperation, RenderState, RenderVertex, ResourceOwner, TextureBinding, TextureFilter, TextureSampling,
 };
+use qa_client::ui::hud::q1_native::Q1_PRINTSPEED_CHARS_PER_SECOND;
 use qa_client::ui::hud::q1_native::{
     NativeQ1HudFrame, NativeQ1HudOperation, Q1SbarProduct, Q1_AMMO_LUMPS, Q1_ARMOR_LUMPS, Q1_HIPNOTIC_ITEM_LUMPS,
     Q1_HIPNOTIC_STEMS, Q1_ITEM_LUMPS, Q1_IT_CELLS, Q1_IT_GRENADE_LAUNCHER, Q1_IT_LIGHTNING, Q1_IT_NAILGUN, Q1_IT_NAILS,
@@ -235,6 +236,11 @@ pub struct Q1NativeHud {
     view_seen: bool,
     /// Last wall-clock frame time, milliseconds.
     last_wall_ms: Option<f64>,
+    /// Latched level-completion time (`cl.completed_time`, frozen at
+    /// intermission entry).
+    completed_time: f32,
+    /// Sim time the finale text first appeared (typewriter start).
+    finale_seen_at: Option<f32>,
 }
 
 impl Q1NativeHud {
@@ -290,6 +296,8 @@ impl Q1NativeHud {
             pending_kick: (0.0, 0.0),
             view_seen: false,
             last_wall_ms: None,
+            completed_time: 0.0,
+            finale_seen_at: None,
         })
     }
 
@@ -456,9 +464,41 @@ impl Q1NativeHud {
         self.face_anim_until
     }
 
+    /// Track intermission edges: latch the completion tally the
+    /// first frame `running` reads 1 (stock freezes `completed_time` at
+    /// entry, `cl_parse.c:939`), stamp the finale typewriter start when
+    /// text first appears, and release both back at `running` 0.
+    pub fn note_intermission(&mut self, running: u32, completed_now: f32, finale: Option<&str>, sim_now: f32) {
+        if running == 0 {
+            self.completed_time = 0.0;
+            self.finale_seen_at = None;
+            return;
+        }
+        if running == 1 && self.completed_time == 0.0 {
+            self.completed_time = completed_now;
+        }
+        if finale.is_some() && self.finale_seen_at.is_none() {
+            self.finale_seen_at = Some(sim_now);
+        }
+    }
+
+    /// Latched level-completion tally for the overlay.
+    #[must_use]
+    pub fn completed_time(&self) -> f32 {
+        self.completed_time
+    }
+
+    /// Typewriter reveal count for the finale text at `sim_now`
+    /// (`scr_printspeed` 8 chars per second from first sight).
+    #[must_use]
+    pub fn finale_reveal(&self, sim_now: f32) -> Option<usize> {
+        self.finale_seen_at
+            .map(|start| ((sim_now - start).max(0.0) * Q1_PRINTSPEED_CHARS_PER_SECOND) as usize)
+    }
+
     /// Real frame delta in seconds since the last call (0 on the first).
     pub fn wall_dt(&mut self, time_ms: f64) -> f32 {
-        let dt = self.last_wall_ms.map_or(0.0, |last| (time_ms - last) as f32);
+        let dt = wall_dt_seconds(self.last_wall_ms, time_ms);
         self.last_wall_ms = Some(time_ms);
         dt
     }
@@ -499,6 +539,13 @@ fn load_lump(mounts: &MountedContent, archive: &OwnedWadArchive, name: &str) -> 
     }
     let image = decode_qpic(&lump.bytes, &format!("gfx.wad:{name}")).ok()?;
     Some((image.width, image.height, image.indices))
+}
+
+/// Wall-clock frame delta in seconds from millisecond stamps (0 on
+/// the first frame). Decay math runs in seconds; the stamps arrive in
+/// milliseconds.
+fn wall_dt_seconds(last_wall_ms: Option<f64>, time_ms: f64) -> f32 {
+    last_wall_ms.map_or(0.0, |last| ((time_ms - last) / 1000.0) as f32)
 }
 
 /// Current-ammo stat and ammo-icon bit from the active weapon
@@ -890,6 +937,12 @@ mod tests {
         assert_eq!(current_ammo(Q1_IT_LIGHTNING, 0.0, 0.0, 0.0, 40.0), (40, Q1_IT_CELLS));
         assert_eq!(current_ammo(Q1_IT_AXE, 25.0, 0.0, 0.0, 0.0), (0, 0));
         assert_eq!(current_ammo(0, 25.0, 0.0, 0.0, 0.0), (0, 0));
+    }
+
+    #[test]
+    fn wall_dt_counts_seconds_not_milliseconds() {
+        assert_eq!(wall_dt_seconds(None, 1000.0), 0.0);
+        assert!((wall_dt_seconds(Some(1000.0), 1028.0) - 0.028).abs() < 1e-6);
     }
 
     #[test]

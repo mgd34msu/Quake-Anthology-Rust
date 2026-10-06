@@ -558,18 +558,6 @@ pub struct Q1IntermissionSpot {
     pub mangle: Vec3,
 }
 
-/// One recorded player spawn spot (`SelectSpawnPoint`, `client.qc:407`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Q1SpawnSpot {
-    /// Spawn classname (`info_player_start`, `start2`, `coop`,
-    /// `deathmatch`, `testplayerstart`).
-    pub classname: String,
-    /// Spawn origin.
-    pub origin: Vec3,
-    /// Spawn facing.
-    pub angles: Vec3,
-}
-
 /// Latest player damage event for the view (`V_ParseDamage`,
 /// `view.c:316-379` inputs): the `q1_t_damage` funnel records the armor
 /// save, the health taken, and the inflictor center so the HUD can flash
@@ -585,6 +573,18 @@ pub struct Q1PlayerDamage {
     pub blood: f32,
     /// Inflictor body center, when the hit names one.
     pub from: Option<[f32; 3]>,
+}
+
+/// One recorded player spawn spot (`SelectSpawnPoint`, `client.qc:407`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q1SpawnSpot {
+    /// Spawn classname (`info_player_start`, `start2`, `coop`,
+    /// `deathmatch`, `testplayerstart`).
+    pub classname: String,
+    /// Spawn origin.
+    pub origin: Vec3,
+    /// Spawn facing.
+    pub angles: Vec3,
 }
 
 /// Live native Q1 gamecode state, shared between the spawn path and the
