@@ -562,6 +562,11 @@ impl<L: ServerLogic> Server<L> {
             let mut suppressed = false;
             if step.displacement.x == 0.0 && step.displacement.y == 0.0 && step.displacement.z == 0.0 {
                 self.simulation.set_body_origin(actor, next)?;
+            } else if !mover.solid {
+                // Unsolid (`SOLID_NOT`) pushers move freely: stock never
+                // finds anything inside them, so they carry nothing and
+                // nothing blocks them (`sv_phys.c:499`).
+                self.simulation.set_body_origin(actor, next)?;
             } else {
                 // Pusher transaction (`SV_PushMove`): the pusher moves
                 // first, riders and overlaps are carried, and a solid
@@ -1268,6 +1273,59 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, ServerEvent::MoverThink { .. } | ServerEvent::MoverArrived { .. })));
+    }
+
+    #[test]
+    fn unsolid_pusher_ghosts_through_without_carrying_or_blocking() {
+        use crate::movers::{use_mover, MoverKind};
+
+        let mut server = q1_server();
+        let provider = ProviderId::new("q1", "game");
+        let ghost = server
+            .simulation_mut()
+            .spawn(
+                provider.clone(),
+                "q1:ghost",
+                Some(q1_body(vec3(0.0, 0.0, 0.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        // Overlapping the ghost's start and end: a solid pusher would
+        // carry then block on this body.
+        let victim = server
+            .simulation_mut()
+            .spawn(
+                provider,
+                "q1:player",
+                Some(q1_body(vec3(0.0, 0.0, 10.0))),
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut state = MoverState::new(
+            MoverKind::Pusher,
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 20.0),
+            400.0,
+            0.0,
+        );
+        state.solid = false;
+        use_mover(&mut state, vec3(0.0, 0.0, 0.0));
+        server.movers_mut().insert(ghost.id().clone(), state);
+        let fired = blocked_hook_fired(&mut server);
+        server.tick(SourceTime::Seconds(0.05)).unwrap();
+        assert!(fired.borrow().is_empty(), "nothing blocks a ghost");
+        assert_eq!(
+            server.simulation().body_state(ghost.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 20.0)),
+            "the ghost reaches its endpoint"
+        );
+        assert_eq!(
+            server.simulation().body_state(victim.id()).map(|state| state.origin),
+            Some(vec3(0.0, 0.0, 10.0)),
+            "the ghost carries nothing"
+        );
     }
 
     #[test]

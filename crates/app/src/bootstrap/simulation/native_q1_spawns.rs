@@ -35,6 +35,7 @@ use qa_world::WorldError;
 
 use super::native_q1_items::{q1_item_touch, Q1Ammo, Q1Item, Q1Sprint};
 use super::native_q1_monsters::{Q1Gib, Q1Monster, Q1MoveTarget, Q1PendingGib, Q1ShamBall, Q1Sound, Q1WizVolley};
+use super::native_q1_plats::Q1Train;
 use super::native_q1_triggers::{
     q1_button_mover_think, q1_trigger_think, q1_trigger_touch, q1_use_targets, Q1Button, Q1Centerprint, Q1DelayedUse,
     Q1Light, Q1PendingThink, Q1PlayerForce, Q1TeleportDestination, Q1ThinkKind, Q1Trigger, Q1UseSource,
@@ -620,6 +621,8 @@ pub struct Q1NativeBehaviors {
     pub teleport_fogs: Vec<Vec3>,
     /// Button actors by id.
     pub buttons: Q1EdictTable<Q1Button>,
+    /// Train actors by id (`misc_teleporttrain`).
+    pub trains: Q1EdictTable<Q1Train>,
     /// Toggle-light actors by id.
     pub lights: Q1EdictTable<Q1Light>,
     /// Item actors by id.
@@ -661,6 +664,9 @@ pub struct Q1NativeBehaviors {
     pub found_secrets: u32,
     /// Whether the mounts hold the registered version (`gfx/pop.lmp`).
     pub registered: bool,
+    /// Animated lightstyle patterns by style (`finale_3` sets style 0;
+    /// single-level sets clear the pattern like stock `lightstyle`).
+    pub light_patterns: HashMap<u32, String>,
     /// Worldspawn `worldtype` (0 medieval, 1 runic, 2 base).
     pub worldtype: u8,
     /// Pending skill value from `trigger_setskill` (the map transition
@@ -827,8 +833,8 @@ pub(crate) fn q1_can_take_damage(simulation: &Simulation, actor: &ActorId) -> bo
 
 /// Remove an actor stock `remove()` style: unmark its trigger volume,
 /// drop every gamecode record (doors, fields, triggers, teleport
-/// destinations, buttons, lights, items, monsters, movetargets, gibs,
-/// missiles, movers, solidity), and release the actor. Stale targetname
+/// destinations, buttons, trains, lights, items, monsters, movetargets,
+/// gibs, missiles, movers, solidity), and release the actor. Stale targetname
 /// index entries stay (bounded by the map's entity count); firing
 /// tolerates them because every dispatch misses released actors.
 ///
@@ -849,6 +855,7 @@ pub(crate) fn q1_remove(
     behaviors.triggers.remove(actor);
     behaviors.teleport_destinations.remove(actor);
     behaviors.buttons.remove(actor);
+    behaviors.trains.remove(actor);
     behaviors.lights.remove(actor);
     behaviors.items.remove(actor);
     behaviors.monsters.remove(actor);
@@ -1338,6 +1345,12 @@ pub fn q1_native_mover_think(
 ) {
     if behaviors.buttons.contains_key(actor) {
         q1_button_mover_think(behaviors, simulation, movers, triggers, actor, phase, arrived);
+        return;
+    }
+    if behaviors.trains.contains_key(actor) {
+        super::native_q1_plats::q1_train_mover_think(
+            behaviors, simulation, movers, actor, phase, arrived,
+        );
         return;
     }
     let Some(door) = behaviors.doors.get(actor) else {

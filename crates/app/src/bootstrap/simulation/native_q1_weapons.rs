@@ -2760,9 +2760,10 @@ fn q1_gib_player(
         behaviors.pending_gibs.push(Q1PendingGib {
             model: model.to_string(),
             at,
+            angles: vec3(0.0, 0.0, 0.0),
             velocity,
             avelocity,
-            remove_at,
+            remove_at: Some(remove_at),
         });
     }
     let attacker_class = behaviors

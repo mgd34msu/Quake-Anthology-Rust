@@ -3,7 +3,9 @@
 //! positions at a fixed speed with wait times; each step is one pusher
 //! transaction where riders and overlapping entities are carried, solid
 //! obstacles block (rolling positions back after the `blocked` callback
-//! runs), and think timing uses local pusher time. Rotation is an explicit
+//! runs), and think timing uses local pusher time. Unsolid (`SOLID_NOT`)
+//! pushers skip the transaction and move freely — stock never finds
+//! anything inside them (`sv_phys.c:499`). Rotation is an explicit
 //! extension; ordinary NetQuake PUSH is translational.
 
 use qa_core::identity::ActorId;
@@ -65,10 +67,13 @@ pub struct MoverState {
     pub local_time_seconds: f64,
     /// Next think in local pusher time (0 = none).
     pub next_think_seconds: f64,
+    /// Whether the pusher is solid: unsolid (`SOLID_NOT`) pushers move
+    /// freely, carrying nothing and blocked by nothing.
+    pub solid: bool,
 }
 
 impl MoverState {
-    /// New mover resting at position 1.
+    /// New solid mover resting at position 1.
     #[must_use]
     pub const fn new(kind: MoverKind, pos1: Vec3, pos2: Vec3, speed: f64, wait_seconds: f64) -> Self {
         Self {
@@ -80,6 +85,7 @@ impl MoverState {
             wait_seconds,
             local_time_seconds: 0.0,
             next_think_seconds: 0.0,
+            solid: true,
         }
     }
 
