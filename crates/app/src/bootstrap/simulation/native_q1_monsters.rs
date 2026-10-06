@@ -163,6 +163,8 @@ pub enum Q1MonsterKind {
     Fiend,
     /// `monster_shambler` (`shambler.qc`).
     Shambler,
+    /// `monster_wizard` (`wizard.qc`).
+    Wizard,
 }
 
 impl Q1MonsterKind {
@@ -179,6 +181,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Knight => "monster_knight",
             Q1MonsterKind::Fiend => "monster_demon1",
             Q1MonsterKind::Shambler => "monster_shambler",
+            Q1MonsterKind::Wizard => "monster_wizard",
         }
     }
 
@@ -196,6 +199,7 @@ impl Q1MonsterKind {
             "monster_knight" => Some(Q1MonsterKind::Knight),
             "monster_demon1" => Some(Q1MonsterKind::Fiend),
             "monster_shambler" => Some(Q1MonsterKind::Shambler),
+            "monster_wizard" => Some(Q1MonsterKind::Wizard),
             _ => None,
         }
     }
@@ -373,6 +377,20 @@ pub enum Q1MonsterSeq {
     ShamPain,
     /// Shambler death 1-11.
     ShamDie,
+    /// Scrag stand 1-8 (hover frames, `wizard.qc`).
+    WizStand,
+    /// Scrag walk 1-8 (hover frames).
+    WizWalk,
+    /// Scrag strafe 1-8 (hover frames).
+    WizSide,
+    /// Scrag run 1-14 (fly frames).
+    WizRun,
+    /// Scrag spike volley 1-10 (magatt frames, tail reversed).
+    WizFast,
+    /// Scrag pain 1-4.
+    WizPain,
+    /// Scrag death 1-8.
+    WizDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -383,6 +401,9 @@ pub enum Q1MonsterThink {
     /// `swimmonster_start_go` (`monsters.qc:185`): no floor drop, the
     /// swim flag, and the classic second kill-count increment.
     StartSwimGo,
+    /// `flymonster_start_go` (`monsters.qc:133`): no floor drop, the
+    /// fly flag, and a wall check that only prints.
+    StartFlyGo,
     /// Delayed `FoundTarget` from `monster_use` (`monsters.qc:21`).
     FoundTarget,
     /// A `$frame` function: sequence plus 0-based index.
@@ -464,6 +485,10 @@ pub struct Q1Monster {
     /// Zombie pain state (`self.inpain`, `zombie.qc`): 0 idle, 1 in a
     /// fast pain, 2 knocked down. Other kinds leave it 0.
     pub inpain: u8,
+    /// Idle-sound throttle (`self.waitmin`, `wizard.qc`): the next
+    /// master-clock instant an idle line may play. Other kinds leave
+    /// it 0.
+    pub waitmin: f64,
 }
 
 /// Live `path_corner` record (`ai.qc:87`): the body holds the corner
@@ -518,6 +543,23 @@ pub struct Q1ShamBall {
     pub frame: i32,
     /// Master-clock removal instant (0.7 s out, stock `SUB_Remove`).
     pub remove_at: f64,
+}
+
+/// One delayed scrag spike (`Wiz_StartFast`, `wizard.qc`): stock
+/// spawns a real point edict holding owner, enemy, aim offset, and
+/// fire time; the pass fires and removes due volleys each think.
+#[derive(Debug, Clone)]
+pub struct Q1WizVolley {
+    /// Firing scrag (dead owners fire blanks: the volley still pops).
+    pub owner: ActorId,
+    /// Target at cast time.
+    pub enemy: ActorId,
+    /// Spike origin (cast-time chest offset, never tracks).
+    pub at: Vec3,
+    /// Cast-time facing side (`±v_right`) for the aim offset.
+    pub movedir: Vec3,
+    /// Master-clock fire instant (0.3 s left, 0.8 s right).
+    pub fire_at: f64,
 }
 
 /// One queued monster sound for the audio slice to drain: stock `sound`
@@ -609,6 +651,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_knight",
         "monster_demon1",
         "monster_shambler",
+        "monster_wizard",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -997,6 +1040,45 @@ pub const Q1_SHAMBLER_BALL_MODEL: &str = "progs/s_light.mdl";
 /// Shambler head model (`sham_die`, `shambler.qc`).
 pub const Q1_SHAMBLER_HEAD_MODEL: &str = "progs/h_shams.mdl";
 
+/// Scrag hull (`monster_wizard`, `wizard.qc`).
+pub const Q1_WIZARD_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 40.0,
+    },
+};
+
+/// Scrag spawn health (`monster_wizard`, `wizard.qc`).
+pub const Q1_WIZARD_HEALTH: f64 = 80.0;
+
+/// Scrag gib threshold (`wiz_die`, `wizard.qc`).
+pub const Q1_WIZARD_GIB_HEALTH: f64 = -40.0;
+
+/// Scrag walk/strafe stride per frame (`wiz_walk1..8`, `wiz_side1..8`).
+pub const Q1_WIZARD_WALK_STEPS: [f64; 8] = [8.0; 8];
+
+/// Scrag run stride per frame (`wiz_run1..14`).
+pub const Q1_WIZARD_RUN_STEPS: [f64; 14] = [16.0; 14];
+
+/// Scrag volley model frames (`wiz_fast1..10`): the attack runs
+/// `magatt1..6`, then rewinds `magatt5..2` (`wizard.qc`).
+pub const Q1_WIZARD_FAST_FRAMES: [i32; 10] = [29, 30, 31, 32, 33, 34, 33, 32, 31, 30];
+
+/// Scrag spike speed (`Wiz_FastFire`, `wizard.qc`).
+pub const Q1_WIZARD_SPIKE_SPEED: f32 = 600.0;
+
+/// Scrag spike life in seconds (`launch_spike`, `weapons.qc:607`).
+pub const Q1_WIZARD_SPIKE_LIFE: f64 = 6.0;
+
+/// Scrag head model (`wiz_die`, `wizard.qc`).
+pub const Q1_WIZARD_HEAD_MODEL: &str = "progs/h_wizard.mdl";
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -1040,6 +1122,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Knight => (Q1_KNIGHT_BOUNDS, Q1_KNIGHT_HEALTH),
         Q1MonsterKind::Fiend => (Q1_FIEND_BOUNDS, Q1_FIEND_HEALTH),
         Q1MonsterKind::Shambler => (Q1_SHAMBLER_BOUNDS, Q1_SHAMBLER_HEALTH),
+        Q1MonsterKind::Wizard => (Q1_WIZARD_BOUNDS, Q1_WIZARD_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -1097,17 +1180,21 @@ pub fn build_q1_monster<L: ServerLogic>(
                 effects: 0,
                 dead: false,
                 inpain: 0,
+                waitmin: 0.0,
             },
         );
         return Ok(());
     }
-    // `walkmonster_start` / `swimmonster_start`: delay the floor drop
-    // past door spawns and spread think times so monsters never share
-    // a think instant. Swimmers arm their own start-go (no floor
-    // drop); both count the first kill-count increment here.
+    // `walkmonster_start` / `swimmonster_start` / `flymonster_start`:
+    // delay the floor drop past door spawns and spread think times so
+    // monsters never share a think instant. Swimmers and flyers arm
+    // their own start-go (no floor drop); all count the first
+    // kill-count increment here.
     let nextthink = now + f64::from(q1_monster_random(behaviors)) * 0.5;
     let start = if kind == Q1MonsterKind::Fish {
         Q1MonsterThink::StartSwimGo
+    } else if kind == Q1MonsterKind::Wizard {
+        Q1MonsterThink::StartFlyGo
     } else {
         Q1MonsterThink::StartGo
     };
@@ -1141,6 +1228,7 @@ pub fn build_q1_monster<L: ServerLogic>(
             effects: 0,
             dead: false,
             inpain: 0,
+            waitmin: 0.0,
         },
     );
     behaviors.total_monsters += 1;
@@ -1532,6 +1620,7 @@ fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1Mo
         Q1MonsterKind::Knight => Some("knight/ksight.wav"),
         Q1MonsterKind::Fiend => Some("demon/sight2.wav"),
         Q1MonsterKind::Shambler => Some("shambler/ssight.wav"),
+        Q1MonsterKind::Wizard => Some("wizard/wsight.wav"),
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
@@ -1622,6 +1711,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightStand, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendStand, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamStand, 0),
+        Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, 0),
     }
 }
 
@@ -1638,6 +1728,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightWalk, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendWalk, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamWalk, 0),
+        Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, 0),
     }
 }
 
@@ -1654,6 +1745,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Knight => Q1MonsterThink::Frame(Q1MonsterSeq::KnightRun, 0),
         Q1MonsterKind::Fiend => Q1MonsterThink::Frame(Q1MonsterSeq::FiendRun, 0),
         Q1MonsterKind::Shambler => Q1MonsterThink::Frame(Q1MonsterSeq::ShamRun, 0),
+        Q1MonsterKind::Wizard => Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0),
     }
 }
 
@@ -1667,6 +1759,7 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind, healt
         Q1MonsterKind::Grunt => None,
         Q1MonsterKind::Enforcer => None,
         Q1MonsterKind::Zombie => None,
+        Q1MonsterKind::Wizard => None,
         Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
         Q1MonsterKind::Knight => Some(Q1MonsterThink::Frame(Q1MonsterSeq::KnightAttack, 0)),
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendAttack, 0)),
@@ -1706,6 +1799,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Knight => None,
         Q1MonsterKind::Fiend => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FiendJump, 0)),
         Q1MonsterKind::Shambler => Some(Q1MonsterThink::Frame(Q1MonsterSeq::ShamMagic, 0)),
+        Q1MonsterKind::Wizard => Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0)),
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1807,6 +1901,13 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::ShamMagic => 12,
         Q1MonsterSeq::ShamPain => 6,
         Q1MonsterSeq::ShamDie => 11,
+        Q1MonsterSeq::WizStand => 8,
+        Q1MonsterSeq::WizWalk => 8,
+        Q1MonsterSeq::WizSide => 8,
+        Q1MonsterSeq::WizRun => 14,
+        Q1MonsterSeq::WizFast => 10,
+        Q1MonsterSeq::WizPain => 4,
+        Q1MonsterSeq::WizDie => 8,
     }
 }
 
@@ -1936,7 +2037,18 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::ShamMagic => 65,
         Q1MonsterSeq::ShamPain => 77,
         Q1MonsterSeq::ShamDie => 83,
+        Q1MonsterSeq::WizStand => 0,
+        Q1MonsterSeq::WizWalk => 0,
+        Q1MonsterSeq::WizSide => 0,
+        Q1MonsterSeq::WizRun => 15,
+        Q1MonsterSeq::WizFast => 29,
+        Q1MonsterSeq::WizPain => 42,
+        Q1MonsterSeq::WizDie => 46,
     };
+    // The volley rewinds `magatt5..2` over its tail (`wizard.qc`).
+    if seq == Q1MonsterSeq::WizFast {
+        return Q1_WIZARD_FAST_FRAMES[usize::from(index.min(9))];
+    }
     base + i32::from(index)
 }
 
@@ -2053,6 +2165,16 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::ShamPain) => q1_th_run(kind),
         // The death tail self-loops (`shambler.qc`); death never exits.
         (_, Q1MonsterSeq::ShamDie) => Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, index),
+        (_, Q1MonsterSeq::WizStand) => Q1MonsterThink::Frame(Q1MonsterSeq::WizStand, 0),
+        (_, Q1MonsterSeq::WizWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::WizWalk, 0),
+        (_, Q1MonsterSeq::WizSide) => Q1MonsterThink::Frame(Q1MonsterSeq::WizSide, 0),
+        (_, Q1MonsterSeq::WizRun) => Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0),
+        // The volley tail always overrides with `WizardAttackFinished`;
+        // the straight branch is the fallback.
+        (_, Q1MonsterSeq::WizFast) => q1_th_run(kind),
+        (_, Q1MonsterSeq::WizPain) => q1_th_run(kind),
+        // The death tail self-loops (`wizard.qc`); death never exits.
+        (_, Q1MonsterSeq::WizDie) => Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, index),
     }
 }
 
@@ -2285,6 +2407,19 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        // The hurt bark plays first, always; felt hits flinch with no
+        // hold (`Wiz_Pain`, `wizard.qc`).
+        Q1MonsterKind::Wizard => {
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "wizard/wpain.wav", 1.0, Q1_ATTN_NORM);
+            if f64::from(q1_monster_random(behaviors)) * 70.0 > take {
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::WizPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::WizPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -2486,6 +2621,23 @@ pub fn q1_monster_th_die(
             if let Some(monster) = behaviors.monsters.get_mut(actor) {
                 monster.frame = q1_seq_frame(Q1MonsterSeq::ShamDie, 0);
                 monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::ShamDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
+        // The cry waits for the first death frame, which also tosses
+        // the corpse (`wiz_die`, `wiz_death1`).
+        Q1MonsterKind::Wizard => {
+            if health < Q1_WIZARD_GIB_HEALTH {
+                q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "player/udeath.wav", 1.0, Q1_ATTN_NORM);
+                q1_throw_head(behaviors, simulation, actor, Q1_WIZARD_HEAD_MODEL, health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
+                return;
+            }
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::WizDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, 0);
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
@@ -2750,6 +2902,20 @@ pub fn q1_monster_pass<L: ServerLogic>(
     // out; expired balls retire even when their caster died mid-cast.
     let now = ctx.now;
     ctx.behaviors.sham_balls.retain(|ball| ball.remove_at > now);
+    // Due scrag volleys fire and pop (`Wiz_FastFire` removes even
+    // blanks); future ones wait.
+    let mut due = Vec::new();
+    ctx.behaviors.wiz_volleys.retain(|volley| {
+        if volley.fire_at <= now {
+            due.push(volley.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for volley in &due {
+        q1_wiz_fast_fire(&mut *ctx.server, &mut *ctx.behaviors, now, volley);
+    }
     // Stock `SV_CleanupEnts` (`sv_main.c:554`): muzzle flashes live one
     // server frame, so last pass's flashes clear before thinks run.
     for monster in ctx.behaviors.monsters.values_mut() {
@@ -2825,6 +2991,7 @@ fn q1_monster_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
         match monster.think {
             Q1MonsterThink::StartGo => q1_start_go(ctx, actor),
             Q1MonsterThink::StartSwimGo => q1_swim_start_go(ctx, actor),
+            Q1MonsterThink::StartFlyGo => q1_fly_start_go(ctx, actor),
             Q1MonsterThink::FoundTarget => {
                 let simulation = ctx.server.simulation_mut();
                 q1_found_target(ctx.behaviors, simulation, actor);
@@ -3863,6 +4030,81 @@ fn q1_sham_check_attack<L: ServerLogic>(
     true
 }
 
+/// Stock `WizardCheckAttack` (`wizard.qc`): far or blocked scrags
+/// run straight; a clear shot fires by range (0.9/0.6/0.2), else mid
+/// range runs straight and close range strafes. State flips restart
+/// the run/strafe sequence; repeats hold it.
+fn q1_wizard_check_attack<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    memo: &Q1EnemyMemo,
+) -> bool {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return false;
+    };
+    let now = ctx.now;
+    let (attack_state, attack_finished) = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .map_or((Q1_AS_STRAIGHT, 0.0), |monster| {
+            (monster.attack_state, monster.attack_finished)
+        });
+    if now < attack_finished {
+        return false;
+    }
+    if !memo.vis {
+        return false;
+    }
+    if memo.range == Q1_RANGE_FAR {
+        q1_wiz_straight(ctx, actor, attack_state);
+        return false;
+    }
+    if !q1_clear_shot(ctx, actor, &enemy) {
+        q1_wiz_straight(ctx, actor, attack_state);
+        return false;
+    }
+    let chance = match memo.range {
+        r if r == Q1_RANGE_MELEE => 0.9,
+        r if r == Q1_RANGE_NEAR => 0.6,
+        r if r == Q1_RANGE_MID => 0.2,
+        _ => 0.0,
+    };
+    if f64::from(q1_monster_random(ctx.behaviors)) < chance {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_MISSILE;
+        }
+        return true;
+    }
+    if memo.range == Q1_RANGE_MID {
+        q1_wiz_straight(ctx, actor, attack_state);
+    } else if attack_state != Q1_AS_SLIDING {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_SLIDING;
+            monster.frame = q1_seq_frame(Q1MonsterSeq::WizSide, 0);
+            monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::WizSide, 0);
+        }
+    }
+    false
+}
+
+/// Stock check redirect into the straight run (`wiz_run1`): only a
+/// state flip restarts the sequence.
+fn q1_wiz_straight<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, attack_state: u8) {
+    if attack_state != Q1_AS_STRAIGHT {
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.attack_state = Q1_AS_STRAIGHT;
+            monster.frame = q1_seq_frame(Q1MonsterSeq::WizRun, 0);
+            monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0);
+        }
+    }
+}
+
 /// Stock `DemonCheckAttack` (`demon.qc`): slash in melee range, else
 /// leap when the geometry allows (the leap cry plays on the check,
 /// not the launch).
@@ -4033,6 +4275,7 @@ fn q1_check_any_attack<L: ServerLogic>(
         Some(Q1MonsterKind::Knight) => q1_check_attack(ctx, actor, memo, true, false),
         Some(Q1MonsterKind::Fiend) => q1_fiend_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Shambler) => q1_sham_check_attack(ctx, actor, memo),
+        Some(Q1MonsterKind::Wizard) => q1_wizard_check_attack(ctx, actor, memo),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -4689,6 +4932,94 @@ fn q1_swim_start_go<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
     }
 }
 
+/// Stock `flymonster_start_go` (`monsters.qc:133`): arm `DAMAGE_AIM`,
+/// face the spawn yaw, fly flags and the standard eye, then stand —
+/// or walk out along a patrol route when the spawn target names a
+/// corner. No floor drop; the wall check only prints, so it runs for
+/// its grounding side effect like the walker's.
+fn q1_fly_start_go<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let now = ctx.now;
+    q1_walkmove(ctx, actor, 0.0, 0.0);
+    if let Some(combat) = ctx.server.simulation().combat_state(actor).cloned() {
+        let _ignored = ctx.server.simulation_mut().set_combat(
+            actor,
+            CombatState {
+                can_take_damage: true,
+                ..combat
+            },
+        );
+    }
+    let spawn_yaw = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .map_or(0.0, |body| f64::from(body.angles.y));
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.takedamage = Q1_DAMAGE_AIM;
+        monster.ideal_yaw = spawn_yaw;
+        if monster.yaw_speed == 0.0 {
+            monster.yaw_speed = 10.0;
+        }
+        monster.view_ofs = vec3(0.0, 0.0, Q1_MONSTER_VIEW_OFS_Z);
+        monster.flags |= Q1_FLAG_FLY | Q1_FLAG_MONSTER;
+    }
+    let target = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.source.target.clone());
+    if let Some(target) = target {
+        let goal = ctx
+            .behaviors
+            .by_targetname
+            .get(&target)
+            .and_then(|matches| matches.first().cloned());
+        let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+        let to = goal
+            .as_ref()
+            .and_then(|goal| ctx.server.simulation().body_state(goal).map(|body| body.origin));
+        if let (Some(from), to) = (from, to) {
+            let to = to.unwrap_or(vec3(0.0, 0.0, 0.0));
+            let yaw = q1_vectoyaw(vec3(to.x - from.x, to.y - from.y, to.z - from.z));
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.ideal_yaw = yaw;
+            }
+        }
+        let is_corner = goal
+            .as_ref()
+            .is_some_and(|goal| ctx.behaviors.movetargets.contains_key(goal));
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.goalentity = goal.clone();
+            monster.movetarget = goal;
+            let think = if is_corner {
+                q1_th_walk(monster.kind)
+            } else {
+                monster.pausetime = 99_999_999.0;
+                q1_th_stand(monster.kind)
+            };
+            let frame = match think {
+                Q1MonsterThink::Frame(seq, index) => q1_seq_frame(seq, index),
+                _ => monster.frame,
+            };
+            monster.frame = frame;
+            monster.think = think;
+        }
+    } else if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.pausetime = 99_999_999.0;
+        let think = q1_th_stand(monster.kind);
+        let frame = match think {
+            Q1MonsterThink::Frame(seq, index) => q1_seq_frame(seq, index),
+            _ => monster.frame,
+        };
+        monster.frame = frame;
+        monster.think = think;
+    }
+    let spread = f64::from(q1_monster_random(ctx.behaviors)) * 0.5;
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.nextthink = now + Q1_MONSTER_THINK_STEP + spread;
+    }
+}
+
 /// Stock `dog_bite` (`dog.qc`): charge, then wound nearby enemies in
 /// the open for `(r+r+r)*8`.
 fn q1_dog_bite<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
@@ -4982,6 +5313,124 @@ fn q1_drop_backpack<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
 /// Stock `Demon_Melee` (`demon.qc`): face, close 12, then rake for
 /// `10 + 5r` inside 100 units with a clear line, spraying meat to
 /// the stroke side.
+/// Stock `Wiz_idlesound` (`wizard.qc`): at most one idle line every
+/// 2 s, drawn from `random * 5` (over 4.5 hums, under 1.5 hisses).
+/// The roll fires before the throttle check, like stock.
+fn q1_wiz_idlesound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, now: f64) {
+    let wr = f64::from(q1_monster_random(behaviors)) * 5.0;
+    let waitmin = behaviors.monsters.get(actor).map_or(0.0, |monster| monster.waitmin);
+    if waitmin < now {
+        if let Some(monster) = behaviors.monsters.get_mut(actor) {
+            monster.waitmin = now + 2.0;
+        }
+        if wr > 4.5 {
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "wizard/widle1.wav", 1.0, Q1_ATTN_IDLE);
+        }
+        if wr < 1.5 {
+            q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, "wizard/widle2.wav", 1.0, Q1_ATTN_IDLE);
+        }
+    }
+}
+
+/// Stock `Wiz_StartFast` (`wizard.qc`): bark once and schedule the
+/// two delayed spikes — left from the left claw in 0.3 s, right from
+/// the right claw in 0.8 s (stock overwrites both arming thinks, so
+/// the second writes win). Scene-free: origins ride cast-time bodies.
+fn q1_wiz_start_fast<L: ServerLogic>(
+    server: &mut Server<L>,
+    behaviors: &mut Q1NativeBehaviors,
+    now: f64,
+    actor: &ActorId,
+) {
+    q1_monster_sound(behaviors, actor, Q1_CHAN_WEAPON, "wizard/wattack.wav", 1.0, Q1_ATTN_NORM);
+    let enemy = behaviors.monsters.get(actor).and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let Some(body) = server.simulation().body_state(actor) else {
+        return;
+    };
+    let axes = angle_vectors(body.angles);
+    let chest = vec3(
+        body.origin.x + axes.forward.x * 14.0,
+        body.origin.y + axes.forward.y * 14.0,
+        body.origin.z + 30.0 + axes.forward.z * 14.0,
+    );
+    let right = vec3(axes.right.x, axes.right.y, axes.right.z);
+    behaviors.wiz_volleys.push(Q1WizVolley {
+        owner: actor.clone(),
+        enemy: enemy.clone(),
+        at: vec3(chest.x + right.x * 14.0, chest.y + right.y * 14.0, chest.z + right.z * 14.0),
+        movedir: right,
+        fire_at: now + 0.8,
+    });
+    behaviors.wiz_volleys.push(Q1WizVolley {
+        owner: actor.clone(),
+        enemy,
+        at: vec3(chest.x - right.x * 14.0, chest.y - right.y * 14.0, chest.z - right.z * 14.0),
+        movedir: vec3(-right.x, -right.y, -right.z),
+        fire_at: now + 0.3,
+    });
+}
+
+/// Stock `Wiz_FastFire` (`wizard.qc`): a live owner flashes and looses
+/// one 600-speed wizspike from the cast-time claw at the enemy's live
+/// origin, offset 13 units past the cast-time side. Dead owners and
+/// point-blank aims still pop the volley; the pass removes it either
+/// way.
+fn q1_wiz_fast_fire<L: ServerLogic>(
+    server: &mut Server<L>,
+    behaviors: &mut Q1NativeBehaviors,
+    now: f64,
+    volley: &Q1WizVolley,
+) {
+    if q1_health_of(server.simulation(), &volley.owner) <= 0.0 {
+        return;
+    }
+    if let Some(owner) = behaviors.monsters.get_mut(&volley.owner) {
+        owner.effects |= Q1_EF_MUZZLEFLASH;
+    }
+    let Some(foe) = server.simulation().body_state(&volley.enemy) else {
+        return;
+    };
+    let dx = foe.origin.x - 13.0 * volley.movedir.x - volley.at.x;
+    let dy = foe.origin.y - 13.0 * volley.movedir.y - volley.at.y;
+    let dz = foe.origin.z - 13.0 * volley.movedir.z - volley.at.z;
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    let dir = if dist.is_normal() {
+        vec3(dx / dist, dy / dist, dz / dist)
+    } else {
+        vec3(0.0, 0.0, 0.0)
+    };
+    q1_monster_sound(
+        behaviors,
+        &volley.owner,
+        Q1_CHAN_WEAPON,
+        "wizard/wattack.wav",
+        1.0,
+        Q1_ATTN_NORM,
+    );
+    let _ignored = q1_spawn_missile(
+        server,
+        behaviors,
+        Q1MissileSpawn {
+            kind: Q1MissileKind::WizSpike,
+            owner: volley.owner.clone(),
+            origin: volley.at,
+            velocity: vec3(
+                dir.x * Q1_WIZARD_SPIKE_SPEED,
+                dir.y * Q1_WIZARD_SPIKE_SPEED,
+                dir.z * Q1_WIZARD_SPIKE_SPEED,
+            ),
+            avelocity: vec3(0.0, 0.0, 0.0),
+            effects: 0,
+            fuse_at: None,
+            remove_at: now + Q1_WIZARD_SPIKE_LIFE,
+            born_at: now,
+        },
+    );
+}
+
 /// Stock `ShamClaw` (`shambler.qc`): charge in 10, then rake the
 /// enemy within 100 units for `(random + random + random) * 20` — with
 /// no `CanDamage` gate, unlike the overhead smash — flinging a meat
@@ -6884,6 +7333,105 @@ fn q1_shambler_frame<L: ServerLogic>(
     }
 }
 
+/// One scrag `$frame` body (`wizard.qc`): hover gait with idle
+/// throttles, the strafing slide that still runs the hunt, the spike
+/// volley with its attack-finish redirect, frozen pain, and the
+/// tossed falling death.
+fn q1_wizard_frame<L: ServerLogic>(
+    ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
+    actor: &ActorId,
+    seq: Q1MonsterSeq,
+    index: u8,
+) {
+    match (seq, index) {
+        (Q1MonsterSeq::WizStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::WizWalk, 0) => {
+            q1_ai_walk(ctx, actor, Q1_WIZARD_WALK_STEPS[0]);
+            q1_wiz_idlesound(ctx.behaviors, actor, ctx.now);
+        }
+        (Q1MonsterSeq::WizWalk, _) => {
+            q1_ai_walk(ctx, actor, Q1_WIZARD_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::WizSide, 0) => {
+            q1_ai_run(ctx, actor, Q1_WIZARD_WALK_STEPS[0]);
+            q1_wiz_idlesound(ctx.behaviors, actor, ctx.now);
+        }
+        (Q1MonsterSeq::WizSide, _) => {
+            q1_ai_run(ctx, actor, Q1_WIZARD_WALK_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::WizRun, 0) => {
+            q1_ai_run(ctx, actor, Q1_WIZARD_RUN_STEPS[0]);
+            q1_wiz_idlesound(ctx.behaviors, actor, ctx.now);
+        }
+        (Q1MonsterSeq::WizRun, _) => {
+            q1_ai_run(ctx, actor, Q1_WIZARD_RUN_STEPS[usize::from(index)]);
+        }
+        (Q1MonsterSeq::WizFast, 0) => {
+            q1_ai_face(ctx, actor);
+            q1_wiz_start_fast(&mut *ctx.server, &mut *ctx.behaviors, ctx.now, actor);
+        }
+        (Q1MonsterSeq::WizFast, 9) => {
+            q1_ai_face(ctx, actor);
+            // `SUB_AttackFinished (2)`: nightmares skip the hold.
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.cnt = 0;
+                if ctx.behaviors.skill != 3 {
+                    monster.attack_finished = ctx.now + 2.0;
+                }
+            }
+            // `WizardAttackFinished`: mid range and beyond (or a lost
+            // enemy) runs straight back in; close range strafes.
+            let enemy = ctx.behaviors.monsters.get(actor).and_then(|monster| monster.enemy.clone());
+            let range = enemy
+                .as_ref()
+                .map_or(Q1_RANGE_FAR, |enemy| q1_range(ctx, actor, enemy));
+            let vis = enemy.as_ref().is_some_and(|enemy| q1_visible(ctx, actor, enemy));
+            let (seq, state) = if range >= Q1_RANGE_MID || !vis {
+                (Q1MonsterSeq::WizRun, Q1_AS_STRAIGHT)
+            } else {
+                (Q1MonsterSeq::WizSide, Q1_AS_SLIDING)
+            };
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.attack_state = state;
+                monster.frame = q1_seq_frame(seq, 0);
+                monster.think = Q1MonsterThink::Frame(seq, 0);
+            }
+        }
+        (Q1MonsterSeq::WizFast, _) => {
+            q1_ai_face(ctx, actor);
+        }
+        (Q1MonsterSeq::WizPain, _) => {}
+        // The death toss: random fling, skyward pop, off the ground,
+        // and the cry (`wiz_death1`). `monster_death_use` already
+        // dropped FL_FLY, so the pass falls the corpse.
+        (Q1MonsterSeq::WizDie, 0) => {
+            let velocity = vec3(
+                -200.0 + 400.0 * q1_monster_random(ctx.behaviors),
+                -200.0 + 400.0 * q1_monster_random(ctx.behaviors),
+                100.0 + 100.0 * q1_monster_random(ctx.behaviors),
+            );
+            let _ignored = ctx.server.simulation_mut().set_body_velocity(actor, velocity);
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.flags &= !Q1_FLAG_ONGROUND;
+            }
+            q1_monster_sound(
+                ctx.behaviors,
+                actor,
+                Q1_CHAN_VOICE,
+                "wizard/wdeath.wav",
+                1.0,
+                Q1_ATTN_NORM,
+            );
+        }
+        (Q1MonsterSeq::WizDie, 2) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::WizDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -6902,6 +7450,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Knight => q1_knight_frame(ctx, actor, seq, index),
         Q1MonsterKind::Fiend => q1_fiend_frame(ctx, actor, seq, index),
         Q1MonsterKind::Shambler => q1_shambler_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Wizard => q1_wizard_frame(ctx, actor, seq, index),
     }
 }
 
@@ -6961,6 +7510,10 @@ mod tests {
 
     fn shambler_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_shambler", pairs)
+    }
+
+    fn wizard_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_wizard", pairs)
     }
 
     fn spawn_monster(
@@ -7039,6 +7592,14 @@ mod tests {
     }
 
     fn spawn_shambler(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_wizard(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -7166,6 +7727,14 @@ mod tests {
         shambler: &ActorId,
     ) {
         arm_monster(server, behaviors, shambler);
+    }
+
+    fn arm_wizard(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        wizard: &ActorId,
+    ) {
+        arm_monster(server, behaviors, wizard);
     }
 
     #[test]
@@ -9529,6 +10098,313 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Shambler, ShamDie, 10),
             Q1MonsterThink::Frame(ShamDie, 10)
+        );
+    }
+
+    #[test]
+    fn wizard_spawn_sizes_fly_defers_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(wizard.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_WIZARD_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_WIZARD_BOUNDS.max);
+        let combat = server.simulation().combat_state(wizard.id()).unwrap();
+        assert_eq!(combat.health, Q1_WIZARD_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(wizard.id()));
+        let monster = behaviors.monsters.get(wizard.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Wizard);
+        assert_eq!(monster.think, Q1MonsterThink::StartFlyGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(
+            Q1MonsterKind::from_classname("monster_wizard"),
+            Some(Q1MonsterKind::Wizard)
+        );
+        assert_eq!(Q1MonsterKind::Wizard.classname(), "monster_wizard");
+        // No melee stroke; the missile stroke is the spike volley.
+        let health = q1_health_of(server.simulation(), wizard.id());
+        assert!(q1_th_melee(&mut behaviors, Q1MonsterKind::Wizard, health).is_none());
+        assert_eq!(
+            q1_th_missile(&mut behaviors, Q1MonsterKind::Wizard),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::WizFast, 0))
+        );
+    }
+
+    #[test]
+    fn wizard_volley_schedules_two_delayed_spikes() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        behaviors.monsters.get_mut(wizard.id()).unwrap().enemy = Some(player.id().clone());
+        q1_wiz_start_fast(&mut server, &mut behaviors, 10.0, wizard.id());
+        assert_eq!(behaviors.wiz_volleys.len(), 2);
+        // Facing yaw 0 off the origin: chest (14, 0, 30), claws at
+        // ±14 along -y.
+        let right = &behaviors.wiz_volleys[0];
+        assert_eq!(right.owner, *wizard.id());
+        assert_eq!(right.enemy, *player.id());
+        assert_eq!(right.at, vec3(14.0, -14.0, 30.0));
+        assert_eq!(right.movedir, vec3(0.0, -1.0, 0.0));
+        assert_eq!(right.fire_at, 10.8);
+        let left = &behaviors.wiz_volleys[1];
+        assert_eq!(left.at, vec3(14.0, 14.0, 30.0));
+        assert_eq!(left.movedir, vec3(0.0, 1.0, 0.0));
+        assert_eq!(left.fire_at, 10.3);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "wizard/wattack.wav"),
+            "casts bark once up front"
+        );
+    }
+
+    #[test]
+    fn wizard_fast_fire_looses_aimed_spike() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        let volley = Q1WizVolley {
+            owner: wizard.id().clone(),
+            enemy: player.id().clone(),
+            at: vec3(14.0, -14.0, 30.0),
+            movedir: vec3(0.0, -1.0, 0.0),
+            fire_at: 10.8,
+        };
+        q1_wiz_fast_fire(&mut server, &mut behaviors, 10.8, &volley);
+        assert_eq!(behaviors.missiles.len(), 1);
+        let (id, spike) = behaviors.missiles.iter().next().unwrap();
+        assert_eq!(spike.kind, Q1MissileKind::WizSpike);
+        assert_eq!(spike.owner, *wizard.id());
+        assert_eq!(spike.remove_at, 16.8);
+        let body = server.simulation().body_state(id).unwrap();
+        assert_eq!(body.origin, vec3(14.0, -14.0, 30.0));
+        let speed = (body.velocity.x * body.velocity.x
+            + body.velocity.y * body.velocity.y
+            + body.velocity.z * body.velocity.z)
+            .sqrt();
+        assert!((speed - 600.0).abs() < 0.01, "spikes fly at 600, got {speed}");
+        // Aim runs at the enemy past the cast-time side: +x, +y, -z.
+        assert!(body.velocity.x > 0.0 && body.velocity.y > 0.0 && body.velocity.z < 0.0);
+        let monster = behaviors.monsters.get(wizard.id()).unwrap();
+        assert_ne!(monster.effects & Q1_EF_MUZZLEFLASH, 0, "owners flash");
+        assert_eq!(
+            behaviors.sounds.iter().filter(|sound| sound.sample == "wizard/wattack.wav").count(),
+            1,
+            "each spike barks"
+        );
+    }
+
+    #[test]
+    fn wizard_fast_fire_blank_when_owner_dies() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        super::super::native_q1_spawns::register_q1_spawns(server.spawns_mut());
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        let combat = server.simulation().combat_state(wizard.id()).cloned().unwrap();
+        server
+            .simulation_mut()
+            .set_combat(wizard.id(), CombatState { health: 0.0, ..combat })
+            .unwrap();
+        let volley = Q1WizVolley {
+            owner: wizard.id().clone(),
+            enemy: player.id().clone(),
+            at: vec3(14.0, -14.0, 30.0),
+            movedir: vec3(0.0, -1.0, 0.0),
+            fire_at: 10.8,
+        };
+        q1_wiz_fast_fire(&mut server, &mut behaviors, 10.8, &volley);
+        assert!(behaviors.missiles.is_empty(), "dead owners fire blanks");
+        assert!(behaviors.sounds.is_empty(), "blanks stay silent");
+    }
+
+    #[test]
+    fn wizard_pain_barks_and_flinches_without_hold() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        // A crushing hit always flinches (`random * 70 <= 70`) with no
+        // hold latch.
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, wizard.id(), 70.0);
+        let monster = behaviors.monsters.get(wizard.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizPain, 0));
+        assert_eq!(monster.pain_finished, 0.0);
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "wizard/wpain.wav"),
+            "pain barks the hurt line"
+        );
+        // A light hit against a probed high roll barks without flinching.
+        behaviors.monsters.get_mut(wizard.id()).unwrap().think =
+            Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0);
+        let mut probe = Q1NativeBehaviors::new();
+        let seed = (1..100_000)
+            .find(|seed| {
+                probe.monster_rand = *seed;
+                f64::from(q1_monster_random(&mut probe)) * 70.0 > 1.0
+            })
+            .expect("a high roll within the sweep");
+        behaviors.monster_rand = seed;
+        let simulation = server.simulation_mut();
+        q1_monster_th_pain(&mut behaviors, simulation, wizard.id(), 1.0);
+        let monster = behaviors.monsters.get(wizard.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0));
+    }
+
+    #[test]
+    fn wizard_dies_silent_drops_fly() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        behaviors.monsters.get_mut(wizard.id()).unwrap().flags |= Q1_FLAG_FLY;
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            wizard.id(),
+            Some(player.id()),
+            Some(player.id()),
+            Q1_WIZARD_HEALTH,
+        );
+        assert!(q1_health_of(server.simulation(), wizard.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(wizard.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::WizDie, 0));
+        assert_eq!(monster.flags & Q1_FLAG_FLY, 0, "corpses drop FL_FLY to fall");
+        assert!(
+            behaviors.sounds.iter().all(|sound| sound.sample != "wizard/wdeath.wav"),
+            "the cry waits for the first death frame"
+        );
+    }
+
+    #[test]
+    fn wizard_gibs_past_minus_forty() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            wizard.id(),
+            Some(player.id()),
+            Some(player.id()),
+            700.0,
+        );
+        // `T_Damage` clamps the corpse at -99 like every other gib test.
+        assert_eq!(q1_health_of(server.simulation(), wizard.id()), -99.0);
+        assert_eq!(behaviors.pending_gibs.len(), 3);
+        let models: Vec<&str> = behaviors.pending_gibs.iter().map(|gib| gib.model.as_str()).collect();
+        assert_eq!(models, ["progs/gib2.mdl", "progs/gib2.mdl", "progs/gib2.mdl"]);
+        assert!(behaviors.gibs.contains_key(wizard.id()), "the head keeps the actor");
+        assert!(behaviors.sounds.iter().any(|sound| sound.sample == "player/udeath.wav"));
+    }
+
+    #[test]
+    fn wizard_sight_barks_the_classname_line() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(60.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        arm_wizard(&mut server, &mut behaviors, wizard.id());
+        behaviors.monsters.get_mut(wizard.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, wizard.id());
+        assert!(
+            behaviors.sounds.iter().any(|sound| sound.sample == "wizard/wsight.wav"),
+            "sight barks the classname line"
+        );
+        assert_eq!(
+            behaviors.monsters.get(wizard.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::WizRun, 0)
+        );
+    }
+
+    #[test]
+    fn wizard_idlesound_throttles_two_seconds() {
+        let mut behaviors = Q1NativeBehaviors::new();
+        let mut server = test_server();
+        let fields = wizard_fields(&[]);
+        let wizard = spawn_wizard(&mut server, &mut behaviors, &fields);
+        // At time zero the throttle (`waitmin < time`) holds shut.
+        q1_wiz_idlesound(&mut behaviors, wizard.id(), 0.0);
+        assert!(behaviors.sounds.is_empty());
+        assert_eq!(behaviors.monsters.get(wizard.id()).unwrap().waitmin, 0.0);
+        // Past zero the throttle latches 2 s out and stays shut.
+        q1_wiz_idlesound(&mut behaviors, wizard.id(), 1.0);
+        assert_eq!(behaviors.monsters.get(wizard.id()).unwrap().waitmin, 3.0);
+        let sounds = behaviors.sounds.len();
+        assert!(sounds <= 1);
+        q1_wiz_idlesound(&mut behaviors, wizard.id(), 2.0);
+        assert_eq!(behaviors.sounds.len(), sounds, "held idles stay silent");
+    }
+
+    #[test]
+    fn wizard_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(WizStand), 8);
+        assert_eq!(q1_seq_len(WizWalk), 8);
+        assert_eq!(q1_seq_len(WizSide), 8);
+        assert_eq!(q1_seq_len(WizRun), 14);
+        assert_eq!(q1_seq_len(WizFast), 10);
+        assert_eq!(q1_seq_len(WizPain), 4);
+        assert_eq!(q1_seq_len(WizDie), 8);
+        assert_eq!(q1_seq_frame(WizStand, 0), 0);
+        assert_eq!(q1_seq_frame(WizStand, 7), 7);
+        assert_eq!(q1_seq_frame(WizWalk, 0), 0);
+        assert_eq!(q1_seq_frame(WizSide, 7), 7);
+        assert_eq!(q1_seq_frame(WizRun, 0), 15);
+        assert_eq!(q1_seq_frame(WizRun, 13), 28);
+        assert_eq!(q1_seq_frame(WizFast, 0), 29);
+        assert_eq!(q1_seq_frame(WizFast, 5), 34);
+        assert_eq!(q1_seq_frame(WizFast, 6), 33);
+        assert_eq!(q1_seq_frame(WizFast, 9), 30);
+        assert_eq!(q1_seq_frame(WizPain, 0), 42);
+        assert_eq!(q1_seq_frame(WizPain, 3), 45);
+        assert_eq!(q1_seq_frame(WizDie, 0), 46);
+        assert_eq!(q1_seq_frame(WizDie, 7), 53);
+        // The volley tail falls back to the run; death never exits.
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Wizard, WizFast, 9),
+            q1_th_run(Q1MonsterKind::Wizard)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Wizard, WizSide, 7),
+            Q1MonsterThink::Frame(WizSide, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Wizard, WizDie, 7),
+            Q1MonsterThink::Frame(WizDie, 7)
         );
     }
 }
