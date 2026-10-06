@@ -4130,6 +4130,12 @@ mod tests {
         live_monsters(world, Q1MonsterKind::Zombie)
     }
 
+    /// Live fish on the map, in record order.
+    fn live_fish(world: &PlayWorld) -> Vec<qa_core::identity::ActorId> {
+        use super::super::simulation::native_q1_monsters::Q1MonsterKind;
+        live_monsters(world, Q1MonsterKind::Fish)
+    }
+
     /// Two dogs denning within earshot (< 500 units), if the map dens
     /// any together.
     fn live_den_pair(world: &PlayWorld) -> Option<(qa_core::identity::ActorId, qa_core::identity::ActorId)> {
@@ -4260,6 +4266,12 @@ mod tests {
     /// fiends, wizards, and shamblers keep the generic path until
     /// their slices land, so they stay out of the native count.
     const LIVE_E1M3_NATIVE_SKILL2_TOTAL: u32 = 48;
+
+    /// e2m3 native census at skill 2: 15 ogres plus 7 zombies plus 6
+    /// fish counting twice each (the classic swim double-count: 15 +
+    /// 7 + 12 = 34). The fiend, hell knights, and shamblers keep the
+    /// generic path until their slices land.
+    const LIVE_E2M3_NATIVE_SKILL2_TOTAL: u32 = 34;
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
@@ -7197,5 +7209,147 @@ mod tests {
         let end = live_monster_feet(&world, &patrol);
         let moved = ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt();
         assert!(moved > 10.0, "the patrol travels, moved {moved}");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0143_fish_spawn_settles_armed() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e2m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        let fish = live_fish(&world);
+        assert_eq!(fish.len(), 6, "e2m3 spawns six fish");
+        let spawned: Vec<qa_core::math::Vec3> = fish
+            .iter()
+            .map(|fish| world.server().simulation().body_state(fish).expect("fish body").origin)
+            .collect();
+        live_advance(&mut world, 1.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E2M3_NATIVE_SKILL2_TOTAL);
+        for (one, at) in fish.iter().zip(spawned.iter()) {
+            let monster = borrowed.monsters.get(one).expect("fish record");
+            assert_eq!(monster.flags & 2, 2, "swim start flags FL_SWIM");
+            assert_eq!(monster.flags & 32, 32, "swim start flags the monster bit");
+            assert_eq!(monster.takedamage, 2, "swim start arms DAMAGE_AIM");
+            assert_eq!(monster.view_ofs, vec3(0.0, 0.0, 10.0));
+            assert_eq!(monster.yaw_speed, 10.0);
+            assert!(
+                matches!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, _)),
+                "fish stand, got {:?}",
+                monster.think
+            );
+            assert!(monster.pausetime > 9999999.0, "targetless fish stand down");
+            let combat = world.server().simulation().combat_state(one).expect("fish combat");
+            assert_eq!(combat.health, 25.0);
+            let settled = world.server().simulation().body_state(one).expect("fish body").origin;
+            // Stock `SV_Physics_Step` freefalls step-movers with no
+            // onground/fly/swim bits, and stock fish spawn flags 0 —
+            // so they sink toward the pool floor until the start-go
+            // arms SWIM. Settle, never rise.
+            assert!(
+                settled.z <= at.z + 0.01,
+                "pre-start freefall settles, {settled:?} vs spawn {at:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0143_fish_bite_wounds() {
+        let Some(mut world) = live_q1_world("maps/e2m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        live_set_player_health(&mut world, 1000.0);
+        let fish = live_fish(&world);
+        // Offer the player to each fish in turn until one sights and
+        // bites. The 50-unit stand sits inside bite range, so the
+        // first stroke lands within 5 s of the sighting.
+        let mut biter = None;
+        for candidate in fish.iter() {
+            live_place_player_before(&mut world, candidate, 50.0);
+            let mut bit = false;
+            for _ in 0..300 {
+                live_tick(&mut world);
+                if live_player_health(&world) < 1000.0 {
+                    bit = true;
+                    break;
+                }
+            }
+            if bit {
+                biter = Some(candidate.clone());
+                break;
+            }
+        }
+        biter.expect("a fish sights, hunts, and lands its bite");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "fish/bite.wav"),
+            "bites snap"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0143_fish_pain_then_dies_no_gib() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e2m3.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let fish = live_fish(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_damage(&mut world, &fish[0], Some(&player), 5.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                borrowed.monsters.get(&fish[0]).expect("fish record").think,
+                Q1MonsterThink::Frame(Q1MonsterSeq::FishPain, 0),
+                "wounds always run pain"
+            );
+        }
+        live_damage(&mut world, &fish[0], Some(&player), 30.0);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&fish[0]).expect("fish record");
+            assert!(monster.dead);
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, 0));
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(borrowed.pending_gibs.is_empty(), "fish never queue chunks");
+            assert!(!borrowed.gibs.contains_key(&fish[0]), "fish never keep a head");
+        }
+        // The 21-frame death runs its cry, then drops unsolid at the
+        // tail. Each tick runs one monster pass, so poll per-tick like
+        // the walker death proofs (coarse advances starve the frames).
+        let mut unsolid = false;
+        for _ in 0..300 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().solids.contains(&fish[0]) {
+                unsolid = true;
+                break;
+            }
+        }
+        assert!(unsolid, "the death tail drops unsolid");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "fish/death.wav"),
+            "deaths cry"
+        );
     }
 }

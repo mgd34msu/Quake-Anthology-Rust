@@ -155,6 +155,8 @@ pub enum Q1MonsterKind {
     Ogre,
     /// `monster_zombie` (`zombie.qc`).
     Zombie,
+    /// `monster_fish` (`fish.qc`).
+    Fish,
 }
 
 impl Q1MonsterKind {
@@ -167,6 +169,7 @@ impl Q1MonsterKind {
             Q1MonsterKind::Enforcer => "monster_enforcer",
             Q1MonsterKind::Ogre => "monster_ogre",
             Q1MonsterKind::Zombie => "monster_zombie",
+            Q1MonsterKind::Fish => "monster_fish",
         }
     }
 
@@ -180,6 +183,7 @@ impl Q1MonsterKind {
             "monster_enforcer" => Some(Q1MonsterKind::Enforcer),
             "monster_ogre" | "monster_ogre_marksman" => Some(Q1MonsterKind::Ogre),
             "monster_zombie" => Some(Q1MonsterKind::Zombie),
+            "monster_fish" => Some(Q1MonsterKind::Fish),
             _ => None,
         }
     }
@@ -295,6 +299,18 @@ pub enum Q1MonsterSeq {
     ZombiePainD,
     /// Zombie knockdown/revive pain E 1-30.
     ZombiePainE,
+    /// Fish stand (swim frames) 1-18 (`fish.qc`).
+    FishStand,
+    /// Fish walk (swim frames) 1-18.
+    FishWalk,
+    /// Fish run (odd swim frames) 1-9.
+    FishRun,
+    /// Fish bite attack 1-18.
+    FishAttack,
+    /// Fish pain 1-9.
+    FishPain,
+    /// Fish death 1-21.
+    FishDie,
 }
 
 /// One monster think slot: stock `think` as data (`monsters.qc`, `ai.qc`).
@@ -302,6 +318,9 @@ pub enum Q1MonsterSeq {
 pub enum Q1MonsterThink {
     /// `walkmonster_start_go` (`monsters.qc:69`).
     StartGo,
+    /// `swimmonster_start_go` (`monsters.qc:185`): no floor drop, the
+    /// swim flag, and the classic second kill-count increment.
+    StartSwimGo,
     /// Delayed `FoundTarget` from `monster_use` (`monsters.qc:21`).
     FoundTarget,
     /// A `$frame` function: sequence plus 0-based index.
@@ -503,6 +522,7 @@ pub fn register_q1_monster_spawns(registry: &mut SpawnRegistry) {
         "monster_enforcer",
         "monster_ogre",
         "monster_zombie",
+        "monster_fish",
         "path_corner",
     ] {
         let definition = format!("q1:{classname}");
@@ -667,6 +687,30 @@ pub const Q1_FLESH_DAMAGE: f64 = 10.0;
 /// vectors): atta, attb, attc.
 pub const Q1_FLESH_OFFSETS: [[f32; 3]; 3] = [[-10.0, -22.0, 30.0], [-10.0, -24.0, 29.0], [-12.0, -19.0, 29.0]];
 
+/// Fish collision bounds (`setsize`, `monster_fish`, `fish.qc`).
+pub const Q1_FISH_BOUNDS: Bounds = Bounds {
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 24.0,
+    },
+};
+
+/// Fish health (`monster_fish`, `fish.qc`).
+pub const Q1_FISH_HEALTH: f64 = 25.0;
+
+/// Fish bite reach in units (`fish_melee`, `fish.qc`).
+pub const Q1_FISH_BITE_RANGE: f32 = 60.0;
+
+/// Swimmer eye height above the origin (`swimmonster_start_go`,
+/// `monsters.qc`: lower than the walker's 25).
+pub const Q1_SWIM_VIEW_OFS_Z: f32 = 10.0;
+
 /// Corner touch volume (`setsize`, `t_movetarget`, `ai.qc`).
 const MOVETARGET_BOUNDS: Bounds = Bounds {
     min: Vec3 {
@@ -706,6 +750,7 @@ pub fn build_q1_monster<L: ServerLogic>(
         Q1MonsterKind::Enforcer => (Q1_ENFORCER_BOUNDS, Q1_ENFORCER_HEALTH),
         Q1MonsterKind::Ogre => (Q1_OGRE_BOUNDS, Q1_OGRE_HEALTH),
         Q1MonsterKind::Zombie => (Q1_ZOMBIE_BOUNDS, Q1_ZOMBIE_HEALTH),
+        Q1MonsterKind::Fish => (Q1_FISH_BOUNDS, Q1_FISH_HEALTH),
     };
     let now = server.simulation().frame().time.as_seconds_f64();
     server.simulation_mut().set_body_bounds(actor.id(), bounds)?;
@@ -767,14 +812,21 @@ pub fn build_q1_monster<L: ServerLogic>(
         );
         return Ok(());
     }
-    // `walkmonster_start`: delay the floor drop past door spawns and
-    // spread think times so monsters never share a think instant.
+    // `walkmonster_start` / `swimmonster_start`: delay the floor drop
+    // past door spawns and spread think times so monsters never share
+    // a think instant. Swimmers arm their own start-go (no floor
+    // drop); both count the first kill-count increment here.
     let nextthink = now + f64::from(q1_monster_random(behaviors)) * 0.5;
+    let start = if kind == Q1MonsterKind::Fish {
+        Q1MonsterThink::StartSwimGo
+    } else {
+        Q1MonsterThink::StartGo
+    };
     behaviors.monsters.insert(
         actor.id(),
         Q1Monster {
             kind,
-            think: Q1MonsterThink::StartGo,
+            think: start,
             nextthink,
             frame: 0,
             enemy: None,
@@ -1178,23 +1230,28 @@ pub fn q1_monster_use(
 /// queue their line here as their slices land.
 fn q1_sight_sound(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, kind: Q1MonsterKind) {
     // The enforcer barks one of four sight lines at random (`ai.qc:303`).
+    // Stock `SightSound` names no fish line (`ai.qc:279`): fish hunt silently.
     let sample = match kind {
-        Q1MonsterKind::Dog => "dog/dsight.wav",
-        Q1MonsterKind::Grunt => "soldier/sight1.wav",
-        Q1MonsterKind::Ogre => "ogre/ogwake.wav",
-        Q1MonsterKind::Zombie => "zombie/z_idle.wav",
+        Q1MonsterKind::Dog => Some("dog/dsight.wav"),
+        Q1MonsterKind::Grunt => Some("soldier/sight1.wav"),
+        Q1MonsterKind::Ogre => Some("ogre/ogwake.wav"),
+        Q1MonsterKind::Zombie => Some("zombie/z_idle.wav"),
+        Q1MonsterKind::Fish => None,
         Q1MonsterKind::Enforcer => {
             let rsnd = (q1_monster_random(behaviors) * 3.0 + 0.5).floor() as i32;
             if rsnd == 1 {
-                "enforcer/sight1.wav"
+                Some("enforcer/sight1.wav")
             } else if rsnd == 2 {
-                "enforcer/sight2.wav"
+                Some("enforcer/sight2.wav")
             } else if rsnd == 0 {
-                "enforcer/sight3.wav"
+                Some("enforcer/sight3.wav")
             } else {
-                "enforcer/sight4.wav"
+                Some("enforcer/sight4.wav")
             }
         }
+    };
+    let Some(sample) = sample else {
+        return;
     };
     q1_monster_sound(behaviors, actor, Q1_CHAN_VOICE, sample, 1.0, Q1_ATTN_NORM);
 }
@@ -1266,6 +1323,7 @@ pub fn q1_th_stand(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerStand, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreStand, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieStand, 0),
+        Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, 0),
     }
 }
 
@@ -1278,6 +1336,7 @@ pub fn q1_th_walk(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerWalk, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreWalk, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieWalk, 0),
+        Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishWalk, 0),
     }
 }
 
@@ -1290,6 +1349,7 @@ pub fn q1_th_run(kind: Q1MonsterKind) -> Q1MonsterThink {
         Q1MonsterKind::Enforcer => Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerRun, 0),
         Q1MonsterKind::Ogre => Q1MonsterThink::Frame(Q1MonsterSeq::OgreRun, 0),
         Q1MonsterKind::Zombie => Q1MonsterThink::Frame(Q1MonsterSeq::ZombieRun, 0),
+        Q1MonsterKind::Fish => Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0),
     }
 }
 
@@ -1302,6 +1362,7 @@ pub fn q1_th_melee(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> Op
         Q1MonsterKind::Grunt => None,
         Q1MonsterKind::Enforcer => None,
         Q1MonsterKind::Zombie => None,
+        Q1MonsterKind::Fish => Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0)),
         Q1MonsterKind::Ogre => {
             if q1_monster_random(behaviors) > 0.5 {
                 Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreSmash, 0))
@@ -1321,6 +1382,7 @@ pub fn q1_th_missile(behaviors: &mut Q1NativeBehaviors, kind: Q1MonsterKind) -> 
         Q1MonsterKind::Grunt => Some(Q1MonsterThink::Frame(Q1MonsterSeq::GruntAttack, 0)),
         Q1MonsterKind::Enforcer => Some(Q1MonsterThink::Frame(Q1MonsterSeq::EnforcerAttack, 0)),
         Q1MonsterKind::Ogre => Some(Q1MonsterThink::Frame(Q1MonsterSeq::OgreNail, 0)),
+        Q1MonsterKind::Fish => None,
         Q1MonsterKind::Zombie => {
             let roll = q1_monster_random(behaviors);
             if roll < 0.3 {
@@ -1391,6 +1453,12 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
         Q1MonsterSeq::ZombiePainC => 18,
         Q1MonsterSeq::ZombiePainD => 13,
         Q1MonsterSeq::ZombiePainE => 30,
+        Q1MonsterSeq::FishStand => 18,
+        Q1MonsterSeq::FishWalk => 18,
+        Q1MonsterSeq::FishRun => 9,
+        Q1MonsterSeq::FishAttack => 18,
+        Q1MonsterSeq::FishPain => 9,
+        Q1MonsterSeq::FishDie => 21,
     }
 }
 
@@ -1406,7 +1474,8 @@ pub fn q1_seq_len(seq: Q1MonsterSeq) -> u8 {
 /// paind 81-96, paine 97-111, death 112-125, bdeath 126-135; zombie
 /// stand 0-14, walk 15-33, run 34-51, atta 52-64, attb 65-78, attc
 /// 79-90, paina 91-102, painb 103-130, painc 131-148, paind 149-161,
-/// paine 162-191, cruc 192-197).
+/// paine 162-191, cruc 192-197; fish attack 0-17, death 18-38,
+/// swim 39-56, pain 57-65).
 #[must_use]
 pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     // The enforcer volley reuses attack5-8 mid-sequence (`enf_atk9..12`,
@@ -1424,6 +1493,10 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
     if seq == Q1MonsterSeq::ZombieAttB {
         let clamped = index.min(12);
         return 65 + i32::from(clamped);
+    }
+    // The fish run skims the odd swim frames (`f_run1..9`, `fish.qc`).
+    if seq == Q1MonsterSeq::FishRun {
+        return 39 + i32::from(index.min(8)) * 2;
     }
     let base = match seq {
         Q1MonsterSeq::DogStand => 69,
@@ -1479,6 +1552,12 @@ pub fn q1_seq_frame(seq: Q1MonsterSeq, index: u8) -> i32 {
         Q1MonsterSeq::ZombiePainC => 131,
         Q1MonsterSeq::ZombiePainD => 149,
         Q1MonsterSeq::ZombiePainE => 162,
+        Q1MonsterSeq::FishStand => 39,
+        Q1MonsterSeq::FishWalk => 39,
+        Q1MonsterSeq::FishRun => 39,
+        Q1MonsterSeq::FishAttack => 0,
+        Q1MonsterSeq::FishPain => 57,
+        Q1MonsterSeq::FishDie => 18,
     };
     base + i32::from(index)
 }
@@ -1550,6 +1629,13 @@ pub fn q1_seq_next(kind: Q1MonsterKind, seq: Q1MonsterSeq, index: u8) -> Q1Monst
         (_, Q1MonsterSeq::ZombiePainC) => q1_th_run(kind),
         (_, Q1MonsterSeq::ZombiePainD) => q1_th_run(kind),
         (_, Q1MonsterSeq::ZombiePainE) => q1_th_run(kind),
+        (_, Q1MonsterSeq::FishStand) => Q1MonsterThink::Frame(Q1MonsterSeq::FishStand, 0),
+        (_, Q1MonsterSeq::FishWalk) => Q1MonsterThink::Frame(Q1MonsterSeq::FishWalk, 0),
+        (_, Q1MonsterSeq::FishRun) => Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0),
+        (_, Q1MonsterSeq::FishAttack) => q1_th_run(kind),
+        (_, Q1MonsterSeq::FishPain) => q1_th_run(kind),
+        // The death tail self-loops unsolid (`f_death21`, `fish.qc`).
+        (_, Q1MonsterSeq::FishDie) => Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, index),
     }
 }
 
@@ -1700,6 +1786,15 @@ pub fn q1_monster_th_pain(behaviors: &mut Q1NativeBehaviors, simulation: &mut Si
                 monster.nextthink = now + Q1_MONSTER_THINK_STEP;
             }
         }
+        Q1MonsterKind::Fish => {
+            // Fish always run their pain frames (`fish_pain`,
+            // `fish.qc`): no gate, no bark.
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::FishPain, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FishPain, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
+        }
     }
 }
 
@@ -1721,7 +1816,8 @@ fn q1_zombie_knockdown(behaviors: &mut Q1NativeBehaviors, actor: &ActorId, now: 
 /// grunt stays solid into one of its two death sequences — solidity
 /// drops in the third death frame (`army_die`, `soldier.qc`). The
 /// zombie always gibs (`zombie_die`, `zombie.qc`): pain resets health
-/// to 60, so death only arrives on a gibbing hit.
+/// to 60, so death only arrives on a gibbing hit. The fish never
+/// gibs: stock points `th_die` at `f_death1` directly (`fish.qc`).
 pub fn q1_monster_th_die(
     behaviors: &mut Q1NativeBehaviors,
     simulation: &mut Simulation,
@@ -1829,6 +1925,16 @@ pub fn q1_monster_th_die(
             q1_throw_gib(behaviors, simulation, actor, "progs/gib1.mdl", health);
             q1_throw_gib(behaviors, simulation, actor, "progs/gib2.mdl", health);
             q1_throw_gib(behaviors, simulation, actor, "progs/gib3.mdl", health);
+        }
+        Q1MonsterKind::Fish => {
+            // Stock points `th_die` at `f_death1` directly (`fish.qc`):
+            // fish never gib, whatever the killing hit (the death cry
+            // plays in the first death frame).
+            if let Some(monster) = behaviors.monsters.get_mut(actor) {
+                monster.frame = q1_seq_frame(Q1MonsterSeq::FishDie, 0);
+                monster.think = Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, 0);
+                monster.nextthink = now + Q1_MONSTER_THINK_STEP;
+            }
         }
     }
 }
@@ -2161,6 +2267,7 @@ fn q1_monster_actor<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor
     if monster.nextthink <= ctx.now && monster.nextthink >= 0.0 {
         match monster.think {
             Q1MonsterThink::StartGo => q1_start_go(ctx, actor),
+            Q1MonsterThink::StartSwimGo => q1_swim_start_go(ctx, actor),
             Q1MonsterThink::FoundTarget => {
                 let simulation = ctx.server.simulation_mut();
                 q1_found_target(ctx.behaviors, simulation, actor);
@@ -3207,6 +3314,9 @@ fn q1_check_any_attack<L: ServerLogic>(
         // `fight.qc:57`): no `th_melee`, `th_missile` armed.
         Some(Q1MonsterKind::Enforcer) => q1_check_attack(ctx, actor, memo, false, true),
         Some(Q1MonsterKind::Zombie) => q1_check_attack(ctx, actor, memo, false, true),
+        // Fish run the generic check with melee armed and no missile
+        // (`CheckAttack`, `fight.qc:57`).
+        Some(Q1MonsterKind::Fish) => q1_check_attack(ctx, actor, memo, true, false),
         Some(Q1MonsterKind::Ogre) => q1_ogre_check_attack(ctx, actor, memo),
         None => false,
     }
@@ -3752,6 +3862,88 @@ fn q1_start_go<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &Ac
                 monster.pausetime = 99_999_999.0;
                 q1_th_stand(monster.kind)
             };
+            let frame = match think {
+                Q1MonsterThink::Frame(seq, index) => q1_seq_frame(seq, index),
+                _ => monster.frame,
+            };
+            monster.frame = frame;
+            monster.think = think;
+        }
+    } else if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.pausetime = 99_999_999.0;
+        let think = q1_th_stand(monster.kind);
+        let frame = match think {
+            Q1MonsterThink::Frame(seq, index) => q1_seq_frame(seq, index),
+            _ => monster.frame,
+        };
+        monster.frame = frame;
+        monster.think = think;
+    }
+    let spread = f64::from(q1_monster_random(ctx.behaviors)) * 0.5;
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.nextthink = now + Q1_MONSTER_THINK_STEP + spread;
+    }
+}
+
+/// Stock `swimmonster_start_go` (`monsters.qc:185`): arm `DAMAGE_AIM`,
+/// count the classic second kill-count increment (stock counts in both
+/// `swimmonster_start` and here), swim flags and the lower eye, then
+/// walk out toward the target (no corner check, unlike walkers) or
+/// stand down. No floor drop and no wall check: fish hang where
+/// spawned. The stock deathmatch re-check is unreachable (the build
+/// already refuses monsters in deathmatch).
+fn q1_swim_start_go<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let now = ctx.now;
+    if let Some(combat) = ctx.server.simulation().combat_state(actor).cloned() {
+        let _ignored = ctx.server.simulation_mut().set_combat(
+            actor,
+            CombatState {
+                can_take_damage: true,
+                ..combat
+            },
+        );
+    }
+    ctx.behaviors.total_monsters += 1;
+    let spawn_yaw = ctx
+        .server
+        .simulation()
+        .body_state(actor)
+        .map_or(0.0, |body| f64::from(body.angles.y));
+    if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+        monster.takedamage = Q1_DAMAGE_AIM;
+        monster.ideal_yaw = spawn_yaw;
+        if monster.yaw_speed == 0.0 {
+            monster.yaw_speed = 10.0;
+        }
+        monster.view_ofs = vec3(0.0, 0.0, Q1_SWIM_VIEW_OFS_Z);
+        monster.flags |= Q1_FLAG_SWIM | Q1_FLAG_MONSTER;
+    }
+    let target = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.source.target.clone());
+    if let Some(target) = target {
+        let goal = ctx
+            .behaviors
+            .by_targetname
+            .get(&target)
+            .and_then(|matches| matches.first().cloned());
+        let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+        let to = goal
+            .as_ref()
+            .and_then(|goal| ctx.server.simulation().body_state(goal).map(|body| body.origin));
+        if let (Some(from), to) = (from, to) {
+            let to = to.unwrap_or(vec3(0.0, 0.0, 0.0));
+            let yaw = q1_vectoyaw(vec3(to.x - from.x, to.y - from.y, to.z - from.z));
+            if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+                monster.ideal_yaw = yaw;
+            }
+        }
+        if let Some(monster) = ctx.behaviors.monsters.get_mut(actor) {
+            monster.goalentity = goal.clone();
+            monster.movetarget = goal;
+            let think = q1_th_walk(monster.kind);
             let frame = match think {
                 Q1MonsterThink::Frame(seq, index) => q1_seq_frame(seq, index),
                 _ => monster.frame,
@@ -5178,6 +5370,74 @@ fn q1_zombie_frame<L: ServerLogic>(
     }
 }
 
+/// Stock `fish_melee` (`fish.qc`): bite nearby enemies in the open
+/// for `(r+r)*3`.
+fn q1_fish_melee<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId) {
+    let enemy = ctx
+        .behaviors
+        .monsters
+        .get(actor)
+        .and_then(|monster| monster.enemy.clone());
+    let Some(enemy) = enemy else {
+        return;
+    };
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let to = ctx.server.simulation().body_state(&enemy).map(|body| body.origin);
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+    let delta = vec3(from.x - to.x, from.y - to.y, from.z - to.z);
+    if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt() > Q1_FISH_BITE_RANGE {
+        return;
+    }
+    q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_VOICE, "fish/bite.wav", 1.0, Q1_ATTN_NORM);
+    let damage = f64::from(q1_monster_random(ctx.behaviors) + q1_monster_random(ctx.behaviors)) * 3.0;
+    let me = actor.clone();
+    let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+    q1_t_damage(
+        ctx.behaviors,
+        simulation,
+        movers,
+        triggers,
+        &enemy,
+        Some(&me),
+        Some(&me),
+        damage,
+    );
+}
+
+/// One fish `$frame` body (`fish.qc`): the swim gait, the run skim
+/// over odd swim frames with its idle line, the three-stroke bite,
+/// pain footwork, and the death cry with its unsolid tail.
+fn q1_fish_frame<L: ServerLogic>(ctx: &mut Q1MonsterCtx<'_, '_, '_, L>, actor: &ActorId, seq: Q1MonsterSeq, index: u8) {
+    match (seq, index) {
+        (Q1MonsterSeq::FishStand, _) => q1_ai_stand(ctx, actor),
+        (Q1MonsterSeq::FishWalk, _) => q1_ai_walk(ctx, actor, 8.0),
+        (Q1MonsterSeq::FishRun, 0) => {
+            q1_ai_run(ctx, actor, 12.0);
+            if q1_monster_random(ctx.behaviors) < 0.5 {
+                q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_VOICE, "fish/idle.wav", 1.0, Q1_ATTN_NORM);
+            }
+        }
+        (Q1MonsterSeq::FishRun, _) => q1_ai_run(ctx, actor, 12.0),
+        (Q1MonsterSeq::FishAttack, 2) | (Q1MonsterSeq::FishAttack, 8) | (Q1MonsterSeq::FishAttack, 14) => {
+            q1_fish_melee(ctx, actor)
+        }
+        (Q1MonsterSeq::FishAttack, _) => q1_ai_charge(ctx, actor, 10.0),
+        (Q1MonsterSeq::FishPain, 0) => {}
+        (Q1MonsterSeq::FishPain, _) => q1_ai_pain(ctx, actor, 6.0),
+        (Q1MonsterSeq::FishDie, 0) => {
+            q1_monster_sound(ctx.behaviors, actor, Q1_CHAN_VOICE, "fish/death.wav", 1.0, Q1_ATTN_NORM);
+        }
+        (Q1MonsterSeq::FishDie, 20) => {
+            ctx.behaviors.solids.remove(actor);
+        }
+        (Q1MonsterSeq::FishDie, _) => {}
+        // Other kinds never dispatch here.
+        _ => {}
+    }
+}
+
 /// One monster `$frame` body, dispatched per kind.
 fn q1_monster_frame<L: ServerLogic>(
     ctx: &mut Q1MonsterCtx<'_, '_, '_, L>,
@@ -5192,6 +5452,7 @@ fn q1_monster_frame<L: ServerLogic>(
         Q1MonsterKind::Enforcer => q1_enforcer_frame(ctx, actor, seq, index),
         Q1MonsterKind::Ogre => q1_ogre_frame(ctx, actor, seq, index),
         Q1MonsterKind::Zombie => q1_zombie_frame(ctx, actor, seq, index),
+        Q1MonsterKind::Fish => q1_fish_frame(ctx, actor, seq, index),
     }
 }
 
@@ -5235,6 +5496,10 @@ mod tests {
 
     fn zombie_fields(pairs: &[(&str, &str)]) -> SpawnFields {
         monster_fields("monster_zombie", pairs)
+    }
+
+    fn fish_fields(pairs: &[(&str, &str)]) -> SpawnFields {
+        monster_fields("monster_fish", pairs)
     }
 
     fn spawn_monster(
@@ -5281,6 +5546,14 @@ mod tests {
     }
 
     fn spawn_zombie(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fields: &SpawnFields,
+    ) -> OwnedActor {
+        spawn_monster(server, behaviors, fields)
+    }
+
+    fn spawn_fish(
         server: &mut Server<qa_guest::server::GuestServerLogic>,
         behaviors: &mut Q1NativeBehaviors,
         fields: &SpawnFields,
@@ -5376,6 +5649,14 @@ mod tests {
         zombie: &ActorId,
     ) {
         arm_monster(server, behaviors, zombie);
+    }
+
+    fn arm_fish(
+        server: &mut Server<qa_guest::server::GuestServerLogic>,
+        behaviors: &mut Q1NativeBehaviors,
+        fish: &ActorId,
+    ) {
+        arm_monster(server, behaviors, fish);
     }
 
     #[test]
@@ -6873,6 +7154,159 @@ mod tests {
         assert_eq!(
             q1_seq_next(Q1MonsterKind::Zombie, ZombieStand, 14),
             Q1MonsterThink::Frame(ZombieStand, 0)
+        );
+    }
+
+    #[test]
+    fn fish_spawn_sizes_counts_and_defers_swim_start() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let fields = fish_fields(&[]);
+        let fish = spawn_fish(&mut server, &mut behaviors, &fields);
+        let body = server.simulation().body_state(fish.id()).unwrap();
+        assert_eq!(body.bounds.min, Q1_FISH_BOUNDS.min);
+        assert_eq!(body.bounds.max, Q1_FISH_BOUNDS.max);
+        let combat = server.simulation().combat_state(fish.id()).unwrap();
+        assert_eq!(combat.health, Q1_FISH_HEALTH);
+        assert!(!combat.can_take_damage);
+        assert!(behaviors.solids.contains(fish.id()));
+        let monster = behaviors.monsters.get(fish.id()).unwrap();
+        assert_eq!(monster.kind, Q1MonsterKind::Fish);
+        assert_eq!(monster.think, Q1MonsterThink::StartSwimGo);
+        assert!((0.0..0.5).contains(&monster.nextthink));
+        // First of the two classic kill-count increments; the swim
+        // start-go counts the second.
+        assert_eq!(behaviors.total_monsters, 1);
+        assert_eq!(Q1MonsterKind::from_classname("monster_fish"), Some(Q1MonsterKind::Fish));
+        assert_eq!(Q1MonsterKind::Fish.classname(), "monster_fish");
+        assert_eq!(
+            q1_th_melee(&mut behaviors, Q1MonsterKind::Fish),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::FishAttack, 0))
+        );
+        assert!(q1_th_missile(&mut behaviors, Q1MonsterKind::Fish).is_none());
+    }
+
+    #[test]
+    fn fish_pain_always_runs() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fish_fields(&[]);
+        let fish = spawn_fish(&mut server, &mut behaviors, &fields);
+        arm_fish(&mut server, &mut behaviors, fish.id());
+        // Even a running pain hold cannot gate fish pain: stock runs it always.
+        behaviors.monsters.get_mut(fish.id()).unwrap().pain_finished = 999.0;
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            fish.id(),
+            None,
+            Some(player.id()),
+            5.0,
+        );
+        let monster = behaviors.monsters.get(fish.id()).unwrap();
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FishPain, 0));
+        assert!(
+            behaviors.sounds.iter().all(|sound| sound.sample != "fish/bite.wav"
+                && sound.sample != "fish/death.wav"
+                && sound.sample != "fish/idle.wav"),
+            "fish pain runs silent"
+        );
+    }
+
+    #[test]
+    fn fish_dies_without_gibbing() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fish_fields(&[]);
+        let fish = spawn_fish(&mut server, &mut behaviors, &fields);
+        arm_fish(&mut server, &mut behaviors, fish.id());
+        let (simulation, movers, triggers) = server.simulation_movers_and_triggers_mut();
+        // A 1000-point hit still runs death frames: fish never gib.
+        q1_t_damage(
+            &mut behaviors,
+            simulation,
+            movers,
+            triggers,
+            fish.id(),
+            None,
+            Some(player.id()),
+            1000.0,
+        );
+        assert!(q1_health_of(server.simulation(), fish.id()) <= 0.0);
+        assert_eq!(behaviors.killed_monsters, 1);
+        let monster = behaviors.monsters.get(fish.id()).unwrap();
+        assert!(monster.dead);
+        assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::FishDie, 0));
+        assert!(behaviors.pending_gibs.is_empty(), "no chunks queue");
+        assert!(!behaviors.gibs.contains_key(fish.id()), "no head keeps the actor");
+        assert!(behaviors.sounds.iter().all(|sound| sound.sample != "player/udeath.wav"));
+        // Solidity drops in the last death frame, not in `th_die`.
+        assert!(behaviors.solids.contains(fish.id()));
+    }
+
+    #[test]
+    fn fish_sight_hunts_silently() {
+        let mut server = test_server();
+        let mut behaviors = Q1NativeBehaviors::new();
+        let player = spawn_player(&mut server, vec3(100.0, 0.0, 0.0));
+        behaviors.set_player(Some(player.id().clone()));
+        let fields = fish_fields(&[]);
+        let fish = spawn_fish(&mut server, &mut behaviors, &fields);
+        arm_fish(&mut server, &mut behaviors, fish.id());
+        behaviors.monsters.get_mut(fish.id()).unwrap().enemy = Some(player.id().clone());
+        let simulation = server.simulation_mut();
+        q1_found_target(&mut behaviors, simulation, fish.id());
+        assert!(behaviors.sounds.is_empty(), "stock names no fish sight line");
+        assert_eq!(
+            behaviors.monsters.get(fish.id()).unwrap().think,
+            Q1MonsterThink::Frame(Q1MonsterSeq::FishRun, 0)
+        );
+    }
+
+    #[test]
+    fn fish_sequence_tables_match_stock() {
+        use Q1MonsterSeq::*;
+        assert_eq!(q1_seq_len(FishStand), 18);
+        assert_eq!(q1_seq_len(FishWalk), 18);
+        assert_eq!(q1_seq_len(FishRun), 9);
+        assert_eq!(q1_seq_len(FishAttack), 18);
+        assert_eq!(q1_seq_len(FishPain), 9);
+        assert_eq!(q1_seq_len(FishDie), 21);
+        assert_eq!(q1_seq_frame(FishStand, 0), 39);
+        assert_eq!(q1_seq_frame(FishStand, 17), 56);
+        assert_eq!(q1_seq_frame(FishWalk, 17), 56);
+        // The run skims the odd swim frames.
+        assert_eq!(q1_seq_frame(FishRun, 0), 39);
+        assert_eq!(q1_seq_frame(FishRun, 1), 41);
+        assert_eq!(q1_seq_frame(FishRun, 8), 55);
+        assert_eq!(q1_seq_frame(FishAttack, 0), 0);
+        assert_eq!(q1_seq_frame(FishAttack, 17), 17);
+        assert_eq!(q1_seq_frame(FishPain, 0), 57);
+        assert_eq!(q1_seq_frame(FishPain, 8), 65);
+        assert_eq!(q1_seq_frame(FishDie, 0), 18);
+        assert_eq!(q1_seq_frame(FishDie, 20), 38);
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fish, FishAttack, 17),
+            q1_th_run(Q1MonsterKind::Fish)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fish, FishPain, 8),
+            q1_th_run(Q1MonsterKind::Fish)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fish, FishStand, 17),
+            Q1MonsterThink::Frame(FishStand, 0)
+        );
+        assert_eq!(
+            q1_seq_next(Q1MonsterKind::Fish, FishDie, 20),
+            Q1MonsterThink::Frame(FishDie, 20)
         );
     }
 }
