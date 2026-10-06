@@ -9303,6 +9303,292 @@ mod tests {
 
     #[test]
     #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0139_boss_spawn_sleeps_and_counts() {
+        use super::super::simulation::native_q1_monsters::Q1MonsterThink;
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let bosses = live_bosses(&world);
+        assert_eq!(bosses.len(), 1, "e1m7 spawns one Chthon");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(borrowed.total_monsters, LIVE_E1M7_NATIVE_SKILL2_TOTAL);
+        let monster = borrowed.monsters.get(&bosses[0]).expect("boss record");
+        assert_eq!(monster.think, Q1MonsterThink::Asleep);
+        assert_eq!(monster.nextthink, -1.0, "no think until use wakes it");
+        assert!(!borrowed.solids.contains(&bosses[0]), "sleepers stay unsolid");
+        let combat = world
+            .server()
+            .simulation()
+            .combat_state(&bosses[0])
+            .expect("boss combat");
+        assert_eq!(combat.health, 0.0);
+        // The lightning rig spawns with it: one event, two electrodes.
+        assert_eq!(borrowed.by_targetname.get("t14").map(Vec::len), Some(1));
+        assert_eq!(live_doors_by_targetname(&world, "t12").len(), 1);
+        assert_eq!(live_doors_by_targetname(&world, "t13").len(), 1);
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0139_boss_awake_rises_and_hurls() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+        use super::super::simulation::native_q1_weapons::{Q1MissileKind, Q1TempEnt};
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let bosses = live_bosses(&world);
+        let player = world.player_actor().cloned().expect("player");
+        // Probe a lava-free spot while the sleeper dreams (the arena
+        // floor burns): short windows, so nothing else can interfere.
+        let feet = live_monster_feet(&world, &bosses[0]);
+        let mut spot = None;
+        'probe: for dist in [300.0, 400.0, 500.0] {
+            for (dx, dy) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+                let at = vec3(feet.x + dx * dist, feet.y + dy * dist, feet.z + 200.0);
+                live_place_player(&mut world, at);
+                live_set_player_health(&mut world, 1000.0);
+                for _ in 0..10 {
+                    live_tick(&mut world);
+                }
+                if live_player_health(&world) >= 1000.0 {
+                    spot = Some(at);
+                    break 'probe;
+                }
+            }
+        }
+        let spot = spot.expect("a lava-free spot near the boss");
+        // The sigil's use wakes the sleeper: solid, sized, rising.
+        live_fire_use(&mut world, &bosses[0], &player);
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let monster = borrowed.monsters.get(&bosses[0]).expect("boss record");
+            assert_eq!(monster.think, Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0));
+            assert_eq!(monster.enemy, Some(player.clone()));
+            assert!(borrowed.solids.contains(&bosses[0]));
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::LavaSplash { .. })),
+                "wakes splash lava"
+            );
+        }
+        // The rise barks the breach, then the sight.
+        for _ in 0..30 {
+            live_tick(&mut world);
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/out1.wav"),
+                "the rise barks the breach"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/sight1.wav"),
+                "the rise barks the sight"
+            );
+        }
+        // The missile loop hurls lava balls at the player: soak until
+        // an owned ball is in flight, then attribute the wound to an
+        // owned impact (other monsters roam the map).
+        live_place_player(&mut world, spot);
+        live_set_player_health(&mut world, 1000.0);
+        let mut cast = false;
+        let mut owned = 0;
+        let mut impact_step = None;
+        let mut wounded = false;
+        for step in 0..900 {
+            if step % 10 == 0 {
+                live_place_player(&mut world, spot);
+            }
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            let flying = borrowed
+                .missiles
+                .values()
+                .filter(|missile| missile.kind == Q1MissileKind::LavaBall && missile.owner == bosses[0])
+                .count();
+            cast |= flying > 0;
+            if flying < owned {
+                impact_step = Some(step);
+            }
+            owned = flying;
+            if cast && live_player_health(&world) < 1000.0 && impact_step.is_some_and(|at| step - at <= 5) {
+                wounded = true;
+                break;
+            }
+        }
+        assert!(cast, "the missile loop hurls lava balls");
+        assert!(wounded, "a lava ball wounds the player");
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        assert!(
+            behaviors
+                .borrow()
+                .sounds
+                .iter()
+                .any(|sound| sound.sample == "boss1/throw.wav"),
+            "throws bark"
+        );
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0139_boss_ignores_damage() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_advance(&mut world, 1.0);
+        let bosses = live_bosses(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_fire_use(&mut world, &bosses[0], &player);
+        // `DAMAGE_NO`: even a 700-damage hit changes nothing.
+        live_damage(&mut world, &bosses[0], Some(&player), 700.0);
+        let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+        let borrowed = behaviors.borrow();
+        assert_eq!(
+            world
+                .server()
+                .simulation()
+                .combat_state(&bosses[0])
+                .map(|combat| combat.health),
+            Some(3.0)
+        );
+        assert_eq!(
+            borrowed.monsters.get(&bosses[0]).map(|monster| monster.think),
+            Some(Q1MonsterThink::Frame(Q1MonsterSeq::BossRise, 0))
+        );
+        assert_eq!(borrowed.killed_monsters, 0);
+        assert!(borrowed.pending_gibs.is_empty(), "Chthon never gibs");
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
+    fn live_q1_0139_lightning_kills_and_opens_exit() {
+        use super::super::simulation::native_q1_monsters::{Q1MonsterSeq, Q1MonsterThink};
+        use super::super::simulation::native_q1_weapons::Q1TempEnt;
+
+        let Some(mut world) = live_q1_world("maps/e1m7.bsp", GameMode::Singleplayer, 2) else {
+            return;
+        };
+        live_silence_door_fields(&mut world);
+        live_advance(&mut world, 1.0);
+        let bosses = live_bosses(&world);
+        let player = world.player_actor().cloned().expect("player");
+        live_fire_use(&mut world, &bosses[0], &player);
+        let event = {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let found = behaviors.borrow().by_targetname.get("t14").cloned().unwrap_or_default();
+            found
+        }
+        .into_iter()
+        .next()
+        .expect("lightning event");
+        // The electrodes start open; three strikes walk the shocks.
+        // The gate only refuses same-instant repeats, so back-to-back
+        // strikes land inside the 1 s window with no re-raise.
+        for (health, seq) in [
+            (2.0, Q1MonsterSeq::BossShockA),
+            (1.0, Q1MonsterSeq::BossShockB),
+            (0.0, Q1MonsterSeq::BossShockC),
+        ] {
+            for _ in 0..5 {
+                live_tick(&mut world);
+            }
+            live_fire_use(&mut world, &event, &player);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert_eq!(
+                world
+                    .server()
+                    .simulation()
+                    .combat_state(&bosses[0])
+                    .map(|combat| combat.health),
+                Some(health)
+            );
+            assert_eq!(
+                borrowed.monsters.get(&bosses[0]).map(|monster| monster.think),
+                Some(Q1MonsterThink::Frame(seq, 0))
+            );
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(borrowed.monsters.get(&bosses[0]).expect("boss record").dead);
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "misc/power.wav"),
+                "strikes hum"
+            );
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/pain.wav"),
+                "TOP strikes hurt"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::Lightning3 { .. })),
+                "strikes draw TE_LIGHTNING3"
+            );
+        }
+        // The final shock runs the crying death into the counting
+        // removal, which fires the exit doors open.
+        for _ in 0..600 {
+            live_tick(&mut world);
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            if !behaviors.borrow().monsters.contains_key(&bosses[0]) {
+                break;
+            }
+        }
+        {
+            let behaviors = world.q1_behaviors().expect("Q1 behaviors");
+            let borrowed = behaviors.borrow();
+            assert!(
+                !borrowed.monsters.contains_key(&bosses[0]),
+                "the death removes the body"
+            );
+            assert_eq!(borrowed.killed_monsters, 1);
+            assert!(
+                borrowed.sounds.iter().any(|sound| sound.sample == "boss1/death.wav"),
+                "deaths cry"
+            );
+            assert!(
+                borrowed
+                    .temp_ents
+                    .iter()
+                    .any(|ent| matches!(ent, Q1TempEnt::LavaSplash { .. })),
+                "the ninth death splashes lava"
+            );
+        }
+        for _ in 0..600 {
+            live_tick(&mut world);
+        }
+        let exits = live_doors_by_targetname(&world, "t9");
+        assert_eq!(exits.len(), 3, "three exit doors wait on the boss");
+        for exit in &exits {
+            let phase = world.server_mut().movers_mut().get(exit).unwrap().phase;
+            assert!(
+                matches!(
+                    phase,
+                    qa_world::movers::MoverPhase::ToPos2 | qa_world::movers::MoverPhase::AtPos2
+                ),
+                "the death opens the exit doors, got {phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "live proof: needs Steel corpus"]
     fn live_q1_0144_hknight_gib_bursts() {
         let Some(mut world) = live_q1_world("maps/e2m3.bsp", GameMode::Singleplayer, 2) else {
             return;
