@@ -9048,7 +9048,7 @@ mod tests {
                 .iter()
                 .find(|tarbaby| {
                     matches!(
-                        borrowed.monsters.get(*tarbaby).map(|monster| monster.think),
+                        borrowed.monsters.get(tarbaby).map(|monster| monster.think),
                         Some(Q1MonsterThink::Frame(Q1MonsterSeq::TbStand, _))
                     )
                 })
