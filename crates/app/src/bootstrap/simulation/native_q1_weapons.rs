@@ -41,9 +41,11 @@ use qa_world::spawn::SpawnFields;
 
 use super::native_q1_items::Q1Sprint;
 use super::native_q1_monsters::{
-    q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage, q1_takedamage_aim,
-    Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE, Q1_CHAN_WEAPON, Q1_DAMAGE_AIM,
-    Q1_FLESH_DAMAGE, Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
+    q1_actor_eye, q1_can_damage, q1_monster_crandom, q1_monster_random, q1_monster_sound, q1_t_damage,
+    q1_takedamage_aim, Q1MonsterCtx, Q1PendingGib, Q1_ATTN_NORM, Q1_ATTN_STATIC, Q1_CHAN_VOICE,
+    Q1_CHAN_WEAPON, Q1_DAMAGE_AIM, Q1_FLESH_DAMAGE, Q1_GRENADE_DAMAGE, Q1_LASER_DAMAGE,
+    Q1_VOREBALL_BLAST_DAMAGE, Q1_VOREBALL_HOME_INTERVAL, Q1_VOREBALL_HOME_SPEED,
+    Q1_VOREBALL_HOME_SPEED_NIGHTMARE, Q1_VOREBALL_ZOMBIE_DAMAGE,
 };
 use super::native_q1_spawns::{q1_can_take_damage, q1_health_of, q1_remove, Q1NativeBehaviors};
 
@@ -352,6 +354,11 @@ pub enum Q1TempEnt {
         /// Impact point.
         at: Vec3,
     },
+    /// `TE_KNIGHTSPIKE` at the impact point.
+    KnightSpike {
+        /// Impact point.
+        at: Vec3,
+    },
     /// `TE_BLOOD` at the wound (`SpawnBlood`, `combat.qc`).
     Blood {
         /// Wound point.
@@ -361,6 +368,11 @@ pub enum Q1TempEnt {
     },
     /// `TE_EXPLOSION` at the blast center.
     Explosion {
+        /// Blast center.
+        at: Vec3,
+    },
+    /// `TE_TAREXPLOSION` at a spawn blast (`tbaby_die2`).
+    TarExplosion {
         /// Blast center.
         at: Vec3,
     },
@@ -1285,6 +1297,14 @@ pub enum Q1MissileKind {
     /// with classname `wizspike`, `weapons.qc:675`). The green tracer
     /// rides the `w_spike.mdl` model flags, not gamecode.
     WizSpike,
+    /// Hell knight spike: 9 damage, `TE_KNIGHTSPIKE` walls
+    /// (`spike_touch` with classname `knightspike`,
+    /// `weapons.qc:675`).
+    KnightSpike,
+    /// Vore homing ball: 110 direct to zombies plus a 40-radius
+    /// blast (`ShalMissileTouch`, `shalrath.qc:177`). Stock spawns
+    /// it classless; the native tag names the only such missile.
+    VoreBall,
 }
 
 impl Q1MissileKind {
@@ -1300,6 +1320,8 @@ impl Q1MissileKind {
             Q1MissileKind::OgreGrenade => "grenade",
             Q1MissileKind::ZombieFlesh => "zombie_flesh",
             Q1MissileKind::WizSpike => "wizspike",
+            Q1MissileKind::KnightSpike => "knightspike",
+            Q1MissileKind::VoreBall => "voreball",
         }
     }
 }
@@ -1330,6 +1352,12 @@ pub struct Q1Missile {
     /// `zombie.qc`): the next touch removes it. Other kinds leave this
     /// false.
     pub spent: bool,
+    /// Homing victim (`ShalHome`, `shalrath.qc:159`): voreballs steer
+    /// onto this enemy. Other kinds leave this empty.
+    pub home_enemy: Option<ActorId>,
+    /// Master-clock instant of the next homing steer (`ShalHome`
+    /// re-arms every 0.2 s; `None` never steers).
+    pub home_at: Option<f64>,
 }
 
 /// Stock `spawn()` parameters for one missile: the fire functions fill
@@ -1354,6 +1382,11 @@ pub struct Q1MissileSpawn {
     pub remove_at: f64,
     /// Master-clock spawn instant (no movement in the spawn pass).
     pub born_at: f64,
+    /// Homing victim for voreballs (`ShalHome`).
+    pub home_enemy: Option<ActorId>,
+    /// Master-clock instant of the first homing steer (flight time
+    /// out, at least 0.1 s).
+    pub home_at: Option<f64>,
 }
 
 /// Stock `spawn()` for a missile: a point-sized unsolid body with toss
@@ -1393,6 +1426,8 @@ pub fn q1_spawn_missile<L: ServerLogic>(
             onground: false,
             born_at: spawn.born_at,
             spent: false,
+            home_enemy: spawn.home_enemy,
+            home_at: spawn.home_at,
         },
     );
     Some(actor.id().clone())
@@ -1422,6 +1457,8 @@ pub fn q1_launch_spike<L: ServerLogic>(
             avelocity: vec3(0.0, 0.0, 0.0),
             effects: 0,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + 6.0,
             born_at: ctx.now,
         },
@@ -1515,6 +1552,8 @@ pub fn q1_fire_grenade<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             avelocity: vec3(300.0, 300.0, 300.0),
             effects: 0,
             fuse_at: Some(ctx.now + 2.5),
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + 2.5,
             born_at: ctx.now,
         },
@@ -1548,6 +1587,8 @@ pub fn q1_fire_rocket<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>) {
             avelocity: vec3(0.0, 0.0, 0.0),
             effects: 0,
             fuse_at: None,
+            home_enemy: None,
+            home_at: None,
             remove_at: ctx.now + 5.0,
             born_at: ctx.now,
         },
@@ -1719,17 +1760,56 @@ fn q1_missile_actor<L: ServerLogic>(ctx: &mut Q1WeaponFire<'_, '_, '_, L>, actor
     if missile.born_at == ctx.now {
         return;
     }
+    if missile.kind == Q1MissileKind::VoreBall {
+        q1_home_voreball(ctx, actor, &missile);
+    }
     match missile.kind {
         Q1MissileKind::Spike
         | Q1MissileKind::SuperSpike
         | Q1MissileKind::WizSpike
+        | Q1MissileKind::KnightSpike
         | Q1MissileKind::Rocket
-        | Q1MissileKind::Laser => {
+        | Q1MissileKind::Laser
+        | Q1MissileKind::VoreBall => {
             q1_fly_missile(ctx, actor, &missile, dt);
         }
         Q1MissileKind::Grenade | Q1MissileKind::OgreGrenade | Q1MissileKind::ZombieFlesh => {
             q1_bounce_grenade(ctx, actor, &missile, dt);
         }
+    }
+}
+
+/// Stock `ShalHome` (`shalrath.qc:159`): every 0.2 s the ball turns
+/// onto its victim's eye, 250 u/s (350 on nightmare). A ball past its
+/// arming with a bodiless victim just flies on straight.
+fn q1_home_voreball<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+) {
+    let armed = missile.home_at.is_some_and(|at| at <= ctx.now);
+    let Some(enemy) = missile.home_enemy.clone().filter(|_| armed) else {
+        return;
+    };
+    let speed = if ctx.behaviors.skill == 3 {
+        Q1_VOREBALL_HOME_SPEED_NIGHTMARE
+    } else {
+        Q1_VOREBALL_HOME_SPEED
+    };
+    let from = ctx.server.simulation().body_state(actor).map(|body| body.origin);
+    let aim = q1_actor_eye(ctx.behaviors, ctx.server.simulation(), &enemy);
+    if let (Some(from), Some(aim)) = (from, aim) {
+        let dir = vec3(aim.x - from.x, aim.y - from.y, aim.z - from.z);
+        let len = length3(dir);
+        if len > 0.0 {
+            let _ignored = ctx
+                .server
+                .simulation_mut()
+                .set_body_velocity(actor, scale3(dir, speed / len));
+        }
+    }
+    if let Some(record) = ctx.behaviors.missiles.get_mut(actor) {
+        record.home_at = Some(ctx.now + Q1_VOREBALL_HOME_INTERVAL);
     }
 }
 
@@ -1887,8 +1967,10 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Spike
             | Q1MissileKind::SuperSpike
             | Q1MissileKind::WizSpike
+            | Q1MissileKind::KnightSpike
             | Q1MissileKind::Rocket
             | Q1MissileKind::Laser
+            | Q1MissileKind::VoreBall
     );
     if flies_straight && q1_point_is_sky(ctx.scene, hit.endpos) {
         q1_remove_missile(ctx, actor);
@@ -1898,6 +1980,7 @@ fn q1_missile_impact<L: ServerLogic>(
         Q1MissileKind::Spike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::Spike),
         Q1MissileKind::SuperSpike => q1_spike_impact(ctx, actor, missile, hit, 18.0, Q1SpikeWall::SuperSpike),
         Q1MissileKind::WizSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::WizSpike),
+        Q1MissileKind::KnightSpike => q1_spike_impact(ctx, actor, missile, hit, 9.0, Q1SpikeWall::KnightSpike),
         Q1MissileKind::Rocket => {
             q1_rocket_impact(ctx, actor, missile, hit);
             true
@@ -1915,6 +1998,10 @@ fn q1_missile_impact<L: ServerLogic>(
             q1_zombie_flesh_impact(ctx, actor, missile, hit);
             true
         }
+        Q1MissileKind::VoreBall => {
+            q1_voreball_impact(ctx, actor, missile, hit);
+            true
+        }
     }
 }
 
@@ -1929,6 +2016,8 @@ pub enum Q1SpikeWall {
     SuperSpike,
     /// `TE_WIZSPIKE`.
     WizSpike,
+    /// `TE_KNIGHTSPIKE`.
+    KnightSpike,
 }
 
 /// Stock `spike_touch` / `superspike_touch` (`weapons.qc:675`): blood
@@ -1981,6 +2070,7 @@ fn q1_spike_impact<L: ServerLogic>(
             Q1SpikeWall::Spike => Q1TempEnt::Spike { at: hit.endpos },
             Q1SpikeWall::SuperSpike => Q1TempEnt::SuperSpike { at: hit.endpos },
             Q1SpikeWall::WizSpike => Q1TempEnt::WizSpike { at: hit.endpos },
+            Q1SpikeWall::KnightSpike => Q1TempEnt::KnightSpike { at: hit.endpos },
         };
         ctx.behaviors.temp_ents.push(ent);
     }
@@ -2083,6 +2173,40 @@ fn q1_rocket_impact<L: ServerLogic>(
         }
     }
     q1_grenade_explode(ctx, actor, hit.hit_actor.as_ref(), 120.0, 8.0);
+}
+
+/// Stock `ShalMissileTouch` (`shalrath.qc:177`): zombies take 110
+/// direct; then a 40-radius blast goes off around the ball with the
+/// flash 8 u back along the flight (`q1_grenade_explode` carries the
+/// offset and the removal). Stock ignores only `world`, so the
+/// direct victim takes the blast too.
+fn q1_voreball_impact<L: ServerLogic>(
+    ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
+    actor: &ActorId,
+    missile: &Q1Missile,
+    hit: &Q1LineHit,
+) {
+    if let Some(other) = hit.hit_actor.clone() {
+        let zombie = ctx
+            .behaviors
+            .monsters
+            .get(&other)
+            .is_some_and(|monster| monster.kind.classname() == "monster_zombie");
+        if zombie {
+            let (simulation, movers, triggers) = ctx.server.simulation_movers_and_triggers_mut();
+            q1_t_damage(
+                ctx.behaviors,
+                simulation,
+                movers,
+                triggers,
+                &other,
+                Some(actor),
+                Some(&missile.owner),
+                Q1_VOREBALL_ZOMBIE_DAMAGE,
+            );
+        }
+    }
+    q1_grenade_explode(ctx, actor, None, Q1_VOREBALL_BLAST_DAMAGE, 8.0);
 }
 
 /// Stock `GrenadeTouch` (`weapons.qc:714`) plus the toss clip
@@ -2275,7 +2399,7 @@ pub(crate) fn q1_grenade_explode<L: ServerLogic>(
 /// Stock `T_RadiusDamage` (`combat.qc:224`): linear `damage - 0.5 * dist`
 /// falloff over `damage + 40` units, the attacker at half strength,
 /// `CanDamage` gating every victim, shamblers halved again.
-fn q1_t_radius_damage<L: ServerLogic>(
+pub(crate) fn q1_t_radius_damage<L: ServerLogic>(
     ctx: &mut Q1WeaponFire<'_, '_, '_, L>,
     inflictor: &ActorId,
     attacker: &ActorId,
@@ -3625,6 +3749,8 @@ mod tests {
                 avelocity: vec3(3000.0, 1000.0, 2000.0),
                 effects: 0,
                 fuse_at: None,
+                home_enemy: None,
+                home_at: None,
                 remove_at: 3.5,
                 born_at: 1.0,
             },
@@ -3747,6 +3873,8 @@ mod tests {
                 avelocity: vec3(0.0, 0.0, 0.0),
                 effects: 0,
                 fuse_at: None,
+                home_enemy: None,
+                home_at: None,
                 remove_at: 99.0,
                 born_at: 0.0,
             },
@@ -3777,6 +3905,8 @@ mod tests {
                 avelocity: vec3(0.0, 0.0, 0.0),
                 effects: 0,
                 fuse_at: None,
+                home_enemy: None,
+                home_at: None,
                 remove_at: 7.0,
                 born_at: 1.0,
             },

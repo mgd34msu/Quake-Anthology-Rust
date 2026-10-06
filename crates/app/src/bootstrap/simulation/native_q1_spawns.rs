@@ -686,6 +686,10 @@ pub struct Q1NativeBehaviors {
     /// Pending scrag spike volleys (`Wiz_StartFast`): the monster pass
     /// fires and removes due ones each think.
     pub wiz_volleys: Vec<Q1WizVolley>,
+    /// Shared hell knight combo counter (`hknight_type`, `hknight.qc`):
+    /// stock keeps one global across all hell knights, cycling
+    /// slice/smash/whirl.
+    pub hknight_type: i32,
     /// Queued monster sounds for the audio slice to drain.
     pub sounds: Vec<Q1Sound>,
     /// Monsters in the map (`total_monsters`).
