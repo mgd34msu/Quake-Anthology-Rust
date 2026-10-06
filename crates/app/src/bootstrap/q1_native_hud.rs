@@ -458,7 +458,7 @@ impl Q1NativeHud {
 
     /// Real frame delta in seconds since the last call (0 on the first).
     pub fn wall_dt(&mut self, time_ms: f64) -> f32 {
-        let dt = self.last_wall_ms.map_or(0.0, |last| (time_ms - last) as f32);
+        let dt = wall_dt_seconds(self.last_wall_ms, time_ms);
         self.last_wall_ms = Some(time_ms);
         dt
     }
@@ -499,6 +499,13 @@ fn load_lump(mounts: &MountedContent, archive: &OwnedWadArchive, name: &str) -> 
     }
     let image = decode_qpic(&lump.bytes, &format!("gfx.wad:{name}")).ok()?;
     Some((image.width, image.height, image.indices))
+}
+
+/// Wall-clock frame delta in seconds from millisecond stamps (0 on
+/// the first frame). Decay math runs in seconds; the stamps arrive in
+/// milliseconds.
+fn wall_dt_seconds(last_wall_ms: Option<f64>, time_ms: f64) -> f32 {
+    last_wall_ms.map_or(0.0, |last| ((time_ms - last) / 1000.0) as f32)
 }
 
 /// Current-ammo stat and ammo-icon bit from the active weapon
@@ -890,6 +897,12 @@ mod tests {
         assert_eq!(current_ammo(Q1_IT_LIGHTNING, 0.0, 0.0, 0.0, 40.0), (40, Q1_IT_CELLS));
         assert_eq!(current_ammo(Q1_IT_AXE, 25.0, 0.0, 0.0, 0.0), (0, 0));
         assert_eq!(current_ammo(0, 25.0, 0.0, 0.0, 0.0), (0, 0));
+    }
+
+    #[test]
+    fn wall_dt_counts_seconds_not_milliseconds() {
+        assert_eq!(wall_dt_seconds(None, 1000.0), 0.0);
+        assert!((wall_dt_seconds(Some(1000.0), 1028.0) - 0.028).abs() < 1e-6);
     }
 
     #[test]
