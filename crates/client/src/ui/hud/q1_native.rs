@@ -352,25 +352,35 @@ fn sbar_itoa(num: i32) -> String {
     text
 }
 
+/// One right-aligned numeric field for [`draw_num`]: position,
+/// value, field width and `num_` (0) / `anum_` (1) color.
+struct Q1NumField {
+    x: i32,
+    y: i32,
+    num: i32,
+    digits: usize,
+    color: usize,
+}
+
 /// Stock `Sbar_DrawNum` (`sbar.c:350-374`): right-aligned `digits`
 /// field of 24 px numerals, truncating leading (most significant)
 /// digits past the field width. `color` selects `num_` (0) or `anum_`
 /// (1).
-fn draw_num(out: &mut Vec<NativeQ1HudOperation>, xofs: i32, base_y: i32, x: i32, y: i32, num: i32, digits: usize, color: usize) {
-    let text = sbar_itoa(num);
+fn draw_num(out: &mut Vec<NativeQ1HudOperation>, xofs: i32, base_y: i32, field: Q1NumField) {
+    let text = sbar_itoa(field.num);
     let chars: Vec<char> = text.chars().collect();
-    let start = chars.len().saturating_sub(digits);
+    let start = chars.len().saturating_sub(field.digits);
     let shown = &chars[start..];
-    let mut x = x + (digits.saturating_sub(shown.len()) as i32) * 24;
+    let mut x = field.x + (field.digits.saturating_sub(shown.len()) as i32) * 24;
     for ch in shown {
         let lump = if *ch == '-' {
-            format!("{}_minus", if color == 0 { "num" } else { "anum" })
+            format!("{}_minus", if field.color == 0 { "num" } else { "anum" })
         } else {
-            format!("{}_{}", if color == 0 { "num" } else { "anum" }, ch)
+            format!("{}_{}", if field.color == 0 { "num" } else { "anum" }, ch)
         };
         out.push(NativeQ1HudOperation::TransPicture {
             x: xofs + x,
-            y: base_y + y,
+            y: base_y + field.y,
             lump,
         });
         x += 24;
@@ -594,7 +604,7 @@ fn draw_hipnotic_weapons(
         if frame.items & (1 << bit) == 0 {
             continue;
         }
-        let active = frame.stats[Q1_STAT_ACTIVEWEAPON] == (1 << bit) as i32;
+        let active = frame.stats[Q1_STAT_ACTIVEWEAPON] == (1 << bit);
         let row = weapon_flash_row(frame, *bit, active);
         if slot == 2 {
             if frame.items & Q1_IT_GRENADE_LAUNCHER != 0 && row != 0 {
@@ -769,7 +779,7 @@ fn draw_face(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs
 /// 666 plus the disc, otherwise the value plus the strongest icon.
 fn draw_armor(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs: i32, base_y: i32) {
     if frame.items & Q1_IT_INVULNERABILITY != 0 {
-        draw_num(out, xofs, base_y, 24, 0, 666, 3, 1);
+        draw_num(out, xofs, base_y, Q1NumField { x: 24, y: 0, num: 666, digits: 3, color: 1 });
         out.push(NativeQ1HudOperation::Picture {
             x: xofs,
             y: base_y,
@@ -778,7 +788,7 @@ fn draw_armor(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xof
         return;
     }
     let armor = frame.stats[Q1_STAT_ARMOR];
-    draw_num(out, xofs, base_y, 24, 0, armor, 3, usize::from(armor <= 25));
+    draw_num(out, xofs, base_y, Q1NumField { x: 24, y: 0, num: armor, digits: 3, color: usize::from(armor <= 25) });
     let (low, mid, high) = if frame.product == Q1SbarProduct::Rogue {
         (Q1_RIT_ARMOR1, Q1_RIT_ARMOR2, Q1_RIT_ARMOR3)
     } else {
@@ -842,7 +852,7 @@ fn draw_ammo(out: &mut Vec<NativeQ1HudOperation>, frame: &NativeQ1HudFrame, xofs
         });
     }
     let ammo = frame.stats[Q1_STAT_AMMO];
-    draw_num(out, xofs, base_y, 248, 0, ammo, 3, usize::from(ammo <= 10));
+    draw_num(out, xofs, base_y, Q1NumField { x: 248, y: 0, num: ammo, digits: 3, color: usize::from(ammo <= 10) });
 }
 
 /// Solo scoreboard (`Sbar_SoloScoreboard`, `sbar.c:457-480`): monster
@@ -1074,7 +1084,7 @@ pub fn q1_sbar_operations(
         draw_armor(&mut out, frame, xofs, base_y);
         draw_face(&mut out, frame, xofs, base_y);
         let health = frame.stats[Q1_STAT_HEALTH];
-        draw_num(&mut out, xofs, base_y, 136, 0, health, 3, usize::from(health <= 25));
+        draw_num(&mut out, xofs, base_y, Q1NumField { x: 136, y: 0, num: health, digits: 3, color: usize::from(health <= 25) });
         draw_ammo(&mut out, frame, xofs, base_y);
     }
     if width > Q1_SBAR_WIDTH && frame.deathmatch {
@@ -1105,7 +1115,7 @@ pub fn q1_intermission_operations(frame: &NativeQ1HudFrame, width: i32) -> Vec<N
     });
     let minutes = (frame.completed_time / 60.0) as i32;
     let seconds = (frame.completed_time - 60.0 * minutes as f32) as i32;
-    draw_num(&mut out, xofs, 0, 160, 64, minutes, 3, 0);
+    draw_num(&mut out, xofs, 0, Q1NumField { x: 160, y: 64, num: minutes, digits: 3, color: 0 });
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 234,
         y: 64,
@@ -1121,20 +1131,20 @@ pub fn q1_intermission_operations(frame: &NativeQ1HudFrame, width: i32) -> Vec<N
         y: 64,
         lump: format!("num_{}", seconds % 10),
     });
-    draw_num(&mut out, xofs, 0, 160, 104, frame.stats[Q1_STAT_SECRETS], 3, 0);
+    draw_num(&mut out, xofs, 0, Q1NumField { x: 160, y: 104, num: frame.stats[Q1_STAT_SECRETS], digits: 3, color: 0 });
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 232,
         y: 104,
         lump: "num_slash".to_string(),
     });
-    draw_num(&mut out, xofs, 0, 240, 104, frame.stats[Q1_STAT_TOTALSECRETS], 3, 0);
-    draw_num(&mut out, xofs, 0, 160, 144, frame.stats[Q1_STAT_MONSTERS], 3, 0);
+    draw_num(&mut out, xofs, 0, Q1NumField { x: 240, y: 104, num: frame.stats[Q1_STAT_TOTALSECRETS], digits: 3, color: 0 });
+    draw_num(&mut out, xofs, 0, Q1NumField { x: 160, y: 144, num: frame.stats[Q1_STAT_MONSTERS], digits: 3, color: 0 });
     out.push(NativeQ1HudOperation::TransPicture {
         x: xofs + 232,
         y: 144,
         lump: "num_slash".to_string(),
     });
-    draw_num(&mut out, xofs, 0, 240, 144, frame.stats[Q1_STAT_TOTALMONSTERS], 3, 0);
+    draw_num(&mut out, xofs, 0, Q1NumField { x: 240, y: 144, num: frame.stats[Q1_STAT_TOTALMONSTERS], digits: 3, color: 0 });
     out
 }
 
