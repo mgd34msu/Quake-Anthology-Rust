@@ -37,6 +37,10 @@ class XClient:
     def __init__(self, display):
         self.x = C.CDLL("libX11.so.6")
         self.xt = C.CDLL("libXtst.so.6")
+        callback = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p)
+        self.error_handler = callback(lambda display, event: 0)
+        self.x.XSetErrorHandler.argtypes = [callback]
+        self.x.XSetErrorHandler(self.error_handler)
         signatures = {
             "XOpenDisplay": ([C.c_char_p], C.c_void_p),
             "XDefaultRootWindow": ([C.c_void_p], C.c_ulong),
@@ -79,6 +83,8 @@ class XClient:
         return None
 
     def drive(self, window, actions):
+        if not actions:
+            return
         self.x.XSetInputFocus(self.display, window, 2, 0)
         for action in actions:
             if "mouse" in action:

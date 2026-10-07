@@ -54,10 +54,10 @@ def stage(source, target, expected):
 
 def install(build, destination, profile, evidence, arguments):
     require(destination.name == "qa-rust", "destination must name qa-rust")
+    original_profile = {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
     metadata, qualification = qualify(build, profile, evidence, arguments)
     binary = build / "qa-rust"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    original_profile = {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
     staged = stage(binary, destination, qualification["candidate_identity"])
     try:
         require(identity(binary) == qualification["candidate_identity"], "qualified candidate changed before install")
