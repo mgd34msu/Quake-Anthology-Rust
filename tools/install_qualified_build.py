@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 from private_run import equal_files, identity, run, settings
+from timing_guard import compare
 
 
 def require(condition, message):
@@ -53,10 +54,13 @@ def stage(source, target, expected):
         raise
 
 
-def install(build, destination, profile, evidence, arguments):
+def install(build, destination, profile, evidence, arguments, timings=None, baseline=None):
     require(destination.name == "qa-rust", "destination must name qa-rust")
     original_profile = {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
     metadata, qualification = qualify(build, profile, evidence, arguments)
+    require(timings is not None and baseline is not None, "measured gameplay timings and a comparable baseline are required")
+    performance = compare(json.loads(timings.read_text()), json.loads(baseline.read_text()),
+                          metadata, qualification["candidate_identity"])
     binary = build / "qa-rust"
     destination.parent.mkdir(parents=True, exist_ok=True)
     staged = stage(binary, destination, qualification["candidate_identity"])
@@ -68,6 +72,7 @@ def install(build, destination, profile, evidence, arguments):
         receipt = {"result": "PASS", "commit": metadata["commit"], "build": metadata,
                    "build_time_seconds": metadata["build_time_seconds"], "installed_at_utc": time_utc(),
                    "qualification_evidence": str(evidence / "result.json"),
+                   "performance": performance, "timing_evidence": str(timings), "timing_baseline": str(baseline),
                    "destination": str(destination), "byte_equal": True, "installed_identity": identity(destination)}
         (evidence / "install-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
         return receipt
@@ -86,13 +91,16 @@ def main():
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--owner-profile", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--timings", type=Path, help="measured gameplay timing report for this exact candidate")
+    parser.add_argument("--baseline", type=Path, help="comparable measured gameplay report")
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
     try:
         receipt = install(args.build_dir.resolve(strict=True), args.destination.absolute(),
-                          args.owner_profile.resolve(strict=True), args.evidence.resolve(), arguments)
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+                          args.owner_profile.resolve(strict=True), args.evidence.resolve(), arguments,
+                          args.timings, args.baseline)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print("Install refused: " + str(error), file=os.sys.stderr)
         return 1
     print(json.dumps(receipt, indent=2))

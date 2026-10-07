@@ -5,9 +5,11 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import statistics
+import subprocess
 
-from private_run import run
+from private_run import identity, run
 
 
 def pinned_cores():
@@ -49,6 +51,9 @@ def main():
     parser.add_argument("--owner-profile", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
+    binary = args.binary.resolve(strict=True)
+    artifact_identity = identity(binary)
+    build = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
     cores = pinned_cores()
     rows = []
     for width, height in ((1920, 1080), (640, 400), (320, 200)):
@@ -68,8 +73,15 @@ def main():
         rows.append({"resolution": f"{width}x{height}", "scope": timing["scope"],
                      "renderer": "SDL software window shell", "map": None,
                      "hardware_renderer_qualified": False, "warmup": 60, "frames": 600,
+                     "debugger": False, "vsync": False, "workload": None,
                      "cores": cores, "stages": stages, "evidence": str(folder)})
-    output = {"scope": "R0 tooling only; no gameplay renderer performance claim", "rows": rows}
+    if identity(binary) != artifact_identity:
+        raise ValueError("candidate changed during timing runs")
+    output = {"scope": "window_shell", "measured": True,
+              "qualification": "R0 tooling only; no gameplay renderer performance claim",
+              "artifact": str(binary), "artifact_identity": artifact_identity,
+              "commit": build["commit"], "target_cpu": build["target_cpu"],
+              "machine": dict(platform.uname()._asdict()), "rows": rows}
     (args.evidence / "frame-times.json").write_text(json.dumps(output, indent=2) + "\n")
     print(json.dumps(output, indent=2))
 
