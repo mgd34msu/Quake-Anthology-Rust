@@ -136,6 +136,11 @@ These are Mike's standing rules. They apply to every commit.
 
 ## Repo
 
+* Unit tests cover format readers, math and rule tables against qsrc values.
+  Put tests in tests/ or a small trailing test module. Production files with
+  more than 40% test-only content fail the build checker. Never assert message
+  wording. End-to-end proof goes through the normal input path in a binary,
+  with scripted input only in the development proof candidate.
 * Do not create GitHub releases or version tags unless the owner explicitly asks.
 * Keep `AGENTS.md` in the repo root with these rules and the current milestone order, so they survive restarts and context compaction.
 * Small commits, one capability or fix each, with the qsrc reference in the message.
