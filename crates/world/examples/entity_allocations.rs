@@ -40,10 +40,10 @@ fn main() -> Result<(), &'static str> {
             operations += 1;
         }
         for entry in &mut ids {
-            if let Some(id) = entry.take() {
-                if !table.release(id, now) {
-                    return Err("stale handle");
-                }
+            if let Some(id) = entry.take()
+                && !table.release(id, now)
+            {
+                return Err("stale handle");
             }
         }
     }
