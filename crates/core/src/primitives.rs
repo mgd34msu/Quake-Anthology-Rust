@@ -29,6 +29,12 @@ pub struct Plane {
     pub axis: Option<Axis>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ClipNode {
+    pub plane: u32,
+    pub children: [i32; 2],
+}
+
 impl Plane {
     pub fn signed_distance(self, point: Vec3) -> f32 {
         let coordinate = match self.axis {

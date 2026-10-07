@@ -1,7 +1,9 @@
 pub mod archive;
+pub mod bsp;
 mod headers;
 
-pub use headers::{Bsp, BspFormat, ModelHeader};
+pub use bsp::{Bsp, BspFormat};
+pub use headers::ModelHeader;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FormatError {
@@ -12,6 +14,9 @@ pub enum FormatError {
     Io(std::io::ErrorKind),
     Compression,
     Checksum,
+    InvalidValue,
+    InvalidReference(&'static str, usize),
+    Cycle,
 }
 
 fn word(bytes: &[u8], offset: usize) -> Result<u32, FormatError> {

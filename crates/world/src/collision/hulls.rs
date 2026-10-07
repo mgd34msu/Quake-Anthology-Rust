@@ -1,11 +1,6 @@
 use super::{Contents, Trace};
+pub use qa_core::primitives::ClipNode;
 use qa_core::primitives::{Axis, Plane, Vec3};
-
-#[derive(Clone, Copy, Debug)]
-pub struct ClipNode {
-    pub plane: u32,
-    pub children: [i32; 2],
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct HullModel {

@@ -61,6 +61,8 @@ fn malformed_bsp_records_are_rejected_at_admission() {
     let mut bytes = vec![0; 124];
     bytes[..4].copy_from_slice(&29u32.to_le_bytes());
     assert_eq!(Bsp::parse(&bytes).unwrap().record_count(1), Some(0));
+    bytes.push(0);
+    bytes[12..16].copy_from_slice(&124u32.to_le_bytes());
     bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
     assert!(matches!(
         Bsp::parse(&bytes),
