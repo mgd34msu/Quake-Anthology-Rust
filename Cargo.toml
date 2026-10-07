@@ -1,48 +1,16 @@
 [workspace]
-resolver = "2"
-members = [
-    "crates/core",
-    "crates/content",
-    "crates/world",
-    "crates/net",
-    "crates/guest",
-    "crates/compat",
-    "crates/client",
-    "crates/app",
-    "crates/platform",
-    "crates/bots",
-    "crates/tools",
-]
+resolver = "3"
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "GPL-2.0-or-later"
 
-[workspace.dependencies]
-crc32fast = "1"
-flate2 = "1"
-thiserror = "2"
-qa-core = { path = "crates/core" }
-qa-content = { path = "crates/content" }
-qa-world = { path = "crates/world" }
-qa-net = { path = "crates/net" }
-qa-guest = { path = "crates/guest" }
-qa-compat = { path = "crates/compat" }
-qa-client = { path = "crates/client" }
-qa-app = { path = "crates/app" }
-qa-platform = { path = "crates/platform" }
-qa-bots = { path = "crates/bots" }
-
-[package]
-name = "quake-anthology"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[[bin]]
-name = "quake-anthology"
-path = "src/main.rs"
-
-[dependencies]
-qa-app = { workspace = true }
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 2
+strip = "none"

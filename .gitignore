@@ -1,2 +1,4 @@
-target/
-docs/PORT_PLAN.md
+/target/
+/target-*/
+/evidence/
+**/__pycache__/

@@ -5,10 +5,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
-qa-core = { workspace = true }
-qa-platform = { workspace = true }
-qa-world = { workspace = true }
-qa-guest = { workspace = true }
-crc32fast = { workspace = true }
-flate2 = { workspace = true }
+qa-core = { path = "../core" }

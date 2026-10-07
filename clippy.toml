@@ -1,2 +1,0 @@
-# Clippy configuration. Lint levels are enforced via
-# `cargo clippy --all-targets -- -D warnings` (see docs/PORT_PLAN.md).
