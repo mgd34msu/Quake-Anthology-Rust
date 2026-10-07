@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cpu", choices=("baseline", "native"), default="baseline")
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+    subprocess.run(["python3", str(ROOT / "tools/check_rules.py"), "--root", str(ROOT)], check=True)
+    if args.check_only:
+        return
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = str(ROOT / "target")
     env["RUSTFLAGS"] = "" if args.cpu == "baseline" else "-C target-cpu=native"

@@ -77,7 +77,7 @@ impl Window {
         let mut quit = false;
         unsafe {
             while SDL_PollEvent(&mut event) != 0 {
-                let kind = u32::from_ne_bytes(event.0[0..4].try_into().unwrap());
+                let kind = u32::from_ne_bytes([event.0[0], event.0[1], event.0[2], event.0[3]]);
                 if kind == 0x300 {
                     println!("{{\"event\":\"key_down\",\"repeat\":{}}}", event.0[13] != 0);
                 }

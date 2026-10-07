@@ -1,0 +1,7 @@
+[
+  {
+    "rule": "panic-or-unwrap",
+    "path": "crates/formats/src/lib.rs",
+    "reason": "word() admits an exact four-byte slice before conversion; this is a load boundary."
+  }
+]

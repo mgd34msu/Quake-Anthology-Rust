@@ -112,7 +112,7 @@ fn run() -> Result<(), String> {
 
 fn main() {
     if let Err(message) = run() {
-        eprintln!("{message}");
+        qa_console::logger::error(&message);
         std::process::exit(1);
     }
 }

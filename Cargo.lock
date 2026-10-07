@@ -6,6 +6,7 @@ version = 4
 name = "qa-app"
 version = "0.1.0"
 dependencies = [
+ "qa-console",
  "qa-core",
  "qa-platform",
 ]
