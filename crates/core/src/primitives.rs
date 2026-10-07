@@ -168,10 +168,30 @@ impl PlayerState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UserCmd {
     pub duration_ms: u16,
+    pub server_time_ms: i32,
     pub view_angles: Vec3,
     pub movement: [i16; 3],
     pub buttons: u32,
     pub impulse: u8,
+    pub light_level: u8,
+    pub weapon: Option<WeaponId>,
+}
+
+pub mod buttons {
+    pub const ATTACK: u32 = 1;
+    pub const JUMP: u32 = 2;
+    pub const USE: u32 = 4;
+    pub const CROUCH: u32 = 8;
+    pub const WALK: u32 = 16;
+    pub const ANY: u32 = 32;
+    pub const TALK: u32 = 64;
+    pub const GESTURE: u32 = 128;
+    pub const AFFIRMATIVE: u32 = 256;
+    pub const NEGATIVE: u32 = 512;
+    pub const GETFLAG: u32 = 1024;
+    pub const GUARDBASE: u32 = 2048;
+    pub const PATROL: u32 = 4096;
+    pub const FOLLOWME: u32 = 8192;
 }
 
 #[derive(Clone, Copy, Debug)]
