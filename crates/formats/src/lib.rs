@@ -1,9 +1,9 @@
 pub mod archive;
 pub mod bsp;
-mod headers;
+pub mod model;
+mod text;
 
 pub use bsp::{Bsp, BspFormat};
-pub use headers::ModelHeader;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FormatError {

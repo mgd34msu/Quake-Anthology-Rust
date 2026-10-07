@@ -1,0 +1,17 @@
+MD5Version 10
+commandline "test"
+numJoints 1
+numMeshes 1
+joints { "origin" -1 ( 1 2 3 ) ( 0 0 0 ) }
+mesh { shader "textures/test"
+numverts 3
+vert 2 ( 0 1 ) 2 1
+vert 0 ( 0 0 ) 0 1
+vert 1 ( 1 0 ) 1 1
+numtris 1
+tri 0 0 1 2
+numweights 3
+weight 2 0 1 ( 0 1 0 )
+weight 0 0 1 ( 0 0 0 )
+weight 1 0 1 ( 1 0 0 )
+}

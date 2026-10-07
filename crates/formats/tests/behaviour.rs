@@ -1,4 +1,4 @@
-use qa_formats::{Bsp, BspFormat, FormatError, ModelHeader, archive::Archive};
+use qa_formats::{Bsp, BspFormat, FormatError, archive::Archive, model::Model};
 use std::{
     fs::File,
     sync::{
@@ -91,6 +91,13 @@ fn retail_e1m1_lumps_and_player_frames_match_observed_data() {
     assert_eq!(bsp.record_count(7), Some(5516));
     assert_eq!(bsp.record_count(14), Some(58));
     let model = load(b"progs/player.mdl");
-    let mdl = ModelHeader::parse(&model).unwrap();
-    assert_eq!((mdl.vertices, mdl.triangles, mdl.frames), (212, 408, 143));
+    let mdl = Model::parse(&model).unwrap();
+    assert_eq!(
+        (
+            mdl.meshes[0].vertices_per_frame,
+            mdl.meshes[0].triangles.len(),
+            mdl.frames.len()
+        ),
+        (212, 408, 143)
+    );
 }

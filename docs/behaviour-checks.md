@@ -16,7 +16,8 @@ The owned PAK0 observation matches e1m1's 1,810 planes, 7,358 vertices, 5,516 fa
 uses qsrc's binary layouts and the C port's checked load-time bounds and indexing.
 PAK names are indexed once at load, payloads remain borrowed, and duplicates keep
 the first original ordinal. BSP29, IBSP38 and IBSP46 share the header reader.
-ModelHeader reads MDL metadata; it does not yet decode all model records.
+The full model reader replaces the former MDL header-only reader. See
+[Model readers](model-readers.md) for format fidelity checks and their limits.
 
 Reference layouts are quake/WinQuake/common.c:1225-1236,
 quake/WinQuake/bspfile.h:59-95 and quake/WinQuake/modelgen.h:59-75.

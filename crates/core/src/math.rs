@@ -57,6 +57,17 @@ pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
     ])
 }
 
+/// A quaternion rotation, shared by skeletal file conversion and deformation.
+pub fn rotate_quaternion(q: [f32; 4], p: Vec3) -> Vec3 {
+    let dot = q[0] * p.0[0] + q[1] * p.0[1] + q[2] * p.0[2];
+    let scalar = q[3] * q[3] - q[0] * q[0] - q[1] * q[1] - q[2] * q[2];
+    Vec3([
+        scalar * p.0[0] + 2.0 * (q[0] * dot + q[3] * (q[1] * p.0[2] - q[2] * p.0[1])),
+        scalar * p.0[1] + 2.0 * (q[1] * dot + q[3] * (q[2] * p.0[0] - q[0] * p.0[2])),
+        scalar * p.0[2] + 2.0 * (q[2] * dot + q[3] * (q[0] * p.0[1] - q[1] * p.0[0])),
+    ])
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AngleBasis {
     pub forward: Vec3,
