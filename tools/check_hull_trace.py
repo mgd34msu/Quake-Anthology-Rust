@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import platform
 from pathlib import Path
 import random
 import re
@@ -13,7 +14,7 @@ from frame_timings import pinned_cores
 
 
 def function(source, name):
-    match = re.search(r"^\w+\s+" + re.escape(name) + r" \([^;\n]*\)\n\{", source, re.MULTILINE)
+    match = re.search(r"^[^;{}\n]*\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source, re.MULTILINE)
     if match is None:
         raise ValueError("reference function definition missing: " + name)
     start = match.start()
@@ -52,13 +53,14 @@ def geometry(pak_path):
     data = struct.pack("<3I3i", len(planes) // 20, len(drawing), len(clips), *roots) + planes
     data += b"".join(struct.pack("<Iii", *node) for node in drawing + clips)
     rng = random.Random(0x5155414B)
-    cases = []
+    segments = []
     for index in range(10_000):
         start = [rng.uniform(bounds[axis] - 32, bounds[axis + 3] + 32) for axis in range(3)]
         end = ([value + rng.uniform(-64, 64) for value in start] if index % 2 else
                [rng.uniform(bounds[axis] - 32, bounds[axis + 3] + 32) for axis in range(3)])
-        cases.append(struct.pack("<I6f", index % 3, *start, *end))
-    return data + b"".join(cases), {"planes": len(planes) // 20, "drawing_nodes": len(drawing), "clip_nodes": len(clips), "roots": roots, "seed": "0x5155414B", "cases": len(cases)}
+        segments.append(struct.pack("<6f", *start, *end))
+    cases = [struct.pack("<I", hull) + segment for hull in range(3) for segment in segments]
+    return data + b"".join(cases), {"planes": len(planes) // 20, "drawing_nodes": len(drawing), "clip_nodes": len(clips), "roots": roots, "seed": "0x5155414B", "unique_segments": len(segments), "hulls": ["point", "player", "large"], "cases_per_hull": len(segments), "cases": len(cases)}
 
 
 PREFIX = r'''
@@ -116,6 +118,7 @@ def main():
     parser.add_argument("--pak", type=Path, required=True)
     parser.add_argument("--qsrc", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--c-port", type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     world = args.qsrc / "quake/WinQuake/world.c"
@@ -141,7 +144,10 @@ def main():
     run.check_returncode()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], text=True))
-    report = {"scope": "headless retail hull workload; no gameplay/install", "commit": commit, "source_tree_dirty": dirty, "reference": str(world), "c_flags": "-O3 -ffp-contract=off", "cpu_affinity": cores, "debugger": False, "target_cpu": "baseline", "build_seconds": build_seconds, "workload": workload, "result": json.loads(run.stdout), "muse_historical_us": 229, "comparison_limit": "Muse's historical workload was not remeasured; this is not a controlled before/after comparison"}
+    report = {"scope": "headless retail hull workload; no gameplay/install", "commit": commit, "source_tree_dirty": dirty, "reference": str(world), "c_flags": "-O3 -ffp-contract=off", "cpu_affinity": cores, "machine": dict(platform.uname()._asdict()), "debugger": False, "target_cpu": "baseline", "build_seconds": build_seconds, "workload": workload, "result": json.loads(run.stdout), "muse_historical_us": 229, "comparison_limit": "Muse's historical workload was not remeasured; this is not a controlled before/after comparison"}
+    if args.c_port:
+        from measure_c_hull import measure
+        report["c_port"] = measure(args.c_port, data, args.output, cores)
     (args.output / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 

@@ -131,33 +131,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    for &(hull, start, end) in queries.iter().take(600) {
-        let (mins, maxs) = bounds[hull as usize];
-        black_box(hulls.trace(start, end, mins, maxs, Contents::SOLID));
+    if queries.len() != 30_000 {
+        return Err("expected the same 10000 segments for each hull".into());
     }
-    let mut samples = vec![0u128; queries.len() * 60];
-    MEASURING.store(true, Ordering::Relaxed);
-    for (sample, &(hull, start, end)) in samples.iter_mut().zip(queries.iter().cycle()) {
-        let (mins, maxs) = bounds[hull as usize];
-        let started = Instant::now();
-        black_box(hulls.trace(
-            black_box(start),
-            black_box(end),
-            mins,
-            maxs,
-            Contents::SOLID,
-        ));
-        *sample = started.elapsed().as_nanos();
+    let mut samples = vec![0u128; 10_000 * 60];
+    let mut statistics = [(0.0f64, 0u128); 3];
+    for (index, (group, stats)) in queries
+        .as_chunks::<10_000>()
+        .0
+        .iter()
+        .zip(&mut statistics)
+        .enumerate()
+    {
+        if group.iter().any(|query| query.0 as usize != index) {
+            return Err("mixed hull timing group".into());
+        }
+        let (mins, maxs) = bounds[index];
+        for &(_, start, end) in group.iter().take(600) {
+            black_box(hulls.trace(start, end, mins, maxs, Contents::SOLID));
+        }
+        MEASURING.store(true, Ordering::Relaxed);
+        for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
+            let started = Instant::now();
+            black_box(hulls.trace(
+                black_box(start),
+                black_box(end),
+                mins,
+                maxs,
+                Contents::SOLID,
+            ));
+            *sample = started.elapsed().as_nanos();
+        }
+        MEASURING.store(false, Ordering::Relaxed);
+        samples.sort_unstable();
+        *stats = (
+            (samples[(samples.len() - 1) / 2] + samples[samples.len() / 2]) as f64 * 0.5,
+            samples[(samples.len() * 99).div_ceil(100) - 1],
+        );
     }
-    MEASURING.store(false, Ordering::Relaxed);
     let allocations = ALLOCATIONS.load(Ordering::Relaxed);
-    samples.sort_unstable();
     println!(
-        "{{\"bit_exact_segments\":{},\"warmup_traces\":600,\"timed_traces\":{},\"median_ns\":{},\"p99_ns\":{},\"allocations_after_load\":{allocations}}}",
+        "{{\"bit_exact_segments\":{},\"unique_segments_per_hull\":10000,\"warmup_traces_per_hull\":600,\"timed_traces_per_hull\":600000,\"allocations_after_load\":{allocations},\"rows\":[{{\"hull\":\"point\",\"median_ns\":{},\"p99_ns\":{}}},{{\"hull\":\"player\",\"median_ns\":{},\"p99_ns\":{}}},{{\"hull\":\"large\",\"median_ns\":{},\"p99_ns\":{}}}]}}",
         queries.len(),
-        samples.len(),
-        samples[samples.len() / 2],
-        samples[samples.len() * 99 / 100]
+        statistics[0].0,
+        statistics[0].1,
+        statistics[1].0,
+        statistics[1].1,
+        statistics[2].0,
+        statistics[2].1
     );
     if allocations != 0 {
         return Err("trace allocated".into());
