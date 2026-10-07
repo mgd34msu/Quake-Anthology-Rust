@@ -111,7 +111,6 @@ pub enum PlayerTail {
         attack_finished: f64,
         water_jump_until: f64,
         teleport_hold_until: f64,
-        armor_absorption: f32,
     },
     Q2 {
         weapon_frame: i32,
@@ -130,6 +129,8 @@ pub struct PlayerState {
     pub view_angles: Vec3,
     pub health: i32,
     pub armor: i32,
+    pub armor_absorption: f32,
+    pub armor_energy_absorption: f32,
     pub armor_type: ItemId,
     pub weapon: WeaponId,
     pub pending_weapon: Option<WeaponId>,
@@ -208,8 +209,25 @@ pub struct Weapon {
 pub struct DamageEvent {
     pub target: EntityId,
     pub attacker: Option<EntityId>,
-    pub amount: i32,
-    pub direction: Vec3,
+    pub inflictor: Option<EntityId>,
+    pub amount: f32,
+    pub knockback: i32,
+    pub direction: Option<Vec3>,
+    pub point: Vec3,
+    pub flags: DamageFlags,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DamageFlags(pub u32);
+impl DamageFlags {
+    pub const RADIUS: u32 = 1;
+    pub const NO_ARMOR: u32 = 2;
+    pub const NO_KNOCKBACK: u32 = 4;
+    pub const NO_PROTECTION: u32 = 8;
+    pub const ENERGY: u32 = 16;
+    pub const FALLING: u32 = 32;
+    pub fn contains(self, flag: u32) -> bool {
+        self.0 & flag != 0
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SoundEvent {

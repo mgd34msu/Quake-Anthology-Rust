@@ -18,6 +18,8 @@ pub struct EntityColumns {
     pub touch: Box<[Option<CallbackId>]>,
     pub use_fn: Box<[Option<CallbackId>]>,
     pub blocked: Box<[Option<CallbackId>]>,
+    pub pain: Box<[Option<CallbackId>]>,
+    pub die: Box<[Option<CallbackId>]>,
     pub owner: Box<[ModuleId]>,
     pub classname: Box<[NameId]>,
     targetname: Box<[NameId]>,
@@ -40,6 +42,8 @@ impl EntityColumns {
             touch: vec![None; capacity].into_boxed_slice(),
             use_fn: vec![None; capacity].into_boxed_slice(),
             blocked: vec![None; capacity].into_boxed_slice(),
+            pain: vec![None; capacity].into_boxed_slice(),
+            die: vec![None; capacity].into_boxed_slice(),
             owner: vec![ModuleId::default(); capacity].into_boxed_slice(),
             classname: vec![NameId::default(); capacity].into_boxed_slice(),
             targetname: vec![NameId::default(); capacity].into_boxed_slice(),
@@ -61,6 +65,8 @@ impl EntityColumns {
         self.touch[slot] = None;
         self.use_fn[slot] = None;
         self.blocked[slot] = None;
+        self.pain[slot] = None;
+        self.die[slot] = None;
         self.owner[slot] = ModuleId::default();
         self.classname[slot] = NameId::default();
         self.targetname[slot] = NameId::default();
