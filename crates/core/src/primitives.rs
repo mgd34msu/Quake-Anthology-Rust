@@ -78,6 +78,20 @@ pub struct Body {
     pub maxs: Vec3,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bounds {
+    pub mins: Vec3,
+    pub maxs: Vec3,
+}
+
+impl Bounds {
+    pub fn overlaps(self, other: Self) -> bool {
+        (0..3).all(|axis| {
+            self.mins.0[axis] <= other.maxs.0[axis] && self.maxs.0[axis] >= other.mins.0[axis]
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Entity {
     pub id: EntityId,

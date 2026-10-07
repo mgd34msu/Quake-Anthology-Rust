@@ -1,5 +1,6 @@
 use qa_core::names::NameTable;
-use qa_core::primitives::ModuleId;
+use qa_core::primitives::{Bounds, ModuleId, Vec3};
+use qa_world::area::{AreaGrid, LinkFlags};
 use qa_world::entities::EntityTable;
 use qa_world::targets::TargetIndex;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -36,6 +37,11 @@ fn main() -> Result<(), &'static str> {
     let door = names.find(b"DOOR").ok_or("missing door")?;
     let exit = names.find(b"exit").ok_or("missing exit")?;
     let mut targets = TargetIndex::new(&table);
+    let bounds = Bounds {
+        mins: Vec3([-1024.0; 3]),
+        maxs: Vec3([1024.0; 3]),
+    };
+    let mut grid = AreaGrid::load(table.capacity(), bounds).map_err(|_| "area capacity")?;
     let mut ids = [None; 256];
     let mut operations = 0;
     MEASURING.store(true, Ordering::Relaxed);
@@ -44,6 +50,10 @@ fn main() -> Result<(), &'static str> {
         for (index, entry) in ids.iter_mut().enumerate() {
             let id = table.allocate(now, ModuleId(1)).ok_or("full table")?;
             table.set_targetname(id, if index % 2 == 0 { door } else { exit });
+            table.columns.position[id.slot as usize] = Vec3([index as f32 * 4.0 - 512.0, 0.0, 0.0]);
+            if !grid.link(&table, id, LinkFlags::SOLID) || grid.link(&table, id, LinkFlags::SOLID) {
+                return Err("unchanged row relinked");
+            }
             *entry = Some(id);
             operations += 1;
         }
@@ -51,9 +61,17 @@ fn main() -> Result<(), &'static str> {
         if targets.find(door).count() != 128 || targets.refresh(&table) {
             return Err("target index mismatch");
         }
+        if grid.query(&table, bounds, LinkFlags::SOLID).count() != 256 {
+            return Err("area query differs");
+        }
+        let moving = ids[0].ok_or("missing moving entity")?;
+        table.columns.position[moving.slot as usize].0[0] += 0.5;
+        if !grid.link(&table, moving, LinkFlags::SOLID) {
+            return Err("moved row was not relinked");
+        }
         for entry in &mut ids {
             if let Some(id) = entry.take()
-                && !table.release(id, now)
+                && (!grid.unlink(id) || !table.release(id, now))
             {
                 return Err("stale handle");
             }
@@ -66,10 +84,11 @@ fn main() -> Result<(), &'static str> {
     MEASURING.store(false, Ordering::Relaxed);
     let count = ALLOCATIONS.load(Ordering::Relaxed);
     println!(
-        "{{\"scope\":\"headless entity and target-index workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{}}}",
-        table.len()
+        "{{\"scope\":\"headless entity, target-index and area workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{},\"area_relinks\":{},\"unchanged_relinks\":0}}",
+        table.len(),
+        grid.relinks
     );
-    if count == 0 && table.len() == 2 {
+    if count == 0 && table.len() == 2 && grid.relinks == 2_570_000 {
         Ok(())
     } else {
         Err("allocation or lifecycle mismatch")
