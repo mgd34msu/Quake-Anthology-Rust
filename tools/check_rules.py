@@ -13,10 +13,27 @@ def source_code(text):
     return TOKENS.sub(lambda match: "".join("\n" if c == "\n" else " " for c in match[0]), text)
 
 
+def type_definitions(code):
+    blocks, boundary = [], 0
+    for token in re.finditer(r"\b(struct|enum|type)\s+(\w+)|[{};]", code):
+        value = token[0]
+        if value == "{":
+            blocks.append(bool(re.search(r"\b(?:impl|trait)\b", code[boundary:token.start()])))
+            boundary = token.end()
+        elif value == "}":
+            if blocks:
+                blocks.pop()
+            boundary = token.end()
+        elif value == ";":
+            boundary = token.end()
+        elif not (token[1] == "type" and blocks and blocks[-1]):
+            yield token
+
+
 def check(root):
     findings, definitions = [], {}
     primitive_source = source_code((root / "crates/core/src/primitives.rs").read_text())
-    primitives = {match[1] for match in re.finditer(r"\b(?:struct|enum|type)\s+(\w+)", primitive_source)}
+    primitives = {match[2] for match in type_definitions(primitive_source)}
     allow_file = root / "tools/rules-allowlist.json"
     allowed = json.loads(allow_file.read_text()) if allow_file.exists() else []
     for row in allowed:
@@ -53,12 +70,12 @@ def check(root):
         for rule, pattern in rules.items():
             for match in re.finditer(pattern, code):
                 add(path, code, match.start(), rule)
-        for match in re.finditer(r"\b(?:struct|enum|type)\s+(\w+)", code):
-            if match[1] in primitives:
-                if match[1] in definitions:
+        for match in type_definitions(code):
+            if match[2] in primitives:
+                if match[2] in definitions:
                     add(path, code, match.start(), "duplicate-primitive")
                 else:
-                    definitions[match[1]] = relative
+                    definitions[match[2]] = relative
         for match in re.finditer(r"\bTEMP(?:[-_][A-Z]+)?\b", raw):
             add(path, raw, match.start(), "temporary-diagnostics")
         test = re.search(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]", code)

@@ -37,7 +37,7 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
         fixture = root / "crates/world/src/violation.rs"
-        fixture.write_text('// mirror seam donor in comments are not identifiers\nfn fine() { let _ = "Sha256 panic!"; }')
+        fixture.write_text('// mirror seam donor in comments are not identifiers\nfn fine() { let _ = "Sha256 panic!"; }\nimpl Iterator for Query { type Item = EntityId; }')
         baseline = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
         if baseline.returncode:
             raise RuntimeError("non-code words caused a false positive: " + baseline.stdout)
