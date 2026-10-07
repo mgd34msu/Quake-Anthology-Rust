@@ -188,6 +188,22 @@ impl EntityTable {
         })
     }
 
+    /// A disconnected client's slot stays reserved, but its lifetime ends.
+    pub fn reset_client(&mut self, id: EntityId) -> Option<EntityId> {
+        let slot = self
+            .resolve(id)
+            .filter(|slot| *slot > 0 && *slot < self.reserved)?;
+        self.columns.clear(slot);
+        self.revision = self.revision.wrapping_add(1);
+        self.generations[slot] += 1;
+        if self.generations[slot] == u32::MAX {
+            self.live[slot] = false;
+            self.live_count -= 1;
+            return None;
+        }
+        self.id_at(slot)
+    }
+
     /// ED_Alloc: lowest eligible slot, early-map exception, then >0.5 seconds.
     pub fn allocate(&mut self, now: f64, owner: ModuleId) -> Option<EntityId> {
         for word in 0..self.free_bits.len() {

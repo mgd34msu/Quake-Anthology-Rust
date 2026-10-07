@@ -118,6 +118,7 @@ name = "qa-session"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-world",
 ]
 
 [[package]]

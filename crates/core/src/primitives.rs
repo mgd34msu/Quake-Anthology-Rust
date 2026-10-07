@@ -63,6 +63,10 @@ pub struct NameId(pub u32);
 pub struct ModuleId(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CallbackId(pub u16);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientId(pub u8);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PowerupId(pub u16);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Think {
@@ -99,13 +103,66 @@ pub struct Entity {
     pub next_think: Option<Think>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PlayerTail {
+    #[default]
+    None,
+    Q1 {
+        attack_finished: f64,
+        water_jump_until: f64,
+        teleport_hold_until: f64,
+        armor_absorption: f32,
+    },
+    Q2 {
+        weapon_frame: i32,
+        movement_time: u8,
+    },
+    Q3 {
+        weapon_time: i32,
+        movement_time: i32,
+        command_time: i32,
+    },
+}
+
+#[derive(Debug, Default)]
 pub struct PlayerState {
     pub body: Body,
     pub view_angles: Vec3,
     pub health: i32,
     pub armor: i32,
+    pub armor_type: ItemId,
     pub weapon: WeaponId,
+    pub pending_weapon: Option<WeaponId>,
+    pub inventory: Box<[i32]>,
+    pub powerup_until: Box<[f64]>,
+    pub view_offset: Vec3,
+    pub punch_angles: Vec3,
+    pub flags: u32,
+    pub score: i32,
+    pub frags: i32,
+    pub tail: PlayerTail,
+}
+
+impl PlayerState {
+    pub fn with_capacity(items: usize, powerups: usize) -> Self {
+        Self {
+            inventory: vec![0; items].into_boxed_slice(),
+            powerup_until: vec![0.0; powerups].into_boxed_slice(),
+            ..Self::default()
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.inventory.fill(0);
+        self.powerup_until.fill(0.0);
+        let inventory = std::mem::take(&mut self.inventory);
+        let powerup_until = std::mem::take(&mut self.powerup_until);
+        *self = Self {
+            inventory,
+            powerup_until,
+            ..Self::default()
+        };
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
