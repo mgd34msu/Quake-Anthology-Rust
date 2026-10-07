@@ -3,6 +3,44 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Vec3(pub [f32; 3]);
 
+impl Vec3 {
+    pub fn dot(self, other: Self) -> f32 {
+        self.0[0] * other.0[0] + self.0[1] * other.0[1] + self.0[2] * other.0[2]
+    }
+
+    pub fn lerp(self, end: Self, fraction: f32) -> Self {
+        Self(std::array::from_fn(|axis| {
+            self.0[axis] + fraction * (end.0[axis] - self.0[axis])
+        }))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
+    pub axis: Option<Axis>,
+}
+
+impl Plane {
+    pub fn signed_distance(self, point: Vec3) -> f32 {
+        let coordinate = match self.axis {
+            Some(Axis::X) => point.0[0],
+            Some(Axis::Y) => point.0[1],
+            Some(Axis::Z) => point.0[2],
+            None => self.normal.dot(point),
+        };
+        coordinate - self.distance
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityId {
     pub slot: u32,
