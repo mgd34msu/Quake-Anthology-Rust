@@ -1,5 +1,7 @@
+use qa_core::names::NameTable;
 use qa_core::primitives::ModuleId;
 use qa_world::entities::EntityTable;
+use qa_world::targets::TargetIndex;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -30,14 +32,24 @@ static ALLOCATOR: Counter = Counter;
 
 fn main() -> Result<(), &'static str> {
     let mut table = EntityTable::new(512, 2).map_err(|_| "capacity")?;
+    let names = NameTable::load([b"door".as_slice(), b"exit"]).map_err(|_| "name capacity")?;
+    let door = names.find(b"DOOR").ok_or("missing door")?;
+    let exit = names.find(b"exit").ok_or("missing exit")?;
+    let mut targets = TargetIndex::new(&table);
     let mut ids = [None; 256];
     let mut operations = 0;
     MEASURING.store(true, Ordering::Relaxed);
     for step in 0..10_000 {
         let now = 10.0 + f64::from(step);
-        for entry in &mut ids {
-            *entry = Some(table.allocate(now, ModuleId(1)).ok_or("full table")?);
+        for (index, entry) in ids.iter_mut().enumerate() {
+            let id = table.allocate(now, ModuleId(1)).ok_or("full table")?;
+            table.set_targetname(id, if index % 2 == 0 { door } else { exit });
+            *entry = Some(id);
             operations += 1;
+        }
+        targets.refresh(&table);
+        if targets.find(door).count() != 128 || targets.refresh(&table) {
+            return Err("target index mismatch");
         }
         for entry in &mut ids {
             if let Some(id) = entry.take()
@@ -46,11 +58,15 @@ fn main() -> Result<(), &'static str> {
                 return Err("stale handle");
             }
         }
+        targets.refresh(&table);
+        if targets.find(door).next().is_some() {
+            return Err("freed target remains");
+        }
     }
     MEASURING.store(false, Ordering::Relaxed);
     let count = ALLOCATIONS.load(Ordering::Relaxed);
     println!(
-        "{{\"scope\":\"headless entity allocation workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{}}}",
+        "{{\"scope\":\"headless entity and target-index workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{}}}",
         table.len()
     );
     if count == 0 && table.len() == 2 {

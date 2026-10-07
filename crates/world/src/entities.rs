@@ -20,7 +20,7 @@ pub struct EntityColumns {
     pub blocked: Box<[Option<CallbackId>]>,
     pub owner: Box<[ModuleId]>,
     pub classname: Box<[NameId]>,
-    pub targetname: Box<[NameId]>,
+    targetname: Box<[NameId]>,
     pub flags: Box<[u32]>,
     pub model: Box<[u32]>,
     pub frame: Box<[u32]>,
@@ -86,6 +86,10 @@ impl EntityColumns {
         self.mins[slot] = body.mins;
         self.maxs[slot] = body.maxs;
     }
+
+    pub fn targetname(&self, slot: usize) -> NameId {
+        self.targetname[slot]
+    }
 }
 
 pub struct EntityTable {
@@ -96,6 +100,7 @@ pub struct EntityTable {
     free_bits: Box<[u64]>,
     reserved: usize,
     live_count: usize,
+    revision: u64,
 }
 
 impl EntityTable {
@@ -121,6 +126,7 @@ impl EntityTable {
             free_bits,
             reserved,
             live_count: reserved,
+            revision: 0,
         })
     }
 
@@ -134,6 +140,21 @@ impl EntityTable {
 
     pub fn is_empty(&self) -> bool {
         self.live_count == 0
+    }
+
+    pub fn structural_revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn set_targetname(&mut self, id: EntityId, name: NameId) -> bool {
+        let Some(slot) = self.resolve(id) else {
+            return false;
+        };
+        if self.columns.targetname[slot] != name {
+            self.columns.targetname[slot] = name;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        true
     }
 
     pub fn id_at(&self, slot: usize) -> Option<EntityId> {
@@ -181,6 +202,7 @@ impl EntityTable {
                 self.free_bits[word] &= !(1 << bit);
                 self.live[slot] = true;
                 self.live_count += 1;
+                self.revision = self.revision.wrapping_add(1);
                 self.columns.clear(slot);
                 self.columns.owner[slot] = owner;
                 return self.id_at(slot);
@@ -198,6 +220,7 @@ impl EntityTable {
         }
         self.live[slot] = false;
         self.live_count -= 1;
+        self.revision = self.revision.wrapping_add(1);
         self.freed_at[slot] = now;
         self.columns.clear(slot);
         self.generations[slot] += 1;
