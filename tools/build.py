@@ -17,6 +17,11 @@ def main():
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = str(ROOT / "target")
     env["RUSTFLAGS"] = "" if args.cpu == "baseline" else "-C target-cpu=native"
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True))
+    env["QA_BUILD_COMMIT"] = commit
+    env["QA_BUILD_DIRTY"] = str(dirty).lower()
+    env["QA_TARGET_CPU"] = args.cpu
     started = time.monotonic()
     subprocess.run(["cargo", "build", "--release", "--workspace"], cwd=ROOT, env=env, check=True)
     candidate = ROOT / "target/candidate"
@@ -28,10 +33,10 @@ def main():
     subprocess.run(["objcopy", "--only-keep-debug", str(binary), str(symbols)], check=True)
     subprocess.run(["strip", "--strip-debug", str(binary)], check=True)
     subprocess.run(["objcopy", "--add-gnu-debuglink=" + symbols.name, binary.name], cwd=candidate, check=True)
-    record = {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+    record = {"commit": commit, "source_tree_dirty": dirty,
               "build_time_seconds": time.monotonic() - started, "target_cpu": args.cpu,
               "built_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-              "candidate": str(binary), "debug_symbols": str(symbols), "gameplay": False}
+              "candidate": str(binary), "debug_symbols": str(symbols)}
     (candidate / "build.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record))
 

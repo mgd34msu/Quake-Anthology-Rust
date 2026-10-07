@@ -8,6 +8,15 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--build-info" => {
+                println!(
+                    "{{\"commit\":\"{}\",\"source_tree_dirty\":{},\"target_cpu\":\"{}\"}}",
+                    option_env!("QA_BUILD_COMMIT").unwrap_or("unrecorded"),
+                    option_env!("QA_BUILD_DIRTY").unwrap_or("true"),
+                    option_env!("QA_TARGET_CPU").unwrap_or("baseline")
+                );
+                return Ok(());
+            }
             "--version" => {
                 println!("qa-rust {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());

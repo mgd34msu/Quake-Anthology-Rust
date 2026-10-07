@@ -188,6 +188,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
             time.sleep(0.05)
         if not window:
             raise RuntimeError("candidate did not open its window")
+        time.sleep(0.2)
         subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
         client.drive(window, actions or [])
         result["exit_code"] = game.wait(timeout=timeout)
