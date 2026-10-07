@@ -1,4 +1,6 @@
-use qa_core::primitives::{ClientId, EntityId, ModuleId, PlayerState, PlayerTail, UserCmd};
+use qa_core::primitives::{
+    ClientId, EntityId, HudState, ModuleId, PlayerState, PlayerTail, UserCmd,
+};
 use qa_world::entities::EntityTable;
 
 pub const MAX_CLIENTS: usize = 64;
@@ -14,6 +16,7 @@ pub struct Client {
     pub entity: EntityId,
     pub module: ModuleId,
     pub player: PlayerState,
+    pub hud: HudState,
     pub command: UserCmd,
 }
 
@@ -57,6 +60,11 @@ impl Server {
                 if slot < max_clients { powerups } else { 0 },
             ),
             command: UserCmd::default(),
+            hud: HudState::with_capacity(
+                if slot < max_clients { items } else { 0 },
+                if slot < max_clients { powerups } else { 0 },
+                if slot < max_clients { items } else { 0 },
+            ),
         });
         Ok(Self {
             entities,
@@ -76,6 +84,7 @@ impl Server {
         })?;
         let client = &mut self.clients[slot];
         client.player.reset();
+        client.hud.reset();
         client.player.tail = tail;
         client.command = UserCmd::default();
         client.module = module;
@@ -94,6 +103,7 @@ impl Server {
         };
         client.connection = None;
         client.player.reset();
+        client.hud.reset();
         client.command = UserCmd::default();
         client.module = ModuleId::default();
         if let Some(entity) = self.entities.reset_client(client.entity) {

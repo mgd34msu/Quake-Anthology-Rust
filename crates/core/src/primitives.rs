@@ -140,7 +140,9 @@ pub struct PlayerState {
     pub weapon: WeaponId,
     pub pending_weapon: Option<WeaponId>,
     pub inventory: Box<[i32]>,
+    pub item_acquired_at: Box<[f64]>,
     pub powerup_until: Box<[f64]>,
+    pub collectibles: u64,
     pub view_offset: Vec3,
     pub punch_angles: Vec3,
     pub flags: u32,
@@ -153,6 +155,7 @@ impl PlayerState {
     pub fn with_capacity(items: usize, powerups: usize) -> Self {
         Self {
             inventory: vec![0; items].into_boxed_slice(),
+            item_acquired_at: vec![0.0; items].into_boxed_slice(),
             powerup_until: vec![0.0; powerups].into_boxed_slice(),
             ..Self::default()
         }
@@ -160,11 +163,14 @@ impl PlayerState {
 
     pub fn reset(&mut self) {
         self.inventory.fill(0);
+        self.item_acquired_at.fill(0.0);
         self.powerup_until.fill(0.0);
         let inventory = std::mem::take(&mut self.inventory);
+        let item_acquired_at = std::mem::take(&mut self.item_acquired_at);
         let powerup_until = std::mem::take(&mut self.powerup_until);
         *self = Self {
             inventory,
+            item_acquired_at,
             powerup_until,
             ..Self::default()
         };
@@ -272,10 +278,58 @@ pub struct PrintEvent {
     pub kind: PrintKind,
     pub text: TextId,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
+pub struct HudLine {
+    pub text: TextId,
+    pub started_at: f64,
+    pub until: f64,
+}
+#[derive(Debug, Default)]
 pub struct HudState {
     pub health: i32,
     pub armor: i32,
     pub ammo: i32,
     pub weapon: WeaponId,
+    pub armor_type: ItemId,
+    pub frags: i32,
+    pub score: i32,
+    pub item_counts: Box<[i32]>,
+    pub item_acquired_at: Box<[f64]>,
+    pub owned_items: Box<[u64]>,
+    pub owned_weapons: Box<[u64]>,
+    pub powerup_until: Box<[f64]>,
+    pub collectibles: u64,
+    pub layout: NameId,
+    pub layout_text: Option<TextId>,
+    pub centerprint: Option<HudLine>,
+    pub notify: [Option<HudLine>; 4],
+}
+
+impl HudState {
+    pub fn with_capacity(items: usize, powerups: usize, weapons: usize) -> Self {
+        Self {
+            item_counts: vec![0; items].into_boxed_slice(),
+            item_acquired_at: vec![0.0; items].into_boxed_slice(),
+            owned_items: vec![0; items.div_ceil(64)].into_boxed_slice(),
+            owned_weapons: vec![0; weapons.div_ceil(64)].into_boxed_slice(),
+            powerup_until: vec![0.0; powerups].into_boxed_slice(),
+            ..Self::default()
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.item_counts.fill(0);
+        self.item_acquired_at.fill(0.0);
+        self.owned_items.fill(0);
+        self.owned_weapons.fill(0);
+        self.powerup_until.fill(0.0);
+        *self = Self {
+            item_counts: std::mem::take(&mut self.item_counts),
+            item_acquired_at: std::mem::take(&mut self.item_acquired_at),
+            owned_items: std::mem::take(&mut self.owned_items),
+            owned_weapons: std::mem::take(&mut self.owned_weapons),
+            powerup_until: std::mem::take(&mut self.powerup_until),
+            ..Self::default()
+        };
+    }
 }
