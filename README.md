@@ -7,8 +7,9 @@ R0 currently defines the workspace and shared values. Gameplay is not implemente
 Behaviour comes from qsrc, features from quake-typescript, and proven algorithms
 and fixes from the C port. Neither port's incompatible structure is retained.
 
-Muse's retired tree remains available through the annotated `muse-final` tag and
-its lane branches and worktrees. Main continues through normal descendant commits.
+Muse's retired tree remains available through the annotated `muse-final` tag.
+The owner retired its branches and worktrees. Main continues through normal
+descendant commits.
 
 `cargo build --release` builds `target/release/qa-rust`. The portable default uses
 Rust's baseline CPU. Machine-specific timing builds may use

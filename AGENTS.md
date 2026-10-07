@@ -36,10 +36,20 @@ used by all build modes: target. No global fast-math.
 ## Order
 
 R0: THE-596, THE-597, THE-598, THE-599, THE-600, THE-601, THE-603, THE-602.
+R0 additions: THE-605, THE-678, THE-626 (closed by the supervisor), THE-633,
+THE-640, THE-644. Muse lanes and worktrees have been retired by the owner;
+do not recreate them. Fetch with prune before pushing.
 Then R1 primitives/VFS/formats, R2 console/cvars/input/frame loop, R3 renderers,
 R4 Q1 e1m1 and a mixed configuration, R5 Q1 complete, R6 Q2, R7 Q3/TA and bots,
 R8 mods together, R9 combined mode, R10 audio/menus/UI, R11 network,
 R12 measured performance, R13 release.
+
+## Salvage
+
+Read the [Salvage map from muse-final](https://linear.app/the-artificery/document/salvage-map-from-muse-final-071964446627)
+before mining retired code. It lists reusable algorithms and readers, and banned
+architecture. Keep the primitive-first workspace. Each R1-R11 issue using salvage
+must cite the exact `muse-final:path` it read in its evidence comment and commit.
 
 # Owner rules for the Rust port
 
