@@ -67,6 +67,11 @@ pub struct CallbackId(pub u16);
 pub struct ClientId(pub u8);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerupId(pub u16);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextId {
+    pub slot: u16,
+    pub generation: u32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Think {
@@ -233,14 +238,39 @@ impl DamageFlags {
 pub struct SoundEvent {
     pub sound: SoundId,
     pub entity: Option<EntityId>,
+    pub channel: u16,
     pub position: Vec3,
     pub volume: f32,
+    pub attenuation: f32,
+    pub action: SoundAction,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoundAction {
+    #[default]
+    Play,
+    StartLoop,
+    Stop,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct EffectEvent {
     pub effect: EffectId,
     pub position: Vec3,
     pub direction: Vec3,
+    pub count: u16,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintKind {
+    Console,
+    Notify,
+    Center,
+    Chat,
+    Layout,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct PrintEvent {
+    pub client: Option<ClientId>,
+    pub kind: PrintKind,
+    pub text: TextId,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HudState {
