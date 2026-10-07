@@ -132,6 +132,7 @@ These are Mike's standing rules. They apply to every commit.
 
 ## Repo
 
+* Do not create GitHub releases or version tags unless the owner explicitly asks.
 * Keep `AGENTS.md` in the repo root with these rules and the current milestone order, so they survive restarts and context compaction.
 * Small commits, one capability or fix each, with the qsrc reference in the message.
 ## C-port lessons to check at each milestone
