@@ -142,7 +142,14 @@ These are Mike's standing rules. They apply to every commit.
 * Game windows and audio only on private displays and audio servers (Xvfb or a private X server on the spare RTX 5060 Ti; the RTX 3090 drives the owner's desktop), with a window manager; use window capture for screenshots.
 * Copy binaries and profiles; never write into `qfiles` except through the installer.
 * Stop only process ids you recorded; never pkill/killall by name (the C agent runs a similarly named binary).
-* Timing runs: pinned cores, no debugger, 600 frames after warm-up, report median and p99.
+* Wrap commands in `timeout 300`. This agent uses `CARGO_TARGET_DIR=target`;
+  delegated agents must use their own target directories.
+* Timing runs: pinned cores, no debugger, 600 frames after a 60-frame warm-up,
+  vsync off. Report median and p99 for sim, scene, draw, present and audio once
+  those stages exist. R0 shell stages do not qualify renderer performance.
+* The installer must reject a measured regression over 10% against a comparable
+  baseline. Shell timings cannot qualify gameplay or supply that baseline.
+  See the [Proof and measurement protocol](https://linear.app/the-artificery/document/proof-and-measurement-protocol-045c1cc12ab8).
 
 ## Repo
 

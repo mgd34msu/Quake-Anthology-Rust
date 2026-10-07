@@ -54,20 +54,20 @@ def main():
     for width, height in ((1920, 1080), (640, 400), (320, 200)):
         folder = args.evidence / f"{width}x{height}"
         result = run(args.binary, args.owner_profile, folder,
-                     ["--frames", "600", "--warmup", "120", "--uncapped", "--frame-timings",
+                     ["--frames", "600", "--warmup", "60", "--uncapped", "--frame-timings",
                       "--startup-hold-ms", "2500", "--width", str(width), "--height", str(height)],
                      size=(width, height), cores=cores)
         if result["result"] != "PASS":
             raise RuntimeError("private timing launch failed: " + str(result.get("error")))
         timing = next(v for v in result["events"] if v.get("event") == "frame_timings")
         samples = timing["samples_ns"]
-        if len(samples) != 600 or timing["warmup"] != 120 or timing["vsync"]:
+        if len(samples) != 600 or timing["warmup"] != 60 or timing["vsync"]:
             raise ValueError("timing run did not complete the requested uncapped sample")
         stages = {stage: summarize([row[i] for row in samples])
                   for i, stage in enumerate(("input", "present", "total"))}
         rows.append({"resolution": f"{width}x{height}", "scope": timing["scope"],
                      "renderer": "SDL software window shell", "map": None,
-                     "hardware_renderer_qualified": False, "warmup": 120, "frames": 600,
+                     "hardware_renderer_qualified": False, "warmup": 60, "frames": 600,
                      "cores": cores, "stages": stages, "evidence": str(folder)})
     output = {"scope": "R0 tooling only; no gameplay renderer performance claim", "rows": rows}
     (args.evidence / "frame-times.json").write_text(json.dumps(output, indent=2) + "\n")
