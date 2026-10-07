@@ -1,5 +1,6 @@
 pub mod brushes;
 pub mod contents;
+pub mod hulls;
 
 use brushes::{BrushMap, BrushRules};
 pub use contents::Contents;
@@ -35,13 +36,22 @@ impl Trace {
 }
 
 pub enum CollisionWorld {
+    Q1Hulls(hulls::Q1Hulls),
     Q2Brushes(BrushMap),
     Q3Brushes(BrushMap),
 }
 
 impl CollisionWorld {
-    pub fn trace(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: Contents) -> Trace {
+    pub fn trace(
+        &mut self,
+        start: Vec3,
+        end: Vec3,
+        mins: Vec3,
+        maxs: Vec3,
+        mask: Contents,
+    ) -> Trace {
         match self {
+            Self::Q1Hulls(map) => map.trace(start, end, mins, maxs, mask),
             Self::Q2Brushes(map) => map.trace(start, end, mins, maxs, mask, BrushRules::Classic),
             Self::Q3Brushes(map) => map.trace(start, end, mins, maxs, mask, BrushRules::Arena),
         }
@@ -49,6 +59,7 @@ impl CollisionWorld {
 
     pub fn point_contents(&self, point: Vec3) -> Contents {
         match self {
+            Self::Q1Hulls(map) => map.point_contents(point),
             Self::Q2Brushes(map) | Self::Q3Brushes(map) => map.point_contents(point),
         }
     }

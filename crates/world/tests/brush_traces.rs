@@ -27,7 +27,7 @@ fn box_map() -> BrushMap {
 
 #[test]
 fn player_bounds_trace_against_both_brush_formats_without_family_tags() {
-    for world in [
+    for mut world in [
         CollisionWorld::Q2Brushes(box_map()),
         CollisionWorld::Q3Brushes(box_map()),
     ] {
@@ -74,7 +74,7 @@ fn player_bounds_trace_against_both_brush_formats_without_family_tags() {
 
 #[test]
 fn embedded_motion_keeps_original_brush_trace_semantics() {
-    for (world, fraction) in [
+    for (mut world, fraction) in [
         (CollisionWorld::Q2Brushes(box_map()), 1.0),
         (CollisionWorld::Q3Brushes(box_map()), 0.0),
     ] {
