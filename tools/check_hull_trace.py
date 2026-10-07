@@ -14,7 +14,7 @@ from frame_timings import pinned_cores
 
 
 def function(source, name):
-    match = re.search(r"^[^;{}\n]*\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source, re.MULTILINE)
+    match = re.search(r"^[ \t]*(?:(?:static|inline|extern)[ \t]+)*[A-Za-z_]\w*[ \t*]+" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source, re.MULTILINE)
     if match is None:
         raise ValueError("reference function definition missing: " + name)
     start = match.start()
