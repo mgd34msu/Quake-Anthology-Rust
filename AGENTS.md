@@ -40,7 +40,8 @@ R0 additions: THE-605, THE-678, THE-626 (closed by the supervisor), THE-633,
 THE-640, THE-644. Muse lanes and worktrees have been retired by the owner;
 do not recreate them. Fetch with prune before pushing.
 Then R1 primitives/VFS/formats, R2 console/cvars/input/frame loop, R3 renderers,
-R4 Q1 e1m1 and a mixed configuration, R5 Q1 complete, R6 Q2, R7 Q3/TA and bots,
+R3.5 THE-839 three-game walk-through gate, R4 Q1 e1m1 and a mixed configuration,
+R5 Q1 complete, R6 Q2, R7 Q3/TA and bots,
 R8 mods together, R9 combined mode, R10 audio/menus/UI, R11 network,
 R12 measured performance, R13 release.
 
@@ -51,6 +52,15 @@ THE-790, THE-770, THE-776, THE-777, THE-780, THE-792, THE-784, THE-786.
 R0 THE-599/600/601/603/640/678 remain In Progress until gameplay proves their
 acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
 spawning, mixed-play and installed-binary evidence they require.
+
+Design every R1-R3 primitive and shared service against Q1, Q2 and Q3 now.
+Before R4 monsters, weapons or saves, THE-839 must prove e1m1, base1 and q3dm1
+loading, rendering on GL and CPU, and walking with their own movement and with
+another game's movement. Use the same VFS, readers, entities, traces, area index,
+usercmd, player state, console/cvars, event ring and renderers. Per-game code
+contains movement rules and boundary conversions only. The shipped candidate's
+private-harness evidence must include world screenshots, real key-repeat walks
+with wall/step collision, Q1/Q3 cvar aliases in every map, and measured timings.
 
 ## Salvage
 
