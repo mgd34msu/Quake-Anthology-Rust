@@ -9,8 +9,10 @@ def rows(report):
         raise ValueError("installation requires measured gameplay timings")
     indexed = {}
     for row in report["rows"]:
-        if not row.get("map") or not row.get("workload"):
+        if not row.get("map") or not isinstance(row.get("workload"), dict) or not row["workload"]:
             raise ValueError("timing row must name its map and reproducible workload")
+        if not {"roles", "settings", "seed", "simulation_steps", "final_state", "events"} <= row["workload"].keys():
+            raise ValueError("timing workload lacks settings, roles, seed, simulation steps or fidelity outputs")
         if (row.get("frames") != 600 or row.get("warmup") != 60
                 or row.get("debugger") is not False or row.get("vsync") is not False):
             raise ValueError("timing row violates the measurement protocol")
