@@ -1,8 +1,7 @@
+pub mod archive;
 mod headers;
-mod pak;
 
 pub use headers::{Bsp, BspFormat, ModelHeader};
-pub use pak::Pak;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FormatError {
@@ -10,6 +9,9 @@ pub enum FormatError {
     Unsupported,
     InvalidRange,
     InvalidRecordSize,
+    Io(std::io::ErrorKind),
+    Compression,
+    Checksum,
 }
 
 fn word(bytes: &[u8], offset: usize) -> Result<u32, FormatError> {

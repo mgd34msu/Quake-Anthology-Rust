@@ -38,20 +38,17 @@ pub struct Origin<'a> {
     pub kind: MountKind,
 }
 
-/// A boundary reader supplies admitted member ranges, in original order.
-pub struct FileRange {
-    pub name: Vec<u8>,
-    pub offset: u64,
-    pub length: u64,
-}
-
 struct Entry {
     mount: usize,
     name: Box<[u8]>,
     original_name: Box<[u8]>,
-    file: Arc<File>,
-    offset: u64,
+    source: EntrySource,
     length: u64,
+}
+
+enum EntrySource {
+    Loose(Arc<File>),
+    Archive { archive: Arc<Archive>, entry: usize },
 }
 
 #[derive(Debug)]
@@ -61,6 +58,12 @@ pub enum VfsError {
     Range,
     Handle,
     Io(io::Error),
+    Format(FormatError),
+}
+impl From<FormatError> for VfsError {
+    fn from(error: FormatError) -> Self {
+        Self::Format(error)
+    }
 }
 impl From<io::Error> for VfsError {
     fn from(error: io::Error) -> Self {
@@ -80,24 +83,83 @@ pub fn normalize(path: &[u8]) -> Result<Vec<u8>, VfsError> {
     if path.is_empty() || path.len() > 4096 || path.iter().any(|&c| c == 0 || c == b':') {
         return Err(VfsError::Path);
     }
+    let mut components = Vec::new();
     for component in path.split(|&c| c == b'/' || c == b'\\') {
-        if component.is_empty() || component == b"." || component == b".." {
+        if component.is_empty() || component == b"." {
             return Err(VfsError::Path);
         }
-    }
-    Ok(path
-        .iter()
-        .map(|&c| {
-            if c == b'\\' {
-                b'/'
-            } else {
-                c.to_ascii_lowercase()
+        if component == b".." {
+            if components.pop().is_none() {
+                return Err(VfsError::Path);
             }
-        })
-        .collect())
+        } else {
+            components.push(component);
+        }
+    }
+    if components.is_empty() {
+        return Err(VfsError::Path);
+    }
+    let mut normalized = Vec::with_capacity(path.len());
+    for (index, component) in components.into_iter().enumerate() {
+        if index != 0 {
+            normalized.push(b'/');
+        }
+        normalized.extend(component.iter().map(u8::to_ascii_lowercase));
+    }
+    Ok(normalized)
 }
 
 impl Vfs {
+    /// Higher-ranked products/mods choose a larger base priority. Inside each
+    /// product, loose files are below numerically ordered PAKs and alphabetic PK3s.
+    pub fn mount_product(&mut self, path: &Path, priority: i32) -> Result<Vec<MountId>, VfsError> {
+        let first_mount = self.mounts.len();
+        let result = (|| {
+            let root = self.mount_directory(path, priority)?;
+            let mut packages: Vec<_> = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.mount == root.0 as usize
+                        && !entry.name.contains(&b'/')
+                        && (entry.name.ends_with(b".pak") || entry.name.ends_with(b".pk3"))
+                })
+                .map(|(entry, value)| {
+                    (
+                        FileRef {
+                            entry: entry as u32,
+                        },
+                        value.name.to_vec(),
+                        value.original_name.to_vec(),
+                    )
+                })
+                .collect();
+            packages.sort_unstable_by(|a, b| {
+                package_order(&a.1)
+                    .cmp(&package_order(&b.1))
+                    .then(a.1.cmp(&b.1))
+            });
+            let mut mounts = vec![root];
+            for (rank, (reference, _, name)) in packages.into_iter().enumerate() {
+                let file = self.source_file(reference).ok_or(VfsError::Handle)?;
+                let archive = Arc::new(Archive::parse(file)?);
+                let name = std::str::from_utf8(&name).map_err(|_| VfsError::Path)?;
+                let native_path = self.mounts[root.0 as usize].path.join(name);
+                let rank = i32::try_from(rank + 1).map_err(|_| VfsError::Capacity)?;
+                let priority = priority.checked_add(rank).ok_or(VfsError::Capacity)?;
+                mounts.push(self.mount_archive(&native_path, priority, archive)?);
+            }
+            Ok(mounts)
+        })();
+        if result.is_err() {
+            for mount in &mut self.mounts[first_mount..] {
+                mount.active = false;
+            }
+            self.reindex();
+        }
+        result
+    }
     pub fn mount_directory(&mut self, path: &Path, priority: i32) -> Result<MountId, VfsError> {
         let root = path.canonicalize()?;
         let mut pending = vec![root.clone()];
@@ -128,8 +190,7 @@ impl Vfs {
                     mount: self.mounts.len(),
                     name: normalized.into_boxed_slice(),
                     original_name: name.into_boxed_slice(),
-                    file,
-                    offset: 0,
+                    source: EntrySource::Loose(file),
                     length,
                 });
             }
@@ -137,31 +198,30 @@ impl Vfs {
         self.publish(root, MountKind::Directory, priority, entries)
     }
 
-    pub fn mount_ranges(
+    pub fn mount_archive(
         &mut self,
         path: &Path,
-        kind: MountKind,
         priority: i32,
-        file: Arc<File>,
-        ranges: impl IntoIterator<Item = FileRange>,
+        archive: Arc<Archive>,
     ) -> Result<MountId, VfsError> {
-        let size = file.metadata()?.len();
+        let kind = match archive.kind {
+            ArchiveKind::Pak => MountKind::Pak,
+            ArchiveKind::Zip => MountKind::Pk3,
+        };
         let mut entries = Vec::new();
-        for range in ranges {
-            if range
-                .offset
-                .checked_add(range.length)
-                .is_none_or(|end| end > size)
-            {
-                return Err(VfsError::Range);
+        for (ordinal, entry) in archive.entries.iter().enumerate() {
+            if entry.directory {
+                continue;
             }
             entries.push(Entry {
                 mount: self.mounts.len(),
-                name: normalize(&range.name)?.into_boxed_slice(),
-                original_name: range.name.into_boxed_slice(),
-                file: Arc::clone(&file),
-                offset: range.offset,
-                length: range.length,
+                name: normalize(&entry.name)?.into_boxed_slice(),
+                original_name: entry.name.clone(),
+                source: EntrySource::Archive {
+                    archive: Arc::clone(&archive),
+                    entry: ordinal,
+                },
+                length: entry.length,
             });
         }
         self.publish(path.to_path_buf(), kind, priority, entries)
@@ -251,6 +311,12 @@ impl Vfs {
         destination: &mut [u8],
     ) -> Result<usize, VfsError> {
         let entry = self.entry(reference)?;
+        if let EntrySource::Archive { archive, entry } = &entry.source {
+            return Ok(archive.read_at(*entry, offset, destination)?);
+        }
+        let EntrySource::Loose(file) = &entry.source else {
+            return Err(VfsError::Handle);
+        };
         let remaining = entry.length.checked_sub(offset).ok_or(VfsError::Range)?;
         let count = destination
             .len()
@@ -258,9 +324,9 @@ impl Vfs {
         let mut written = 0;
         while written < count {
             let read = native_read(
-                &entry.file,
+                file,
                 &mut destination[written..count],
-                entry.offset + offset + written as u64,
+                offset + written as u64,
             )?;
             if read == 0 {
                 return Err(io::ErrorKind::UnexpectedEof.into());
@@ -268,6 +334,15 @@ impl Vfs {
             written += read;
         }
         Ok(written)
+    }
+
+    /// The product mount loader reuses loose archive handles already opened by
+    /// mount_directory. This is a cold operation; it never reopens a package.
+    pub fn source_file(&self, reference: FileRef) -> Option<Arc<File>> {
+        match &self.entry(reference).ok()?.source {
+            EntrySource::Loose(file) => Some(Arc::clone(file)),
+            EntrySource::Archive { .. } => None,
+        }
     }
 
     pub fn origin(&self, reference: FileRef) -> Option<Origin<'_>> {
@@ -312,6 +387,26 @@ impl Vfs {
     }
 }
 
+fn package_order(name: &[u8]) -> (u8, u64) {
+    if let Some(stem) = name.strip_suffix(b".pak") {
+        let number = stem
+            .strip_prefix(b"pak")
+            .filter(|digits| !digits.is_empty())
+            .and_then(|digits| {
+                digits.iter().try_fold(0u64, |number, &digit| {
+                    if !digit.is_ascii_digit() {
+                        return None;
+                    }
+                    number.checked_mul(10)?.checked_add(u64::from(digit - b'0'))
+                })
+            })
+            .unwrap_or(u64::MAX);
+        (0, number)
+    } else {
+        (1, 0)
+    }
+}
+
 #[cfg(unix)]
 fn native_read(file: &File, destination: &mut [u8], offset: u64) -> io::Result<usize> {
     use std::os::unix::fs::FileExt;
@@ -328,3 +423,7 @@ impl From<io::ErrorKind> for VfsError {
         Self::Io(kind.into())
     }
 }
+use qa_formats::{
+    FormatError,
+    archive::{Archive, ArchiveKind},
+};
