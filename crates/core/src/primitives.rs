@@ -79,6 +79,47 @@ pub struct Think {
     pub callback: CallbackId,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum CallbackCall {
+    Think {
+        entity: EntityId,
+        time: f64,
+    },
+    Touch {
+        entity: EntityId,
+        other: EntityId,
+    },
+    Use {
+        entity: EntityId,
+        activator: EntityId,
+    },
+    Blocked {
+        entity: EntityId,
+        other: EntityId,
+    },
+    Pain {
+        event: DamageEvent,
+        taken: i32,
+        knockback: i32,
+    },
+    Die {
+        event: DamageEvent,
+        taken: i32,
+    },
+}
+
+impl CallbackCall {
+    pub fn entity(self) -> EntityId {
+        match self {
+            Self::Think { entity, .. }
+            | Self::Touch { entity, .. }
+            | Self::Use { entity, .. }
+            | Self::Blocked { entity, .. } => entity,
+            Self::Pain { event, .. } | Self::Die { event, .. } => event.target,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Body {
     pub position: Vec3,
