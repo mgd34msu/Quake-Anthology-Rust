@@ -7,6 +7,7 @@ name = "qa-app"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-platform",
 ]
 
 [[package]]

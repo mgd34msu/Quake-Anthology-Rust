@@ -1,1 +1,3 @@
-//! Shared platform capability. Implementations enter in milestone order.
+mod sdl;
+
+pub use sdl::Window;

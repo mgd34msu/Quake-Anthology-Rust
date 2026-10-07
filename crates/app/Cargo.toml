@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-platform = { path = "../platform" }
 
 [[bin]]
 name = "qa-rust"
