@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import re
 
-PRIMITIVES = "Entity EntityId Body PlayerState UserCmd Item ItemId Weapon WeaponId DamageEvent SoundEvent SoundId EffectEvent EffectId HudState CvarHandle".split()
 TOKENS = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|r(?P<hash>\#*)"[\s\S]*?"(?P=hash)|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
 
 
@@ -16,6 +15,8 @@ def source_code(text):
 
 def check(root):
     findings, definitions = [], {}
+    primitive_source = source_code((root / "crates/core/src/primitives.rs").read_text())
+    primitives = {match[1] for match in re.finditer(r"\b(?:struct|enum|type)\s+(\w+)", primitive_source)}
     allow_file = root / "tools/rules-allowlist.json"
     allowed = json.loads(allow_file.read_text()) if allow_file.exists() else []
     for row in allowed:
@@ -53,7 +54,7 @@ def check(root):
             for match in re.finditer(pattern, code):
                 add(path, code, match.start(), rule)
         for match in re.finditer(r"\b(?:struct|enum|type)\s+(\w+)", code):
-            if match[1] in PRIMITIVES:
+            if match[1] in primitives:
                 if match[1] in definitions:
                     add(path, code, match.start(), "duplicate-primitive")
                 else:

@@ -19,6 +19,18 @@ pub struct CvarHandle(pub u32);
 pub struct SoundId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectId(pub u32);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NameId(pub u32);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModuleId(pub u16);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackId(pub u16);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Think {
+    pub at: f64,
+    pub callback: CallbackId,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Body {
@@ -32,7 +44,7 @@ pub struct Body {
 pub struct Entity {
     pub id: EntityId,
     pub body: Body,
-    pub next_think: Option<f64>,
+    pub next_think: Option<Think>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

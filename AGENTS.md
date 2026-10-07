@@ -44,6 +44,14 @@ R4 Q1 e1m1 and a mixed configuration, R5 Q1 complete, R6 Q2, R7 Q3/TA and bots,
 R8 mods together, R9 combined mode, R10 audio/menus/UI, R11 network,
 R12 measured performance, R13 release.
 
+Current lane: R1, authorised after the supervisor's R0 review. In order:
+THE-611, THE-617, THE-625, THE-636, THE-642, THE-650, THE-656, THE-673,
+THE-680, THE-691, THE-697, THE-702, THE-709, THE-711, THE-718, THE-726,
+THE-790, THE-770, THE-776, THE-777, THE-780, THE-792, THE-784, THE-786.
+R0 THE-599/600/601/603/640/678 remain In Progress until gameplay proves their
+acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
+spawning, mixed-play and installed-binary evidence they require.
+
 ## Salvage
 
 Read the [Salvage map from muse-final](https://linear.app/the-artificery/document/salvage-map-from-muse-final-071964446627)
