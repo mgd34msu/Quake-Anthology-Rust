@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-PRIMITIVES = "Entity EntityId Body PlayerState UserCmd Item ItemId Weapon WeaponId DamageEvent SoundEvent EffectEvent HudState CvarHandle".split()
+PRIMITIVES = "Entity EntityId Body PlayerState UserCmd Item ItemId Weapon WeaponId DamageEvent SoundEvent SoundId EffectEvent EffectId HudState CvarHandle".split()
 TOKENS = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|r(?P<hash>\#*)"[\s\S]*?"(?P=hash)|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
 
 
