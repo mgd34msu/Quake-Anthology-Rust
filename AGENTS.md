@@ -26,6 +26,9 @@ bots, persistence, console, input, ui, platform and app. Games convert into
 primitives at file, wire and module ABI boundaries. Game-specific rules belong
 inside gameplay modules. There are no per-game console, cvar or HUD crates.
 Core has no dependencies. Capability crates depend on core; app composes them.
+The engine and everything shipped must be Rust. Python is allowed for developer
+tooling such as builds, checks, private harnesses, installation, timing and
+generators; that tooling is not part of the shipped platform.
 
 `cargo build --release` uses opt-level 3, fat LTO, one codegen unit and abort
 panics. `python3 tools/build.py` splits debug symbols into qa-rust.debug and
