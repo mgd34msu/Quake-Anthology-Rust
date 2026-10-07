@@ -9,6 +9,7 @@ unsafe extern "C" {
     fn SDL_Init(flags: u32) -> c_int;
     fn SDL_Quit();
     fn SDL_GetError() -> *const c_char;
+    fn SDL_GetCurrentVideoDriver() -> *const c_char;
     fn SDL_CreateWindow(
         title: *const c_char,
         x: c_int,
@@ -38,6 +39,11 @@ pub struct Window {
 }
 
 impl Window {
+    pub fn video_driver(&self) -> &str {
+        unsafe { CStr::from_ptr(SDL_GetCurrentVideoDriver()) }
+            .to_str()
+            .unwrap_or("unknown")
+    }
     pub fn open(width: i32, height: i32) -> Result<Self, String> {
         unsafe {
             if SDL_Init(0x20) != 0 {

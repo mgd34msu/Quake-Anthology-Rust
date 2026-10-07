@@ -70,7 +70,11 @@ fn run() -> Result<(), String> {
     }
     let mut window = Window::open(width, height)?;
     window.present();
-    println!("{{\"event\":\"window_ready\",\"gameplay\":false}}");
+    println!(
+        "{{\"event\":\"window_ready\",\"gameplay\":false,\"video_driver\":\"{}\",\"wayland_display_present\":{}}}",
+        window.video_driver(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+    );
     std::thread::sleep(Duration::from_millis(startup_hold));
     let mut completed = 0;
     let mut samples = if timings {

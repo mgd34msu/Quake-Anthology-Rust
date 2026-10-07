@@ -181,7 +181,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         if wm.poll() is not None:
             raise RuntimeError("private window manager failed")
         client = XClient(display)
-        argv = [str(candidate), *arguments]
+        argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
         if cores:
             argv = ["taskset", "-c", cores, *argv]
         game = spawn("runtime", argv, env)
@@ -210,7 +210,9 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         result["gameplay_reached"] = any(v.get("event") == "gameplay_ready" for v in events)
         result["events"] = events
         result["private_containment"] = {"display": display, "video": "owned Xvfb with Openbox",
-                                         "audio": "SDL disk", "home": env["HOME"]}
+                                         "audio": "SDL disk", "home": env["HOME"],
+                                         "wayland_display_unset": "WAYLAND_DISPLAY" not in env,
+                                         "sdl_video_driver": env["SDL_VIDEODRIVER"]}
         result["screenshot"] = str(evidence / "window.png")
         result["result"] = "PASS" if result["normal_exit"] else "FAIL"
     except Exception as error:

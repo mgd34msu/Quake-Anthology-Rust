@@ -125,6 +125,10 @@ These are Mike's standing rules. They apply to every commit.
 
 ## Private runs
 
+* On this host Xvfb alone is insufficient: every game launch must unset
+  WAYLAND_DISPLAY and force SDL_VIDEODRIVER=x11. Use SDL_AUDIODRIVER=dummy for
+  silent checks, or a private sink/disk capture for sound proof. The harness
+  enforces `env -u WAYLAND_DISPLAY SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=disk`.
 * Game windows and audio only on private displays and audio servers (Xvfb or a private X server on the spare RTX 5060 Ti; the RTX 3090 drives the owner's desktop), with a window manager; use window capture for screenshots.
 * Copy binaries and profiles; never write into `qfiles` except through the installer.
 * Stop only process ids you recorded; never pkill/killall by name (the C agent runs a similarly named binary).
