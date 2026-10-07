@@ -1,3 +1,4 @@
+pub(crate) use qa_core::math::{difference, length, normalized};
 use qa_core::primitives::{Body, CallbackId, DamageEvent, DamageFlags, EntityId, Vec3};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,23 +219,6 @@ pub fn radius_damage(
             });
         }
     }
-}
-
-pub(crate) fn difference(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3(std::array::from_fn(|axis| a.0[axis] - b.0[axis]))
-}
-
-pub(crate) fn length(v: Vec3) -> f32 {
-    v.dot(v).sqrt()
-}
-
-pub(crate) fn normalized(v: Vec3) -> Vec3 {
-    let len = length(v);
-    if len == 0.0 {
-        return v;
-    }
-    let inverse = 1.0 / len;
-    Vec3(v.0.map(|component| component * inverse))
 }
 
 pub(crate) fn impulse(target: &mut DamageTarget<'_>, direction: Vec3, force: f32) {

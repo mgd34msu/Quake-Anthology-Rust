@@ -1,0 +1,108 @@
+use crate::primitives::Vec3;
+use std::ops::{Add, Div, Mul, Neg, Sub};
+
+impl Add for Vec3 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] + rhs.0[i]))
+    }
+}
+impl Sub for Vec3 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] - rhs.0[i]))
+    }
+}
+impl Mul<f32> for Vec3 {
+    type Output = Self;
+    fn mul(self, rhs: f32) -> Self {
+        Self(self.0.map(|v| v * rhs))
+    }
+}
+impl Div<f32> for Vec3 {
+    type Output = Self;
+    fn div(self, rhs: f32) -> Self {
+        Self(self.0.map(|v| v / rhs))
+    }
+}
+impl Neg for Vec3 {
+    type Output = Self;
+    fn neg(self) -> Self {
+        Self(self.0.map(|v| -v))
+    }
+}
+
+pub fn difference(a: Vec3, b: Vec3) -> Vec3 {
+    a - b
+}
+pub fn length(v: Vec3) -> f32 {
+    v.dot(v).sqrt()
+}
+pub fn normalize(v: &mut Vec3) -> f32 {
+    let len = length(*v);
+    if len != 0.0 {
+        *v = *v * (1.0 / len);
+    }
+    len
+}
+pub fn normalized(mut v: Vec3) -> Vec3 {
+    normalize(&mut v);
+    v
+}
+pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3([
+        a.0[1] * b.0[2] - a.0[2] * b.0[1],
+        a.0[2] * b.0[0] - a.0[0] * b.0[2],
+        a.0[0] * b.0[1] - a.0[1] * b.0[0],
+    ])
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AngleBasis {
+    pub forward: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
+}
+
+/// mathlib.c and Q2 q_shared.c multiply by an unsuffixed M_PI expression,
+/// storing the result into a float before calling sin(double)/cos(double).
+pub fn radians_from_degrees(angles: Vec3) -> Vec3 {
+    Vec3(
+        angles
+            .0
+            .map(|v| (f64::from(v) * (std::f64::consts::TAU / 360.0)) as f32),
+    )
+}
+
+/// Q3's q_shared.h defines M_PI with an f suffix. Convert at that boundary;
+/// the basis below remains the single engine implementation.
+pub fn radians_from_degrees_f32(angles: Vec3) -> Vec3 {
+    angles * (std::f32::consts::TAU / 360.0)
+}
+
+pub fn angle_vectors(angles: Vec3) -> AngleBasis {
+    angle_vectors_radians(radians_from_degrees(angles))
+}
+
+pub fn angle_vectors_radians(angles: Vec3) -> AngleBasis {
+    let sy = f64::from(angles.0[1]).sin() as f32;
+    let cy = f64::from(angles.0[1]).cos() as f32;
+    let sp = f64::from(angles.0[0]).sin() as f32;
+    let cp = f64::from(angles.0[0]).cos() as f32;
+    let sr = f64::from(angles.0[2]).sin() as f32;
+    let cr = f64::from(angles.0[2]).cos() as f32;
+    AngleBasis {
+        forward: Vec3([cp * cy, cp * sy, -sp]),
+        right: Vec3([
+            -sr * sp * cy + -cr * -sy,
+            -sr * sp * sy + -cr * cy,
+            -sr * cp,
+        ]),
+        up: Vec3([cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp]),
+    }
+}
+
+pub fn anglemod(angle: f32) -> f32 {
+    let short = (f64::from(angle) * (65536.0 / 360.0)) as i32 & 65535;
+    ((360.0 / 65536.0) * f64::from(short)) as f32
+}
