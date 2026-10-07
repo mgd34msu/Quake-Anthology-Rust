@@ -1,10 +1,13 @@
-use qa_platform::Window;
+use qa_console::cvars::Cvars;
+use qa_platform::{InputEvent, Window};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "proof")]
 mod proof;
 
 fn run() -> Result<(), String> {
+    let mut cvars = Cvars::new(qa_console::cvars_generated::DEFINITIONS);
+    let developer = cvars.find("developer").ok_or("developer cvar missing")?;
     let mut frames = 120u32;
     let mut width = 640i32;
     let mut height = 400i32;
@@ -17,6 +20,21 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "+set" => {
+                let name = args.next().ok_or("+set needs a cvar name")?;
+                let value: f32 = args
+                    .next()
+                    .ok_or("+set needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid numeric cvar value")?;
+                if !value.is_finite() {
+                    return Err("cvar value must be finite".into());
+                }
+                let handle = cvars
+                    .find(&name)
+                    .ok_or_else(|| format!("unknown cvar: {name}"))?;
+                cvars.set(handle, value);
+            }
             #[cfg(feature = "proof")]
             "--proof-script" => {
                 script = Some(proof::Script::load(
@@ -91,6 +109,8 @@ fn run() -> Result<(), String> {
     #[cfg(feature = "proof")]
     let script_start = Instant::now();
     let mut completed = 0;
+    let mut key_downs = 0u64;
+    let mut key_repeats = 0u64;
     let mut samples = if timings {
         Vec::with_capacity(frames as usize)
     } else {
@@ -102,7 +122,18 @@ fn run() -> Result<(), String> {
         if let Some(script) = &mut script {
             script.inject_due(script_start.elapsed(), &mut window);
         }
-        if window.poll_quit() {
+        if window.poll(|event| {
+            if let InputEvent::KeyDown { repeat, .. } = event {
+                key_downs += 1;
+                key_repeats += u64::from(repeat);
+            }
+            qa_console::logger::dev_print(
+                &cvars,
+                developer,
+                1,
+                format_args!("{{\"event\":\"input_diagnostic\",\"input\":\"{event:?}\"}}"),
+            );
+        }) {
             break;
         }
         let input_ns = start.elapsed().as_nanos() as u64;
@@ -124,7 +155,9 @@ fn run() -> Result<(), String> {
             "{{\"event\":\"frame_timings\",\"scope\":\"window_shell\",\"warmup\":{warmup},\"frames\":{completed},\"vsync\":false,\"samples_ns\":{samples:?}}}"
         );
     }
-    println!("{{\"event\":\"normal_exit\",\"frames\":{completed}}}");
+    println!(
+        "{{\"event\":\"normal_exit\",\"frames\":{completed},\"key_downs\":{key_downs},\"key_repeats\":{key_repeats}}}"
+    );
     Ok(())
 }
 

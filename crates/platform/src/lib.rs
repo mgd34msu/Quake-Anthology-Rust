@@ -1,3 +1,3 @@
 mod sdl;
 
-pub use sdl::Window;
+pub use sdl::{InputEvent, Window};

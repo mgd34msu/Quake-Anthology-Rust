@@ -44,6 +44,13 @@ pub struct Window {
     renderer: NonNull<c_void>,
 }
 
+#[derive(Debug)]
+pub enum InputEvent {
+    KeyDown { key: i32, repeat: bool },
+    KeyUp { key: i32 },
+    MouseMotion { dx: i32, dy: i32 },
+}
+
 impl Window {
     #[cfg(feature = "proof")]
     pub fn inject_key(&mut self, name: &str, down: bool) -> Result<(), String> {
@@ -121,14 +128,44 @@ impl Window {
         }
     }
 
-    pub fn poll_quit(&mut self) -> bool {
+    pub fn poll(&mut self, mut input: impl FnMut(InputEvent)) -> bool {
         let mut event = Event([0; 56]);
         let mut quit = false;
         unsafe {
             while SDL_PollEvent(&mut event) != 0 {
                 let kind = u32::from_ne_bytes([event.0[0], event.0[1], event.0[2], event.0[3]]);
-                if kind == 0x300 {
-                    println!("{{\"event\":\"key_down\",\"repeat\":{}}}", event.0[13] != 0);
+                match kind {
+                    0x300 | 0x301 => {
+                        let key = i32::from_ne_bytes([
+                            event.0[20],
+                            event.0[21],
+                            event.0[22],
+                            event.0[23],
+                        ]);
+                        input(if kind == 0x300 {
+                            InputEvent::KeyDown {
+                                key,
+                                repeat: event.0[13] != 0,
+                            }
+                        } else {
+                            InputEvent::KeyUp { key }
+                        });
+                    }
+                    0x400 => input(InputEvent::MouseMotion {
+                        dx: i32::from_ne_bytes([
+                            event.0[28],
+                            event.0[29],
+                            event.0[30],
+                            event.0[31],
+                        ]),
+                        dy: i32::from_ne_bytes([
+                            event.0[32],
+                            event.0[33],
+                            event.0[34],
+                            event.0[35],
+                        ]),
+                    }),
+                    _ => {}
                 }
                 if kind == 0x100 || (kind == 0x200 && event.0[12] == 14) {
                     quit = true;
