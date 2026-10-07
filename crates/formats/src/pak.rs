@@ -22,7 +22,7 @@ impl<'a> Pak<'a> {
         }
         let directory = span(bytes, offset, size)?;
         let mut entries = Vec::with_capacity(directory.len() / 64);
-        for (ordinal, record) in directory.chunks_exact(64).enumerate() {
+        for (ordinal, record) in directory.as_chunks::<64>().0.iter().enumerate() {
             let name = &record[..record[..56].iter().position(|v| *v == 0).unwrap_or(56)];
             let data = span(bytes, word(record, 56)?, word(record, 60)?)?;
             entries.push(Entry {
