@@ -25,6 +25,12 @@ unsafe extern "C" {
     fn SDL_RenderClear(renderer: *mut c_void) -> c_int;
     fn SDL_RenderPresent(renderer: *mut c_void);
     fn SDL_PollEvent(event: *mut Event) -> c_int;
+    #[cfg(feature = "proof")]
+    fn SDL_PushEvent(event: *mut Event) -> c_int;
+    #[cfg(feature = "proof")]
+    fn SDL_GetKeyFromName(name: *const c_char) -> c_int;
+    #[cfg(feature = "proof")]
+    fn SDL_GetScancodeFromKey(key: c_int) -> c_int;
 }
 
 fn error() -> String {
@@ -39,6 +45,49 @@ pub struct Window {
 }
 
 impl Window {
+    #[cfg(feature = "proof")]
+    pub fn inject_key(&mut self, name: &str, down: bool) -> Result<(), String> {
+        let name = std::ffi::CString::new(name).map_err(|_| "invalid key name")?;
+        let key = unsafe { SDL_GetKeyFromName(name.as_ptr()) };
+        if key == 0 {
+            return Err("unknown key name".into());
+        }
+        let mut event = Event([0; 56]);
+        event.0[..4].copy_from_slice(&(if down { 0x300u32 } else { 0x301u32 }).to_ne_bytes());
+        event.0[12] = u8::from(down);
+        event.0[16..20].copy_from_slice(&unsafe { SDL_GetScancodeFromKey(key) }.to_ne_bytes());
+        event.0[20..24].copy_from_slice(&key.to_ne_bytes());
+        if unsafe { SDL_PushEvent(&mut event) } != 1 {
+            return Err(error());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "proof")]
+    pub fn inject_mouse(&mut self, dx: i32, dy: i32) -> Result<(), String> {
+        let mut event = Event([0; 56]);
+        event.0[..4].copy_from_slice(&0x400u32.to_ne_bytes());
+        event.0[28..32].copy_from_slice(&dx.to_ne_bytes());
+        event.0[32..36].copy_from_slice(&dy.to_ne_bytes());
+        if unsafe { SDL_PushEvent(&mut event) } != 1 {
+            return Err(error());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "proof")]
+    pub fn inject_text(&mut self, text: &str) -> Result<(), String> {
+        let mut event = Event([0; 56]);
+        if text.len() > 31 || text.contains('\0') {
+            return Err("text input event exceeds 31 bytes".into());
+        }
+        event.0[..4].copy_from_slice(&0x303u32.to_ne_bytes());
+        event.0[12..12 + text.len()].copy_from_slice(text.as_bytes());
+        if unsafe { SDL_PushEvent(&mut event) } != 1 {
+            return Err(error());
+        }
+        Ok(())
+    }
     pub fn video_driver(&self) -> &str {
         unsafe { CStr::from_ptr(SDL_GetCurrentVideoDriver()) }
             .to_str()

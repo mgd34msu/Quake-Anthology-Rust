@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cpu", choices=("baseline", "native"), default="baseline")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--proof", action="store_true", help="separate development candidate with scripted SDL input")
     args = parser.parse_args()
     subprocess.run(["python3", str(ROOT / "tools/check_rules.py"), "--root", str(ROOT)], check=True)
     if args.check_only:
@@ -27,8 +28,11 @@ def main():
     env["QA_BUILD_DIRTY"] = str(dirty).lower()
     env["QA_TARGET_CPU"] = args.cpu
     started = time.monotonic()
-    subprocess.run(["cargo", "build", "--release", "--workspace"], cwd=ROOT, env=env, check=True)
-    candidate = ROOT / "target/candidate"
+    command = ["cargo", "build", "--release", "--workspace"]
+    if args.proof:
+        command += ["--features", "qa-app/proof"]
+    subprocess.run(command, cwd=ROOT, env=env, check=True)
+    candidate = ROOT / ("target/proof-candidate" if args.proof else "target/candidate")
     candidate.mkdir(exist_ok=True)
     binary = candidate / "qa-rust"
     binary.write_bytes((ROOT / "target/release/qa-rust").read_bytes())
@@ -37,7 +41,7 @@ def main():
     subprocess.run(["objcopy", "--only-keep-debug", str(binary), str(symbols)], check=True)
     subprocess.run(["strip", "--strip-debug", str(binary)], check=True)
     subprocess.run(["objcopy", "--add-gnu-debuglink=" + symbols.name, binary.name], cwd=candidate, check=True)
-    record = {"commit": commit, "source_tree_dirty": dirty,
+    record = {"commit": commit, "source_tree_dirty": dirty, "proof": args.proof,
               "build_time_seconds": time.monotonic() - started, "target_cpu": args.cpu,
               "built_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "candidate": str(binary), "debug_symbols": str(symbols)}

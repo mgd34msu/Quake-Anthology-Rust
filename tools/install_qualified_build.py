@@ -20,8 +20,9 @@ def qualify(build, profile, evidence, arguments):
     binary = build / "qa-rust"
     metadata = json.loads((build / "build.json").read_text())
     require(metadata.get("source_tree_dirty") is False, "build must come from a committed clean tree")
+    require(metadata.get("proof") is False, "development proof candidates cannot be installed")
     compiled = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
-    require(all(compiled.get(k) == metadata.get(k) for k in ("commit", "source_tree_dirty", "target_cpu")),
+    require(all(compiled.get(k) == metadata.get(k) for k in ("commit", "source_tree_dirty", "target_cpu", "proof")),
             "build metadata differs from the compiled candidate")
     result = run(binary, profile, evidence, arguments)
     require(result["result"] == "PASS" and result.get("normal_exit"), "copied-profile private launch failed")

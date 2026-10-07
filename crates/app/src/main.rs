@@ -1,6 +1,9 @@
 use qa_platform::Window;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "proof")]
+mod proof;
+
 fn run() -> Result<(), String> {
     let mut frames = 120u32;
     let mut width = 640i32;
@@ -9,9 +12,17 @@ fn run() -> Result<(), String> {
     let mut timings = false;
     let mut uncapped = false;
     let mut startup_hold = 0u64;
+    #[cfg(feature = "proof")]
+    let mut script = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            #[cfg(feature = "proof")]
+            "--proof-script" => {
+                script = Some(proof::Script::load(
+                    &args.next().ok_or("--proof-script needs a path")?,
+                )?)
+            }
             "--frame-timings" => timings = true,
             "--uncapped" => uncapped = true,
             "--warmup" => {
@@ -30,10 +41,11 @@ fn run() -> Result<(), String> {
             }
             "--build-info" => {
                 println!(
-                    "{{\"commit\":\"{}\",\"source_tree_dirty\":{},\"target_cpu\":\"{}\"}}",
+                    "{{\"commit\":\"{}\",\"source_tree_dirty\":{},\"target_cpu\":\"{}\",\"proof\":{}}}",
                     option_env!("QA_BUILD_COMMIT").unwrap_or("unrecorded"),
                     option_env!("QA_BUILD_DIRTY").unwrap_or("true"),
-                    option_env!("QA_TARGET_CPU").unwrap_or("baseline")
+                    option_env!("QA_TARGET_CPU").unwrap_or("baseline"),
+                    cfg!(feature = "proof")
                 );
                 return Ok(());
             }
@@ -76,6 +88,8 @@ fn run() -> Result<(), String> {
         std::env::var_os("WAYLAND_DISPLAY").is_some()
     );
     std::thread::sleep(Duration::from_millis(startup_hold));
+    #[cfg(feature = "proof")]
+    let script_start = Instant::now();
     let mut completed = 0;
     let mut samples = if timings {
         Vec::with_capacity(frames as usize)
@@ -84,6 +98,10 @@ fn run() -> Result<(), String> {
     };
     for frame in 0..u64::from(frames) + u64::from(warmup) {
         let start = Instant::now();
+        #[cfg(feature = "proof")]
+        if let Some(script) = &mut script {
+            script.inject_due(script_start.elapsed(), &mut window);
+        }
         if window.poll_quit() {
             break;
         }
