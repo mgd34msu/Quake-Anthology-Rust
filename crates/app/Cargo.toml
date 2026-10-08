@@ -17,6 +17,7 @@ qa-input = { path = "../input" }
 qa-network = { path = "../network" }
 qa-session = { path = "../session" }
 qa-world = { path = "../world" }
+qa-formats = { path = "../formats" }
 
 [[bin]]
 name = "qa-rust"

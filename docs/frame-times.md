@@ -132,3 +132,39 @@ Evidence: `THE-885-local-probe.json` and `THE-885-probe-build.log`.
 ```sh
 timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local
 ```
+
+## THE-887: matched real-console workload
+
+Core 23, release baseline CPU build, no debugger, 60 warm-up and 600 measured
+frames. Each frame appends the same alias/echo, vstr, five cvar assignments and
+compressed-PK3 exec sequence in all five source contexts to one Console;
+Com_Frame also receives a ConsoleLine, a held-key repeat and local packets.
+The platform fixture generates times 16 ms apart so both builds execute the
+same 210/105/421/210 world/Q2/Q2RR/Q3 counter ticks, 1,396 packets and 659
+repeats. A 16 ms pause is outside counting/timing. Appending commands, both
+command drains, provider counters, decoder reset/read, prints and client-frame
+conversion are inside measurement. These are counters, not gameplay modules.
+
+| Build/workload | Median ns | p99 ns | Maximum allocations/reallocations | Maximum requested bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Archived 96878df0 with the same probe | 18,183,639.5 | 19,078,973 | 318 | 397,774 |
+| THE-887 working tree | 182,714 | 213,895 | 0 | 0 |
+
+Final cvar values and an empty command buffer are checked in both runs.
+All 67,320 bytes of command output match directly; provider/packet/input counts
+and parameters match. The baseline probe disables only its zero-allocation
+rejection to report the measured violations. No content fingerprint is used.
+The first fixed-text layout measured 53 ms median; separating text from hot
+records and refreshing only dependent projections replaced that slow layout.
+That exploratory run had wall-clock provider rates and is not a matched ratio.
+
+Evidence: THE-887-console-comparison.json, THE-887-before-probe.log,
+THE-887-console-probe.log and THE-887-probe-build.log in the R2 evidence folder.
+This proves the named calling-Rust-thread workload, excluding SDL, map loading,
+physics, rendering, native allocations and other threads. Per-game and combined
+map acceptance, qualified installation and renderer timing remain outstanding.
+
+```sh
+cargo build --release -p qa-platform --example host_frame --features allocation-tracking
+taskset -c "$CORE" target/release/examples/host_frame --local --console --content "$SCRIPT_PRODUCT"
+```

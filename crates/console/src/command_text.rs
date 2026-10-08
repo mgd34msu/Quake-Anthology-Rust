@@ -1,5 +1,10 @@
 //! Command-boundary parsing from the original Q1/Q2/Q3 Cmd tokenizers.
-use crate::views::Source;
+use crate::{
+    conversion::Text,
+    text::{FixedText, MAX_TEXT},
+    views::Source,
+};
+use std::{fmt::Write, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextError {
@@ -8,20 +13,79 @@ pub enum TextError {
     MacroLoop,
     UnmatchedQuote,
 }
+#[derive(Clone, Copy, Default)]
+struct Span {
+    start: u16,
+    end: u16,
+    raw: u16,
+}
+pub struct Tokens {
+    spans: [Span; 1024],
+    len: usize,
+}
+impl Default for Tokens {
+    fn default() -> Self {
+        Self {
+            spans: [Span::default(); 1024],
+            len: 0,
+        }
+    }
+}
 pub struct Arguments<'a> {
-    pub values: Vec<&'a str>,
+    text: &'a str,
+    tokens: &'a Tokens,
     pub raw: &'a str,
 }
 impl<'a> Arguments<'a> {
-    pub fn get(&self, index: usize) -> &'a str {
-        self.values.get(index).copied().unwrap_or("")
+    pub fn len(&self) -> usize {
+        self.tokens.len
     }
-    pub fn tail(&self, first: usize) -> String {
-        self.values.get(first..).unwrap_or(&[]).join(" ")
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn get(&self, index: usize) -> &'a str {
+        self.tokens
+            .spans
+            .get(index)
+            .filter(|_| index < self.len())
+            .map_or("", |s| &self.text[s.start as usize..s.end as usize])
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &'a str> + '_ {
+        (0..self.len()).map(|i| self.get(i))
+    }
+    pub fn tail(&self, first: usize) -> &'a str {
+        if first >= self.len() {
+            ""
+        } else if first + 1 == self.len() {
+            self.get(first)
+        } else {
+            &self.text[self.tokens.spans[first].raw as usize..]
+        }
+    }
+    pub fn join<const N: usize>(
+        &self,
+        first: usize,
+        output: &mut FixedText<N>,
+    ) -> Result<(), TextError> {
+        output.clear();
+        for i in first..self.len() {
+            if i != first {
+                output.write_str(" ").map_err(|_| TextError::TooLong)?;
+            }
+            output
+                .write_str(self.get(i))
+                .map_err(|_| TextError::TooLong)?;
+        }
+        Ok(())
     }
 }
 
-pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> {
+pub fn tokenize<'a>(
+    text: &'a str,
+    source: Source,
+    tokens: &'a mut Tokens,
+) -> Result<Arguments<'a>, TextError> {
+    tokens.len = 0;
     if text.len() > 8192 {
         return Err(TextError::TooLong);
     }
@@ -33,7 +97,6 @@ pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> 
     let maximum = if q3 { 1024 } else { 80 };
     let bytes = text.as_bytes();
     let mut at = 0;
-    let mut values = Vec::with_capacity(maximum.min(text.len() + 1));
     let mut args_start = text.len();
     while at < bytes.len() {
         while bytes
@@ -45,7 +108,7 @@ pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> 
         if at == bytes.len() || (!q3 && bytes[at] == b'\n') {
             break;
         }
-        if values.len() == 1 {
+        if tokens.len == 1 {
             args_start = at;
         }
         if q3 && bytes[at..].starts_with(b"//") {
@@ -75,6 +138,7 @@ pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> 
             at += length + 4;
             continue;
         }
+        let raw_start = at;
         let first = bytes[at];
         let start;
         let end;
@@ -115,10 +179,15 @@ pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> 
             }
             value = "";
         }
-        if values.len() < maximum {
-            values.push(value);
+        if tokens.len < maximum {
+            tokens.spans[tokens.len] = Span {
+                start: start as u16,
+                end: (start + value.len()) as u16,
+                raw: raw_start as u16,
+            };
+            tokens.len += 1;
         }
-        if q3 && values.len() == maximum {
+        if q3 && tokens.len == maximum {
             break;
         }
     }
@@ -126,39 +195,40 @@ pub fn tokenize(text: &str, source: Source) -> Result<Arguments<'_>, TextError> 
     if matches!(source, Source::Quake2 | Source::Quake2Rerelease) {
         raw = raw.trim_end_matches(|c: char| c.is_ascii() && c <= ' ');
     }
-    Ok(Arguments { values, raw })
+    Ok(Arguments { text, tokens, raw })
 }
 
 /// Q2 expands outside quotes, repeats substituted macros, and scopes loops to
 /// the command. The lookup is a cold command-boundary operation.
-pub fn expand(
-    text: &str,
-    mut value: impl FnMut(&str) -> Option<String>,
-) -> Result<String, TextError> {
-    let mut text = text.to_owned();
+pub fn expand<'a>(
+    text: &mut FixedText<MAX_TEXT>,
+    tokens: &mut Tokens,
+    mut value: impl FnMut(&str) -> Option<Text<'a>>,
+) -> Result<(), TextError> {
     let mut replacements = 0;
     loop {
-        if text.len() >= 1024 {
+        let raw = text.as_str();
+        if raw.len() >= 1024 {
             return Err(TextError::TooLong);
         }
         let mut quote = false;
-        let mut found = None;
-        for (at, &byte) in text.as_bytes().iter().enumerate() {
+        let mut found: Option<(Range<usize>, Text<'a>)> = None;
+        for (at, byte) in raw.bytes().enumerate() {
             if byte == b'"' {
                 quote = !quote;
             }
             if !quote && byte == b'$' {
-                let after = &text[at + 1..];
-                let token = tokenize(after, Source::Quake2)?;
-                if let Some(name) = token.values.first() {
-                    let start = name.as_ptr() as usize - text.as_ptr() as usize;
+                let token = tokenize(&raw[at + 1..], Source::Quake2, tokens)?;
+                if !token.is_empty() {
+                    let name = token.get(0);
+                    let start = name.as_ptr() as usize - raw.as_ptr() as usize;
                     let mut end = start + name.len();
-                    if text.as_bytes().get(start.wrapping_sub(1)) == Some(&b'"')
-                        && text.as_bytes().get(end) == Some(&b'"')
+                    if raw.as_bytes().get(start.wrapping_sub(1)) == Some(&b'"')
+                        && raw.as_bytes().get(end) == Some(&b'"')
                     {
                         end += 1;
                     }
-                    found = Some((at..end, value(name).unwrap_or_default()));
+                    found = Some((at..end, value(name).unwrap_or(Text::Borrowed(""))));
                     break;
                 }
             }
@@ -168,12 +238,13 @@ pub fn expand(
             if replacements >= 100 {
                 return Err(TextError::MacroLoop);
             }
-            text.replace_range(range, &replacement);
+            text.replace(range, replacement.as_str())
+                .map_err(|_| TextError::TooLong)?;
         } else {
             return if quote {
                 Err(TextError::UnmatchedQuote)
             } else {
-                Ok(text)
+                Ok(())
             };
         }
     }

@@ -128,3 +128,43 @@ fn corrupt_crc_truncation_and_local_name_disagreement_are_scoped_errors() {
     let (_fixture, archive) = Fixture::parse(truncated);
     assert!(archive.is_err());
 }
+
+#[test]
+fn one_loaded_inflater_streams_large_members_and_resets_after_empty_and_bad_streams() {
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    let mut seed = 0x434d4442u32;
+    let large: Vec<_> = (0..70000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    for payload in [b"small".as_slice(), &large, &[], b"after empty", &large] {
+        let (_fixture, archive) = Fixture::parse(&zip(payload, true, true, b""));
+        let mut destination = vec![0; payload.len()];
+        assert_eq!(
+            archive
+                .unwrap()
+                .read_into_reusing(0, &mut destination, &mut reader)
+                .unwrap(),
+            payload.len()
+        );
+        assert_eq!(destination, payload);
+    }
+    let (_fixture, archive) = Fixture::parse(&zip(b"bad stream", true, true, b""));
+    let mut archive = archive.unwrap();
+    archive.entries[0].compressed_length -= 1;
+    assert_eq!(
+        archive.read_into_reusing(0, &mut [0; 10], &mut reader),
+        Err(FormatError::Compression)
+    );
+    let (_fixture, archive) = Fixture::parse(&zip(b"after error", true, true, b""));
+    let mut destination = [0; 11];
+    archive
+        .unwrap()
+        .read_into_reusing(0, &mut destination, &mut reader)
+        .unwrap();
+    assert_eq!(&destination, b"after error");
+}

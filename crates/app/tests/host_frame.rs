@@ -185,7 +185,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
 fn cap_wait_drains_keys_and_aliases_use_one_cached_fps_handle() {
     let mut host = host();
     let cap = host.console.cvars.find("com_maxfps").unwrap();
-    host.console.cvars.set(cap, 100.0);
+    host.console.cvars.set(cap, 100.0).unwrap();
     let mut source = Source {
         time: 0,
         waits: 0,
@@ -201,7 +201,7 @@ fn cap_wait_drains_keys_and_aliases_use_one_cached_fps_handle() {
     assert_eq!(frame.commands[1].movement, [0; 3]);
     let alias = host.console.cvars.find("cl_maxfps").unwrap();
     assert_eq!(alias, cap);
-    host.console.cvars.set(alias, 200.0);
+    host.console.cvars.set(alias, 200.0).unwrap();
     source.wait_key = false;
     host.frame(&mut source, false);
     assert_eq!(source.waits, 15);

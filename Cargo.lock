@@ -131,6 +131,7 @@ dependencies = [
  "qa-console",
  "qa-content",
  "qa-core",
+ "qa-formats",
  "qa-input",
  "qa-network",
  "qa-platform",

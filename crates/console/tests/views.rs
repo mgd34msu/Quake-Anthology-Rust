@@ -45,7 +45,7 @@ fn all_sources_share_canonical_values_with_native_units_and_stable_handles() {
         assert_eq!(read(&cvars, "vid_gamma", context), "0.800000");
         assert_eq!(read(&cvars, "gamma", context), "0.800000");
     }
-    cvars.set_text(sensitivity, "4.25");
+    cvars.set_text(sensitivity, "4.25").unwrap();
     cvars.select_context(context(Source::Quake));
     assert_eq!(cvars.value(sensitivity), 4.25);
     cvars.reset(sensitivity);
@@ -94,12 +94,12 @@ fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
     write(&mut cvars, "teamplay", "1", q1);
     assert_eq!(read(&cvars, "teamplay", q1), "2");
     assert_eq!(read(&cvars, "g_friendlyFire", q1), "1.000000");
-    cvars.apply_latches();
+    cvars.apply_latches().unwrap();
     assert_eq!(read(&cvars, "teamplay", q1), "1");
     assert_eq!(read(&cvars, "g_friendlyFire", q1), "0.000000");
     write(&mut cvars, "teamplay", "2", q1);
     write(&mut cvars, "g_gametype", "9", q1);
-    cvars.apply_latches();
+    cvars.apply_latches().unwrap();
     assert_eq!(read(&cvars, "g_gametype", q1), "9");
     assert_eq!(read(&cvars, "g_friendlyFire", q1), "0.000000");
 }

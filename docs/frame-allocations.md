@@ -39,8 +39,10 @@ with no measured frames also fails. The development `proof` feature enables
 allocation tracking automatically. Warm-up allocations are reported when
 diagnostics are enabled but do not fail qualification.
 
-Use an idle private run as a negative control and a measured console command
-as the allocating positive control while THE-887 replaces owned command text.
+THE-887 removes the owned command text and cvar-write allocations. Console
+commands are now a zero-allocation workload, not an allocating control.
+The platform host probe verifies its allocator first with an intentional
+allocation/reallocation outside measurement, then counts real console frames.
 Normal gameplay builds retain scoped gameplay errors; this failure belongs to
 development qualification and occurs after cleanup.
 

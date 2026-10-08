@@ -1,15 +1,26 @@
-//! One host-owned command table, aliases and command buffer for every source.
+//! One host-owned command table and fixed command/alias storage for every source.
 use crate::{
     command_buffer::CommandBuffer,
-    command_text::{self, Arguments, TextError},
+    command_text::{self, Arguments, TextError, Tokens},
     cvars::{Cvars, WriteError},
+    text::{FixedText, MAX_TEXT},
     views::{Context, Source},
 };
-use std::fmt::Arguments as Output;
+use std::{
+    cmp::Ordering,
+    fmt::{Arguments as Output, Write},
+};
 
+#[derive(Clone, Copy, Debug)]
+pub enum ScriptError {
+    Missing,
+    TooLong,
+    Read,
+    Encoding,
+}
 pub trait Host {
     fn print(&mut self, text: Output<'_>);
-    fn read_script(&mut self, path: &str) -> Result<String, String>;
+    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError>;
     fn quit(&mut self);
 }
 #[derive(Debug)]
@@ -19,7 +30,7 @@ pub enum CommandError {
     Usage,
     UnknownCvar,
     AliasName,
-    Script(String),
+    Script(ScriptError),
 }
 impl From<TextError> for CommandError {
     fn from(e: TextError) -> Self {
@@ -38,22 +49,49 @@ struct Command<H> {
     function: CommandFn<H>,
 }
 struct Alias {
-    name: String,
-    text: String,
+    name: FixedText<32>,
+    text: FixedText<1024>,
+}
+#[derive(Default)]
+struct Parser {
+    line: FixedText<MAX_TEXT>,
+    tokens: Tokens,
 }
 pub struct Console<H> {
     pub cvars: Cvars,
     buffer: CommandBuffer,
     commands: Vec<Command<H>>,
-    aliases: Vec<Alias>,
+    aliases: Box<[Alias]>,
+    alias_count: usize,
+    parser: Option<Box<Parser>>,
+    joined: FixedText<MAX_TEXT>,
+    script: Box<[u8]>,
+}
+fn compare(a: &str, b: &str) -> Ordering {
+    a.bytes()
+        .map(|b| b.to_ascii_lowercase())
+        .cmp(b.bytes().map(|b| b.to_ascii_lowercase()))
 }
 impl<H: Host> Console<H> {
     pub fn new(context: Context) -> Self {
+        Self::with_alias_capacity(context, 4096)
+    }
+    /// Select the session's alias storage while loading; commands never grow it.
+    pub fn with_alias_capacity(context: Context, alias_capacity: usize) -> Self {
         let mut console = Self {
             cvars: Cvars::with_context(context),
             buffer: CommandBuffer::new(),
             commands: Vec::with_capacity(64),
-            aliases: Vec::new(),
+            aliases: (0..alias_capacity)
+                .map(|_| Alias {
+                    name: FixedText::default(),
+                    text: FixedText::default(),
+                })
+                .collect(),
+            alias_count: 0,
+            parser: Some(Box::default()),
+            joined: FixedText::default(),
+            script: vec![0; 65535].into_boxed_slice(),
         };
         for (name, function) in [
             ("echo", Self::echo as CommandFn<H>),
@@ -67,20 +105,18 @@ impl<H: Host> Console<H> {
             ("cvarlist", Self::cvarlist),
             ("quit", Self::quit),
         ] {
-            console.commands.push(Command { name, function });
+            console.register(name, function);
         }
         console
     }
     pub fn register(&mut self, name: &'static str, function: CommandFn<H>) -> bool {
-        if self
-            .commands
-            .iter()
-            .any(|c| c.name.eq_ignore_ascii_case(name))
-        {
-            return false;
+        match self.commands.binary_search_by(|c| compare(c.name, name)) {
+            Ok(_) => false,
+            Err(at) => {
+                self.commands.insert(at, Command { name, function });
+                true
+            }
         }
-        self.commands.push(Command { name, function });
-        true
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append(text, context)
@@ -89,6 +125,12 @@ impl<H: Host> Console<H> {
         self.buffer.is_empty()
     }
     pub fn execute_frame(&mut self, host: &mut H) {
+        // Move only the scratch pointer. Commands may mutate/insert into the
+        // buffer while argv continues borrowing this console's loaded parser.
+        let Some(mut parser) = self.parser.take() else {
+            host.print(format_args!("Console execution already active\n"));
+            return;
+        };
         let mut executed = 0;
         let mut aliases = 0;
         while !self.buffer.is_empty() && self.buffer.ready() {
@@ -96,32 +138,39 @@ impl<H: Host> Console<H> {
                 host.print(format_args!("Command frame limit\n"));
                 break;
             }
-            let Some(line) = self.buffer.next_line() else {
+            let Some((context, result)) = self.buffer.next_line(&mut parser.line) else {
                 break;
             };
             executed += 1;
-            let expanded;
-            let text = if matches!(
-                line.context.source,
-                Source::Quake2 | Source::Quake2Rerelease
-            ) {
-                expanded = command_text::expand(&line.text, |name| {
-                    self.cvars
-                        .bind(name, line.context)
-                        .and_then(|view| self.cvars.read(view).ok())
-                        .map(|text| text.as_str().to_owned())
-                });
-                match &expanded {
-                    Ok(text) => text.as_str(),
-                    Err(error) => {
-                        host.print(format_args!("Command rejected: {error:?}\n"));
-                        continue;
-                    }
+            if let Err(error) = result {
+                host.print(format_args!("Command rejected: {error:?}\n"));
+                continue;
+            }
+            if matches!(context.source, Source::Quake2 | Source::Quake2Rerelease) {
+                let raw = parser.line.as_str();
+                let expanded = if raw.contains('$') {
+                    command_text::expand(&mut parser.line, &mut parser.tokens, |name| {
+                        self.cvars
+                            .bind(name, context)
+                            .and_then(|view| self.cvars.read(view).ok())
+                    })
+                } else if raw.len() >= 1024 {
+                    Err(TextError::TooLong)
+                } else if raw.bytes().filter(|&b| b == b'"').count() & 1 != 0 {
+                    Err(TextError::UnmatchedQuote)
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = expanded {
+                    host.print(format_args!("Command rejected: {error:?}\n"));
+                    continue;
                 }
-            } else {
-                line.text.as_str()
-            };
-            let args = match command_text::tokenize(text, line.context.source) {
+            }
+            let args = match command_text::tokenize(
+                parser.line.as_str(),
+                context.source,
+                &mut parser.tokens,
+            ) {
                 Ok(args) => args,
                 Err(error) => {
                     host.print(format_args!("Command rejected: {error:?}\n"));
@@ -132,15 +181,10 @@ impl<H: Host> Console<H> {
             if name.is_empty() {
                 continue;
             }
-            let result = if let Some(function) = self
-                .commands
-                .iter()
-                .find(|c| c.name.eq_ignore_ascii_case(name))
-                .map(|c| c.function)
-            {
-                function(self, host, &args, line.context)
-            } else if let Some(view) = self.cvars.bind(name, line.context) {
-                if args.values.len() == 1 {
+            let result = if let Ok(at) = self.commands.binary_search_by(|c| compare(c.name, name)) {
+                (self.commands[at].function)(self, host, &args, context)
+            } else if let Some(view) = self.cvars.bind(name, context) {
+                if args.len() == 1 {
                     match self.cvars.read(view) {
                         Ok(value) => {
                             if self.cvars.private(view) {
@@ -153,20 +197,20 @@ impl<H: Host> Console<H> {
                         Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
                     }
                 } else {
-                    self.cvars.write(view, &args.tail(1)).map_err(Into::into)
+                    self.cvars.write(view, args.get(1)).map_err(Into::into)
                 }
-            } else if let Some(alias) = self
-                .aliases
+            } else if let Some(alias) = self.aliases[..self.alias_count]
                 .iter()
-                .find(|a| a.name.eq_ignore_ascii_case(name))
+                .find(|a| !a.name.as_str().is_empty() && a.name.as_str().eq_ignore_ascii_case(name))
             {
                 aliases += 1;
                 if aliases > 16 {
                     host.print(format_args!("Alias expansion limit\n"));
                     continue;
                 }
-                let text = alias.text.clone();
-                self.buffer.insert(&text, line.context).map_err(Into::into)
+                self.buffer
+                    .insert(alias.text.as_str(), context)
+                    .map_err(Into::into)
             } else {
                 host.print(format_args!("Unknown command \"{name}\"\n"));
                 Ok(())
@@ -175,21 +219,21 @@ impl<H: Host> Console<H> {
                 host.print(format_args!("Command {name} rejected: {error:?}\n"));
             }
         }
+        self.parser = Some(parser);
     }
     fn echo(&mut self, host: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
-        for text in args.values.iter().skip(1) {
+        for text in args.iter().skip(1) {
             host.print(format_args!("{text} "));
         }
         host.print(format_args!("\n"));
         Ok(())
     }
     fn wait(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
-        let frames = if args.values.len() == 1 {
+        self.buffer.wait(if args.len() == 1 {
             1
         } else {
             crate::numbers::integer(args.get(1)).max(0) as u32
-        };
-        self.buffer.wait(frames);
+        });
         Ok(())
     }
     fn alias(
@@ -198,9 +242,16 @@ impl<H: Host> Console<H> {
         args: &Arguments<'_>,
         _: Context,
     ) -> Result<(), CommandError> {
-        if args.values.len() == 1 {
-            for alias in &self.aliases {
-                host.print(format_args!("{} : {}", alias.name, alias.text));
+        if args.len() == 1 {
+            for alias in self.aliases[..self.alias_count]
+                .iter()
+                .filter(|a| !a.name.as_str().is_empty())
+            {
+                host.print(format_args!(
+                    "{} : {}",
+                    alias.name.as_str(),
+                    alias.text.as_str()
+                ));
             }
             return Ok(());
         }
@@ -213,27 +264,38 @@ impl<H: Host> Console<H> {
         {
             return Err(CommandError::AliasName);
         }
-        let text = args.tail(2) + "\n";
-        if let Some(alias) = self
-            .aliases
-            .iter_mut()
-            .find(|a| a.name.eq_ignore_ascii_case(name))
-        {
-            alias.text = text;
-        } else {
-            self.aliases.push(Alias {
-                name: name.to_owned(),
-                text,
-            });
+        let mut text = FixedText::<1024>::default();
+        args.join(2, &mut text)?;
+        text.write_str("\n").map_err(|_| TextError::TooLong)?;
+        let index = self.aliases[..self.alias_count]
+            .iter()
+            .position(|a| a.name.as_str().eq_ignore_ascii_case(name))
+            .or_else(|| {
+                self.aliases[..self.alias_count]
+                    .iter()
+                    .position(|a| a.name.as_str().is_empty())
+            })
+            .unwrap_or(self.alias_count);
+        if index == self.aliases.len() {
+            return Err(TextError::TooLong.into());
         }
+        self.alias_count = self.alias_count.max(index + 1);
+        let alias = &mut self.aliases[index];
+        alias.name.set(name).map_err(|_| TextError::TooLong)?;
+        alias.text = text;
         Ok(())
     }
     fn unalias(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
-        if args.values.len() != 2 {
+        if args.len() != 2 {
             return Err(CommandError::Usage);
         }
-        self.aliases
-            .retain(|a| !a.name.eq_ignore_ascii_case(args.get(1)));
+        if let Some(alias) = self.aliases[..self.alias_count]
+            .iter_mut()
+            .find(|a| a.name.as_str().eq_ignore_ascii_case(args.get(1)))
+        {
+            alias.name.clear();
+            alias.text.clear();
+        }
         Ok(())
     }
     fn exec(
@@ -242,17 +304,20 @@ impl<H: Host> Console<H> {
         args: &Arguments<'_>,
         context: Context,
     ) -> Result<(), CommandError> {
-        if args.values.len() != 2 {
+        if args.len() != 2 {
             return Err(CommandError::Usage);
         }
-        let path = args.get(1);
-        let path = if std::path::Path::new(path).extension().is_some() {
-            path.to_owned()
-        } else {
-            format!("{path}.cfg")
-        };
-        let text = host.read_script(&path).map_err(CommandError::Script)?;
-        self.buffer.insert(&text, context)?;
+        let mut path = FixedText::<4096>::default();
+        path.set(args.get(1)).map_err(|_| TextError::TooLong)?;
+        if std::path::Path::new(path.as_str()).extension().is_none() {
+            path.write_str(".cfg").map_err(|_| TextError::TooLong)?;
+        }
+        let length = host
+            .read_script(path.as_str(), &mut self.script)
+            .map_err(CommandError::Script)?;
+        let text = std::str::from_utf8(&self.script[..length])
+            .map_err(|_| CommandError::Script(ScriptError::Encoding))?;
+        self.buffer.insert(text, context)?;
         Ok(())
     }
     fn vstr(
@@ -261,7 +326,7 @@ impl<H: Host> Console<H> {
         args: &Arguments<'_>,
         context: Context,
     ) -> Result<(), CommandError> {
-        if args.values.len() != 2 {
+        if args.len() != 2 {
             return Err(CommandError::Usage);
         }
         let view = self
@@ -271,9 +336,14 @@ impl<H: Host> Console<H> {
         let text = self
             .cvars
             .read(view)
-            .map_err(|e| CommandError::Cvar(WriteError::Conversion(e)))?
-            .into_owned();
-        self.buffer.insert(&(text + "\n"), context)?;
+            .map_err(|e| CommandError::Cvar(WriteError::Conversion(e)))?;
+        self.joined
+            .set(text.as_str())
+            .map_err(|_| TextError::TooLong)?;
+        self.joined
+            .write_str("\n")
+            .map_err(|_| TextError::TooLong)?;
+        self.buffer.insert(self.joined.as_str(), context)?;
         Ok(())
     }
     fn set(
@@ -282,14 +352,27 @@ impl<H: Host> Console<H> {
         args: &Arguments<'_>,
         context: Context,
     ) -> Result<(), CommandError> {
-        if args.values.len() < 3 {
+        if args.len() < 3 {
             return Err(CommandError::Usage);
         }
         let view = self
             .cvars
             .bind(args.get(1), context)
             .ok_or(CommandError::UnknownCvar)?;
-        self.cvars.write(view, &args.tail(2))?;
+        if matches!(context.source, Source::Quake2 | Source::Quake2Rerelease) {
+            if args.len() > 4 || (args.len() == 4 && !matches!(args.get(3), "u" | "s")) {
+                return Err(CommandError::Usage);
+            }
+            if args.len() == 4 {
+                self.cvars
+                    .full_set(view, args.get(2), if args.get(3) == "u" { 2 } else { 4 })?;
+            } else {
+                self.cvars.write(view, args.get(2))?;
+            }
+        } else {
+            args.join(2, &mut self.joined)?;
+            self.cvars.write(view, self.joined.as_str())?;
+        }
         Ok(())
     }
     fn cmdlist(&mut self, host: &mut H, _: &Arguments<'_>, _: Context) -> Result<(), CommandError> {

@@ -17,13 +17,13 @@ fn every_canonical_alias_and_seat_has_a_slot_and_seats_remain_independent() {
     let first = cvars.find("ui_seat1_language").unwrap();
     let second = cvars.find("ui_seat2_language").unwrap();
     assert_ne!(first, second);
-    cvars.set_text(first, "Alice");
-    cvars.set_text(second, "Bob");
+    cvars.set_text(first, "Alice").unwrap();
+    cvars.set_text(second, "Bob").unwrap();
     assert_eq!(cvars.text(first), "Alice");
     assert_eq!(cvars.text(second), "Bob");
     let developer = cvars.find("DEVELOPER").unwrap();
     assert_eq!(cvars.value(developer), 0.0);
-    cvars.set(developer, 1.0);
+    cvars.set(developer, 1.0).unwrap();
     assert_eq!(cvars.value(developer), 1.0);
     assert_eq!(cvars.find("FOV"), cvars.find("cg_fov"));
 }

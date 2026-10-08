@@ -34,6 +34,20 @@ pub struct Archive {
     file: Arc<File>,
 }
 
+/// Caller-owned inflate state, allocated once at load and reset between files.
+pub struct ArchiveReader {
+    decoder: flate2::Decompress,
+    input: [u8; 8192],
+}
+impl Default for ArchiveReader {
+    fn default() -> Self {
+        Self {
+            decoder: flate2::Decompress::new(false),
+            input: [0; 8192],
+        }
+    }
+}
+
 fn range(size: u64, start: u64, length: u64) -> Result<(), FormatError> {
     if start.checked_add(length).is_none_or(|end| end > size) {
         Err(FormatError::InvalidRange)
@@ -252,6 +266,27 @@ impl Archive {
     /// Whole-member read into an admitted caller buffer. No snapshot/digest cache.
     pub fn read_into(&self, index: usize, destination: &mut [u8]) -> Result<usize, FormatError> {
         let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
+        if entry.compression == Compression::Stored {
+            let length = usize::try_from(entry.length).map_err(|_| FormatError::InvalidRange)?;
+            let out = destination
+                .get_mut(..length)
+                .ok_or(FormatError::InvalidRange)?;
+            exact(&self.file, entry.offset, out)?;
+            if entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc) {
+                return Err(FormatError::Checksum);
+            }
+            return Ok(length);
+        }
+        self.read_into_reusing(index, destination, &mut ArchiveReader::default())
+    }
+
+    pub fn read_into_reusing(
+        &self,
+        index: usize,
+        destination: &mut [u8],
+        reader: &mut ArchiveReader,
+    ) -> Result<usize, FormatError> {
+        let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
         let length = usize::try_from(entry.length).map_err(|_| FormatError::InvalidRange)?;
         let out = destination
             .get_mut(..length)
@@ -264,17 +299,50 @@ impl Archive {
                     at: entry.offset,
                     remaining: entry.compressed_length,
                 };
-                let mut decoder = flate2::read::DeflateDecoder::new(input);
-                decoder
-                    .read_exact(out)
-                    .map_err(|_| FormatError::Compression)?;
-                if decoder
-                    .read(&mut [0; 1])
-                    .map_err(|_| FormatError::Compression)?
-                    != 0
-                    || decoder.total_in() != entry.compressed_length
-                {
-                    return Err(FormatError::Compression);
+                let mut input = input;
+                reader.decoder.reset(false);
+                let mut first = 0;
+                let mut last = 0;
+                loop {
+                    if first == last {
+                        last = input.read(&mut reader.input).map_err(io_error)?;
+                        first = 0;
+                    }
+                    let before_in = reader.decoder.total_in();
+                    let before_out = reader.decoder.total_out();
+                    let written =
+                        usize::try_from(before_out).map_err(|_| FormatError::Compression)?;
+                    let mut extra = [0; 1];
+                    let destination = if written < out.len() {
+                        &mut out[written..]
+                    } else {
+                        &mut extra[..]
+                    };
+                    let status = reader
+                        .decoder
+                        .decompress(
+                            &reader.input[first..last],
+                            destination,
+                            flate2::FlushDecompress::None,
+                        )
+                        .map_err(|_| FormatError::Compression)?;
+                    let consumed = reader.decoder.total_in() - before_in;
+                    let produced = reader.decoder.total_out() - before_out;
+                    first += consumed as usize;
+                    if reader.decoder.total_out() > entry.length {
+                        return Err(FormatError::Compression);
+                    }
+                    if status == flate2::Status::StreamEnd {
+                        if reader.decoder.total_in() != entry.compressed_length
+                            || reader.decoder.total_out() != entry.length
+                        {
+                            return Err(FormatError::Compression);
+                        }
+                        break;
+                    }
+                    if consumed == 0 && produced == 0 {
+                        return Err(FormatError::Compression);
+                    }
                 }
             }
         }

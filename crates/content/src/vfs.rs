@@ -80,33 +80,45 @@ pub struct Vfs {
 }
 
 pub fn normalize(path: &[u8]) -> Result<Vec<u8>, VfsError> {
+    let mut bytes = [0; 4096];
+    let length = normalize_into(path, &mut bytes)?;
+    Ok(bytes[..length].to_vec())
+}
+
+fn normalize_into(path: &[u8], normalized: &mut [u8; 4096]) -> Result<usize, VfsError> {
     if path.is_empty() || path.len() > 4096 || path.iter().any(|&c| c == 0 || c == b':') {
         return Err(VfsError::Path);
     }
-    let mut components = Vec::new();
+    let mut starts = [0usize; 2048];
+    let mut count = 0;
+    let mut length = 0;
     for component in path.split(|&c| c == b'/' || c == b'\\') {
         if component.is_empty() || component == b"." {
             return Err(VfsError::Path);
         }
         if component == b".." {
-            if components.pop().is_none() {
+            if count == 0 {
                 return Err(VfsError::Path);
             }
+            count -= 1;
+            length = starts[count];
         } else {
-            components.push(component);
+            starts[count] = length;
+            count += 1;
+            if length != 0 {
+                normalized[length] = b'/';
+                length += 1;
+            }
+            for byte in component {
+                normalized[length] = byte.to_ascii_lowercase();
+                length += 1;
+            }
         }
     }
-    if components.is_empty() {
+    if count == 0 {
         return Err(VfsError::Path);
     }
-    let mut normalized = Vec::with_capacity(path.len());
-    for (index, component) in components.into_iter().enumerate() {
-        if index != 0 {
-            normalized.push(b'/');
-        }
-        normalized.extend(component.iter().map(u8::to_ascii_lowercase));
-    }
-    Ok(normalized)
+    Ok(length)
 }
 
 impl Vfs {
@@ -283,10 +295,12 @@ impl Vfs {
     /// Resolve names only while loading. Simulation/render/audio retain FileRefs.
     pub fn open(&self, path: &[u8]) -> Option<FileRef> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
-        let name = normalize(path).ok()?;
+        let mut normalized = [0; 4096];
+        let length = normalize_into(path, &mut normalized).ok()?;
+        let name = &normalized[..length];
         let position = self
             .index
-            .partition_point(|&index| self.entries[index].name.as_ref() < name.as_slice());
+            .partition_point(|&index| self.entries[index].name.as_ref() < name);
         let &entry = self.index.get(position)?;
         (self.entries[entry].name.as_ref() == name).then_some(FileRef {
             entry: entry as u32,
@@ -302,6 +316,19 @@ impl Vfs {
 
     pub fn length(&self, reference: FileRef) -> Result<u64, VfsError> {
         Ok(self.entry(reference)?.length)
+    }
+
+    pub fn read_into_reusing(
+        &self,
+        reference: FileRef,
+        destination: &mut [u8],
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<usize, VfsError> {
+        let entry = self.entry(reference)?;
+        if let EntrySource::Archive { archive, entry } = &entry.source {
+            return Ok(archive.read_into_reusing(*entry, destination, reader)?);
+        }
+        self.read_at(reference, 0, destination)
     }
 
     pub fn read_at(

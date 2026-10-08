@@ -1,3 +1,4 @@
+use crate::text::{FixedText, MAX_TEXT};
 use crate::{
     catalog::{Condition, ConversionKind, DefaultKind, Operation, Scope},
     conversion::{self, Input, Text},
@@ -6,7 +7,7 @@ use crate::{
     views::{Context, Role, Source},
 };
 use qa_core::primitives::CvarHandle;
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Write};
 
 pub use crate::catalog::Definition;
 const EMPTY: u16 = u16::MAX;
@@ -123,34 +124,62 @@ struct Value {
     name: &'static str,
     row: usize,
     seat: u8,
-    explicit: Option<String>,
+    explicit: bool,
     numbers: [f32; 5],
     integers: [i32; 5],
     revision: u64,
+    command_flags: [Option<u32>; 5],
 }
 struct Detail {
-    text: String,
-    revisions: Vec<(CvarHandle, u64)>,
+    text: FixedText<MAX_TEXT>,
+    revisions: [(CvarHandle, u64); 33],
+    count: usize,
+    present: bool,
+}
+impl Default for Detail {
+    fn default() -> Self {
+        Self {
+            text: FixedText::default(),
+            revisions: [(CvarHandle(0), 0); 33],
+            count: 0,
+            present: false,
+        }
+    }
 }
 struct PendingDetail {
     view: View,
-    text: String,
+    text: FixedText<MAX_TEXT>,
     modified: bool,
 }
 struct PendingWrite {
-    changes: Vec<(CvarHandle, String)>,
+    first: Option<(CvarHandle, FixedText<MAX_TEXT>)>,
+    changes: [Option<(CvarHandle, FixedText<64>)>; 32],
     detail: Option<PendingDetail>,
+}
+impl PendingWrite {
+    fn handles(&self) -> impl Iterator<Item = CvarHandle> + '_ {
+        self.first
+            .iter()
+            .map(|(h, _)| *h)
+            .chain(self.changes.iter().flatten().map(|(h, _)| *h))
+    }
 }
 type Projections = [[Result<f32, conversion::Error>; 3]; 5];
 
 pub struct Cvars {
     values: Vec<Value>,
+    texts: Box<[FixedText<MAX_TEXT>]>,
     offsets: Vec<usize>,
     defaults: Vec<[Option<Cow<'static, str>>; 5]>,
     index: NameIndex,
-    details: Vec<[Option<Detail>; 5]>,
+    details: Vec<[Option<Box<Detail>>; 5]>,
     pending: Vec<PendingWrite>,
     projections: Vec<Projections>,
+    dependents: Vec<Vec<u16>>,
+    dirty_handles: Vec<CvarHandle>,
+    dirty_values: Vec<bool>,
+    dirty_bindings: Vec<u16>,
+    dirty_projections: Vec<bool>,
     context: Context,
     revision_clock: u64,
     pub server_active: bool,
@@ -183,15 +212,19 @@ impl Cvars {
                     name,
                     row,
                     seat,
-                    explicit: None,
+                    explicit: false,
                     numbers: [0.0; 5],
                     integers: [0; 5],
                     revision: 0,
+                    command_flags: [None; 5],
                 });
             }
         }
+        let pending_capacity = values.len();
+        let texts = (0..values.len()).map(|_| FixedText::default()).collect();
         let mut registry = Self {
             values,
+            texts,
             offsets,
             index,
             context,
@@ -199,15 +232,51 @@ impl Cvars {
             defaults: (0..DEFINITIONS.len())
                 .map(|_| std::array::from_fn(|_| None))
                 .collect(),
-            details: (0..BINDINGS.len())
-                .map(|_| std::array::from_fn(|_| None))
+            details: BINDINGS
+                .iter()
+                .map(|b| {
+                    std::array::from_fn(|source| {
+                        let row = &DEFINITIONS[b.row as usize];
+                        let conversion = &CONVERSIONS[if row.stored {
+                            b.conversions[source]
+                        } else {
+                            row.rule_conversion
+                        } as usize];
+                        (conversion.detail || conversion.operation == Operation::MusicMute)
+                            .then(Box::default)
+                    })
+                })
                 .collect(),
-            pending: Vec::new(),
+            pending: Vec::with_capacity(pending_capacity),
             projections: vec![[[Ok(0.0); 3]; 5]; BINDINGS.len()],
+            dependents: (0..pending_capacity).map(|_| Vec::new()).collect(),
+            dirty_handles: Vec::with_capacity(pending_capacity),
+            dirty_values: vec![false; pending_capacity],
+            dirty_bindings: Vec::with_capacity(BINDINGS.len()),
+            dirty_projections: vec![false; BINDINGS.len()],
             server_active: false,
             cheats: false,
             initialized: false,
         };
+        for (i, binding) in BINDINGS.iter().enumerate() {
+            let handle = registry.slot(binding.row as usize, binding.seat);
+            registry.dependents[handle.0 as usize].push(i as u16);
+            let definition = &DEFINITIONS[binding.row as usize];
+            for source in 0..5 {
+                let c = &CONVERSIONS[if definition.stored {
+                    binding.conversions[source]
+                } else {
+                    definition.rule_conversion
+                } as usize];
+                for operand in &OPERANDS[c.operands.clone()] {
+                    let handle = registry.slot(operand.row as usize, 0);
+                    let dependents = &mut registry.dependents[handle.0 as usize];
+                    if !dependents.contains(&(i as u16)) {
+                        dependents.push(i as u16);
+                    }
+                }
+            }
+        }
         registry.resolve_defaults();
         registry.refresh_numbers();
         registry.refresh_projections();
@@ -276,11 +345,13 @@ impl Cvars {
     }
     fn effective(&self, handle: CvarHandle, source: Source) -> &str {
         let value = &self.values[handle.0 as usize];
-        value.explicit.as_deref().unwrap_or_else(|| {
+        if value.explicit {
+            self.texts[handle.0 as usize].as_str()
+        } else {
             self.defaults[value.row][source as usize]
                 .as_deref()
                 .unwrap_or("")
-        })
+        }
     }
     pub fn value(&self, handle: CvarHandle) -> f32 {
         self.values[handle.0 as usize].numbers[self.context.source as usize]
@@ -311,7 +382,7 @@ impl Cvars {
         self.effective(handle, self.context.source)
     }
     pub fn is_explicit(&self, handle: CvarHandle) -> bool {
-        self.values[handle.0 as usize].explicit.is_some()
+        self.values[handle.0 as usize].explicit
     }
     pub fn default_available(&self, handle: CvarHandle, source: Source) -> bool {
         self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
@@ -354,6 +425,11 @@ impl Cvars {
         } as usize]
     }
     pub fn flags(&self, view: View) -> u32 {
+        if let Some(flags) =
+            self.values[view.handle.0 as usize].command_flags[view.context.source as usize]
+        {
+            return flags;
+        }
         let b = &BINDINGS[view.binding as usize];
         let row = &DEFINITIONS[b.row as usize];
         let native = b.native_sources & (1 << view.context.source as u8) != 0;
@@ -402,7 +478,25 @@ impl Cvars {
         Ok(())
     }
     pub fn write(&mut self, view: View, text: &str) -> Result<(), WriteError> {
-        self.check_write(view, text)?;
+        self.write_inner(view, text, true)
+    }
+    /// Q2 Cvar_FullSet changes this source's flags and bypasses normal policy.
+    pub fn full_set(&mut self, view: View, text: &str, flags: u32) -> Result<(), WriteError> {
+        let source = view.context.source as usize;
+        let previous = self.values[view.handle.0 as usize].command_flags[source];
+        self.values[view.handle.0 as usize].command_flags[source] = Some(flags);
+        if let Err(error) = self.write_inner(view, text, false) {
+            self.values[view.handle.0 as usize].command_flags[source] = previous;
+            return Err(error);
+        }
+        self.mark_change(view.handle);
+        self.refresh_changes();
+        Ok(())
+    }
+    fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
+        if enforce {
+            self.check_write(view, text)?;
+        }
         let binding = &BINDINGS[view.binding as usize];
         let current = self.effective(view.handle, view.context.source);
         let detail = self.detail(view);
@@ -425,86 +519,116 @@ impl Cvars {
             operand: &operands,
         })?;
         let detail = if out.detail {
-            Some(out.detail_value.unwrap_or(text).to_owned())
+            let mut value = FixedText::default();
+            value
+                .set(out.detail_value.unwrap_or(text))
+                .map_err(|_| conversion::Error::TextTooLong)?;
+            Some(value)
         } else {
             None
         };
-        let detail_modified = detail.as_deref() != self.detail(view);
-        // Admit every owned assignment before publishing any composite change.
-        let mut changes = Vec::with_capacity(out.change_count + 1);
-        let mut pending = self.flags(view) & 32 != 0 && self.server_active;
+        let detail_modified = detail.as_ref().map(FixedText::as_str) != self.detail(view);
+        let mut changes = PendingWrite {
+            first: None,
+            changes: std::array::from_fn(|_| None),
+            detail: None,
+        };
+        let mut pending = enforce && self.flags(view) & 32 != 0 && self.server_active;
         if DEFINITIONS[binding.row as usize].stored {
-            changes.push((view.handle, out.text.into_owned()));
+            let mut value = FixedText::default();
+            if let Some(prefix) = out.prefix {
+                value
+                    .write_str(prefix)
+                    .map_err(|_| conversion::Error::TextTooLong)?;
+            }
+            value
+                .write_str(out.text.as_str())
+                .map_err(|_| conversion::Error::TextTooLong)?;
+            changes.first = Some((view.handle, value));
         }
-        for change in out.changes.into_iter().take(out.change_count).flatten() {
+        for (i, change) in out
+            .changes
+            .into_iter()
+            .take(out.change_count)
+            .flatten()
+            .enumerate()
+        {
             let handle = self.slot(change.row as usize, 0);
             let target = self.values[handle.0 as usize].name;
             if let Some(target_view) = self.bind(target, view.context) {
-                self.check_write(target_view, change.text.as_str())?;
-                pending |= self.flags(target_view) & 32 != 0 && self.server_active;
-                changes.push((handle, change.text.as_str().to_owned()));
+                if enforce {
+                    self.check_write(target_view, change.text.as_str())?;
+                }
+                pending |= enforce && self.flags(target_view) & 32 != 0 && self.server_active;
+                let mut text = FixedText::default();
+                text.set(change.text.as_str())
+                    .map_err(|_| conversion::Error::TextTooLong)?;
+                changes.changes[i] = Some((handle, text));
             }
         }
-        // A coupled conversion is one publication, including a deferred write.
-        self.pending.retain(|old| {
-            !old.changes
-                .iter()
-                .any(|(h, _)| changes.iter().any(|(new, _)| h == new))
+        self.pending
+            .retain(|old| !old.handles().any(|h| changes.handles().any(|new| h == new)));
+        changes.detail = detail.map(|text| PendingDetail {
+            view,
+            text,
+            modified: detail_modified,
         });
         if pending {
-            self.pending.push(PendingWrite {
-                changes,
-                detail: detail.map(|text| PendingDetail {
-                    view,
-                    text,
-                    modified: detail_modified,
-                }),
-            });
+            self.pending.push(changes);
             return Ok(());
         }
-        for (handle, text) in changes {
-            self.clear_details(handle);
-            self.publish(handle, text);
-        }
-        if let Some(text) = detail {
-            self.save_detail(view, text, detail_modified);
-        }
-        self.refresh_numbers();
-        self.refresh_projections();
+        self.publish_group(changes)?;
+        self.refresh_changes();
         Ok(())
     }
     fn detail(&self, view: View) -> Option<&str> {
         self.details[view.binding as usize][view.context.source as usize]
             .as_ref()
             .filter(|d| {
-                d.revisions
-                    .iter()
-                    .all(|(h, revision)| self.values[h.0 as usize].revision == *revision)
+                d.present
+                    && d.revisions[..d.count]
+                        .iter()
+                        .all(|(h, revision)| self.values[h.0 as usize].revision == *revision)
             })
             .map(|d| d.text.as_str())
     }
-    fn save_detail(&mut self, view: View, text: String, modified: bool) {
+    fn save_detail(
+        &mut self,
+        view: View,
+        text: FixedText<MAX_TEXT>,
+        modified: bool,
+    ) -> Result<(), WriteError> {
         if modified {
             self.mark_change(view.handle);
         }
-        let mut revisions = Vec::with_capacity(self.conversion(view).operands.len() + 1);
-        revisions.push((view.handle, self.values[view.handle.0 as usize].revision));
+        let mut revisions = [(CvarHandle(0), 0); 33];
+        revisions[0] = (view.handle, self.values[view.handle.0 as usize].revision);
+        let mut count = 1;
         for operand in &OPERANDS[self.conversion(view).operands.clone()] {
             let handle = self.slot(operand.row as usize, 0);
-            revisions.push((handle, self.values[handle.0 as usize].revision));
+            revisions[count] = (handle, self.values[handle.0 as usize].revision);
+            count += 1;
         }
-        self.details[view.binding as usize][view.context.source as usize] =
-            Some(Detail { text, revisions });
+        let detail = self.details[view.binding as usize][view.context.source as usize]
+            .as_mut()
+            .ok_or(conversion::Error::PolicyRequired)?;
+        detail.text = text;
+        detail.revisions = revisions;
+        detail.count = count;
+        detail.present = true;
+        Ok(())
     }
     fn clear_details(&mut self, handle: CvarHandle) {
         let mut modified = false;
-        for source_details in &mut self.details {
-            for detail in source_details {
-                if detail
-                    .as_ref()
-                    .is_some_and(|d| d.revisions.iter().any(|(h, _)| *h == handle))
+        for &binding in &self.dependents[handle.0 as usize] {
+            let source_details = &mut self.details[binding as usize];
+            for detail in source_details.iter_mut().flatten() {
+                if detail.present
+                    && detail.revisions[..detail.count]
+                        .iter()
+                        .any(|(h, _)| *h == handle)
                 {
-                    *detail = None;
+                    detail.present = false;
                     modified = true;
                 }
             }
@@ -514,52 +638,74 @@ impl Cvars {
         }
     }
     fn cancel_pending(&mut self, handle: CvarHandle) {
-        self.pending
-            .retain(|p| !p.changes.iter().any(|(h, _)| *h == handle));
+        self.pending.retain(|p| !p.handles().any(|h| h == handle));
     }
-    fn publish(&mut self, handle: CvarHandle, text: String) {
+    fn publish(&mut self, handle: CvarHandle, text: FixedText<MAX_TEXT>) {
         let value = &mut self.values[handle.0 as usize];
-        if value.explicit.as_deref() != Some(&text) {
-            value.explicit = Some(text);
+        if !value.explicit || self.texts[handle.0 as usize].as_str() != text.as_str() {
+            value.explicit = true;
+            self.texts[handle.0 as usize] = text;
             self.mark_change(handle);
         }
+    }
+    fn publish_group(&mut self, pending: PendingWrite) -> Result<(), WriteError> {
+        if let Some((handle, text)) = pending.first {
+            self.clear_details(handle);
+            self.publish(handle, text);
+        }
+        for (handle, text) in pending.changes.into_iter().flatten() {
+            let mut value = FixedText::default();
+            value
+                .set(text.as_str())
+                .map_err(|_| conversion::Error::TextTooLong)?;
+            self.clear_details(handle);
+            self.publish(handle, value);
+        }
+        if let Some(detail) = pending.detail {
+            self.save_detail(detail.view, detail.text, detail.modified)?;
+        }
+        Ok(())
     }
     fn mark_change(&mut self, handle: CvarHandle) {
         self.revision_clock = self.revision_clock.wrapping_add(1);
         self.values[handle.0 as usize].revision = self.revision_clock;
+        if !self.dirty_values[handle.0 as usize] {
+            self.dirty_values[handle.0 as usize] = true;
+            self.dirty_handles.push(handle);
+        }
     }
     /// Engine-owned updates bypass command policy (ROM values and telemetry).
-    pub fn set(&mut self, handle: CvarHandle, value: f32) {
-        self.set_text(handle, &value.to_string());
+    pub fn set(&mut self, handle: CvarHandle, value: f32) -> Result<(), WriteError> {
+        let mut text = FixedText::<64>::default();
+        write!(text, "{value}").map_err(|_| conversion::Error::TextTooLong)?;
+        self.set_text(handle, text.as_str())
     }
-    pub fn set_text(&mut self, handle: CvarHandle, text: &str) {
+    pub fn set_text(&mut self, handle: CvarHandle, text: &str) -> Result<(), WriteError> {
+        let mut value = FixedText::default();
+        value
+            .set(text)
+            .map_err(|_| conversion::Error::TextTooLong)?;
         self.cancel_pending(handle);
         self.clear_details(handle);
-        self.publish(handle, text.to_owned());
-        self.refresh_numbers();
-        self.refresh_projections();
+        self.publish(handle, value);
+        self.refresh_changes();
+        Ok(())
     }
     pub fn reset(&mut self, handle: CvarHandle) {
         self.cancel_pending(handle);
         self.clear_details(handle);
         let value = &mut self.values[handle.0 as usize];
-        value.explicit = None;
+        value.explicit = false;
         self.mark_change(handle);
-        self.refresh_numbers();
-        self.refresh_projections();
+        self.refresh_changes();
     }
-    pub fn apply_latches(&mut self) {
-        for pending in std::mem::take(&mut self.pending) {
-            for (handle, text) in pending.changes {
-                self.clear_details(handle);
-                self.publish(handle, text);
-            }
-            if let Some(detail) = pending.detail {
-                self.save_detail(detail.view, detail.text, detail.modified);
-            }
+    pub fn apply_latches(&mut self) -> Result<(), WriteError> {
+        while !self.pending.is_empty() {
+            let pending = self.pending.remove(0);
+            self.publish_group(pending)?;
         }
-        self.refresh_numbers();
-        self.refresh_projections();
+        self.refresh_changes();
+        Ok(())
     }
     pub fn entries(
         &self,
@@ -575,41 +721,73 @@ impl Cvars {
             )
         })
     }
+    fn refresh_number_at(&mut self, index: usize) {
+        let numbers = std::array::from_fn(|s| {
+            number(
+                self.effective(CvarHandle(index as u32), Source::ALL[s]),
+                Source::ALL[s],
+            )
+        });
+        let integers = std::array::from_fn(|s| {
+            integer(self.effective(CvarHandle(index as u32), Source::ALL[s]))
+        });
+        self.values[index].numbers = numbers;
+        self.values[index].integers = integers;
+    }
     fn refresh_numbers(&mut self) {
         for index in 0..self.values.len() {
-            let numbers = std::array::from_fn(|s| {
-                number(
-                    self.effective(CvarHandle(index as u32), Source::ALL[s]),
-                    Source::ALL[s],
-                )
-            });
-            self.values[index].numbers = numbers;
-            self.values[index].integers = std::array::from_fn(|s| {
-                integer(self.effective(CvarHandle(index as u32), Source::ALL[s]))
-            });
+            self.refresh_number_at(index);
         }
     }
+    fn refresh_projection_at(&mut self, index: usize) {
+        let binding = &BINDINGS[index];
+        let projections = std::array::from_fn(|source| {
+            std::array::from_fn(|role| {
+                let context = Context {
+                    source: Source::ALL[source],
+                    side: self.context.side,
+                    role: ROLES[role],
+                    dedicated: self.context.dedicated,
+                };
+                let view = View {
+                    handle: self.slot(binding.row as usize, binding.seat),
+                    binding: index as u16,
+                    context,
+                };
+                self.read(view)
+                    .map(|text| number(text.as_str(), context.source))
+            })
+        });
+        self.projections[index] = projections;
+    }
     fn refresh_projections(&mut self) {
-        for (index, binding) in BINDINGS.iter().enumerate() {
-            let projections = std::array::from_fn(|source| {
-                std::array::from_fn(|role| {
-                    let context = Context {
-                        source: Source::ALL[source],
-                        side: self.context.side,
-                        role: ROLES[role],
-                        dedicated: self.context.dedicated,
-                    };
-                    let view = View {
-                        handle: self.slot(binding.row as usize, binding.seat),
-                        binding: index as u16,
-                        context,
-                    };
-                    self.read(view)
-                        .map(|text| number(text.as_str(), context.source))
-                })
-            });
-            self.projections[index] = projections;
+        for index in 0..BINDINGS.len() {
+            self.refresh_projection_at(index);
         }
+        self.dirty_values.fill(false);
+        self.dirty_projections.fill(false);
+        self.dirty_handles.clear();
+        self.dirty_bindings.clear();
+    }
+    fn refresh_changes(&mut self) {
+        for i in 0..self.dirty_handles.len() {
+            let index = self.dirty_handles[i].0 as usize;
+            self.refresh_number_at(index);
+            for &binding in &self.dependents[index] {
+                if !self.dirty_projections[binding as usize] {
+                    self.dirty_projections[binding as usize] = true;
+                    self.dirty_bindings.push(binding);
+                }
+            }
+            self.dirty_values[index] = false;
+        }
+        for i in 0..self.dirty_bindings.len() {
+            let index = self.dirty_bindings[i] as usize;
+            self.refresh_projection_at(index);
+            self.dirty_projections[index] = false;
+        }
+        self.dirty_handles.clear();
+        self.dirty_bindings.clear();
     }
     fn resolve_defaults(&mut self) {
         for row in 0..DEFINITIONS.len() {
@@ -728,7 +906,7 @@ impl Cvars {
             if selected.as_deref().is_some_and(|s| s != out.text.as_str()) && !joined {
                 return None;
             }
-            selected = Some(Cow::Owned(out.text.into_owned()));
+            selected = Some(Cow::Owned(out.into_owned()));
         }
         selected
     }

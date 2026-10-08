@@ -1,22 +1,20 @@
 use crate::{
     command_text::TextError,
+    text::FixedText,
     views::{Context, Source},
 };
-use std::collections::VecDeque;
 
-const CAPACITY: usize = 65536;
-struct Chunk {
-    text: String,
+pub const CAPACITY: usize = 65536;
+#[derive(Clone, Copy)]
+struct Span {
+    end: usize,
     context: Context,
 }
 pub struct CommandBuffer {
-    chunks: VecDeque<Chunk>,
+    text: Box<[u8]>,
+    spans: Vec<Span>,
     bytes: usize,
     wait: u32,
-}
-pub struct Line {
-    pub text: String,
-    pub context: Context,
 }
 impl Default for CommandBuffer {
     fn default() -> Self {
@@ -26,7 +24,8 @@ impl Default for CommandBuffer {
 impl CommandBuffer {
     pub fn new() -> Self {
         Self {
-            chunks: VecDeque::with_capacity(16),
+            text: vec![0; CAPACITY].into_boxed_slice(),
+            spans: Vec::with_capacity(CAPACITY),
             bytes: 0,
             wait: 0,
         }
@@ -36,33 +35,39 @@ impl CommandBuffer {
         if text.is_empty() {
             return Ok(());
         }
-        if let Some(last) = self.chunks.back_mut().filter(|c| c.context == context) {
-            last.text.push_str(text);
+        self.text[self.bytes..self.bytes + text.len()].copy_from_slice(text.as_bytes());
+        self.bytes += text.len();
+        if let Some(last) = self.spans.last_mut().filter(|s| s.context == context) {
+            last.end = self.bytes;
         } else {
-            self.chunks.push_back(Chunk {
-                text: text.to_owned(),
+            self.spans.push(Span {
+                end: self.bytes,
                 context,
             });
         }
-        self.bytes += text.len();
         Ok(())
     }
     pub fn insert(&mut self, text: &str, context: Context) -> Result<(), TextError> {
-        let newline = matches!(context.source, Source::QuakeWorld | Source::Quake3);
-        self.admit(text, usize::from(newline))?;
-        let mut owned = String::with_capacity(text.len() + usize::from(newline));
-        owned.push_str(text);
-        if newline {
-            owned.push('\n');
+        let newline = usize::from(matches!(
+            context.source,
+            Source::QuakeWorld | Source::Quake3
+        ));
+        self.admit(text, newline)?;
+        let size = text.len() + newline;
+        if size == 0 {
+            return Ok(());
         }
-        self.bytes += owned.len();
-        if !newline && let Some(front) = self.chunks.front_mut().filter(|c| c.context == context) {
-            front.text.insert_str(0, &owned);
-        } else if !owned.is_empty() {
-            self.chunks.push_front(Chunk {
-                text: owned,
-                context,
-            });
+        self.text.copy_within(..self.bytes, size);
+        self.text[..text.len()].copy_from_slice(text.as_bytes());
+        if newline != 0 {
+            self.text[text.len()] = b'\n';
+        }
+        self.bytes += size;
+        for span in &mut self.spans {
+            span.end += size;
+        }
+        if self.spans.first().is_none_or(|s| s.context != context) {
+            self.spans.insert(0, Span { end: size, context });
         }
         Ok(())
     }
@@ -87,39 +92,42 @@ impl CommandBuffer {
         }
     }
     pub fn is_empty(&self) -> bool {
-        self.chunks.is_empty()
+        self.bytes == 0
     }
     pub fn clear(&mut self) {
-        self.chunks.clear();
+        self.spans.clear();
         self.bytes = 0;
         self.wait = 0;
     }
-    pub fn next_line(&mut self) -> Option<Line> {
-        let chunk = self.chunks.front_mut()?;
+    pub fn next_line<const N: usize>(
+        &mut self,
+        line: &mut FixedText<N>,
+    ) -> Option<(Context, Result<(), TextError>)> {
+        let span = *self.spans.first()?;
         let mut quoted = false;
-        let end = chunk
-            .text
-            .bytes()
-            .position(|b| {
+        let end = self.text[..span.end]
+            .iter()
+            .position(|&b| {
                 if b == b'"' {
                     quoted = !quoted;
                 }
                 (!quoted && b == b';')
                     || b == b'\n'
-                    || (chunk.context.source == Source::Quake3 && b == b'\r')
+                    || (span.context.source == Source::Quake3 && b == b'\r')
             })
-            .unwrap_or(chunk.text.len());
-        let text = chunk.text[..end].to_owned();
-        let removed = end + usize::from(end < chunk.text.len());
-        let line = Line {
-            text,
-            context: chunk.context,
-        };
-        chunk.text.drain(..removed);
+            .unwrap_or(span.end);
+        let result = line
+            .set(std::str::from_utf8(&self.text[..end]).unwrap_or(""))
+            .map_err(|_| TextError::TooLong);
+        let removed = end + usize::from(end < span.end);
+        self.text.copy_within(removed..self.bytes, 0);
         self.bytes -= removed;
-        if chunk.text.is_empty() {
-            self.chunks.pop_front();
+        if removed == span.end {
+            self.spans.remove(0);
         }
-        Some(line)
+        for span in &mut self.spans {
+            span.end -= removed;
+        }
+        Some((span.context, result))
     }
 }

@@ -1,6 +1,6 @@
 pub mod host;
 
-use qa_console::commands::Host;
+use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::events::EventRing;
 use qa_core::loopback::Loopback;
@@ -14,6 +14,7 @@ pub struct Runtime {
     pub server: Server,
     pub events: EventRing,
     pub loopback: Loopback,
+    script_reader: qa_formats::archive::ArchiveReader,
 }
 
 impl Runtime {
@@ -25,6 +26,7 @@ impl Runtime {
             server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
             loopback: Loopback::load(),
+            script_reader: qa_formats::archive::ArchiveReader::default(),
         })
     }
 }
@@ -33,20 +35,21 @@ impl Host for Runtime {
     fn print(&mut self, text: std::fmt::Arguments<'_>) {
         qa_console::logger::console(text);
     }
-    fn read_script(&mut self, path: &str) -> Result<String, String> {
-        let file = self
-            .vfs
-            .open(path.as_bytes())
-            .ok_or_else(|| format!("script unavailable: {path}"))?;
-        let length = self.vfs.length(file).map_err(|e| format!("{e:?}"))?;
-        if length > 65535 {
-            return Err("script exceeds command buffer capacity".into());
+    fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
+        let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
+        let length = self.vfs.length(file).map_err(|_| ScriptError::Read)?;
+        let length = usize::try_from(length).map_err(|_| ScriptError::TooLong)?;
+        if length > destination.len() {
+            return Err(ScriptError::TooLong);
         }
-        let mut bytes = vec![0; length as usize];
-        self.vfs
-            .read_at(file, 0, &mut bytes)
-            .map_err(|e| format!("{e:?}"))?;
-        String::from_utf8(bytes).map_err(|e| format!("script is not UTF-8: {e}"))
+        let read = self
+            .vfs
+            .read_into_reusing(file, &mut destination[..length], &mut self.script_reader)
+            .map_err(|_| ScriptError::Read)?;
+        if read != length {
+            return Err(ScriptError::Read);
+        }
+        Ok(length)
     }
     fn quit(&mut self) {
         self.quit = true;

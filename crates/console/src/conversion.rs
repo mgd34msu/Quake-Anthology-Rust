@@ -51,21 +51,18 @@ impl NumberText {
 pub enum Text<'a> {
     Borrowed(&'a str),
     Number(NumberText),
-    Owned(String),
 }
 impl Text<'_> {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Borrowed(s) => s,
             Self::Number(n) => n.as_str(),
-            Self::Owned(s) => s,
         }
     }
     pub fn into_owned(self) -> String {
         match self {
             Self::Borrowed(s) => s.to_owned(),
             Self::Number(n) => n.as_str().to_owned(),
-            Self::Owned(s) => s,
         }
     }
     fn numeric(n: f64) -> Result<Self, Error> {
@@ -87,15 +84,26 @@ pub struct Change {
 }
 pub struct Output<'a> {
     pub text: Text<'a>,
+    pub prefix: Option<&'a str>,
     pub detail: bool,
     pub detail_value: Option<&'a str>,
     pub changes: [Option<Change>; 32],
     pub change_count: usize,
 }
 impl<'a> Output<'a> {
+    pub fn into_owned(self) -> String {
+        let mut text =
+            String::with_capacity(self.prefix.map_or(0, str::len) + self.text.as_str().len());
+        if let Some(prefix) = self.prefix {
+            text.push_str(prefix);
+        }
+        text.push_str(self.text.as_str());
+        text
+    }
     fn new(text: &'a str) -> Self {
         Self {
             text: Text::Borrowed(text),
+            prefix: None,
             detail: false,
             detail_value: None,
             changes: std::array::from_fn(|_| None),
@@ -422,10 +430,7 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
         Operation::QwSkin => {
             if in_.context.source == Source::QuakeWorld {
                 let prefix = in_.current.rfind('/').map_or("", |i| &in_.current[..=i]);
-                let mut text = String::with_capacity(prefix.len() + in_.value.len());
-                text.push_str(prefix);
-                text.push_str(in_.value);
-                out.text = Text::Owned(text);
+                out.prefix = Some(prefix);
             }
             return Ok(out);
         }
