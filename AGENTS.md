@@ -122,10 +122,15 @@ An explicit relink always unlinks and reinserts; head/tail insertion is rule dat
 of the entity's game. Unchanged internal body commits stay no-ops. THE-625/1862
 trace calls carry the caller's clipping, epsilon and filtering rules independently
 of the map geometry; stock results remain bit-exact. THE-697/890 output payload
-pages belong to ring slots and retire only after every module/client consumer
-cursor has passed, with bounded slow-client resync and overflow counts. HUD text
-remains valid throughout its display lifetime; no event payload cloning or frame
-arena reset may invalidate a slower consumer.
+pages belong to ring slots and retire after every applicable module/client
+consumer has completed its native delivery rule. Reliable records wait for a
+real native ACK; best-effort records retire after successful native submission;
+unsent records remain retained. Delivery rules are protocol data, and a transmit
+watermark never counts as an ACK. NetQuake unreliable datagrams have no ACK
+(qsrc WinQuake/net_dgrm.c:370-395,427-431); no new wire field may be added to
+retire them. Count overflow and bounded slow-client resync separately from ACKs.
+HUD text holds an independent display lease throughout its lifetime; no event
+payload cloning or frame arena reset may invalidate a slower consumer.
 
 Use modern techniques where pinned timings prove a gain: fixed multicore
 partitions with ordered merges, SIMD, modern GL and cache-friendly storage.
