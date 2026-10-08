@@ -180,6 +180,7 @@ fn windowed(
                 Arc::clone(&world.prepare.catalog),
                 budget,
                 CpuLimits::default().max_spans,
+                RasterSelection::Unbinned,
             )
             .unwrap()
         })
@@ -274,9 +275,16 @@ fn windowed(
     }
     assert_eq!(stats.rejected, 0);
     let mut counters = world.prepare.stats;
+    let mut cache = CacheStats::default();
     for band in &bands {
         counters = merge_stats(counters, band.stats);
+        let current = band.cache.stats();
+        cache.hits += current.hits;
+        cache.fills += current.fills;
+        cache.evictions += current.evictions;
+        cache.rejected += current.rejected;
     }
+    counters.cache = cache;
     cpu.world = Some(world);
     counters
 }
@@ -350,6 +358,7 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
     let mut serial = CpuBackend::load_with_assets(29, 19, assets).unwrap();
     assert_eq!(serial.render(list, assets).rejected, 0);
     let reference = serial.world_stats();
+    let mut unbinned = [WorldStats::default(); MAX_BANDS];
     for count in [1, 2, 4, 8, 19] {
         let mut cpu = CpuBackend::load_with_assets(29, 19, assets).unwrap();
         let stats = windowed(&mut cpu, list, assets, count);
@@ -372,6 +381,9 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
         assert_eq!(stats.polygons, reference.polygons);
         assert_eq!(stats.patch_polygons, reference.patch_polygons);
         assert_eq!(stats.pixels, reference.pixels);
+        if count <= MAX_BANDS as u32 {
+            unbinned[count as usize - 1] = stats;
+        }
     }
     for bands in [
         RasterBands::One,
@@ -417,6 +429,7 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
         assert_eq!(cpu.indices, serial.indices);
         assert_eq!(cpu.palettes, serial.palettes);
         let aggregate = cpu.world_stats();
+        assert_eq!(aggregate, unbinned[bands.count() - 1]);
         assert_eq!(aggregate.polygons, reference.polygons);
         assert_eq!(aggregate.patch_polygons, reference.patch_polygons);
         assert_eq!(aggregate.pixels, reference.pixels);
@@ -436,6 +449,17 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
             config.per_band_cache_bytes * bands.count()
         );
         assert!(config.per_band_cache_bytes >= config.mandatory_cache_bytes);
+        assert_eq!(
+            config.bin_index_capacity_bytes,
+            cpu.world
+                .as_ref()
+                .unwrap()
+                .prepare
+                .catalog
+                .primitive_capacity
+                * bands.count()
+                * size_of::<u32>()
+        );
     }
     reference
 }
@@ -1219,7 +1243,8 @@ fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
                 19,
                 Arc::clone(&raster.prepare.catalog),
                 total / bands,
-                4096
+                4096,
+                RasterSelection::Band(0),
             )
             .is_ok()
         );
@@ -1229,7 +1254,8 @@ fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
                 19,
                 Arc::clone(&raster.prepare.catalog),
                 total / bands - 1,
-                4096
+                4096,
+                RasterSelection::Band(0),
             )
             .is_err()
         );
@@ -1296,7 +1322,46 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
         },
         ..test_view()
     };
-    exact_rows(&assets, &packet(&assets, &[world], view));
+    let frame = packet(&assets, &[world], view);
+    let counters = exact_rows(&assets, &frame);
+    assert_eq!(counters.polygons, 0);
+    assert_eq!(
+        counters.sky_pixels,
+        u64::from(view.viewport.width * view.viewport.height)
+    );
+    let mut cpu = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Eight,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    let prepared = &cpu.world.as_ref().unwrap().prepare;
+    assert!(prepared.background.is_some());
+    assert_eq!(prepared.primitive_count, 0);
+    for band in 0..8 {
+        assert!(
+            prepared
+                .bins
+                .range(RasterSelection::Band(band), [0, 0])
+                .is_empty()
+        );
+    }
+    let single_row = Refdef {
+        viewport: Viewport {
+            y: 8,
+            height: 1,
+            ..view.viewport
+        },
+        ..view
+    };
+    let counters = exact_rows(&assets, &packet(&assets, &[world], single_row));
+    assert_eq!(counters.polygons, 0);
+    assert_eq!(counters.sky_pixels, u64::from(single_row.viewport.width));
 }
 
 #[test]
@@ -1467,6 +1532,133 @@ fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share()
             config.per_band_cache_bytes * count
         );
         assert!(config.allocated_cache_bytes <= config.total_cache_budget_bytes);
+    }
+}
+
+#[test]
+fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
+    let viewport = test_view().viewport;
+    let mut primitives = Vec::new();
+    let mut coverage = Vec::new();
+    let mut append = |points: [[f32; 2]; 4]| {
+        primitives.push(Primitive {
+            first_coverage: coverage.len(),
+            coverage_count: points.len(),
+            ..Primitive::default()
+        });
+        coverage.extend(points.map(|xy| ProjectedVertex {
+            xy,
+            inverse_depth: 0.25,
+            texcoord_over_depth: [0.0; 2],
+        }));
+    };
+    append([[5.0, 4.0], [20.0, 4.0], [20.0, 7.0], [5.0, 7.0]]);
+    append([[5.0, -2.0], [20.0, -2.0], [20.0, 24.0], [5.0, 24.0]]);
+    append([[5.0, 4.1], [20.0, 4.1], [20.0, 4.25], [5.0, 4.25]]);
+    append([[0.0, 5.0], [1e20, 6.0], [1e20, 10.0], [0.0, 10.0]]);
+    let mut bins = CoverageBins::load(19, 8, primitives.len()).unwrap();
+    assert_eq!(bins.capacity_bytes(), 8 * 4 * size_of::<u32>());
+    bins.rebuild(
+        viewport,
+        DepthPolicy::PlaneDepth,
+        primitives.len(),
+        &primitives,
+        &coverage,
+    );
+    for (band, expected) in [
+        &[][..],
+        &[1, 3][..],
+        &[0, 1, 3][..],
+        &[1, 3][..],
+        &[1, 3][..],
+        &[1, 3][..],
+        &[1, 3][..],
+        &[][..],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(bins.range(RasterSelection::Band(band), [0, 4]), expected);
+    }
+    assert_eq!(bins.range(RasterSelection::Band(2), [1, 3]), &[1]);
+    assert_eq!(bins.range(RasterSelection::Unbinned, [1, 3]), &[1, 2]);
+    bins.rebuild(
+        Viewport {
+            y: 8,
+            height: 1,
+            ..viewport
+        },
+        DepthPolicy::BspKeys,
+        primitives.len(),
+        &primitives,
+        &coverage,
+    );
+    for band in 0..8 {
+        let expected = if band == 3 { &[1, 3][..] } else { &[][..] };
+        assert_eq!(bins.range(RasterSelection::Band(band), [0, 4]), expected);
+    }
+    bins.rebuild(viewport, DepthPolicy::PlaneDepth, 0, &[], &[]);
+    for band in 0..8 {
+        assert!(bins.range(RasterSelection::Band(band), [0, 4]).is_empty());
+    }
+    assert!(CoverageBins::load(1, 8, 1).is_err());
+    assert!(CoverageBins::load(19, 8, usize::MAX).is_err());
+}
+
+#[test]
+fn single_offset_camera_row_uses_one_bin_with_exact_unbinned_output() {
+    let mut assets = Assets::load();
+    let image = assets.register_image(1, 1, &[91, 117, 143, 255]).unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        2.0,
+        1.5,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let view = Refdef {
+        viewport: Viewport {
+            y: 8,
+            height: 1,
+            ..test_view().viewport
+        },
+        ..test_view()
+    };
+    let frame = packet(&assets, &[world], view);
+    let counters = exact_rows(&assets, &frame);
+    assert_eq!(counters.polygons, 1);
+    assert_eq!(counters.pixels, u64::from(view.viewport.width));
+    let mut cpu = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Eight,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    let bins = &cpu.world.as_ref().unwrap().prepare.bins;
+    for band in 0..8 {
+        let expected = if band == 3 { &[0][..] } else { &[][..] };
+        assert_eq!(bins.range(RasterSelection::Band(band), [0, 1]), expected);
     }
 }
 

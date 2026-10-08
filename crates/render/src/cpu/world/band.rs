@@ -1,8 +1,8 @@
 //! A row window consumes immutable prepared coverage. Geometry, shaders and
 //! projection have already been evaluated by the common view preparation.
 use super::{
-    Assets, Buffers, Camera, DepthPolicy, PreparedDraw, WorldBand, WorldPrepare, add_edge_stats,
-    consume_span,
+    Assets, Buffers, Camera, DepthPolicy, PreparedDraw, RasterSelection, WorldBand, WorldPrepare,
+    add_edge_stats, consume_span,
 };
 
 impl WorldBand {
@@ -12,6 +12,7 @@ impl WorldBand {
         catalog: std::sync::Arc<super::WorldCatalog>,
         cache_bytes: usize,
         max_spans: usize,
+        selection: RasterSelection,
     ) -> Result<Self, &'static str> {
         if cache_bytes < catalog.mandatory_cache_bytes {
             return Err("CPU band cache cannot hold a mandatory surface");
@@ -31,6 +32,7 @@ impl WorldBand {
             )?,
             catalog,
             stats: super::WorldStats::default(),
+            selection,
         })
     }
 
@@ -91,13 +93,14 @@ impl WorldBand {
             PreparedDraw::External => false,
             PreparedDraw::Skip => true,
             PreparedDraw::Surface(range) => {
-                for index in range[0]..range[1] {
-                    let primitive = prepared.primitives[index];
+                let indices = prepared.bins.range(self.selection, range);
+                for &index in indices {
+                    let primitive = &prepared.primitives[index as usize];
                     if primitive.overlay {
-                        self.raster_range(
+                        self.raster_indices(
                             prepared,
                             camera,
-                            [index, index + 1],
+                            std::slice::from_ref(&index),
                             false,
                             DepthPolicy::PlaneDepth,
                             assets,
@@ -145,7 +148,31 @@ impl WorldBand {
         buffers: &mut Buffers<'_>,
         stats: &mut crate::BackendStats,
     ) {
-        if range[0] == range[1] {
+        let indices = prepared.bins.range(self.selection, range);
+        self.raster_indices(
+            prepared,
+            camera,
+            indices,
+            opaque_only,
+            policy,
+            assets,
+            buffers,
+            stats,
+        );
+    }
+
+    fn raster_indices(
+        &mut self,
+        prepared: &WorldPrepare,
+        camera: &Camera,
+        indices: &[u32],
+        opaque_only: bool,
+        policy: DepthPolicy,
+        assets: &Assets,
+        buffers: &mut Buffers<'_>,
+        stats: &mut crate::BackendStats,
+    ) {
+        if indices.is_empty() {
             return;
         }
         let Some(rows) = buffers.rows(self.width, camera.refdef.viewport) else {
@@ -156,15 +183,15 @@ impl WorldBand {
         if !self.edges.begin_band(camera.refdef.viewport, rows, policy) {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
         } else {
-            for index in range[0]..range[1] {
-                let primitive = prepared.primitives[index];
+            for &index in indices {
+                let primitive = &prepared.primitives[index as usize];
                 if opaque_only && primitive.overlay {
                     continue;
                 }
                 let vertices = &prepared.coverage
                     [primitive.first_coverage..primitive.first_coverage + primitive.coverage_count];
                 if !self.edges.add_polygon(
-                    index as u32,
+                    index,
                     primitive.depth_key,
                     primitive.draw_rank,
                     vertices,

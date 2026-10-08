@@ -15,8 +15,10 @@ use crate::world::geometry::{GeometryPartition, TextureCoordinates};
 use std::sync::Arc;
 
 mod band;
+mod bins;
 mod clip;
 mod jobs;
+use bins::{CoverageBins, RasterSelection};
 pub use jobs::{BandJob, render_band};
 
 pub const MAX_BANDS: usize = 8;
@@ -47,6 +49,8 @@ pub struct RasterConfig {
     pub allocated_cache_bytes: usize,
     pub per_band_cache_bytes: usize,
     pub mandatory_cache_bytes: usize,
+    /// Load-owned ordered u32 index payload; separate from the rover budget.
+    pub bin_index_capacity_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -314,6 +318,7 @@ struct WorldPrepare {
     policy: DepthPolicy,
     background: Option<super::sky::BackgroundDraw>,
     stats: WorldStats,
+    bins: CoverageBins,
 }
 
 struct WorldBand {
@@ -322,6 +327,7 @@ struct WorldBand {
     edges: Edges,
     cache: SurfaceCache,
     stats: WorldStats,
+    selection: RasterSelection,
 }
 
 pub(super) struct WorldRaster {
@@ -614,8 +620,19 @@ impl WorldRaster {
             skies: skies.into_boxed_slice(),
             surfaces_cache,
         });
+        let bins = CoverageBins::load(height, band_count, catalog.primitive_capacity)?;
+        let bin_index_capacity_bytes = bins.capacity_bytes();
         let bands = (0..band_count)
-            .map(|_| WorldBand::load(width, height, Arc::clone(&catalog), share, limits.max_spans))
+            .map(|id| {
+                WorldBand::load(
+                    width,
+                    height,
+                    Arc::clone(&catalog),
+                    share,
+                    limits.max_spans,
+                    RasterSelection::Band(id),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice();
         Ok(Self {
@@ -645,6 +662,7 @@ impl WorldRaster {
                 policy: DepthPolicy::PlaneDepth,
                 background: None,
                 stats: WorldStats::default(),
+                bins,
             },
             bands,
             config: RasterConfig {
@@ -653,6 +671,7 @@ impl WorldRaster {
                 allocated_cache_bytes: share * band_count,
                 per_band_cache_bytes: share,
                 mandatory_cache_bytes,
+                bin_index_capacity_bytes,
             },
         })
     }
@@ -727,6 +746,7 @@ impl WorldPrepare {
         self.coverage_count = 0;
         self.opaque_count = 0;
         self.draw_count = 0;
+        self.bins.clear();
         self.background = None;
         if list.draws(scene.draws).len() > self.draws.len() {
             self.reject(stats);
@@ -1063,6 +1083,13 @@ impl WorldPrepare {
                 self.prepare_draw(camera, item, rank as u32, list, assets, evaluator, stats);
         }
         self.draw_count = list.draws(scene.draws).len();
+        self.bins.rebuild(
+            camera.refdef.viewport,
+            self.policy,
+            self.opaque_count,
+            &self.primitives[..self.primitive_count],
+            &self.coverage[..self.coverage_count],
+        );
         self.stats.polygons = self
             .stats
             .polygons

@@ -13,6 +13,79 @@ def source_code(text):
     return TOKENS.sub(lambda match: "".join("\n" if c == "\n" else " " for c in match[0]), text)
 
 
+def delimiter_end(code, start):
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack = [pairs[code[start]]]
+    for position in range(start + 1, len(code)):
+        token = code[position]
+        if token in pairs:
+            stack.append(pairs[token])
+        elif token == stack[-1]:
+            stack.pop()
+            if not stack:
+                return position + 1
+    return len(code)
+
+
+def annotated_item_end(code, start):
+    head = re.match(r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+|unsafe\s+|const\s+|extern\s+|default\s+)*(fn|mod|struct|enum|impl|trait|union)\b", code[start:])
+    body_item = bool(head)
+    position, angles, expression, arm = start, 0, False, False
+    while position < len(code):
+        token = code[position]
+        if token in "([":
+            position = delimiter_end(code, position)
+            continue
+        if code.startswith("=>", position):
+            expression, arm = True, True
+            position += 2
+            continue
+        if token == "=" and not body_item:
+            expression = True
+        if token == "<" and not expression:
+            angles += 1
+        elif token == ">" and angles:
+            angles -= 1
+        elif token == "{":
+            end = delimiter_end(code, position)
+            tail = code[end:].lstrip()
+            if not angles and (body_item or (arm and not re.match(r"else\b", tail))):
+                return end, False
+            position = end
+            continue
+        elif token in ",;" and not angles:
+            return position + 1, bool(head and head[1] == "mod" and token == ";")
+        elif token == "}":
+            return position, False
+        position += 1
+    return len(code), False
+
+
+def test_item_ranges(code):
+    groups = []
+    for marker in re.finditer(r"#\s*\[", code):
+        opening = code.index("[", marker.start(), marker.end())
+        end = delimiter_end(code, opening)
+        attribute = code[opening + 1:end - 1].strip()
+        if groups and not code[groups[-1][-1][1]:marker.start()].strip():
+            groups[-1].append((marker.start(), end, attribute))
+        else:
+            groups.append([(marker.start(), end, attribute)])
+    ranges = []
+    for group in groups:
+        if not any(re.fullmatch(r"cfg\s*\(\s*test\s*\)", attribute) for _, _, attribute in group):
+            continue
+        end, external = annotated_item_end(code, group[-1][1])
+        if external:
+            continue
+        start = group[0][0]
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return ranges
+
+
 def type_definitions(code):
     blocks, boundary = [], 0
     for token in re.finditer(r"\b(struct|enum|type)\s+(\w+)|[{};]", code):
@@ -107,9 +180,9 @@ def check(root):
                     definitions[match[2]] = relative
         for match in re.finditer(r"\bTEMP(?:[-_][A-Z]+)?\b", raw):
             add(path, raw, match.start(), "temporary-diagnostics")
-        test = re.search(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]", code)
-        if test and (len(code) - test.start()) > len(code) * 0.4:
-            add(path, code, test.start(), "test-share")
+        tests = test_item_ranges(code)
+        if tests and sum(end - start for start, end in tests) > len(code) * 0.4:
+            add(path, code, tests[0][0], "test-share")
     checksum = root / "crates/core/src/checksum.rs"
     if checksum.exists():
         code = source_code(checksum.read_text())

@@ -1,4 +1,4 @@
-use qa_render::edges::{DepthPolicy, Edges, ProjectedVertex, Span};
+use qa_render::edges::{DepthPolicy, Edges, ProjectedVertex, Span, certified_rows};
 use qa_render::scene::Viewport;
 
 const WIDTH: u32 = 48;
@@ -350,4 +350,87 @@ fn band_bounds_and_polygon_capacity_failures_preserve_queued_full_view_work() {
     assert_eq!(stats.rejected, 0);
     assert_eq!(stats.pixels, 16);
     assert_eq!(stats.flushes, 2);
+}
+
+#[test]
+fn certified_rows_keep_one_ulp_ceil_bounds_and_exclusive_bottom() {
+    let viewport = view(5, 3, 17, 13);
+    let below = |value: f32| f32::from_bits(value.to_bits() - 1);
+    let above = |value: f32| f32::from_bits(value.to_bits() + 1);
+    for (top, bottom, expected) in [
+        (below(5.0), below(9.0), 5..9),
+        (5.0, 9.0, 5..9),
+        (above(5.0), above(9.0), 6..10),
+        (-2.0, 24.0, 3..16),
+    ] {
+        let polygon = rect(7, 0, 0, [7.0, top, 19.0, bottom], [0.0, 0.0, 0.25]);
+        for policy in [DepthPolicy::BspKeys, DepthPolicy::PlaneDepth] {
+            let certified = certified_rows(&polygon.vertices, viewport, policy).unwrap();
+            assert_eq!(certified, expected);
+            let reference = render(viewport, std::slice::from_ref(&polygon), policy, None, 1);
+            for count in [1, 2, 4, 8] {
+                let mut result = vec![None; (WIDTH * HEIGHT) as usize];
+                let mut edges = Edges::load(WIDTH, HEIGHT, 16, 4, 1).unwrap();
+                for band in 0..count {
+                    let start = (band * HEIGHT / count).max(viewport.y);
+                    let end = ((band + 1) * HEIGHT / count).min(viewport.y + viewport.height);
+                    if start >= end || certified.end <= start || certified.start >= end {
+                        continue;
+                    }
+                    assert!(edges.begin_band(viewport, start..end, policy));
+                    assert!(edges.add_polygon(7, 0, 0, &polygon.vertices));
+                    assert_eq!(
+                        edges
+                            .scan(|spans| record(&mut result, spans, viewport, start..end))
+                            .rejected,
+                        0
+                    );
+                }
+                assert_eq!(result, reference);
+            }
+        }
+    }
+    let no_integer_row = rect(9, 0, 0, [7.0, above(5.0), 19.0, 6.0], [0.0, 0.0, 0.25]);
+    assert!(
+        certified_rows(&no_integer_row.vertices, viewport, DepthPolicy::PlaneDepth)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        render(
+            viewport,
+            &[no_integer_row],
+            DepthPolicy::PlaneDepth,
+            None,
+            1
+        )
+        .iter()
+        .all(Option::is_none)
+    );
+}
+
+#[test]
+fn failed_native_certification_keeps_rejection_in_outside_bands() {
+    let viewport = view(0, 0, WIDTH, HEIGHT);
+    let tiny = f32::from_bits(1);
+    let polygon = polygon(
+        13,
+        0,
+        0,
+        &[[0.0, -tiny], [48.0, tiny], [48.0, 10.0], [0.0, 10.0]],
+        [0.0, 0.0, 0.25],
+    );
+    for policy in [DepthPolicy::BspKeys, DepthPolicy::PlaneDepth] {
+        assert!(certified_rows(&polygon.vertices, viewport, policy).is_err());
+        for band in 0..8 {
+            let rows = band * HEIGHT / 8..(band + 1) * HEIGHT / 8;
+            let mut edges = Edges::load(WIDTH, HEIGHT, 16, 4, 1).unwrap();
+            assert!(edges.begin_band(viewport, rows, policy));
+            assert!(!edges.add_polygon(13, 0, 0, &polygon.vertices));
+            let mut spans = 0;
+            let stats = edges.scan(|batch| spans += batch.len());
+            assert_eq!(spans, 0);
+            assert_eq!(stats.rejected, 1);
+        }
+    }
 }

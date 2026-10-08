@@ -45,6 +45,41 @@ pub struct Stats {
     pub rejected: u64,
 }
 
+/// Certifies a polygon's native global row interval without storing scanner
+/// state. Errors must remain eligible for every active band: add_polygon still
+/// owns their scoped rejection, including fixed-edge arithmetic failures.
+pub fn certified_rows(
+    vertices: &[ProjectedVertex],
+    viewport: Viewport,
+    policy: DepthPolicy,
+) -> Result<std::ops::Range<u32>, ()> {
+    if viewport.width == 0
+        || viewport.height == 0
+        || viewport.x.checked_add(viewport.width).is_none()
+        || viewport.y.checked_add(viewport.height).is_none()
+    {
+        return Err(());
+    }
+    let clockwise = polygon_winding(vertices)?;
+    let mut start = viewport.y + viewport.height;
+    let mut end = viewport.y;
+    let mut previous = vertices[vertices.len() - 1];
+    for &vertex in vertices {
+        if let Some(edge) = make_edge(previous, vertex, clockwise, viewport)? {
+            start = start.min(edge.start);
+            end = end.max(edge.end);
+        }
+        previous = vertex;
+    }
+    if start >= end {
+        return Ok(viewport.y..viewport.y);
+    }
+    if policy == DepthPolicy::PlaneDepth && depth_plane(vertices).is_none() {
+        return Err(());
+    }
+    Ok(start..end)
+}
+
 #[derive(Clone, Copy, Default)]
 struct Edge {
     u: i64,
@@ -231,35 +266,16 @@ impl Edges {
         draw_rank: u32,
         vertices: &[ProjectedVertex],
     ) -> bool {
-        if !self.collecting
-            || vertices.len() < 3
-            || vertices.iter().any(|vertex| {
-                !vertex
-                    .xy
-                    .iter()
-                    .chain(vertex.texcoord_over_depth.iter())
-                    .all(|f| f.is_finite())
-                    || !vertex.inverse_depth.is_finite()
-                    || vertex.inverse_depth <= 0.0
-            })
-        {
+        if !self.collecting {
             self.stats.rejected += 1;
             return false;
         }
-        let mut area = 0.0_f64;
-        let mut previous = vertices[vertices.len() - 1];
-        for &vertex in vertices {
-            area += f64::from(previous.xy[0]) * f64::from(vertex.xy[1])
-                - f64::from(vertex.xy[0]) * f64::from(previous.xy[1]);
-            previous = vertex;
-        }
-        if area == 0.0 || !area.is_finite() {
+        let Ok(clockwise) = polygon_winding(vertices) else {
             self.stats.rejected += 1;
             return false;
-        }
-        let clockwise = area > 0.0;
+        };
         let mut needed = 0usize;
-        previous = vertices[vertices.len() - 1];
+        let mut previous = vertices[vertices.len() - 1];
         for &vertex in vertices {
             match make_band_edge(
                 previous,
@@ -686,6 +702,32 @@ fn depth_plane(vertices: &[ProjectedVertex]) -> Option<DepthPlane> {
         .iter()
         .all(|coefficient| coefficient.is_finite())
         .then_some(DepthPlane { x, y, origin })
+}
+
+fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<bool, ()> {
+    if vertices.len() < 3
+        || vertices.iter().any(|vertex| {
+            !vertex
+                .xy
+                .iter()
+                .chain(vertex.texcoord_over_depth.iter())
+                .all(|f| f.is_finite())
+                || !vertex.inverse_depth.is_finite()
+                || vertex.inverse_depth <= 0.0
+        })
+    {
+        return Err(());
+    }
+    let mut area = 0.0_f64;
+    let mut previous = vertices[vertices.len() - 1];
+    for &vertex in vertices {
+        area += f64::from(previous.xy[0]) * f64::from(vertex.xy[1])
+            - f64::from(vertex.xy[0]) * f64::from(previous.xy[1]);
+        previous = vertex;
+    }
+    (area != 0.0 && area.is_finite())
+        .then_some(area > 0.0)
+        .ok_or(())
 }
 
 fn make_edge(
