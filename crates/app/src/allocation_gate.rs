@@ -19,9 +19,9 @@ impl Gate {
         self.counts.requested_bytes += counts.requested_bytes;
     }
 
-    pub fn finish(self, scope: &str) -> Result<(), String> {
+    pub fn finish(self, scope: &str, worker_threads: usize) -> Result<(), String> {
         println!(
-            "{{\"event\":\"allocation_gate\",\"scope\":\"{scope}_rust_thread\",\"frames\":{},\"failed_frames\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"passed\":{}}}",
+            "{{\"event\":\"allocation_gate\",\"scope\":\"{scope}_all_instrumented_rust_threads\",\"calling_threads\":1,\"worker_threads\":{worker_threads},\"native_heap_measured\":false,\"frames\":{},\"failed_frames\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"passed\":{}}}",
             self.frames,
             self.failed_frames,
             self.counts.allocations,

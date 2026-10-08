@@ -1,6 +1,17 @@
 //! Fixed-time retail CPU draw benchmark. Run only through the private harness.
 //! This developer example neither drives input nor qualifies gameplay/installation.
-use qa_app::{Runtime, map, profile, render_settings};
+//!
+//! Both the example and shared app dispatcher need allocation tracking:
+//! ```sh
+//! cargo build --release -p qa-platform --example cpu_retail \
+//!   --features allocation-tracking,qa-app/allocation-tracking
+//! ```
+//! Select `--cpu-bands 1`, `2`, `4` or `8`; the harness records the inherited
+//! process CPU mask. `--depth-output` writes final depth scores after measurement.
+use qa_app::{
+    Runtime, map, profile, render_settings,
+    renderer::{CpuDispatch, parse_cpu_bands, report_cpu_config},
+};
 use qa_console::{
     commands::Console,
     logger,
@@ -10,7 +21,7 @@ use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, pause};
 use qa_render::{
     Assets, BackendStats, CpuPresentation, FrontEnd, Limits, Refdef, Viewport,
-    cpu::{CpuBackend, WorldStats},
+    cpu::{CpuBackend, CpuLimits, MAX_BANDS, RasterBands, WorldStats, render_band},
     material::world_load::WorldLoadOptions,
     world::WorldView,
 };
@@ -35,11 +46,15 @@ struct Options {
     content: PathBuf,
     map: String,
     output: PathBuf,
+    depth_output: Option<PathBuf>,
     hold_ms: u64,
+    bands: RasterBands,
 }
 impl Options {
     fn read() -> Result<Self, String> {
         let (mut content, mut map, mut output) = (None, None, None);
+        let mut depth_output = None;
+        let mut bands = None;
         let mut hold_ms = 1500;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -57,6 +72,17 @@ impl Options {
                         args.next().ok_or("--output needs a raw RGBA path")?,
                     ));
                 }
+                "--depth-output" if depth_output.is_none() => {
+                    depth_output = Some(PathBuf::from(
+                        args.next()
+                            .ok_or("--depth-output needs an inverse-depth path")?,
+                    ));
+                }
+                "--cpu-bands" if bands.is_none() => {
+                    bands = Some(parse_cpu_bands(
+                        &args.next().ok_or("--cpu-bands needs 1, 2, 4 or 8")?,
+                    )?);
+                }
                 "--startup-hold-ms" => {
                     hold_ms = args
                         .next()
@@ -73,14 +99,21 @@ impl Options {
         let content = content.ok_or("--content is required")?;
         let map = map.ok_or("--map is required")?;
         let output = output.ok_or("--output is required")?;
-        if !content.is_absolute() || !output.is_absolute() {
+        if !content.is_absolute()
+            || !output.is_absolute()
+            || depth_output
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+        {
             return Err("content and output paths must be absolute".into());
         }
         Ok(Self {
             content,
             map,
             output,
+            depth_output,
             hold_ms,
+            bands: bands.unwrap_or(RasterBands::One),
         })
     }
 }
@@ -169,10 +202,10 @@ fn backend_stats(stats: BackendStats) {
 }
 
 fn world_stats(stats: WorldStats) {
-    // Fields shared with e9e6211d. Stage/cache categories may change between
-    // kernels; the immutable packet and raw pixels define comparison fidelity.
+    // Cache/raster categories can change with partitioning. The immutable
+    // packet, final pixels and depth scores define comparison fidelity.
     logger::console(format_args!(
-        "{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rgba_spans\":{},\"rgba_pixels\":{},\"rgba_hits\":{},\"rgba_fills\":{},\"rgba_evictions\":{},\"rgba_rejected\":{},\"rgba_minified_spans\":{},\"rejected\":{},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}",
+        "{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"curve_spans\":{},\"curve_pixels\":{},\"multistage_spans\":{},\"multistage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rgba_spans\":{},\"rgba_pixels\":{},\"rgba_hits\":{},\"rgba_fills\":{},\"rgba_evictions\":{},\"rgba_rejected\":{},\"rgba_minified_spans\":{},\"factor_spans\":{},\"factor_pixels\":{},\"factor_hits\":{},\"factor_fills\":{},\"factor_evictions\":{},\"factor_rejected\":{},\"factor_fallback_spans\":{},\"factor_minified_spans\":{},\"factor_curve_spans\":{},\"factor_curve_pixels\":{},\"rejected\":{},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}",
         stats.polygons,
         stats.patch_polygons,
         stats.spans,
@@ -181,6 +214,10 @@ fn world_stats(stats: WorldStats) {
         stats.sky_pixels,
         stats.stage_spans,
         stats.stage_pixels,
+        stats.curve_spans,
+        stats.curve_pixels,
+        stats.multistage_spans,
+        stats.multistage_pixels,
         stats.indexed_spans,
         stats.indexed_pixels,
         stats.rgba_spans,
@@ -190,6 +227,16 @@ fn world_stats(stats: WorldStats) {
         stats.rgba_evictions,
         stats.rgba_rejected,
         stats.rgba_minified_spans,
+        stats.factor_spans,
+        stats.factor_pixels,
+        stats.factor_hits,
+        stats.factor_fills,
+        stats.factor_evictions,
+        stats.factor_rejected,
+        stats.factor_fallback_spans,
+        stats.factor_minified_spans,
+        stats.factor_curve_spans,
+        stats.factor_curve_pixels,
         stats.rejected,
         stats.cache.hits,
         stats.cache.fills,
@@ -207,6 +254,24 @@ fn write_rgba(path: &Path, pixels: &[u32]) -> std::io::Result<()> {
     file.flush()
 }
 
+fn write_depth(path: &Path, depth: &[f32]) -> std::io::Result<()> {
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = BufWriter::new(file);
+    for value in depth {
+        file.write_all(&value.to_bits().to_le_bytes())?;
+    }
+    file.flush()
+}
+
+fn draw(
+    cpu: &mut CpuBackend,
+    dispatch: &mut CpuDispatch,
+    packet: &qa_render::scene::CommandList,
+    assets: &Assets,
+) -> Result<BackendStats, qa_platform::WorkerError> {
+    cpu.render_with_dispatch(packet, assets, |jobs| dispatch.dispatch(jobs, render_band))
+}
+
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn run() -> Result<(), String> {
     use qa_platform::allocations::{begin_frame, end_frame};
@@ -218,6 +283,14 @@ fn run() -> Result<(), String> {
         .canonicalize()
         .map_err(|e| format!("content directory: {e}"))?;
     let output = output_path(&options.output, &content, &profile_root)?;
+    let depth_output = options
+        .depth_output
+        .as_ref()
+        .map(|path| output_path(path, &content, &profile_root))
+        .transpose()?;
+    if depth_output.as_ref() == Some(&output) {
+        return Err("pixel and inverse-depth evidence paths must differ".into());
+    }
     let mut runtime = Runtime::load()?;
     runtime
         .vfs
@@ -302,8 +375,23 @@ fn run() -> Result<(), String> {
     if window.video_driver() != "x11" {
         return Err("private benchmark did not select X11".into());
     }
-    let mut cpu = CpuBackend::load_with_assets(WIDTH, HEIGHT, &assets)?;
-    let initial = cpu.render(&packet, &assets);
+    let mut cpu = CpuBackend::load_with_limits(
+        WIDTH,
+        HEIGHT,
+        &assets,
+        CpuLimits {
+            scene: limits,
+            bands: options.bands,
+            ..CpuLimits::default()
+        },
+    )?;
+    let config = cpu.raster_config();
+    let mut dispatch =
+        CpuDispatch::load(config.bands).map_err(|e| format!("retail CPU workers: {e}"))?;
+    report_cpu_config(config, dispatch.worker_count());
+    let initial = draw(&mut cpu, &mut dispatch, &packet, &assets);
+    let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
+    let initial = initial.map_err(|e| format!("initial retail CPU dispatch: {e}"))?;
     if initial.rejected != 0 || !window.present_pixels(WIDTH, HEIGHT, cpu.pixels()) {
         return Err("initial retail draw or presentation failed".into());
     }
@@ -326,20 +414,24 @@ fn run() -> Result<(), String> {
     let mut final_stats = initial;
     for _ in 0..WARMUP {
         let timer = Stopwatch::start();
-        final_stats = cpu.render(&packet, &assets);
+        let result = draw(&mut cpu, &mut dispatch, &packet, &assets);
         let _ = timer.elapsed();
+        let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
+        final_stats = result.map_err(|e| format!("warmup retail CPU dispatch: {e}"))?;
         rejected += u64::from(final_stats.rejected);
     }
     let expected_stats = final_stats;
     let warm_cache = cpu.world_stats().cache;
-    // Only the direct CPU draw and platform stopwatch are inside this measured
-    // allocation scope. No scene construction, SDL presentation or I/O occurs.
+    // CPU preparation, all raster dispatches/barriers and the stopwatch are
+    // inside this scope. Each sample merges caller and every worker's counts.
+    // No scene construction, SDL presentation or I/O occurs inside it.
     for sample in &mut samples {
         begin_frame();
         let timer = Stopwatch::start();
-        final_stats = cpu.render(&packet, &assets);
+        let result = draw(&mut cpu, &mut dispatch, &packet, &assets);
         *sample = timer.elapsed().as_nanos() as u64;
-        let counts = end_frame();
+        let counts = dispatch.merge_counts(end_frame());
+        final_stats = result.map_err(|e| format!("measured retail CPU dispatch: {e}"))?;
         allocations += counts.allocations;
         reallocations += counts.reallocations;
         requested_bytes += counts.requested_bytes;
@@ -353,6 +445,10 @@ fn run() -> Result<(), String> {
         return Err("final retail presentation failed".into());
     }
     write_rgba(&output, cpu.pixels()).map_err(|e| format!("raw RGBA evidence: {e}"))?;
+    if let Some(path) = &depth_output {
+        write_depth(path, cpu.inverse_depth())
+            .map_err(|e| format!("inverse-depth evidence: {e}"))?;
+    }
 
     logger::console(format_args!(
         "{{\"event\":\"retail_draw_workload\",\"scope\":\"fixed_time_retail_draw\",\"gameplay_qualified\":false,\"host_loop_qualified\":false,\"width\":{WIDTH},\"height\":{HEIGHT},\"time_ms\":0,\"home\":"
@@ -422,7 +518,9 @@ fn run() -> Result<(), String> {
     let mut sorted = samples;
     sorted.sort_unstable();
     logger::console(format_args!(
-        "{{\"event\":\"retail_draw_timings\",\"scope\":\"direct_cpu_backend_only\",\"warmup\":{WARMUP},\"frames\":{FRAMES},\"debug_build\":{},\"median_ns\":{},\"p99_ns\":{},\"samples_ns\":[",
+        "{{\"event\":\"retail_draw_timings\",\"scope\":\"cpu_prepare_raster_dispatch_and_barriers\",\"bands\":{},\"workers\":{},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"debug_build\":{},\"median_ns\":{},\"p99_ns\":{},\"samples_ns\":[",
+        config.bands.count(),
+        dispatch.worker_count(),
         cfg!(debug_assertions),
         sorted[299] as f64 * 0.5 + sorted[300] as f64 * 0.5,
         sorted[593]
@@ -453,16 +551,43 @@ fn run() -> Result<(), String> {
             .rejected
             .saturating_sub(warm_cache.rejected)
     ));
+    let mut bands = [WorldStats::default(); MAX_BANDS];
+    let band_count = cpu.band_stats(&mut bands);
     logger::console(format_args!(
-        "{{\"event\":\"allocation_gate\",\"scope\":\"direct CPU draw calling Rust thread; excludes SDL/driver allocations and presentation\",\"frames\":{FRAMES},\"allocations\":{allocations},\"reallocations\":{reallocations},\"requested_bytes\":{requested_bytes},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_requested_bytes},\"passed\":{}}}\n",
+        "{{\"event\":\"retail_draw_bands\",\"bands\":["
+    ));
+    for (index, band) in bands[..band_count].iter().enumerate() {
+        if index != 0 {
+            logger::console(format_args!(","));
+        }
+        logger::console(format_args!(
+            "{{\"band\":{index},\"cache_capacity_bytes\":{},\"world\":",
+            config.per_band_cache_bytes
+        ));
+        world_stats(*band);
+        logger::console(format_args!("}}"));
+    }
+    logger::console(format_args!("]}}\n"));
+    logger::console(format_args!(
+        "{{\"event\":\"allocation_gate\",\"scope\":\"cpu_draw_all_instrumented_rust_threads\",\"calling_threads\":1,\"worker_threads\":{},\"native_heap_measured\":false,\"presentation_measured\":false,\"frames\":{FRAMES},\"allocations\":{allocations},\"reallocations\":{reallocations},\"requested_bytes\":{requested_bytes},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_requested_bytes},\"passed\":{}}}\n",
+        dispatch.worker_count(),
         allocations == 0 && reallocations == 0 && requested_bytes == 0
     ));
     logger::console(format_args!(
-        "{{\"event\":\"retail_draw_pixels\",\"format\":\"RGBA8\",\"row_order\":\"top_to_bottom\",\"width\":{WIDTH},\"height\":{HEIGHT},\"bytes\":{},\"depth_output_available\":false,\"path\":",
-        cpu.pixels().len() * 4
+        "{{\"event\":\"retail_draw_pixels\",\"format\":\"RGBA8\",\"row_order\":\"top_to_bottom\",\"width\":{WIDTH},\"height\":{HEIGHT},\"bytes\":{},\"depth_output_available\":{},\"path\":",
+        cpu.pixels().len() * 4,
+        depth_output.is_some()
     ));
     json_string(&output.to_string_lossy());
     logger::console(format_args!("}}\n"));
+    if let Some(path) = &depth_output {
+        logger::console(format_args!(
+            "{{\"event\":\"retail_draw_depth\",\"format\":\"f32_le_inverse_depth_scores\",\"includes_depth_range_adjustment\":true,\"row_order\":\"top_to_bottom\",\"width\":{WIDTH},\"height\":{HEIGHT},\"bytes\":{},\"path\":",
+            cpu.inverse_depth().len() * 4
+        ));
+        json_string(&path.to_string_lossy());
+        logger::console(format_args!("}}\n"));
+    }
     std::io::stdout()
         .flush()
         .map_err(|e| format!("final capture report: {e}"))?;

@@ -1,5 +1,5 @@
 use qa_app::map;
-use qa_app::renderer::{Kind, Renderer};
+use qa_app::renderer::{Kind, Renderer, parse_cpu_bands};
 use qa_app::{
     Runtime,
     host::{FrameHost, LiveFrame},
@@ -10,7 +10,7 @@ use qa_console::{
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
-use qa_render::{Assets, material::world_load::WorldLoadOptions};
+use qa_render::{Assets, cpu::RasterBands, material::world_load::WorldLoadOptions};
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -36,6 +36,8 @@ fn run() -> Result<(), String> {
     let mut uncapped = false;
     let mut startup_hold = 0u64;
     let mut renderer_kind = Kind::Cpu;
+    let mut cpu_bands = RasterBands::One;
+    let mut cpu_bands_explicit = false;
     let mut map_name = None;
     let mut movement_rules = None;
     let mut console_source_explicit = false;
@@ -135,6 +137,13 @@ fn run() -> Result<(), String> {
             "--renderer" => {
                 renderer_kind = Kind::parse(&args.next().ok_or("--renderer needs cpu or gl")?)?
             }
+            "--cpu-bands" => {
+                if cpu_bands_explicit {
+                    return Err("--cpu-bands was supplied more than once".into());
+                }
+                cpu_bands_explicit = true;
+                cpu_bands = parse_cpu_bands(&args.next().ok_or("--cpu-bands needs 1, 2, 4 or 8")?)?;
+            }
             "--uncapped" => uncapped = true,
             "--warmup" => {
                 warmup = args
@@ -190,6 +199,9 @@ fn run() -> Result<(), String> {
     }
     if frames == 0 || width <= 0 || height <= 0 {
         return Err("frames and dimensions must be positive".into());
+    }
+    if cpu_bands_explicit && matches!(renderer_kind, Kind::Gl) {
+        return Err("--cpu-bands requires --renderer cpu".into());
     }
     if movement_rules.is_some() && map_name.is_none() {
         return Err("--movement needs a loaded --map".into());
@@ -302,8 +314,11 @@ fn run() -> Result<(), String> {
         height as u32,
         assets,
         loaded_world.into_iter().collect(),
+        cpu_bands,
     )?;
     renderer.frame(&host.client_views());
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    let _ = renderer.merge_worker_counts(qa_platform::allocations::Counts::default());
     renderer.present(&mut window);
     if !renderer.sample.presented {
         return Err("initial frame presentation failed".into());
@@ -378,7 +393,8 @@ fn run() -> Result<(), String> {
         if host.runtime.quit {
             #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
             {
-                let counts = qa_platform::allocations::end_frame();
+                let caller = qa_platform::allocations::end_frame();
+                let counts = renderer.merge_worker_counts(caller);
                 #[cfg(feature = "allocation-tracking")]
                 allocation_gate.observe(frame, warmup, counts);
                 #[cfg(not(feature = "allocation-tracking"))]
@@ -506,7 +522,8 @@ fn run() -> Result<(), String> {
                     host.console.cvars.lookup_count()
                 ),
             );
-            let counts = qa_platform::allocations::end_frame();
+            let caller = qa_platform::allocations::end_frame();
+            let counts = renderer.merge_worker_counts(caller);
             #[cfg(feature = "allocation-tracking")]
             allocation_gate.observe(frame, warmup, counts);
             qa_console::logger::dev_print(
@@ -514,7 +531,7 @@ fn run() -> Result<(), String> {
                 host.developer,
                 1,
                 format_args!(
-                    "{{\"event\":\"frame_allocations\",\"scope\":\"{scope}_rust_thread\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+                    "{{\"event\":\"frame_allocations\",\"scope\":\"{scope}_all_instrumented_rust_threads\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
                     counts.allocations, counts.reallocations, counts.requested_bytes
                 ),
             );
@@ -562,10 +579,16 @@ fn run() -> Result<(), String> {
             stats.cache.rejected
         ));
     }
+    let worker_error = renderer.worker_error();
+    #[cfg(feature = "allocation-tracking")]
+    let worker_threads = renderer.worker_count();
     drop(renderer);
     drop(window);
+    if let Some(error) = worker_error {
+        return Err(format!("CPU worker qualification failed: {error}"));
+    }
     #[cfg(feature = "allocation-tracking")]
-    allocation_gate.finish(scope)?;
+    allocation_gate.finish(scope, worker_threads)?;
     if timings {
         println!(
             "{{\"event\":\"frame_timings\",\"scope\":\"{scope}\",\"warmup\":{warmup},\"frames\":{completed},\"vsync\":false,\"samples_ns\":{samples:?},\"stage_columns\":[\"simulation\",\"client\",\"scene\",\"draw\",\"present\"],\"stage_samples_ns\":{stage_samples:?},\"audio_measured\":false}}"

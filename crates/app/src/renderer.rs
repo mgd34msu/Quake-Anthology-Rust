@@ -1,14 +1,126 @@
 //! Client composition uses the same scene packets for either renderer.
 use crate::host::ClientView;
 use qa_core::{math::angle_vectors, sys_events::SeatId};
-use qa_platform::{Stopwatch, Window};
+use qa_platform::{Stopwatch, Window, WorkerError, Workers};
 use qa_render::{
     Assets, BackendStats, BlendPhase, FrontEnd, Limits, Refdef, Viewport,
-    cpu::CpuBackend,
+    cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, render_band},
     gl::GlBackend,
     material::world_load::{LoadedWorld, PresentationDefaults},
     world::WorldView,
 };
+
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+use qa_platform::allocations::Counts;
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+use qa_render::cpu::MAX_BANDS;
+
+pub fn parse_cpu_bands(value: &str) -> Result<RasterBands, &'static str> {
+    match value {
+        "1" => Ok(RasterBands::One),
+        "2" => Ok(RasterBands::Two),
+        "4" => Ok(RasterBands::Four),
+        "8" => Ok(RasterBands::Eight),
+        _ => Err("CPU bands must be 1, 2, 4 or 8"),
+    }
+}
+
+/// The app owns worker scheduling; render only lends disjoint raster jobs.
+/// Developer retail draws use this same dispatcher and allocation accounting.
+pub struct CpuDispatch {
+    workers: Option<Workers>,
+    failure: Option<WorkerError>,
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    scratch: [Counts; MAX_BANDS],
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    pending: Counts,
+}
+impl CpuDispatch {
+    pub fn load(bands: RasterBands) -> Result<Self, WorkerError> {
+        let workers = if bands == RasterBands::One {
+            None
+        } else {
+            Some(Workers::load(bands.count())?)
+        };
+        Ok(Self {
+            workers,
+            failure: None,
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            scratch: [Counts::default(); MAX_BANDS],
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            pending: Counts::default(),
+        })
+    }
+
+    pub fn worker_count(&self) -> usize {
+        self.workers.as_ref().map_or(0, Workers::count)
+    }
+
+    pub fn failure(&self) -> Option<WorkerError> {
+        self.failure
+    }
+
+    pub fn dispatch<J: Send>(
+        &mut self,
+        jobs: &mut [J],
+        work: fn(&mut J),
+    ) -> Result<(), WorkerError> {
+        let result = if let Some(workers) = &mut self.workers {
+            let result = workers.dispatch_scoped(jobs, work);
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            let result = {
+                // Counts belong to this completed or rejected dispatch, even
+                // when the worker operation failed. Read before another batch.
+                let counts = &mut self.scratch[..workers.count()];
+                let count_result = workers.allocation_counts(counts);
+                if count_result.is_ok() {
+                    for count in counts {
+                        add_counts(&mut self.pending, *count);
+                    }
+                }
+                result.and(count_result)
+            };
+            result
+        } else {
+            for job in jobs {
+                work(job);
+            }
+            Ok(())
+        };
+        if let Err(error) = result {
+            self.failure.get_or_insert(error);
+        }
+        result
+    }
+
+    /// Consume every dispatch since the preceding merge, exactly once.
+    /// Inline jobs already belong to the caller's thread-local counts.
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    pub fn merge_counts(&mut self, mut caller: Counts) -> Counts {
+        add_counts(&mut caller, std::mem::take(&mut self.pending));
+        caller
+    }
+}
+
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+fn add_counts(total: &mut Counts, counts: Counts) {
+    total.allocations = total.allocations.saturating_add(counts.allocations);
+    total.reallocations = total.reallocations.saturating_add(counts.reallocations);
+    total.requested_bytes = total.requested_bytes.saturating_add(counts.requested_bytes);
+}
+
+/// Cache sizes describe the backend's load-time reservation, across all bands.
+pub fn report_cpu_config(config: RasterConfig, workers: usize) {
+    qa_console::logger::console(format_args!(
+        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
+        config.bands.count(),
+        workers,
+        config.total_cache_budget_bytes,
+        config.allocated_cache_bytes,
+        config.per_band_cache_bytes,
+        config.mandatory_cache_bytes,
+    ));
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Kind {
@@ -47,7 +159,10 @@ pub struct Sample {
     pub visible_surfaces: u32,
 }
 enum Backend {
-    Cpu(CpuBackend),
+    Cpu {
+        backend: CpuBackend,
+        dispatch: CpuDispatch,
+    },
     Gl(GlBackend),
 }
 struct WorldScene {
@@ -64,6 +179,7 @@ pub struct Renderer {
     width: u32,
     height: u32,
     recorded_rendered_frames: u64,
+    draw_failed: bool,
 }
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
@@ -74,6 +190,7 @@ impl Renderer {
         height: u32,
         assets: Assets,
         worlds: Vec<LoadedWorld>,
+        bands: RasterBands,
     ) -> Result<Self, String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
@@ -107,7 +224,22 @@ impl Renderer {
         );
         let frontend = FrontEnd::load(limits)?;
         let backend = match kind {
-            Kind::Cpu => Backend::Cpu(CpuBackend::load_with_assets(width, height, &assets)?),
+            Kind::Cpu => {
+                let backend = CpuBackend::load_with_limits(
+                    width,
+                    height,
+                    &assets,
+                    CpuLimits {
+                        scene: limits,
+                        bands,
+                        ..CpuLimits::default()
+                    },
+                )?;
+                let dispatch = CpuDispatch::load(backend.raster_config().bands)
+                    .map_err(|error| format!("CPU workers: {error}"))?;
+                report_cpu_config(backend.raster_config(), dispatch.worker_count());
+                Backend::Cpu { backend, dispatch }
+            }
             Kind::Gl => Backend::Gl(unsafe {
                 GlBackend::load(
                     |name| window.gl_proc(name),
@@ -136,12 +268,13 @@ impl Renderer {
             width,
             height,
             recorded_rendered_frames: 0,
+            draw_failed: false,
         })
     }
     /// Last backend-rendered frame workload, with lifetime cache counters.
     pub fn cpu_world_stats(&self) -> Option<qa_render::cpu::WorldStats> {
         match &self.backend {
-            Backend::Cpu(cpu) => Some(cpu.world_stats()),
+            Backend::Cpu { backend, .. } => Some(backend.world_stats()),
             Backend::Gl(_) => None,
         }
     }
@@ -149,11 +282,32 @@ impl Renderer {
     pub fn recorded_rendered_frames(&self) -> u64 {
         self.recorded_rendered_frames
     }
+    pub fn worker_count(&self) -> usize {
+        match &self.backend {
+            Backend::Cpu { dispatch, .. } => dispatch.worker_count(),
+            Backend::Gl(_) => 0,
+        }
+    }
+    pub fn worker_error(&self) -> Option<WorkerError> {
+        match &self.backend {
+            Backend::Cpu { dispatch, .. } => dispatch.failure(),
+            Backend::Gl(_) => None,
+        }
+    }
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    pub fn merge_worker_counts(&mut self, caller: Counts) -> Counts {
+        match &mut self.backend {
+            Backend::Cpu { dispatch, .. } => dispatch.merge_counts(caller),
+            Backend::Gl(_) => caller,
+        }
+    }
     pub fn frame(&mut self, views: &[Option<ClientView>; SeatId::COUNT]) {
         self.sample = Sample::default();
+        self.draw_failed = false;
         let timer = Stopwatch::start();
         let Some(mut frame) = self.frontend.begin_frame([18, 26, 34, 255]) else {
             self.sample.stats.rejected += 1;
+            self.draw_failed = true;
             return;
         };
         let count = views.iter().filter(|view| view.is_some()).count();
@@ -213,21 +367,41 @@ impl Renderer {
         let packet = frame.finish();
         self.sample.frontend_ns = timer.elapsed().as_nanos() as u64;
         let timer = Stopwatch::start();
-        self.sample.stats = match &mut self.backend {
-            Backend::Cpu(cpu) => cpu.render(&packet, &self.assets),
-            Backend::Gl(gl) => gl.render(&packet, &self.assets),
+        let result = match &mut self.backend {
+            Backend::Cpu { backend, dispatch } => {
+                backend.render_with_dispatch(&packet, &self.assets, |jobs| {
+                    dispatch.dispatch(jobs, render_band)
+                })
+            }
+            Backend::Gl(gl) => Ok(gl.render(&packet, &self.assets)),
         };
         self.sample.backend_ns = timer.elapsed().as_nanos() as u64;
-        self.recorded_rendered_frames += 1;
+        match result {
+            Ok(stats) => {
+                self.sample.stats = stats;
+                self.recorded_rendered_frames += 1;
+            }
+            Err(_) => {
+                self.sample.stats.rejected += 1;
+                self.draw_failed = true;
+            }
+        }
         self.sample.stats.rejected += rejected;
         if self.frontend.recycle(packet).is_err() {
             self.sample.stats.rejected += 1;
         }
     }
     pub fn present(&mut self, window: &mut Window) {
+        if self.draw_failed {
+            self.sample.presented = false;
+            self.sample.present_ns = 0;
+            return;
+        }
         let timer = Stopwatch::start();
         self.sample.presented = match &self.backend {
-            Backend::Cpu(cpu) => window.present_pixels(self.width, self.height, cpu.pixels()),
+            Backend::Cpu { backend, .. } => {
+                window.present_pixels(self.width, self.height, backend.pixels())
+            }
             Backend::Gl(_) => window.present_gl(),
         };
         self.sample.present_ns = timer.elapsed().as_nanos() as u64;
