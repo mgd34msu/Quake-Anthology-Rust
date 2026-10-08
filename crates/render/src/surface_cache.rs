@@ -312,6 +312,12 @@ impl CacheLayout {
     }
 }
 
+fn payload_bytes(layout: CacheLayout, [width, height]: [u32; 2]) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(layout.bytes_per_pixel())
+}
+
 pub struct SurfaceSource {
     texture_mins: [i32; 2],
     extents: [u32; 2],
@@ -475,10 +481,7 @@ impl SurfaceSource {
     }
 
     fn bytes(&self, mip: u8) -> Option<usize> {
-        let [width, height] = self.dimensions(mip)?;
-        (width as usize)
-            .checked_mul(height as usize)?
-            .checked_mul(self.layout.bytes_per_pixel())
+        payload_bytes(self.layout, self.dimensions(mip)?)
     }
 }
 
@@ -486,6 +489,10 @@ impl SurfaceSource {
 struct SlotSource {
     surface: usize,
     mip: u8,
+    // Validated once for this actual mip and shared by every rover.
+    texture_mins: [i32; 2],
+    dimensions: [u32; 2],
+    bytes: usize,
 }
 
 /// Immutable surface layouts and native light samples, shared at load by
@@ -504,21 +511,39 @@ impl SurfaceCatalog {
             return Err("invalid surface catalog capacity");
         }
         let mut slot_count = 0usize;
-        let mut max_reservation = [0usize; 2];
         for source in &mut surfaces {
             source.slot_start = slot_count;
             slot_count = slot_count
                 .checked_add(source.mip_count as usize)
                 .ok_or("surface slot count overflow")?;
+        }
+        if slot_count
+            .checked_mul(std::mem::size_of::<SlotSource>())
+            .is_none_or(|bytes| bytes > isize::MAX as usize)
+        {
+            return Err("surface slot metadata size overflow");
+        }
+        let mut slots = Vec::with_capacity(slot_count);
+        let mut max_reservation = [0usize; 2];
+        for (surface, source) in surfaces.iter().enumerate() {
             let layout = match source.layout {
                 CacheLayout::Indexed8 => 0,
                 CacheLayout::Rgba8 => 1,
             };
             for mip in 0..source.mip_count {
-                let bytes = source
-                    .reservation_bytes(mip)
-                    .ok_or("surface reservation size overflow")?;
-                max_reservation[layout] = max_reservation[layout].max(bytes);
+                let (texture_mins, dimensions) = source.layout_for(mip);
+                let bytes = payload_bytes(source.layout, dimensions)
+                    .ok_or("surface payload size overflow")?;
+                let reservation =
+                    allocation_bytes(bytes).ok_or("surface reservation size overflow")?;
+                max_reservation[layout] = max_reservation[layout].max(reservation);
+                slots.push(SlotSource {
+                    surface,
+                    mip,
+                    texture_mins,
+                    dimensions,
+                    bytes,
+                });
             }
         }
         let block_count = slot_count
@@ -530,17 +555,9 @@ impl SurfaceCatalog {
             .map(SurfaceSource::grid_cells)
             .max()
             .unwrap_or(0);
-        let slots = surfaces
-            .iter()
-            .enumerate()
-            .flat_map(|(surface, source)| {
-                (0..source.mip_count).map(move |mip| SlotSource { surface, mip })
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
         Ok(Arc::new(Self {
             surfaces: surfaces.into_boxed_slice(),
-            slots,
+            slots: slots.into_boxed_slice(),
             block_count,
             scratch_cells,
             max_reservation,
@@ -553,6 +570,12 @@ impl SurfaceCatalog {
 
     pub fn surfaces(&self) -> &[SurfaceSource] {
         &self.surfaces
+    }
+
+    /// Shared actual-mip slot payload, including this target's struct padding.
+    /// Surface/light sample storage and each rover's state are separate.
+    pub fn mip_metadata_bytes(&self) -> usize {
+        self.slots.len() * std::mem::size_of::<SlotSource>()
     }
 
     /// Includes the rover's eight-byte payload alignment. RGBA sources may be
@@ -843,12 +866,12 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         };
-        let bytes = source.bytes(mip)?;
         let key = source.slot_start + mip as usize;
+        let bytes = self.catalog.slots[key].bytes;
         let stamp = Stamp::Indexed(IndexedStamp::from_state(state, texture, palette));
         let (block, needs_fill) = self.prepare_slot(key, bytes, stamp)?;
         if !needs_fill {
-            return Some(self.span(surface as usize, mip, block, texture.transparent_index));
+            return Some(self.span(key, block, texture.transparent_index));
         }
         let source = &self.catalog.surfaces[surface as usize];
         build_lightmap(source, state, &mut self.light_scratch);
@@ -864,7 +887,7 @@ impl SurfaceCache {
         );
         self.pin(block);
         self.stats.fills = self.stats.fills.saturating_add(1);
-        Some(self.span(surface as usize, mip, block, texture.transparent_index))
+        Some(self.span(key, block, texture.transparent_index))
     }
 
     /// Fill an exact row-major RGBA payload: a precombined surface or retained
@@ -886,8 +909,8 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         }
-        let bytes = source.bytes(mip)?;
         let key = source.slot_start + mip as usize;
+        let bytes = self.catalog.slots[key].bytes;
         let (block, needs_fill) = self.prepare_slot(key, bytes, Stamp::Rgba(state))?;
         if needs_fill {
             let offset = self.blocks[block].offset;
@@ -895,7 +918,7 @@ impl SurfaceCache {
             self.pin(block);
             self.stats.fills = self.stats.fills.saturating_add(1);
         }
-        Some(self.span(surface as usize, mip, block, None))
+        Some(self.span(key, block, None))
     }
 
     /// Validate the originating cache, layout, dimensions, mip and generation
@@ -916,8 +939,8 @@ impl SurfaceCache {
         }
         let source = self.catalog.surfaces.get(slot_source.surface)?;
         if span.layout != source.layout
-            || [span.width, span.height] != source.dimensions(span.mip)?
-            || span.texture_mins != source.layout_for(span.mip).0
+            || [span.width, span.height] != slot_source.dimensions
+            || span.texture_mins != slot_source.texture_mins
             || span.cutout != span.transparent_index.is_some()
         {
             return None;
@@ -928,7 +951,7 @@ impl SurfaceCache {
             (CacheLayout::Rgba8, Some(Stamp::Rgba(_))) if !span.cutout => {}
             _ => return None,
         }
-        let bytes = source.bytes(span.mip)?;
+        let bytes = slot_source.bytes;
         if bytes > block.bytes {
             return None;
         }
@@ -986,21 +1009,16 @@ impl SurfaceCache {
         Some((block, true))
     }
 
-    fn span(
-        &self,
-        surface: usize,
-        mip: u8,
-        block: usize,
-        transparent_index: Option<u8>,
-    ) -> CacheSpan {
-        let source = &self.catalog.surfaces[surface];
-        let (texture_mins, [width, height]) = source.layout_for(mip);
+    fn span(&self, key: usize, block: usize, transparent_index: Option<u8>) -> CacheSpan {
+        let slot_source = &self.catalog.slots[key];
+        let source = &self.catalog.surfaces[slot_source.surface];
+        let [width, height] = slot_source.dimensions;
         CacheSpan {
             layout: source.layout,
             width,
             height,
-            mip,
-            texture_mins,
+            mip: slot_source.mip,
+            texture_mins: slot_source.texture_mins,
             cutout: transparent_index.is_some(),
             transparent_index,
             cache_id: self.id,
