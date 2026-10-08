@@ -1,26 +1,19 @@
 # Frame scratch storage and allocation counts
 
-`qa_core::arena::FrameArena` allocates one fixed backing buffer at load time.
-It initializes typed `Copy` values, including types with alignment larger than
-64 bytes, and resets by advancing a generation and clearing the used offset.
-Typed blocks from another arena or an earlier generation cannot be read. Slice
-borrows prevent concurrent allocation, reset or destruction. Exhaustion returns
-an error without growing storage or invalidating existing blocks; the affected
-consumer skips its work. Zero-sized element types are rejected.
+Each service owns typed storage allocated at load: boxed arrays or vectors
+whose capacity covers the workload. Resetting that storage reuses its memory.
+THE-2875 removes the unused raw FrameArena and its tests; core now forbids
+unsafe code. No replacement generic allocator is introduced.
 
-The reset/reuse and address-alignment approach follows C `src/core/arena.c`
-and original Quake `WinQuake/zone.c` hunk marks. The frame allocator reserves
-capacity at load time instead of adding blocks during play. No retired Muse
-allocator or per-game allocation structure was copied.
-
-Each service owns its reusable scratch vectors and clears them between frames;
-temporary typed arrays can use the arena. The headless probe exercises both
-patterns over 10,000 iterations with a positive allocation/reallocation control.
+The headless probe reuses 1,024 points, 4,096 bytes and 256 scratch values for
+60 warm-up frames and 600 measured frames. Its positive control must detect
+one allocation, one reallocation and 320 requested bytes before the zero gate
+runs. It counts every measured frame, with no workers or native heap in scope.
 
 ```sh
-cargo test -p qa-core --test arena
-cargo run --release -p qa-platform --example frame_allocations \
+timeout 300 cargo build --release -p qa-platform --example frame_allocations \
   --features allocation-tracking
+timeout 300 taskset -c "$CORE" target/release/examples/frame_allocations
 ```
 
 Development app builds use the platform's counting `System` allocator. With

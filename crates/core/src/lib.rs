@@ -1,4 +1,5 @@
-pub mod arena;
+#![forbid(unsafe_code)]
+
 pub mod checksum;
 pub mod events;
 pub mod loopback;

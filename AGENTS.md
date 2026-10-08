@@ -80,14 +80,16 @@ spawning, mixed-play and installed-binary evidence they require.
 Completed R2 structural order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
 THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891.
-Current order, authorised in the 2026-10-08 14:15 project update and 14:51 comment:
-finish every unfinished common primitive in architecture section 3.3, incorporating
-the accepted THE-650 explicit-relink and THE-625/THE-1862 caller-selected trace
-rules. Then meet THE-859's installed three-map, independent-seat and combined-
-movement criteria and THE-697/890's consumer-cursor output retention criteria,
-followed by THE-884, THE-885, THE-887, THE-888 and THE-889. Next confirm the one
-surface cache for every map family (THE-862), then THE-860, THE-861, THE-862
-materials and THE-863. THE-862 q3dm1 speed work is paused until those steps finish.
+Current order, authorised in the 2026-10-08 18:10 owner directive:
+THE-2875 removes unused FrameArena and duplicate liveness storage, then THE-2868
+puts inline collision models into the shared geometry store. One rule-set id
+type selects rules per role: movement, damage, link order, tick rate and trace;
+client module rules, never map format, choose tick rate and insertion order.
+Then THE-2872/THE-2865 supplies one job dispatcher and automatic raster bands,
+THE-889, interned NameIds for renderer material/image caches and folded cvar/
+command lookup, THE-2869, then THE-859 and THE-697/890. The shared StampSet and
+THE-892 duplicate checker apply to collision, visibility and GL sky marking.
+Unfinished R1 work remains required. THE-862 q3dm1 speed work stays paused.
 Earlier structural commits do not satisfy live acceptance criteria by themselves.
 R1 issues with live acceptance criteria remain In Progress for integration at
 the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
@@ -118,6 +120,13 @@ it does not prescribe the engine's storage, allocator or scheduling structure.
 Every structural choice earns its place through pinned timings, memory safety
 or simplicity. Preserve observable native ordering and arithmetic without
 copying recursive stacks, global mutable scratch or per-game capability code.
+
+Every primitive has exactly one implementation. When it replaces an old copy,
+delete that copy in the same slice and extend the duplicate checker. Collision,
+visibility and GL sky marking use the one core StampSet. Core forbids unsafe
+code; use safe typed owned storage allocated at load. Other unsafe code needs
+an explicit safety invariant and focused memory-safety proof, and belongs only
+at OS/SDL boundaries or in paths whose measured gain justifies it.
 
 * A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. No receive thread, journal, input recording or replay may be added pending the owner.
 * B. THE-884: Com_Frame performs two nonblocking physical intake drains: before SERVER and before CLIENT, each followed by commands, matching qsrc Com_Frame/Com_EventLoop. SERVER providers advance at their own native rates on one timeline; CLIENT applies snapshots, predicts and presents. No other physical intake point is allowed, including frame-cap waits or final-ACK retirement. The 2026-10-08 16:12 owner ruling supersedes the earlier draining-wait requirement; queued events may still be consumed without polling OS sources. The cap waits on platform time before the first intake, using native integer-millisecond boundaries and a zero startup baseline. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.

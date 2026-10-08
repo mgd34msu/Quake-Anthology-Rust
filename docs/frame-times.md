@@ -82,6 +82,23 @@ source based on `de70bdff`. The measured world sources match staged tree
 the C port or Muse and does not qualify installed gameplay or arbitrary
 foreign-player shapes in Q1's fixed compiled hulls.
 
+## THE-2875 owned scratch and allocation counter
+
+The unused raw arena was removed on 2026-10-08; no production caller depended
+on it. Core now forbids unsafe code. The release `frame_allocations` example
+uses plain load-owned arrays and a reserved vector, pinned to core 23, baseline
+CPU, without a debugger. After 60 warm-up frames, 600 measured frames reused
+1,024 points, 4,096 bytes and 256 scratch values. Median and nearest-rank p99
+were both 150 ns. The positive control detected one allocation, one
+reallocation and 320 requested bytes; every measured frame and all totals
+recorded zero allocation, reallocation and requested bytes.
+
+This times the developer scratch/counter workload, with no gameplay, workers
+or native heap measurement. It establishes no engine speedup or regression
+comparison. Release build: 15.33 seconds. Evidence:
+`THE-2875-safe-core/owned-scratch.json`. Reproduction commands are in
+[frame allocations](frame-allocations.md).
+
 ## R1 brush-tree traversal
 
 THE-625/THE-1862's 2026-10-08 release probe preserves BSP nodes, ordered leaf
