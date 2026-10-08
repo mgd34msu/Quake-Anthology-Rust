@@ -45,10 +45,21 @@ SDL2 identifies controllers individually but combines physical keyboards.
 Real multi-controller walkthroughs and owner profile application remain for
 integration; headless two-device commands do not prove those runs.
 
-The rule checker rejects OS clock types, SDL symbols and direct socket types
-outside platform, including imported aliases, examples and integration tests.
-CI runs the planted rejection fixtures. There is no queue journal, recording
-or replay implementation. Do not add one pending the owner's decision.
+The rule checker rejects OS clock types, epoch/POSIX clock sources, SDL
+symbols/crate imports and foreign link attributes, stdin, thread spawn/sleep
+and direct socket types outside platform, including the imported aliases and
+examples exercised by its fixtures. Shared sound/effect/print/packet queue
+definitions belong to core. CI runs planted rejection and permitted-boundary
+fixtures. These source checks cover the listed patterns, not arbitrary Rust
+name resolution. There is no queue journal. The development SDL input player
+is a replay release blocker under THE-893; do not add recording or replay
+pending the owner's decision.
+
+THE-884 replaces the current single shell drain with the Com_Frame order in
+[AGENTS.md](../AGENTS.md): drain/commands, provider-rate server ticks, a second
+drain/commands, then client prediction/presentation. Its frame-cap wait must
+continue draining events. THE-885 adds fixed local loopback buffers feeding
+the same packet path. These are pending integration contracts.
 
 ```sh
 timeout 300 python3 tools/build.py --check-only

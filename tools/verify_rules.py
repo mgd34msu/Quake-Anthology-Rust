@@ -21,6 +21,7 @@ CASES = {
     "duplicate-md4": "struct Md4 {}",
     "platform-event-source": "fn bad() { std::time::Instant::now(); SystemTime::now(); SDL_PollEvent(&mut event); }",
     "platform-network-source": "fn bad() { UdpSocket::bind(address); }",
+    "duplicate-event-storage": "struct SoundRing { values: [Option<SoundEvent>; 16] }",
     "diagnostics-path": 'fn bad() { eprintln!("event"); }',
     "temporary-diagnostics": "// TEMP-DIAG\nfn bad() {}",
     "test-share": "fn live() {}\n#[cfg(test)]\nmod tests { " + "fn scenario() {} " * 50 + "}",
@@ -64,6 +65,18 @@ def main():
             ("sdl-time", "fn bad() { SDL_GetTicks(); }", "world/src"),
             ("sdl-input-import", "use external::SDL_PollEvent as poll;", "world/src"),
             ("sdl-foreign", 'unsafe extern "C" { fn SDL_PollEvent(event: *mut u8) -> i32; }', "world/src"),
+            ("clock-unix-epoch", "use std::time::UNIX_EPOCH as epoch;", "world/src"),
+            ("clock-posix", "fn bad() { libc::clock_gettime(0, &mut value); }", "world/src"),
+            ("thread-spawn", "fn bad() { std::thread::spawn(work); }", "world/src"),
+            ("thread-sleep", "fn bad() { std::thread::sleep(duration); }", "world/src"),
+            ("thread-import-alias", "use std::thread::{spawn as start}; fn bad() { start(work); }", "world/src"),
+            ("thread-module-alias", "use std::thread as jobs; fn bad() { jobs::sleep(duration); }", "world/examples"),
+            ("stdin-call", "fn bad() { std::io::stdin(); }", "world/src"),
+            ("stdin-import-alias", "use std::io::stdin as read; fn bad() { read(); }", "world/src"),
+            ("stdin-group-alias", "use std::io::{stdin as read};", "world/src"),
+            ("sdl-crate-alias", "use sdl2 as video; fn bad() { video::init(); }", "world/src"),
+            ("sdl-foreign-alias", '#[link_name = "SDL_PollEvent"] unsafe extern "C" fn poll();', "world/src"),
+            ("sdl-library", '#[link(name = "SDL2")] unsafe extern "C" { fn poll(); }', "world/src"),
         ]:
             violation = root / "crates" / directory / "source_violation.rs"
             violation.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +89,33 @@ def main():
             if not passed:
                 raise RuntimeError("source boundary was not enforced: " + name)
             violation.unlink()
+        for name, text in [
+            ("output-deque", "struct Pending { events: VecDeque<FrameEvent> }"),
+            ("packet-ring", "struct PacketRing { slots: [u8; 16] }"),
+            ("output-renamed-queue", "struct PendingQueue { slots: [Option<EffectEvent>; 16] }"),
+            ("output-type-alias", "type Prints = VecDeque<PrintEvent>;"),
+        ]:
+            fixture.write_text(text)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            output = json.loads(result.stdout)
+            passed = result.returncode != 0 and any(v["rule"] == "duplicate-event-storage" for v in output["findings"])
+            records.append({"rule": name, "rejected_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("duplicate storage was admitted: " + name)
+            fixture.unlink()
+        # Source ownership permits these declarations only at the platform
+        # boundary. Core alone may define the shared event storage.
+        platform_fixture = root / "crates/platform/src/source_boundary.rs"
+        platform_fixture.write_text('use std::thread::{spawn, sleep}; use std::io::stdin; use std::time::UNIX_EPOCH; use sdl2 as video; #[link_name = "SDL_PollEvent"] unsafe extern "C" fn poll();')
+        core_fixture = root / "crates/core/src/storage_boundary.rs"
+        core_fixture.write_text("struct SoundRing { slots: [Option<SoundEvent>; 16] }")
+        result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError("permitted ownership boundaries were rejected: " + result.stdout)
+        (args.evidence / "permitted-boundaries.log").write_text(result.stdout + result.stderr)
+        platform_fixture.unlink()
+        core_fixture.unlink()
         generated = root / "crates/console/src/cvars_generated.rs"
         generated.write_text(generated.read_text() + "\n// stale catalog fixture\n")
         result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)

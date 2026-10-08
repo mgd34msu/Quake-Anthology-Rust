@@ -52,8 +52,17 @@ def check(root):
         code = source_code(raw)
         relative = path.relative_to(root).as_posix()
         if not relative.startswith("crates/platform/"):
-            for match in re.finditer(r"\b(?:Instant|SystemTime|SDL_\w+)\b", code):
+            for match in re.finditer(r"\b(?:Instant|SystemTime|UNIX_EPOCH|clock_gettime|sdl2|SDL_\w+)\b|\bstdin\s*\(|\bstd\s*::\s*io\s*::\s*stdin\b|\b(?:std\s*::\s*)?thread\s*::\s*(?:spawn|sleep)\b|\buse\s+std\s*::\s*(?:io|thread)\s*::\s*\{[^;]*\b(?:stdin|spawn|sleep)\b", code):
                 add(path, code, match.start(), "platform-event-source")
+            # Renaming the thread module must not hide its OS operations.
+            for alias in re.finditer(r"\buse\s+std\s*::\s*thread\s+as\s+(\w+)", code):
+                for match in re.finditer(r"\b" + re.escape(alias[1]) + r"\s*::\s*(?:spawn|sleep)\b", code):
+                    add(path, code, match.start(), "platform-event-source")
+            # Strings are normally excluded; foreign symbol/library attributes
+            # carry source ownership even when the Rust function is renamed.
+            for match in re.finditer(r'#\s*\[\s*(?:link_name\s*=\s*"SDL_[^"]*"|link\s*\(\s*name\s*=\s*"(?i:SDL2?)[^"]*")', raw):
+                if code[match.start()] == "#":
+                    add(path, code, match.start(), "platform-event-source")
             for match in re.finditer(r"\b(?:UdpSocket|TcpListener|TcpStream|recvfrom|recvmsg)\b", code):
                 add(path, code, match.start(), "platform-network-source")
         if "/src/" not in relative:
@@ -77,6 +86,10 @@ def check(root):
             rules["diagnostics-path"] = r"\beprintln\s*!"
         if relative != "crates/core/src/checksum.rs":
             rules["duplicate-md4"] = r"(?i)\b(?:struct|enum|type)\s+Md4(?:Context|State|Hasher)?\b|\bfn\s+md4(?:_transform|_update|_finish|_final)?\b"
+        if not relative.startswith("crates/core/"):
+            # Command text storage is not an event queue. Event payload queues
+            # and named output/network rings must be defined in core.
+            rules["duplicate-event-storage"] = r"\bVecDeque\s*<[^;{}]*\b(?:SysEvent|FrameEvent|SoundEvent|EffectEvent|PrintEvent|Packet)\b|\b(?:struct|enum|type)\s+\w*(?:Sound|Effect|Print|Packet|SysEvent|OutputEvent)\w*(?:Ring|Queue)\b|\b(?:struct|enum|type)\s+\w*(?:Ring|Queue)\w*[^;]*\{[^}]*\b(?:SysEvent|FrameEvent|SoundEvent|EffectEvent|PrintEvent|Packet)\b"
         for rule, pattern in rules.items():
             for match in re.finditer(pattern, code):
                 add(path, code, match.start(), rule)

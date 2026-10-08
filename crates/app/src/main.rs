@@ -17,6 +17,9 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 #[cfg(feature = "proof")]
 mod proof;
 
+#[cfg(feature = "allocation-tracking")]
+mod allocation_gate;
+
 fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context::default());
     let mut runtime = Runtime {
@@ -187,6 +190,8 @@ fn run() -> Result<(), String> {
     let mut completed = 0;
     let mut key_downs = 0u64;
     let mut key_repeats = 0u64;
+    #[cfg(feature = "allocation-tracking")]
+    let mut allocation_gate = allocation_gate::Gate::default();
     let mut samples = if timings {
         Vec::with_capacity(frames as usize)
     } else {
@@ -259,7 +264,13 @@ fn run() -> Result<(), String> {
         console.execute_frame(&mut runtime);
         if runtime.quit {
             #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
-            let _ = qa_platform::allocations::end_frame();
+            {
+                let counts = qa_platform::allocations::end_frame();
+                #[cfg(feature = "allocation-tracking")]
+                allocation_gate.observe(frame, warmup, counts);
+                #[cfg(not(feature = "allocation-tracking"))]
+                let _ = counts;
+            }
             break;
         }
         // R2 routing proof uses normalized units. THE-735 supplies each seat's
@@ -301,6 +312,8 @@ fn run() -> Result<(), String> {
                 ),
             );
             let counts = qa_platform::allocations::end_frame();
+            #[cfg(feature = "allocation-tracking")]
+            allocation_gate.observe(frame, warmup, counts);
             qa_console::logger::dev_print(
                 &console.cvars,
                 developer,
@@ -316,6 +329,8 @@ fn run() -> Result<(), String> {
         }
     }
     drop(window);
+    #[cfg(feature = "allocation-tracking")]
+    allocation_gate.finish()?;
     if timings {
         println!(
             "{{\"event\":\"frame_timings\",\"scope\":\"window_shell\",\"warmup\":{warmup},\"frames\":{completed},\"vsync\":false,\"samples_ns\":{samples:?}}}"

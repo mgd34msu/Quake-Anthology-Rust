@@ -31,6 +31,19 @@ allocations and other threads are outside this counter's scope. Debug builds
 enable it automatically; optimized development builds use
 `--features qa-app/allocation-tracking`. Normal release builds omit it.
 
+THE-892 makes allocation-tracking qualification independent of `developer`.
+After warm-up, any allocation or reallocation, including in a quit frame,
+rejects the run after the window is destroyed. The final `allocation_gate`
+record contains measured/failed frame counts and total requested bytes. A run
+with no measured frames also fails. The development `proof` feature enables
+allocation tracking automatically. Warm-up allocations are reported when
+diagnostics are enabled but do not fail qualification.
+
+Use an idle private run as a negative control and a measured console command
+as the allocating positive control while THE-887 replaces owned command text.
+Normal gameplay builds retain scoped gameplay errors; this failure belongs to
+development qualification and occurs after cleanup.
+
 Run development binaries only with `tools/private_run.py`, which unsets
 `WAYLAND_DISPLAY`, forces X11 and captures audio privately. The current loop is
 a window shell. Its counts and the headless probe do not establish zero

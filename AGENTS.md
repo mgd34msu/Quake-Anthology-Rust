@@ -57,7 +57,9 @@ acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
 spawning, mixed-play and installed-binary evidence they require.
 
 Current lane: R2, after the R1 structural implementation. In order:
-THE-613, THE-623, THE-630, THE-639, THE-859, THE-651, THE-662, THE-669, THE-679,
+THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
+THE-887, THE-888, THE-889, THE-890, THE-886, THE-891, then
+THE-651, THE-662, THE-669, THE-679,
 THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
 R1 issues with live acceptance criteria remain In Progress for integration at
 the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
@@ -74,16 +76,41 @@ contains movement rules and boundary conversions only. The shipped candidate's
 private-harness evidence must include world screenshots, real key-repeat walks
 with wall/step collision, Q1/Q3 cvar aliases in every map, and measured timings.
 
-THE-859 precedes further console/usercmd wiring. One fixed system event queue
-carries input, UDP packets and time. Only platform reads SDL, sockets or OS
-clocks; the host drains once per frame, through one bind table and a usercmd
-builder shared by human devices and bots. No receive thread. Do not add a
-journal or queue recording/replay in any form pending the owner's decision.
-The rule checker rejects direct Instant::now, SystemTime::now and SDL symbols
-outside crates/platform, including examples. Developer timers use platform.
-R3 THE-861 uses one double-buffered command list for both render back ends,
-initially single-threaded. R11 THE-860 uses one field-table delta encoder and
-reliable ring, with protocol-specific tables rather than per-game encoders.
+## Unified engine architecture
+
+The [Unified engine architecture](https://linear.app/the-artificery/document/unified-engine-architecture-1f0df1cfc792)
+is the target. These are ownership contracts, not claims that integration is
+complete. Every capability must accept independent choices per world, entity,
+player and client. Each playable feature needs per-game and combined-mode proof,
+such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
+
+* A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. No receive thread, journal, input recording or replay may be added pending the owner.
+* B. THE-884: Com_Frame drains events and commands, advances SERVER providers at their own native rates on one timeline, drains events and commands again, then runs CLIENT snapshot application, prediction and presentation. The client cap uses cached com_maxfps aliases; its wait continues draining input and packets. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
+* C. THE-691/890: all modules produce sound, effect and print primitives into the one core output ring and text arena; the client drains it once into audio, particles and per-seat HUD/notify consumers. Load-sized arenas, fixed rings and hot SoA state mean zero Rust heap allocation per frame; instrumented qualification fails on any measured-frame allocation.
+* D. THE-860: one netchan owns sequence, ack, reliable bit, qport, fragments and fixed packet buffers; protocol tables select reliability, Huffman/XOR and one field-table delta encoder. Each client has a 32-slot snapshot ring and zero baseline, with its own NQ/QW/Q2/Q2RR/Q3 protocol over the same world; packet limit is 1400 bytes.
+* E. THE-861/862: one scene API registers assets, clears a scene, adds entities/polys/lights, renders a refdef and submits 2D draws to one double-buffered command list. One Q3 stage material table converts Q1/Q2 surface flags at load into shared materials and one lightmap atlas. Shared iterative leaf/PVS/visframe/dlightframe/frustum traversal serves every map. GL uses static map VBOs, persistent dynamic buffers, material/lightmap batching and a state cache, never glFinish; RGB SIMD CPU rendering uses depth-ordered edge/spans, a rover surface cache per mip and a 1/Z buffer, with optional palette output.
+* F. THE-863: one EngineServices table provides trace, link entity, sound, print, cvar, configstring and file operations. Thin numbered QVM, native dllEntry/game_import_t and QuakeC builtin mappings call those services. Module memory is checked at load; several module formats coexist and retain their own tick rates.
+* G. THE-889/891: one usercmd builder serves every client, including bots in SERVER ticks rather than local-seat overrides. One Pmove-style entry chooses movement rules per player and runs identically for server, prediction and bots over shared trace services. AAS and NAV2 are data behind one bot/navigation interface.
+* H. THE-887/888: one console tokenises its fixed text buffer in place with borrowed argv spans, sorted command lookup and cached cvar handles; a bare cvar command uses argv 1 per qsrc. One bind table dispatches normal and +/- commands into the same console and per-client builder. Every alias works in every game; bare text is a command/cvar, chat only via say.
+
+Use modern techniques where pinned timings prove a gain: fixed multicore
+partitions with ordered merges, SIMD, modern GL and cache-friendly storage.
+Partition load work per file/lump, scenes per view, raster per screen band,
+surface fills into serially reserved cache slots, snapshots per client, bots
+and read-only traces over a frozen world. Merge bot commands by client id.
+Keep observable qsrc think/entity ordering serial. Platform owns worker threads;
+bounded audio mixahead and a render worker are adopted only after measurement.
+Report pinned median and p99 over 600 measured frames after 60 warm-up frames,
+with matched workload and fidelity, without a debugger.
+
+THE-892 checks platform ownership and duplicate event/output storage, including
+examples and imported aliases. Developer timers also use platform. Runtime
+allocation qualification covers the instrumented Rust thread; SDL/driver heap
+work needs separate measurement and is not proved by that counter.
+
+THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
+input injector form an input player. Remove recording/replay before any public
+release. A development proof build must never qualify as a shipping candidate.
 
 ## Salvage
 
