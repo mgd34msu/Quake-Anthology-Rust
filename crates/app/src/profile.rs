@@ -139,7 +139,7 @@ fn control(input: &Value) -> Option<u16> {
             if code <= 255 {
                 keys::parse(&format!("0x{code:02x}"))
             } else if (256..272).contains(&code) {
-                Some(608 + (code as u16 - 256))
+                Some(656 + (code as u16 - 256))
             } else {
                 None
             }
@@ -473,6 +473,8 @@ impl InputHandles {
             && !vars.is_explicit(self.0[8])
         {
             false
+        } else if !matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld) {
+            vars.integer_in(self.0[8], source) != 0
         } else {
             value(8, if policy.always_run { 1.0 } else { 0.0 }) != 0.0
         };
@@ -484,8 +486,16 @@ impl InputHandles {
         ];
         policy.mouse_side = value(13, policy.mouse_side);
         policy.mouse_forward = value(14, policy.mouse_forward);
-        policy.filter = value(15, 0.0) != 0.0;
-        policy.freelook = value(16, 1.0) != 0.0;
+        policy.filter = if rules == MovementRules::Quake3 {
+            vars.integer_in(self.0[15], source) != 0
+        } else {
+            value(15, 0.0) != 0.0
+        };
+        policy.freelook = if rules == MovementRules::Quake3 {
+            vars.integer_in(self.0[16], source) != 0
+        } else {
+            value(16, 1.0) != 0.0
+        };
         policy.look_strafe = value(17, 0.0) != 0.0;
         policy
     }

@@ -336,7 +336,15 @@ impl FrameHost {
                             .movement_rules
                     },
                 );
-                self.input_handles.policy(&self.console.cvars, rules)
+                let mut policy = self.input_handles.policy(&self.console.cvars, rules);
+                if let Some(id) = self.local_clients[seat] {
+                    policy.delta_pitch = self.runtime.server.clients[id.0 as usize]
+                        .player
+                        .movement
+                        .delta_angles
+                        .0[0];
+                }
+                policy
             });
             self.runtime
                 .input
