@@ -12,6 +12,7 @@ allocation-tracking = ["qa-platform/allocation-tracking", "qa-console/lookup-tra
 qa-core = { path = "../core" }
 qa-platform = { path = "../platform" }
 qa-console = { path = "../console" }
+qa-content = { path = "../content" }
 
 [[bin]]
 name = "qa-rust"

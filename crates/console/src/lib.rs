@@ -1,4 +1,7 @@
 pub mod catalog;
+pub mod command_buffer;
+pub mod command_text;
+pub mod commands;
 pub mod conversion;
 pub mod cvars;
 pub mod cvars_generated;

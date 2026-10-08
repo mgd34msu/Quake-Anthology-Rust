@@ -1,4 +1,8 @@
-use qa_console::cvars::Cvars;
+use qa_console::{
+    commands::{Console, Host},
+    views::{Context, Source},
+};
+use qa_content::vfs::Vfs;
 use qa_platform::{InputEvent, Window};
 use std::time::{Duration, Instant};
 
@@ -11,8 +15,15 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 mod proof;
 
 fn run() -> Result<(), String> {
-    let mut cvars = Cvars::new();
-    let developer = cvars.find("developer").ok_or("developer cvar missing")?;
+    let mut console = Console::<Runtime>::new(Context::default());
+    let mut runtime = Runtime {
+        vfs: Vfs::default(),
+        quit: false,
+    };
+    let developer = console
+        .cvars
+        .find("developer")
+        .ok_or("developer cvar missing")?;
     let mut frames = 120u32;
     let mut width = 640i32;
     let mut height = 400i32;
@@ -26,6 +37,7 @@ fn run() -> Result<(), String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "+set" => {
+                let cvars = &mut console.cvars;
                 let name = args.next().ok_or("+set needs a cvar name")?;
                 let value = args.next().ok_or("+set needs a value")?;
                 let view = cvars
@@ -34,6 +46,39 @@ fn run() -> Result<(), String> {
                 cvars
                     .write(view, &value)
                     .map_err(|error| format!("cvar {name}: {error:?}"))?;
+            }
+            "--commands" => {
+                let text = args.next().ok_or("--commands needs text")?;
+                console
+                    .append(&(text + "\n"), console.cvars.context())
+                    .map_err(|e| format!("{e:?}"))?;
+            }
+            "--console-source" => {
+                let name = args
+                    .next()
+                    .ok_or("--console-source needs q1/qw/q2/q2rr/q3")?;
+                let source = [
+                    ("q1", Source::Quake),
+                    ("qw", Source::QuakeWorld),
+                    ("q2", Source::Quake2),
+                    ("q2rr", Source::Quake2Rerelease),
+                    ("q3", Source::Quake3),
+                ]
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, s)| s)
+                .ok_or("unknown console source")?;
+                console.cvars.select_context(Context {
+                    source,
+                    ..console.cvars.context()
+                });
+            }
+            "--content" => {
+                let path = args.next().ok_or("--content needs a product directory")?;
+                runtime
+                    .vfs
+                    .mount_product(std::path::Path::new(&path), 0)
+                    .map_err(|e| format!("content: {e:?}"))?;
             }
             #[cfg(feature = "proof")]
             "--proof-script" => {
@@ -118,10 +163,16 @@ fn run() -> Result<(), String> {
     };
     for frame in 0..u64::from(frames) + u64::from(warmup) {
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
-        cvars.reset_lookup_count();
+        console.cvars.reset_lookup_count();
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         qa_platform::allocations::begin_frame();
         let start = Instant::now();
+        console.execute_frame(&mut runtime);
+        if runtime.quit {
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            let _ = qa_platform::allocations::end_frame();
+            break;
+        }
         #[cfg(feature = "proof")]
         if let Some(script) = &mut script {
             script.inject_due(script_start.elapsed(), &mut window);
@@ -132,7 +183,7 @@ fn run() -> Result<(), String> {
                 key_repeats += u64::from(repeat);
             }
             qa_console::logger::dev_print(
-                &cvars,
+                &console.cvars,
                 developer,
                 1,
                 format_args!("{{\"event\":\"input_diagnostic\",\"input\":\"{event:?}\"}}"),
@@ -155,17 +206,17 @@ fn run() -> Result<(), String> {
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         {
             qa_console::logger::dev_print(
-                &cvars,
+                &console.cvars,
                 developer,
                 1,
                 format_args!(
                     "{{\"event\":\"frame_cvar_lookups\",\"scope\":\"window_shell\",\"frame\":{frame},\"lookups\":{}}}",
-                    cvars.lookup_count()
+                    console.cvars.lookup_count()
                 ),
             );
             let counts = qa_platform::allocations::end_frame();
             qa_console::logger::dev_print(
-                &cvars,
+                &console.cvars,
                 developer,
                 1,
                 format_args!(
@@ -188,6 +239,34 @@ fn run() -> Result<(), String> {
         "{{\"event\":\"normal_exit\",\"frames\":{completed},\"key_downs\":{key_downs},\"key_repeats\":{key_repeats}}}"
     );
     Ok(())
+}
+
+struct Runtime {
+    vfs: Vfs,
+    quit: bool,
+}
+impl Host for Runtime {
+    fn print(&mut self, text: std::fmt::Arguments<'_>) {
+        qa_console::logger::console(text);
+    }
+    fn read_script(&mut self, path: &str) -> Result<String, String> {
+        let file = self
+            .vfs
+            .open(path.as_bytes())
+            .ok_or_else(|| format!("script unavailable: {path}"))?;
+        let length = self.vfs.length(file).map_err(|e| format!("{e:?}"))?;
+        if length > 65535 {
+            return Err("script exceeds command buffer capacity".into());
+        }
+        let mut bytes = vec![0; length as usize];
+        self.vfs
+            .read_at(file, 0, &mut bytes)
+            .map_err(|e| format!("{e:?}"))?;
+        String::from_utf8(bytes).map_err(|e| format!("script is not UTF-8: {e}"))
+    }
+    fn quit(&mut self) {
+        self.quit = true;
+    }
 }
 
 fn main() {
