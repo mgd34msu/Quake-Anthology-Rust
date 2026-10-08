@@ -5,7 +5,8 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::ModuleId,
+    loopback::Endpoint,
+    primitives::{ClientId, ModuleId},
     sys_events::{DeviceId, EventKind, SysEventQueue},
 };
 use qa_input::Input;
@@ -55,12 +56,18 @@ impl FrameSource for Source {
 fn provider(runtime: &mut Runtime, tick: Tick) {
     if let qa_session::timing::TickTarget::Provider(module) = tick.target {
         runtime.server.clients[module.0 as usize].player.score += 1;
+        let _ = runtime.loopback.send(
+            Endpoint::Server,
+            ClientId(module.0 as u8),
+            b"provider packet",
+        );
     }
 }
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_platform::allocations::{begin_frame, end_frame};
+    let local = std::env::args().nth(1).as_deref() == Some("--local");
     begin_frame();
     let mut positive = Vec::with_capacity(4);
     positive.extend_from_slice(&[1u64; 4]);
@@ -71,8 +78,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("allocator positive control failed".into());
     }
     let mut pump = EventPump::new();
-    let (_, address) = pump.bind_udp("127.0.0.1:0".parse()?)?;
-    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    let udp = if local {
+        None
+    } else {
+        let (_, address) = pump.bind_udp("127.0.0.1:0".parse()?)?;
+        Some((UdpSocket::bind("127.0.0.1:0")?, address))
+    };
     let mut source = Source {
         pump,
         timer: Stopwatch::start(),
@@ -103,9 +114,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Pacing is outside the timed/counted region, but supplies actual
         // platform event time to exercise all loaded native-rate clocks.
         qa_platform::pause(Duration::from_millis(16));
-        sender.send_to(b"host packet", address)?;
+        if let Some((sender, address)) = &udp {
+            sender.send_to(b"host packet", address)?;
+        }
         host.console.cvars.reset_lookup_count();
         begin_frame();
+        if local {
+            host.runtime
+                .loopback
+                .send(Endpoint::Client, ClientId(1), b"host packet")
+                .map_err(|_| "local send")?;
+        }
         let result = host.frame(&mut source, true);
         let counts = end_frame();
         if result.drains != 2 || !host.queue.is_empty() || host.console.cvars.lookup_count() != 0 {
@@ -125,19 +144,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host.runtime.server.clients[2].player.score as u64,
         host.runtime.server.clients[3].player.score as u64,
     ];
-    if host.runtime.network.packets != 660
+    if host.runtime.network.packets != 660 + native[1..].iter().sum::<u64>()
         || host.key_repeats != 659
         || maximum != 0
         || maximum_bytes != 0
         || native.contains(&0)
         || native[0] != native[3]
         || native.iter().sum::<u64>() != ticks
+        || host.runtime.loopback.pending(Endpoint::Client) != 0
+        || host.runtime.loopback.pending(Endpoint::Server) != 0
+        || host.runtime.loopback.overwritten(Endpoint::Client) != 0
+        || host.runtime.loopback.overwritten(Endpoint::Server) != 0
     {
         return Err("host qualification failed".into());
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame, live UDP/time, key repeats and native provider counters; no gameplay\",\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
         host.runtime.network.packets,
         host.key_repeats,
         (samples[299] + samples[300]) as f64 * 0.5,

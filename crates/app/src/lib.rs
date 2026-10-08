@@ -3,6 +3,7 @@ pub mod host;
 use qa_console::commands::Host;
 use qa_content::vfs::Vfs;
 use qa_core::events::EventRing;
+use qa_core::loopback::Loopback;
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::Server;
 
@@ -12,6 +13,7 @@ pub struct Runtime {
     pub network: PacketReceiver,
     pub server: Server,
     pub events: EventRing,
+    pub loopback: Loopback,
 }
 
 impl Runtime {
@@ -22,6 +24,7 @@ impl Runtime {
             network: PacketReceiver::default(),
             server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
+            loopback: Loopback::load(),
         })
     }
 }

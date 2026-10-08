@@ -2,6 +2,7 @@
 use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
+    loopback::Endpoint,
     primitives::{ClientId, CvarHandle, ModuleId, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
@@ -207,6 +208,19 @@ impl FrameHost {
                         event.time.0,
                         event_name(event.kind)
                     ),
+                );
+            }
+        }
+        // Com_EventLoop drains local client packets, then server packets when
+        // system events run out. Both use the same packet consumer as UDP.
+        for to in [Endpoint::Client, Endpoint::Server] {
+            while let Some(packet) = self.runtime.loopback.receive(to) {
+                result.events += 1;
+                self.runtime.network.receive(
+                    to.socket(),
+                    qa_network::ingress::Peer::Loopback(packet.client),
+                    packet.bytes,
+                    self.time,
                 );
             }
         }

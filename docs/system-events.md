@@ -64,7 +64,15 @@ The cached com_maxfps handle uses the original integer-millisecond client cap,
 including its aliases. Linux poll waits on readable sockets for at most 2 ms,
 then polls SDL too; other platforms currently use the same bounded interval
 with a timer wait. This removes the fixed 16 ms sleep and drains while waiting.
-THE-885 adds fixed local loopback buffers feeding the same packet path.
+THE-885 adds core-owned local loopback buffers feeding the same packet path.
+Each direction keeps 16 messages of at most 1400 bytes, overwriting the oldest
+on overflow as Q3 net_chan.c does. ClientId metadata survives transport so
+local clients can choose different protocol tables. Once system events run
+out, the host drains client packets then server packets through the same
+receiver as UDP, with reserved destination socket ids and a typed local peer.
+Provider-generated packets arrive in the second drain before the client
+frame. Loopback sends touch no OS socket. Netchan/codec integration remains
+THE-860; the present receiver only counts and identifies delivered packets.
 
 `qa_session::timing::Timeline` schedules the world and loaded provider frame
 functions on one event timeline. Rates are data selected at load, independent

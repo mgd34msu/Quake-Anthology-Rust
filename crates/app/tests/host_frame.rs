@@ -8,6 +8,7 @@ use qa_console::{
     views::Context,
 };
 use qa_core::{
+    loopback::Endpoint,
     primitives::{ModuleId, PlayerTail},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
@@ -93,6 +94,14 @@ fn provider(runtime: &mut Runtime, tick: Tick) {
     assert!(runtime.server.clients[0].player.health >= 10);
     runtime.server.clients[0].player.health = 20;
     runtime.server.clients[tick.index as usize].player.score += 1;
+    runtime
+        .loopback
+        .send(
+            Endpoint::Server,
+            qa_core::primitives::ClientId(7),
+            b"same-frame snapshot",
+        )
+        .unwrap();
 }
 fn after(
     _: &mut Console<Runtime>,
@@ -150,7 +159,18 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     assert_eq!(frame.server_ticks, 3); // two world ticks and one Q2 provider tick
     assert_eq!(host.runtime.server.world_frame, 2);
     assert_eq!(host.runtime.server.clients[0].player.health, 30);
-    assert_eq!(host.runtime.network.packets, 1);
+    assert_eq!(host.runtime.network.packets, 2);
+    assert_eq!(
+        host.runtime.network.last_socket,
+        Some(Endpoint::Client.socket())
+    );
+    assert_eq!(host.runtime.loopback.pending(Endpoint::Client), 0);
+    assert_eq!(
+        host.runtime.network.last_from,
+        Some(qa_network::ingress::Peer::Loopback(
+            qa_core::primitives::ClientId(7)
+        ))
+    );
     assert_eq!(
         host.runtime.server.clients[id.0 as usize]
             .command

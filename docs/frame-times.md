@@ -94,7 +94,8 @@ baseline yet. Reproduce with the commands in [system events](system-events.md).
 
 THE-884's `host_frame` release example runs the actual app host function on
 baseline CPU, pinned core 23, without a debugger. It warms 60 frames and
-measures 600. Each frame receives one real UDP datagram and a held/repeating
+measures 600. This record is for commit 591b6f32, before THE-885's additional
+local snapshot workload. Each frame receives one real UDP datagram and a held/repeating
 key, drains before/after server work, runs the empty console and builds four
 seat commands. The scheduler drives world/Q2/rerelease/Q3 counter callbacks at
 50/100/25/50 ms on actual platform event time. A 16 ms pause and packet send
@@ -115,4 +116,19 @@ gameplay, combined-mode modules or either renderer.
 timeout 300 cargo build --release -p qa-platform --example host_frame \
   --features allocation-tracking
 timeout 300 taskset -c "$CORE" target/release/examples/host_frame
+```
+
+THE-885 extends that probe with same-frame local snapshot packets from each
+native-rate counter callback. `--local` uses an in-process client packet in
+place of UDP and opens no UDP socket. It measured 1,640 ns median and 2,140 ns
+p99 on core 23 over 600 frames after 60 warm-up frames. All measured frames
+had zero Rust-thread allocations/reallocations/requested bytes and zero hot
+cvar lookups. Both directions drained without overwrite. The run delivered
+1,399 packets, 659 key repeats and 211/105/423/211 world/provider ticks. Client
+ring insertion is counted but precedes the timer; provider sends and both
+drains are timed. This is another workload baseline, not a speedup comparison.
+Evidence: `THE-885-local-probe.json` and `THE-885-probe-build.log`.
+
+```sh
+timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local
 ```
