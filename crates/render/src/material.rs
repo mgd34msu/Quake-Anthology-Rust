@@ -4,6 +4,7 @@ use qa_content::vfs::{Vfs, VfsError};
 use qa_formats::archive::ArchiveReader;
 
 pub mod resources;
+pub mod world_load;
 
 #[derive(Debug)]
 pub enum CatalogLoadError {
