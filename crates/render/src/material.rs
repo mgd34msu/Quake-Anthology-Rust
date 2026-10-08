@@ -3,6 +3,8 @@ use crate::shader::{ShaderCatalog, ShaderSource, parse_sources};
 use qa_content::vfs::{Vfs, VfsError};
 use qa_formats::archive::ArchiveReader;
 
+pub mod resources;
+
 #[derive(Debug)]
 pub enum CatalogLoadError {
     Vfs(VfsError),

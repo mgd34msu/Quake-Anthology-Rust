@@ -174,6 +174,22 @@ impl Assets {
         self.palettes.push(palette);
         Ok(id)
     }
+    /// A resource can keep distinct original GL and software images (Q2 sky's
+    /// TGA and PCX). IndexedTexture validated its own mip sizes at construction.
+    pub fn register_rgba_with_indexed(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        indexed: IndexedTexture,
+    ) -> Result<ImageId, &'static str> {
+        if indexed.mip(0).is_none() {
+            return Err("missing indexed base mip");
+        }
+        let id = self.register_image(width, height, rgba)?;
+        self.images[id.0 as usize].indexed = Some(indexed);
+        Ok(id)
+    }
     pub fn palette(&self, id: PaletteId) -> Option<&PaletteLighting> {
         self.palettes.get(id.0 as usize)
     }
@@ -187,7 +203,7 @@ impl Assets {
         let mut rgba = Vec::with_capacity(base.indices().len() * 4);
         for &index in base.indices() {
             let mut color = palette.color(index).to_le_bytes();
-            if texture.cutout() && index == 255 {
+            if texture.transparent_index() == Some(index) {
                 color[3] = 0;
             }
             rgba.extend_from_slice(&color);
