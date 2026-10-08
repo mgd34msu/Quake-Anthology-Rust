@@ -32,6 +32,22 @@ pub struct WorldStats {
     pub polygons: u64,
     pub spans: u64,
     pub pixels: u64,
+    /// Clipped patch boundary primitives accepted by the edge scanner.
+    pub patch_polygons: u64,
+    /// Kernel span calls and successful pixel writes, including sky stages.
+    pub sky_spans: u64,
+    pub sky_pixels: u64,
+    /// Non-sky generic stage calls. A multi-stage span contributes per stage.
+    pub stage_spans: u64,
+    pub stage_pixels: u64,
+    /// Overlapping subsets of non-sky generic stage calls and writes.
+    pub curve_spans: u64,
+    pub curve_pixels: u64,
+    pub multistage_spans: u64,
+    pub multistage_pixels: u64,
+    /// Native indexed-cache kernel calls and successful pixel writes.
+    pub indexed_spans: u64,
+    pub indexed_pixels: u64,
     pub rejected: u64,
     pub cache: CacheStats,
 }
@@ -151,6 +167,7 @@ struct Primitive {
     first_vertex: usize,
     vertex_count: usize,
     depth_override: Option<f32>,
+    patch: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -554,6 +571,7 @@ impl WorldRaster {
                     first_stage: self.stage_count,
                     stages: 0,
                     deforms,
+                    patch: surface.patch.is_some(),
                     ..Primitive::default()
                 };
                 let Some(count) = self.clip(
@@ -708,15 +726,17 @@ impl WorldRaster {
                 self.stages[primitive.first_stage].prepared
             };
             if let Some(count) = self.clip(camera, assets, primitive, prepared, evaluator) {
-                if count >= 3
-                    && !self.edges.add_polygon(
+                if count >= 3 {
+                    if !self.edges.add_polygon(
                         index as u32,
                         primitive.depth_key,
                         primitive.draw_rank,
                         &self.projected[..count],
-                    )
-                {
-                    self.reject(stats);
+                    ) {
+                        self.reject(stats);
+                    } else if primitive.patch {
+                        self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(1);
+                    }
                 }
             } else {
                 self.reject(stats);
@@ -793,6 +813,9 @@ impl WorldRaster {
             {
                 self.reject(stats);
                 continue;
+            }
+            if primitive.patch {
+                self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(1);
             }
             let stages = &self.stages;
             let cache = &mut self.cache;
@@ -1772,6 +1795,8 @@ fn consume_span(
         );
         if let Some(cached) = cached {
             if let Some(texels) = cache.pixels(cached) {
+                let before = stats.pixels;
+                stats.indexed_spans = stats.indexed_spans.saturating_add(1);
                 native_span(
                     width,
                     span,
@@ -1788,6 +1813,9 @@ fn consume_span(
                     buffers,
                     stats,
                 );
+                stats.indexed_pixels = stats
+                    .indexed_pixels
+                    .saturating_add(stats.pixels.saturating_sub(before));
             } else {
                 stats.rejected += 1;
             }
@@ -1809,6 +1837,7 @@ fn consume_span(
                 stats.rejected += 1;
                 continue;
             };
+            let before = stats.pixels;
             for x in span.x..span.x + span.count {
                 let px = x as f32;
                 let py = span.y as f32;
@@ -1842,6 +1871,22 @@ fn consume_span(
                     buffers.depth_ranks[index] = primitive.draw_rank;
                 }
                 stats.pixels = stats.pixels.saturating_add(1);
+            }
+            let written = stats.pixels.saturating_sub(before);
+            if primitive.vertex_count != 0 {
+                stats.sky_spans = stats.sky_spans.saturating_add(1);
+                stats.sky_pixels = stats.sky_pixels.saturating_add(written);
+            } else {
+                stats.stage_spans = stats.stage_spans.saturating_add(1);
+                stats.stage_pixels = stats.stage_pixels.saturating_add(written);
+                if primitive.patch {
+                    stats.curve_spans = stats.curve_spans.saturating_add(1);
+                    stats.curve_pixels = stats.curve_pixels.saturating_add(written);
+                }
+                if primitive.stages > 1 {
+                    stats.multistage_spans = stats.multistage_spans.saturating_add(1);
+                    stats.multistage_pixels = stats.multistage_pixels.saturating_add(written);
+                }
             }
         }
     }

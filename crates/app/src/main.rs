@@ -520,6 +520,31 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    if timings && let Some(stats) = renderer.cpu_world_stats() {
+        qa_console::logger::console(format_args!(
+            "{{\"event\":\"cpu_draw_profile\",\"scope\":\"{scope}\",\"gameplay\":false,\"width\":{width},\"height\":{height},\"recorded_rendered_frames\":{},\"includes_startup\":true,\"includes_warmup\":true,\"requested_warmup_frames\":{warmup},\"measured_host_frames\":{completed},\"final_rendered_frame\":{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"curve_spans\":{},\"curve_pixels\":{},\"multistage_spans\":{},\"multistage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rejected\":{}}},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}\n",
+            renderer.recorded_rendered_frames(),
+            stats.polygons,
+            stats.patch_polygons,
+            stats.spans,
+            stats.pixels,
+            stats.sky_spans,
+            stats.sky_pixels,
+            stats.stage_spans,
+            stats.stage_pixels,
+            stats.curve_spans,
+            stats.curve_pixels,
+            stats.multistage_spans,
+            stats.multistage_pixels,
+            stats.indexed_spans,
+            stats.indexed_pixels,
+            stats.rejected,
+            stats.cache.hits,
+            stats.cache.fills,
+            stats.cache.evictions,
+            stats.cache.rejected
+        ));
+    }
     drop(renderer);
     drop(window);
     #[cfg(feature = "allocation-tracking")]

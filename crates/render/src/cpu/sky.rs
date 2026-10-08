@@ -235,6 +235,8 @@ pub(super) fn layered_span(
         stats.rejected += 1;
         return;
     };
+    let before = stats.pixels;
+    stats.sky_spans = stats.sky_spans.saturating_add(1);
     let draw = LayeredDraw::load(camera, width, height, sphere);
     let mut x = span.x;
     let end = span.x + span.count;
@@ -283,6 +285,9 @@ pub(super) fn layered_span(
         x += count;
         current = next;
     }
+    stats.sky_pixels = stats
+        .sky_pixels
+        .saturating_add(stats.pixels.saturating_sub(before));
 }
 
 #[derive(Clone, Copy, Default)]
@@ -420,6 +425,8 @@ pub(super) fn background(
                 stats.rejected += 1;
                 continue;
             };
+            let before = stats.pixels;
+            stats.sky_spans = stats.sky_spans.saturating_add(1);
             let plane = planes[face];
             let extent = [
                 ((i64::from(mip.width)) << 16) - 1,
@@ -463,6 +470,9 @@ pub(super) fn background(
                 cursor += count;
                 current = next;
             }
+            stats.sky_pixels = stats
+                .sky_pixels
+                .saturating_add(stats.pixels.saturating_sub(before));
         }
     }
 }

@@ -63,6 +63,7 @@ pub struct Renderer {
     pub sample: Sample,
     width: u32,
     height: u32,
+    recorded_rendered_frames: u64,
 }
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
@@ -121,10 +122,8 @@ impl Renderer {
             let (renderer, version) = gl.renderer_info();
             qa_console::logger::console(format_args!(
                 "{{\"event\":\"gl_context\",\"renderer\":{},\"version\":{}}}\n",
-                serde_json::to_string(renderer)
-                    .map_err(|e| format!("GL renderer report: {e}"))?,
-                serde_json::to_string(version)
-                    .map_err(|e| format!("GL version report: {e}"))?
+                serde_json::to_string(renderer).map_err(|e| format!("GL renderer report: {e}"))?,
+                serde_json::to_string(version).map_err(|e| format!("GL version report: {e}"))?
             ));
         }
         Ok(Self {
@@ -136,7 +135,19 @@ impl Renderer {
             sample: Sample::default(),
             width,
             height,
+            recorded_rendered_frames: 0,
         })
+    }
+    /// Last backend-rendered frame workload, with lifetime cache counters.
+    pub fn cpu_world_stats(&self) -> Option<qa_render::cpu::WorldStats> {
+        match &self.backend {
+            Backend::Cpu(cpu) => Some(cpu.world_stats()),
+            Backend::Gl(_) => None,
+        }
+    }
+    /// Includes startup and warmup; failed front-end acquisitions do not count.
+    pub fn recorded_rendered_frames(&self) -> u64 {
+        self.recorded_rendered_frames
     }
     pub fn frame(&mut self, views: &[Option<ClientView>; SeatId::COUNT]) {
         self.sample = Sample::default();
@@ -207,6 +218,7 @@ impl Renderer {
             Backend::Gl(gl) => gl.render(&packet, &self.assets),
         };
         self.sample.backend_ns = timer.elapsed().as_nanos() as u64;
+        self.recorded_rendered_frames += 1;
         self.sample.stats.rejected += rejected;
         if self.frontend.recycle(packet).is_err() {
             self.sample.stats.rejected += 1;

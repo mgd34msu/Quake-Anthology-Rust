@@ -424,11 +424,11 @@ supplied the measurements below; it is not the shipping candidate.
 | Map / consumer | Simulation median / p99 ns | Client median / p99 ns | Scene median / p99 ns | Draw median / p99 ns | Present median / p99 ns |
 |---|---:|---:|---:|---:|---:|
 | e1m1 CPU | 2,050 / 4,750 | 2,240 / 4,200 | 33,010 / 49,630 | 2,442,377 / 2,618,942 | 1,835,801.5 / 2,036,022 |
-| e1m1 GL | 2,330 / 4,540 | 2,640 / 4,240 | 41,975 / 52,780 | 5,507,429 / 6,900,165 | 5,776,044 / 5,943,065 |
+| e1m1 Mesa software GL | 2,330 / 4,540 | 2,640 / 4,240 | 41,975 / 52,780 | 5,507,429 / 6,900,165 | 5,776,044 / 5,943,065 |
 | base1 CPU | 100,050 / 108,990 | 87,110 / 94,250 | 81,255 / 89,230 | 5,076,149 / 5,113,704 | 1,822,141.5 / 1,899,731 |
-| base1 GL | 100,210 / 110,600 | 86,740 / 95,130 | 96,600 / 109,000 | 8,500,266 / 12,057,568 | 4,462,483 / 4,844,884 |
+| base1 Mesa software GL | 100,210 / 110,600 | 86,740 / 95,130 | 96,600 / 109,000 | 8,500,266 / 12,057,568 | 4,462,483 / 4,844,884 |
 | q3dm1 CPU | 31,705 / 40,900 | 22,120 / 27,900 | 175,480 / 205,631 | 44,368,553 / 45,978,173 | 1,855,287 / 2,311,122 |
-| q3dm1 GL | 31,730 / 36,070 | 22,040 / 28,230 | 187,610 / 201,140 | 18,311,098.5 / 21,877,306 | 5,414,184 / 8,241,826 |
+| q3dm1 Mesa software GL | 31,730 / 36,070 | 22,040 / 28,230 | 187,610 / 201,140 | 18,311,098.5 / 21,877,306 | 5,414,184 / 8,241,826 |
 
 All six aggregate allocation gates counted zero Rust allocations,
 reallocations and requested bytes, with no failing measured frames.
@@ -461,3 +461,40 @@ Evidence under `r3-20261008`: `native-tracking-report.json`, the six
 `native-image-retail-report.json` and the six normal
 `native-image-{e1m1,base1,q3dm1}-{cpu,gl}-b` directories. Their runtime logs,
 result files, embedded stage samples and window captures record these results.
+
+
+## THE-862 q3dm1 CPU sampling profile, 2026-10-08
+
+The copied normal `872a865b` candidate ran q3dm1 CPU at 640×400 on owned
+Xvfb, core 23, with a fresh copied owner profile. Perf attached after the first
+world frame and sampled `cpu-clock:u` at 999 Hz with DWARF call stacks during
+600 measured frames after 60 warm-up frames. The run exited normally,
+preserved candidate/profile and cleaned its owned PIDs. Perf recorded
+30,762 samples, zero lost samples. No build, checker or debugger ran alongside
+it. This separate profiling run cannot supply qualification timings.
+
+| Symbol | Process self samples |
+|---|---:|
+| Repeat linear texture sampler | 21.17% |
+| Clamp linear texture sampler | 12.18% |
+| World span consumption | 18.23% |
+| Rust floating remainder | 7.28% |
+| Other floating remainder | 0.78% |
+| Floating round | 5.88% |
+| World clipping | 5.18% |
+| Opaque world setup | 3.68% |
+| Edge polygon submission | 1.40% |
+| Stage texture modifiers | 1.04% |
+
+These are self samples across the process, including presentation and native
+threads. They are neither draw-only percentages nor per-phase elapsed times.
+Source inspection shows RGB world spans currently bypass the cache and sample
+stages per pixel. The existing cache storage extension has not yet changed
+that path. Curves, sky, material classes and cache hit rate need runtime
+counters to accompany these samples. Static texture-times-lightmap caching,
+prepared RGB mip sampling, deterministic banded raster work and pinned
+before/after results remain required before THE-862 review. No speedup is
+claimed from this profile.
+
+Evidence: `q3dm1-cpu-profile-before-a/{profile.json,perf-self.json,perf-flat.txt,
+perf.data,runtime.log,result.json}` under `r3-20261008`.
