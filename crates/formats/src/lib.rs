@@ -3,6 +3,7 @@ pub mod bsp;
 pub mod image;
 pub mod model;
 mod read;
+pub mod sound;
 mod text;
 
 pub use bsp::{Bsp, BspFormat};

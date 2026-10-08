@@ -62,6 +62,24 @@ pub struct CvarHandle(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SoundId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PcmChannels {
+    Mono = 1,
+    Stereo = 2,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pcm {
+    pub rate: std::num::NonZeroU32,
+    pub channels: PcmChannels,
+    pub samples: Vec<i16>,
+    pub loop_start: Option<usize>,
+}
+impl Pcm {
+    pub fn frames(&self) -> usize {
+        self.samples.len() / self.channels as usize
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NameId(pub u32);
