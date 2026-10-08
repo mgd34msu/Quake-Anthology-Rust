@@ -7,7 +7,10 @@ use qa_platform::{EventPump, Stopwatch, Window, pause};
 use qa_render::{
     Assets, BackendStats, BlendPhase, Command, CommandList, Draw2d, FrontEnd, Light, Limits,
     MaterialId, ModelId, Refdef, SceneEntity, Vertex, Viewport,
-    assets::{Cull, DepthFunc, MaterialSettings, Stage, StageTexture, TcGen},
+    assets::{
+        Cull, DepthFunc, MaterialSettings, Stage, StageTexture, TcGen,
+        upload::{MipmapBuild, UploadParams},
+    },
     cpu::CpuBackend,
     gl::GlBackend,
     shader::{BlendFactor, StageBlend},
@@ -32,8 +35,16 @@ struct Fixture {
 }
 impl Fixture {
     fn load(assets: &mut Assets) -> Result<Self, &'static str> {
-        let base = assets.register_image(1, 1, &[192, 128, 64, 255])?;
+        let base = assets.register_image(2, 2, &[192, 128, 64, 255].repeat(4))?;
+        assets.prepare_image(
+            base,
+            UploadParams {
+                mipmaps: MipmapBuild::LegacyBox,
+                ..UploadParams::default()
+            },
+        )?;
         let lightmap = assets.register_image(1, 1, &[128, 128, 128, 255])?;
+        assets.prepare_image(lightmap, UploadParams::default())?;
         let material = assets.register_material(
             "fixture/base-times-lightmap",
             &[
@@ -73,7 +84,14 @@ impl Fixture {
             ..Vertex::default()
         });
         let model = assets.register_model(&mesh, &[0, 1, 2, 0, 2, 3], material)?;
-        let image = assets.register_image(1, 1, &[32, 160, 224, 255])?;
+        let image = assets.register_image(2, 2, &[32, 160, 224, 255].repeat(4))?;
+        assets.prepare_image(
+            image,
+            UploadParams {
+                mipmaps: MipmapBuild::Box,
+                ..UploadParams::default()
+            },
+        )?;
         let poly_material = assets.register_material(
             "fixture/near-clipped-texture",
             &[Stage {

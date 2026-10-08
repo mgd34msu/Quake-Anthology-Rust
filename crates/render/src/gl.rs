@@ -587,22 +587,43 @@ impl GlBackend {
             (gl.pixel_store)(0x0cf5, 1);
             for (image, &texture) in assets.images().iter().zip(self.textures.iter()) {
                 (gl.bind_texture)(TEXTURE_2D, texture);
-                (gl.texture_image)(
-                    TEXTURE_2D,
-                    0,
-                    0x8058,
-                    image.width as i32,
-                    image.height as i32,
-                    0,
-                    RGBA,
-                    UNSIGNED_BYTE,
-                    image.rgba.as_ptr().cast(),
-                );
+                if let Some(prepared) = &image.prepared {
+                    for (level, pixels) in prepared.levels.iter().enumerate() {
+                        (gl.texture_image)(
+                            TEXTURE_2D,
+                            level as i32,
+                            0x8058,
+                            pixels.width as i32,
+                            pixels.height as i32,
+                            0,
+                            RGBA,
+                            UNSIGNED_BYTE,
+                            pixels.rgba.as_ptr().cast(),
+                        );
+                    }
+                    (gl.texture_parameter)(
+                        TEXTURE_2D,
+                        0x813d,
+                        prepared.levels.len().saturating_sub(1) as i32,
+                    );
+                } else {
+                    (gl.texture_image)(
+                        TEXTURE_2D,
+                        0,
+                        0x8058,
+                        image.width as i32,
+                        image.height as i32,
+                        0,
+                        RGBA,
+                        UNSIGNED_BYTE,
+                        image.rgba.as_ptr().cast(),
+                    );
+                    (gl.generate_mipmap)(TEXTURE_2D);
+                }
                 (gl.texture_parameter)(TEXTURE_2D, 0x2801, 0x2701); // linear, nearest mip
                 (gl.texture_parameter)(TEXTURE_2D, 0x2800, 0x2601);
                 (gl.texture_parameter)(TEXTURE_2D, 0x2802, 0x2901);
                 (gl.texture_parameter)(TEXTURE_2D, 0x2803, 0x2901);
-                (gl.generate_mipmap)(TEXTURE_2D);
             }
             (gl.bind_texture)(TEXTURE_2D, 0);
             (gl.gen_buffers)(1, &mut self.table_buffer);

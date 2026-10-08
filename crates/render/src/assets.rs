@@ -1,4 +1,6 @@
 //! Registration is a load operation. Frames use numeric handles only.
+pub mod upload;
+
 use crate::scene::Span;
 pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
 use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
@@ -42,6 +44,9 @@ pub struct Image {
     /// Original disk indices/mips for software presentation. The GL view of
     /// the same image is resolved once using the selected load-time palette.
     pub indexed: Option<IndexedTexture>,
+    /// Cold native upload levels. Both consumers may use these numeric mip
+    /// resources; the original indexed mips and unprocessed RGBA stay intact.
+    pub prepared: Option<upload::PreparedImage>,
 }
 /// All frame-time texture choices are numeric. Lightmap is resolved from the
 /// surface binding, so a script material is shared across atlas pages/worlds.
@@ -266,6 +271,7 @@ impl Assets {
                 height: 1,
                 rgba: vec![255; 4].into_boxed_slice(),
                 indexed: None,
+                prepared: None,
             }],
             materials: vec![Material {
                 name: "*white".into(),
@@ -310,6 +316,7 @@ impl Assets {
             height,
             rgba: rgba.into(),
             indexed: None,
+            prepared: None,
         });
         Ok(id)
     }
@@ -372,8 +379,23 @@ impl Assets {
             height: base.height,
             rgba: rgba.into_boxed_slice(),
             indexed: Some(texture),
+            prepared: None,
         });
         Ok(id)
+    }
+    pub fn prepare_image(
+        &mut self,
+        id: ImageId,
+        params: upload::UploadParams,
+    ) -> Result<(), &'static str> {
+        let image = self
+            .images
+            .get_mut(id.0 as usize)
+            .ok_or("invalid image handle")?;
+        let prepared = upload::prepare_rgba(image.width, image.height, &image.rgba, params)
+            .map_err(|_| "invalid image preparation")?;
+        image.prepared = Some(prepared);
+        Ok(())
     }
     pub fn register_material(
         &mut self,
