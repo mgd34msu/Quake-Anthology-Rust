@@ -332,7 +332,7 @@ struct ConsoleInput<'a> {
 }
 impl Target for ConsoleInput<'_> {
     fn character(&mut self, _seat: SeatId, _value: char) {
-        // THE-651 adds console/menu focus and editing here; never poll SDL there.
+        // R2 adds console/menu focus and editing here; never poll SDL there.
     }
     fn command(&mut self, _seat: SeatId, text: &str) {
         let context = self.console.cvars.context();

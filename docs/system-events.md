@@ -23,7 +23,7 @@ belongs to input. Developer timing uses platform's Stopwatch too.
 The host drains once in FIFO order. Input goes through one bind table, chars
 go to the console/menu target, console lines enter the single command buffer,
 and packets go to the network boundary. The Time event supplies frame time.
-The current R2 shell's character target awaits THE-651 focus/editing, and its
+The current R2 shell's character target awaits R2 focus/editing, and its
 network receiver only counts delivered datagrams; R11 supplies channels and
 protocol decoding. Neither is gameplay proof.
 
@@ -33,7 +33,8 @@ hold time supplies movement fractions. Focus loss and controller removal
 release acquired bindings. A UI-consumed press does not acquire a binding.
 Release a live control before rebinding or reassigning its device. Human
 intents and bot intents use the same UserCmdBuilder. Movement speed, mouse
-policy, seat settings and frame caps enter through THE-735's cached handles;
+policy and seat settings enter through THE-735's cached handles; frame pacing
+remains part of the R2 host-loop work.
 the current shell's 127 units and 0.022 mouse scale are routing fixtures.
 The held-key reference is Q3 `cl_input.c` IN_KeyDown, IN_KeyUp and CL_KeyState.
 Native wire projections remain in the shared network command module.

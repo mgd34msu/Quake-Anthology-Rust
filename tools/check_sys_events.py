@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Prove normal-candidate system-event ingress on an owned private display."""
+import argparse
+import json
+from pathlib import Path
+import socket
+
+from frame_timings import pinned_cores
+from private_run import XClient, run
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--owner-profile", type=Path, required=True)
+    parser.add_argument("--evidence", type=Path, required=True)
+    args = parser.parse_args()
+    original = XClient.drive
+    payloads = (b"first", b"second\0packet", bytes(range(256)))
+
+    def drive(client, window, actions):
+        # Read the address reported by this copied candidate, never another
+        # process. Send actual UDP bytes before the ordinary X-server key hold.
+        log = (args.evidence / "runtime.log").read_text()
+        events = [json.loads(line) for line in log.splitlines() if line.startswith('{')]
+        listen = next(row for row in events if row.get("event") == "udp_listen")
+        host, port = listen["address"].rsplit(":", 1)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            for data in payloads:
+                sender.sendto(data, (host, int(port)))
+        original(client, window, actions)
+
+    XClient.drive = drive
+    cores = pinned_cores()
+    try:
+        result = run(args.binary, args.owner_profile, args.evidence,
+                     ["--udp-listen", "127.0.0.1:0", "--frames", "180",
+                      "--startup-hold-ms", "1000", "+set", "developer", "1"],
+                     actions=[{"key": "w", "hold_seconds": 1.25}], cores=cores)
+    finally:
+        XClient.drive = original
+    events = result.get("events", [])
+    rows = [row for row in events if row.get("event") == "system_event_frame"]
+    exit_event = next((row for row in events if row.get("event") == "normal_exit"), {})
+    ready = next((row for row in events if row.get("event") == "window_ready"), {})
+    checks = {
+        "private_run": result["result"] == "PASS",
+        "normal_180_frames": exit_event.get("frames") == 180,
+        "real_os_repeat": exit_event.get("key_repeats", 0) > 0,
+        "all_frames_drained": len(rows) == 180 and all(row["queue_remaining"] == 0 for row in rows),
+        "three_udp_packets_delivered": bool(rows) and rows[-1]["network_packets"] == len(payloads),
+        "seat0_forward": any(row["seat0_movement"][0] > 0 for row in rows),
+        "seat1_neutral": all(row["seat1_movement"] == [0, 0, 0] for row in rows),
+        "no_event_or_packet_rejection": all(row["rejected"] == row["dropped_packets"] == 0 for row in rows),
+        "forced_x11": ready.get("video_driver") == "x11" and ready.get("wayland_display_present") is False,
+        "profile_and_candidate_preserved": result["owner_profile_unchanged"] and result["candidate_unchanged"],
+        "owned_processes_stopped": result["remaining_owned_pids"] == [],
+    }
+    report = {"result": "PASS" if all(checks.values()) else "FAIL",
+              "scope": "normal window-shell input and packet boundary; no map or protocol decoding",
+              "cores": cores, "checks": checks, "normal_exit": exit_event,
+              "udp_packets": len(payloads), "udp_payload_bytes": sum(map(len, payloads)),
+              "gameplay_reached": result["gameplay_reached"]}
+    (args.evidence / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report))
+    return report["result"] != "PASS"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
