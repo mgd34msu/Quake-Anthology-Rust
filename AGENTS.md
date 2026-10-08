@@ -153,6 +153,11 @@ and allocation checks under owned headless sway and weston as well as Xvfb.
 X11 launches retain the forced-X11 environment. The Wayland checks must use a
 separate private runtime directory and an explicitly selected owned compositor
 socket; never inherit the owner's WAYLAND_DISPLAY or desktop socket.
+`tools/check_sdl3.py` exercises owned Xvfb, sway and Weston with copied candidates
+and profiles. Use SDL3 hint names as well as the mandated legacy names:
+SDL_VIDEO_DRIVER, SDL_AUDIO_DRIVER and SDL_AUDIO_DISK_OUTPUT_FILE. Future window
+state changes must call SDL_SyncWindow before reporting completion. The private
+PCM probe accepts only explicit disk/dummy sinks; it does not prove game audio.
 
 THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
 input injector form an input player. Remove recording/replay before any public

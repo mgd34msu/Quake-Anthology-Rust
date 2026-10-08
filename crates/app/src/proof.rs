@@ -4,7 +4,7 @@ use std::time::Duration;
 enum Input {
     Key { name: String, down: bool },
     Mouse(i32, i32),
-    Text(String),
+    Text(std::ffi::CString),
 }
 
 pub struct Script {
@@ -44,7 +44,10 @@ impl Script {
                         .parse()
                         .map_err(|_| "invalid dy")?,
                 ),
-                "text" => Input::Text(fields.collect::<Vec<_>>().join(" ")),
+                "text" => Input::Text(
+                    std::ffi::CString::new(fields.collect::<Vec<_>>().join(" "))
+                        .map_err(|_| "invalid text")?,
+                ),
                 _ => return Err("unknown script event".into()),
             };
             events.push((Duration::from_millis(ms), input));
@@ -61,7 +64,8 @@ impl Script {
             let result = match input {
                 Input::Key { name, down } => window.inject_key(name, *down),
                 Input::Mouse(dx, dy) => window.inject_mouse(*dx, *dy),
-                Input::Text(text) => window.inject_text(text),
+                // Script owns the string beyond the following SDL3 poll.
+                Input::Text(text) => unsafe { window.inject_text(text) },
             };
             if let Err(message) = result {
                 qa_console::logger::error(&message);

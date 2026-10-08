@@ -75,6 +75,8 @@ def main():
             ("stdin-import-alias", "use std::io::stdin as read; fn bad() { read(); }", "world/src"),
             ("stdin-group-alias", "use std::io::{stdin as read};", "world/src"),
             ("sdl-crate-alias", "use sdl2 as video; fn bad() { video::init(); }", "world/src"),
+            ("sdl3-crate-alias", "use sdl3 as video; fn bad() { video::init(); }", "world/src"),
+            ("sdl3-clock-example", "fn bad() { SDL_GetTicksNS(); }", "world/examples"),
             ("sdl-foreign-alias", '#[link_name = "SDL_PollEvent"] unsafe extern "C" fn poll();', "world/src"),
             ("sdl-library", '#[link(name = "SDL2")] unsafe extern "C" { fn poll(); }', "world/src"),
         ]:

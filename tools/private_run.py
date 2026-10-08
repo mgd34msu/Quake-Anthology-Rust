@@ -9,6 +9,7 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
+import tempfile
 import time
 
 
@@ -120,7 +121,9 @@ def audio_summary(path, cues):
                 rms=(sum(v * v for v in data) / max(1, len(data))) ** 0.5)
 
 
-def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False):
+def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False):
+    if backend not in ("x11", "sway", "weston"):
+        raise ValueError("unknown private backend")
     binary, profile, evidence = binary.resolve(strict=True), profile.resolve(strict=True), evidence.resolve()
     if evidence.exists():
         raise ValueError("use a fresh evidence directory")
@@ -143,6 +146,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
     candidate_identity = identity(binary)
     owned, handles, client = [], [], None
     terminal_fds = []
+    private_runtime = None
     result = {"artifact": str(binary), "candidate_identity": candidate_identity,
               "owner_profile_source": str(profile), "copied_owner_settings": sorted(originals),
               "copied_profile": str(copied_profile), "argv": arguments, "gameplay_reached": False,
@@ -158,31 +162,65 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         return process
 
     try:
-        read_fd, write_fd = os.pipe()
-        try:
-            spawn("xvfb", ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", f"{size[0]}x{size[1]}x24", "-nolisten", "tcp", "-ardelay", "500", "-arinterval", "30"], pass_fds=(write_fd,))
-        finally:
-            os.close(write_fd)
-        try:
-            if not select.select([read_fd], [], [], 10)[0]:
-                raise RuntimeError("private display startup timed out")
-            display = ":" + os.read(read_fd, 64).decode().strip()
-        finally:
-            os.close(read_fd)
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "HOME": str(evidence / "home"),
-               "DISPLAY": display, "XDG_RUNTIME_DIR": str(evidence / "runtime"),
+               "XDG_RUNTIME_DIR": str(evidence / "runtime"),
                "XDG_CONFIG_HOME": str(evidence / "config"), "XDG_CACHE_HOME": str(evidence / "cache"),
                "XDG_DATA_HOME": str(evidence / "home/.local/share"),
                "SDL_VIDEODRIVER": "x11", "SDL_AUDIODRIVER": "disk",
                "SDL_DISKAUDIOFILE": str(evidence / "audio.raw"),
+               "SDL_VIDEO_DRIVER": "x11", "SDL_AUDIO_DRIVER": "disk",
+               "SDL_AUDIO_DISK_OUTPUT_FILE": str(evidence / "audio.raw"),
                "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(evidence / "runtime/no-owner-bus"),
                "LP_NUM_THREADS": "2"}
-        wm = spawn("openbox", ["openbox", "--sm-disable"], env)
-        time.sleep(0.4)
-        if wm.poll() is not None:
-            raise RuntimeError("private window manager failed")
-        client = XClient(display)
-        argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
+        display = None
+        if backend == "x11":
+            read_fd, write_fd = os.pipe()
+            try:
+                spawn("xvfb", ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", f"{size[0]}x{size[1]}x24", "-nolisten", "tcp", "-ardelay", "500", "-arinterval", "30"], env, pass_fds=(write_fd,))
+            finally:
+                os.close(write_fd)
+            try:
+                if not select.select([read_fd], [], [], 10)[0]:
+                    raise RuntimeError("private display startup timed out")
+                display = ":" + os.read(read_fd, 64).decode().strip()
+            finally:
+                os.close(read_fd)
+            env["DISPLAY"] = display
+            wm = spawn("openbox", ["openbox", "--sm-disable"], env)
+            time.sleep(0.4)
+            if wm.poll() is not None:
+                raise RuntimeError("private window manager failed")
+            client = XClient(display)
+            argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
+        else:
+            # Unix socket names have a short ABI limit. Keep the owned runtime
+            # independent of potentially long evidence paths, and remove it
+            # only after stopping its recorded compositor and clients.
+            private_runtime = tempfile.TemporaryDirectory(prefix="qa-wayland-")
+            env["XDG_RUNTIME_DIR"] = private_runtime.name
+            env.update(SDL_VIDEODRIVER="wayland", SDL_VIDEO_DRIVER="wayland", XDG_SESSION_TYPE="wayland",
+                WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_LIBINPUT_NO_DEVICES="1", WLR_HEADLESS_OUTPUTS="1",
+                LIBGL_ALWAYS_SOFTWARE="1")
+            if backend == "sway":
+                config = evidence / "sway.conf"
+                config.write_text(f'xwayland disable\noutput * resolution {size[0]}x{size[1]}\nseat seat0 fallback true\ndefault_border none\n')
+                wm = spawn("sway", ["sway", "--unsupported-gpu", "-c", str(config)], env)
+            else:
+                wm = spawn("weston", ["weston", "--backend=headless", "--renderer=pixman", "--shell=kiosk-shell.so", "--socket=qa-private", "--idle-time=0", "--no-config", "--debug", "--fake-seat", f"--width={size[0]}", f"--height={size[1]}"], env)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if wm.poll() is not None:
+                    raise RuntimeError("owned compositor failed")
+                sockets = [p for p in Path(env["XDG_RUNTIME_DIR"]).iterdir() if p.is_socket() and (p.name.startswith("wayland-") or p.name == "qa-private")]
+                if sockets:
+                    env["WAYLAND_DISPLAY"] = sockets[0].name
+                    break
+                time.sleep(0.02)
+            else:
+                raise RuntimeError("owned compositor socket missing")
+            if backend == "sway":
+                env["SWAYSOCK"] = str(next(p for p in Path(env["XDG_RUNTIME_DIR"]).glob("sway-ipc*") if p.is_socket()))
+            argv = ["env", "-u", "DISPLAY", "SDL_VIDEODRIVER=wayland", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
         if cores:
             argv = ["taskset", "-c", cores, *argv]
         if stdin_tty:
@@ -206,7 +244,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
                 except json.JSONDecodeError:
                     pass
             if ready:
-                window = client.find_window(title)
+                window = client.find_window(title) if client else True
                 if window:
                     break
             time.sleep(0.05)
@@ -215,13 +253,36 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         time.sleep(0.2)
         # Startup can replace the first X window before readiness. Use the
         # current client for capture/input after the engine reports readiness.
-        window = client.find_window(title)
+        window = client.find_window(title) if client else True
         if not window:
             raise RuntimeError("ready window closed before capture")
-        result["captured_window"] = hex(window)
+        result["captured_window"] = hex(window) if client else "owned headless output (single kiosk/tiled window)"
         result["window_ready_before_selection"] = ready
-        subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
-        client.drive(window, actions or [])
+        if actions and (input_after_first_frame or backend != "x11"):
+            deadline = time.monotonic() + 5
+            while '"event":"system_event_frame"' not in (evidence / "runtime.log").read_text():
+                if time.monotonic() > deadline or game.poll() is not None:
+                    raise RuntimeError("host did not execute initial config before input")
+                time.sleep(0.01)
+        if client:
+            subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
+            client.drive(window, actions or [])
+        else:
+            capture = ["grim", str(evidence / "window.png")] if backend == "sway" else ["weston-screenshooter"]
+            if spawn("capture", capture, env).wait(timeout=10) != 0:
+                raise RuntimeError("owned Wayland capture failed")
+            if backend == "weston":
+                next(evidence.glob("wayland-screenshot*.png")).rename(evidence / "window.png")
+            if actions:
+                if backend != "sway":
+                    raise ValueError("headless weston input check uses stdin; virtual-keyboard protocol unavailable")
+                for action in actions:
+                    if "key" not in action:
+                        raise ValueError("Wayland helper requires an actual keyboard action")
+                    # Admit the new wl_keyboard/keymap before the first press,
+                    # and process release before destroying the virtual device.
+                    if spawn("input", ["wtype", "-s", "200", "-P", action["key"], "-s", str(round(action.get("hold_seconds", 0.1)*1000)), "-p", action["key"], "-s", "100"], env).wait(timeout=5) != 0:
+                        raise RuntimeError("owned virtual keyboard failed")
         if stdin_bytes is not None:
             if stdin_tty:
                 os.write(terminal_master, stdin_bytes)
@@ -244,6 +305,9 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
                                          "audio": "SDL disk", "home": env["HOME"],
                                          "wayland_display_unset": "WAYLAND_DISPLAY" not in env,
                                          "sdl_video_driver": env["SDL_VIDEODRIVER"]}
+        if backend != "x11":
+            result["private_containment"].update(video=f"owned headless {backend} with pixman", display_unset="DISPLAY" not in env,
+                wayland_display_unset=False, private_wayland_socket=str(Path(env["XDG_RUNTIME_DIR"]) / env["WAYLAND_DISPLAY"]), compositor_pid=wm.pid)
         result["screenshot"] = str(evidence / "window.png")
         result["result"] = "PASS" if result["normal_exit"] else "FAIL"
     except Exception as error:
@@ -263,6 +327,8 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
             handle.close()
         for fd in terminal_fds:
             os.close(fd)
+        if private_runtime:
+            private_runtime.cleanup()
         result["remaining_owned_pids"] = [p.pid for _, p in owned if p.poll() is None]
         result["owner_profile_unchanged"] = originals == {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
         result["candidate_unchanged"] = identity(binary) == candidate_identity and equal_files(binary, candidate)

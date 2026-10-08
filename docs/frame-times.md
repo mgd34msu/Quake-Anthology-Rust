@@ -268,3 +268,21 @@ This is a headless shell fixture, not gameplay or renderer qualification.
 Evidence: THE-886-timing.json and THE-886-timing-repeat.json in the R2 evidence
 root. Private pipe and owned canonical PTY runs each completed 600 frames with
 zero measured Rust allocations, including line dispatch and idle polling.
+
+## THE-901: SDL3 transport
+
+The private SDL3 signed-16 PCM transport probe on core 23 used 60 warm-up and
+600 measured writes of 480 stereo sample frames at 48 kHz. It measured a 770 ns
+median and 880 ns p99 for write/queued-byte queries, with zero Rust allocations
+and 5,760 peak queued bytes. Bounded mixahead waiting is outside that stage.
+The disk capture contained 655,360 samples, 623,040 non-silent, peak 2,048;
+it is a generated 400 Hz signal, not a game cue. SDL's native device thread
+and allocator are outside the Rust counter. This is not mixer qualification.
+
+The display verifier records pinned shell input/present/total times on Xvfb,
+sway and Weston. Those capped totals include the draining frame wait and are
+not renderer timings or an installer baseline. Each backend separately checks
+60 warm-up and 600 measured frames, time/input/output and zero Rust allocations.
+
+Evidence: THE-901-audio.log, THE-901-audio-summary.json and the THE-901-three
+verification directories in the R2 evidence root.

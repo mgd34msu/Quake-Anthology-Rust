@@ -62,7 +62,7 @@ def check(root):
                 + r"|\b(?:struct|enum|type)\s+\w*(?:Ring|Queue)\w*[^;]*\{[^}]*" + payload, code):
                 add(path, code, match.start(), "duplicate-event-storage")
         if not relative.startswith("crates/platform/"):
-            for match in re.finditer(r"\b(?:Instant|SystemTime|UNIX_EPOCH|clock_gettime|sdl2|SDL_\w+)\b|\bstdin\s*\(|\bstd\s*::\s*io\s*::\s*stdin\b|\b(?:std\s*::\s*)?thread\s*::\s*(?:spawn|sleep)\b|\buse\s+std\s*::\s*(?:io|thread)\s*::\s*\{[^;]*\b(?:stdin|spawn|sleep)\b", code):
+            for match in re.finditer(r"\b(?:Instant|SystemTime|UNIX_EPOCH|clock_gettime|sdl[23]|SDL_\w+)\b|\bstdin\s*\(|\bstd\s*::\s*io\s*::\s*stdin\b|\b(?:std\s*::\s*)?thread\s*::\s*(?:spawn|sleep)\b|\buse\s+std\s*::\s*(?:io|thread)\s*::\s*\{[^;]*\b(?:stdin|spawn|sleep)\b", code):
                 add(path, code, match.start(), "platform-event-source")
             # Renaming the thread module must not hide its OS operations.
             for alias in re.finditer(r"\buse\s+std\s*::\s*thread\s+as\s+(\w+)", code):
