@@ -1305,10 +1305,7 @@ impl GlBackend {
             return;
         }
         let matrix = multiply(projection, &model_matrix(entity));
-        let delta = Vec3(std::array::from_fn(|i| {
-            inputs.view_origin.0[i] - entity.origin.0[i]
-        }));
-        inputs.view_origin = Vec3(entity.axes.map(|axis| delta.dot(axis) / axis.dot(axis)));
+        inputs.view_origin = crate::stage::entity_view_origin(inputs.view_origin, entity);
         inputs.entity_color = entity.color;
         inputs.entity_texcoord = entity.shader_texcoord;
         inputs.entity_shader_time = entity.shader_time;

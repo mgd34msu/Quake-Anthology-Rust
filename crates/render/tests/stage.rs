@@ -461,3 +461,21 @@ fn material_registration_validates_at_load_and_handles_remain_numeric() {
         id
     );
 }
+
+#[test]
+fn native_entity_view_uses_submitted_axis_scale_policy() {
+    use qa_core::primitives::Vec3;
+    use qa_render::{SceneEntity, stage::entity_view_origin};
+    let mut entity = SceneEntity {
+        origin: Vec3([4.0, 5.0, 6.0]),
+        ..SceneEntity::default()
+    };
+    let view = Vec3([68.0, 37.0, 22.0]);
+    assert_eq!(entity_view_origin(view, &entity), Vec3([64.0, 32.0, 16.0]));
+    entity.axes = entity.axes.map(|axis| Vec3(axis.0.map(|v| v * 2.0)));
+    assert_eq!(entity_view_origin(view, &entity), Vec3([128.0, 64.0, 32.0]));
+    entity.non_normalized_axes = true;
+    assert_eq!(entity_view_origin(view, &entity), Vec3([64.0, 32.0, 16.0]));
+    entity.axes[0] = Vec3::default();
+    assert_eq!(entity_view_origin(view, &entity), Vec3::default());
+}

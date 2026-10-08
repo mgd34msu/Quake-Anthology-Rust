@@ -459,12 +459,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let local_view = Vec3(std::array::from_fn(|i| {
-            let delta = Vec3(std::array::from_fn(|axis| {
-                camera.refdef.origin.0[axis] - entity.origin.0[axis]
-            }));
-            delta.dot(entity.axes[i])
-        }));
+        let local_view = crate::stage::entity_view_origin(camera.refdef.origin, entity);
         let inputs = DrawInputs {
             time_ms: camera.refdef.time_ms,
             entity_color: entity.color,

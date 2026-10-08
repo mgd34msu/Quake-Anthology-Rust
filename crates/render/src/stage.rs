@@ -8,6 +8,19 @@ use crate::shader::{
 };
 use qa_core::primitives::Vec3;
 
+/// Native R_RotateForEntity uses a single axis-length compensation selected by
+/// the submitted entity; this is deliberately shared by both draw consumers.
+pub fn entity_view_origin(view: Vec3, entity: &crate::scene::SceneEntity) -> Vec3 {
+    let delta = Vec3(std::array::from_fn(|i| view.0[i] - entity.origin.0[i]));
+    let scale = if entity.non_normalized_axes {
+        let length = entity.axes[0].dot(entity.axes[0]).sqrt();
+        if length == 0.0 { 0.0 } else { 1.0 / length }
+    } else {
+        1.0
+    };
+    Vec3(entity.axes.map(|axis| delta.dot(axis) * scale))
+}
+
 pub const TABLE_SIZE: usize = 1024;
 pub const WARP_TABLE: usize = 5 * TABLE_SIZE;
 pub const NOISE_TABLE: usize = WARP_TABLE + 256;
