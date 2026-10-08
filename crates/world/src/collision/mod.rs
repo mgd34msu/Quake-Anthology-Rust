@@ -2,10 +2,35 @@ pub mod boxes;
 pub mod brushes;
 pub mod contents;
 pub mod hulls;
+pub mod scene;
 
 use brushes::BrushMap;
 pub use contents::Contents;
 use qa_core::primitives::{EntityId, Plane, SurfaceFlags, Vec3};
+pub use scene::WorldTrace;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuakeTraceKind {
+    Normal,
+    IgnoreBoxes,
+    Missile,
+}
+
+/// Native filtering, temporary-body kernel and result merging belong to the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityTraceRules {
+    Quake { kind: QuakeTraceKind },
+    Quake2,
+    Quake3,
+}
+
+impl EntityTraceRules {
+    pub const QUAKE: Self = Self::Quake {
+        kind: QuakeTraceKind::Normal,
+    };
+    pub const QUAKE2: Self = Self::Quake2;
+    pub const ARENA: Self = Self::Quake3;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutsideBrush {
@@ -65,16 +90,40 @@ impl TraceRules {
     };
 }
 
-/// A point or axis-aligned box sweep. No capsule or linked-entity filtering is
-/// represented here; those services must be implemented before exposing them.
+/// A point or axis-aligned box sweep over the scene. Exclusions are borrowed;
+/// caller rules are independent of geometry, module format and wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TraceQuery {
+pub struct TraceQuery<'a> {
     pub start: Vec3,
     pub end: Vec3,
     pub mins: Vec3,
     pub maxs: Vec3,
     pub mask: Contents,
     pub rules: TraceRules,
+    pub entity_rules: EntityTraceRules,
+    pub pass: Option<EntityId>,
+    pub excluded: &'a [EntityId],
+}
+
+impl TraceQuery<'_> {
+    pub fn point(
+        start: Vec3,
+        end: Vec3,
+        rules: TraceRules,
+        entity_rules: EntityTraceRules,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            mins: Vec3::default(),
+            maxs: Vec3::default(),
+            mask: Contents::SOLID,
+            rules,
+            entity_rules,
+            pass: None,
+            excluded: &[],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +143,31 @@ pub struct Trace {
 }
 
 impl Trace {
+    /// qsrc Q1/Q2 replace on solid flags or nearer; Q3 replaces only nearer.
+    /// Equal-fraction Q3 solid flags affect the retained result, not its owner.
+    pub fn merge_linked(&mut self, incoming: Self, rules: EntityTraceRules) {
+        match rules {
+            EntityTraceRules::Quake { .. } | EntityTraceRules::Quake2 => {
+                if incoming.all_solid || incoming.start_solid || incoming.fraction < self.fraction {
+                    let start_solid = self.start_solid;
+                    *self = incoming;
+                    self.start_solid |= start_solid;
+                }
+            }
+            EntityTraceRules::Quake3 => {
+                if incoming.all_solid {
+                    self.all_solid = true;
+                } else if incoming.start_solid {
+                    self.start_solid = true;
+                }
+                if incoming.fraction < self.fraction {
+                    let start_solid = self.start_solid;
+                    *self = incoming;
+                    self.start_solid |= start_solid;
+                }
+            }
+        }
+    }
     pub fn clear(end: Vec3) -> Self {
         Self {
             fraction: 1.0,
@@ -116,15 +190,32 @@ pub enum CollisionWorld {
     Brushes(BrushMap),
 }
 
+/// Cold-sized caller storage. Each concurrent trace caller owns its scratch.
+pub struct TraceScratch {
+    hull: Option<hulls::HullScratch>,
+}
+
 impl CollisionWorld {
-    pub fn trace(&mut self, query: TraceQuery) -> Trace {
+    pub fn scratch(&self) -> TraceScratch {
+        TraceScratch {
+            hull: match self {
+                Self::Hulls(map) => Some(map.scratch()),
+                Self::Brushes(_) => None,
+            },
+        }
+    }
+
+    pub(crate) fn trace_geometry(&self, query: TraceQuery, scratch: &mut TraceScratch) -> Trace {
         match self {
-            Self::Hulls(map) => map.trace(query),
+            Self::Hulls(map) => match &mut scratch.hull {
+                Some(hull) => map.trace(query, hull),
+                None => Trace::clear(query.end),
+            },
             Self::Brushes(map) => map.trace(query),
         }
     }
 
-    pub fn point_contents(&self, point: Vec3) -> Contents {
+    pub(crate) fn point_contents(&self, point: Vec3) -> Contents {
         match self {
             Self::Hulls(map) => map.point_contents(point),
             Self::Brushes(map) => map.point_contents(point),

@@ -2,11 +2,14 @@ mod support;
 
 use qa_core::primitives::{MovementRules, PlayerState, PlayerTail, UserCmd, Vec3};
 use qa_movement::TraceServices;
-use qa_world::collision::{Contents, Trace, TraceQuery, TraceRules};
+use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules};
+use std::cell::Cell;
 
 struct CheckedQueries {
     world: support::FixtureWorld,
     expected: TraceRules,
+    expected_entities: EntityTraceRules,
+    contents_calls: Cell<u32>,
     calls: u32,
     position_tests: u32,
     ground_tests: u32,
@@ -17,6 +20,9 @@ struct CheckedQueries {
 impl TraceServices for CheckedQueries {
     fn trace(&mut self, query: TraceQuery) -> Trace {
         assert_eq!(query.rules, self.expected);
+        assert_eq!(query.entity_rules, self.expected_entities);
+        assert_eq!(query.pass, None);
+        assert!(query.excluded.is_empty());
         self.calls += 1;
         self.position_tests += u32::from(query.start == query.end);
         self.ground_tests += u32::from(
@@ -30,8 +36,10 @@ impl TraceServices for CheckedQueries {
         self.world.trace(query)
     }
 
-    fn point_contents(&self, point: Vec3) -> Contents {
-        self.world.point_contents(point)
+    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
+        assert_eq!(rules, self.expected_entities);
+        self.contents_calls.set(self.contents_calls.get() + 1);
+        self.world.point_contents(point, rules)
     }
 }
 
@@ -69,6 +77,12 @@ fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
             } else {
                 TraceRules::LEGACY
             },
+            expected_entities: match movement_rules {
+                MovementRules::Quake | MovementRules::QuakeWorld => EntityTraceRules::QUAKE,
+                MovementRules::Quake2 | MovementRules::Quake2Rerelease => EntityTraceRules::QUAKE2,
+                MovementRules::Quake3 => EntityTraceRules::ARENA,
+            },
+            contents_calls: Cell::new(0),
             calls: 0,
             position_tests: 0,
             ground_tests: 0,
@@ -86,6 +100,7 @@ fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
             &mut queries,
         );
         assert!(queries.calls > 0);
+        assert!(queries.contents_calls.get() > 0);
         assert_eq!(result.traces, queries.calls);
         if movement_rules == MovementRules::Quake {
             assert!(queries.ledge_tests > 0 && queries.point_tests > 0);

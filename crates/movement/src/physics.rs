@@ -5,18 +5,18 @@ use qa_core::{
         Vec3, buttons,
     },
 };
-use qa_world::collision::{CollisionWorld, Contents, Trace, TraceQuery, TraceRules};
+use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace};
 
 pub trait TraceServices {
     fn trace(&mut self, query: TraceQuery) -> Trace;
-    fn point_contents(&self, point: Vec3) -> Contents;
+    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents;
 }
-impl TraceServices for CollisionWorld {
+impl TraceServices for WorldTrace<'_> {
     fn trace(&mut self, query: TraceQuery) -> Trace {
-        CollisionWorld::trace(self, query)
+        WorldTrace::trace(self, query)
     }
-    fn point_contents(&self, point: Vec3) -> Contents {
-        CollisionWorld::point_contents(self, point)
+    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
+        WorldTrace::point_contents(self, point, rules, &[])
     }
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,6 +67,7 @@ pub fn set_bounds(player: &mut PlayerState) {
 pub(crate) struct Parameters {
     pub rules: MovementRules,
     pub trace_rules: TraceRules,
+    pub entity_rules: EntityTraceRules,
     pub gravity: f32,
     pub speed: f32,
     pub friction: f32,
@@ -88,6 +89,13 @@ impl Parameters {
                 TraceRules::ARENA
             } else {
                 TraceRules::LEGACY
+            },
+            entity_rules: if legacy {
+                EntityTraceRules::QUAKE
+            } else if arena {
+                EntityTraceRules::ARENA
+            } else {
+                EntityTraceRules::QUAKE2
             },
             gravity: t.gravity.unwrap_or(800.0) * t.gravity_multiplier,
             speed: t
@@ -138,6 +146,9 @@ impl Step<'_> {
             maxs,
             mask: self.mask,
             rules: self.parameters.trace_rules,
+            entity_rules: self.parameters.entity_rules,
+            pass: None,
+            excluded: &[],
         })
     }
     pub fn contact(&mut self, trace: &Trace) {
@@ -190,7 +201,9 @@ impl Step<'_> {
         point.0[2] += body.mins.0[2] + 1.0;
         self.player.movement.water_level = 0;
         self.player.movement.water_contents = 0;
-        let contents = self.world.point_contents(point);
+        let contents = self
+            .world
+            .point_contents(point, self.parameters.entity_rules);
         if !contents.intersects(Contents::FLUID) {
             return;
         }
@@ -202,10 +215,18 @@ impl Step<'_> {
             body.mins.0[2] + ((self.player.view_offset.0[2] - body.mins.0[2]) as i32 / 2) as f32
         };
         point.0[2] = body.position.0[2] + middle;
-        if self.world.point_contents(point).intersects(Contents::FLUID) {
+        if self
+            .world
+            .point_contents(point, self.parameters.entity_rules)
+            .intersects(Contents::FLUID)
+        {
             self.player.movement.water_level = 2;
             point.0[2] = body.position.0[2] + self.player.view_offset.0[2];
-            if self.world.point_contents(point).intersects(Contents::FLUID) {
+            if self
+                .world
+                .point_contents(point, self.parameters.entity_rules)
+                .intersects(Contents::FLUID)
+            {
                 self.player.movement.water_level = 3;
             }
         }

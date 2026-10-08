@@ -1,7 +1,7 @@
 use qa_core::primitives::{Axis, Plane, Vec3};
 use qa_platform::Stopwatch;
 use qa_world::collision::{
-    Contents, TraceQuery, TraceRules,
+    Contents, EntityTraceRules, TraceQuery, TraceRules,
     hulls::{ClipNode, HullModel, Q1Hulls},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -86,8 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let [drawing, clips] = node_sets;
-    let mut hulls = Q1Hulls::load(planes, drawing, clips, vec![HullModel { roots }])
+    let hulls = Q1Hulls::load(planes, drawing, clips, vec![HullModel { roots }])
         .map_err(|err| format!("hull load: {err:?}"))?;
+    let mut scratch = hulls.scratch();
     let mut queries = Vec::new();
     while !data.is_empty() {
         queries.push((word(&mut data)?, vector(&mut data)?, vector(&mut data)?));
@@ -107,14 +108,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
     {
         let (mins, maxs) = bounds[hull as usize];
-        let trace = hulls.trace(TraceQuery {
-            start,
-            end,
-            mins,
-            maxs,
-            mask: Contents::SOLID,
-            rules: TraceRules::LEGACY,
-        });
+        let trace = hulls.trace(
+            TraceQuery {
+                mins,
+                maxs,
+                mask: Contents::SOLID,
+                ..TraceQuery::point(start, end, TraceRules::LEGACY, EntityTraceRules::QUAKE)
+            },
+            &mut scratch,
+        );
         let flags = u32::from(trace.start_solid)
             | u32::from(trace.all_solid) << 1
             | u32::from(trace.in_open) << 2
@@ -156,26 +158,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let (mins, maxs) = bounds[index];
         for &(_, start, end) in group.iter().take(600) {
-            black_box(hulls.trace(TraceQuery {
-                start,
-                end,
-                mins,
-                maxs,
-                mask: Contents::SOLID,
-                rules: TraceRules::LEGACY,
-            }));
+            black_box(hulls.trace(
+                TraceQuery {
+                    mins,
+                    maxs,
+                    mask: Contents::SOLID,
+                    ..TraceQuery::point(start, end, TraceRules::LEGACY, EntityTraceRules::QUAKE)
+                },
+                &mut scratch,
+            ));
         }
         MEASURING.store(true, Ordering::Relaxed);
         for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
             let started = Stopwatch::start();
-            black_box(hulls.trace(TraceQuery {
-                start: black_box(start),
-                end: black_box(end),
-                mins,
-                maxs,
-                mask: Contents::SOLID,
-                rules: TraceRules::LEGACY,
-            }));
+            black_box(hulls.trace(
+                TraceQuery {
+                    mins,
+                    maxs,
+                    mask: Contents::SOLID,
+                    ..TraceQuery::point(
+                        black_box(start),
+                        black_box(end),
+                        TraceRules::LEGACY,
+                        EntityTraceRules::QUAKE,
+                    )
+                },
+                &mut scratch,
+            ));
             *sample = started.elapsed().as_nanos();
         }
         MEASURING.store(false, Ordering::Relaxed);

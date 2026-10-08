@@ -1,8 +1,13 @@
 use qa_core::primitives::{
-    ClientId, CommandIntent, EntityId, HudState, ModuleId, PlayerState, PlayerTail, UserCmd,
+    Bounds, ClientId, CollisionShape, CommandIntent, EntityId, HudState, ModuleId, NativeEntity,
+    PlayerState, PlayerTail, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
-use qa_world::entities::EntityTable;
+use qa_world::{
+    area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
+    collision::{CollisionWorld, Contents, TraceScratch, WorldTrace},
+    entities::EntityTable,
+};
 
 pub const MAX_CLIENTS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +21,8 @@ pub struct Client {
     pub connection: Option<Connection>,
     pub entity: EntityId,
     pub module: ModuleId,
+    /// Native spatial insertion order is independent of movement rules.
+    pub link_order: LinkOrder,
     pub player: PlayerState,
     pub hud: HudState,
     pub command: UserCmd,
@@ -25,6 +32,7 @@ pub struct Client {
 
 pub struct Server {
     pub entities: EntityTable,
+    pub area: AreaGrid,
     pub clients: [Client; MAX_CLIENTS],
     limit: usize,
     pub world_time: EventTime,
@@ -56,6 +64,15 @@ impl Server {
         }
         let entities = EntityTable::new(entity_capacity, max_clients + 1)
             .map_err(|_| ServerError::EntityCapacity)?;
+        // Map load replaces these bounds before linking its entities.
+        let area = AreaGrid::load(
+            entity_capacity,
+            Bounds {
+                mins: Vec3([-131072.0; 3]),
+                maxs: Vec3([131072.0; 3]),
+            },
+        )
+        .map_err(|_| ServerError::EntityCapacity)?;
         let clients = std::array::from_fn(|slot| Client {
             connection: None,
             entity: EntityId {
@@ -63,6 +80,7 @@ impl Server {
                 generation: 1,
             },
             module: ModuleId::default(),
+            link_order: LinkOrder::Tail,
             player: PlayerState::with_capacity(
                 if slot < max_clients { items } else { 0 },
                 if slot < max_clients { powerups } else { 0 },
@@ -78,6 +96,7 @@ impl Server {
         });
         Ok(Self {
             entities,
+            area,
             clients,
             limit: max_clients,
             world_time: EventTime::default(),
@@ -102,8 +121,16 @@ impl Server {
         client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = module;
+        client.link_order = LinkOrder::Tail;
         client.connection = Some(connection);
-        self.entities.columns.owner[client.entity.slot as usize] = module;
+        let entity_slot = client.entity.slot as usize;
+        self.entities.columns.owner[entity_slot] = module;
+        self.entities.columns.native_entity[entity_slot] = Some(NativeEntity {
+            module,
+            slot: client.entity.slot as i32,
+        });
+        self.entities.columns.collision_shape[entity_slot] = CollisionShape::Box;
+        self.entities.columns.collision_contents[entity_slot] = Contents::BODY.0;
         Some(ClientId(slot as u8))
     }
 
@@ -115,6 +142,7 @@ impl Server {
         else {
             return false;
         };
+        self.area.unlink(client.entity);
         client.connection = None;
         client.player.reset();
         client.hud.reset();
@@ -122,6 +150,7 @@ impl Server {
         client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = ModuleId::default();
+        client.link_order = LinkOrder::Tail;
         if let Some(entity) = self.entities.reset_client(client.entity) {
             client.entity = entity;
         }
@@ -151,16 +180,36 @@ impl Server {
     /// Local, network and bot clients share the same authoritative entry.
     /// Caller drains ingress before this SERVER phase; commands are consumed
     /// once even when several world/provider ticks occur in a host frame.
-    pub fn move_pending_clients(&mut self, trace: &mut dyn qa_movement::TraceServices) -> u32 {
+    pub fn move_pending_clients(
+        &mut self,
+        geometry: &CollisionWorld,
+        scratch: &mut TraceScratch,
+    ) -> u32 {
         let mut steps = 0;
         for client in &mut self.clients[..self.limit] {
             if client.connection.is_some() && client.command_pending {
                 client.command_pending = false;
-                let result = qa_movement::pmove(client.command, &mut client.player, trace);
+                let result = {
+                    let mut trace = WorldTrace::new(
+                        geometry,
+                        &self.entities,
+                        &self.area,
+                        scratch,
+                        Some(client.entity),
+                    );
+                    qa_movement::pmove(client.command, &mut client.player, &mut trace)
+                };
                 steps += result.steps;
                 self.entities
                     .columns
                     .set_body(client.entity.slot as usize, client.player.body);
+                self.area.link(
+                    &self.entities,
+                    client.entity,
+                    LinkFlags::SOLID,
+                    client.link_order,
+                    LinkIntent::Commit,
+                );
             }
         }
         steps

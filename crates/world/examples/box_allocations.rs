@@ -1,5 +1,5 @@
 use qa_core::primitives::{Body, EntityId, Vec3};
-use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
+use qa_world::collision::{Contents, EntityTraceRules, TraceQuery, TraceRules, boxes::trace_box};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -47,6 +47,9 @@ fn main() -> Result<(), &'static str> {
                     maxs: Vec3([16.0, 16.0, 32.0]),
                     mask: Contents::SOLID,
                     rules: TraceRules::LEGACY,
+                    entity_rules: EntityTraceRules::QUAKE,
+                    pass: None,
+                    excluded: &[],
                 },
                 body,
                 EntityId {

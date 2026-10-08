@@ -977,3 +977,63 @@ Evidence under `r3-20261008`: `fixed-bands-mip-layout-after-a-report.json`,
 `fixed-bands-ordered-dispatch-after-a-report.json`,
 `fixed-bands-ordered-dispatch-after-a-comparison.json` and their 24 private
 run directories.
+
+## THE-625 shared linked-box trace checkpoint, 2026-10-08
+
+The shared scene query reads linked collision columns directly from the entity
+SoA and the existing area index. Caller data selects Q1/Q2/Q3 filtering, body
+clipping and hit merging, independently of the map. SERVER excludes its moving
+client, then commits and relinks that body before the next client. Current-command
+prediction uses the same service. Q1 hull geometry is immutable; each caller
+loads and reuses its own traversal scratch.
+
+`tools/check_linked_merge.py` compares unchanged linked-hit statement blocks
+from Q1 `SV_ClipToLinks` and Q2/Q3 `SV_ClipMoveToEntities`. All 396 rows per rule
+matched every declared raw output word, including the solid flags and retained
+contact identity. Each rule rejected a one-bit output mutation. The blocks
+allocate zero Rust calling-thread bytes. This proves those statements, not
+complete native `SV_Trace`, native ABI encoding or linked BSP/capsule geometry.
+
+The unchanged convex-brush workload also passed all 10,070 rows per Q2/Q3
+rule with zero Rust calling-thread allocations. The Q1 stack-box workload
+completed 50,000 traces with zero allocations. Source review and focused
+fixtures cover the distinct Q2 point-contents maximum face, Q2/Q3 pass semantics,
+immediate world hits, and transformed-box endpoint/centering operation order.
+Those fixtures do not replace native retail entity-trace comparisons.
+
+Pinned primitive measurement uses baseline CPU code on core 23, without a
+debugger. Sixty warm-up frames precede 600 measured frames. The new analytic
+workload has 64 local/remote/bot clients with all five movement choices, 321
+loaded brushes, shared linked-body queries, and authoritative/prediction state
+comparisons in 64 rooms arranged 8 by 8.
+
+| Workload | Median / p99 ns | Measured SERVER steps | Maximum Rust allocations / requested bytes |
+|---|---:|---:|---:|
+| `linked_scene_64_native_range_rooms` | 1,757,736 / 2,345,232 | 38,400 | 0 / 0 |
+
+Authoritative and prediction position, velocity and movement state match on
+every frame. No workers or SDL/driver operations enter this headless workload;
+it proves the calling Rust thread only. Its initial linear room layout placed
+Q2 clients outside the native signed eighth-unit coordinate range and failed
+the state check after those origins wrapped into other rooms. The corrected
+layout keeps native widths and physics unchanged. This workload differs from
+the earlier analytic movement fixture, so it supplies no matched speedup or
+regression claim. The measured release example rebuild took 6.74 s.
+
+The immutable-hull rerun retained the same 10,000 seeded e1m1 segments per
+native hull and matched all 30,000 original-C outputs. It allocated zero bytes
+after load. Release build took 5.451 s, on core 23, with 600 warm-up traces and
+600,000 timed calls per hull.
+
+| Hull | Median / p99 ns per trace |
+|---|---:|
+| Point | 160 / 1,040 |
+| Player | 160 / 730 |
+| Large | 150 / 630 |
+
+Muse's historical 229 microseconds is still not a matched baseline. No C-port
+timing was taken. Evidence under `caller-linked-trace`: `merge/result.json`,
+`brush/result.json`, `movement/verification.json` and `hulls/verification.json`.
+These are developer examples, not a shipped or installed gameplay candidate.
+Placed BSP bodies, capsules/patches, complete leaf-content and result adaptation,
+retail module execution and the three-map installed acceptance remain open.

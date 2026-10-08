@@ -2,9 +2,13 @@
 //! Build with `cargo build --release -p qa-world --example brush_trace`, then
 //! run through tools/check_brush_trace.py. File transport is cold; the measured
 //! allocation scope contains only analytic traces and fixed result writes.
-use qa_core::primitives::{Axis, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Axis, Bounds, Plane, SurfaceFlags, Vec3};
+use qa_world::area::AreaGrid;
 use qa_world::collision::brushes::{Brush, BrushMap};
-use qa_world::collision::{CollisionWorld, Contents, TraceQuery, TraceRules};
+use qa_world::collision::{
+    CollisionWorld, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
+};
+use qa_world::entities::EntityTable;
 use std::hint::black_box;
 
 #[path = "../../../tools/probes/allocation_counter.rs"]
@@ -13,7 +17,7 @@ mod allocation_counter;
 #[derive(Clone, Copy)]
 struct Query {
     map: usize,
-    trace: TraceQuery,
+    trace: TraceQuery<'static>,
 }
 
 fn word(data: &mut &[u8]) -> Result<u32, &'static str> {
@@ -45,6 +49,7 @@ fn contents(raw: u32) -> Result<Contents, &'static str> {
 fn load(
     mut data: &[u8],
     rules: TraceRules,
+    entity_rules: EntityTraceRules,
 ) -> Result<(Vec<CollisionWorld>, Vec<Query>), &'static str> {
     if word(&mut data)? != 0x48535242 || word(&mut data)? != 1 {
         return Err("unsupported brush fixture");
@@ -126,6 +131,9 @@ fn load(
                 maxs,
                 mask,
                 rules,
+                entity_rules,
+                pass: None,
+                excluded: &[],
             },
         });
     }
@@ -140,20 +148,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 4 {
         return Err("expected q2|q3, brush fixture, and result path".into());
     }
-    let rules = match args[1].as_str() {
-        "q2" => TraceRules::LEGACY,
-        "q3" => TraceRules::ARENA,
+    let (rules, entity_rules) = match args[1].as_str() {
+        "q2" => (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
+        "q3" => (TraceRules::ARENA, EntityTraceRules::ARENA),
         _ => return Err("expected q2 or q3 rules".into()),
     };
     let payload = std::fs::read(&args[2])?;
-    let (mut worlds, queries) = load(&payload, rules)?;
+    let (worlds, queries) = load(&payload, rules, entity_rules)?;
+    let entities = EntityTable::new(2, 1).map_err(|_| "invalid fixture entity capacity")?;
+    let area = AreaGrid::load(
+        2,
+        Bounds {
+            mins: Vec3([-4096.0; 3]),
+            maxs: Vec3([4096.0; 3]),
+        },
+    )
+    .map_err(|_| "invalid fixture area bounds")?;
+    let mut scratch: Vec<_> = worlds.iter().map(CollisionWorld::scratch).collect();
+    let mut scenes: Vec<_> = worlds
+        .iter()
+        .zip(&mut scratch)
+        .map(|(geometry, scratch)| WorldTrace::new(geometry, &entities, &area, scratch, None))
+        .collect();
     let mut results = vec![[0u32; 11]; queries.len()];
     let mut contacts = 0usize;
     let mut start_solid = 0usize;
     let mut all_solid = 0usize;
     allocation_counter::start();
     for (query, row) in queries.iter().zip(&mut results) {
-        let trace = black_box(worlds[query.map].trace(black_box(query.trace)));
+        let trace = black_box(scenes[query.map].trace(black_box(query.trace)));
         contacts += usize::from(trace.fraction < 1.0);
         start_solid += usize::from(trace.start_solid);
         all_solid += usize::from(trace.all_solid);

@@ -25,7 +25,7 @@ pub struct Runtime {
     /// One preallocated index over the server's generation-checked entities.
     pub targets: qa_world::targets::TargetIndex,
     /// Loaded geometry is independent of every player's movement rules.
-    pub collision: Option<qa_world::collision::CollisionWorld>,
+    pub collision: Option<LoadedCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub events: EventRing,
     pub texts: TextStore,
@@ -33,6 +33,18 @@ pub struct Runtime {
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
     script_reader: qa_formats::archive::ArchiveReader,
+}
+
+pub struct LoadedCollision {
+    pub geometry: qa_world::collision::CollisionWorld,
+    pub scratch: qa_world::collision::TraceScratch,
+}
+
+impl LoadedCollision {
+    pub fn new(geometry: qa_world::collision::CollisionWorld) -> Self {
+        let scratch = geometry.scratch();
+        Self { geometry, scratch }
+    }
 }
 
 impl Runtime {
@@ -88,6 +100,13 @@ impl Runtime {
             .columns
             .set_body(client.entity.slot as usize, client.player.body);
         self.server.entities.columns.angles[client.entity.slot as usize] = spawn.angles;
+        self.server.area.link(
+            &self.server.entities,
+            client.entity,
+            qa_world::area::LinkFlags::SOLID,
+            client.link_order,
+            qa_world::area::LinkIntent::Explicit,
+        );
         self.prediction[seat.index()].apply_snapshot(&client.player);
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)

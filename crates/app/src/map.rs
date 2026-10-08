@@ -2,7 +2,7 @@
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
 use qa_console::views::Source;
 use qa_content::vfs::{MountKind, Vfs, normalize};
-use qa_core::primitives::{ClipNode, MovementRules, SurfaceFlags, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, MovementRules, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
     bsp::{Bsp, BspFormat, Lump, Map},
@@ -30,6 +30,7 @@ pub struct SpawnAnchor {
 
 pub struct LoadedMap {
     pub collision: CollisionWorld,
+    pub collision_bounds: Bounds,
     pub render: LoadedWorld,
     pub spawn: SpawnAnchor,
     pub native_source: Source,
@@ -316,6 +317,7 @@ impl MapInput {
             load_world(vfs, &map, assets, options).map_err(|e| format!("world assets: {e:?}"))?;
         Ok(LoadedMap {
             collision,
+            collision_bounds: map.models.first().ok_or("missing world model")?.bounds,
             render,
             spawn,
             native_source: self.native_source,

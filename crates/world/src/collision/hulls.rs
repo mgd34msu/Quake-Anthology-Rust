@@ -235,6 +235,12 @@ pub struct Q1Hulls {
     drawing: Box<[ClipNode]>,
     clips: Box<[ClipNode]>,
     models: Box<[HullModel]>,
+    stack_capacity: usize,
+}
+
+/// Per-caller traversal state, allocated from its immutable geometry at load.
+/// The arena is reused between queries; geometry may be shared by callers.
+pub struct HullScratch {
     stack: Box<[Frame]>,
 }
 
@@ -288,8 +294,14 @@ impl Q1Hulls {
             drawing: drawing.into_boxed_slice(),
             clips: clips.into_boxed_slice(),
             models: models.into_boxed_slice(),
-            stack: vec![Frame::default(); depth + 1].into_boxed_slice(),
+            stack_capacity: depth + 1,
         })
+    }
+
+    pub fn scratch(&self) -> HullScratch {
+        HullScratch {
+            stack: vec![Frame::default(); self.stack_capacity].into_boxed_slice(),
+        }
     }
 
     pub fn point_contents(&self, point: Vec3) -> Contents {
@@ -307,7 +319,8 @@ impl Q1Hulls {
     /// offsets retain SV_HullForEntity behavior; arbitrary box heights, a
     /// 30-wide Q3 player and capsules are not rebuilt into exact hull shapes.
     /// Caller rules still select contact epsilon and all-solid behavior.
-    pub fn trace(&mut self, query: TraceQuery) -> Trace {
+    /// Scratch must be provisioned from this geometry before querying.
+    pub fn trace(&self, query: TraceQuery, scratch: &mut HullScratch) -> Trace {
         let TraceQuery {
             start,
             end,
@@ -341,7 +354,7 @@ impl Q1Hulls {
                 end: local(end),
                 ..query
             },
-            &mut self.stack,
+            &mut scratch.stack,
         );
         trace.end = if trace.fraction == 1.0 {
             end

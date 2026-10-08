@@ -287,8 +287,28 @@ fn run() -> Result<(), String> {
             }
         };
         runtime.entity_sources.push(loaded.entity_source);
-        runtime.collision = Some(loaded.collision);
+        runtime.server.area = qa_world::area::AreaGrid::load(
+            runtime.server.entities.capacity(),
+            loaded.collision_bounds,
+        )
+        .map_err(|e| format!("world area: {e:?}"))?;
+        runtime.collision = Some(qa_app::LoadedCollision::new(loaded.collision));
         let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
+        // Entity insertion is native module/world rule data, not movement.
+        let entity = runtime.server.clients[client.0 as usize].entity;
+        let order = if loaded.native_source == Source::Quake3 {
+            qa_world::area::LinkOrder::Head
+        } else {
+            qa_world::area::LinkOrder::Tail
+        };
+        runtime.server.clients[client.0 as usize].link_order = order;
+        runtime.server.area.link(
+            &runtime.server.entities,
+            entity,
+            qa_world::area::LinkFlags::SOLID,
+            order,
+            qa_world::area::LinkIntent::Explicit,
+        );
         let player = &runtime.server.clients[client.0 as usize].player;
         println!(
             "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",

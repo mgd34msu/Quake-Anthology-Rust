@@ -1,14 +1,79 @@
 //! Pinned developer timing of the shared primitive path, not a gameplay run.
-#[path = "../../movement/tests/support/mod.rs"]
-mod support;
 use qa_core::{
-    primitives::{ClientId, CommandIntent, ModuleId, MovementRules, PlayerTail, Vec3},
+    primitives::{
+        Bounds, ClientId, CommandIntent, ModuleId, MovementRules, Plane, PlayerTail, Vec3,
+    },
     sys_events::EventTime,
 };
 use qa_session::{
     clients::{Connection, Server},
     prediction::Prediction,
 };
+use qa_world::{
+    area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
+    collision::{
+        CollisionWorld, Contents, WorldTrace,
+        brushes::{Brush, BrushMap},
+    },
+};
+
+fn box_brush(planes: &mut Vec<Plane>, brushes: &mut Vec<Brush>, mins: Vec3, maxs: Vec3) {
+    let first_plane = planes.len() as u32;
+    for axis in 0..3 {
+        for sign in [1.0, -1.0] {
+            let mut normal = Vec3::default();
+            normal.0[axis] = sign;
+            planes.push(Plane {
+                normal,
+                distance: if sign > 0.0 {
+                    maxs.0[axis]
+                } else {
+                    -mins.0[axis]
+                },
+                axis: None,
+            });
+        }
+    }
+    brushes.push(Brush {
+        first_plane,
+        plane_count: 6,
+        contents: Contents::SOLID,
+    });
+}
+
+fn scene() -> Result<CollisionWorld, String> {
+    let mut planes = vec![Plane {
+        normal: Vec3([0.0, 0.0, 1.0]),
+        distance: 0.0,
+        axis: None,
+    }];
+    let mut brushes = vec![Brush {
+        first_plane: 0,
+        plane_count: 1,
+        contents: Contents::SOLID,
+    }];
+    for room in 0..64 {
+        let x = (room % 8) as f32 * 320.0;
+        let y = (room / 8) as f32 * 320.0;
+        for (mins, maxs) in [
+            ([-144.0, -120.0, 0.0], [-128.0, 120.0, 256.0]),
+            ([240.0, -120.0, 0.0], [256.0, 120.0, 256.0]),
+            ([-144.0, -136.0, 0.0], [256.0, -120.0, 256.0]),
+            ([-144.0, 120.0, 0.0], [256.0, 136.0, 256.0]),
+            ([96.0, -120.0, 0.0], [160.0, 120.0, 16.0]),
+        ] {
+            box_brush(
+                &mut planes,
+                &mut brushes,
+                Vec3([mins[0] + x, mins[1] + y, mins[2]]),
+                Vec3([maxs[0] + x, maxs[1] + y, maxs[2]]),
+            );
+        }
+    }
+    BrushMap::load(planes, brushes)
+        .map(CollisionWorld::Brushes)
+        .map_err(|error| format!("analytic scene: {error:?}"))
+}
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 #[global_allocator]
 static ALLOCATOR: qa_platform::allocations::CountingAllocator =
@@ -20,11 +85,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         allocations::{begin_frame, end_frame},
     };
     let mut server = Server::load(64, 128, 1, 0, 0).map_err(|e| format!("{e:?}"))?;
+    server.area = AreaGrid::load(
+        128,
+        Bounds {
+            mins: Vec3([-160.0, -160.0, -512.0]),
+            maxs: Vec3([2560.0, 2560.0, 512.0]),
+        },
+    )
+    .map_err(|e| format!("{e:?}"))?;
     let mut predictions: [Prediction; 64] = std::array::from_fn(|_| Prediction::default());
-    let mut world = support::FixtureWorld {
-        step: true,
-        water: false,
-    };
+    let world = scene()?;
+    let mut scratch = world.scratch();
     let rules = [
         MovementRules::Quake,
         MovementRules::QuakeWorld,
@@ -40,11 +111,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PlayerTail::Q2 { weapon_frame: 0 },
             )
             .ok_or("client capacity")?;
-        let player = &mut server.clients[slot].player;
-        player.movement_rules = rules[slot % 5];
-        qa_movement::set_bounds(player);
-        player.body.position = Vec3([0.0, 0.0, 24.0]);
-        player.movement.grounded = true;
+        let client = &mut server.clients[slot];
+        client.player.movement_rules = rules[slot % 5];
+        qa_movement::set_bounds(&mut client.player);
+        // All rooms stay inside native Q2's signed eighth-unit origin range.
+        client.player.body.position =
+            Vec3([(slot % 8) as f32 * 320.0, (slot / 8) as f32 * 320.0, 24.125]);
+        client.player.movement.grounded = true;
+        server
+            .entities
+            .columns
+            .set_body(client.entity.slot as usize, client.player.body);
+        if !server.area.link(
+            &server.entities,
+            client.entity,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Explicit,
+        ) {
+            return Err("initial client link".into());
+        }
     }
     let mut ns = [0u64; 600];
     let mut maximum_allocations = 0;
@@ -80,9 +166,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         server.build_bot_commands(start, end);
-        let count = server.move_pending_clients(&mut world);
+        let count = server.move_pending_clients(&world, &mut scratch);
         for (client, prediction) in server.clients.iter().zip(&mut predictions) {
-            prediction.advance(client.command, &mut world);
+            let mut trace = WorldTrace::new(
+                &world,
+                &server.entities,
+                &server.area,
+                &mut scratch,
+                Some(client.entity),
+            );
+            prediction.advance(client.command, &mut trace);
         }
         let elapsed = timer.elapsed().as_nanos() as u64;
         let counts = end_frame();
@@ -93,27 +186,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 maximum_allocations.max(counts.allocations + counts.reallocations);
             maximum_bytes = maximum_bytes.max(counts.requested_bytes);
         }
-        for (client, prediction) in server.clients.iter().zip(&predictions) {
+        for (slot, (client, prediction)) in server.clients.iter().zip(&predictions).enumerate() {
             if client.player.body.position != prediction.player.body.position
                 || client.player.body.velocity != prediction.player.body.velocity
                 || client.player.movement != prediction.player.movement
             {
-                return Err("authoritative/prediction mismatch".into());
+                let nearby = server
+                    .clients
+                    .iter()
+                    .enumerate()
+                    .find(|(other_slot, other)| {
+                        *other_slot != slot
+                            && (0..3).all(|axis| {
+                                (other.player.body.position.0[axis]
+                                    - prediction.player.body.position.0[axis])
+                                    .abs()
+                                    < 64.0
+                            })
+                    })
+                    .map(|(slot, other)| (slot, other.player.body.position));
+                return Err(format!("authoritative/prediction mismatch frame={frame} client={slot} nearby={nearby:?} rules={:?} server_position={:?} prediction_position={:?} server_velocity={:?} prediction_velocity={:?} server_movement={:?} prediction_movement={:?}", client.player.movement_rules, client.player.body.position, prediction.player.body.position, client.player.body.velocity, prediction.player.body.velocity, client.player.movement, prediction.player.movement).into());
             }
         }
     }
     ns.sort_unstable();
     println!(
-        "{{\"scope\":\"64 mixed-rule clients with authoritative and prediction movement on analytic stairs/walls\",\"warmup\":60,\"frames\":600,\"server_steps\":{steps},\"median_ns\":{},\"p99_ns\":{},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_bytes},\"state_match\":true}}",
+        "{{\"scope\":\"64 mixed-rule clients with authoritative and prediction WorldTrace movement on loaded brush stairs/walls in 8x8 native-range rooms\",\"workload\":\"linked_scene_64_native_range_rooms\",\"matched_previous_workload\":false,\"warmup\":60,\"frames\":600,\"server_steps\":{steps},\"median_ns\":{},\"p99_ns\":{},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_bytes},\"state_match\":true}}",
         (ns[299] + ns[300]) / 2,
         ns[593]
     );
-    for (slot, client) in server.clients.iter().enumerate() {
-        println!(
-            "client {slot} {:?} {:?}",
-            client.player.body.position, client.player.body.velocity
-        );
-    }
     if maximum_allocations != 0 || maximum_bytes != 0 {
         return Err("allocation gate".into());
     }
