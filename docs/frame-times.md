@@ -635,3 +635,64 @@ Evidence under `r3-20261008`: `fixed-retail-before-c-report.json`,
 `fixed-retail-baseline-rebuild-validation.json`, and the corresponding
 `fixed-retail-{before,after}-c-{e1m1,base1,q3dm1}-cpu` directories containing
 runtime logs, private-run results, raw RGBA and window captures.
+
+## THE-862 shared serial preparation checkpoint, 2026-10-08
+
+Commit `e56c2a0761b50ac8c70e8536dfe0392c1a50135f` prepares world geometry,
+shader attributes and clipping once per view, then consumes that frozen result
+through one full-height raster band. Its portable release developer example
+built from a cleared release dependency cache in 32.3779 s. The immutable scene
+packet and raw RGBA match the static-cache checkpoint byte for byte on all three
+maps. The benchmark source also remains byte-identical.
+
+Owned private Xvfb runs used core 23, 640×400, shader time zero, 60 warm-up draws
+and 600 measured draws. All exited normally, preserved the owner profile and
+copied candidate, and cleaned recorded owned PIDs. No build, checker, debugger
+or profiler ran alongside timing.
+
+| Map | Draw median / p99 ns | Measured cache hits / fills / evictions / rejects |
+|---|---:|---:|
+| e1m1 | 2,212,476.5 / 2,239,911 | 2,227,200 / 0 / 0 / 0 |
+| base1 | 4,858,093 / 4,996,074 | 3,318,000 / 0 / 0 / 0 |
+| q3dm1 | 21,729,916 / 24,177,567 | 11,863,200 / 0 / 0 / 0 |
+
+Each run recorded zero calling-thread Rust allocations, reallocations and
+requested bytes, stable backend counters and zero rejects. Cache counts match
+the preceding static-cache checkpoint. The polygon counter now counts prepared
+boundaries once, before row-window scanning, rather than accepted scanner
+polygons; its different value does not indicate a different scene packet.
+Workers are not dispatched in this checkpoint. Native heap work, gameplay and
+installation remain outside its qualification. Base1 and q3dm1 still exceed
+4 ms.
+
+A separate process profile of the preceding static-cache binary recorded
+16,084 samples with zero lost samples. It identifies cached spans, generic and
+sky material stages, clipping and memory copies as remaining draw costs.
+Inspection of that release binary found a 4,568-byte Camera copy followed by a
+4,560-byte Refdef copy on every opaque span. Commit `4e0ed10c` changes those
+parameters to borrowed immutable references; its performance is measured
+separately. The profile's timings are discarded and its libc samples are not
+all attributed to those copies.
+
+Evidence under `r3-20261008`: `fixed-retail-prepare-serial-a-report.json`,
+`fixed-retail-prepare-serial-comparison.json`, corresponding
+`fixed-retail-prepare-serial-a-{e1m1,base1,q3dm1}-cpu` directories, and
+`profile-static-cached-q3dm1-cpu`.
+
+Commit `4e0ed10ca2770390f783145d26e8ec02ce6b4762` built the borrowed-view
+portable release example in 33.5617 s from a cleared release cache. Under the
+same private core-23 workload, its 60/600 draw measurements are:
+
+| Map | Borrowed-view draw median / p99 ns |
+|---|---:|
+| e1m1 | 2,067,036.5 / 2,225,911 |
+| base1 | 4,600,083 / 4,759,513 |
+| q3dm1 | 19,517,524 / 22,332,287 |
+
+All three raw images, immutable workload fields and backend/cache counters match
+`e56c2a07` exactly. Per-run private profile/evidence paths are excluded from the
+workload comparison. The measured calling-thread allocation counters remain
+zero, with normal exits and recorded owned-PID cleanup. This remains a serial
+draw benchmark, and base1/q3dm1 remain over the target. Evidence:
+`fixed-retail-borrow-serial-a-report.json`,
+`fixed-retail-borrow-serial-comparison.json` and corresponding private-run folders.
