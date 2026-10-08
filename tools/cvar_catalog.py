@@ -513,4 +513,3 @@ class Catalog:
         # Inputs contain no embedded NUL; every pooled offset names a whole cell.
         if sum(len(value.encode('utf-8')) + 1 for value in self.pool) != self.pool_size:
             raise ValueError('string pool offset mismatch')
-
