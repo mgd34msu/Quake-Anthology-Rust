@@ -193,7 +193,7 @@ fn mixed_modules_retain_the_freed_lifetimes_reuse_rules() {
 #[test]
 fn qw_displaces_last_owned_lifetime_and_reports_spatial_unlink_handle() {
     use qa_core::primitives::Bounds;
-    use qa_world::area::{AreaGrid, LinkFlags};
+    use qa_world::area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder};
     let mut table = EntityTable::new(4, 1).unwrap();
     let first = table
         .allocate(10.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
@@ -215,7 +215,13 @@ fn qw_displaces_last_owned_lifetime_and_reports_spatial_unlink_handle() {
         },
     )
     .unwrap();
-    assert!(area.link(&table, last, LinkFlags::SOLID));
+    assert!(area.link(
+        &table,
+        last,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit
+    ));
     table.columns.frame[last.slot as usize] = 7;
     let replacement = table
         .allocate(10.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
@@ -228,6 +234,14 @@ fn qw_displaces_last_owned_lifetime_and_reports_spatial_unlink_handle() {
     assert!(table.resolve(foreign).is_some());
     assert_eq!(table.columns.frame[replacement.id.slot as usize], 0);
     assert!(area.unlink(replacement.displaced.unwrap()));
+    assert!(area.link(
+        &table,
+        replacement.id,
+        LinkFlags::SOLID,
+        LinkOrder::Head,
+        LinkIntent::Explicit
+    ));
+    assert!(!area.unlink(last));
     assert_eq!(table.len(), 4);
 }
 

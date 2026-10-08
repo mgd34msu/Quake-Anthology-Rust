@@ -9,6 +9,23 @@ impl LinkFlags {
     pub const SOLID: Self = Self(1);
     pub const TRIGGER: Self = Self(2);
     pub const ITEM: u8 = 4;
+    /// All spatially linked rows, including non-colliding Q3 entities.
+    pub const LINKED: Self = Self(8);
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkOrder {
+    Head,
+    #[default]
+    Tail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkIntent {
+    /// A module's LinkEntity call preserves native unlink/reinsert ordering.
+    Explicit,
+    /// An internal body commit need not republish unchanged spatial state.
+    Commit,
 }
 
 #[derive(Clone, Copy)]
@@ -16,8 +33,8 @@ struct Node {
     axis: Option<usize>,
     distance: f32,
     children: [u8; 2],
-    heads: [u32; 2],
-    tails: [u32; 2],
+    head: u32,
+    tail: u32,
 }
 impl Default for Node {
     fn default() -> Self {
@@ -25,8 +42,8 @@ impl Default for Node {
             axis: None,
             distance: 0.0,
             children: [0; 2],
-            heads: [NONE; 2],
-            tails: [NONE; 2],
+            head: NONE,
+            tail: NONE,
         }
     }
 }
@@ -35,6 +52,7 @@ struct Link {
     id: Option<EntityId>,
     bounds: Bounds,
     flags: LinkFlags,
+    order: LinkOrder,
     node: u8,
     previous: u32,
     next: u32,
@@ -45,6 +63,7 @@ impl Default for Link {
             id: None,
             bounds: Bounds::default(),
             flags: LinkFlags::default(),
+            order: LinkOrder::Tail,
             node: 0,
             previous: NONE,
             next: NONE,
@@ -129,15 +148,14 @@ impl AreaGrid {
         else {
             return false;
         };
-        let kind = usize::from(link.flags.0 & LinkFlags::TRIGGER.0 != 0);
         let node = &mut self.nodes[link.node as usize];
         if link.previous == NONE {
-            node.heads[kind] = link.next;
+            node.head = link.next;
         } else {
             self.links[link.previous as usize].next = link.next;
         }
         if link.next == NONE {
-            node.tails[kind] = link.previous;
+            node.tail = link.previous;
         } else {
             self.links[link.next as usize].previous = link.previous;
         }
@@ -145,13 +163,26 @@ impl AreaGrid {
         true
     }
 
-    pub fn link(&mut self, table: &EntityTable, id: EntityId, flags: LinkFlags) -> bool {
+    pub fn link(
+        &mut self,
+        table: &EntityTable,
+        id: EntityId,
+        flags: LinkFlags,
+        order: LinkOrder,
+        intent: LinkIntent,
+    ) -> bool {
         let Some(slot) = table
             .resolve(id)
             .filter(|slot| *slot != 0 && *slot < self.links.len())
         else {
             return false;
         };
+        let flags =
+            if flags.0 & (LinkFlags::SOLID.0 | LinkFlags::TRIGGER.0 | LinkFlags::LINKED.0) != 0 {
+                LinkFlags(flags.0 | LinkFlags::LINKED.0)
+            } else {
+                flags
+            };
         let columns = &table.columns;
         let item = flags.0 & LinkFlags::ITEM != 0;
         let expansion = |axis| {
@@ -170,13 +201,18 @@ impl AreaGrid {
             })),
         };
         let old = self.links[slot];
-        if old.id == Some(id) && old.bounds == bounds && old.flags == flags {
+        if intent == LinkIntent::Commit
+            && old.id == Some(id)
+            && old.bounds == bounds
+            && old.flags == flags
+            && old.order == order
+        {
             return false;
         }
         if let Some(old_id) = old.id {
             self.unlink(old_id);
         }
-        if flags.0 & (LinkFlags::SOLID.0 | LinkFlags::TRIGGER.0) == 0 {
+        if flags.0 & LinkFlags::LINKED.0 == 0 {
             return false;
         }
         let mut index = 0;
@@ -190,23 +226,32 @@ impl AreaGrid {
                 break;
             }
         }
-        let kind = usize::from(flags.0 & LinkFlags::TRIGGER.0 != 0);
         let node = &mut self.nodes[index];
-        let previous = node.tails[kind];
+        // Q1 world.c:463-466 appends; Q3 sv_world.c:350-353 prepends.
+        // One list preserves Q3's observable order across solid/trigger roles.
+        let (previous, next) = match order {
+            LinkOrder::Head => (NONE, node.head),
+            LinkOrder::Tail => (node.tail, NONE),
+        };
         self.links[slot] = Link {
             id: Some(id),
             bounds,
             flags,
+            order,
             node: index as u8,
             previous,
-            next: NONE,
+            next,
         };
         if previous == NONE {
-            node.heads[kind] = slot as u32;
+            node.head = slot as u32;
         } else {
             self.links[previous as usize].next = slot as u32;
         }
-        node.tails[kind] = slot as u32;
+        if next == NONE {
+            node.tail = slot as u32;
+        } else {
+            self.links[next as usize].previous = slot as u32;
+        }
         self.relinks += 1;
         true
     }
@@ -223,8 +268,7 @@ impl AreaGrid {
             flags,
             pending: [0; 31],
             count: 1,
-            current: [NONE; 2],
-            kind: 2,
+            current: NONE,
         }
         .filter_map(move |id| {
             let slot = table.resolve(id)?;
@@ -247,22 +291,22 @@ struct Query<'a> {
     flags: LinkFlags,
     pending: [u8; 31],
     count: usize,
-    current: [u32; 2],
-    kind: usize,
+    current: u32,
 }
 impl Iterator for Query<'_> {
     type Item = EntityId;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            while self.kind < 2 {
-                let slot = self.current[self.kind];
-                if slot == NONE {
-                    self.kind += 1;
-                    continue;
-                }
+            while self.current != NONE {
+                let slot = self.current;
                 let link = self.grid.links[slot as usize];
-                self.current[self.kind] = link.next;
-                if self.bounds.overlaps(link.bounds) {
+                self.current = link.next;
+                if link.flags.0
+                    & self.flags.0
+                    & (LinkFlags::SOLID.0 | LinkFlags::TRIGGER.0 | LinkFlags::LINKED.0)
+                    != 0
+                    && self.bounds.overlaps(link.bounds)
+                {
                     return link.id;
                 }
             }
@@ -272,29 +316,17 @@ impl Iterator for Query<'_> {
             self.count -= 1;
             let node = self.grid.nodes[self.pending[self.count] as usize];
             if let Some(axis) = node.axis {
-                // Inclusive traversal keeps boxes exactly touching a split visible.
-                if self.bounds.mins.0[axis] <= node.distance {
+                // Native area queries visit front then back, strictly across splits.
+                if self.bounds.mins.0[axis] < node.distance {
                     self.pending[self.count] = node.children[1];
                     self.count += 1;
                 }
-                if self.bounds.maxs.0[axis] >= node.distance {
+                if self.bounds.maxs.0[axis] > node.distance {
                     self.pending[self.count] = node.children[0];
                     self.count += 1;
                 }
             }
-            self.current = [
-                if self.flags.0 & LinkFlags::SOLID.0 != 0 {
-                    node.heads[0]
-                } else {
-                    NONE
-                },
-                if self.flags.0 & LinkFlags::TRIGGER.0 != 0 {
-                    node.heads[1]
-                } else {
-                    NONE
-                },
-            ];
-            self.kind = 0;
+            self.current = node.head;
         }
     }
 }

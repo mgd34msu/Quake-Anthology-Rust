@@ -1,6 +1,6 @@
 use qa_core::names::NameTable;
 use qa_core::primitives::{Bounds, ModuleId, Vec3};
-use qa_world::area::{AreaGrid, LinkFlags};
+use qa_world::area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder};
 use qa_world::entities::AllocationPolicy;
 use qa_world::entities::EntityTable;
 use qa_world::targets::TargetIndex;
@@ -55,7 +55,19 @@ fn main() -> Result<(), &'static str> {
                 .id;
             table.set_targetname(id, if index % 2 == 0 { door } else { exit });
             table.columns.position[id.slot as usize] = Vec3([index as f32 * 4.0 - 512.0, 0.0, 0.0]);
-            if !grid.link(&table, id, LinkFlags::SOLID) || grid.link(&table, id, LinkFlags::SOLID) {
+            if !grid.link(
+                &table,
+                id,
+                LinkFlags::SOLID,
+                LinkOrder::Tail,
+                LinkIntent::Explicit,
+            ) || grid.link(
+                &table,
+                id,
+                LinkFlags::SOLID,
+                LinkOrder::Tail,
+                LinkIntent::Commit,
+            ) {
                 return Err("unchanged row relinked");
             }
             *entry = Some(id);
@@ -69,8 +81,23 @@ fn main() -> Result<(), &'static str> {
             return Err("area query differs");
         }
         let moving = ids[0].ok_or("missing moving entity")?;
+        if !grid.link(
+            &table,
+            moving,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Explicit,
+        ) {
+            return Err("explicit row was not relinked");
+        }
         table.columns.position[moving.slot as usize].0[0] += 0.5;
-        if !grid.link(&table, moving, LinkFlags::SOLID) {
+        if !grid.link(
+            &table,
+            moving,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Commit,
+        ) {
             return Err("moved row was not relinked");
         }
         for entry in &mut ids {
@@ -88,11 +115,11 @@ fn main() -> Result<(), &'static str> {
     MEASURING.store(false, Ordering::Relaxed);
     let count = ALLOCATIONS.load(Ordering::Relaxed);
     println!(
-        "{{\"scope\":\"headless entity, target-index and area workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{},\"area_relinks\":{},\"unchanged_relinks\":0}}",
+        "{{\"scope\":\"headless entity, target-index and area workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{},\"area_relinks\":{},\"explicit_unchanged_relinks\":10000,\"unchanged_commits\":0}}",
         table.len(),
         grid.relinks
     );
-    if count == 0 && table.len() == 2 && grid.relinks == 2_570_000 {
+    if count == 0 && table.len() == 2 && grid.relinks == 2_580_000 {
         Ok(())
     } else {
         Err("allocation or lifecycle mismatch")

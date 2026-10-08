@@ -448,7 +448,13 @@ mod tests {
             },
         )
         .map_err(|_| "area")?;
-        assert!(area.link(&table, dying, crate::area::LinkFlags::SOLID));
+        assert!(area.link(
+            &table,
+            dying,
+            crate::area::LinkFlags::SOLID,
+            crate::area::LinkOrder::Tail,
+            crate::area::LinkIntent::Explicit,
+        ));
         let replacement = table
             .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
             .ok_or("replacement")?;
