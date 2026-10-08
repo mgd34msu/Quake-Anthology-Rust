@@ -572,3 +572,66 @@ raster and native image/gameplay qualification remain open. No installation.
 Evidence under `r3-20261008`: `serial-rgb-report.json` and
 `serial-rgb-{normal,tracking}-{e1m1,base1,q3dm1}-cpu-a` directories, each
 with runtime log, private-run result, workload counters and window capture.
+
+## THE-862 static lit surface cache checkpoint, 2026-10-08
+
+The developer `cpu_retail` example renders one immutable retail scene packet
+at native spawn with the copied owner's presentation/FOV and shader time zero.
+It times only `CpuBackend::render`, with presentation and reporting outside the
+sample. Both engine snapshots use the identical committed benchmark source
+from `df974fad`; neither is an installation candidate or gameplay proof.
+
+The baseline is `e9e6211d249cc38954e98d5fac94fa96a4a517dd`; the static-cache
+snapshot is `2c64ec1c6471b38c71ae44bfe86a3ee92e33d0d5`. Each archive was built
+from a cleared Cargo release cache, with portable release settings and allocation
+tracking. Clearing that cache matters when moving between archived revisions:
+an intermediate `before-b` run reused newer renderer dependencies despite the
+older source archive. Those rows are discarded. Rebuilt `before-c` images match
+all three earlier `before-a` raw images byte for byte.
+
+All six accepted runs used owned Xvfb, forced X11/private audio, core 23,
+640×400, 60 warm-up draws and 600 measured draws. They exited normally, preserved
+the copied candidate and owner's original profile, and cleaned recorded owned
+PIDs. No build, checker, debugger or profiler ran alongside timing. All reported
+zero calling-thread Rust allocations/reallocations/requested bytes, stable
+backend statistics and zero rejected draws. Workers are not wired in this
+checkpoint; this counter excludes native SDL/driver heap activity.
+
+| Map | Baseline draw median / p99 ns | Static-cache draw median / p99 ns |
+|---|---:|---:|
+| e1m1 | 2,427,977 / 2,472,542 | 2,436,262 / 2,462,422 |
+| base1 | 5,284,889 / 5,332,544 | 5,172,409 / 5,289,224 |
+| q3dm1 | 51,089,057 / 52,304,838 | 23,560,732 / 25,819,408 |
+
+q3dm1 now fills native base-mip texels multiplied by bilinear lightmap mip zero
+into the shared rover. Its measured 600-draw cache deltas are 11,863,200 hits,
+zero fills, zero evictions and zero rejects. Across startup, warm-up and measured
+661 draws, it recorded 13,067,848 hits, 1,444 fills, zero evictions and zero
+rejects. The old baseline recorded zero for all four cache counters.
+
+The final cached frame wrote 211,003 pixels through 19,772 RGBA spans, including
+16,881 minified spans. Generic non-sky stages wrote 4,115 pixels through 2,647
+stage calls; sky wrote 83,712 pixels through 17,608 stage calls. Total writes
+are 298,830; the old separate-stage baseline wrote 509,833. Both consume the same
+3,770 clipped polygons, including 1,496 patch polygons, and the same immutable
+scene metadata. These are writes, not unique screen pixels.
+
+The e1m1 and base1 indexed images remain byte-identical. q3dm1 changes 193,967 of
+256,000 pixels, with a maximum channel difference of 75. Its new software-cache
+lattice reads original mip texels and rounds the native collapsed product once;
+the former independently filtered stage image is not an oracle for that
+convention. Independent cache-fill fixtures cover native mip/ROI/color arithmetic.
+Retail native visual acceptance remains open, so these rows do not establish a
+fidelity-matched speedup or qualify the timing guard.
+
+The 23.56 ms q3dm1 and 5.17 ms base1 medians still exceed 4 ms. Shared geometry
+preparation and fixed raster bands on platform workers are next. Actual animated
+stage handling, complete static-material coverage, live RGB style/dlight inputs,
+foreign movement, combined views and gameplay qualification remain open. No
+installation or Slack notice.
+
+Evidence under `r3-20261008`: `fixed-retail-before-c-report.json`,
+`fixed-retail-after-c-report.json`, `fixed-retail-static-cache-comparison.json`,
+`fixed-retail-baseline-rebuild-validation.json`, and the corresponding
+`fixed-retail-{before,after}-c-{e1m1,base1,q3dm1}-cpu` directories containing
+runtime logs, private-run results, raw RGBA and window captures.
