@@ -224,3 +224,32 @@ renderers, SDL and other-thread/native heaps. This is not gameplay qualification
 cargo build --release -p qa-platform --example host_frame --features allocation-tracking
 timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local --binds --bots --content "$SCRIPT_PRODUCT"
 ```
+
+## THE-890: one output drain
+
+A fresh sequential comparison rebuilt THE-889 commit 7d76e71b and measured its
+unchanged bind/console/local workload against THE-890 on core 23. Both used
+release baseline CPU, no debugger, 60 warm-up and 600 measured frames.
+
+| Workload | Median ns | p99 ns | Counted allocations/reallocations |
+| --- | ---: | ---: | ---: |
+| Fresh THE-889 baseline | 216,384 | 300,156 | 0 |
+| THE-890 matched workload | 218,099.5 | 306,966 | 0 |
+| THE-890 plus 64 bots and output consumers | 227,374.5 | 324,126 | 0 |
+
+Console output, final values, 1,396 packets, 659 repeats and 210/105/421/210
+counter ticks match directly. Candidate/baseline ratios are 1.008 median and
+1.023 p99. The added workload builds 12,288 bot commands in measured server
+ticks and dispatches three sound/effect/print events each frame. Consumers
+received 1,980 sounds and 1,980 effects including warm-up. Each frame drains
+output once and leaves the ring empty. Requested Rust-thread bytes were zero.
+
+Evidence: THE-890-paired.json, THE-890-paired-baseline.log,
+THE-890-paired-current.log and THE-890-paired-outputs.log in the R2 evidence
+directory. Earlier overlapping/checker and historical measurements are retained
+but not used for this comparison. The source archive used the existing target
+directory; its release artifacts were cleared afterward.
+
+This is headless dispatch and consumer fidelity, not live mixing, particles,
+map gameplay, renderer performance or installation qualification. Native and
+other-thread heaps are outside the allocation count.

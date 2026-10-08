@@ -94,6 +94,10 @@ def main():
             ("packet-ring", "struct PacketRing { slots: [u8; 16] }"),
             ("output-renamed-queue", "struct PendingQueue { slots: [Option<EffectEvent>; 16] }"),
             ("output-type-alias", "type Prints = VecDeque<PrintEvent>;"),
+            ("sound-vector", "struct Pending { values: Vec<SoundEvent> }"),
+            ("effect-array", "struct Pending { values: [Option<EffectEvent>; 16] }"),
+            ("print-boxed-array", "struct Pending { values: Box<[PrintEvent; 16]> }"),
+            ("renamed-payload", "use qa_core::primitives::SoundEvent as S; struct Pending { values: Vec<S> }"),
         ]:
             fixture.write_text(text)
             result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)

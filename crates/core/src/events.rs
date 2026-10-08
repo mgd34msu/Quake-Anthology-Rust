@@ -1,4 +1,5 @@
 use crate::primitives::{EffectEvent, PrintEvent, SoundEvent, TextId};
+use std::fmt::{self, Write};
 
 #[derive(Clone, Copy, Debug)]
 pub enum FrameEvent {
@@ -107,7 +108,7 @@ impl TextStore {
         })
     }
 
-    pub fn insert(&mut self, text: &[u8]) -> Option<TextId> {
+    fn reserve(&mut self) -> Option<(usize, TextId)> {
         let rows = self.lengths.len();
         let slot = (0..rows)
             .map(|offset| (self.next + offset) % rows)
@@ -117,16 +118,38 @@ impl TextStore {
             self.overwritten = self.overwritten.saturating_add(1);
         }
         self.generations[slot] += 1;
+        Some((
+            slot,
+            TextId {
+                slot: slot as u16,
+                generation: self.generations[slot],
+            },
+        ))
+    }
+
+    pub fn insert(&mut self, text: &[u8]) -> Option<TextId> {
+        let (slot, id) = self.reserve()?;
         let len = text.len().min(self.width);
         if len != text.len() {
             self.truncated = self.truncated.saturating_add(1);
         }
         self.bytes[slot * self.width..slot * self.width + len].copy_from_slice(&text[..len]);
         self.lengths[slot] = len as u16;
-        Some(TextId {
-            slot: slot as u16,
-            generation: self.generations[slot],
-        })
+        Some(id)
+    }
+
+    /// Format directly into one reserved row, retaining a valid UTF-8 prefix.
+    pub fn insert_formatted(&mut self, text: fmt::Arguments<'_>) -> Option<TextId> {
+        let (slot, id) = self.reserve()?;
+        let mut writer = TextWriter {
+            bytes: &mut self.bytes[slot * self.width..(slot + 1) * self.width],
+            len: 0,
+            truncated: false,
+        };
+        let _ = writer.write_fmt(text);
+        self.lengths[slot] = writer.len as u16;
+        self.truncated = self.truncated.saturating_add(u64::from(writer.truncated));
+        Some(id)
     }
 
     pub fn get(&self, id: TextId) -> Option<&[u8]> {
@@ -142,5 +165,26 @@ impl TextStore {
     }
     pub fn truncated(&self) -> u64 {
         self.truncated
+    }
+}
+
+struct TextWriter<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+    truncated: bool,
+}
+impl Write for TextWriter<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        if self.truncated {
+            return Ok(());
+        }
+        let mut count = text.len().min(self.bytes.len() - self.len);
+        while !text.is_char_boundary(count) {
+            count -= 1;
+        }
+        self.bytes[self.len..self.len + count].copy_from_slice(&text.as_bytes()[..count]);
+        self.len += count;
+        self.truncated = count != text.len();
+        Ok(())
     }
 }

@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import socket
+import time
 
 from frame_timings import pinned_cores
 from private_run import XClient, run
@@ -18,11 +19,24 @@ def main():
     parser.add_argument("--console-source", choices=("q1", "qw", "q2", "q2rr", "q3"))
     parser.add_argument("--check-command-time", action="store_true",
                         help="require seeded command time and duration diagnostics")
+    parser.add_argument("--check-output-drain", action="store_true")
+    parser.add_argument("--expected-output", help="require an echoed marker from the bound command")
     args = parser.parse_args()
     original = XClient.drive
     payloads = (b"first", b"second\0packet", bytes(range(256)))
 
     def drive(client, window, actions):
+        # window_ready precedes startup hold and initial Cbuf execution. Wait
+        # for a completed host frame so this hold tests the requested bind,
+        # rather than one event delivered to the previous default binding.
+        deadline = time.monotonic() + 5
+        while True:
+            lines = (args.evidence / "runtime.log").read_text().splitlines()
+            if any(line.startswith('{"event":"system_event_frame"') for line in lines):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("candidate did not complete initial config frame")
+            time.sleep(0.01)
         # Read the address reported by this copied candidate, never another
         # process. Send actual UDP bytes before the ordinary X-server key hold.
         log = (args.evidence / "runtime.log").read_text()
@@ -59,6 +73,7 @@ def main():
         "all_frames_drained": len(rows) == 180 and all(row["queue_remaining"] == 0 for row in rows),
         "three_udp_packets_delivered": bool(rows) and rows[-1]["network_packets"] == len(payloads),
         "seat0_forward": any(row["seat0_movement"][0] > 0 for row in rows),
+        "sustained_seat0_forward": sum(row["seat0_movement"][0] > 0 for row in rows) >= 30,
         "seat0_returns_neutral": bool(rows) and rows[-1]["seat0_movement"] == [0, 0, 0],
         "seat1_neutral": all(row["seat1_movement"] == [0, 0, 0] for row in rows),
         "no_event_or_packet_rejection": all(row["rejected"] == row["dropped_packets"] == 0 for row in rows),
@@ -80,6 +95,13 @@ def main():
                 row.get("command_server_time_ms") == row["time_ns"] // 1_000_000
                 for row in rows),
         })
+    if args.check_output_drain:
+        outputs = [row for row in events if row.get("event") == "output_frame"]
+        checks["output_drains_once"] = len(outputs) == 180 and all(
+            row["drains"] == 1 and row["remaining"] == row["stale_texts"] == 0 for row in outputs)
+    if args.expected_output is not None:
+        checks["bound_console_output"] = any(line.strip() == args.expected_output
+            for line in (args.evidence / "runtime.log").read_text().splitlines())
     report = {"result": "PASS" if all(checks.values()) else "FAIL",
               "scope": "normal window-shell input and packet boundary; no map or protocol decoding",
               "cores": cores, "checks": checks, "normal_exit": exit_event,
@@ -87,6 +109,7 @@ def main():
               "config_commands": args.commands, "console_source": args.console_source,
               "first_command_duration_ms": rows[0].get("seat0_duration_ms") if rows else None,
               "first_command_server_time_ms": rows[0].get("command_server_time_ms") if rows else None,
+              "forward_frames": sum(row["seat0_movement"][0] > 0 for row in rows),
               "gameplay_reached": result["gameplay_reached"]}
     (args.evidence / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))

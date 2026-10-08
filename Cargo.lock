@@ -137,6 +137,7 @@ dependencies = [
  "qa-network",
  "qa-platform",
  "qa-session",
+ "qa-ui",
  "qa-world",
 ]
 

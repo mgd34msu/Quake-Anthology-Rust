@@ -8,8 +8,12 @@ use qa_console::{
     views::{Context, Source as CommandSource},
 };
 use qa_core::{
+    events::FrameEvent,
     loopback::Endpoint,
-    primitives::{ClientId, CommandIntent, ModuleId, MovementRules, PlayerTail, WeaponId, buttons},
+    primitives::{
+        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, MovementRules, PlayerTail,
+        PrintKind, SoundAction, SoundEvent, SoundId, Vec3, WeaponId, buttons,
+    },
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_platform::{EventPump, Stopwatch};
@@ -31,6 +35,8 @@ struct Source {
     console: bool,
     binds: bool,
     fixture_frame: u64,
+    sounds: u64,
+    effects: u64,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self, queue: &mut SysEventQueue) {
@@ -105,6 +111,14 @@ impl FrameSource for Source {
         self.timer.elapsed()
     }
     fn present(&mut self) {}
+    fn sound(&mut self, event: SoundEvent) -> bool {
+        self.sounds += 1;
+        (1..=3).contains(&event.sound.0) && event.channel == 1 && event.volume == 1.0
+    }
+    fn effect(&mut self, event: EffectEvent) -> bool {
+        self.effects += 1;
+        (1..=3).contains(&event.effect.0) && event.count == 20
+    }
 }
 fn provider(runtime: &mut Runtime, tick: Tick) {
     if let qa_session::timing::TickTarget::Provider(module) = tick.target {
@@ -124,13 +138,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local = arguments.iter().any(|s| s == "--local");
     let binds = arguments.iter().any(|s| s == "--binds");
     let bots = arguments.iter().any(|s| s == "--bots");
+    let outputs = arguments.iter().any(|s| s == "--outputs");
     let console = bots || binds || arguments.iter().any(|s| s == "--console");
     let content = arguments
         .windows(2)
         .find(|s| s[0] == "--content")
         .map(|s| &s[1]);
     if arguments.iter().any(|s| s == "--help") {
-        println!("host_frame [--local] [--console | --binds] [--bots] [--content DIRECTORY]");
+        println!(
+            "host_frame [--local] [--console | --binds] [--bots] [--outputs] [--content DIRECTORY]"
+        );
         return Ok(());
     }
     begin_frame();
@@ -156,6 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         console,
         binds,
         fixture_frame: 0,
+        sounds: 0,
+        effects: 0,
     };
     let providers = [(1, 100), (2, 25), (3, 50)]
         .map(|(id, ms)| {
@@ -262,10 +281,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .send(Endpoint::Client, ClientId(1), b"host packet")
                 .map_err(|_| "local send")?;
         }
+        if outputs {
+            for id in 1..=3 {
+                host.runtime.events.push(FrameEvent::Sound(SoundEvent {
+                    sound: SoundId(id),
+                    entity: None,
+                    channel: 1,
+                    position: Vec3::default(),
+                    volume: 1.0,
+                    attenuation: 1.0,
+                    action: SoundAction::Play,
+                }));
+                host.runtime
+                    .print_event(None, PrintKind::Console, format_args!("output {id}\n"));
+                host.runtime.events.push(FrameEvent::Effect(EffectEvent {
+                    effect: EffectId(id),
+                    position: Vec3::default(),
+                    direction: Vec3::default(),
+                    count: 20,
+                }));
+            }
+        }
         let result = host.frame(&mut source, true);
         let elapsed = timer.elapsed().as_nanos() as u64;
         let counts = end_frame();
         if result.drains != 2
+            || result.output_drains != 1
+            || !host.runtime.events.is_empty()
+            || (outputs
+                && (result.output.sounds != 3
+                    || result.output.effects != 3
+                    || result.output.unhandled_sounds != 0
+                    || result.output.unhandled_effects != 0))
             || !host.queue.is_empty()
             || (!console && host.console.cvars.lookup_count() != 0)
         {
@@ -336,8 +383,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"binding_workload\":{binds},\"bot_clients\":{},\"measured_bot_commands\":{bot_commands},\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"binding_workload\":{binds},\"bot_clients\":{},\"measured_bot_commands\":{bot_commands},\"output_workload\":{outputs},\"output_sounds\":{},\"output_effects\":{},\"output_drains_per_frame\":1,\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
         if bots { 64 } else { 0 },
+        source.sounds,
+        source.effects,
         host.runtime.network.packets,
         host.key_repeats,
         (samples[299] + samples[300]) as f64 * 0.5,

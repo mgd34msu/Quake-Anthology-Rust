@@ -52,3 +52,16 @@ fn text_handles_do_not_alias_recycled_messages_and_keep_source_newlines() {
     assert_eq!(text.get(third), Some(b"third is".as_slice()));
     assert_eq!((text.overwritten(), text.truncated()), (1, 1));
 }
+
+#[test]
+fn formatted_rows_truncate_only_at_utf8_boundaries_and_remain_reusable() {
+    let mut text = TextStore::load(1, 5).unwrap();
+    let first = text
+        .insert_formatted(format_args!("{}{}{}", "ab", "é", "世"))
+        .unwrap();
+    assert_eq!(text.get(first), Some("abé".as_bytes()));
+    assert_eq!(text.truncated(), 1);
+    let second = text.insert_formatted(format_args!("{}", 123)).unwrap();
+    assert_eq!(text.get(first), None);
+    assert_eq!(text.get(second), Some(b"123".as_slice()));
+}

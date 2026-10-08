@@ -3,7 +3,7 @@ use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, CvarHandle, ModuleId, UserCmd},
+    primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
 use qa_input::Target;
@@ -19,6 +19,13 @@ pub trait FrameSource {
     fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration);
     fn elapsed(&self) -> Duration;
     fn present(&mut self);
+    /// False reports an unloaded backend, not successful audio/particle proof.
+    fn sound(&mut self, _event: SoundEvent) -> bool {
+        false
+    }
+    fn effect(&mut self, _event: EffectEvent) -> bool {
+        false
+    }
 }
 pub struct LiveFrame<'a> {
     pub pump: &'a mut EventPump,
@@ -57,6 +64,8 @@ pub struct FrameHost {
     pub developer: CvarHandle,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     maxfps: CvarHandle,
+    notify_time: CvarHandle,
+    center_time: CvarHandle,
     previous: Option<EventTime>,
     timeline: Timeline,
     providers: Box<[Provider]>,
@@ -70,6 +79,8 @@ pub struct FrameResult {
     pub commands: [UserCmd; SeatId::COUNT],
     pub input_ns: u64,
     pub total_ns: u64,
+    pub output: crate::output::OutputCounts,
+    pub output_drains: u64,
 }
 
 impl FrameHost {
@@ -84,6 +95,14 @@ impl FrameHost {
             .cvars
             .find("com_maxfps")
             .ok_or("missing com_maxfps")?;
+        let notify_time = console
+            .cvars
+            .find("con_notifytime")
+            .ok_or("missing con_notifytime")?;
+        let center_time = console
+            .cvars
+            .find("cg_centertime")
+            .ok_or("missing cg_centertime")?;
         let timeline = Timeline::load(world_rate, providers.iter().map(|p| (p.module, p.rate)))
             .map_err(|e| format!("provider clocks: {e:?}"))?;
         providers.sort_unstable_by_key(|p| p.module.0);
@@ -97,6 +116,8 @@ impl FrameHost {
             developer,
             local_clients: [None; SeatId::COUNT],
             maxfps,
+            notify_time,
+            center_time,
             previous: None,
             timeline,
             providers: providers.into_boxed_slice(),
@@ -125,6 +146,7 @@ impl FrameHost {
         }
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            self.dispatch_output(source, &mut result);
             return result;
         }
         let server_time = self.time;
@@ -148,13 +170,27 @@ impl FrameHost {
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            self.dispatch_output(source, &mut result);
             return result;
         }
         result.commands = self.client_frame();
+        self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result
+    }
+
+    fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
+        result.output = crate::output::dispatch(
+            &mut self.runtime,
+            source,
+            &self.local_clients,
+            self.time,
+            f64::from(self.console.cvars.value(self.notify_time)),
+            f64::from(self.console.cvars.value(self.center_time)),
+        );
+        result.output_drains += 1;
     }
 
     pub fn drain(&mut self, result: &mut FrameResult) {

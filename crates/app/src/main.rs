@@ -246,6 +246,22 @@ fn run() -> Result<(), String> {
             ),
         );
         if frame >= u64::from(warmup) {
+            qa_console::logger::dev_print(
+                &host.console.cvars,
+                host.developer,
+                1,
+                format_args!(
+                    "{{\"event\":\"output_frame\",\"frame\":{frame},\"drains\":{},\"remaining\":{},\"sounds\":{},\"effects\":{},\"prints\":{},\"unhandled_sounds\":{},\"unhandled_effects\":{},\"stale_texts\":{}}}",
+                    result.output_drains,
+                    host.runtime.events.len(),
+                    result.output.sounds,
+                    result.output.effects,
+                    result.output.prints,
+                    result.output.unhandled_sounds,
+                    result.output.unhandled_effects,
+                    result.output.stale_texts
+                ),
+            );
             completed += 1;
             if timings {
                 samples.push([

@@ -58,7 +58,7 @@ spawning, mixed-play and installed-binary evidence they require.
 
 Current lane: R2, after the R1 structural implementation. In order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
-THE-887, THE-888, THE-889, THE-890, THE-886, THE-891, THE-901, then
+THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891, then
 THE-651, THE-662, THE-669, THE-679,
 THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
 R1 issues with live acceptance criteria remain In Progress for integration at

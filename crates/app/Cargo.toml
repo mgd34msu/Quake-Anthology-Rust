@@ -19,6 +19,7 @@ qa-network = { path = "../network" }
 qa-session = { path = "../session" }
 qa-world = { path = "../world" }
 qa-formats = { path = "../formats" }
+qa-ui = { path = "../ui" }
 
 [[bin]]
 name = "qa-rust"

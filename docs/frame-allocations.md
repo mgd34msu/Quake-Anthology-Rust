@@ -65,3 +65,9 @@ table. Its stateless command conversion and movement-duration selection use
 no scratch allocation. The host probe's `--bots` mode connects all slots at
 load and checks fixed intents, native duration policies and server-time output
 after every frame. This measures command construction, not bot navigation/AI.
+
+THE-890 adds the shared TextStore at load and formats directly into its rows.
+One client-frame dispatch drains console and module output, updates local HUD
+messages and expires them. `--outputs` adds sound/effect consumer callbacks and
+formatted prints to the measured host workload. The live mixer/particle backend
+is not loaded in the shell; consumer checks are delivery proof only.

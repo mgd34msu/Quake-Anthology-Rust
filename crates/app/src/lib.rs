@@ -1,9 +1,11 @@
 pub mod host;
+pub mod output;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
-use qa_core::events::EventRing;
+use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
+use qa_core::primitives::{ClientId, PrintEvent, PrintKind};
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::Server;
 
@@ -13,6 +15,7 @@ pub struct Runtime {
     pub network: PacketReceiver,
     pub server: Server,
     pub events: EventRing,
+    pub texts: TextStore,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -27,11 +30,25 @@ impl Runtime {
             network: PacketReceiver::default(),
             server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
+            texts: TextStore::load(4096, 8192).map_err(|e| format!("output text: {e:?}"))?,
             loopback: Loopback::load(),
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
+    }
+
+    /// Shared print service for console and gameplay/module callers.
+    pub fn print_event(
+        &mut self,
+        client: Option<ClientId>,
+        kind: PrintKind,
+        text: std::fmt::Arguments<'_>,
+    ) {
+        if let Some(text) = self.texts.insert_formatted(text) {
+            self.events
+                .push(FrameEvent::Print(PrintEvent { client, kind, text }));
+        }
     }
 }
 
@@ -43,7 +60,7 @@ impl Host for Runtime {
         self.input_time
     }
     fn print(&mut self, text: std::fmt::Arguments<'_>) {
-        qa_console::logger::console(text);
+        self.print_event(None, PrintKind::Console, text);
     }
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
         let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
