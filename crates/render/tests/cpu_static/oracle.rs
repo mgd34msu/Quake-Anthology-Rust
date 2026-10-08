@@ -502,6 +502,24 @@ fn static_cache_reuses_payload_and_explicit_input_changes_invalidate() {
 }
 
 #[test]
+fn static_color_fields_retain_precision_at_large_texture_origins() {
+    let mut fixture = fixture(false, true, false);
+    for vertex in &mut fixture.geometry.vertices {
+        vertex.vertex.texcoord[0] += 2097152.0;
+    }
+    let recipe = product(&fixture, 65536).unwrap();
+    let prepared = recipe
+        .prepare(Refdef::default(), &fixture.evaluator)
+        .unwrap();
+    for local in [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.5, 3.5]] {
+        let chart = [8388608.0 + local[0], local[1]];
+        let red = super::at64(prepared.colors[0][0], chart);
+        let expected = (64.0 + 8.0 * (local[0] + local[1])) / 255.0;
+        assert!((red - expected).abs() < 1.0e-9);
+    }
+}
+
+#[test]
 fn native_vertex_byte_rounding_checks_all_polygon_vertices() {
     let mut fixture = fixture(false, true, false);
     for (vertex, red) in fixture.geometry.vertices.iter_mut().zip([0, 1, 2, 1]) {

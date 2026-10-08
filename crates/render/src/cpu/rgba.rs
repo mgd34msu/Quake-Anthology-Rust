@@ -59,7 +59,7 @@ enum Combination {
 #[derive(Clone, Copy)]
 pub(super) struct ProductPrepared {
     pub state: RgbaBuildState,
-    colors: [[[f32; 3]; 4]; 2],
+    colors: [[[f64; 3]; 4]; 2],
 }
 
 #[derive(Clone)]
@@ -683,7 +683,7 @@ impl Product {
                     return None;
                 }
             }
-            colors[stage] = fields.map(|field| field.map(|value| value as f32));
+            colors[stage] = fields;
         }
         if colors
             .as_flattened()
@@ -748,12 +748,17 @@ impl Product {
         let step = (1u64 << mip) as f32;
         for (index, out) in destination.chunks_exact_mut(4).enumerate() {
             let coordinate = [
-                minimum[0] as f32 + (index as u32 % width) as f32 * step + 0.5 * step,
-                minimum[1] as f32 + (index as u32 / width) as f32 * step + 0.5 * step,
+                f64::from(minimum[0])
+                    + f64::from(index as u32 % width) * f64::from(step)
+                    + 0.5 * f64::from(step),
+                f64::from(minimum[1])
+                    + f64::from(index as u32 / width) * f64::from(step)
+                    + 0.5 * f64::from(step),
             ];
             let colors = prepared
                 .colors
-                .map(|stage| stage.map(|field| at(field, coordinate).clamp(0.0, 1.0)));
+                .map(|stage| stage.map(|field| at64(field, coordinate).clamp(0.0, 1.0) as f32));
+            let coordinate = coordinate.map(|value| value as f32);
             let mut samples = [[0.0; 4]; 2];
             let sample_colors = match self.combination {
                 Combination::Modulate => [[1.0; 4]; 2],
