@@ -16,12 +16,45 @@ use std::sync::Arc;
 
 mod band;
 mod clip;
+mod jobs;
+pub use jobs::{BandJob, render_band};
+
+pub const MAX_BANDS: usize = 8;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RasterBands {
+    #[default]
+    One,
+    Two,
+    Four,
+    Eight,
+}
+impl RasterBands {
+    pub const fn count(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Four => 4,
+            Self::Eight => 8,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RasterConfig {
+    pub bands: RasterBands,
+    pub total_cache_budget_bytes: usize,
+    pub allocated_cache_bytes: usize,
+    pub per_band_cache_bytes: usize,
+    pub mandatory_cache_bytes: usize,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct CpuLimits {
     pub cache_bytes: usize,
     pub max_spans: usize,
     pub scene: crate::scene::Limits,
+    pub bands: RasterBands,
 }
 impl Default for CpuLimits {
     fn default() -> Self {
@@ -29,6 +62,7 @@ impl Default for CpuLimits {
             cache_bytes: 32 * 1024 * 1024,
             max_spans: 4096,
             scene: crate::scene::Limits::default(),
+            bands: RasterBands::One,
         }
     }
 }
@@ -205,7 +239,6 @@ enum PrimitiveDomain {
 struct Primitive {
     domain: PrimitiveDomain,
     world: WorldId,
-    reference: u32,
     surface: u32,
     boundary: u32,
     depth_key: u32,
@@ -251,7 +284,7 @@ struct WorldCatalog {
 enum PreparedDraw {
     #[default]
     External,
-    Surface(u32),
+    Surface([usize; 2]),
     Sky {
         boxes: [usize; 2],
         clouds: [usize; 2],
@@ -274,6 +307,8 @@ struct WorldPrepare {
     sky_states: Box<[super::sky::SkyState]>,
     sky_stages: Box<[Option<PreparedStage>]>,
     draws: Box<[PreparedDraw]>,
+    surface_draws: Box<[PreparedDraw]>,
+    reference_base: u32,
     draw_count: usize,
     opaque_count: usize,
     policy: DepthPolicy,
@@ -291,7 +326,8 @@ struct WorldBand {
 
 pub(super) struct WorldRaster {
     prepare: WorldPrepare,
-    band: WorldBand,
+    bands: Box<[WorldBand]>,
+    config: RasterConfig,
 }
 
 pub(super) struct Buffers<'a> {
@@ -304,7 +340,36 @@ pub(super) struct Buffers<'a> {
     pub palettes: &'a mut [u32],
 }
 
-impl Buffers<'_> {
+impl<'a> Buffers<'a> {
+    fn split_rows(self, width: u32, rows: u32) -> (Self, Self) {
+        let count = width as usize * rows as usize;
+        let (pixels, remaining_pixels) = self.pixels.split_at_mut(count);
+        let (depth, remaining_depth) = self.inverse_depth.split_at_mut(count);
+        let (ranks, remaining_ranks) = self.depth_ranks.split_at_mut(count);
+        let (indices, remaining_indices) = self.indices.split_at_mut(count);
+        let (palettes, remaining_palettes) = self.palettes.split_at_mut(count);
+        (
+            Self {
+                first_row: self.first_row,
+                frame_height: self.frame_height,
+                pixels,
+                inverse_depth: depth,
+                depth_ranks: ranks,
+                indices,
+                palettes,
+            },
+            Self {
+                first_row: self.first_row + rows,
+                frame_height: self.frame_height,
+                pixels: remaining_pixels,
+                inverse_depth: remaining_depth,
+                depth_ranks: remaining_ranks,
+                indices: remaining_indices,
+                palettes: remaining_palettes,
+            },
+        )
+    }
+
     pub(super) fn rows(
         &self,
         width: u32,
@@ -328,6 +393,11 @@ impl WorldRaster {
         limits: CpuLimits,
         evaluator: &StageEvaluator,
     ) -> Result<Self, &'static str> {
+        let band_count = limits.bands.count();
+        if band_count > height as usize {
+            return Err("CPU band count exceeds framebuffer rows");
+        }
+        let share = (limits.cache_bytes / 8 / band_count) * 8;
         let mut offsets = Vec::with_capacity(assets.worlds().len());
         let mut sources = Vec::new();
         let mut surfaces = Vec::new();
@@ -357,7 +427,11 @@ impl WorldRaster {
             .scene
             .draw_capacity()
             .ok_or("CPU scene draw count overflow")?;
-        if draw_capacity == 0 || draw_capacity > u32::MAX as usize {
+        if draw_capacity == 0
+            || draw_capacity > u32::MAX as usize
+            || limits.scene.surfaces == 0
+            || limits.scene.surfaces > u32::MAX as usize
+        {
             return Err("invalid CPU scene draw capacity");
         }
         for world in assets.worlds() {
@@ -523,7 +597,7 @@ impl WorldRaster {
                 );
             }
         }
-        if mandatory_cache_bytes > limits.cache_bytes {
+        if mandatory_cache_bytes > share {
             return Err("CPU cache cannot hold a mandatory surface");
         }
         let rgba_count = rgba.len();
@@ -540,6 +614,10 @@ impl WorldRaster {
             skies: skies.into_boxed_slice(),
             surfaces_cache,
         });
+        let bands = (0..band_count)
+            .map(|_| WorldBand::load(width, height, Arc::clone(&catalog), share, limits.max_spans))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice();
         Ok(Self {
             prepare: WorldPrepare {
                 catalog: Arc::clone(&catalog),
@@ -560,60 +638,77 @@ impl WorldRaster {
                     .into_boxed_slice(),
                 sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
                 draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
+                surface_draws: vec![PreparedDraw::Skip; limits.scene.surfaces].into_boxed_slice(),
+                reference_base: 0,
                 draw_count: 0,
                 opaque_count: 0,
                 policy: DepthPolicy::PlaneDepth,
                 background: None,
                 stats: WorldStats::default(),
             },
-            band: WorldBand::load(
-                width,
-                height,
-                Arc::clone(&catalog),
-                limits.cache_bytes,
-                limits.max_spans,
-            )?,
+            bands,
+            config: RasterConfig {
+                bands: limits.bands,
+                total_cache_budget_bytes: limits.cache_bytes,
+                allocated_cache_bytes: share * band_count,
+                per_band_cache_bytes: share,
+                mandatory_cache_bytes,
+            },
         })
     }
 
     pub(super) fn stats(&self) -> WorldStats {
-        WorldStats {
-            cache: self.band.cache.stats(),
-            ..merge_stats(self.prepare.stats, self.band.stats)
+        let mut total = self.prepare.stats;
+        let mut cache = CacheStats::default();
+        for band in &self.bands {
+            total = merge_stats(total, band.stats);
+            let current = band.cache.stats();
+            cache.hits = cache.hits.saturating_add(current.hits);
+            cache.fills = cache.fills.saturating_add(current.fills);
+            cache.evictions = cache.evictions.saturating_add(current.evictions);
+            cache.rejected = cache.rejected.saturating_add(current.rejected);
         }
+        WorldStats { cache, ..total }
+    }
+    pub(super) fn config(&self) -> RasterConfig {
+        self.config
+    }
+    pub(super) fn band_stats(&self, output: &mut [WorldStats; MAX_BANDS]) -> usize {
+        output.fill(WorldStats::default());
+        for (out, band) in output.iter_mut().zip(&self.bands) {
+            *out = WorldStats {
+                cache: band.cache.stats(),
+                ..band.stats
+            };
+        }
+        self.bands.len()
     }
     pub(super) fn reset_stats(&mut self) {
         self.prepare.stats = WorldStats::default();
-        self.band.stats = WorldStats::default();
+        for band in &mut self.bands {
+            band.stats = WorldStats::default();
+        }
     }
-    pub(super) fn render_opaque(
+    pub(super) fn prepare_view(
         &mut self,
         camera: &Camera,
         list: &CommandList,
         scene: SceneRanges,
         assets: &Assets,
         evaluator: &StageEvaluator,
-        buffers: Buffers<'_>,
-        stats: &mut crate::BackendStats,
-    ) {
-        if self
-            .prepare
-            .prepare_view(camera, list, scene, assets, evaluator, stats)
-        {
-            self.band
-                .render_opaque(&self.prepare, camera, assets, buffers, stats);
-        }
-    }
-    pub(super) fn draw_item(
-        &mut self,
-        camera: &Camera,
-        rank: usize,
-        assets: &Assets,
-        buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
     ) -> bool {
-        self.band
-            .draw_item(&self.prepare, camera, rank, assets, buffers, stats)
+        self.prepare
+            .prepare_view(camera, list, scene, assets, evaluator, stats)
+    }
+
+    fn draw(&self, rank: usize) -> PreparedDraw {
+        self.prepare
+            .draws
+            .get(rank)
+            .filter(|_| rank < self.prepare.draw_count)
+            .copied()
+            .unwrap_or(PreparedDraw::External)
     }
 }
 
@@ -640,6 +735,12 @@ impl WorldPrepare {
         self.collect_skies(camera, list, scene, assets, stats);
         let references = list.surfaces(scene.surfaces);
         let reference_base = scene.surfaces.first;
+        self.reference_base = reference_base;
+        if references.len() > self.surface_draws.len() {
+            self.reject(stats);
+            return false;
+        }
+        self.surface_draws[..references.len()].fill(PreparedDraw::Skip);
         let mut background = None;
         let first_world = references.first().map(|r| r.world);
         let mut certified = first_world.is_some_and(|id| {
@@ -703,14 +804,7 @@ impl WorldPrepare {
                     continue;
                 }
                 if self.add_sky(
-                    camera,
-                    *reference,
-                    reference_base + reference_index as u32,
-                    source,
-                    material,
-                    assets,
-                    evaluator,
-                    stats,
+                    camera, *reference, source, material, assets, evaluator, stats,
                 ) {
                     stats.surfaces = stats.surfaces.saturating_add(1);
                     if matches!(source, super::sky::Source::BackgroundCube { .. }) {
@@ -789,7 +883,6 @@ impl WorldPrepare {
                 }
                 let mut primitive = Primitive {
                     world: reference.world,
-                    reference: reference_base + reference_index as u32,
                     surface: reference.surface,
                     boundary: boundary as u32,
                     depth_key: reference.depth_key,
@@ -948,6 +1041,13 @@ impl WorldPrepare {
             }
             if self.primitive_count > before {
                 stats.surfaces = stats.surfaces.saturating_add(1);
+                if self.primitives[before..self.primitive_count]
+                    .iter()
+                    .any(|p| p.overlay)
+                {
+                    self.surface_draws[reference_index] =
+                        PreparedDraw::Surface([before, self.primitive_count]);
+                }
             }
         }
         self.policy = if certified {
@@ -1107,7 +1207,12 @@ impl WorldPrepare {
         stats: &mut crate::BackendStats,
     ) -> PreparedDraw {
         let external = match item.kind {
-            DrawKind::Surface => PreparedDraw::Surface(item.index),
+            DrawKind::Surface => item
+                .index
+                .checked_sub(self.reference_base)
+                .and_then(|index| self.surface_draws.get(index as usize))
+                .copied()
+                .unwrap_or(PreparedDraw::Skip),
             _ => PreparedDraw::External,
         };
         let Some(id) = sky_item_material(item, list, assets) else {
@@ -1439,7 +1544,6 @@ impl WorldPrepare {
         &mut self,
         camera: &Camera,
         reference: SurfaceRef,
-        reference_index: u32,
         source: super::sky::Source,
         material: &Material,
         assets: &Assets,
@@ -1457,7 +1561,6 @@ impl WorldPrepare {
                 world: reference.world,
                 surface: reference.surface,
                 boundary: boundary as u32,
-                reference: reference_index,
                 depth_key: reference.depth_key,
                 draw_rank: reference.draw_rank,
                 sky: Some(source),

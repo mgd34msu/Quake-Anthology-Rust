@@ -90,10 +90,10 @@ impl WorldBand {
         match draw {
             PreparedDraw::External => false,
             PreparedDraw::Skip => true,
-            PreparedDraw::Surface(reference) => {
-                for index in 0..prepared.opaque_count {
+            PreparedDraw::Surface(range) => {
+                for index in range[0]..range[1] {
                     let primitive = prepared.primitives[index];
-                    if primitive.reference == reference && primitive.overlay {
+                    if primitive.overlay {
                         self.raster_range(
                             prepared,
                             camera,

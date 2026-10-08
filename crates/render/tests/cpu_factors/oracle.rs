@@ -317,7 +317,7 @@ fn compare(
     assert_eq!(fixed.world_stats().stage_spans, 0);
     assert!(fixed.world_stats().factor_spans > 0);
     assert_buffers(&fixed, &generic);
-    if budget < 8 {
+    if budget <= 8 {
         assert_eq!(fixed.world_stats().factor_fills, 0);
         assert!(fixed.world_stats().factor_fallback_spans > 0);
         assert!(fixed.world_stats().factor_rejected > 0);
@@ -353,8 +353,10 @@ fn factors_match_generic_pixels_depth_and_rank_for_native_grids() {
 
 #[test]
 fn factor_reservation_failure_keeps_original_views_and_exact_coverage() {
-    compare(false, true, true, false, true, 4, DepthFunc::Equal, false);
-    compare(true, false, false, true, false, 4, DepthFunc::Equal, false);
+    // A selected band reserves in eight-byte units. One unit still cannot
+    // hold either factor, so both views must retain their exact fallback.
+    compare(false, true, true, false, true, 8, DepthFunc::Equal, false);
+    compare(true, false, false, true, false, 8, DepthFunc::Equal, false);
 }
 
 #[test]

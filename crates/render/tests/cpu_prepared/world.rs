@@ -307,6 +307,76 @@ fn exact_rows(assets: &Assets, list: &CommandList) {
         assert_eq!(stats.patch_polygons, reference.patch_polygons);
         assert_eq!(stats.pixels, reference.pixels);
     }
+    for bands in [
+        RasterBands::One,
+        RasterBands::Two,
+        RasterBands::Four,
+        RasterBands::Eight,
+    ] {
+        let mut cpu = CpuBackend::load_with_limits(
+            29,
+            19,
+            assets,
+            CpuLimits {
+                bands,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        let mut callbacks = 0usize;
+        let result: Result<_, std::convert::Infallible> =
+            cpu.render_with_dispatch(list, assets, |jobs| {
+                callbacks += 1;
+                assert_eq!(jobs.len(), bands.count());
+                for job in jobs.iter_mut().rev() {
+                    super::render_band(job);
+                }
+                Ok(())
+            });
+        assert_eq!(result.unwrap().rejected, 0);
+        assert!(callbacks > 0);
+        assert_eq!(cpu.pixels, serial.pixels);
+        assert_eq!(
+            cpu.inverse_depth
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            serial
+                .inverse_depth
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(cpu.depth_ranks, serial.depth_ranks);
+        assert_eq!(cpu.indices, serial.indices);
+        assert_eq!(cpu.palettes, serial.palettes);
+        let aggregate = cpu.world_stats();
+        assert_eq!(aggregate.polygons, reference.polygons);
+        assert_eq!(aggregate.patch_polygons, reference.patch_polygons);
+        assert_eq!(aggregate.pixels, reference.pixels);
+        let mut per_band = [WorldStats::default(); MAX_BANDS];
+        assert_eq!(cpu.band_stats(&mut per_band), bands.count());
+        assert_eq!(
+            per_band[..bands.count()]
+                .iter()
+                .map(|s| s.pixels)
+                .sum::<u64>(),
+            aggregate.pixels
+        );
+        assert!(
+            per_band[bands.count()..]
+                .iter()
+                .all(|s| *s == WorldStats::default())
+        );
+        let config = cpu.raster_config();
+        assert_eq!(config.bands, bands);
+        assert_eq!(config.total_cache_budget_bytes, 32 * 1024 * 1024);
+        assert_eq!(
+            config.allocated_cache_bytes,
+            config.per_band_cache_bytes * bands.count()
+        );
+        assert!(config.per_band_cache_bytes >= config.mandatory_cache_bytes);
+    }
 }
 
 fn stages(assets: &mut Assets, stages: &[Stage], settings: MaterialSettings) -> MaterialId {
@@ -469,6 +539,40 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
         },
     );
     let frame = packet(&assets, &[world], test_view());
+    let admission = CpuBackend::load_with_assets(29, 19, &assets)
+        .unwrap()
+        .raster_config();
+    let required = admission.mandatory_cache_bytes;
+    assert!(required > 0);
+    for bands in [RasterBands::Two, RasterBands::Four, RasterBands::Eight] {
+        assert!(
+            CpuBackend::load_with_limits(
+                29,
+                19,
+                &assets,
+                CpuLimits {
+                    bands,
+                    cache_bytes: required * bands.count() - 1,
+                    ..CpuLimits::default()
+                }
+            )
+            .is_err()
+        );
+        let accepted = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands,
+                cache_bytes: required * bands.count(),
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(accepted.raster_config().mandatory_cache_bytes, required);
+        assert_eq!(accepted.raster_config().per_band_cache_bytes, required);
+    }
+
     exact_rows(&assets, &frame);
     let mut old = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let mut old_rows = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
@@ -817,4 +921,325 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
         ..test_view()
     };
     exact_rows(&assets, &packet(&assets, &[world], view));
+}
+
+#[test]
+fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
+    let mut assets = Assets::load();
+    let image = assets.register_image(1, 1, &[91, 117, 143, 255]).unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        2.0,
+        1.5,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let frame = packet(&assets, &[world], test_view());
+    let mut cpu = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Four,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    let mut calls = 0;
+    let failed = cpu.render_with_dispatch(&frame, &assets, |jobs| {
+        calls += 1;
+        super::render_band(&mut jobs[0]);
+        Err("dispatch rejected")
+    });
+    assert_eq!(failed, Err("dispatch rejected"));
+    assert_eq!(calls, 1);
+    let mut per_band = [WorldStats::default(); MAX_BANDS];
+    assert_eq!(cpu.band_stats(&mut per_band), 4);
+    assert!(per_band[0].pixels > 0);
+    assert!(per_band[1..4].iter().all(|stats| stats.pixels == 0));
+    assert_eq!(cpu.world_stats().pixels, per_band[0].pixels);
+    let mut callbacks = 0;
+    let complete: Result<_, std::convert::Infallible> =
+        cpu.render_with_dispatch(&frame, &assets, |jobs| {
+            callbacks += 1;
+            for job in jobs {
+                super::render_band(job);
+            }
+            Ok(())
+        });
+    assert_eq!(complete.unwrap().rejected, 0);
+    assert_eq!(callbacks, 1);
+    let mut fresh = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(fresh.render(&frame, &assets).rejected, 0);
+    assert_eq!(fresh.pixels, cpu.pixels);
+    assert_eq!(fresh.depth_ranks, cpu.depth_ranks);
+}
+
+#[test]
+fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share() {
+    use crate::surface_cache::IndexedTexture;
+    let mut assets = Assets::load();
+    let palette = indexed_palette(&mut assets);
+    let mip_bytes: [Vec<u8>; 4] = std::array::from_fn(|mip| vec![17; (16 >> mip) * (16 >> mip)]);
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(
+                16,
+                16,
+                std::array::from_fn(|mip| mip_bytes[mip].as_slice()),
+                false,
+            )
+            .unwrap(),
+            palette,
+        )
+        .unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    fixture_world(
+        &mut assets,
+        2.0,
+        1.0,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        Some(137),
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let base = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    let required = base.raster_config().mandatory_cache_bytes;
+    assert!(required > 0);
+    for bands in [
+        RasterBands::One,
+        RasterBands::Two,
+        RasterBands::Four,
+        RasterBands::Eight,
+    ] {
+        let count = bands.count();
+        assert!(
+            CpuBackend::load_with_limits(
+                29,
+                19,
+                &assets,
+                CpuLimits {
+                    bands,
+                    cache_bytes: required * count - 1,
+                    ..CpuLimits::default()
+                }
+            )
+            .is_err()
+        );
+        let cpu = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands,
+                cache_bytes: required * count,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        let config = cpu.raster_config();
+        assert_eq!(config.allocated_cache_bytes, required * count);
+        assert_eq!(config.per_band_cache_bytes, required);
+        let padded = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands,
+                cache_bytes: 32 * 1024 * 1024 + 13,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        let config = padded.raster_config();
+        assert_eq!(config.total_cache_budget_bytes, 32 * 1024 * 1024 + 13);
+        assert_eq!(
+            config.per_band_cache_bytes,
+            (config.total_cache_budget_bytes / 8 / count) * 8
+        );
+        assert_eq!(
+            config.allocated_cache_bytes,
+            config.per_band_cache_bytes * count
+        );
+        assert!(config.allocated_cache_bytes <= config.total_cache_budget_bytes);
+    }
+}
+
+#[test]
+fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
+    let mut assets = Assets::load();
+    let red = assets.register_image(1, 1, &[193, 31, 47, 255]).unwrap();
+    let blue = assets.register_image(1, 1, &[17, 53, 211, 255]).unwrap();
+    let opaque = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(red),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let translucent = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(blue),
+            alpha_gen: AlphaGen::Const(0.375),
+            depth_write: false,
+            blend: Some(StageBlend {
+                source: BlendFactor::SourceAlpha,
+                destination: BlendFactor::OneMinusSourceAlpha,
+            }),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            sort: 6.0,
+            ..MaterialSettings::default()
+        },
+    );
+    let back = fixture_world(
+        &mut assets,
+        2.0,
+        1.5,
+        SurfaceMaterial {
+            material: opaque,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let front = fixture_world(
+        &mut assets,
+        2.0,
+        0.75,
+        SurfaceMaterial {
+            material: translucent,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let vertices = [
+        [2.0, 1.0, 1.0],
+        [2.0, -1.0, 1.0],
+        [2.0, -1.0, -1.0],
+        [2.0, 1.0, -1.0],
+    ]
+    .map(|p| Vertex {
+        position: Vec3(p),
+        ..Vertex::default()
+    });
+    let model = assets
+        .register_model(&vertices, &[0, 1, 2, 0, 2, 3], opaque)
+        .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    assert!(frame.add_world(
+        back,
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 9000
+        }]
+    ));
+    assert!(frame.add_world(
+        front,
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.add_entity(crate::scene::SceneEntity {
+        model,
+        color: [127, 255, 191, 255],
+        ..crate::scene::SceneEntity::default()
+    }));
+    assert!(frame.add_poly(translucent, &vertices));
+    assert!(frame.render_scene(
+        Refdef {
+            blend: [0.2, 0.1, 0.3, 0.25],
+            ..test_view()
+        },
+        &[],
+        &assets
+    ));
+    assert!(frame.draw_2d(crate::scene::Draw2d {
+        rect: [4.0, 4.0, 13.0, 3.0],
+        texcoords: [0.0, 0.0, 1.0, 1.0],
+        color: [255; 4],
+        material: opaque
+    }));
+    frame.clear_scene();
+    assert!(frame.add_world(
+        front,
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 9000
+        }]
+    ));
+    assert!(frame.add_world(
+        back,
+        &[VisibleSurface {
+            surface: 0,
+            depth_key: 0
+        }]
+    ));
+    assert!(frame.add_entity(crate::scene::SceneEntity {
+        model,
+        color: [255, 127, 191, 255],
+        ..crate::scene::SceneEntity::default()
+    }));
+    assert!(frame.render_scene(
+        Refdef {
+            viewport: Viewport {
+                x: 7,
+                y: 5,
+                width: 13,
+                height: 11
+            },
+            blend: [0.1, 0.3, 0.2, 0.5],
+            ..test_view()
+        },
+        &[],
+        &assets
+    ));
+    assert!(frame.draw_2d(crate::scene::Draw2d {
+        rect: [3.0, 9.0, 7.0, 2.0],
+        texcoords: [0.0, 0.0, 1.0, 1.0],
+        color: [255; 4],
+        material: translucent
+    }));
+    exact_rows(&assets, &frame.finish());
 }

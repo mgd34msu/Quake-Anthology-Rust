@@ -16,7 +16,9 @@ use crate::scene::{
     Refdef, SceneEntity, Viewport,
 };
 use qa_core::primitives::Vec3;
-pub use world::{CpuLimits, WorldStats};
+pub use world::{
+    BandJob, CpuLimits, MAX_BANDS, RasterBands, RasterConfig, WorldStats, render_band,
+};
 
 const CLIP_VERTICES: usize = 12;
 
@@ -255,11 +257,50 @@ impl CpuBackend {
         &self.pixels
     }
 
+    pub fn inverse_depth(&self) -> &[f32] {
+        &self.inverse_depth
+    }
+
     pub fn dimensions(&self) -> [u32; 2] {
         [self.width, self.height]
     }
 
+    pub fn raster_config(&self) -> RasterConfig {
+        self.world
+            .as_ref()
+            .map_or(RasterConfig::default(), |world| world.config())
+    }
+    pub fn band_stats(&self, output: &mut [WorldStats; MAX_BANDS]) -> usize {
+        if let Some(world) = &self.world {
+            world.band_stats(output)
+        } else {
+            output.fill(WorldStats::default());
+            0
+        }
+    }
+
     pub fn render(&mut self, list: &CommandList, assets: &Assets) -> BackendStats {
+        let result: Result<BackendStats, std::convert::Infallible> =
+            self.render_with_dispatch(list, assets, |jobs| {
+                for job in jobs {
+                    render_band(job);
+                }
+                Ok(())
+            });
+        match result {
+            Ok(stats) => stats,
+            Err(never) => match never {},
+        }
+    }
+
+    /// The dispatcher must complete each job before returning. An error stops
+    /// this packet; callers can inspect attempted band counts and skip presenting.
+    pub fn render_with_dispatch<E>(
+        &mut self,
+        list: &CommandList,
+        assets: &Assets,
+        mut dispatch: impl for<'job> FnMut(&mut [BandJob<'job>]) -> Result<(), E>,
+    ) -> Result<BackendStats, E> {
         let mut stats = BackendStats {
             rejected: list.rejected.min(u32::MAX as u64) as u32,
             ..BackendStats::default()
@@ -305,7 +346,8 @@ impl CpuBackend {
                                 palettes: &mut self.palettes,
                             },
                             &mut stats,
-                        );
+                            &mut dispatch,
+                        )?;
                     } else {
                         stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     }
@@ -325,7 +367,8 @@ impl CpuBackend {
                                     palettes: &mut self.palettes,
                                 },
                                 &mut stats,
-                            )
+                                &mut dispatch,
+                            )?
                         {
                             continue;
                         }
@@ -366,7 +409,7 @@ impl CpuBackend {
                 self.view_blend(&camera.refdef, true, assets);
             }
         }
-        stats
+        Ok(stats)
     }
 
     fn clear_depth(&mut self, viewport: Viewport, far: f32) {
