@@ -18,6 +18,7 @@ mod band;
 mod bins;
 mod clip;
 mod jobs;
+mod packed;
 use bins::{CoverageBins, RasterSelection};
 pub use jobs::{BandJob, render_band};
 
@@ -2398,31 +2399,15 @@ fn rgba_span(
     if let Some(block) = block {
         if let Some(pixels) = cache.rgba_pixels(block) {
             let before = stats.pixels;
-            for x in span.x..span.x + span.count {
-                let zi = primitive.planes.inverse_depth.at(x as f32, span.y as f32);
-                let index = buffers.offset(width, x, span.y);
-                if zi <= 0.0
-                    || !zi.is_finite()
-                    || !super::depth_passes(
-                        DepthFunc::Lequal,
-                        zi,
-                        buffers.inverse_depth[index],
-                        primitive.draw_rank,
-                        buffers.depth_ranks[index],
-                    )
-                {
-                    continue;
-                }
-                let coordinate = std::array::from_fn(|axis| {
-                    primitive.planes.texture[axis].at(x as f32, span.y as f32) / zi
-                });
-                buffers.pixels[index] =
-                    super::rgba::Product::cached_pixel(block, pixels, coordinate);
-                buffers.palettes[index] = u32::MAX;
-                buffers.inverse_depth[index] = zi;
-                buffers.depth_ranks[index] = primitive.draw_rank;
-                stats.pixels = stats.pixels.saturating_add(1);
-            }
+            stats.pixels = stats.pixels.saturating_add(packed::cached_rgba_span(
+                width,
+                span,
+                &primitive.planes,
+                primitive.draw_rank,
+                block,
+                pixels,
+                buffers,
+            ) as u64);
             stats.rgba_spans = stats.rgba_spans.saturating_add(1);
             if mip != 0 {
                 stats.rgba_minified_spans = stats.rgba_minified_spans.saturating_add(1);

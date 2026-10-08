@@ -931,6 +931,7 @@ impl Product {
     pub(super) fn base_sampler(&self) -> crate::assets::Sampler {
         self.stages[self.base_stage].sampler
     }
+    #[cfg(test)]
     pub(super) fn cached_pixel(
         block: crate::surface_cache::CacheSpan,
         pixels: &[[u8; 4]],
