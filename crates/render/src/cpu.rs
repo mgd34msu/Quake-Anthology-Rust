@@ -6,6 +6,7 @@ use crate::BackendStats;
 use crate::assets::{Assets, DepthFunc, Filter, Image, Material, Sampler, Vertex, Wrap};
 use crate::shader::{BlendFactor, Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
+mod sky;
 mod world;
 use crate::scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawKind, PaletteOperation, Poly,

@@ -71,11 +71,22 @@ fn world(
     light: Option<u8>,
     partition: GeometryPartition,
 ) -> WorldId {
+    world_with_extent(assets, depth, 1.0, material, light, partition)
+}
+fn world_with_extent(
+    assets: &mut Assets,
+    depth: f32,
+    extent: f32,
+    material: MaterialId,
+    light: Option<u8>,
+    partition: GeometryPartition,
+) -> WorldId {
+    let size = depth * extent;
     let points = [
-        [depth, depth, depth],
-        [depth, -depth, depth],
-        [depth, -depth, -depth],
-        [depth, depth, -depth],
+        [depth, size, size],
+        [depth, -size, size],
+        [depth, -size, -size],
+        [depth, size, -size],
     ];
     let vertices: Vec<_> = points
         .into_iter()
@@ -90,8 +101,8 @@ fn world(
         })
         .collect();
     let bounds = Bounds {
-        mins: Vec3([depth, -depth, -depth]),
-        maxs: Vec3([depth, depth, depth]),
+        mins: Vec3([depth, -size, -size]),
+        maxs: Vec3([depth, size, size]),
     };
     let geometry = WorldGeometry {
         partition,
@@ -112,7 +123,7 @@ fn world(
             }),
             bounds,
             texture_coordinates: TextureCoordinates::Texels,
-            texture_projection: [[0.0, -8.0 / depth, 0.0, 8.0], [0.0, 0.0, -8.0 / depth, 8.0]],
+            texture_projection: [[0.0, -8.0 / size, 0.0, 8.0], [0.0, 0.0, -8.0 / size, 8.0]],
             texture_minima: [0; 2],
             texture_extents: [16; 2],
             lightmap_grid: [2; 2],
@@ -605,5 +616,351 @@ fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
                 .iter()
                 .all(|&pixel| pixel == u32::from_le_bytes(expected))
         );
+    }
+}
+
+fn layered_material(
+    assets: &mut Assets,
+    palette: PaletteId,
+    back: &[u8],
+    front: &[u8],
+) -> MaterialId {
+    use qa_render::{
+        assets::{Sky, TcGen},
+        shader::{BlendFactor, StageBlend},
+        sky::LayeredSphere,
+    };
+    let images = [
+        assets
+            .register_indexed_image(
+                IndexedTexture::load_base(128, 128, back, None).unwrap(),
+                palette,
+            )
+            .unwrap(),
+        assets
+            .register_indexed_image(
+                IndexedTexture::load_base(128, 128, front, Some(0)).unwrap(),
+                palette,
+            )
+            .unwrap(),
+    ];
+    let sphere = LayeredSphere::NATIVE;
+    let stages = std::array::from_fn::<_, 2, _>(|layer| Stage {
+        texture: StageTexture::Image(images[layer]),
+        texgen: TcGen::LayeredSky {
+            flatten_z: sphere.flatten_z,
+            projected_scale: sphere.projected_scale,
+            texture_size: sphere.texture_size,
+            scroll_speed: sphere.scroll_speeds[layer],
+        },
+        blend: (layer == 1).then_some(StageBlend {
+            source: BlendFactor::SourceAlpha,
+            destination: BlendFactor::OneMinusSourceAlpha,
+        }),
+        depth_write: layer == 0,
+        sampler: Sampler {
+            mipmaps: false,
+            ..Sampler::default()
+        },
+        ..Stage::default()
+    });
+    assets
+        .register_material(
+            "layered sky",
+            &stages,
+            MaterialSettings {
+                cull: Cull::None,
+                sort: 2.0,
+                sky: Some(Sky::Layered { images, sphere }),
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn layered_sky_occludes_far_world_and_retains_unlit_masked_indices() {
+    let mut assets = Assets::load();
+    let palette = palette(&mut assets, false);
+    let image = texture(&mut assets, palette, 20, false);
+    let solid = material(&mut assets, image, false);
+    let sky_material = layered_material(
+        &mut assets,
+        palette,
+        &vec![11; 128 * 128],
+        &vec![0; 128 * 128],
+    );
+    let sky = world(
+        &mut assets,
+        2.0,
+        sky_material,
+        Some(0),
+        GeometryPartition::Unpartitioned,
+    );
+    let far = world(
+        &mut assets,
+        4.0,
+        solid,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let near = world(
+        &mut assets,
+        1.0,
+        solid,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for references in [[(sky, 9000), (far, 0)], [(far, 0), (sky, 9000)]] {
+        let packet = packet(&mut frontend, &references, view(palette), &assets);
+        let stats = cpu.render(&packet, &assets);
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.triangles, 0);
+        assert!(
+            cpu.pixels()
+                .iter()
+                .all(|&pixel| pixel == u32::from_le_bytes([11, 11, 11, 255]))
+        );
+        assert!(frontend.recycle(packet).is_ok());
+    }
+    let packet = packet(
+        &mut frontend,
+        &[(near, 9000), (sky, 0)],
+        view(palette),
+        &assets,
+    );
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([20, 20, 20, 255]))
+    );
+}
+
+#[test]
+fn layered_sky_uses_full_seat_integer_center_and_ignores_fov() {
+    let mut assets = Assets::load();
+    let palette = palette(&mut assets, false);
+    let back: Vec<_> = (0..128 * 128).map(|i| (i % 128) as u8).collect();
+    let material = layered_material(&mut assets, palette, &back, &vec![0; 128 * 128]);
+    let sky = world(
+        &mut assets,
+        2.0,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(16, 10, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for fov in [65.0, 110.0] {
+        let refdef = Refdef {
+            viewport: Viewport {
+                x: 4,
+                y: 4,
+                width: 1,
+                height: 1,
+            },
+            blend_viewport: Some(Viewport {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 10,
+            }),
+            fov: [fov; 2],
+            ..view(palette)
+        };
+        let packet = packet(&mut frontend, &[(sky, 0)], refdef, &assets);
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        // Extent is the 1-pixel viewport, but center is the full seat (4,5).
+        // Normalize (4096,0,24576), then truncate 378*x to texel62.
+        assert_eq!(
+            cpu.pixels()[4 * 16 + 4],
+            u32::from_le_bytes([62, 62, 62, 255])
+        );
+        assert_eq!(
+            cpu.pixels()[4 * 16 + 12],
+            u32::from_le_bytes([0, 0, 0, 255])
+        );
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn layered_sky_indices_bypass_world_colormap_lighting() {
+    let mut assets = Assets::load();
+    // Every supplied colormap row changes index11, including the fullbright
+    // row. Sky indices are palette inputs rather than lit cache texels.
+    let palette = palette(&mut assets, true);
+    let material = layered_material(
+        &mut assets,
+        palette,
+        &vec![11; 128 * 128],
+        &vec![0; 128 * 128],
+    );
+    let sky = world(
+        &mut assets,
+        2.0,
+        material,
+        Some(0),
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(&mut frontend, &[(sky, 0)], view(palette), &assets);
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([11, 11, 11, 255]))
+    );
+}
+
+#[test]
+fn layered_sky_front_scroll_truncates_its_extra_shift_separately() {
+    let mut assets = Assets::load();
+    let palette = palette(&mut assets, false);
+    let mut front = vec![0; 128 * 128];
+    front[122] = 201;
+    front[256 + 124] = 202;
+    let material = layered_material(&mut assets, palette, &vec![11; 128 * 128], &front);
+    let sky = world(
+        &mut assets,
+        2.0,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for (time_ms, color) in [(100, 201), (125, 202)] {
+        let packet = packet(
+            &mut frontend,
+            &[(sky, 0)],
+            Refdef {
+                viewport: Viewport {
+                    x: 4,
+                    y: 4,
+                    width: 1,
+                    height: 1,
+                },
+                time_ms,
+                ..view(palette)
+            },
+            &assets,
+        );
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        assert_eq!(
+            cpu.pixels()[4 * 8 + 4],
+            u32::from_le_bytes([color, color, color, 255])
+        );
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+fn cube_material(assets: &mut Assets, cpu_rotation: bool) -> MaterialId {
+    use qa_render::{
+        assets::{CubeSkyParams, Sky},
+        sky::{CloudSphere, Rotation},
+    };
+    let images = std::array::from_fn(|face| {
+        let indices: Vec<_> = (0..16).map(|pixel| 10 + face as u8 * 20 + pixel).collect();
+        let indexed = IndexedTexture::load_base(4, 4, &indices, None).unwrap();
+        // Distinct GL dimensions/content must not determine CPU sampling.
+        assets
+            .register_rgba_with_indexed(1, 1, &[200, 200, 200, 255], indexed)
+            .unwrap()
+    });
+    assets
+        .register_material(
+            "cube sky",
+            &[],
+            MaterialSettings {
+                cull: Cull::None,
+                sort: 2.0,
+                sky: Some(Sky::Cube {
+                    outer_box: Some(images),
+                    inner_box: None,
+                    clouds: CloudSphere::native(512.0),
+                    rotation: Some(Rotation {
+                        axis: Vec3([0.0, 0.0, 1.0]),
+                        degrees_per_second: 90.0,
+                    }),
+                    params: CubeSkyParams {
+                        cpu_background: true,
+                        cpu_rotation,
+                        ..CubeSkyParams::default()
+                    },
+                }),
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn cube_background_uses_original_index_dimensions_and_typed_rotation_policy() {
+    for cpu_rotation in [false, true] {
+        let mut assets = Assets::load();
+        let palette = palette(&mut assets, false);
+        let sky_material = cube_material(&mut assets, cpu_rotation);
+        let sky = world_with_extent(
+            &mut assets,
+            2.0,
+            0.2,
+            sky_material,
+            None,
+            GeometryPartition::Unpartitioned,
+        );
+        let solid_image = texture(&mut assets, palette, 200, false);
+        let solid = material(&mut assets, solid_image, false);
+        let foreground = world_with_extent(
+            &mut assets,
+            1.0,
+            0.2,
+            solid,
+            None,
+            GeometryPartition::Unpartitioned,
+        );
+        let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        for time_ms in [0, 1000] {
+            let packet = packet(
+                &mut frontend,
+                &[(sky, 0)],
+                Refdef {
+                    time_ms,
+                    ..view(palette)
+                },
+                &assets,
+            );
+            let stats = cpu.render(&packet, &assets);
+            assert_eq!(stats.rejected, 0);
+            assert_eq!(stats.triangles, 0);
+            let face_base = if cpu_rotation && time_ms != 0 { 70 } else { 10 };
+            for y in 0..8 {
+                for x in 0..8 {
+                    let color = face_base + (y / 2) as u8 * 4 + (x / 2) as u8;
+                    assert_eq!(
+                        cpu.pixels()[y * 8 + x],
+                        u32::from_le_bytes([color, color, color, 255])
+                    );
+                }
+            }
+            assert!(frontend.recycle(packet).is_ok());
+        }
+        let packet = packet(
+            &mut frontend,
+            &[(sky, 0), (foreground, 9000)],
+            view(palette),
+            &assets,
+        );
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        assert_eq!(
+            cpu.pixels()[4 * 8 + 4],
+            u32::from_le_bytes([200, 200, 200, 255])
+        );
+        assert_eq!(cpu.pixels()[0], u32::from_le_bytes([10, 10, 10, 255]));
     }
 }

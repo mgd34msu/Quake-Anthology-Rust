@@ -3,7 +3,7 @@
 use super::{Camera, ClipVertex, ScreenVertex};
 use crate::assets::{Assets, DepthFunc, ImageId, Material, StageTexture, Vertex};
 use crate::edges::{DepthPolicy, Edges, ProjectedVertex, Span};
-use crate::scene::{CpuPresentation, Refdef, SurfaceRef};
+use crate::scene::{CpuPresentation, SurfaceRef};
 use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, Cull, RgbGen, TexCoordGen};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, alpha_pass};
 use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
@@ -38,6 +38,7 @@ struct SurfaceInfo {
     cache: u32,
     cache_supported: bool,
     mip_adjust: f32,
+    sky: Option<super::sky::Source>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -135,6 +136,7 @@ struct Primitive {
     draw_rank: u32,
     cache: u32,
     cache_image: Option<ImageId>,
+    sky: Option<super::sky::Source>,
     mip: u8,
     fixed_adjust: [i64; 2],
     planes: Planes,
@@ -229,6 +231,7 @@ impl WorldRaster {
                     cache,
                     cache_supported,
                     mip_adjust: mip_adjust(surface.texture_projection),
+                    sky: None,
                 });
                 let loops = geometry
                     .boundaries
@@ -241,6 +244,9 @@ impl WorldRaster {
                 let material = assets
                     .material(binding.material)
                     .ok_or("invalid world material")?;
+                if let Some(info) = surfaces.last_mut() {
+                    info.sky = super::sky::Source::load(material, assets);
+                }
                 stage_capacity = stage_capacity
                     .checked_add(
                         loops
@@ -324,6 +330,7 @@ impl WorldRaster {
         let backend_rejected = stats.rejected;
         self.primitive_count = 0;
         self.stage_count = 0;
+        let mut background = None;
         let first_world = references.first().map(|r| r.world);
         let mut certified = first_world.is_some_and(|id| {
             assets
@@ -357,8 +364,40 @@ impl WorldRaster {
                 self.reject(stats);
                 continue;
             };
+            if material.settings.sky.is_some() {
+                let Some(source) = info.sky else {
+                    self.reject(stats);
+                    continue;
+                };
+                if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Indexed { palette, .. } if assets.palette(palette).is_some())
+                {
+                    self.reject(stats);
+                    continue;
+                }
+                if self.add_sky(
+                    camera,
+                    *reference,
+                    reference_base + reference_index as u32,
+                    source,
+                    material,
+                    assets,
+                    evaluator,
+                    stats,
+                ) {
+                    stats.surfaces = stats.surfaces.saturating_add(1);
+                    if matches!(source, super::sky::Source::BackgroundCube { .. }) {
+                        if background.is_some_and(|old| old != source) {
+                            // Multiple independently selected full-view backgrounds
+                            // need a combined-game policy, not a backend sorter.
+                            self.reject(stats);
+                        } else {
+                            background = Some(source);
+                        }
+                    }
+                }
+                continue;
+            }
             if material.stages.is_empty()
-                || material.settings.sky.is_some()
                 || material.settings.fog.is_some()
                 || material.settings.portal
                 || material.settings.polygon_offset
@@ -429,6 +468,7 @@ impl WorldRaster {
                     draw_rank: reference.draw_rank,
                     cache: info.cache,
                     cache_image: native,
+                    sky: None,
                     mip: 0,
                     fixed_adjust: [0; 2],
                     planes: Planes::default(),
@@ -568,12 +608,22 @@ impl WorldRaster {
             self.reject(stats);
             return;
         }
+        if let Some(source) = background {
+            super::sky::background(
+                self.width,
+                source,
+                camera,
+                assets,
+                &mut buffers,
+                &mut self.stats,
+            );
+        }
         for index in 0..self.primitive_count {
             let primitive = self.primitives[index];
             if primitive.overlay {
                 continue;
             }
-            let prepared = if primitive.cache_image.is_some() {
+            let prepared = if primitive.cache_image.is_some() || primitive.sky.is_some() {
                 None
             } else {
                 self.stages[primitive.first_stage].prepared
@@ -607,7 +657,7 @@ impl WorldRaster {
                     stages,
                     cache,
                     assets,
-                    camera.refdef,
+                    camera,
                     &mut buffers,
                     counters,
                 );
@@ -640,7 +690,7 @@ impl WorldRaster {
                 continue;
             }
             let primitive = self.primitives[index];
-            let prepared = if primitive.cache_image.is_some() {
+            let prepared = if primitive.cache_image.is_some() || primitive.sky.is_some() {
                 None
             } else {
                 self.stages[primitive.first_stage].prepared
@@ -677,7 +727,7 @@ impl WorldRaster {
                         stages,
                         cache,
                         assets,
-                        camera.refdef,
+                        camera,
                         &mut buffers,
                         counters,
                     );
@@ -692,6 +742,71 @@ impl WorldRaster {
     fn reject(&mut self, stats: &mut crate::BackendStats) {
         self.stats.rejected = self.stats.rejected.saturating_add(1);
         stats.rejected = stats.rejected.saturating_add(1);
+    }
+
+    fn add_sky(
+        &mut self,
+        camera: Camera,
+        reference: SurfaceRef,
+        reference_index: u32,
+        source: super::sky::Source,
+        material: &Material,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        let Some(world) = assets.world(reference.world) else {
+            self.reject(stats);
+            return false;
+        };
+        let surface = &world.geometry().surfaces[reference.surface as usize];
+        let mut visible = false;
+        for boundary in surface.boundaries.indices() {
+            let mut primitive = Primitive {
+                world: reference.world,
+                surface: reference.surface,
+                boundary: boundary as u32,
+                reference: reference_index,
+                depth_key: reference.depth_key,
+                draw_rank: reference.draw_rank,
+                sky: Some(source),
+                ..Primitive::default()
+            };
+            let Some(count) = self.clip(camera, assets, primitive, None, evaluator) else {
+                self.reject(stats);
+                continue;
+            };
+            if count < 3 {
+                continue;
+            }
+            let area = polygon_area(&self.screen[..count]);
+            if area == 0.0
+                || match material.settings.cull {
+                    Cull::Front => area < 0.0,
+                    Cull::Back => area > 0.0,
+                    Cull::None => false,
+                }
+            {
+                continue;
+            }
+            if matches!(source, super::sky::Source::BackgroundCube { .. }) {
+                visible = true;
+                continue;
+            }
+            let Some(planes) = Planes::load(&self.screen[..count]) else {
+                self.reject(stats);
+                continue;
+            };
+            if self.primitive_count == self.primitives.len() {
+                self.reject(stats);
+                break;
+            }
+            primitive.planes = planes;
+            self.primitives[self.primitive_count] = primitive;
+            self.primitive_count += 1;
+            visible = true;
+        }
+        visible
     }
 
     fn clip(
@@ -900,10 +1015,27 @@ fn consume_span(
     stages: &[StagePlanes],
     cache: &mut SurfaceCache,
     assets: &Assets,
-    refdef: Refdef,
+    camera: Camera,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
+    let refdef = camera.refdef;
+    if let Some(source) = primitive.sky {
+        let depth = primitive.planes.inverse_depth;
+        super::sky::layered_span(
+            width,
+            (buffers.pixels.len() / width as usize) as u32,
+            span,
+            source,
+            camera,
+            assets,
+            [depth.x, depth.y, depth.origin],
+            primitive.draw_rank,
+            buffers,
+            stats,
+        );
+        return;
+    }
     if let Some(image) = primitive.cache_image {
         let CpuPresentation::Indexed {
             palette,
