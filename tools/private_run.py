@@ -187,14 +187,29 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         game = spawn("runtime", argv, env)
         deadline = time.monotonic() + min(10, timeout)
         window = None
+        ready = False
         while game.poll() is None and time.monotonic() < deadline:
-            window = client.find_window(title)
-            if window:
-                break
+            for line in (evidence / "runtime.log").read_text().splitlines():
+                try:
+                    event = json.loads(line)
+                    ready |= isinstance(event, dict) and event.get("event") == "window_ready"
+                except json.JSONDecodeError:
+                    pass
+            if ready:
+                window = client.find_window(title)
+                if window:
+                    break
             time.sleep(0.05)
         if not window:
-            raise RuntimeError("candidate did not open its window")
+            raise RuntimeError("candidate did not report a ready window")
         time.sleep(0.2)
+        # Startup can replace the first X window before readiness. Use the
+        # current client for capture/input after the engine reports readiness.
+        window = client.find_window(title)
+        if not window:
+            raise RuntimeError("ready window closed before capture")
+        result["captured_window"] = hex(window)
+        result["window_ready_before_selection"] = ready
         subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
         client.drive(window, actions or [])
         result["exit_code"] = game.wait(timeout=timeout)
