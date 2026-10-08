@@ -59,9 +59,13 @@ spawning, mixed-play and installed-binary evidence they require.
 Completed R2 structural order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
 THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891.
-Current order, authorised in the 2026-10-08 03:50 project update:
-THE-861, THE-862, THE-839, THE-860, THE-863, THE-895, THE-896.
-Rendering and the three-game walk-through precede networking and module services.
+Current order, authorised in the 2026-10-08 14:15 project update:
+finish every unfinished common primitive in architecture section 3.3, then meet
+THE-859's installed three-map, independent-seat and combined-movement criteria,
+followed by THE-884, THE-885, THE-887, THE-888 and THE-889. Next confirm the one
+surface cache for every map family (THE-862), then THE-860, THE-861, THE-862
+materials and THE-863. THE-862 q3dm1 speed work is paused until those steps finish.
+Earlier structural commits do not satisfy live acceptance criteria by themselves.
 R1 issues with live acceptance criteria remain In Progress for integration at
 the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
 `data/` into one Rust catalog. `tools/build.py` rejects stale generated output
