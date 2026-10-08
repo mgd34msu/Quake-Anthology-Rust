@@ -4,6 +4,10 @@ Linear project Quake-Rust, P-THE-3, team The Artificery, is the source of truth.
 The owner rules and working protocol apply. Set issues In Progress when starting,
 put THE ids in commit subjects, and leave completed work In Review with evidence.
 Never set Done. Slack #quake-rust is only for qualified installation notices.
+Slack #quake-discussion (`C0C7Z7CLE3E`) is the owner's discussion channel.
+Prefix every message sent there with `[QA-RUST]` and post in the channel,
+never in threads. During active work, check for posts mentioning `[QA-RUST]`
+and follow channel replies to questions and discussions you participate in.
 
 One engine serves every game and every mix through common primitives. Behaviour
 comes from qsrc, features from quake-typescript, proven algorithms and fixes from
