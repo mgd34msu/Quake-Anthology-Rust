@@ -1,5 +1,5 @@
 use super::{
-    Contents, Trace,
+    Trace, TraceQuery,
     hulls::{ClipNode, Frame, Hull},
 };
 use qa_core::primitives::{Axis, Body, EntityId, Plane, Vec3};
@@ -19,15 +19,14 @@ const fn nodes() -> [ClipNode; 6] {
 }
 static NODES: [ClipNode; 6] = nodes();
 
-pub fn trace_box(
-    start: Vec3,
-    end: Vec3,
-    mins: Vec3,
-    maxs: Vec3,
-    mask: Contents,
-    body: &Body,
-    entity: EntityId,
-) -> Trace {
+pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
+    let TraceQuery {
+        start,
+        end,
+        mins,
+        maxs,
+        ..
+    } = query;
     let planes: [Plane; 6] = std::array::from_fn(|index| {
         let axis = index / 2;
         Plane {
@@ -53,7 +52,14 @@ pub fn trace_box(
         planes: &planes,
         root: 0,
     }
-    .trace(local(start), local(end), mask, &mut stack);
+    .trace(
+        TraceQuery {
+            start: local(start),
+            end: local(end),
+            ..query
+        },
+        &mut stack,
+    );
     if trace.fraction < 1.0 {
         trace.end = Vec3(std::array::from_fn(|axis| {
             trace.end.0[axis] + body.position.0[axis]

@@ -1,6 +1,6 @@
 use qa_core::primitives::{Plane, Vec3};
 use qa_movement::TraceServices;
-use qa_world::collision::{Contents, Trace};
+use qa_world::collision::{Contents, Trace, TraceQuery};
 
 /// Analytic fixture shared by function checks and timing; no retail-map claim.
 #[derive(Default)]
@@ -9,7 +9,17 @@ pub struct FixtureWorld {
     pub water: bool,
 }
 impl TraceServices for FixtureWorld {
-    fn trace(&mut self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, _mask: Contents) -> Trace {
+    fn trace(&mut self, query: TraceQuery) -> Trace {
+        // The extracted original movement fixture and this analytic oracle
+        // both have zero contact bias. Production hull/brush services apply
+        // the explicit caller policy received through this same entry.
+        let TraceQuery {
+            start,
+            end,
+            mins,
+            maxs,
+            ..
+        } = query;
         let mut result = Trace::clear(end);
         for (normal, distance) in [
             (Vec3([0.0, 0.0, 1.0]), 0.0),

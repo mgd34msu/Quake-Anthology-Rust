@@ -1,5 +1,5 @@
 use qa_core::primitives::{Body, EntityId, Vec3};
-use qa_world::collision::{Contents, boxes::trace_box};
+use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -40,11 +40,14 @@ fn main() -> Result<(), &'static str> {
         for (slot, body) in bodies.iter().enumerate() {
             let start = Vec3([body.position.0[0] + 100.0, 0.0, 0.0]);
             let trace = trace_box(
-                black_box(start),
-                body.position,
-                Vec3([-16.0, -16.0, -24.0]),
-                Vec3([16.0, 16.0, 32.0]),
-                Contents::SOLID,
+                TraceQuery {
+                    start: black_box(start),
+                    end: body.position,
+                    mins: Vec3([-16.0, -16.0, -24.0]),
+                    maxs: Vec3([16.0, 16.0, 32.0]),
+                    mask: Contents::SOLID,
+                    rules: TraceRules::LEGACY,
+                },
                 body,
                 EntityId {
                     slot: slot as u32,

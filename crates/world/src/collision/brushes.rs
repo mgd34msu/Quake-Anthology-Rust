@@ -1,4 +1,4 @@
-use super::{Contents, Trace};
+use super::{AllSolid, BoundsOrigin, Contents, FractionClamp, OutsideBrush, Trace, TraceQuery};
 use qa_core::primitives::{Plane, SurfaceFlags, Vec3};
 
 #[derive(Clone, Copy, Debug)]
@@ -12,11 +12,6 @@ pub struct Brush {
 pub enum GeometryError {
     Plane,
     BrushRange,
-}
-
-pub(crate) enum BrushRules {
-    Classic,
-    Arena,
 }
 
 pub struct BrushMap {
@@ -76,20 +71,28 @@ impl BrushMap {
         contents
     }
 
-    pub(crate) fn trace(
-        &self,
-        start: Vec3,
-        end: Vec3,
-        mins: Vec3,
-        maxs: Vec3,
-        mask: Contents,
-        rules: BrushRules,
-    ) -> Trace {
-        let (epsilon, arena_rules) = match rules {
-            BrushRules::Classic => (0.03125, false),
-            BrushRules::Arena => (0.125, true),
-        };
-        let mut trace = Trace::clear(end);
+    pub(crate) fn trace(&self, query: TraceQuery) -> Trace {
+        let TraceQuery {
+            mut start,
+            mut end,
+            mut mins,
+            mut maxs,
+            mask,
+            rules,
+        } = query;
+        if rules.bounds_origin == BoundsOrigin::Centered {
+            // CM_Trace centers the box before its brush support-point math.
+            // Keep its f32 addition/subtraction order for asymmetric bounds.
+            for axis in 0..3 {
+                let center = (mins.0[axis] + maxs.0[axis]) * 0.5;
+                mins.0[axis] -= center;
+                maxs.0[axis] -= center;
+                start.0[axis] += center;
+                end.0[axis] += center;
+            }
+        }
+        let point = mins == Vec3::default() && maxs == Vec3::default();
+        let mut trace = Trace::clear(query.end);
         for brush in &self.brushes {
             if !brush.contents.intersects(mask) || brush.plane_count == 0 {
                 continue;
@@ -111,12 +114,20 @@ impl BrushMap {
                         mins.0[axis]
                     }
                 }));
-                let distance = plane.distance - offset.dot(plane.normal);
+                let distance = if point {
+                    plane.distance
+                } else {
+                    plane.distance - offset.dot(plane.normal)
+                };
                 let d1 = start.dot(plane.normal) - distance;
                 let d2 = end.dot(plane.normal) - distance;
                 start_out |= d1 > 0.0;
                 end_out |= d2 > 0.0;
-                if d1 > 0.0 && (d2 >= d1 || d2 > 0.0 && (!arena_rules || d2 >= epsilon)) {
+                if d1 > 0.0
+                    && (d2 >= d1
+                        || rules.outside_brush == OutsideBrush::EndBeyondEpsilon
+                            && f64::from(d2) >= rules.contact_epsilon)
+                {
                     missed = true;
                     break;
                 }
@@ -124,14 +135,27 @@ impl BrushMap {
                     continue;
                 }
                 if d1 > d2 {
-                    let fraction = (d1 - epsilon) / (d1 - d2);
+                    let mut fraction =
+                        ((f64::from(d1) - rules.contact_epsilon) / f64::from(d1 - d2)) as f32;
+                    // Q3 clamps before comparing, including equal near-contact
+                    // planes. Q2 clamps only the selected brush intersection.
+                    if rules.fraction_clamp == FractionClamp::PerPlane && fraction < 0.0 {
+                        fraction = 0.0;
+                    }
                     if fraction > enter {
                         enter = fraction;
                         contact = plane;
                         surface = self.surfaces[brush.first_plane as usize + index];
                     }
                 } else {
-                    leave = leave.min((d1 + epsilon) / (d1 - d2));
+                    let mut fraction =
+                        ((f64::from(d1) + rules.contact_epsilon) / f64::from(d1 - d2)) as f32;
+                    if rules.fraction_clamp == FractionClamp::PerPlane && fraction > 1.0 {
+                        fraction = 1.0;
+                    }
+                    if fraction < leave {
+                        leave = fraction;
+                    }
                 }
             }
             if missed {
@@ -141,10 +165,15 @@ impl BrushMap {
                 trace.start_solid = true;
                 if !end_out {
                     trace.all_solid = true;
-                    trace.contents = brush.contents;
-                    if arena_rules || start == end {
+                    // Stationary Q2/Q3 position tests block immediately. A
+                    // moving Q2 embedded trace preserves fraction and contents.
+                    if rules.all_solid == AllSolid::BlockAtStart || query.start == query.end {
                         trace.fraction = 0.0;
+                        trace.contents = brush.contents;
                     }
+                }
+                if trace.fraction == 0.0 {
+                    break;
                 }
                 continue;
             }
@@ -154,8 +183,17 @@ impl BrushMap {
                 trace.surface = surface;
                 trace.contents = brush.contents;
             }
+            // Native leaf traversal stops at the first zero-fraction brush;
+            // later overlapping brushes must not replace that contact.
+            if trace.fraction == 0.0 {
+                break;
+            }
         }
-        trace.end = start.lerp(end, trace.fraction);
+        trace.end = if trace.fraction == 1.0 {
+            query.end
+        } else {
+            query.start.lerp(query.end, trace.fraction)
+        };
         trace
     }
 }

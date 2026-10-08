@@ -11,7 +11,7 @@ use qa_world::collision::{
     brushes::{Brush, BrushMap},
 };
 fn floor() -> CollisionWorld {
-    CollisionWorld::Q2Brushes(
+    CollisionWorld::Brushes(
         BrushMap::load(
             vec![Plane {
                 normal: Vec3([0.0, 0.0, 1.0]),

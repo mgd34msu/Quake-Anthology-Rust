@@ -332,7 +332,7 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
             .collect();
         let hulls = Q1Hulls::load(map.planes.clone(), drawing, map.clipnodes.clone(), models)
             .map_err(|e| format!("Q1 collision: {e:?}"))?;
-        return Ok((CollisionWorld::Q1Hulls(hulls), 0));
+        return Ok((CollisionWorld::Hulls(hulls), 0));
     }
     let mut included = vec![false; map.brushes.len()];
     if matches!(map.bsp.format, BspFormat::Quake3 | BspFormat::QuakeLive) {
@@ -393,12 +393,5 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
     let count = brushes.len();
     let brushes = BrushMap::load_surfaces(planes, brushes, surfaces)
         .map_err(|e| format!("brush collision: {e:?}"))?;
-    Ok((
-        if map.bsp.format.family() == 2 {
-            CollisionWorld::Q2Brushes(brushes)
-        } else {
-            CollisionWorld::Q3Brushes(brushes)
-        },
-        count,
-    ))
+    Ok((CollisionWorld::Brushes(brushes), count))
 }

@@ -5,15 +5,15 @@ use qa_core::{
         Vec3, buttons,
     },
 };
-use qa_world::collision::{CollisionWorld, Contents, Trace};
+use qa_world::collision::{CollisionWorld, Contents, Trace, TraceQuery, TraceRules};
 
 pub trait TraceServices {
-    fn trace(&mut self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: Contents) -> Trace;
+    fn trace(&mut self, query: TraceQuery) -> Trace;
     fn point_contents(&self, point: Vec3) -> Contents;
 }
 impl TraceServices for CollisionWorld {
-    fn trace(&mut self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, mask: Contents) -> Trace {
-        CollisionWorld::trace(self, start, end, mins, maxs, mask)
+    fn trace(&mut self, query: TraceQuery) -> Trace {
+        CollisionWorld::trace(self, query)
     }
     fn point_contents(&self, point: Vec3) -> Contents {
         CollisionWorld::point_contents(self, point)
@@ -66,6 +66,7 @@ pub fn set_bounds(player: &mut PlayerState) {
 #[derive(Clone, Copy)]
 pub(crate) struct Parameters {
     pub rules: MovementRules,
+    pub trace_rules: TraceRules,
     pub gravity: f32,
     pub speed: f32,
     pub friction: f32,
@@ -83,6 +84,11 @@ impl Parameters {
         let arena = rules == MovementRules::Quake3;
         Self {
             rules,
+            trace_rules: if arena {
+                TraceRules::ARENA
+            } else {
+                TraceRules::LEGACY
+            },
             gravity: t.gravity.unwrap_or(800.0) * t.gravity_multiplier,
             speed: t
                 .max_speed
@@ -121,14 +127,18 @@ pub(crate) struct Step<'a> {
 }
 impl Step<'_> {
     pub fn trace(&mut self, start: Vec3, end: Vec3) -> Trace {
+        self.trace_bounds(start, end, self.player.body.mins, self.player.body.maxs)
+    }
+    fn trace_bounds(&mut self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3) -> Trace {
         self.result.traces += 1;
-        self.world.trace(
+        self.world.trace(TraceQuery {
             start,
             end,
-            self.player.body.mins,
-            self.player.body.maxs,
-            self.mask,
-        )
+            mins,
+            maxs,
+            mask: self.mask,
+            rules: self.parameters.trace_rules,
+        })
     }
     pub fn contact(&mut self, trace: &Trace) {
         if let Some(id) = trace.entity
@@ -278,11 +288,8 @@ impl Step<'_> {
         } else if old_ducked {
             let mut maxs = self.player.body.maxs;
             maxs.0[2] = 32.0;
-            self.result.traces += 1;
             let p = self.player.body.position;
-            let tr = self
-                .world
-                .trace(p, p, self.player.body.mins, maxs, self.mask);
+            let tr = self.trace_bounds(p, p, self.player.body.mins, maxs);
             if !tr.all_solid {
                 self.player.movement.ducked = false;
             }
@@ -338,8 +345,7 @@ impl Step<'_> {
             start.0[2] += self.player.body.mins.0[2];
             let mut end = start;
             end.0[2] -= 34.0;
-            self.result.traces += 1;
-            let tr = self.world.trace(
+            let tr = self.trace_bounds(
                 start,
                 end,
                 if self.nq() {
@@ -352,7 +358,6 @@ impl Step<'_> {
                 } else {
                     self.player.body.maxs
                 },
-                self.mask,
             );
             if tr.fraction == 1.0 {
                 friction *= 2.0;

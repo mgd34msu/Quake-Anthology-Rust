@@ -1,7 +1,7 @@
 use qa_core::primitives::{Axis, Plane, Vec3};
 use qa_platform::Stopwatch;
 use qa_world::collision::{
-    Contents,
+    Contents, TraceQuery, TraceRules,
     hulls::{ClipNode, HullModel, Q1Hulls},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -107,7 +107,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
     {
         let (mins, maxs) = bounds[hull as usize];
-        let trace = hulls.trace(start, end, mins, maxs, Contents::SOLID);
+        let trace = hulls.trace(TraceQuery {
+            start,
+            end,
+            mins,
+            maxs,
+            mask: Contents::SOLID,
+            rules: TraceRules::LEGACY,
+        });
         let flags = u32::from(trace.start_solid)
             | u32::from(trace.all_solid) << 1
             | u32::from(trace.in_open) << 2
@@ -149,18 +156,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let (mins, maxs) = bounds[index];
         for &(_, start, end) in group.iter().take(600) {
-            black_box(hulls.trace(start, end, mins, maxs, Contents::SOLID));
+            black_box(hulls.trace(TraceQuery {
+                start,
+                end,
+                mins,
+                maxs,
+                mask: Contents::SOLID,
+                rules: TraceRules::LEGACY,
+            }));
         }
         MEASURING.store(true, Ordering::Relaxed);
         for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
             let started = Stopwatch::start();
-            black_box(hulls.trace(
-                black_box(start),
-                black_box(end),
+            black_box(hulls.trace(TraceQuery {
+                start: black_box(start),
+                end: black_box(end),
                 mins,
                 maxs,
-                Contents::SOLID,
-            ));
+                mask: Contents::SOLID,
+                rules: TraceRules::LEGACY,
+            }));
             *sample = started.elapsed().as_nanos();
         }
         MEASURING.store(false, Ordering::Relaxed);

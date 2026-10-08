@@ -71,6 +71,17 @@ timeout 300 python3 tools/check_hull_trace.py --pak "$Q1_PAK" \
   --qsrc "$QSRC" --c-port "$C_ENGINE" --output "$EVIDENCE"
 ```
 
+THE-625's caller-selected trace rules were rechecked on 2026-10-08 with the
+same retail geometry, seed, segments and native hulls, baseline release build
+and core 23. All 30,000 original-C comparisons matched and trace allocations
+remained zero. The point/player/large median times were 160/160/140 ns;
+p99 was 1,060/740/620 ns. The release probe build took 6.124 s. Evidence is
+`caller-selected-trace-rules/hulls/verification.json`; it records the dirty
+source based on `de70bdff`. The measured world sources match staged tree
+`2b350561b71574d6299c106ea29d702975cbc116`. This recheck did not remeasure
+the C port or Muse and does not qualify installed gameplay or arbitrary
+foreign-player shapes in Q1's fixed compiled hulls.
+
 ## R2 system event drain
 
 THE-859's release example `system_events`, baseline CPU on core 23, measured

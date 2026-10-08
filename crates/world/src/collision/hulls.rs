@@ -1,4 +1,4 @@
-use super::{Contents, Trace};
+use super::{AllSolid, Contents, Trace, TraceQuery};
 pub use qa_core::primitives::ClipNode;
 use qa_core::primitives::{Axis, Plane, Vec3};
 
@@ -52,15 +52,17 @@ impl Hull<'_> {
         Contents::from_q1(self.point_contents(point, node)).0 & mask.0 != 0
     }
 
-    pub(crate) fn trace(
-        &self,
-        start: Vec3,
-        end: Vec3,
-        mask: Contents,
-        stack: &mut [Frame],
-    ) -> Trace {
+    pub(crate) fn trace(&self, query: TraceQuery, stack: &mut [Frame]) -> Trace {
+        let TraceQuery {
+            start,
+            end,
+            mask,
+            rules,
+            ..
+        } = query;
         let mut trace = Trace::clear(end);
         trace.all_solid = true;
+        let mut enclosed = Contents::EMPTY;
         stack[0] = Frame {
             node: self.root,
             p1f: 0.0,
@@ -77,6 +79,7 @@ impl Hull<'_> {
                 if frame.node < 0 {
                     if Contents::from_q1(frame.node).0 & mask.0 != 0 {
                         trace.start_solid = true;
+                        enclosed = Contents::from_q1(frame.node);
                     } else {
                         trace.all_solid = false;
                         if frame.node == -1 {
@@ -103,7 +106,12 @@ impl Hull<'_> {
                 let side = usize::from(t1 < 0.0);
                 // world.c's unsuffixed DIST_EPSILON promotes only this expression.
                 // Stored distances, midpoint arithmetic and results remain f32.
-                let numerator = f64::from(t1) + if side == 1 { 0.03125 } else { -0.03125 };
+                let numerator = f64::from(t1)
+                    + if side == 1 {
+                        rules.contact_epsilon
+                    } else {
+                        -rules.contact_epsilon
+                    };
                 let fraction = (numerator / f64::from(t1 - t2)) as f32;
                 frame.fraction = fraction.clamp(0.0, 1.0);
                 frame.midf = frame.p1f + (frame.p2f - frame.p1f) * frame.fraction;
@@ -136,7 +144,7 @@ impl Hull<'_> {
                 continue;
             }
             if trace.all_solid {
-                return trace;
+                break;
             }
             trace.plane = self.planes[frame.plane as usize];
             if frame.t1 < 0.0 {
@@ -157,6 +165,11 @@ impl Hull<'_> {
             trace.fraction = frame.midf;
             trace.end = frame.mid;
             return trace;
+        }
+        if trace.all_solid && rules.all_solid == AllSolid::BlockAtStart {
+            trace.fraction = 0.0;
+            trace.end = start;
+            trace.contents = enclosed;
         }
         trace
     }
@@ -290,14 +303,18 @@ impl Q1Hulls {
         )
     }
 
-    pub fn trace(
-        &mut self,
-        start: Vec3,
-        end: Vec3,
-        mins: Vec3,
-        maxs: Vec3,
-        mask: Contents,
-    ) -> Trace {
+    /// Compiled hulls provide point, 32-wide and 64-wide shapes. Selection and
+    /// offsets retain SV_HullForEntity behavior; arbitrary box heights, a
+    /// 30-wide Q3 player and capsules are not rebuilt into exact hull shapes.
+    /// Caller rules still select contact epsilon and all-solid behavior.
+    pub fn trace(&mut self, query: TraceQuery) -> Trace {
+        let TraceQuery {
+            start,
+            end,
+            mins,
+            maxs,
+            ..
+        } = query;
         let width = maxs.0[0] - mins.0[0];
         let index = if width < 3.0 {
             0
@@ -318,7 +335,14 @@ impl Q1Hulls {
             planes: &self.planes,
             root: self.models[0].roots[index],
         }
-        .trace(local(start), local(end), mask, &mut self.stack);
+        .trace(
+            TraceQuery {
+                start: local(start),
+                end: local(end),
+                ..query
+            },
+            &mut self.stack,
+        );
         trace.end = if trace.fraction == 1.0 {
             end
         } else {
