@@ -206,6 +206,11 @@ class Catalog:
         operation = self.operation(row_index, name, dialect, canonical)
         if operation != 'NONE':
             options['operation'] = operation
+        if operation == 'TEAMPLAY' and dialect == 0 and not canonical:
+            assignment = re.search(r'Q1 teamplay 1/2 also set (' + NAME + r') 0/1', raw)
+            if not assignment:
+                raise ValueError('Q1 teamplay policy lost its paired friendly-fire assignment')
+            options['operands'] = ((self.row_index[assignment[1].lower()], 0, 0, 0, (0, 0, 0, 0, 0)),)
         if operation == 'CTF':
             options['issues'] = CONVERSION_POLICY
         if 'UNIT CONFLICT on the same name' in raw:

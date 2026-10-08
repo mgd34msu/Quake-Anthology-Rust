@@ -4,7 +4,7 @@
 1,260-row catalog. `tools/gen_cvars.py` compiles them into one immutable Rust
 catalog in `crates/console/src/cvars_generated.rs`. It records all 237 aliases,
 1,530 expanded name bindings, 6,363 default clauses, 2,327 flag clauses and
-235 conversion descriptors. Eleven seat-name families expand into separate
+236 conversion descriptors. Eleven seat-name families expand into separate
 slots, giving 1,293 canonical storage slots. No game-family lookup gate exists.
 
 The metadata compiler ports the parsing and validation algorithm from C
@@ -31,9 +31,12 @@ Inferred types, ranges and unresolved policy clauses remain explicit metadata;
 they do not become guessed clamps or defaults. The policy report distinguishes
 single-name type hints from default, flag, conversion and ownership questions.
 
-THE-613 provides the table and storage. The current window shell starts with
-Q3 host defaults; THE-623 supplies source-aware unset values, converted alias
-views, side-scoped lookup and flag enforcement. Cached canonical numeric
-handles already avoid string lookup in the shell loop. The command table and
-live `cvarlist` arrive with THE-639. Metadata comparison and registry tests do
-not prove game consumers, console rendering or a qualified installation.
+THE-613 provides the table. THE-623 supplies one flat registry with stable
+handles, source-aware unset values, converted alias views, side-scoped lookup
+and flag enforcement. Changing the selected source preserves explicit values
+and the registry. Unresolved defaults remain unavailable until their producer
+supplies them. See [cvar views](cvar-views.md) for conversion checks and limits.
+Cached canonical numeric handles avoid string lookup in the shell loop.
+The command table and live `cvarlist` arrive with THE-639. Metadata comparison
+and registry tests do not prove game consumers, console rendering or a
+qualified installation.

@@ -27,18 +27,13 @@ fn run() -> Result<(), String> {
         match arg.as_str() {
             "+set" => {
                 let name = args.next().ok_or("+set needs a cvar name")?;
-                let value: f32 = args
-                    .next()
-                    .ok_or("+set needs a value")?
-                    .parse()
-                    .map_err(|_| "invalid numeric cvar value")?;
-                if !value.is_finite() {
-                    return Err("cvar value must be finite".into());
-                }
-                let handle = cvars
-                    .find(&name)
+                let value = args.next().ok_or("+set needs a value")?;
+                let view = cvars
+                    .bind(&name, cvars.context())
                     .ok_or_else(|| format!("unknown cvar: {name}"))?;
-                cvars.set(handle, value);
+                cvars
+                    .write(view, &value)
+                    .map_err(|error| format!("cvar {name}: {error:?}"))?;
             }
             #[cfg(feature = "proof")]
             "--proof-script" => {
