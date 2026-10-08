@@ -3,8 +3,10 @@
 Linear project Quake-Rust, P-THE-3, team The Artificery, is the source of truth.
 The owner rules and working protocol apply. Set issues In Progress when starting,
 put THE ids in commit subjects, and leave completed work In Review with evidence.
-Never set Done. Slack #quake-rust is only for qualified installation notices.
-Slack #quake-discussion (`C0C7Z7CLE3E`) is the owner's discussion channel.
+Never set Done. Post status, builds, installs, retests and progress to Slack
+#quake-rust (`C0C7J4B0QAE`) without an identifier prefix; keep Linear current on
+every issue with its status, commit ids and evidence.
+Slack #quake-discussion (`C0C7Z7CLE3E`) is for design discussion only.
 Prefix every message sent there with `[QA-RUST]` and post in the channel,
 never in threads. During active work, check for posts mentioning `[QA-RUST]`
 and follow channel replies to questions and discussions you participate in.
@@ -63,9 +65,11 @@ spawning, mixed-play and installed-binary evidence they require.
 Completed R2 structural order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
 THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891.
-Current order, authorised in the 2026-10-08 14:15 project update:
-finish every unfinished common primitive in architecture section 3.3, then meet
-THE-859's installed three-map, independent-seat and combined-movement criteria,
+Current order, authorised in the 2026-10-08 14:15 project update and 14:51 comment:
+finish every unfinished common primitive in architecture section 3.3, incorporating
+the accepted THE-650 explicit-relink and THE-625/THE-1862 caller-selected trace
+rules. Then meet THE-859's installed three-map, independent-seat and combined-
+movement criteria and THE-697/890's consumer-cursor output retention criteria,
 followed by THE-884, THE-885, THE-887, THE-888 and THE-889. Next confirm the one
 surface cache for every map family (THE-862), then THE-860, THE-861, THE-862
 materials and THE-863. THE-862 q3dm1 speed work is paused until those steps finish.
@@ -101,6 +105,27 @@ such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
 * F. THE-863: one EngineServices table provides trace, link entity, sound, print, cvar, configstring and file operations. Thin numbered QVM, native dllEntry/game_import_t and QuakeC builtin mappings call those services. Module memory is checked at load; several module formats coexist and retain their own tick rates.
 * G. THE-889/891: one usercmd builder serves every client, including bots in SERVER ticks rather than local-seat overrides. One Pmove-style entry chooses movement rules per player and runs identically for server, prediction and bots over shared trace services. AAS and NAV2 are data behind one bot/navigation interface.
 * H. THE-887/888: one console tokenises its fixed text buffer in place with borrowed argv spans, sorted command lookup and cached cvar handles; a bare cvar command uses argv 1 per qsrc. One bind table dispatches normal and +/- commands into the same console and per-client builder. Every alias works in every game; bare text is a command/cvar, chat only via say.
+
+Legacy interoperability is mandatory. Every game must connect to original or
+reference servers and accept their clients using NQ 15 (666/999 only when
+negotiated), QW 28, Q2 34 and the rerelease protocol, and Q3 68/Team Arena.
+Unified entity, player, usercmd, event and configstring records must always
+convert to each protocol's exact fields and widths. Values or capabilities a
+protocol cannot carry are mapped or dropped at its boundary, never fatal.
+Handshake, challenge, channel framing and delta rules stay byte-exact; extensions
+use that protocol's own negotiation. Check every primitive and event change
+against this rule. THE-860 requires round trips against original captures and
+live connections with original or reference servers and clients for each protocol.
+
+THE-650 distinguishes explicit module LinkEntity from an internal body commit.
+An explicit relink always unlinks and reinserts; head/tail insertion is rule data
+of the entity's game. Unchanged internal body commits stay no-ops. THE-625/1862
+trace calls carry the caller's clipping, epsilon and filtering rules independently
+of the map geometry; stock results remain bit-exact. THE-697/890 output payload
+pages belong to ring slots and retire only after every module/client consumer
+cursor has passed, with bounded slow-client resync and overflow counts. HUD text
+remains valid throughout its display lifetime; no event payload cloning or frame
+arena reset may invalidate a slower consumer.
 
 Use modern techniques where pinned timings prove a gain: fixed multicore
 partitions with ordered merges, SIMD, modern GL and cache-friendly storage.
@@ -291,7 +316,8 @@ These are Mike's standing rules. They apply to every commit.
 
 ## Slack
 
-* Channel **#quake-rust**. Post only when a new qualified `qfiles/qa-rust` is installed: build time, issue ids, what to retest. No progress chatter.
+* Channel **#quake-rust** (`C0C7J4B0QAE`). Post status, builds, installs, retests and progress without an identifier prefix. Include issue ids, commits, actual build time, evidence and limits; request retests only for qualified installed changes.
+* Channel **#quake-discussion** (`C0C7Z7CLE3E`) is for design discussion only. Use `[QA-RUST]`, post in the channel rather than threads, and check mentions and discussions during active work. Each proposal also checks whether the C port has the same gap.
 * The supervisor posts check-in summaries and owner retest requests there.
 
 ## Evidence
