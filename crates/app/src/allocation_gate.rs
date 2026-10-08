@@ -19,9 +19,9 @@ impl Gate {
         self.counts.requested_bytes += counts.requested_bytes;
     }
 
-    pub fn finish(self) -> Result<(), String> {
+    pub fn finish(self, scope: &str) -> Result<(), String> {
         println!(
-            "{{\"event\":\"allocation_gate\",\"scope\":\"window_shell_rust_thread\",\"frames\":{},\"failed_frames\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"passed\":{}}}",
+            "{{\"event\":\"allocation_gate\",\"scope\":\"{scope}_rust_thread\",\"frames\":{},\"failed_frames\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"passed\":{}}}",
             self.frames,
             self.failed_frames,
             self.counts.allocations,

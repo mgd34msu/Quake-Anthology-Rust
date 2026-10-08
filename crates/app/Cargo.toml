@@ -21,6 +21,7 @@ qa-world = { path = "../world" }
 qa-formats = { path = "../formats" }
 qa-ui = { path = "../ui" }
 qa-render = { path = "../render" }
+serde_json = "1"
 
 [[bin]]
 name = "qa-rust"

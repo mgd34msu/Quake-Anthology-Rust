@@ -1,6 +1,6 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{UserCmd, Vec3, buttons},
+    primitives::{MovementRules, UserCmd, Vec3, buttons},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
 };
 
@@ -116,6 +116,59 @@ struct Seat {
     actions: [Button; ACTIONS],
     angles: Vec3,
     mouse: [i64; 2],
+    mouse_previous: [f32; 2],
+}
+
+/// Cached command tuning; map geometry and module formats never select it.
+#[derive(Clone, Copy, Debug)]
+pub struct InputPolicy {
+    pub rules: Option<MovementRules>,
+    pub speed: [f32; 3],
+    pub back_speed: f32,
+    pub angle_speed: [f32; 2],
+    pub angle_multiplier: f32,
+    pub move_multiplier: f32,
+    pub always_run: bool,
+    pub sensitivity: f32,
+    pub acceleration: f32,
+    pub mouse_scale: [f32; 2],
+    pub mouse_side: f32,
+    pub mouse_forward: f32,
+    pub filter: bool,
+    pub freelook: bool,
+    pub look_strafe: bool,
+}
+impl InputPolicy {
+    pub fn native(rules: MovementRules) -> Self {
+        let q1 = matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld);
+        Self {
+            rules: Some(rules),
+            speed: [200.0, if q1 { 350.0 } else { 200.0 }, 200.0],
+            back_speed: 200.0,
+            angle_speed: [
+                140.0,
+                if rules == MovementRules::Quake3 {
+                    140.0
+                } else {
+                    150.0
+                },
+            ],
+            angle_multiplier: 1.5,
+            move_multiplier: 2.0,
+            always_run: matches!(
+                rules,
+                MovementRules::Quake2Rerelease | MovementRules::Quake3
+            ),
+            sensitivity: 3.0,
+            acceleration: 0.0,
+            mouse_scale: [0.022; 2],
+            mouse_side: 0.8,
+            mouse_forward: 1.0,
+            filter: false,
+            freelook: true,
+            look_strafe: false,
+        }
+    }
 }
 #[derive(Clone, Copy)]
 struct Device {
@@ -220,6 +273,12 @@ impl Input {
     /// The first clock event seeds input timing after window/startup work.
     pub fn seed(&mut self, time: EventTime) {
         self.previous.get_or_insert(time);
+    }
+    /// Load/spawn fixangle seeds the same angles later emitted by usercmds.
+    /// The caller converts and validates external angles at the map/module ABI.
+    pub fn set_view_angles(&mut self, seat: SeatId, angles: Vec3) {
+        self.seats[seat.index()].angles = angles;
+        self.seats[seat.index()].mouse = [0; 2];
     }
     pub fn binding(&self, control: u16) -> Option<&Binding> {
         self.bindings
@@ -528,39 +587,115 @@ impl Input {
         speed: [i16; 3],
         mouse_scale: [f32; 2],
     ) -> [UserCmd; SeatId::COUNT] {
+        let policies = std::array::from_fn(|seat| InputPolicy {
+            rules: None,
+            speed: speed.map(f32::from),
+            back_speed: f32::from(speed[0]),
+            angle_speed: [140.0; 2],
+            angle_multiplier: 1.0,
+            move_multiplier: 1.0,
+            always_run: false,
+            sensitivity: 1.0,
+            acceleration: 0.0,
+            mouse_scale,
+            mouse_side: 0.0,
+            mouse_forward: 0.0,
+            filter: false,
+            freelook: self.freelook[seat],
+            look_strafe: false,
+        });
+        self.build_frame_with_policy(time, &policies)
+    }
+    pub fn build_frame_with_policy(
+        &mut self,
+        time: EventTime,
+        policies: &[InputPolicy; SeatId::COUNT],
+    ) -> [UserCmd; SeatId::COUNT] {
         let period = time.since(self.previous.unwrap_or(time));
         self.previous = Some(time);
         std::array::from_fn(|index| {
+            let policy = policies[index];
             let seat = &mut self.seats[index];
             let sampled = seat
                 .actions
                 .each_mut()
                 .map(|button| button.sample(time, period));
-            seat.angles.0[1] -= seat.mouse[0] as f32 * mouse_scale[0];
-            if self.freelook[index] || sampled[Action::MouseLook as usize].1 {
-                seat.angles.0[0] += seat.mouse[1] as f32 * mouse_scale[1];
-            }
+            let strafe = sampled[Action::Strafe as usize].1;
+            let look = sampled[Action::MouseLook as usize].1;
+            let speed_key = sampled[Action::Walk as usize].1;
+            let running = speed_key != policy.always_run;
+            let q3 = policy.rules == Some(MovementRules::Quake3);
+            let q1 = matches!(
+                policy.rules,
+                Some(MovementRules::Quake | MovementRules::QuakeWorld)
+            );
+            let raw = seat.mouse.map(|value| value as f32);
+            let mut mouse = if policy.filter {
+                std::array::from_fn(|axis| (raw[axis] + seat.mouse_previous[axis]) * 0.5)
+            } else {
+                raw
+            };
+            seat.mouse_previous = raw;
+            let rate = (mouse[0] * mouse[0] + mouse[1] * mouse[1]).sqrt()
+                / (period as f32 * 1e-6).max(1.0);
+            let gain = policy.sensitivity + rate * policy.acceleration;
+            mouse.iter_mut().for_each(|value| *value *= gain);
+            let horizontal_strafe = strafe || policy.look_strafe && look;
+            let mouse_pitch = !strafe && (policy.freelook || look);
             let seconds = period as f32 * 1e-9;
             let turn = sampled[Action::TurnLeft as usize].0 - sampled[Action::TurnRight as usize].0;
-            if !sampled[Action::Strafe as usize].1 {
-                seat.angles.0[1] += turn * 140.0 * seconds;
+            let angle_scale = if speed_key {
+                policy.angle_multiplier
+            } else {
+                1.0
+            };
+            if !strafe {
+                seat.angles.0[1] += turn * policy.angle_speed[0] * seconds * angle_scale;
             }
             seat.angles.0[0] += (sampled[Action::LookDown as usize].0
                 - sampled[Action::LookUp as usize].0)
-                * 140.0
-                * seconds;
+                * policy.angle_speed[1]
+                * seconds
+                * angle_scale;
             seat.mouse = [0; 2];
             let mut movement = [
                 sampled[0].0 - sampled[1].0,
                 sampled[3].0 - sampled[2].0,
                 sampled[4].0 - sampled[5].0,
             ];
-            if sampled[Action::Strafe as usize].1 {
+            if strafe {
                 movement[1] -= turn;
             }
-            if sampled[Action::KeyboardLook as usize].1 {
-                seat.angles.0[0] -= movement[0] * 140.0 * seconds;
+            if sampled[Action::KeyboardLook as usize].1 && !q3 {
+                seat.angles.0[0] -= movement[0] * policy.angle_speed[1] * seconds * angle_scale;
                 movement[0] = 0.0;
+            }
+            // CL_AdjustAngles precedes the platform mouse contribution.
+            if q1 {
+                seat.angles.0[1] = qa_core::math::anglemod(seat.angles.0[1]);
+                seat.angles.0[0] = seat.angles.0[0].clamp(-70.0, 80.0);
+                seat.angles.0[2] = seat.angles.0[2].clamp(-50.0, 50.0);
+            }
+            if !horizontal_strafe {
+                seat.angles.0[1] -= mouse[0] * policy.mouse_scale[0];
+            }
+            if mouse_pitch {
+                seat.angles.0[0] += mouse[1] * policy.mouse_scale[1];
+            }
+            if policy.rules.is_some() {
+                seat.angles.0[0] = if q1 {
+                    seat.angles.0[0].clamp(-70.0, 80.0)
+                } else {
+                    seat.angles.0[0].clamp(-89.0, 89.0)
+                };
+            }
+            if policy.rules.is_some() && !q1 {
+                movement[2] = sampled[Action::Up as usize]
+                    .0
+                    .max(sampled[Action::Jump as usize].0)
+                    - sampled[Action::Down as usize]
+                        .0
+                        .max(sampled[Action::Crouch as usize].0);
             }
             for device in &self.devices {
                 if device.seat.is_some_and(|seat| seat.index() == index) {
@@ -592,6 +727,13 @@ impl Input {
                     mask |= bit;
                 }
             }
+            if q3 {
+                if running {
+                    mask &= !buttons::WALK;
+                } else {
+                    mask |= buttons::WALK;
+                }
+            }
             if self.devices.iter().any(|device| {
                 device.seat.is_some_and(|seat| seat.index() == index)
                     && device.held.iter().any(|held| *held)
@@ -600,7 +742,26 @@ impl Input {
             }
             let intent = CommandIntent {
                 movement: std::array::from_fn(|axis| {
-                    (movement[axis].clamp(-1.0, 1.0) * f32::from(speed[axis])) as i16
+                    let native_speed = if axis == 0 && movement[axis] < 0.0 {
+                        policy.back_speed
+                    } else {
+                        policy.speed[axis]
+                    };
+                    let key_speed = if q3 {
+                        if running { 127.0 } else { 64.0 }
+                    } else {
+                        native_speed * if running { policy.move_multiplier } else { 1.0 }
+                    };
+                    let extra = if axis == 0 && !mouse_pitch {
+                        -mouse[1] * policy.mouse_forward
+                    } else if axis == 1 && horizontal_strafe {
+                        mouse[0] * policy.mouse_side
+                    } else {
+                        0.0
+                    };
+                    let limit = if q3 { 127.0 } else { f32::from(i16::MAX) };
+                    (movement[axis].clamp(-1.0, 1.0) * key_speed + extra).clamp(-limit, limit)
+                        as i16
                 }),
                 view_angles: seat.angles,
                 buttons: mask,

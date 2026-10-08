@@ -1,3 +1,4 @@
+use qa_app::map;
 use qa_app::renderer::{Kind, Renderer};
 use qa_app::{
     Runtime,
@@ -9,6 +10,7 @@ use qa_console::{
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
+use qa_render::Assets;
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -34,6 +36,11 @@ fn run() -> Result<(), String> {
     let mut uncapped = false;
     let mut startup_hold = 0u64;
     let mut renderer_kind = Kind::Cpu;
+    let mut map_name = None;
+    let mut movement_rules = None;
+    let mut console_source_explicit = false;
+    let mut content_priority = 0i32;
+    let mut startup_sets = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
@@ -50,6 +57,7 @@ fn run() -> Result<(), String> {
                 cvars
                     .write(view, &value)
                     .map_err(|error| format!("cvar {name}: {error:?}"))?;
+                startup_sets.push((name, value, cvars.context()));
             }
             "--commands" => {
                 let text = args.next().ok_or("--commands needs text")?;
@@ -58,6 +66,7 @@ fn run() -> Result<(), String> {
                     .map_err(|e| format!("{e:?}"))?;
             }
             "--console-source" => {
+                console_source_explicit = true;
                 let name = args
                     .next()
                     .ok_or("--console-source needs q1/qw/q2/q2rr/q3")?;
@@ -81,8 +90,17 @@ fn run() -> Result<(), String> {
                 let path = args.next().ok_or("--content needs a product directory")?;
                 runtime
                     .vfs
-                    .mount_product(std::path::Path::new(&path), 0)
+                    .mount_product(std::path::Path::new(&path), content_priority)
                     .map_err(|e| format!("content: {e:?}"))?;
+                content_priority = content_priority
+                    .checked_add(100_000)
+                    .ok_or("too many content mounts")?;
+            }
+            "--map" => map_name = Some(args.next().ok_or("--map needs a virtual map name")?),
+            "--movement" => {
+                movement_rules = Some(map::movement(
+                    &args.next().ok_or("--movement needs q1/qw/q2/q2rr/q3")?,
+                )?);
             }
             #[cfg(feature = "proof")]
             "--proof-script" => {
@@ -173,12 +191,118 @@ fn run() -> Result<(), String> {
     if frames == 0 || width <= 0 || height <= 0 {
         return Err("frames and dimensions must be positive".into());
     }
+    if movement_rules.is_some() && map_name.is_none() {
+        return Err("--movement needs a loaded --map".into());
+    }
+    let mut assets = Assets::load();
+    let mut loaded_world = None;
+    let mut local_client = None;
+    let mut world_rate = TickRate::FrameDriven;
+    let mut map_path = None;
+    let mut selected_movement = None;
+    let mut imported_profile = qa_app::profile::Import::default();
+    if let Some(name) = map_name {
+        let loaded = map::load(&runtime.vfs, &name, &mut assets)?;
+        if !console_source_explicit {
+            console.cvars.select_context(Context {
+                source: loaded.native_source,
+                ..console.cvars.context()
+            });
+        }
+        let rules = movement_rules.unwrap_or_else(|| map::native_movement(loaded.native_source));
+        imported_profile =
+            qa_app::profile::load(&mut console, &mut runtime, &loaded.profile_product, rules)?;
+        for (name, value, context) in &startup_sets {
+            let view = console
+                .cvars
+                .bind(name, *context)
+                .ok_or_else(|| format!("unknown startup cvar {name}"))?;
+            console
+                .cvars
+                .write(view, value)
+                .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
+        }
+        println!(
+            "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"history_imported\":false,\"settings_only\":true}}",
+            imported_profile.consumed(),
+            serde_json::to_string(&imported_profile.files)
+                .map_err(|e| format!("profile report: {e}"))?,
+            imported_profile.cvars,
+            imported_profile.bindings,
+            imported_profile.unsupported
+        );
+        // This world clock is the native gate-world default, independent of
+        // --movement. Loaded SERVER providers retain their own clocks later.
+        world_rate = match loaded.native_source {
+            Source::Quake | Source::QuakeWorld => TickRate::FrameDriven,
+            Source::Quake2 => TickRate::fixed(100).ok_or("invalid Q2 world period")?,
+            Source::Quake2Rerelease => {
+                TickRate::fixed(25).ok_or("invalid Q2 rerelease world period")?
+            }
+            Source::Quake3 => {
+                let fps = console.cvars.find("sv_fps").ok_or("missing sv_fps")?;
+                TickRate::fixed((1000 / console.cvars.integer(fps).max(1) as u32).max(1))
+                    .ok_or("invalid Q3 world period")?
+            }
+        };
+        runtime.collision = Some(loaded.collision);
+        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
+        let player = &runtime.server.clients[client.0 as usize].player;
+        println!(
+            "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
+            json_string(&loaded.virtual_path),
+            map::movement_name(rules),
+            loaded.render.world.0,
+            client.0,
+            loaded.entity_count,
+            loaded.collision_brushes,
+            loaded.spawn.entity,
+            loaded.spawn.fixture_fallback,
+            player.body.position.0,
+            player.view_angles.0,
+            player.body.mins.0,
+            player.body.maxs.0,
+            loaded.native_source == Source::Quake
+                && rules != qa_core::primitives::MovementRules::Quake,
+            imported_profile.consumed()
+        );
+        local_client = Some(client);
+        map_path = Some(loaded.virtual_path);
+        selected_movement = Some(rules);
+        loaded_world = Some(loaded.render);
+    }
+    let render_world = loaded_world.as_ref().map(|world| world.world);
+    let mut host = FrameHost::load(console, runtime, world_rate, Vec::new())?;
+    host.local_clients[SeatId::FIRST.index()] = local_client;
+    host.local_worlds[SeatId::FIRST.index()] = render_world;
     let mut window = renderer_kind.open(width, height)?;
-    let mut renderer = Renderer::load(renderer_kind, &window, width as u32, height as u32)?;
-    renderer.frame();
+    let mut renderer = Renderer::load(
+        renderer_kind,
+        &window,
+        width as u32,
+        height as u32,
+        assets,
+        loaded_world.into_iter().collect(),
+    )?;
+    renderer.frame(&host.client_views());
     renderer.present(&mut window);
     if !renderer.sample.presented {
         return Err("initial frame presentation failed".into());
+    }
+    if let Some(path) = &map_path {
+        println!(
+            "{{\"event\":\"world_frame_presented\",\"gameplay\":false,\"map\":{},\"renderer\":\"{}\",\"client_connected\":{},\"views\":{},\"visible_surfaces\":{},\"surfaces\":{},\"triangles\":{},\"rejected\":{},\"profile_consumed\":{},\"native_input_policy\":{}}}",
+            json_string(path),
+            renderer_kind.name(),
+            local_client.is_some(),
+            renderer.sample.stats.views,
+            renderer.sample.visible_surfaces,
+            renderer.sample.stats.surfaces,
+            renderer.sample.stats.triangles,
+            renderer.sample.stats.rejected,
+            imported_profile.consumed(),
+            host.native_input_policy_active()
+        );
     }
     println!(
         "{{\"event\":\"window_ready\",\"gameplay\":false,\"video_driver\":\"{}\",\"wayland_display_present\":{}}}",
@@ -186,13 +310,22 @@ fn run() -> Result<(), String> {
         std::env::var_os("WAYLAND_DISPLAY").is_some()
     );
     qa_platform::pause(Duration::from_millis(startup_hold));
-    let mut host = FrameHost::load(console, runtime, TickRate::FrameDriven, Vec::new())?;
+    let scope = if map_path.is_some() {
+        "retail_map_walk_integration"
+    } else {
+        "window_shell"
+    };
     #[cfg(feature = "proof")]
     let mut script_start = None;
     let mut completed = 0;
     #[cfg(feature = "allocation-tracking")]
     let mut allocation_gate = allocation_gate::Gate::default();
     let mut samples = if timings {
+        Vec::with_capacity(frames as usize)
+    } else {
+        Vec::new()
+    };
+    let mut stage_samples = if timings {
         Vec::with_capacity(frames as usize)
     } else {
         Vec::new()
@@ -239,7 +372,7 @@ fn run() -> Result<(), String> {
             host.developer,
             1,
             format_args!(
-                "{{\"event\":\"system_event_frame\",\"scope\":\"window_shell\",\"frame\":{frame},\"time_ns\":{},\"events\":{},\"drains\":{},\"server_ticks\":{},\"world_frames\":{},\"client_frame\":true,\"queue_remaining\":{},\"rejected\":{},\"dropped_packets\":{},\"network_packets\":{},\"seat0_movement\":{:?},\"seat1_movement\":{:?},\"seat0_duration_ms\":{},\"seat1_duration_ms\":{},\"command_server_time_ms\":{}}}",
+                "{{\"event\":\"system_event_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"time_ns\":{},\"events\":{},\"drains\":{},\"server_ticks\":{},\"world_frames\":{},\"client_frame\":true,\"queue_remaining\":{},\"rejected\":{},\"dropped_packets\":{},\"network_packets\":{},\"seat0_movement\":{:?},\"seat1_movement\":{:?},\"seat0_duration_ms\":{},\"seat1_duration_ms\":{},\"command_server_time_ms\":{}}}",
                 host.time.0,
                 result.events,
                 result.drains,
@@ -256,6 +389,29 @@ fn run() -> Result<(), String> {
                 result.commands[0].server_time_ms
             ),
         );
+        if let (Some(id), Some(rules)) = (local_client, selected_movement) {
+            let authoritative = &host.runtime.server.clients[id.0 as usize].player;
+            let predicted = &host.runtime.prediction[SeatId::FIRST.index()].player;
+            qa_console::logger::dev_print(
+                &host.console.cvars,
+                host.developer,
+                1,
+                format_args!(
+                    "{{\"event\":\"walk_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"movement\":\"{}\",\"position\":{:?},\"velocity\":{:?},\"predicted_position\":{:?},\"view_angles\":{:?},\"grounded\":{},\"ground_normal\":{:?},\"ducked\":{},\"water_level\":{},\"simulation_ns\":{},\"client_ns\":{}}}",
+                    map::movement_name(rules),
+                    authoritative.body.position.0,
+                    authoritative.body.velocity.0,
+                    predicted.body.position.0,
+                    predicted.view_angles.0,
+                    authoritative.movement.grounded,
+                    authoritative.movement.ground_normal.0,
+                    authoritative.movement.ducked,
+                    authoritative.movement.water_level,
+                    result.simulation_ns,
+                    result.client_ns
+                ),
+            );
+        }
         if frame >= u64::from(warmup) {
             if timings {
                 qa_console::logger::dev_print(
@@ -263,12 +419,16 @@ fn run() -> Result<(), String> {
                     host.developer,
                     1,
                     format_args!(
-                        "{{\"event\":\"render_frame\",\"scope\":\"window_shell\",\"renderer\":\"{}\",\"frame\":{frame},\"frontend_ns\":{},\"backend_ns\":{},\"present_ns\":{},\"presented\":{},\"rejected\":{}}}",
+                        "{{\"event\":\"render_frame\",\"scope\":\"{scope}\",\"renderer\":\"{}\",\"frame\":{frame},\"frontend_ns\":{},\"backend_ns\":{},\"present_ns\":{},\"presented\":{},\"views\":{},\"surfaces\":{},\"triangles\":{},\"stages\":{},\"rejected\":{}}}",
                         renderer_kind.name(),
                         renderer.sample.frontend_ns,
                         renderer.sample.backend_ns,
                         renderer.sample.present_ns,
                         renderer.sample.presented,
+                        renderer.sample.stats.views,
+                        renderer.sample.stats.surfaces,
+                        renderer.sample.stats.triangles,
+                        renderer.sample.stats.stages,
                         renderer.sample.stats.rejected
                     ),
                 );
@@ -307,6 +467,13 @@ fn run() -> Result<(), String> {
                     result.total_ns - result.input_ns,
                     result.total_ns,
                 ]);
+                stage_samples.push([
+                    result.simulation_ns,
+                    result.client_ns,
+                    renderer.sample.frontend_ns,
+                    renderer.sample.backend_ns,
+                    renderer.sample.present_ns,
+                ]);
             }
         }
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -316,7 +483,7 @@ fn run() -> Result<(), String> {
                 host.developer,
                 1,
                 format_args!(
-                    "{{\"event\":\"frame_cvar_lookups\",\"scope\":\"window_shell\",\"frame\":{frame},\"lookups\":{}}}",
+                    "{{\"event\":\"frame_cvar_lookups\",\"scope\":\"{scope}\",\"frame\":{frame},\"lookups\":{}}}",
                     host.console.cvars.lookup_count()
                 ),
             );
@@ -328,7 +495,7 @@ fn run() -> Result<(), String> {
                 host.developer,
                 1,
                 format_args!(
-                    "{{\"event\":\"frame_allocations\",\"scope\":\"window_shell_rust_thread\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+                    "{{\"event\":\"frame_allocations\",\"scope\":\"{scope}_rust_thread\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
                     counts.allocations, counts.reallocations, counts.requested_bytes
                 ),
             );
@@ -337,10 +504,10 @@ fn run() -> Result<(), String> {
     drop(renderer);
     drop(window);
     #[cfg(feature = "allocation-tracking")]
-    allocation_gate.finish()?;
+    allocation_gate.finish(scope)?;
     if timings {
         println!(
-            "{{\"event\":\"frame_timings\",\"scope\":\"window_shell\",\"warmup\":{warmup},\"frames\":{completed},\"vsync\":false,\"samples_ns\":{samples:?}}}"
+            "{{\"event\":\"frame_timings\",\"scope\":\"{scope}\",\"warmup\":{warmup},\"frames\":{completed},\"vsync\":false,\"samples_ns\":{samples:?},\"stage_columns\":[\"simulation\",\"client\",\"scene\",\"draw\",\"present\"],\"stage_samples_ns\":{stage_samples:?},\"audio_measured\":false}}"
         );
     }
     println!(
@@ -348,6 +515,27 @@ fn run() -> Result<(), String> {
         host.key_downs, host.key_repeats
     );
     Ok(())
+}
+
+fn json_string(value: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c <= '\u{1f}' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn main() {

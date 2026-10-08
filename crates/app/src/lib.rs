@@ -1,14 +1,16 @@
 pub mod host;
+pub mod map;
 pub mod output;
+pub mod profile;
 pub mod renderer;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
-use qa_core::primitives::{ClientId, PrintEvent, PrintKind};
+use qa_core::primitives::{ClientId, ModuleId, MovementRules, PlayerTail, PrintEvent, PrintKind};
 use qa_network::ingress::PacketReceiver;
-use qa_session::clients::Server;
+use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
     pub vfs: Vfs,
@@ -42,6 +44,34 @@ impl Runtime {
             input_time: qa_core::sys_events::EventTime::default(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
+    }
+
+    /// A local connection uses the existing SERVER command consumer and CLIENT
+    /// prediction state. Map anchors never choose the player's movement rules.
+    pub fn connect_local(
+        &mut self,
+        seat: qa_core::sys_events::SeatId,
+        spawn: map::SpawnAnchor,
+        movement: MovementRules,
+    ) -> Result<ClientId, String> {
+        let id = self
+            .server
+            .connect(Connection::Local, ModuleId::default(), PlayerTail::None)
+            .ok_or("no local client slot")?;
+        let client = &mut self.server.clients[id.0 as usize];
+        client.player.movement_rules = movement;
+        qa_movement::set_bounds(&mut client.player);
+        client.player.body.position = spawn.position;
+        client.player.view_angles = spawn.angles;
+        client.player.health = 100;
+        self.server
+            .entities
+            .columns
+            .set_body(client.entity.slot as usize, client.player.body);
+        self.server.entities.columns.angles[client.entity.slot as usize] = spawn.angles;
+        self.prediction[seat.index()].apply_snapshot(&client.player);
+        self.input.set_view_angles(seat, spawn.angles);
+        Ok(id)
     }
 
     /// Shared print service for console and gameplay/module callers.

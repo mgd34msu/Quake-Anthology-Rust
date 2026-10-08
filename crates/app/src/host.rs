@@ -7,9 +7,20 @@ use qa_core::{
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
 use qa_input::Target;
-use qa_platform::{EventPump, Window};
+use qa_platform::{EventPump, Stopwatch, Window};
 use qa_session::timing::{Tick, TickRate, TickTarget, Timeline};
 use std::time::Duration;
+
+/// CLIENT camera values are copied after snapshot application and prediction.
+/// This is a fixed per-seat submission, not a second player or command store.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientView {
+    pub world: qa_render::world::WorldId,
+    pub origin: qa_core::primitives::Vec3,
+    pub angles: qa_core::primitives::Vec3,
+    pub fov_x: f32,
+    pub time_ms: u64,
+}
 
 /// The live adapter delegates every OS operation to platform. The same host
 /// function can be checked headlessly with supplied event times.
@@ -18,7 +29,7 @@ pub trait FrameSource {
     fn poll_events(&mut self, queue: &mut SysEventQueue);
     fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration);
     fn elapsed(&self) -> Duration;
-    fn render(&mut self) {}
+    fn render(&mut self, _views: &[Option<ClientView>; SeatId::COUNT]) {}
     fn present(&mut self);
     /// False reports an unloaded backend, not successful audio/particle proof.
     fn sound(&mut self, _event: SoundEvent) -> bool {
@@ -49,8 +60,8 @@ impl FrameSource for LiveFrame<'_> {
     fn present(&mut self) {
         self.renderer.present(self.window);
     }
-    fn render(&mut self) {
-        self.renderer.frame();
+    fn render(&mut self, views: &[Option<ClientView>; SeatId::COUNT]) {
+        self.renderer.frame(views);
     }
 }
 
@@ -68,7 +79,11 @@ pub struct FrameHost {
     pub key_repeats: u64,
     pub developer: CvarHandle,
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
+    /// A seat's world/presentation choice is independent of its physics rules.
+    pub local_worlds: [Option<qa_render::world::WorldId>; SeatId::COUNT],
     maxfps: CvarHandle,
+    fov: CvarHandle,
+    input_handles: crate::profile::InputHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
     previous: Option<EventTime>,
@@ -83,6 +98,8 @@ pub struct FrameResult {
     pub server_ticks: u64,
     pub commands: [UserCmd; SeatId::COUNT],
     pub input_ns: u64,
+    pub simulation_ns: u64,
+    pub client_ns: u64,
     pub total_ns: u64,
     pub output: crate::output::OutputCounts,
     pub output_drains: u64,
@@ -100,6 +117,8 @@ impl FrameHost {
             .cvars
             .find("com_maxfps")
             .ok_or("missing com_maxfps")?;
+        let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
+        let input_handles = crate::profile::InputHandles::load(&console.cvars)?;
         let notify_time = console
             .cvars
             .find("con_notifytime")
@@ -120,7 +139,10 @@ impl FrameHost {
             key_repeats: 0,
             developer,
             local_clients: [None; SeatId::COUNT],
+            local_worlds: [None; SeatId::COUNT],
             maxfps,
+            fov,
+            input_handles,
             notify_time,
             center_time,
             previous: None,
@@ -156,6 +178,7 @@ impl FrameHost {
         }
         let server_time = self.time;
         self.previous = Some(server_time);
+        let simulation = Stopwatch::start();
         let runtime = &mut self.runtime;
         let providers = &self.providers;
         result.server_ticks = self
@@ -176,6 +199,7 @@ impl FrameHost {
         if let Some(world) = &mut runtime.collision {
             runtime.server.move_pending_clients(world);
         }
+        result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         // Immediate server->client packets take this path in the same frame.
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
@@ -184,13 +208,40 @@ impl FrameHost {
             self.dispatch_output(source, &mut result);
             return result;
         }
+        let client = Stopwatch::start();
         result.commands = self.client_frame();
+        result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
-        source.render();
+        source.render(&self.client_views());
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result
+    }
+
+    pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let client = self.local_clients[seat]?;
+            let world = self.local_worlds[seat]?;
+            if self.runtime.server.clients[client.0 as usize]
+                .connection
+                .is_none()
+            {
+                return None;
+            }
+            let player = &self.runtime.prediction[seat].player;
+            Some(ClientView {
+                world,
+                origin: player.body.position + player.view_offset,
+                angles: player.view_angles,
+                fov_x: self.console.cvars.value(self.fov),
+                time_ms: self.time.milliseconds(),
+            })
+        })
+    }
+
+    pub fn native_input_policy_active(&self) -> bool {
+        self.runtime.collision.is_some() && self.local_clients.iter().any(Option::is_some)
     }
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
@@ -275,12 +326,26 @@ impl FrameHost {
     }
 
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
-        // THE-735 supplies cached per-seat movement/mouse policies; these are
-        // normalized routing units until movement/prediction and scenes exist.
-        let mut commands = self
-            .runtime
-            .input
-            .build_frame(self.time, [127; 3], [0.022; 2]);
+        let mut commands = if self.native_input_policy_active() {
+            let policies = std::array::from_fn(|seat| {
+                let rules = self.local_clients[seat].map_or(
+                    qa_core::primitives::MovementRules::default(),
+                    |id| {
+                        self.runtime.server.clients[id.0 as usize]
+                            .player
+                            .movement_rules
+                    },
+                );
+                self.input_handles.policy(&self.console.cvars, rules)
+            });
+            self.runtime
+                .input
+                .build_frame_with_policy(self.time, &policies)
+        } else {
+            self.runtime
+                .input
+                .build_frame(self.time, [127; 3], [0.022; 2])
+        };
         for (seat, command) in commands.iter_mut().enumerate() {
             let rules = self.local_clients[seat].map_or(
                 qa_core::primitives::MovementRules::default(),
