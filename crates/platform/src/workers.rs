@@ -162,12 +162,12 @@ impl Workers {
         };
         {
             let mut state = self.shared.lock();
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            state.counts.fill(Counts::default());
             if state.worker_failed || state.stopping {
                 return Err(WorkerError::WorkerStopped);
             }
             if jobs.is_empty() {
-                #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
-                state.counts.fill(Counts::default());
                 return Ok(());
             }
             state.dispatch = Some(Dispatch {
@@ -186,6 +186,8 @@ impl Workers {
     /// Development counters cover each worker's wait/wake, job execution and
     /// completion-barrier update. The caller must install CountingAllocator;
     /// measure the dispatching thread separately. Native heap work is excluded.
+    /// Only the latest dispatch is retained. Empty dispatches and dispatches
+    /// rejected before execution clear it.
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     pub fn allocation_counts(&self, output: &mut [Counts]) -> Result<(), WorkerError> {
         if output.len() != self.count() {
@@ -335,5 +337,41 @@ fn worker_main(shared: Arc<Shared>, index: usize, count: usize) {
             // again before InFlight lets the originating borrow return.
             completion.panicked = unsafe { (dispatch.run)(dispatch.context, index, count) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+    #[test]
+    fn rejected_dispatch_clears_prior_counts_without_running_jobs() -> Result<(), WorkerError> {
+        for worker_failed in [false, true] {
+            let mut workers = Workers::load(1)?;
+            let prior = Counts {
+                allocations: 3,
+                reallocations: 2,
+                requested_bytes: 512,
+            };
+            {
+                let mut state = workers.shared.lock();
+                state.counts[0] = prior;
+                state.worker_failed = worker_failed;
+                state.stopping = !worker_failed;
+            }
+            let mut counts = [Counts::default()];
+            workers.allocation_counts(&mut counts)?;
+            assert_eq!(counts, [prior]);
+            let mut jobs = [0u32];
+            assert_eq!(
+                workers.dispatch_scoped(&mut jobs, |job| *job += 1),
+                Err(WorkerError::WorkerStopped)
+            );
+            workers.allocation_counts(&mut counts)?;
+            assert_eq!(counts, [Counts::default()]);
+            assert_eq!(jobs, [0]);
+        }
+        Ok(())
     }
 }

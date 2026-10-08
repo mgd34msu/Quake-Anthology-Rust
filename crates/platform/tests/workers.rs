@@ -243,3 +243,53 @@ fn dispatch_counts_the_caller_and_every_worker_with_positive_controls() {
     drop(jobs);
     assert_eq!(outputs, [73; 4]);
 }
+
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+#[test]
+fn sequential_dispatch_counts_are_distinct_and_empty_dispatch_clears_them() {
+    use qa_platform::allocations::Counts;
+    let mut workers = Workers::load(2).unwrap();
+    let mut outputs = [0u64; 8];
+    let mut jobs = outputs.each_mut().map(|output| AllocationJob {
+        output,
+        positive_control: false,
+    });
+    for _ in 0..8 {
+        workers.dispatch_scoped(&mut jobs, allocation_job).unwrap();
+    }
+    for job in &mut jobs {
+        job.positive_control = true;
+    }
+    workers.dispatch_scoped(&mut jobs, allocation_job).unwrap();
+    let mut first = [Counts::default(); 2];
+    workers.allocation_counts(&mut first).unwrap();
+    assert_eq!(
+        first,
+        [Counts {
+            allocations: 4,
+            reallocations: 0,
+            requested_bytes: 256,
+        }; 2]
+    );
+    workers
+        .dispatch_scoped(&mut jobs[..2], allocation_job)
+        .unwrap();
+    let mut second = [Counts::default(); 2];
+    workers.allocation_counts(&mut second).unwrap();
+    assert_eq!(
+        second,
+        [Counts {
+            allocations: 1,
+            reallocations: 0,
+            requested_bytes: 64,
+        }; 2]
+    );
+    assert_ne!(first, second);
+    workers
+        .dispatch_scoped::<u8>(&mut [], |value| *value += 1)
+        .unwrap();
+    workers.allocation_counts(&mut second).unwrap();
+    assert_eq!(second, [Counts::default(); 2]);
+    drop(jobs);
+    assert_eq!(outputs, [10, 10, 9, 9, 9, 9, 9, 9]);
+}
