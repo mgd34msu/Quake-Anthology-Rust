@@ -3,6 +3,7 @@ pub mod brushes;
 pub mod contents;
 pub mod hulls;
 pub mod scene;
+pub mod tree;
 
 use brushes::BrushMap;
 pub use contents::Contents;
@@ -58,6 +59,30 @@ pub enum AllSolid {
     BlockAtStart,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NonAxialOffset {
+    ProjectedExtents,
+    Fixed(f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeafGate {
+    StoredContents,
+    Brushes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PositionRules {
+    AllSides,
+    AxialPrefix,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PositionEndpoint {
+    Start,
+    ByFraction,
+}
+
 /// Caller-owned clipping choices. Geometry never selects a game or movement.
 /// These are engine query values, not fields of any legacy wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +94,13 @@ pub struct TraceRules {
     pub fraction_clamp: FractionClamp,
     pub bounds_origin: BoundsOrigin,
     pub all_solid: AllSolid,
+    pub tree_margin: f32,
+    pub nonaxial_offset: NonAxialOffset,
+    pub leaf_gate: LeafGate,
+    pub position: PositionRules,
+    pub position_endpoint: PositionEndpoint,
+    /// Original stationary collection truncation is caller compatibility data.
+    pub position_leaf_limit: u32,
 }
 
 impl TraceRules {
@@ -80,6 +112,12 @@ impl TraceRules {
         fraction_clamp: FractionClamp::AfterSelection,
         bounds_origin: BoundsOrigin::Supplied,
         all_solid: AllSolid::PreserveFraction,
+        tree_margin: 0.0,
+        nonaxial_offset: NonAxialOffset::ProjectedExtents,
+        leaf_gate: LeafGate::StoredContents,
+        position: PositionRules::AllSides,
+        position_endpoint: PositionEndpoint::Start,
+        position_leaf_limit: 1024,
     };
     pub const ARENA: Self = Self {
         contact_epsilon: 0.125,
@@ -87,6 +125,12 @@ impl TraceRules {
         fraction_clamp: FractionClamp::PerPlane,
         bounds_origin: BoundsOrigin::Centered,
         all_solid: AllSolid::BlockAtStart,
+        tree_margin: 1.0,
+        nonaxial_offset: NonAxialOffset::Fixed(2048.0),
+        leaf_gate: LeafGate::Brushes,
+        position: PositionRules::AxialPrefix,
+        position_endpoint: PositionEndpoint::ByFraction,
+        position_leaf_limit: 1024,
     };
 }
 
@@ -191,34 +235,33 @@ pub enum CollisionWorld {
 }
 
 /// Cold-sized caller storage. Each concurrent trace caller owns its scratch.
-pub struct TraceScratch {
-    hull: Option<hulls::HullScratch>,
+pub enum TraceScratch {
+    Hulls(hulls::HullScratch),
+    Brushes(brushes::BrushScratch),
 }
 
 impl CollisionWorld {
     pub fn scratch(&self) -> TraceScratch {
-        TraceScratch {
-            hull: match self {
-                Self::Hulls(map) => Some(map.scratch()),
-                Self::Brushes(_) => None,
-            },
+        match self {
+            Self::Hulls(map) => TraceScratch::Hulls(map.scratch()),
+            Self::Brushes(map) => TraceScratch::Brushes(map.scratch()),
         }
     }
 
     pub(crate) fn trace_geometry(&self, query: TraceQuery, scratch: &mut TraceScratch) -> Trace {
-        match self {
-            Self::Hulls(map) => match &mut scratch.hull {
-                Some(hull) => map.trace(query, hull),
-                None => Trace::clear(query.end),
-            },
-            Self::Brushes(map) => map.trace(query),
+        match (self, scratch) {
+            (Self::Hulls(map), TraceScratch::Hulls(scratch)) => map.trace(query, scratch),
+            (Self::Brushes(map), TraceScratch::Brushes(scratch)) => {
+                map.trace_model(0, query, scratch)
+            }
+            _ => Trace::clear(query.end),
         }
     }
 
-    pub(crate) fn point_contents(&self, point: Vec3) -> Contents {
+    pub(crate) fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
         match self {
             Self::Hulls(map) => map.point_contents(point),
-            Self::Brushes(map) => map.point_contents(point),
+            Self::Brushes(map) => map.point_contents_model(0, point, rules),
         }
     }
 }

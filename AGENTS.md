@@ -112,6 +112,13 @@ complete. Every capability must accept independent choices per world, entity,
 player and client. Each playable feature needs per-game and combined-mode proof,
 such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
 
+This is a new unified engine, not a Q3 engine extended with other games. qsrc
+defines gameplay results, stock appearance and byte-exact legacy protocols;
+it does not prescribe the engine's storage, allocator or scheduling structure.
+Every structural choice earns its place through pinned timings, memory safety
+or simplicity. Preserve observable native ordering and arithmetic without
+copying recursive stacks, global mutable scratch or per-game capability code.
+
 * A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. No receive thread, journal, input recording or replay may be added pending the owner.
 * B. THE-884: Com_Frame performs two nonblocking physical intake drains: before SERVER and before CLIENT, each followed by commands, matching qsrc Com_Frame/Com_EventLoop. SERVER providers advance at their own native rates on one timeline; CLIENT applies snapshots, predicts and presents. No other physical intake point is allowed, including frame-cap waits or final-ACK retirement. The 2026-10-08 16:12 owner ruling supersedes the earlier draining-wait requirement; queued events may still be consumed without polling OS sources. The cap waits on platform time before the first intake, using native integer-millisecond boundaries and a zero startup baseline. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
 * C. THE-691/890: all modules produce sound, effect and print primitives into the one core output ring and text arena; the client drains it once into audio, particles and per-seat HUD/notify consumers. Load-sized arenas, fixed rings and hot SoA state mean zero Rust heap allocation per frame; instrumented qualification fails on any measured-frame allocation.

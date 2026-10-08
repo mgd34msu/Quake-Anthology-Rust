@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from check_hull_trace import function
 from check_draw_sort import function as draw_function
+from check_brush_tree import extract_function as tree_function
 
 
 class ReferenceExtraction(unittest.TestCase):
@@ -49,6 +50,52 @@ qboolean GL_Upload8(byte *data) { return data[0]; }
     def test_draw_call_without_definition_is_rejected(self):
         with self.assertRaises(RuntimeError):
             draw_function('void run(void) { return draw(); }', 'draw')
+
+    def test_tree_bspc_branches_share_one_closing_brace(self):
+        body = '''void CM_TestInLeaf(void) {
+#ifdef BSPC
+    if (1) {
+#else
+    if (!cm_noCurves->integer) {
+#endif //BSPC
+        nested();
+    }
+}'''
+        source = 'void forward(void);\n' + body + '\nvoid after(void) { }\n'
+        extracted, span = tree_function(source, 'CM_TestInLeaf')
+        self.assertEqual(extracted, body)
+        self.assertEqual((span['start_line'], span['end_line']), (2, 10))
+        self.assertTrue(span['exact_contiguous_source_slice'])
+        self.assertIn('#ifdef BSPC', extracted)
+        self.assertIn('#else', extracted)
+
+    def test_tree_nested_default_and_elif_branches_preserve_all_bytes(self):
+        body = '''void trace(void) {
+#if 0
+    {{{
+#elif defined(ALWAYS_CAPSULE_VS_CAPSULE)
+    }}
+#else
+#ifndef BSPC
+    if (1) {
+#ifdef CAPSULE_DEBUG
+        }}{{
+#endif
+        const char *text = "}"; // }
+    }
+#endif
+#endif
+}'''
+        extracted, _ = tree_function(body + '\nvoid next(void) { }', 'trace')
+        self.assertEqual(extracted, body)
+
+    def test_tree_conditional_crossing_function_boundary_is_rejected(self):
+        with self.assertRaises(ValueError):
+            tree_function('void trace(void) {\n#ifndef BSPC\n}\n', 'trace')
+
+    def test_tree_unsupported_conditional_is_rejected(self):
+        with self.assertRaises(ValueError):
+            tree_function('void trace(void) {\n#if UNKNOWN + 1\n{}\n#endif\n}', 'trace')
 
 
 if __name__ == '__main__':

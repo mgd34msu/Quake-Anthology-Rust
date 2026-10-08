@@ -6,6 +6,7 @@ pub struct Contents(pub u64);
 impl Contents {
     pub const EMPTY: Self = Self(0);
     pub const SOLID: Self = Self(1);
+    pub const AUX: Self = Self(4);
     pub const LAVA: Self = Self(8);
     pub const SLIME: Self = Self(16);
     pub const WATER: Self = Self(32);
@@ -35,7 +36,7 @@ impl Contents {
     }
 
     pub fn from_q2(raw: u32) -> Self {
-        let mut bits = u64::from(raw & 0x0f038079);
+        let mut bits = u64::from(raw & 0x0f03807d);
         if raw & 2 != 0 {
             bits |= Self::WINDOW.0;
         }

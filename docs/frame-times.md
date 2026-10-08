@@ -82,6 +82,50 @@ source based on `de70bdff`. The measured world sources match staged tree
 the C port or Muse and does not qualify installed gameplay or arbitrary
 foreign-player shapes in Q1's fixed compiled hulls.
 
+## R1 brush-tree traversal
+
+THE-625/THE-1862's 2026-10-08 release probe preserves BSP nodes, ordered leaf
+brush references and inline-model membership in one immutable representation.
+Caller-owned traversal frames, brush stamps and stationary-leaf storage allocate
+at load. Q2 and Q3 clipping rules run over the same ten synthetic trees.
+The original C functions matched all 13 declared raw result words for 15,045
+trace/point pairs per rule: 10,000 seeded pairs plus 5,045 focused cases.
+Identical-row controls passed; one-bit fraction and point-content mutations
+were rejected. The Q3 fixture uses libc `memset` only to initialize trace state;
+the extracted collision function bodies remain unchanged.
+
+The baseline-CPU release timing example ran on core 23 without a debugger,
+with 60 warm-up batches and 600 measured batches of 64 pairs each. A pair
+includes a trace, point contents, all-word comparison and result accounting.
+All 38,400 measured pairs per rule matched the native rows. Both runs recorded
+zero calling-thread Rust allocations, reallocations and requested bytes; their
+positive controls each detected one allocation. No workers were created.
+
+| Caller rules | Median batch ns | p99 batch ns | Median batch ns / 64 |
+| --- | ---: | ---: | ---: |
+| Q2 | 19,230 | 158,800 | 300.46875 |
+| Q3 | 7,225 | 109,730 | 112.890625 |
+
+These are batch timings, not individual-trace latency distributions. They
+exclude retail BSP loading, linked entities, patches, capsules, transforms,
+rendering and installed gameplay. There is no comparable previous-tree or
+C-port timing baseline, so no speedup or regression result follows. The two
+release examples built together in 15.86 seconds. Evidence is
+`brush-tree-20261008/comparison/report.json`, `q2-timing.json` and `q3-timing.json`.
+
+```sh
+timeout 300 cargo build --release -p qa-world --example brush_tree \
+  -p qa-platform --example brush_tree_timing --features qa-platform/allocation-tracking
+timeout 300 python3 tools/check_brush_tree.py --qsrc "$QSRC" \
+  --rust-binary target/release/examples/brush_tree --output "$EVIDENCE/comparison"
+timeout 300 taskset -c "$CORE" target/release/examples/brush_tree_timing q2 \
+  "$EVIDENCE/comparison/tree-fixture.bin" "$EVIDENCE/comparison/q2-native.bin" \
+  "$EVIDENCE/q2-timing.json"
+timeout 300 taskset -c "$CORE" target/release/examples/brush_tree_timing q3 \
+  "$EVIDENCE/comparison/tree-fixture.bin" "$EVIDENCE/comparison/q3-native.bin" \
+  "$EVIDENCE/q3-timing.json"
+```
+
 ## R2 system event drain
 
 THE-859's release example `system_events`, baseline CPU on core 23, measured

@@ -166,7 +166,7 @@ impl<'a> WorldTrace<'a> {
         rules: EntityTraceRules,
         excluded: &[EntityId],
     ) -> Contents {
-        let mut result = self.geometry.point_contents(point);
+        let mut result = self.geometry.point_contents(point, rules);
         // Q1 SV_PointContents is the world hull, without linked-body contents.
         if matches!(rules, EntityTraceRules::Quake { .. }) {
             return result;

@@ -14,7 +14,7 @@ use qa_render::{
 };
 use qa_world::collision::{
     CollisionWorld, Contents,
-    brushes::{Brush, BrushMap},
+    brushes::{Brush, BrushMap, BrushTree, CollisionLeaf, ModelRoot},
     hulls::{HullModel, Q1Hulls},
 };
 use std::borrow::Cow;
@@ -474,7 +474,7 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
 }
 
 fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
-    let model = map.models.first().ok_or("missing world model")?;
+    map.models.first().ok_or("missing world model")?;
     if map.bsp.format.family() == 1 {
         let drawing_child = |child: i32| {
             if child >= 0 {
@@ -506,37 +506,13 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
             .map_err(|e| format!("Q1 collision: {e:?}"))?;
         return Ok((CollisionWorld::Hulls(hulls), 0));
     }
-    let mut included = vec![false; map.brushes.len()];
-    if matches!(map.bsp.format, BspFormat::Quake3 | BspFormat::QuakeLive) {
-        included[model.brushes.indices()].fill(true);
-    } else {
-        // Q2 models name a BSP root, not a brush range. Only reachable world
-        // leaves contribute; inline model brushes remain unplaced.
-        let mut visited = vec![false; map.nodes.len()];
-        let mut nodes = vec![model.headnodes[0]];
-        while let Some(node) = nodes.pop() {
-            if node >= 0 {
-                let index = node as usize;
-                if visited[index] {
-                    continue;
-                }
-                visited[index] = true;
-                nodes.extend_from_slice(&map.nodes[index].children);
-            } else {
-                let leaf = &map.leaves[(-1i64 - i64::from(node)) as usize];
-                for &brush in &map.leaf_brushes[leaf.brushes.indices()] {
-                    included[brush as usize] = true;
-                }
-            }
-        }
-    }
+    // Brush numbers and ordered leaf references belong to the loaded map.
+    // Model roots select membership; unplaced inline models are never part
+    // of a world trace merely because their brushes share this storage.
     let mut planes = Vec::new();
     let mut surfaces = Vec::new();
     let mut brushes = Vec::new();
-    for (index, source) in map.brushes.iter().enumerate() {
-        if !included[index] {
-            continue;
-        }
+    for source in &map.brushes {
         let first_plane = u32::try_from(planes.len()).map_err(|_| "collision plane count")?;
         for side in &map.brush_sides[source.sides.indices()] {
             planes.push(map.planes[side.plane as usize]);
@@ -546,10 +522,13 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
                         .map_or(0, |id| map.texture_info[id as usize].flags as u32),
                 )
             } else {
-                SurfaceFlags::from_q3(
+                let flags = if map.bsp.format == BspFormat::Quake3Test {
+                    side.flags as u32
+                } else {
                     side.shader
-                        .map_or(0, |id| map.shaders[id as usize].surface_flags as u32),
-                )
+                        .map_or(0, |id| map.shaders[id as usize].surface_flags as u32)
+                };
+                SurfaceFlags::from_q3(flags)
             });
         }
         brushes.push(Brush {
@@ -562,8 +541,62 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
             },
         });
     }
+    let mut leaves: Vec<_> = map
+        .leaves
+        .iter()
+        .map(|leaf| CollisionLeaf {
+            stored_contents: (map.bsp.format.family() == 2)
+                .then(|| Contents::from_q2(leaf.contents as u32)),
+            first_brush: leaf.brushes.first,
+            brush_count: leaf.brushes.count,
+        })
+        .collect();
+    let mut leaf_brushes = map.leaf_brushes.clone();
+    let mut models = Vec::with_capacity(map.models.len());
+    for (index, source) in map.models.iter().enumerate() {
+        if matches!(map.bsp.format, BspFormat::Quake3 | BspFormat::QuakeLive) {
+            if index == 0 {
+                models.push(ModelRoot::Tree(0));
+            } else {
+                // qsrc CMod_LoadSubmodels creates a direct leaf for each
+                // Q3 inline model. Keep its contiguous native brush order.
+                let first_brush =
+                    u32::try_from(leaf_brushes.len()).map_err(|_| "leaf brush count")?;
+                let leaf = u32::try_from(leaves.len()).map_err(|_| "collision leaf count")?;
+                leaf_brushes
+                    .extend(source.brushes.first..source.brushes.first + source.brushes.count);
+                leaves.push(CollisionLeaf {
+                    stored_contents: None,
+                    first_brush,
+                    brush_count: source.brushes.count,
+                });
+                models.push(ModelRoot::Leaf(leaf));
+            }
+        } else {
+            // Q2 and the early Q3 test format retain their own BSP roots.
+            models.push(ModelRoot::Tree(source.headnodes[0]));
+        }
+    }
+    let tree = BrushTree {
+        planes: map.planes.clone(),
+        nodes: map
+            .nodes
+            .iter()
+            .map(|node| ClipNode {
+                plane: node.plane,
+                children: node.children,
+            })
+            .collect(),
+        leaves,
+        leaf_brushes,
+        models,
+    };
     let count = brushes.len();
-    let brushes = BrushMap::load_surfaces(planes, brushes, surfaces)
+    let brushes = BrushMap::load_tree(planes, brushes, surfaces, tree)
         .map_err(|e| format!("brush collision: {e:?}"))?;
     Ok((CollisionWorld::Brushes(brushes), count))
 }
+
+#[cfg(test)]
+#[path = "../tests/fixtures/map_collision.rs"]
+mod collision_tests;

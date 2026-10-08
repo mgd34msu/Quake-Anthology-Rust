@@ -1,6 +1,14 @@
 use qa_world::collision::Contents;
 
 #[test]
+fn auxiliary_contents_survives_native_q2_conversion_and_masks() {
+    assert_eq!(Contents::from_q2(4), Contents::AUX);
+    assert_eq!(Contents::from_q2(4 | 32), Contents::AUX | Contents::WATER);
+    assert!(Contents::from_q2(4 | 32).intersects(Contents::AUX));
+    assert!(!Contents::from_q2(32).intersects(Contents::AUX));
+}
+
+#[test]
 fn native_contents_convert_into_distinct_engine_bits() {
     assert_eq!(Contents::from_q1(-2), Contents::SOLID);
     assert_eq!(Contents::from_q1(-3), Contents::from_q2(32));
