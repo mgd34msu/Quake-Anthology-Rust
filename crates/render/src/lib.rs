@@ -9,10 +9,10 @@ pub mod scene;
 pub mod shader;
 pub mod surface_cache;
 pub mod world;
-pub use assets::{Assets, ImageId, MaterialId, ModelId, Vertex};
+pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
 pub use scene::{
-    BlendPhase, Command, CommandList, Draw2d, Frame, FrontEnd, Light, Limits, Refdef, SceneEntity,
-    Viewport,
+    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, Frame, FrontEnd, Light, LightStyle,
+    Limits, PerspectiveStep, Refdef, SceneEntity, Viewport,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

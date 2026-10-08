@@ -1,5 +1,6 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
-use crate::assets::{MaterialId, ModelId, Vertex};
+use crate::assets::{MaterialId, ModelId, PaletteId, Vertex};
+use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId};
 use qa_core::primitives::Vec3;
 use std::ops::Range;
@@ -18,6 +19,46 @@ pub enum BlendPhase {
     AfterView,
     FinalPalette,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CpuPresentation {
+    #[default]
+    Rgb,
+    Indexed {
+        palette: PaletteId,
+        lighting: IndexedLighting,
+        ambient: u8,
+        fullbright: bool,
+    },
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PerspectiveStep {
+    #[default]
+    Eight,
+    Sixteen,
+}
+impl PerspectiveStep {
+    pub fn pixels(self) -> u32 {
+        match self {
+            Self::Eight => 8,
+            Self::Sixteen => 16,
+        }
+    }
+}
+/// Both representations come from the lightstyle provider. They are copied
+/// into a view packet so module memory never reaches a backend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightStyle {
+    pub rgb: [f32; 3],
+    pub indexed_scale: u16,
+}
+impl Default for LightStyle {
+    fn default() -> Self {
+        Self {
+            rgb: [1.0; 3],
+            indexed_scale: 256,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Refdef {
     pub viewport: Viewport,
@@ -33,6 +74,10 @@ pub struct Refdef {
     /// Final palette shifts also cover a seat's statusbar/console outside the
     /// camera viewport. None uses the camera viewport for standalone scenes.
     pub blend_viewport: Option<Viewport>,
+    /// Presentation is independent of the map format, movement and modules.
+    pub cpu_presentation: CpuPresentation,
+    pub perspective_step: PerspectiveStep,
+    pub lightstyles: [LightStyle; 256],
 }
 impl Default for Refdef {
     fn default() -> Self {
@@ -51,6 +96,9 @@ impl Default for Refdef {
             blend: [0.0; 4],
             blend_phase: BlendPhase::AfterView,
             blend_viewport: None,
+            cpu_presentation: CpuPresentation::Rgb,
+            perspective_step: PerspectiveStep::Eight,
+            lightstyles: [LightStyle::default(); 256],
         }
     }
 }
