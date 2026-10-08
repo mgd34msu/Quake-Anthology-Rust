@@ -5,7 +5,7 @@ use qa_content::vfs::{MountKind, Vfs, normalize};
 use qa_core::primitives::{ClipNode, MovementRules, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
-    bsp::{BspFormat, Map},
+    bsp::{Bsp, BspFormat, Map},
     entities::{EntityLump, EntitySyntax},
 };
 use qa_render::{
@@ -36,6 +36,15 @@ pub struct LoadedMap {
     pub profile_product: String,
     pub entity_count: usize,
     pub collision_brushes: usize,
+}
+
+/// Owned cold input retains one VFS read while settings are imported. The
+/// validated lump directory selects its source; records are decoded at load.
+pub struct MapInput {
+    bytes: Vec<u8>,
+    pub native_source: Source,
+    pub virtual_path: String,
+    pub profile_product: String,
 }
 
 pub fn movement(name: &str) -> Result<MovementRules, &'static str> {
@@ -69,8 +78,8 @@ pub fn native_movement(source: Source) -> MovementRules {
     }
 }
 
-/// Read and decode once before a renderer freezes its asset registration.
-pub fn load(vfs: &Vfs, name: &str, assets: &mut Assets) -> Result<LoadedMap, String> {
+/// Read once and establish the settings source before asset preparation.
+pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     let path = virtual_path(name)?;
     let file = vfs
         .open(path.as_bytes())
@@ -88,8 +97,10 @@ pub fn load(vfs: &Vfs, name: &str, assets: &mut Assets) -> Result<LoadedMap, Str
     if read != length {
         return Err("incomplete map read".into());
     }
-    let map = Map::parse(&bytes).map_err(|e| format!("BSP: {e:?}"))?;
-    let source = match map.bsp.format.family() {
+    let format = Bsp::parse(&bytes)
+        .map_err(|e| format!("BSP directory: {e:?}"))?
+        .format;
+    let source = match format.family() {
         1 => Source::Quake,
         2 => Source::Quake2,
         _ => Source::Quake3,
@@ -115,28 +126,40 @@ pub fn load(vfs: &Vfs, name: &str, assets: &mut Assets) -> Result<LoadedMap, Str
             Source::Quake3 => "q3a",
         }
     );
-    let (spawn, entity_count, sky_environment) = spawn(&map)?;
-    let (collision, collision_brushes) = collision(&map)?;
-    let render = load_world(
-        vfs,
-        &map,
-        assets,
-        WorldLoadOptions {
-            sky_environment,
-            ..WorldLoadOptions::default()
-        },
-    )
-    .map_err(|e| format!("world assets: {e:?}"))?;
-    Ok(LoadedMap {
-        collision,
-        render,
-        spawn,
+    Ok(MapInput {
+        bytes,
         native_source: source,
         virtual_path: path,
         profile_product,
-        entity_count,
-        collision_brushes,
     })
+}
+
+impl MapInput {
+    /// Decode map/entities/collision once, then register resources using the
+    /// caller's already-selected saved settings and command-line overrides.
+    pub fn load(
+        self,
+        vfs: &Vfs,
+        assets: &mut Assets,
+        mut options: WorldLoadOptions,
+    ) -> Result<LoadedMap, String> {
+        let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
+        let (spawn, entity_count, sky_environment) = spawn(&map)?;
+        let (collision, collision_brushes) = collision(&map)?;
+        options.sky_environment = sky_environment;
+        let render =
+            load_world(vfs, &map, assets, options).map_err(|e| format!("world assets: {e:?}"))?;
+        Ok(LoadedMap {
+            collision,
+            render,
+            spawn,
+            native_source: self.native_source,
+            virtual_path: self.virtual_path,
+            profile_product: self.profile_product,
+            entity_count,
+            collision_brushes,
+        })
+    }
 }
 
 fn virtual_path(name: &str) -> Result<String, String> {

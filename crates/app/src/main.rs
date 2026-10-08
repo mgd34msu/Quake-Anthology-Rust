@@ -10,7 +10,7 @@ use qa_console::{
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
-use qa_render::Assets;
+use qa_render::{Assets, material::world_load::WorldLoadOptions};
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -194,34 +194,28 @@ fn run() -> Result<(), String> {
     if movement_rules.is_some() && map_name.is_none() {
         return Err("--movement needs a loaded --map".into());
     }
-    let mut assets = Assets::load();
+    let staged_map = if let Some(name) = map_name {
+        let input = map::read(&runtime.vfs, &name)?;
+        let rules = movement_rules.unwrap_or_else(|| map::native_movement(input.native_source));
+        Some((input, rules))
+    } else {
+        None
+    };
     let mut loaded_world = None;
     let mut local_client = None;
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
     let mut selected_movement = None;
     let mut imported_profile = qa_app::profile::Import::default();
-    if let Some(name) = map_name {
-        let loaded = map::load(&runtime.vfs, &name, &mut assets)?;
+    if let Some((input, rules)) = &staged_map {
         if !console_source_explicit {
             console.cvars.select_context(Context {
-                source: loaded.native_source,
+                source: input.native_source,
                 ..console.cvars.context()
             });
         }
-        let rules = movement_rules.unwrap_or_else(|| map::native_movement(loaded.native_source));
         imported_profile =
-            qa_app::profile::load(&mut console, &mut runtime, &loaded.profile_product, rules)?;
-        for (name, value, context) in &startup_sets {
-            let view = console
-                .cvars
-                .bind(name, *context)
-                .ok_or_else(|| format!("unknown startup cvar {name}"))?;
-            console
-                .cvars
-                .write(view, value)
-                .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
-        }
+            qa_app::profile::load(&mut console, &mut runtime, &input.profile_product, *rules)?;
         println!(
             "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"history_imported\":false,\"settings_only\":true}}",
             imported_profile.consumed(),
@@ -231,6 +225,22 @@ fn run() -> Result<(), String> {
             imported_profile.bindings,
             imported_profile.unsupported
         );
+    }
+    // Saved settings are already in the one table. Explicit CLI values win
+    // before image/material registration consumes its cold settings.
+    for (name, value, context) in &startup_sets {
+        let view = console
+            .cvars
+            .bind(name, *context)
+            .ok_or_else(|| format!("unknown startup cvar {name}"))?;
+        console
+            .cvars
+            .write(view, value)
+            .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
+    }
+    let mut assets = Assets::load();
+    if let Some((input, rules)) = staged_map {
+        let loaded = input.load(&runtime.vfs, &mut assets, WorldLoadOptions::default())?;
         // This world clock is the native gate-world default, independent of
         // --movement. Loaded SERVER providers retain their own clocks later.
         world_rate = match loaded.native_source {

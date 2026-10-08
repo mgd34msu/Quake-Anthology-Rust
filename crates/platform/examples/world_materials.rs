@@ -2,7 +2,7 @@
 use qa_app::map;
 use qa_content::vfs::Vfs;
 use qa_platform::Stopwatch;
-use qa_render::{Assets, CpuPresentation};
+use qa_render::{Assets, CpuPresentation, material::world_load::WorldLoadOptions};
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -18,7 +18,7 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("mount: {e:?}"))?;
     let mut assets = Assets::load();
     let start = Stopwatch::start();
-    let loaded = map::load(&vfs, &name, &mut assets)?;
+    let loaded = map::read(&vfs, &name)?.load(&vfs, &mut assets, WorldLoadOptions::default())?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let world = assets
         .world(loaded.render.world)

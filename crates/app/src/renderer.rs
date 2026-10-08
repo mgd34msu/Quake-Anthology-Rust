@@ -117,6 +117,16 @@ impl Renderer {
                 )?
             }),
         };
+        if let Backend::Gl(gl) = &backend {
+            let (renderer, version) = gl.renderer_info();
+            qa_console::logger::console(format_args!(
+                "{{\"event\":\"gl_context\",\"renderer\":{},\"version\":{}}}\n",
+                serde_json::to_string(renderer)
+                    .map_err(|e| format!("GL renderer report: {e}"))?,
+                serde_json::to_string(version)
+                    .map_err(|e| format!("GL version report: {e}"))?
+            ));
+        }
         Ok(Self {
             frontend,
             assets,
