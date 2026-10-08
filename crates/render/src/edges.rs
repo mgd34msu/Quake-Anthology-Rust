@@ -1,15 +1,24 @@
 //! Opaque world edge/span visibility, following qsrc r_draw.c and r_edge.c.
 //!
 //! The caller clips against the near plane and supplies convex projected
-//! polygons in BSP order. Smaller keys are nearer. Static surfaces with equal
-//! keys retain the already-active surface, as R_LeadingEdge does; inline brush
-//! models' same-leaf inverse-depth ordering remains outside this scanner.
+//! polygons. Partitioned geometry uses native BSP keys; unpartitioned or mixed
+//! geometry uses affine inverse-depth planes on the same edge/span machinery.
+//! Neither policy depends on the game family.
 use crate::scene::Viewport;
 
 const NONE: usize = usize::MAX;
 const FRACTION_BITS: u32 = 20;
 const FRACTION: i64 = 1 << FRACTION_BITS;
 const BIAS: i64 = FRACTION - 1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DepthPolicy {
+    /// Native partitioned world surfaces: smaller traversal keys are nearer.
+    #[default]
+    BspKeys,
+    /// Whole surfaces, curves and overlapping worlds require actual depth.
+    PlaneDepth,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProjectedVertex {
@@ -52,6 +61,25 @@ struct Surface {
     id: u32,
     key: u32,
     winding: i32,
+    depth: DepthPlane,
+    activation: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DepthPlane {
+    x: f64,
+    y: f64,
+    origin: f64,
+}
+
+impl DepthPlane {
+    fn at(self, x: u32, y: u32) -> f64 {
+        self.x * f64::from(x) + self.row_origin(y)
+    }
+
+    fn row_origin(self, y: u32) -> f64 {
+        self.y * f64::from(y) + self.origin
+    }
 }
 
 pub struct Edges {
@@ -63,6 +91,7 @@ pub struct Edges {
     active: Box<[usize]>,
     surfaces: Box<[Surface]>,
     stack: Box<[usize]>,
+    depth_stack: Box<[usize]>,
     spans: Box<[Span]>,
     edge_count: usize,
     surface_count: usize,
@@ -70,6 +99,8 @@ pub struct Edges {
     stack_count: usize,
     span_count: usize,
     collecting: bool,
+    policy: DepthPolicy,
+    activation: usize,
     stats: Stats,
 }
 
@@ -100,6 +131,7 @@ impl Edges {
             active: vec![0; max_edges].into_boxed_slice(),
             surfaces: vec![Surface::default(); max_polygons].into_boxed_slice(),
             stack: vec![0; max_polygons].into_boxed_slice(),
+            depth_stack: vec![0; max_polygons].into_boxed_slice(),
             spans: vec![Span::default(); max_spans].into_boxed_slice(),
             edge_count: 0,
             surface_count: 0,
@@ -107,12 +139,20 @@ impl Edges {
             stack_count: 0,
             span_count: 0,
             collecting: false,
+            policy: DepthPolicy::BspKeys,
+            activation: 0,
             stats: Stats::default(),
         })
     }
 
     /// Starts one view. Arena capacities and allocation remain unchanged.
     pub fn begin(&mut self, viewport: Viewport) -> bool {
+        self.begin_with_policy(viewport, DepthPolicy::BspKeys)
+    }
+
+    /// Select by geometry partition metadata and view contents. Combining
+    /// overlapping worlds requires PlaneDepth even if each is partitioned.
+    pub fn begin_with_policy(&mut self, viewport: Viewport, policy: DepthPolicy) -> bool {
         self.buckets.fill(NONE);
         self.edge_count = 0;
         self.surface_count = 0;
@@ -120,6 +160,7 @@ impl Edges {
         self.stack_count = 0;
         self.span_count = 0;
         self.stats = Stats::default();
+        self.policy = policy;
         self.collecting = viewport.width != 0
             && viewport.height != 0
             && viewport
@@ -138,8 +179,9 @@ impl Edges {
         self.collecting
     }
 
-    /// Copies only edges and surface identity. Sampling planes remain with the
-    /// caller. Validation and capacity failure drop the entire polygon.
+    /// Copies edges, surface identity and its visibility depth plane. Texture
+    /// sampling remains with the caller. Differing planes need distinct surface
+    /// ids, including individual curve triangles. Capacity failure is atomic.
     pub fn add_polygon(&mut self, surface: u32, key: u32, vertices: &[ProjectedVertex]) -> bool {
         if !self.collecting
             || vertices.len() < 3
@@ -189,11 +231,23 @@ impl Edges {
             self.stats.rejected += 1;
             return false;
         }
+        let depth = match self.policy {
+            DepthPolicy::BspKeys => DepthPlane::default(),
+            DepthPolicy::PlaneDepth => {
+                let Some(depth) = depth_plane(vertices) else {
+                    self.stats.rejected += 1;
+                    return false;
+                };
+                depth
+            }
+        };
         let polygon = self.surface_count;
         self.surfaces[polygon] = Surface {
             id: surface,
             key,
             winding: 0,
+            depth,
+            activation: 0,
         };
         self.surface_count += 1;
         previous = vertices[vertices.len() - 1];
@@ -251,6 +305,7 @@ impl Edges {
                 edge = self.edges[edge].next;
             }
             self.stack_count = 0;
+            self.activation = 0;
             for &edge in &self.active[..self.active_count] {
                 self.surfaces[self.edges[edge].polygon].winding = 0;
             }
@@ -259,6 +314,10 @@ impl Edges {
             let mut index = 0;
             while index < self.active_count {
                 let x = self.edge_x(self.active[index]);
+                if self.policy == DepthPolicy::PlaneDepth {
+                    self.emit_depth_interval(start, x, y, &mut flush);
+                    start = x;
+                }
                 // All events at this integer pixel boundary are atomic: no
                 // intermediate zero-width span changes the visible surface.
                 while index < self.active_count && self.edge_x(self.active[index]) == x {
@@ -273,17 +332,24 @@ impl Edges {
                     }
                     index += 1;
                 }
-                let next = (self.stack_count != 0).then(|| self.stack[0]);
-                if next != run {
-                    if let Some(polygon) = run {
-                        self.emit(polygon, start, y, x - start, &mut flush);
+                if self.policy == DepthPolicy::BspKeys {
+                    let next = (self.stack_count != 0).then(|| self.stack[0]);
+                    if next != run {
+                        if let Some(polygon) = run {
+                            self.emit(polygon, start, y, x - start, &mut flush);
+                        }
+                        start = x;
+                        run = next;
                     }
-                    start = x;
-                    run = next;
                 }
             }
-            if let Some(polygon) = run {
-                self.emit(polygon, start, y, right - start, &mut flush);
+            match self.policy {
+                DepthPolicy::BspKeys => {
+                    if let Some(polygon) = run {
+                        self.emit(polygon, start, y, right - start, &mut flush);
+                    }
+                }
+                DepthPolicy::PlaneDepth => self.emit_depth_interval(start, right, y, &mut flush),
             }
             for &index in &self.active[..self.active_count] {
                 let edge = &mut self.edges[index];
@@ -335,6 +401,8 @@ impl Edges {
     }
 
     fn insert_surface(&mut self, polygon: usize) {
+        self.surfaces[polygon].activation = self.activation;
+        self.activation += 1;
         let key = self.surfaces[polygon].key;
         let mut position = 0;
         while position < self.stack_count && self.surfaces[self.stack[position]].key <= key {
@@ -368,6 +436,17 @@ impl Edges {
         if count == 0 {
             return;
         }
+        if self.policy == DepthPolicy::PlaneDepth && self.span_count != 0 {
+            let previous = &mut self.spans[self.span_count - 1];
+            if previous.surface == self.surfaces[polygon].id
+                && previous.y == y
+                && previous.x + previous.count == x
+            {
+                previous.count += count;
+                self.stats.pixels += u64::from(count);
+                return;
+            }
+        }
         if self.span_count == self.spans.len() {
             self.flush(flush);
         }
@@ -382,6 +461,84 @@ impl Edges {
         self.stats.pixels += u64::from(count);
     }
 
+    fn emit_depth_interval(
+        &mut self,
+        mut x: u32,
+        end: u32,
+        y: u32,
+        flush: &mut impl FnMut(&[Span]),
+    ) {
+        if self.stack_count == 0 || x == end {
+            return;
+        }
+        self.depth_stack[..self.stack_count].copy_from_slice(&self.stack[..self.stack_count]);
+        while x < end {
+            // At each edge/depth event order the fixed active stack. Exact
+            // depth ties use native key/activation order, without an epsilon.
+            for index in 1..self.stack_count {
+                let surface = self.depth_stack[index];
+                let mut position = index;
+                while position != 0
+                    && self.depth_before(surface, self.depth_stack[position - 1], x, y)
+                {
+                    self.depth_stack[position] = self.depth_stack[position - 1];
+                    position -= 1;
+                }
+                self.depth_stack[position] = surface;
+            }
+            let visible = self.depth_stack[0];
+            let mut next = end;
+            for index in 1..self.stack_count {
+                if let Some(crossing) =
+                    self.first_overtake(visible, self.depth_stack[index], x, end, y)
+                {
+                    next = next.min(crossing);
+                }
+            }
+            self.emit(visible, x, y, next - x, flush);
+            x = next;
+        }
+    }
+
+    fn depth_before(&self, first: usize, second: usize, x: u32, y: u32) -> bool {
+        let first = self.surfaces[first];
+        let second = self.surfaces[second];
+        let first_depth = first.depth.at(x, y);
+        let second_depth = second.depth.at(x, y);
+        first_depth > second_depth
+            || (first_depth == second_depth
+                && (first.key, first.activation) < (second.key, second.activation))
+    }
+
+    fn first_overtake(
+        &self,
+        visible: usize,
+        other: usize,
+        x: u32,
+        end: u32,
+        y: u32,
+    ) -> Option<u32> {
+        let visible_plane = self.surfaces[visible].depth;
+        let other_plane = self.surfaces[other].depth;
+        let slope = other_plane.x - visible_plane.x;
+        if slope <= 0.0 {
+            return None;
+        }
+        let crossing = (visible_plane.row_origin(y) - other_plane.row_origin(y)) / slope;
+        if !crossing.is_finite() || crossing >= f64::from(end) {
+            return None;
+        }
+        // The analytic crossing gives adjacent integer candidates. Evaluate
+        // the actual affine planes there to retain exact sample/tie ownership.
+        let sample = crossing.floor().max(f64::from(x)) as u32;
+        let first = if self.depth_before(other, visible, sample, y) {
+            sample
+        } else {
+            sample + 1
+        };
+        (first > x && first < end).then_some(first)
+    }
+
     fn flush(&mut self, flush: &mut impl FnMut(&[Span])) {
         if self.span_count != 0 {
             flush(&self.spans[..self.span_count]);
@@ -389,6 +546,39 @@ impl Edges {
             self.stats.flushes += 1;
         }
     }
+}
+
+fn depth_plane(vertices: &[ProjectedVertex]) -> Option<DepthPlane> {
+    let origin = vertices[0];
+    let mut largest_area = 0.0_f64;
+    let mut basis = None;
+    for index in 1..vertices.len() - 1 {
+        let first = vertices[index];
+        let second = vertices[index + 1];
+        let ax = f64::from(first.xy[0]) - f64::from(origin.xy[0]);
+        let ay = f64::from(first.xy[1]) - f64::from(origin.xy[1]);
+        let az = f64::from(first.inverse_depth) - f64::from(origin.inverse_depth);
+        let bx = f64::from(second.xy[0]) - f64::from(origin.xy[0]);
+        let by = f64::from(second.xy[1]) - f64::from(origin.xy[1]);
+        let bz = f64::from(second.inverse_depth) - f64::from(origin.inverse_depth);
+        let determinant = ax * by - bx * ay;
+        // The first nonzero fan triangle may be nearly collinear. Its rounded
+        // f32 depth samples can lose a slope entirely. Use the widest projected
+        // basis without an epsilon that would discard legitimate thin geometry.
+        if determinant.abs() > largest_area {
+            largest_area = determinant.abs();
+            basis = Some([ax, ay, az, bx, by, bz, determinant]);
+        }
+    }
+    let [ax, ay, az, bx, by, bz, determinant] = basis?;
+    let x = (az * by - bz * ay) / determinant;
+    let y = (ax * bz - bx * az) / determinant;
+    let origin =
+        f64::from(origin.inverse_depth) - x * f64::from(origin.xy[0]) - y * f64::from(origin.xy[1]);
+    [x, y, origin]
+        .iter()
+        .all(|coefficient| coefficient.is_finite())
+        .then_some(DepthPlane { x, y, origin })
 }
 
 fn make_edge(
