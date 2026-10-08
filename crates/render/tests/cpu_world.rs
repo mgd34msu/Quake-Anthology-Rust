@@ -12,6 +12,450 @@ use qa_render::{
 };
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+fn cloud_material(assets: &mut Assets, stages: &[Stage]) -> MaterialId {
+    cloud_material_with_cull(assets, stages, Cull::None)
+}
+
+fn cloud_material_with_cull(assets: &mut Assets, stages: &[Stage], cull: Cull) -> MaterialId {
+    assets
+        .register_material(
+            "cloud fixture",
+            stages,
+            MaterialSettings {
+                sort: 2.0,
+                cull,
+                sky: Some(qa_render::assets::Sky::Cube {
+                    outer_box: None,
+                    inner_box: None,
+                    clouds: qa_render::sky::CloudSphere::native(384.0),
+                    rotation: None,
+                    params: qa_render::assets::CubeSkyParams::default(),
+                }),
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap()
+}
+
+fn cloud_stage(image: ImageId) -> Stage {
+    Stage {
+        texture: StageTexture::Image(image),
+        texgen: qa_render::shader::TexCoordGen::CloudSky {
+            radius: 4096.0,
+            height: 384.0,
+        },
+        sampler: Sampler {
+            filter: Filter::Nearest,
+            ..Sampler::default()
+        },
+        ..Stage::default()
+    }
+}
+
+#[test]
+fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
+    use qa_render::{
+        assets::TcMod,
+        shader::{BlendFactor, StageBlend, TexMod},
+    };
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[20, 30, 40, 255]).unwrap();
+    let add = assets.register_image(1, 1, &[5, 6, 7, 255]).unwrap();
+    // Retail tim_hell uses two scrolling/scaled stages and additive clouds.
+    let cloud = cloud_material(
+        &mut assets,
+        &[
+            Stage {
+                tcmods: [
+                    Some(TcMod::Script(TexMod::Scroll([0.05, 0.1]))),
+                    Some(TcMod::Script(TexMod::Scale([2.0, 2.0]))),
+                    None,
+                    None,
+                ],
+                ..cloud_stage(base)
+            },
+            Stage {
+                blend: Some(StageBlend {
+                    source: BlendFactor::One,
+                    destination: BlendFactor::One,
+                }),
+                depth_write: false,
+                tcmods: [
+                    Some(TcMod::Script(TexMod::Scroll([0.05, 0.06]))),
+                    Some(TcMod::Script(TexMod::Scale([3.0, 2.0]))),
+                    None,
+                    None,
+                ],
+                ..cloud_stage(add)
+            },
+        ],
+    );
+    let sky = world(
+        &mut assets,
+        2.0,
+        cloud,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let model_vertices = [
+        [2.0, 2.0, 2.0],
+        [2.0, -2.0, 2.0],
+        [2.0, -2.0, -2.0],
+        [2.0, 2.0, -2.0],
+    ]
+    .map(|position| Vertex {
+        position: Vec3(position),
+        ..Vertex::default()
+    });
+    let model = assets
+        .register_model(&model_vertices, &[0, 1, 2, 0, 2, 3], cloud)
+        .unwrap();
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for time_ms in [0, 10_000] {
+        let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+        assert!(frame.add_world(
+            sky,
+            &[VisibleSurface {
+                surface: 0,
+                depth_key: 0
+            }]
+        ));
+        let vertices = [
+            [2.0, 2.0, 2.0],
+            [2.0, -2.0, 2.0],
+            [2.0, -2.0, -2.0],
+            [2.0, 2.0, -2.0],
+        ]
+        .map(|position| Vertex {
+            position: Vec3(position),
+            ..Vertex::default()
+        });
+        assert!(frame.add_poly(cloud, &vertices));
+        assert!(frame.add_entity(qa_render::SceneEntity {
+            model,
+            ..qa_render::SceneEntity::default()
+        }));
+        assert!(frame.render_scene(
+            Refdef {
+                cpu_presentation: CpuPresentation::Rgb,
+                time_ms,
+                ..view(PaletteId(0))
+            },
+            &[],
+            &assets
+        ));
+        let packet = frame.finish();
+        let stats = cpu.render(&packet, &assets);
+        assert_eq!(stats.rejected, 0);
+        assert_eq!(stats.triangles, 0);
+        assert!(cpu.world_stats().spans > 0);
+        assert!(
+            cpu.pixels()
+                .iter()
+                .all(|&pixel| pixel == u32::from_le_bytes([25, 36, 47, 255]))
+        );
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn cloud_uv_interpolates_native_grid_diagonal_before_ordered_texmods() {
+    use qa_render::{assets::TcMod, shader::TexMod};
+    let mut assets = Assets::load();
+    let rgba: Vec<_> = (0..128)
+        .flat_map(|y| (0..128).flat_map(move |x| [x as u8, y as u8, 0, 255]))
+        .collect();
+    let image = assets.register_image(128, 128, &rgba).unwrap();
+    let clouds = cloud_material(
+        &mut assets,
+        &[Stage {
+            tcmods: [
+                Some(TcMod::Script(TexMod::Scroll([0.05, 0.1]))),
+                Some(TcMod::Script(TexMod::Scale([2.0, 2.0]))),
+                None,
+                None,
+            ],
+            ..cloud_stage(image)
+        }],
+    );
+    let sky = world(
+        &mut assets,
+        2.0,
+        clouds,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(
+        &mut frontend,
+        &[(sky, 0)],
+        Refdef {
+            time_ms: 1000,
+            cpu_presentation: CpuPresentation::Rgb,
+            ..view(PaletteId(0))
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    // Pixel (3,3) lies on FillCloudySkySide's native diagonal between grid
+    // (s,t)=(-.25,.25) and (0,0), so it interpolates their UVs equally.
+    // R_InitSkyTexCoords intersects the radius4480 sphere centered at Z=-4096.
+    let native_uv = |direction: [f64; 3]| {
+        let length: f64 = direction.iter().map(|value| value * value).sum();
+        let radius = 4096.0;
+        let height = 384.0;
+        let discriminant = direction[2] * direction[2] * radius * radius
+            + length * (2.0 * radius * height + height * height);
+        let p = (-direction[2] * radius + discriminant.sqrt()) / length;
+        [
+            (direction[0] * p / (radius + height)).acos(),
+            (direction[1] * p / (radius + height)).acos(),
+        ]
+    };
+    let a = native_uv([1.0, 0.25, 0.25]);
+    let b = native_uv([1.0, 0.0, 0.0]);
+    let uv = std::array::from_fn::<_, 2, _>(|axis| {
+        ((a[axis] + b[axis]) * 0.5 + [0.05, 0.1][axis]) * 2.0
+    });
+    let texel = uv.map(|value| ((value - value.floor()) * 128.0) as u8);
+    assert_eq!(
+        cpu.pixels()[3 * 8 + 3],
+        u32::from_le_bytes([texel[0], texel[1], 0, 255])
+    );
+}
+
+#[test]
+fn cloud_far_depth_does_not_occlude_world_behind_its_generated_cube() {
+    let mut assets = Assets::load();
+    let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
+    let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
+    let clouds = cloud_material(&mut assets, &[cloud_stage(red)]);
+    let solid = material(&mut assets, blue, false);
+    let sky = world(
+        &mut assets,
+        2.0,
+        clouds,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    // zFar/1.75 puts the cloud cube at 36.57, in front of this wall. Native
+    // depthRange(1,1) must still let the wall occlude it at every pixel.
+    let wall = world(
+        &mut assets,
+        48.0,
+        solid,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(
+        &mut frontend,
+        &[(sky, 0), (wall, 9000)],
+        Refdef {
+            cpu_presentation: CpuPresentation::Rgb,
+            ..view(PaletteId(0))
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([0, 0, 255, 255]))
+    );
+}
+
+#[test]
+fn cloud_native_generated_winding_obeys_front_and_back_culling() {
+    for reverse_source in [false, true] {
+        for cull in [Cull::Front, Cull::Back] {
+            let mut assets = Assets::load();
+            let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
+            let clouds = cloud_material_with_cull(&mut assets, &[cloud_stage(red)], cull);
+            let sky = world_mutated(
+                &mut assets,
+                2.0,
+                1.0,
+                clouds,
+                None,
+                GeometryPartition::Unpartitioned,
+                |geometry| {
+                    if reverse_source {
+                        geometry.indices[..6].copy_from_slice(&[0, 2, 1, 0, 3, 2]);
+                        geometry.indices[6..].reverse();
+                    }
+                },
+            );
+            let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+            let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+            for reverse_projected_winding in [false, true] {
+                let axes = [
+                    Vec3([1.0, 0.0, 0.0]),
+                    Vec3([0.0, if reverse_projected_winding { -1.0 } else { 1.0 }, 0.0]),
+                    Vec3([0.0, 0.0, 1.0]),
+                ];
+                let packet = packet(
+                    &mut frontend,
+                    &[(sky, 0)],
+                    Refdef {
+                        cpu_presentation: CpuPresentation::Rgb,
+                        axes,
+                        ..view(PaletteId(0))
+                    },
+                    &assets,
+                );
+                assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+                // tr_sky.c FillCloudySkySide generates its own winding regardless
+                // of source winding; tr_shade.c applies the material's cullType.
+                let expected = if (cull == Cull::Front) != reverse_projected_winding {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 255]
+                };
+                assert!(
+                    cpu.pixels()
+                        .iter()
+                        .all(|&pixel| pixel == u32::from_le_bytes(expected))
+                );
+                assert!(frontend.recycle(packet).is_ok());
+            }
+        }
+    }
+}
+
+#[test]
+fn equal_cloud_stage_matches_clear_far_depth_and_rejects_nearer_geometry() {
+    let mut assets = Assets::load();
+    let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
+    let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
+    let clouds = cloud_material(
+        &mut assets,
+        &[Stage {
+            depth_func: qa_render::assets::DepthFunc::Equal,
+            depth_write: false,
+            ..cloud_stage(red)
+        }],
+    );
+    let solid = material(&mut assets, blue, false);
+    let sky = world(
+        &mut assets,
+        2.0,
+        clouds,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let wall = world(
+        &mut assets,
+        48.0,
+        solid,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for (references, expected) in [
+        (vec![(sky, 0)], [255, 0, 0, 255]),
+        (vec![(sky, 0), (wall, 9000)], [0, 0, 255, 255]),
+    ] {
+        let packet = packet(
+            &mut frontend,
+            &references,
+            Refdef {
+                cpu_presentation: CpuPresentation::Rgb,
+                ..view(PaletteId(0))
+            },
+            &assets,
+        );
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        assert!(
+            cpu.pixels()
+                .iter()
+                .all(|&pixel| pixel == u32::from_le_bytes(expected))
+        );
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
+#[test]
+fn clipped_cube_uses_native_face_uv_and_typed_rotation() {
+    use qa_render::{
+        assets::{CubeSkyParams, Sky},
+        sky::{CloudSphere, Rotation},
+    };
+    let mut assets = Assets::load();
+    let images = std::array::from_fn(|face| {
+        // A 2x2 native-oriented image makes texture axes observable.
+        let base = (face as u8 + 1) * 20;
+        let bytes: Vec<_> = [base, base + 1, base + 2, base + 3]
+            .into_iter()
+            .flat_map(|value| [value, value, value, 255])
+            .collect();
+        assets.register_image(2, 2, &bytes).unwrap()
+    });
+    let sky_material = assets
+        .register_material(
+            "rotating cube",
+            &[],
+            MaterialSettings {
+                sort: 2.0,
+                cull: Cull::None,
+                sky: Some(Sky::Cube {
+                    outer_box: Some(images),
+                    inner_box: None,
+                    clouds: CloudSphere::native(384.0),
+                    rotation: Some(Rotation {
+                        axis: Vec3([0.0, 0.0, 1.0]),
+                        degrees_per_second: 90.0,
+                    }),
+                    params: CubeSkyParams {
+                        sampler: Sampler {
+                            filter: Filter::Nearest,
+                            ..CubeSkyParams::default().sampler
+                        },
+                        ..CubeSkyParams::default()
+                    },
+                }),
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap();
+    let sky = world(
+        &mut assets,
+        2.0,
+        sky_material,
+        None,
+        GeometryPartition::Unpartitioned,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for (time_ms, base) in [(0, 20u8), (1000, 80u8)] {
+        let packet = packet(
+            &mut frontend,
+            &[(sky, 0)],
+            Refdef {
+                cpu_presentation: CpuPresentation::Rgb,
+                time_ms,
+                ..view(PaletteId(0))
+            },
+            &assets,
+        );
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        for y in 0..8 {
+            for x in 0..8 {
+                let color = base + (y / 4) as u8 * 2 + (x / 4) as u8;
+                assert_eq!(
+                    cpu.pixels()[y * 8 + x],
+                    u32::from_le_bytes([color, color, color, 255])
+                );
+            }
+        }
+        assert!(frontend.recycle(packet).is_ok());
+    }
+}
+
 fn palette(assets: &mut Assets, grades: bool) -> PaletteId {
     let colors: Vec<u8> = (0..256)
         .flat_map(|index| [index as u8, index as u8, index as u8])

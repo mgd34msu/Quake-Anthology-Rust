@@ -279,12 +279,12 @@ impl CpuBackend {
                         stats.pending_lights.saturating_add(view.scene.lights.count);
                     self.presentation = camera.refdef.cpu_presentation;
                     self.time_ms = camera.refdef.time_ms;
-                    self.clear_depth(camera.refdef.viewport);
+                    self.clear_depth(camera.refdef.viewport, camera.refdef.far);
                     if let Some(world) = &mut self.world {
                         world.render_opaque(
                             camera,
-                            list.surfaces(view.scene.surfaces),
-                            view.scene.surfaces.first,
+                            list,
+                            view.scene,
                             assets,
                             &self.evaluator,
                             world::Buffers {
@@ -300,6 +300,26 @@ impl CpuBackend {
                         stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     }
                     for (draw_rank, item) in list.draws(view.scene.draws).iter().enumerate() {
+                        if let Some(world) = &mut self.world
+                            && world.draw_sky_item(
+                                camera,
+                                *item,
+                                draw_rank as u32,
+                                list,
+                                assets,
+                                &self.evaluator,
+                                world::Buffers {
+                                    pixels: &mut self.pixels,
+                                    inverse_depth: &mut self.inverse_depth,
+                                    depth_ranks: &mut self.depth_ranks,
+                                    indices: &mut self.indices,
+                                    palettes: &mut self.palettes,
+                                },
+                                &mut stats,
+                            )
+                        {
+                            continue;
+                        }
                         match item.kind {
                             DrawKind::Entity => self.entity(
                                 camera,
@@ -357,10 +377,13 @@ impl CpuBackend {
         stats
     }
 
-    fn clear_depth(&mut self, viewport: Viewport) {
+    fn clear_depth(&mut self, viewport: Viewport, far: f32) {
+        // The GL clear value and depthRange(1,1) both represent the view's far
+        // plane. Keep that equality in the shared inverse-depth surface.
+        let far_depth = 1.0 / far;
         for y in viewport.y..viewport.y + viewport.height {
             let start = y as usize * self.width as usize + viewport.x as usize;
-            self.inverse_depth[start..start + viewport.width as usize].fill(0.0);
+            self.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
             self.depth_ranks[start..start + viewport.width as usize].fill(0);
         }
     }

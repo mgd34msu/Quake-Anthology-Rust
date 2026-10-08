@@ -1,9 +1,12 @@
 //! The single world edge/span consumer. Map topology never falls back to mesh
 //! triangles; polygon and tessellated-patch boundaries enter the same scanner.
 use super::{Camera, ClipVertex, ScreenVertex};
-use crate::assets::{Assets, DepthFunc, ImageId, Material, StageTexture, Vertex};
+use crate::assets::{
+    Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, Stage, StageTexture,
+    Vertex,
+};
 use crate::edges::{DepthPolicy, Edges, ProjectedVertex, Span};
-use crate::scene::{CpuPresentation, SurfaceRef};
+use crate::scene::{CommandList, CpuPresentation, DrawItem, DrawKind, SceneRanges, SurfaceRef};
 use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, Cull, RgbGen, TexCoordGen};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, alpha_pass};
 use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
@@ -145,6 +148,9 @@ struct Primitive {
     first_stage: usize,
     stages: usize,
     deforms: [DeformOp; 3],
+    first_vertex: usize,
+    vertex_count: usize,
+    depth_override: Option<f32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -166,6 +172,9 @@ pub(super) struct WorldRaster {
     clip_b: Box<[ClipVertex]>,
     screen: Box<[ScreenVertex]>,
     projected: Box<[ProjectedVertex]>,
+    sky_batches: Box<[super::sky::SkyBatch]>,
+    sky_vertices: Box<[Vertex]>,
+    sky_stages: Box<[Option<PreparedStage>]>,
     edges: Edges,
     cache: SurfaceCache,
     stats: WorldStats,
@@ -193,6 +202,20 @@ impl WorldRaster {
         let mut max_vertices = 3usize;
         let mut max_edges = 0usize;
         let mut stage_capacity = 0usize;
+        let sky_batches: Vec<_> = assets
+            .materials()
+            .iter()
+            .map(super::sky::SkyBatch::load)
+            .collect::<Result<_, _>>()?;
+        let max_sky_stages = assets
+            .materials()
+            .iter()
+            .zip(&sky_batches)
+            .filter(|(_, batch)| batch.enabled)
+            .map(|(material, _)| material.stages.len())
+            .max()
+            .unwrap_or(0);
+        let has_sky = sky_batches.iter().any(|batch| batch.enabled);
         for world in assets.worlds() {
             offsets.push(sources.len());
             let geometry = world.geometry();
@@ -288,6 +311,32 @@ impl WorldRaster {
                 }
             }
         }
+        let sky_boundaries = if has_sky {
+            super::sky::CLOUD_BOUNDARIES + super::sky::BOX_BOUNDARIES
+        } else {
+            0
+        };
+        boundaries = boundaries
+            .checked_add(sky_boundaries)
+            .ok_or("sky polygon count overflow")?;
+        stage_capacity = stage_capacity
+            .checked_add(
+                super::sky::CLOUD_BOUNDARIES
+                    .checked_mul(max_sky_stages)
+                    .and_then(|count| {
+                        count.checked_add(if has_sky {
+                            super::sky::BOX_BOUNDARIES
+                        } else {
+                            0
+                        })
+                    })
+                    .ok_or("sky stage count overflow")?,
+            )
+            .ok_or("sky stage count overflow")?;
+        if has_sky {
+            max_vertices = max_vertices.max(10);
+            max_edges = max_edges.max(super::sky::SKY_EDGES);
+        }
         Ok(Self {
             width,
             offsets: offsets.into_boxed_slice(),
@@ -300,6 +349,13 @@ impl WorldRaster {
             clip_b: vec![ClipVertex::default(); max_vertices].into_boxed_slice(),
             screen: vec![ScreenVertex::default(); max_vertices].into_boxed_slice(),
             projected: vec![ProjectedVertex::default(); max_vertices].into_boxed_slice(),
+            sky_batches: sky_batches.into_boxed_slice(),
+            sky_vertices: vec![
+                Vertex::default();
+                if has_sky { super::sky::SKY_VERTICES } else { 0 }
+            ]
+            .into_boxed_slice(),
+            sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
             edges: Edges::load(
                 width,
                 height,
@@ -326,8 +382,8 @@ impl WorldRaster {
     pub(super) fn render_opaque(
         &mut self,
         camera: Camera,
-        references: &[SurfaceRef],
-        reference_base: u32,
+        list: &CommandList,
+        scene: SceneRanges,
         assets: &Assets,
         evaluator: &StageEvaluator,
         mut buffers: Buffers<'_>,
@@ -337,6 +393,9 @@ impl WorldRaster {
         let backend_rejected = stats.rejected;
         self.primitive_count = 0;
         self.stage_count = 0;
+        self.collect_skies(camera, list, scene, assets, stats);
+        let references = list.surfaces(scene.surfaces);
+        let reference_base = scene.surfaces.first;
         let mut background = None;
         let first_world = references.first().map(|r| r.world);
         let mut certified = first_world.is_some_and(|id| {
@@ -375,6 +434,15 @@ impl WorldRaster {
                 continue;
             }
             if material.settings.sky.is_some() {
+                if self
+                    .sky_batches
+                    .get(binding.material.0 as usize)
+                    .is_some_and(|batch| batch.enabled)
+                    && matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
+                {
+                    stats.surfaces = stats.surfaces.saturating_add(1);
+                    continue;
+                }
                 let Some(source) = info.sky else {
                     self.reject(stats);
                     continue;
@@ -486,6 +554,7 @@ impl WorldRaster {
                     first_stage: self.stage_count,
                     stages: 0,
                     deforms,
+                    ..Primitive::default()
                 };
                 let Some(count) = self.clip(
                     camera,
@@ -754,6 +823,505 @@ impl WorldRaster {
         stats.rejected = stats.rejected.saturating_add(1);
     }
 
+    fn collect_skies(
+        &mut self,
+        camera: Camera,
+        list: &CommandList,
+        scene: SceneRanges,
+        assets: &Assets,
+        stats: &mut crate::BackendStats,
+    ) {
+        for batch in &mut self.sky_batches {
+            batch.clear();
+        }
+        if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
+            return;
+        }
+        for &item in list.draws(scene.draws) {
+            let Some(material) = sky_item_material(item, list, assets) else {
+                continue;
+            };
+            if !self
+                .sky_batches
+                .get(material.0 as usize)
+                .is_some_and(|batch| batch.enabled)
+            {
+                continue;
+            }
+            match item.kind {
+                DrawKind::Surface => {
+                    let reference = list.surface(item.index);
+                    let Some(world) = assets.world(reference.world) else {
+                        continue;
+                    };
+                    let Some(surface) = world.geometry().surfaces.get(reference.surface as usize)
+                    else {
+                        continue;
+                    };
+                    if self
+                        .offsets
+                        .get(reference.world.0 as usize)
+                        .and_then(|offset| self.surfaces.get(offset + reference.surface as usize))
+                        .is_some_and(|info| info.raster_empty)
+                    {
+                        continue;
+                    }
+                    for triangle in
+                        world.geometry().indices[surface.indices.indices()].chunks_exact(3)
+                    {
+                        let points = [triangle[0], triangle[1], triangle[2]]
+                            .map(|index| world.geometry().vertices[index as usize].vertex.position);
+                        self.add_sky_polygon(material, points, camera, stats);
+                    }
+                }
+                DrawKind::Entity => {
+                    let entity = list.entity(item.index);
+                    let Some(model) = assets.model(entity.model) else {
+                        continue;
+                    };
+                    for triangle in model.indices.chunks_exact(3) {
+                        let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
+                            let position = model.vertices[index as usize].position;
+                            qa_core::primitives::Vec3(std::array::from_fn(|axis| {
+                                entity.origin.0[axis]
+                                    + entity.axes[0].0[axis] * position.0[0]
+                                    + entity.axes[1].0[axis] * position.0[1]
+                                    + entity.axes[2].0[axis] * position.0[2]
+                            }))
+                        });
+                        self.add_sky_polygon(material, points, camera, stats);
+                    }
+                }
+                DrawKind::Poly => {
+                    let vertices = list.vertices(list.poly(item.index).vertices);
+                    for triangle in vertices[1..].windows(2) {
+                        self.add_sky_polygon(
+                            material,
+                            [
+                                vertices[0].position,
+                                triangle[0].position,
+                                triangle[1].position,
+                            ],
+                            camera,
+                            stats,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn add_sky_polygon(
+        &mut self,
+        material: MaterialId,
+        points: [qa_core::primitives::Vec3; 3],
+        camera: Camera,
+        stats: &mut crate::BackendStats,
+    ) {
+        if !self.sky_batches[material.0 as usize]
+            .clip
+            .add_polygon(&points, camera.refdef.origin)
+        {
+            self.reject(stats);
+        }
+    }
+
+    /// The shared draw list determines when the material's single sky draw
+    /// occurs. Source polygons from all worlds/entities/polys have already
+    /// contributed to its clip, matching native RB_StageIteratorSky.
+    pub(super) fn draw_sky_item(
+        &mut self,
+        camera: Camera,
+        item: DrawItem,
+        rank: u32,
+        list: &CommandList,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        mut buffers: Buffers<'_>,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        let Some(id) = sky_item_material(item, list, assets) else {
+            return false;
+        };
+        let Some(batch) = self.sky_batches.get_mut(id.0 as usize) else {
+            return false;
+        };
+        if !batch.enabled || !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
+            return false;
+        }
+        if batch.drawn {
+            return true;
+        }
+        batch.drawn = true;
+        let mut bounds = *batch.clip.bounds();
+        if !bounds.iter().any(|bound| bound.visible()) {
+            return true;
+        }
+        let Some(material) = assets.material(id) else {
+            self.reject(stats);
+            return true;
+        };
+        let Some(Sky::Cube {
+            outer_box,
+            rotation,
+            params,
+            ..
+        }) = material.settings.sky
+        else {
+            return false;
+        };
+        if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
+            bounds.fill(crate::sky::FaceBounds {
+                mins: [-1.0; 2],
+                maxs: [1.0; 2],
+            });
+        }
+        let inputs = DrawInputs {
+            time_ms: camera.refdef.time_ms,
+            view_origin: camera.refdef.origin,
+            identity_light: camera.refdef.identity_light,
+            ..DrawInputs::default()
+        };
+        let old_primitive_count = self.primitive_count;
+        let old_stage_count = self.stage_count;
+        let old_rejected = self.stats.rejected;
+        let backend_rejected = stats.rejected;
+        let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
+        let mut vertex_count = 0;
+        if let Some(images) = outer_box {
+            let settings = MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            };
+            for face in crate::sky::CubeFace::ALL {
+                let bound = bounds[face.index()];
+                if !bound.visible() {
+                    continue;
+                }
+                let (mins, maxs) = if params.snap_bounds {
+                    let Some([mins, maxs]) = bound.grid_bounds() else {
+                        continue;
+                    };
+                    (
+                        mins.map(|v| (v as f32 - 4.0) / 4.0),
+                        maxs.map(|v| (v as f32 - 4.0) / 4.0),
+                    )
+                } else {
+                    (bound.mins, bound.maxs)
+                };
+                let vertices = [
+                    [mins[0], mins[1]],
+                    [mins[0], maxs[1]],
+                    [maxs[0], maxs[1]],
+                    [maxs[0], mins[1]],
+                ]
+                .map(|st| {
+                    let cube = crate::sky::cube_vertex(
+                        face,
+                        st,
+                        params.distance.value(camera.refdef.far),
+                        params.texcoord_range,
+                    );
+                    let direction = if params.cpu_rotation {
+                        rotation.map_or(cube.direction, |rotation| {
+                            crate::sky::unrotate(
+                                cube.direction,
+                                crate::sky::Rotation {
+                                    degrees_per_second: -rotation.degrees_per_second,
+                                    ..rotation
+                                },
+                                inputs.time_ms as f32 * 0.001,
+                            )
+                        })
+                    } else {
+                        cube.direction
+                    };
+                    Vertex {
+                        position: inputs.view_origin + direction,
+                        texcoord: cube.uv,
+                        ..Vertex::default()
+                    }
+                });
+                let stage = Stage {
+                    texture: StageTexture::Image(images[face.index()]),
+                    sampler: params.sampler,
+                    rgb_gen: RgbGen::IdentityLighting,
+                    depth_write: !params.far_depth,
+                    ..Stage::default()
+                };
+                let Ok(prepared) = evaluator.prepare(&stage, settings, inputs) else {
+                    self.reject(stats);
+                    continue;
+                };
+                self.sky_stages[0] = Some(prepared);
+                self.add_generated_sky(
+                    camera,
+                    &vertices,
+                    &mut vertex_count,
+                    1,
+                    [DeformOp::None; 3],
+                    Cull::None,
+                    rank,
+                    depth_override,
+                    assets,
+                    evaluator,
+                    stats,
+                );
+            }
+            self.flush_sky(
+                camera,
+                old_primitive_count,
+                assets,
+                evaluator,
+                &mut buffers,
+                stats,
+            );
+            self.primitive_count = old_primitive_count;
+            self.stage_count = old_stage_count;
+            vertex_count = 0;
+        }
+        if !material.stages.is_empty() {
+            let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
+                self.reject(stats);
+                return true;
+            };
+            let mut valid = true;
+            for (index, &stage) in material.stages.iter().enumerate() {
+                let stage = if matches!(stage.texgen, TexCoordGen::CloudSky { .. }) {
+                    Stage {
+                        texgen: TexCoordGen::Texture,
+                        ..stage
+                    }
+                } else {
+                    stage
+                };
+                match evaluator.prepare(&stage, material.settings, inputs) {
+                    Ok(prepared) if assets.image(prepared.image).is_some() => {
+                        self.sky_stages[index] = Some(prepared)
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if valid {
+                for face in crate::sky::CubeFace::ALL {
+                    if face == crate::sky::CubeFace::NegativeZ {
+                        continue;
+                    }
+                    let Some([mins, maxs]) = bounds[face.index()].grid_bounds() else {
+                        continue;
+                    };
+                    for t in mins[1]..maxs[1] {
+                        for s in mins[0]..maxs[0] {
+                            // FillCloudySkySide's native diagonal and vertex order.
+                            for cell in [
+                                [[s, t], [s, t + 1], [s + 1, t]],
+                                [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
+                            ] {
+                                let Some(grid) = self.sky_batches[id.0 as usize].cloud.as_ref()
+                                else {
+                                    self.reject(stats);
+                                    continue;
+                                };
+                                let vertices = cell.map(|[s, t]| {
+                                    let st = [(s as f32 - 4.0) / 4.0, (t as f32 - 4.0) / 4.0];
+                                    let direction = crate::sky::cube_vertex(
+                                        face,
+                                        st,
+                                        params.distance.value(camera.refdef.far),
+                                        [0.0, 1.0],
+                                    )
+                                    .direction;
+                                    Vertex {
+                                        position: inputs.view_origin + direction,
+                                        texcoord: grid.uv[face.index()][t][s],
+                                        ..Vertex::default()
+                                    }
+                                });
+                                self.add_generated_sky(
+                                    camera,
+                                    &vertices,
+                                    &mut vertex_count,
+                                    material.stages.len(),
+                                    deforms,
+                                    material.settings.cull,
+                                    rank,
+                                    depth_override,
+                                    assets,
+                                    evaluator,
+                                    stats,
+                                );
+                            }
+                        }
+                    }
+                }
+                self.flush_sky(
+                    camera,
+                    old_primitive_count,
+                    assets,
+                    evaluator,
+                    &mut buffers,
+                    stats,
+                );
+            } else {
+                self.reject(stats);
+            }
+        }
+        self.primitive_count = old_primitive_count;
+        self.stage_count = old_stage_count;
+        stats.rejected = backend_rejected
+            .saturating_add((self.stats.rejected - old_rejected).min(u32::MAX as u64) as u32);
+        true
+    }
+
+    fn add_generated_sky(
+        &mut self,
+        camera: Camera,
+        vertices: &[Vertex],
+        vertex_count: &mut usize,
+        stages: usize,
+        deforms: [DeformOp; 3],
+        cull: Cull,
+        rank: u32,
+        depth_override: Option<f32>,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        stats: &mut crate::BackendStats,
+    ) {
+        if *vertex_count + vertices.len() > self.sky_vertices.len()
+            || self.primitive_count == self.primitives.len()
+            || self.stage_count + stages > self.stages.len()
+        {
+            self.reject(stats);
+            return;
+        }
+        self.sky_vertices[*vertex_count..*vertex_count + vertices.len()].copy_from_slice(vertices);
+        let mut primitive = Primitive {
+            first_vertex: *vertex_count,
+            vertex_count: vertices.len(),
+            first_stage: self.stage_count,
+            draw_rank: rank,
+            deforms,
+            depth_override,
+            ..Primitive::default()
+        };
+        *vertex_count += vertices.len();
+        for stage in 0..stages {
+            let Some(prepared) = self.sky_stages[stage] else {
+                self.reject(stats);
+                return;
+            };
+            let Some(count) = self.clip(camera, assets, primitive, Some(prepared), evaluator)
+            else {
+                self.stage_count = primitive.first_stage;
+                self.reject(stats);
+                return;
+            };
+            if count < 3 {
+                self.stage_count = primitive.first_stage;
+                return;
+            }
+            let area = polygon_area(&self.screen[..count]);
+            if area == 0.0
+                || match cull {
+                    Cull::Front => area < 0.0,
+                    Cull::Back => area > 0.0,
+                    Cull::None => false,
+                }
+            {
+                // A cube face on the exact frustum boundary can clip to a
+                // line. Native draw calls produce no fragments for that face.
+                self.stage_count = primitive.first_stage;
+                return;
+            }
+            let Some(planes) = Planes::load(&self.screen[..count]) else {
+                self.stage_count = primitive.first_stage;
+                self.reject(stats);
+                return;
+            };
+            self.stages[self.stage_count] = StagePlanes {
+                prepared: Some(prepared),
+                planes,
+                sampler: Some(super::stage_sampler(prepared.stage.sampler)),
+            };
+            self.stage_count += 1;
+            primitive.stages += 1;
+        }
+        primitive.planes = self.stages[primitive.first_stage].planes;
+        self.primitives[self.primitive_count] = primitive;
+        self.primitive_count += 1;
+    }
+
+    fn flush_sky(
+        &mut self,
+        camera: Camera,
+        first: usize,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        buffers: &mut Buffers<'_>,
+        stats: &mut crate::BackendStats,
+    ) {
+        if self.primitive_count == first {
+            return;
+        }
+        if !self
+            .edges
+            .begin_with_policy(camera.refdef.viewport, DepthPolicy::PlaneDepth)
+        {
+            self.reject(stats);
+            return;
+        }
+        for index in first..self.primitive_count {
+            let primitive = self.primitives[index];
+            let prepared = self.stages[primitive.first_stage].prepared;
+            let Some(count) = self.clip(camera, assets, primitive, prepared, evaluator) else {
+                self.reject(stats);
+                continue;
+            };
+            if let Some(depth) = primitive.depth_override {
+                for vertex in &mut self.projected[..count] {
+                    vertex.inverse_depth = depth;
+                }
+            }
+            if count >= 3
+                && !self.edges.add_polygon(
+                    index as u32,
+                    0,
+                    primitive.draw_rank,
+                    &self.projected[..count],
+                )
+            {
+                self.reject(stats);
+            }
+        }
+        let primitives = &self.primitives;
+        let stages = &self.stages;
+        let cache = &mut self.cache;
+        let counters = &mut self.stats;
+        let width = self.width;
+        let edge_stats = self.edges.scan(|spans| {
+            for &span in spans {
+                consume_span(
+                    width,
+                    span,
+                    primitives[span.surface as usize],
+                    stages,
+                    cache,
+                    assets,
+                    camera,
+                    buffers,
+                    counters,
+                );
+            }
+        });
+        add_edge_stats(&mut self.stats, edge_stats);
+        stats.stages = stats.stages.saturating_add(
+            (self.stage_count - self.primitives[first].first_stage).min(u32::MAX as usize) as u32,
+        );
+    }
+
     fn add_sky(
         &mut self,
         camera: Camera,
@@ -827,45 +1395,49 @@ impl WorldRaster {
         prepared: Option<PreparedStage>,
         evaluator: &StageEvaluator,
     ) -> Option<usize> {
-        let world = assets.world(primitive.world)?;
-        let geometry = world.geometry();
-        let surface = &geometry.surfaces[primitive.surface as usize];
-        let boundary = geometry.boundaries[primitive.boundary as usize];
-        let indices = &geometry.indices[boundary.indices()];
-        let mut count = indices.len();
-        if count > self.clip_a.len() {
-            return None;
-        }
-        for (output, &index) in self.clip_a.iter_mut().zip(indices) {
-            let loaded = geometry.vertices[index as usize];
-            let mut vertex = Vertex {
-                normal: loaded.normal,
-                ..loaded.vertex
-            };
-            if primitive.cache_image.is_some() {
-                vertex.texcoord = std::array::from_fn(|axis| {
-                    let projection = surface.texture_projection[axis];
-                    (vertex.position.0[0] * projection[0]
-                        + vertex.position.0[1] * projection[1]
-                        + vertex.position.0[2] * projection[2]
-                        + projection[3]
-                        - surface.texture_minima[axis] as f32)
-                        / (1u32 << primitive.mip) as f32
-                });
+        let mut count = primitive.vertex_count;
+        if count != 0 {
+            let vertices =
+                &self.sky_vertices[primitive.first_vertex..primitive.first_vertex + count];
+            for (output, &vertex) in self.clip_a.iter_mut().zip(vertices) {
+                let vertex = evaluated_vertex(vertex, primitive.deforms, prepared, evaluator);
+                *output = camera.vertex(vertex, vertex.position);
+                if !output.finite() {
+                    return None;
+                }
             }
-            if let Some(prepared) = prepared {
-                vertex = evaluator.apply_deforms(primitive.deforms, vertex);
-                let evaluated = evaluator.evaluate(&prepared, &vertex);
-                vertex = Vertex {
-                    texcoord: evaluated.texcoord,
-                    color: evaluated.color,
-                    position: evaluated.position,
-                    ..vertex
-                };
-            }
-            *output = camera.vertex(vertex, vertex.position);
-            if !output.finite() {
+        } else {
+            let world = assets.world(primitive.world)?;
+            let geometry = world.geometry();
+            let surface = &geometry.surfaces[primitive.surface as usize];
+            let boundary = geometry.boundaries[primitive.boundary as usize];
+            let indices = &geometry.indices[boundary.indices()];
+            count = indices.len();
+            if count > self.clip_a.len() {
                 return None;
+            }
+            for (output, &index) in self.clip_a.iter_mut().zip(indices) {
+                let loaded = geometry.vertices[index as usize];
+                let mut vertex = Vertex {
+                    normal: loaded.normal,
+                    ..loaded.vertex
+                };
+                if primitive.cache_image.is_some() {
+                    vertex.texcoord = std::array::from_fn(|axis| {
+                        let projection = surface.texture_projection[axis];
+                        (vertex.position.0[0] * projection[0]
+                            + vertex.position.0[1] * projection[1]
+                            + vertex.position.0[2] * projection[2]
+                            + projection[3]
+                            - surface.texture_minima[axis] as f32)
+                            / (1u32 << primitive.mip) as f32
+                    });
+                }
+                vertex = evaluated_vertex(vertex, primitive.deforms, prepared, evaluator);
+                *output = camera.vertex(vertex, vertex.position);
+                if !output.finite() {
+                    return None;
+                }
             }
         }
         for plane in 0..6 {
@@ -888,6 +1460,49 @@ impl WorldRaster {
             };
         }
         Some(count)
+    }
+}
+
+fn evaluated_vertex(
+    vertex: Vertex,
+    deforms: [DeformOp; 3],
+    prepared: Option<PreparedStage>,
+    evaluator: &StageEvaluator,
+) -> Vertex {
+    let Some(prepared) = prepared else {
+        return vertex;
+    };
+    let vertex = evaluator.apply_deforms(deforms, vertex);
+    let evaluated = evaluator.evaluate(&prepared, &vertex);
+    Vertex {
+        texcoord: evaluated.texcoord,
+        color: evaluated.color,
+        position: evaluated.position,
+        ..vertex
+    }
+}
+
+fn sky_item_material(item: DrawItem, list: &CommandList, assets: &Assets) -> Option<MaterialId> {
+    match item.kind {
+        DrawKind::Surface => {
+            let reference = list.surface(item.index);
+            Some(
+                assets
+                    .world(reference.world)?
+                    .bindings()
+                    .get(reference.surface as usize)?
+                    .material,
+            )
+        }
+        DrawKind::Entity => {
+            let entity = list.entity(item.index);
+            Some(
+                entity
+                    .material
+                    .unwrap_or(assets.model(entity.model)?.material),
+            )
+        }
+        DrawKind::Poly => Some(list.poly(item.index).material),
     }
 }
 
@@ -1197,9 +1812,10 @@ fn consume_span(
                     continue;
                 }
                 let index = span.y as usize * width as usize + x as usize;
+                let depth = primitive.depth_override.unwrap_or(zi);
                 if !super::depth_passes(
                     prepared.stage.depth_func,
-                    zi,
+                    depth,
                     buffers.inverse_depth[index],
                     primitive.draw_rank,
                     buffers.depth_ranks[index],
@@ -1217,7 +1833,7 @@ fn consume_span(
                     super::composite(buffers.pixels[index], source, prepared.stage.blend);
                 buffers.palettes[index] = u32::MAX;
                 if prepared.stage.depth_write {
-                    buffers.inverse_depth[index] = zi;
+                    buffers.inverse_depth[index] = depth;
                     buffers.depth_ranks[index] = primitive.draw_rank;
                 }
                 stats.pixels = stats.pixels.saturating_add(1);

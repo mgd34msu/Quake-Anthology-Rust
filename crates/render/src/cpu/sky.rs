@@ -11,6 +11,47 @@ use crate::sky::{LayeredSphere, Rotation};
 use crate::surface_cache::{IndexedMip, PaletteLighting};
 use qa_core::primitives::Vec3;
 
+/// tr_sky.c clips source geometry once per material, then consumes a fixed
+/// eight-division cloud grid. Its triangles are boundary inputs to the same
+/// world edge scanner, rather than a second world rasterizer.
+pub(super) struct SkyBatch {
+    pub clip: crate::sky::SkyClip,
+    pub cloud: Option<Box<crate::sky::CloudGrid>>,
+    pub enabled: bool,
+    pub drawn: bool,
+}
+impl SkyBatch {
+    pub fn load(material: &Material) -> Result<Self, &'static str> {
+        let enabled = matches!(material.settings.sky, Some(Sky::Cube { params, .. }) if !params.cpu_background)
+            && material.settings.fog.is_none()
+            && !material.settings.portal
+            && !material.settings.polygon_offset;
+        let cloud = if enabled && !material.stages.is_empty() {
+            let Some(Sky::Cube { clouds, .. }) = material.settings.sky else {
+                return Err("invalid cloud sky material");
+            };
+            Some(Box::new(crate::sky::CloudGrid::generate(clouds)?))
+        } else {
+            None
+        };
+        Ok(Self {
+            clip: crate::sky::SkyClip::new(),
+            cloud,
+            enabled,
+            drawn: false,
+        })
+    }
+    pub fn clear(&mut self) {
+        self.clip.clear();
+        self.drawn = false;
+    }
+}
+
+pub(super) const CLOUD_BOUNDARIES: usize = 5 * 8 * 8 * 2;
+pub(super) const BOX_BOUNDARIES: usize = 6;
+pub(super) const SKY_VERTICES: usize = CLOUD_BOUNDARIES * 3 + BOX_BOUNDARIES * 4;
+pub(super) const SKY_EDGES: usize = CLOUD_BOUNDARIES * 9 + BOX_BOUNDARIES * 10;
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Source {
     Layered {
