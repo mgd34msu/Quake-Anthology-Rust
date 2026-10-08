@@ -106,7 +106,8 @@ impl Topology {
             }
             if let Some(axis) = plane.axis {
                 let mut normal = [0.0; 3];
-                normal[axis_index(axis)] = 1.0;
+                // Q2 PlaneTypeForNormal classifies either unit sign as axial.
+                normal[axis_index(axis)] = plane.normal.0[axis_index(axis)].signum();
                 return plane.normal != Vec3(normal);
             }
             false

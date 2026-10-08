@@ -638,7 +638,7 @@ fn load_rejects_bad_ranges_cycles_nonfinite_and_inconsistent_axis_metadata() {
         Err(GeometryError::TreePlane)
     ));
     let mut bad_axis = minimal_tree();
-    bad_axis.planes[0].normal = Vec3([-1.0, 0.0, 0.0]);
+    bad_axis.planes[0].normal = Vec3([-0.5, 0.0, 0.0]);
     assert!(matches!(
         BrushMap::load_tree(vec![], vec![], vec![], bad_axis),
         Err(GeometryError::TreePlane)
@@ -654,4 +654,37 @@ fn load_rejects_bad_ranges_cycles_nonfinite_and_inconsistent_axis_metadata() {
         BrushMap::load_tree(vec![], vec![], vec![], disconnected),
         Err(GeometryError::TreeCycle)
     ));
+}
+
+#[test]
+fn load_preserves_both_axial_unit_signs_and_rejects_malformed_normals() {
+    for (component, axis) in [(0, Axis::X), (1, Axis::Y), (2, Axis::Z)] {
+        for sign in [-1.0, 1.0] {
+            let mut tree = minimal_tree();
+            let mut normal = [0.0; 3];
+            normal[component] = sign;
+            tree.planes[0] = Plane {
+                normal: Vec3(normal),
+                distance: -17.0,
+                axis: Some(axis),
+            };
+            assert!(BrushMap::load_tree(vec![], vec![], vec![], tree).is_ok());
+        }
+    }
+    for normal in [
+        [0.0, 0.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [-2.0, 0.0, 0.0],
+        [1.0, 0.25, 0.0],
+        [0.0, -1.0, 0.0],
+        [f32::NAN, 0.0, 0.0],
+        [f32::INFINITY, 0.0, 0.0],
+    ] {
+        let mut tree = minimal_tree();
+        tree.planes[0].normal = Vec3(normal);
+        assert!(matches!(
+            BrushMap::load_tree(vec![], vec![], vec![], tree),
+            Err(GeometryError::TreePlane)
+        ));
+    }
 }
