@@ -2,6 +2,11 @@ use qa_console::cvars::Cvars;
 use qa_platform::{InputEvent, Window};
 use std::time::{Duration, Instant};
 
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+#[global_allocator]
+static ALLOCATOR: qa_platform::allocations::CountingAllocator =
+    qa_platform::allocations::CountingAllocator;
+
 #[cfg(feature = "proof")]
 mod proof;
 
@@ -117,12 +122,14 @@ fn run() -> Result<(), String> {
         Vec::new()
     };
     for frame in 0..u64::from(frames) + u64::from(warmup) {
+        #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+        qa_platform::allocations::begin_frame();
         let start = Instant::now();
         #[cfg(feature = "proof")]
         if let Some(script) = &mut script {
             script.inject_due(script_start.elapsed(), &mut window);
         }
-        if window.poll(|event| {
+        let quit = window.poll(|event| {
             if let InputEvent::KeyDown { repeat, .. } = event {
                 key_downs += 1;
                 key_repeats += u64::from(repeat);
@@ -133,7 +140,10 @@ fn run() -> Result<(), String> {
                 1,
                 format_args!("{{\"event\":\"input_diagnostic\",\"input\":\"{event:?}\"}}"),
             );
-        }) {
+        });
+        if quit {
+            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+            let _ = qa_platform::allocations::end_frame();
             break;
         }
         let input_ns = start.elapsed().as_nanos() as u64;
@@ -144,6 +154,19 @@ fn run() -> Result<(), String> {
             if timings {
                 samples.push([input_ns, total_ns - input_ns, total_ns]);
             }
+        }
+        #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+        {
+            let counts = qa_platform::allocations::end_frame();
+            qa_console::logger::dev_print(
+                &cvars,
+                developer,
+                1,
+                format_args!(
+                    "{{\"event\":\"frame_allocations\",\"scope\":\"window_shell_rust_thread\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+                    counts.allocations, counts.reallocations, counts.requested_bytes
+                ),
+            );
         }
         if !uncapped {
             std::thread::sleep(Duration::from_millis(16).saturating_sub(start.elapsed()));

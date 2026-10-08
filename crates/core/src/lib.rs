@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod checksum;
 pub mod events;
 pub mod math;
