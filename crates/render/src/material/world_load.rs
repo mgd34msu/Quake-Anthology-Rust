@@ -470,6 +470,13 @@ pub fn load_world(
         bindings.push(SurfaceMaterial {
             material,
             lightmap: lightmaps[surface.source_id as usize].unwrap_or(ImageId(0)),
+            // Legacy grids retain face bounds after their UVs were rewritten
+            // into the atlas. Authored Page UVs sample the full original page.
+            lightmap_region: if surface.light_source == LightSource::Samples {
+                regions[surface.source_id as usize]
+            } else {
+                None
+            },
             texture_scale: scale,
         });
     }

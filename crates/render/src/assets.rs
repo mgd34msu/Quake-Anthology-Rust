@@ -544,7 +544,20 @@ impl Assets {
             || materials.len() != geometry.surfaces.len()
             || materials.iter().any(|binding| {
                 self.material(binding.material).is_none()
-                    || self.image(binding.lightmap).is_none()
+                    || !self.image(binding.lightmap).is_some_and(|image| {
+                        binding.lightmap_region.is_none_or(|region| {
+                            region.width != 0
+                                && region.height != 0
+                                && region
+                                    .x
+                                    .checked_add(region.width)
+                                    .is_some_and(|end| end <= image.width)
+                                && region
+                                    .y
+                                    .checked_add(region.height)
+                                    .is_some_and(|end| end <= image.height)
+                        })
+                    })
                     || binding
                         .texture_scale
                         .iter()
@@ -569,6 +582,7 @@ impl Assets {
             bindings.push(SurfaceBinding {
                 material: materials[source].material,
                 lightmap: materials[source].lightmap,
+                lightmap_region: materials[source].lightmap_region,
                 texture_scale: materials[source].texture_scale,
                 mesh_indices: Span {
                     first,
