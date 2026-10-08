@@ -1185,28 +1185,60 @@ fn triangle_mip(image: &Image, sampler: Sampler, vertices: [ScreenVertex; 3], at
 
 type ShadeFn = fn(TexelView<'_>, [f32; 2], [f32; 4]) -> [f32; 4];
 fn stage_sampler(image: &Image, sampler: Sampler) -> ShadeFn {
-    sampler_function(effective_sampler(image, sampler))
+    let sampler = effective_sampler(image, sampler);
+    if sampler.filter == Filter::Linear
+        && sampler.wrap == Wrap::Repeat
+        && image_repeat_mask(image, sampler.mipmaps)
+    {
+        sample::<true, true, true>
+    } else {
+        sampler_function(sampler)
+    }
+}
+fn image_repeat_mask(image: &Image, mipmaps: bool) -> bool {
+    if let Some(prepared) = &image.prepared
+        && !prepared.levels.is_empty()
+    {
+        prepared
+            .levels
+            .iter()
+            .take(if mipmaps { 32 } else { 1 })
+            .all(|level| level.width.is_power_of_two() && level.height.is_power_of_two())
+    } else {
+        image.width.is_power_of_two() && image.height.is_power_of_two()
+    }
 }
 fn sampler_function(sampler: Sampler) -> ShadeFn {
     match (sampler.filter, sampler.wrap) {
-        (Filter::Nearest, Wrap::Repeat) => sample::<false, true>,
-        (Filter::Nearest, Wrap::Clamp) => sample::<false, false>,
-        (Filter::Linear, Wrap::Repeat) => sample::<true, true>,
-        (Filter::Linear, Wrap::Clamp) => sample::<true, false>,
+        (Filter::Nearest, Wrap::Repeat) => sample::<false, true, false>,
+        (Filter::Nearest, Wrap::Clamp) => sample::<false, false, false>,
+        (Filter::Linear, Wrap::Repeat) => sample::<true, true, false>,
+        (Filter::Linear, Wrap::Clamp) => sample::<true, false, false>,
     }
 }
-fn linear_taps<const REPEAT: bool>(base: f32, size: u32, low: u32, count: u32) -> [usize; 2] {
+fn linear_taps<const REPEAT: bool, const MASK_REPEAT: bool>(
+    base: f32,
+    size: u32,
+    low: u32,
+    count: u32,
+) -> [usize; 2] {
     let taps = if REPEAT && (-16_777_216.0..=16_777_215.0).contains(&base) {
         // Both consecutive integer taps are exactly representable in this range.
-        let first = (base as i32).rem_euclid(size as i32) as usize;
-        [
-            first,
-            if first + 1 == size as usize {
-                0
-            } else {
-                first + 1
-            },
-        ]
+        if MASK_REPEAT {
+            let mask = size - 1;
+            let first = (base as i32 as u32) & mask;
+            [first as usize, ((first + 1) & mask) as usize]
+        } else {
+            let first = (base as i32).rem_euclid(size as i32) as usize;
+            [
+                first,
+                if first + 1 == size as usize {
+                    0
+                } else {
+                    first + 1
+                },
+            ]
+        }
     } else {
         // Large floats can round base+1 back to base; keep the original operations.
         [base + 0.0, base + 1.0].map(|value| {
@@ -1219,7 +1251,7 @@ fn linear_taps<const REPEAT: bool>(base: f32, size: u32, low: u32, count: u32) -
     };
     taps.map(|tap| tap.clamp(low as usize, (low + count - 1) as usize))
 }
-fn sample<const LINEAR: bool, const REPEAT: bool>(
+fn sample<const LINEAR: bool, const REPEAT: bool, const MASK_REPEAT: bool>(
     image: TexelView<'_>,
     coordinates: [f32; 2],
     color: [f32; 4],
@@ -1229,8 +1261,10 @@ fn sample<const LINEAR: bool, const REPEAT: bool>(
         let p = std::array::from_fn::<_, 2, _>(|i| coordinates[i] * size[i] as f32 - 0.5);
         let base = p.map(f32::floor);
         let fraction = [p[0] - base[0], p[1] - base[1]];
-        let [x0, x1] = linear_taps::<REPEAT>(base[0], size[0], image.bounds[0], image.bounds[2]);
-        let [y0, y1] = linear_taps::<REPEAT>(base[1], size[1], image.bounds[1], image.bounds[3]);
+        let [x0, x1] =
+            linear_taps::<REPEAT, MASK_REPEAT>(base[0], size[0], image.bounds[0], image.bounds[2]);
+        let [y0, y1] =
+            linear_taps::<REPEAT, MASK_REPEAT>(base[1], size[1], image.bounds[1], image.bounds[3]);
         let x0 = x0 - image.storage_origin[0] as usize;
         let x1 = x1 - image.storage_origin[0] as usize;
         let row0 = (y0 - image.storage_origin[1] as usize) * image.row_stride as usize;

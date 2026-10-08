@@ -1,4 +1,6 @@
-use super::{TexelView, Wrap, sample};
+use super::{TexelView, Wrap, image_repeat_mask, sample, sampler_function, stage_sampler};
+use crate::assets::upload::{MipLevel, PreparedImage};
+use crate::assets::{Filter, Image, Sampler, TextureIntensity};
 use crate::lightmap::AtlasRegion;
 
 // Frozen four-corner sampler from e9e6211:crates/render/src/cpu.rs::sample.
@@ -138,7 +140,7 @@ fn compare<const LINEAR: bool, const REPEAT: bool>(
     color: [f32; 4],
 ) {
     assert_eq!(
-        sample::<LINEAR, REPEAT>(candidate, coordinates, color).map(f32::to_bits),
+        sample::<LINEAR, REPEAT, false>(candidate, coordinates, color).map(f32::to_bits),
         original::<LINEAR, REPEAT>(native, coordinates, color).map(f32::to_bits),
         "linear={LINEAR} repeat={REPEAT} size={}x{} bounds={:?} coordinates={coordinates:?} color={color:?}",
         native.width,
@@ -165,7 +167,27 @@ fn compare_all(native: TexelView<'_>, candidate: TexelView<'_>, seed: u32) {
         compare::<true, false>(native, candidate, coordinates, color);
         compare::<false, true>(native, candidate, coordinates, color);
         compare::<false, false>(native, candidate, coordinates, color);
+        if native.width.is_power_of_two() && native.height.is_power_of_two() {
+            compare_mask(native, candidate, coordinates, color);
+        }
     }
+}
+
+fn compare_mask(
+    native: TexelView<'_>,
+    candidate: TexelView<'_>,
+    coordinates: [f32; 2],
+    color: [f32; 4],
+) {
+    assert_eq!(
+        sample::<true, true, true>(candidate, coordinates, color).map(f32::to_bits),
+        original::<true, true>(native, coordinates, color).map(f32::to_bits),
+        "mask size={}x{} bounds={:?} stride={} coordinates={coordinates:?}",
+        native.width,
+        native.height,
+        native.bounds,
+        candidate.row_stride,
+    );
 }
 
 #[test]
@@ -222,6 +244,9 @@ fn stratified_native_sampling_matches_frozen_output_bits() {
 fn copied_roi_preserves_native_taps_and_output_bits() {
     for [width, height, x, y, region_width, region_height] in [
         [128, 128, 13, 21, 7, 11],
+        [64, 32, 21, 13, 7, 5],
+        [32, 1, 11, 0, 7, 1],
+        [1, 32, 0, 11, 1, 7],
         [63, 17, 59, 14, 4, 3],
         [7, 11, 3, 4, 1, 1],
         [1, 31, 0, 13, 1, 5],
@@ -257,6 +282,123 @@ fn copied_roi_preserves_native_taps_and_output_bits() {
         assert_eq!(copied.intensity.to_bits(), native.intensity.to_bits());
         compare_all(native, copied, 0x7219_fc27);
     }
+}
+
+fn image_fixture(width: u32, height: u32, levels: &[[u32; 2]]) -> Image {
+    let prepared = (!levels.is_empty()).then(|| PreparedImage {
+        levels: levels
+            .iter()
+            .map(|&[width, height]| MipLevel {
+                width,
+                height,
+                rgba: pixels(width, height).as_flattened().into(),
+            })
+            .collect(),
+        inverse_intensity: 1.0 / 3.0,
+    });
+    Image {
+        width,
+        height,
+        rgba: pixels(width, height).as_flattened().into(),
+        indexed: None,
+        prepared,
+        preparation_revision: 0,
+        native_sampler: None,
+    }
+}
+
+#[test]
+fn image_selection_uses_every_selectable_logical_mip() {
+    let repeat = Sampler::default();
+    for levels in [
+        &[[32, 8], [16, 4], [8, 2], [4, 1], [2, 1], [1, 1]][..],
+        &[[8, 32], [4, 16], [2, 8], [1, 4], [1, 2], [1, 1]][..],
+    ] {
+        let image = image_fixture(31, 13, levels);
+        assert!(image_repeat_mask(&image, true));
+        assert!(image_repeat_mask(&image, false));
+        let selected = stage_sampler(&image, repeat);
+        let mut state = 0x7408_4acb;
+        for mip in 0..levels.len() {
+            let native = TexelView::image(&image, mip as u8, TextureIntensity::NeutralizeUpload);
+            for index in 0..2048 {
+                let coordinates = [
+                    coordinate(&mut state, index, native.width),
+                    coordinate(&mut state, index + 997, native.height),
+                ];
+                let color = [0.7, 1.0, -0.3, 0.5];
+                assert_eq!(
+                    selected(native, coordinates, color).map(f32::to_bits),
+                    original::<true, true>(native, coordinates, color).map(f32::to_bits),
+                );
+            }
+        }
+    }
+    let mut image = image_fixture(13, 7, &[[16, 8], [8, 4], [3, 2], [1, 1]]);
+    assert!(image_repeat_mask(&image, false));
+    assert!(!image_repeat_mask(&image, true));
+    let general = sampler_function(repeat);
+    assert!(std::ptr::fn_addr_eq(stage_sampler(&image, repeat), general));
+    let base_only = Sampler {
+        mipmaps: false,
+        ..repeat
+    };
+    assert!(std::ptr::fn_addr_eq(
+        stage_sampler(&image, base_only),
+        sample::<true, true, true> as super::ShadeFn,
+    ));
+    image.prepared = None;
+    assert!(!image_repeat_mask(&image, true));
+    assert!(std::ptr::fn_addr_eq(stage_sampler(&image, repeat), general));
+    image = image_fixture(16, 8, &[]);
+    assert!(image_repeat_mask(&image, true));
+    assert!(std::ptr::fn_addr_eq(
+        stage_sampler(&image, repeat),
+        sample::<true, true, true> as super::ShadeFn,
+    ));
+}
+
+#[test]
+fn native_sampler_filter_and_wrap_override_mask_selection() {
+    let repeat = Sampler::default();
+    let mut image = image_fixture(16, 8, &[]);
+    for sampler in [
+        Sampler {
+            filter: Filter::Nearest,
+            ..repeat
+        },
+        Sampler {
+            wrap: Wrap::Clamp,
+            ..repeat
+        },
+        Sampler {
+            filter: Filter::Nearest,
+            wrap: Wrap::Clamp,
+            ..repeat
+        },
+    ] {
+        assert!(std::ptr::fn_addr_eq(
+            stage_sampler(&image, sampler),
+            sampler_function(sampler),
+        ));
+        image.native_sampler = Some(sampler);
+        assert!(std::ptr::fn_addr_eq(
+            stage_sampler(&image, repeat),
+            sampler_function(sampler),
+        ));
+        image.native_sampler = None;
+    }
+    image.native_sampler = Some(repeat);
+    assert!(std::ptr::fn_addr_eq(
+        stage_sampler(
+            &image,
+            Sampler {
+                wrap: Wrap::Clamp,
+                ..repeat
+            }
+        ),
+        sample::<true, true, true> as super::ShadeFn,
+    ));
 }
 
 #[test]
