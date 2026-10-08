@@ -1,4 +1,4 @@
-use super::{Combination, Product, Recipe};
+use super::{Combination, Product, ProductColorCache, Recipe};
 use crate::assets::{
     Assets, DepthFunc, MaterialSettings, Sampler, Stage, StageTexture, TextureIntensity, Vertex,
     Wrap,
@@ -606,6 +606,220 @@ fn native_vertex_byte_rounding_checks_all_polygon_vertices() {
             )
             .is_none()
     );
+}
+
+#[test]
+fn product_color_cache_retains_rounding_failures_and_recovers_on_input_change() {
+    let mut fixture = fixture(false, true, false);
+    for (vertex, red) in fixture.geometry.vertices.iter_mut().zip([0, 1, 2, 1]) {
+        vertex.vertex.color = [red, 255, 255, red];
+    }
+    let recipe = product(&fixture, 65536).unwrap();
+    let mut colors = ProductColorCache::default();
+    for (identity_light, valid, refreshes) in [
+        (1.0, true, 1),
+        (1.0, true, 1),
+        (0.5, false, 2),
+        (0.5, false, 2),
+        (0.25, true, 3),
+        (0.25, true, 3),
+        (1.0, true, 4),
+        (1.0, true, 4),
+    ] {
+        let refdef = Refdef {
+            identity_light,
+            ..Refdef::default()
+        };
+        let cached = recipe.prepare_cached(&refdef, &fixture.evaluator, &mut colors);
+        let original = recipe.prepare(&refdef, &fixture.evaluator);
+        assert_eq!(cached.is_some(), valid);
+        assert_eq!(cached.is_some(), original.is_some());
+        if let (Some(cached), Some(original)) = (cached, original) {
+            assert_eq!(cached.state, original.state);
+            assert_eq!(cached.colors, original.colors);
+            assert_eq!(
+                cached.state.stage_colors[0][3],
+                if identity_light == 1.0 { 0 } else { 255 },
+            );
+        }
+        assert_eq!(colors.refreshes(), refreshes);
+    }
+}
+
+#[test]
+fn identity_lighting_and_inverse_vertex_refresh_their_native_byte_fields() {
+    for rgb_gen in [RgbGen::IdentityLighting, RgbGen::OneMinusVertex] {
+        let mut fixture = fixture(false, true, false);
+        let material = fixture.assets.material(fixture.binding.material).unwrap();
+        let settings = material.settings;
+        let mut stages = material.stages.to_vec();
+        for stage in &mut stages {
+            stage.rgb_gen = rgb_gen;
+        }
+        fixture.binding.material = fixture
+            .assets
+            .register_material("scaled native colors", &stages, settings)
+            .unwrap();
+        let recipe = product(&fixture, 65536).unwrap();
+        let mut colors = ProductColorCache::default();
+        let original = recipe
+            .prepare_cached(&Refdef::default(), &fixture.evaluator, &mut colors)
+            .unwrap();
+        let changed = Refdef {
+            identity_light: 0.5,
+            ..Refdef::default()
+        };
+        for _ in 0..2 {
+            let cached = recipe
+                .prepare_cached(&changed, &fixture.evaluator, &mut colors)
+                .unwrap();
+            let uncached = recipe.prepare(&changed, &fixture.evaluator).unwrap();
+            assert_eq!(cached.colors, uncached.colors);
+            assert_eq!(cached.state, uncached.state);
+            assert_ne!(cached.colors, original.colors);
+            assert_eq!(cached.state.identity_light, 0.5);
+            assert_eq!(colors.refreshes(), 2);
+        }
+    }
+}
+
+#[test]
+fn fixed_native_colors_ignore_identity_changes_and_reuse_rover_pixels() {
+    for rgb_gen in [
+        RgbGen::Identity,
+        RgbGen::Const([0.25, 0.5, 0.75]),
+        RgbGen::ExactVertex,
+    ] {
+        let mut fixture = fixture(false, true, false);
+        let material = fixture.assets.material(fixture.binding.material).unwrap();
+        let settings = material.settings;
+        let mut stages = material.stages.to_vec();
+        for stage in &mut stages {
+            stage.rgb_gen = rgb_gen;
+        }
+        fixture.binding.material = fixture
+            .assets
+            .register_material("fixed source colors", &stages, settings)
+            .unwrap();
+        let recipe = product(&fixture, 65536).unwrap();
+        let mut cache = SurfaceCache::load(vec![recipe.source().unwrap()], 65536).unwrap();
+        let mut colors = ProductColorCache::default();
+        let mut original_pixels = None;
+        for identity_light in [1.0, 0.5, 0.125, 0.0, 2.0] {
+            let refdef = Refdef {
+                identity_light,
+                ..Refdef::default()
+            };
+            let prepared = recipe
+                .prepare_cached(&refdef, &fixture.evaluator, &mut colors)
+                .unwrap();
+            let uncached = recipe.prepare(&refdef, &fixture.evaluator).unwrap();
+            assert_eq!(prepared.state, uncached.state);
+            assert_eq!(prepared.colors, uncached.colors);
+            assert_eq!(prepared.state.identity_light, 1.0);
+            assert!(cache.begin_batch());
+            let block = cache
+                .prepare_rgba(recipe.cache, 0, prepared.state, |out| {
+                    recipe.fill(prepared, 0, &fixture.assets, out);
+                })
+                .unwrap();
+            if let Some(original) = &original_pixels {
+                assert_eq!(cache.rgba_pixels(block).unwrap(), original);
+            } else {
+                original_pixels = Some(cache.rgba_pixels(block).unwrap().to_vec());
+            }
+            cache.end_batch();
+        }
+        assert_eq!(colors.refreshes(), 0, "rgb_gen={rgb_gen:?}");
+        assert_eq!(cache.stats().fills, 1);
+        assert_eq!(cache.stats().hits, 4);
+        assert_eq!(cache.stats().rejected, 0);
+    }
+}
+
+#[test]
+fn styled_payload_and_image_revisions_do_not_refit_source_colors() {
+    let mut fixture = fixture(false, true, false);
+    fixture.geometry.surfaces[0].light_source = LightSource::Samples;
+    fixture.geometry.surfaces[0].styles = [7, 255, 255, 255];
+    let recipe = product(&fixture, 65536).unwrap();
+    let mut colors = ProductColorCache::default();
+    let mut refdef = Refdef::default();
+    let original = recipe
+        .prepare_cached(&refdef, &fixture.evaluator, &mut colors)
+        .unwrap();
+    refdef.lightstyles[7].rgb = [0.5, 0.75, 1.0];
+    let styled = recipe
+        .prepare_cached(&refdef, &fixture.evaluator, &mut colors)
+        .unwrap();
+    assert_eq!(original.colors, styled.colors);
+    assert_ne!(original.state.style_scales, styled.state.style_scales);
+    assert_eq!(colors.refreshes(), 1);
+    fixture
+        .assets
+        .prepare_image(recipe.base, UploadParams::default())
+        .unwrap();
+    let reloaded = product(&fixture, 65536).unwrap();
+    let changed_image = reloaded
+        .prepare_cached(&refdef, &fixture.evaluator, &mut colors)
+        .unwrap();
+    assert_eq!(changed_image.colors, styled.colors);
+    assert_ne!(
+        changed_image.state.base_revision,
+        styled.state.base_revision
+    );
+    assert_eq!(colors.refreshes(), 1);
+    refdef.identity_light = 0.5;
+    let changed_identity = reloaded
+        .prepare_cached(&refdef, &fixture.evaluator, &mut colors)
+        .unwrap();
+    assert_ne!(changed_identity.colors, changed_image.colors);
+    assert_eq!(changed_identity.state.identity_light, 0.5);
+    assert_eq!(colors.refreshes(), 2);
+}
+
+#[test]
+fn cold_source_chart_preserves_original_coordinate_bits_and_corner_order() {
+    for texture_origin in [0.0, 2097152.0, -2097152.0] {
+        let mut fixture = fixture(false, false, false);
+        fixture.geometry.indices.rotate_left(2);
+        for vertex in &mut fixture.geometry.vertices {
+            vertex.vertex.texcoord[0] += texture_origin;
+            vertex.vertex.position.0 = [
+                3.0 * vertex.vertex.position.0[0] - 17.0,
+                0.25 * vertex.vertex.position.0[1] + 9.0,
+                11.0,
+            ];
+        }
+        let product = product(&fixture, 65536).unwrap();
+        let boundary = fixture.geometry.boundaries[0];
+        for (corner, &index) in fixture.geometry.indices[boundary.indices()]
+            .iter()
+            .enumerate()
+        {
+            let position = fixture.geometry.vertices[index as usize].vertex.position;
+            let original = product.coordinate(position);
+            let cold = product.coordinate_corner(corner).unwrap();
+            assert_eq!(cold.map(f32::to_bits), original.map(f32::to_bits));
+            let texture = fixture.geometry.vertices[index as usize].vertex.texcoord;
+            for axis in 0..2 {
+                assert!((cold[axis] - texture[axis] * 4.0).abs() < 1.0e-5);
+            }
+        }
+        assert!(product.coordinate_corner(boundary.count as usize).is_none());
+        let recipe = Recipe::Product(product);
+        assert_eq!(
+            recipe.coordinate_corner(0).unwrap().map(f32::to_bits),
+            recipe
+                .coordinate(
+                    fixture.geometry.vertices[fixture.geometry.indices[0] as usize]
+                        .vertex
+                        .position,
+                )
+                .unwrap()
+                .map(f32::to_bits),
+        );
+    }
 }
 
 #[test]

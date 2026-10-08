@@ -837,6 +837,248 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
 }
 
 #[test]
+fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
+    for (red, can_reject_rounding) in [([64, 96, 128, 96], false), ([0, 1, 2, 1], true)] {
+        let mut assets = Assets::load();
+        let image = assets
+            .register_image(
+                2,
+                2,
+                &[
+                    31, 47, 61, 255, 79, 97, 113, 255, 131, 151, 173, 255, 191, 211, 233, 255,
+                ],
+            )
+            .unwrap();
+        let light = assets.register_image(1, 1, &[173, 191, 211, 255]).unwrap();
+        let material = stages(
+            &mut assets,
+            &[
+                Stage {
+                    texture: StageTexture::Image(image),
+                    rgb_gen: RgbGen::Vertex,
+                    ..Stage::default()
+                },
+                Stage {
+                    texture: StageTexture::Lightmap,
+                    texgen: TexCoordGen::Lightmap,
+                    depth_write: false,
+                    depth_func: DepthFunc::Equal,
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
+                    ..Stage::default()
+                },
+            ],
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
+        );
+        let world = fixture_world(
+            &mut assets,
+            2.0,
+            1.0,
+            SurfaceMaterial {
+                material,
+                lightmap: light,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                let boundary = g.boundaries[0];
+                g.indices[boundary.indices()].rotate_left(2);
+                for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                    vertex.vertex.texcoord = [uv[0] - 0.375, uv[1] + 0.25];
+                    vertex.vertex.lightmap_coord = [0.5; 2];
+                    vertex.vertex.color = [red[index], 255, 255, 255];
+                }
+            },
+        );
+        let other = fixture_world(
+            &mut assets,
+            3.0,
+            1.0,
+            SurfaceMaterial {
+                material,
+                lightmap: light,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                    vertex.vertex.texcoord = [uv[0] + 0.625, uv[1] - 0.375];
+                    vertex.vertex.lightmap_coord = [0.5; 2];
+                    vertex.vertex.color = [
+                        [40, 80, 120, 255],
+                        [80, 120, 160, 255],
+                        [120, 160, 200, 255],
+                        [80, 120, 160, 255],
+                    ][index];
+                }
+            },
+        );
+        let mut cpu = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands: RasterBands::Four,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        for (frame_index, (identity_light, refreshes)) in [
+            (1.0, 1),
+            (1.0, 1),
+            (1.0, 1),
+            (0.5, 2),
+            (0.5, 2),
+            (0.25, 3),
+            (0.25, 3),
+            (1.0, 4),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let motion = frame_index.saturating_sub(1) as f32;
+            let view = Refdef {
+                identity_light,
+                origin: Vec3([0.125 * motion, 0.03125 * motion, -0.03125 * motion]),
+                ..test_view()
+            };
+            let frame = packet(&assets, &[world], view);
+            assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+            let mut fresh = CpuBackend::load_with_limits(
+                29,
+                19,
+                &assets,
+                CpuLimits {
+                    bands: RasterBands::Four,
+                    ..CpuLimits::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(fresh.render(&frame, &assets).rejected, 0);
+            assert_eq!(cpu.pixels, fresh.pixels);
+            assert_eq!(
+                cpu.inverse_depth
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                fresh
+                    .inverse_depth
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(cpu.depth_ranks, fresh.depth_ranks);
+            assert_eq!(cpu.indices, fresh.indices);
+            assert_eq!(cpu.palettes, fresh.palettes);
+            let counters = cpu.world_stats();
+            let valid = !can_reject_rounding || identity_light != 0.5;
+            if valid {
+                assert!(counters.rgba_pixels > 0);
+                assert_eq!(counters.stage_spans, 0);
+                if frame_index == 1 {
+                    assert_eq!(counters.rgba_fills, 0);
+                    assert!(counters.rgba_hits > 0);
+                }
+            } else {
+                assert_eq!(counters.rgba_spans, 0);
+                assert!(counters.stage_pixels > 0);
+            }
+            let prepared = &mut cpu.world.as_mut().unwrap().prepare;
+            assert_eq!(prepared.rgba_colors.len(), prepared.catalog.rgba.len());
+            let recipe_id = prepared.catalog.boundary_offsets[world.0 as usize];
+            assert_eq!(prepared.rgba_colors[recipe_id].refreshes(), refreshes);
+            if valid {
+                let geometry = assets.world(world).unwrap().geometry();
+                let boundary = geometry.boundaries[0];
+                let recipe = prepared.catalog.rgba[recipe_id].as_ref().unwrap();
+                let expected = geometry.indices[boundary.indices()]
+                    .iter()
+                    .map(|&index| {
+                        recipe
+                            .coordinate(geometry.vertices[index as usize].vertex.position)
+                            .unwrap()
+                            .map(f32::to_bits)
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    prepared
+                        .clip
+                        .sources(boundary.count as usize)
+                        .unwrap()
+                        .iter()
+                        .map(|vertex| vertex.texcoord.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+            }
+        }
+        let first_id =
+            cpu.world.as_ref().unwrap().prepare.catalog.boundary_offsets[world.0 as usize];
+        let other_id =
+            cpu.world.as_ref().unwrap().prepare.catalog.boundary_offsets[other.0 as usize];
+        assert_ne!(first_id, other_id);
+        assert_eq!(
+            cpu.world.as_ref().unwrap().prepare.rgba_colors[other_id].refreshes(),
+            0
+        );
+        // Both worlds use local surface/boundary id0. Their recipe slots must
+        // retain independent colors despite sharing the material and images.
+        for worlds in [&[other][..], &[other][..], &[world, other][..]] {
+            let frame = packet(
+                &assets,
+                worlds,
+                Refdef {
+                    identity_light: 0.5,
+                    ..test_view()
+                },
+            );
+            assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+            let mut fresh = CpuBackend::load_with_limits(
+                29,
+                19,
+                &assets,
+                CpuLimits {
+                    bands: RasterBands::Four,
+                    ..CpuLimits::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(fresh.render(&frame, &assets).rejected, 0);
+            assert_eq!(cpu.pixels, fresh.pixels);
+            assert_eq!(cpu.depth_ranks, fresh.depth_ranks);
+            assert_eq!(
+                cpu.inverse_depth
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                fresh
+                    .inverse_depth
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>()
+            );
+            let colors = &cpu.world.as_ref().unwrap().prepare.rgba_colors;
+            assert_eq!(
+                colors[first_id].refreshes(),
+                if worlds.len() == 2 { 5 } else { 4 }
+            );
+            assert_eq!(colors[other_id].refreshes(), 1);
+        }
+    }
+}
+
+#[test]
 fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
     let mut assets = Assets::load();
     let image = assets

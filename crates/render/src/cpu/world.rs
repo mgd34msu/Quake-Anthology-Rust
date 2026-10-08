@@ -299,6 +299,7 @@ enum PreparedDraw {
 struct WorldPrepare {
     catalog: Arc<WorldCatalog>,
     rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
+    rgba_colors: Box<[super::rgba::ProductColorCache]>,
     primitives: Box<[Primitive]>,
     primitive_count: usize,
     stages: Box<[StagePlanes]>,
@@ -639,6 +640,8 @@ impl WorldRaster {
             prepare: WorldPrepare {
                 catalog: Arc::clone(&catalog),
                 rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
+                rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
+                    .into_boxed_slice(),
                 primitives: vec![Primitive::default(); boundaries.max(1)].into_boxed_slice(),
                 primitive_count: 0,
                 stages: vec![StagePlanes::default(); stage_capacity.max(1)].into_boxed_slice(),
@@ -934,9 +937,13 @@ impl WorldPrepare {
                     ..Primitive::default()
                 };
                 if let Some(index) = primitive.rgba {
-                    let prepared = self.catalog.rgba[index]
-                        .as_ref()
-                        .and_then(|recipe| recipe.prepare(&camera.refdef, evaluator));
+                    let prepared = self.catalog.rgba[index].as_ref().and_then(|recipe| {
+                        recipe.prepare_cached(
+                            &camera.refdef,
+                            evaluator,
+                            &mut self.rgba_colors[index],
+                        )
+                    });
                     if let Some(prepared) = prepared {
                         self.rgba_prepared[index] = Some(prepared);
                     } else {
@@ -1648,7 +1655,10 @@ impl WorldPrepare {
         let boundary = geometry.boundaries[primitive.boundary as usize];
         let indices = &geometry.indices[boundary.indices()];
         let vertices = self.clip.sources(indices.len())?;
-        for (output, &index) in vertices.iter_mut().zip(indices) {
+        // Recipe ids map to this immutable boundary, whose source corner order
+        // is the same order used at recipe registration. Intersections still
+        // receive the original ClipGraph interpolation after these sources.
+        for (corner, (output, &index)) in vertices.iter_mut().zip(indices).enumerate() {
             let loaded = geometry.vertices[index as usize];
             let mut vertex = Vertex {
                 normal: loaded.normal,
@@ -1667,7 +1677,12 @@ impl WorldPrepare {
             } else if let Some(index) = primitive.rgba
                 && let Some(coordinate) = self.catalog.rgba[index]
                     .as_ref()?
-                    .coordinate(vertex.position)
+                    .coordinate_corner(corner)
+                    .or_else(|| {
+                        self.catalog.rgba[index]
+                            .as_ref()?
+                            .coordinate(vertex.position)
+                    })
             {
                 vertex.texcoord = coordinate;
             }

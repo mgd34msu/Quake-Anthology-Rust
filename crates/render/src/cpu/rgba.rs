@@ -37,6 +37,7 @@ pub(super) struct Product {
     pub texture: [[f32; 3]; 2],
     layouts: [([i32; 2], [u32; 2]); 32],
     chart: [[f64; 4]; 2],
+    source_coordinates: Box<[[f32; 2]]>,
     lightmap: ImageId,
     lightmap_region: Option<crate::lightmap::AtlasRegion>,
     lightcoord: [[f32; 3]; 2],
@@ -51,6 +52,7 @@ pub(super) struct Product {
     revisions: [u64; 2],
     samplers: [crate::assets::Sampler; 2],
     combination: Combination,
+    color_plans: [ColorPlan; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +65,46 @@ enum Combination {
 pub(super) struct ProductPrepared {
     pub state: RgbaBuildState,
     colors: [[[f64; 3]; 4]; 2],
+}
+
+#[derive(Clone, Copy)]
+struct StageColors {
+    uniform: [u8; 4],
+    fields: [[f64; 3]; 4],
+}
+
+#[derive(Clone, Copy)]
+enum ColorPlan {
+    Fixed(Option<StageColors>),
+    IdentityLight,
+}
+
+#[derive(Clone, Copy)]
+struct ProductColors {
+    uniform: [[u8; 4]; 2],
+    fields: [[[f64; 3]; 4]; 2],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ColorInput {
+    source: u32,
+    identity_light: f32,
+}
+
+/// One load-sized slot per immutable Product, owned by the view preparation.
+/// Native byte rounding can reject a polygon, so failures are retained too.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ProductColorCache {
+    input: Option<ColorInput>,
+    colors: Option<ProductColors>,
+    refreshes: u64,
+}
+
+impl ProductColorCache {
+    #[cfg(test)]
+    pub(super) fn refreshes(&self) -> u64 {
+        self.refreshes
+    }
 }
 
 #[derive(Clone)]
@@ -265,9 +307,22 @@ impl Recipe {
             Self::Pair(_) => None,
         }
     }
-    pub(super) fn prepare(&self, refdef: &Refdef, evaluator: &StageEvaluator) -> Option<Prepared> {
+    pub(super) fn coordinate_corner(&self, corner: usize) -> Option<[f32; 2]> {
         match self {
-            Self::Product(product) => product.prepare(refdef, evaluator).map(Prepared::Product),
+            Self::Product(product) => product.coordinate_corner(corner),
+            Self::Pair(_) => None,
+        }
+    }
+    pub(super) fn prepare_cached(
+        &self,
+        refdef: &Refdef,
+        evaluator: &StageEvaluator,
+        cache: &mut ProductColorCache,
+    ) -> Option<Prepared> {
+        match self {
+            Self::Product(product) => product
+                .prepare_cached(refdef, evaluator, cache)
+                .map(Prepared::Product),
             Self::Pair(_) => Some(Prepared::Pair),
         }
     }
@@ -582,7 +637,11 @@ impl Product {
             LightSource::Samples => surface.styles,
             _ => [255; 4],
         };
-        Some(Self {
+        let source_coordinates = vertices
+            .iter()
+            .map(|vertex| chart_coordinate(chart, vertex.position))
+            .collect();
+        let mut product = Self {
             cache,
             base,
             base_stage,
@@ -593,6 +652,7 @@ impl Product {
             lightcoord,
             layouts,
             chart,
+            source_coordinates,
             lightmap: binding.lightmap,
             lightmap_region: binding.lightmap_region,
             color_basis: basis.map(|i| vertices[i]),
@@ -631,7 +691,22 @@ impl Product {
             } else {
                 Combination::SeparatePasses
             },
-        })
+            color_plans: [ColorPlan::Fixed(None); 2],
+        };
+        // qsrc tr_shade.c:662-715 generates source byte colors before clipping.
+        // Identity/Const/ExactVertex fields are immutable; vertex scaling and
+        // identity lighting retain their exact parameter-dependent rounding.
+        for stage in 0..2 {
+            product.color_plans[stage] = if matches!(
+                product.stages[stage].rgb_gen,
+                RgbGen::IdentityLighting | RgbGen::Vertex | RgbGen::OneMinusVertex
+            ) {
+                ColorPlan::IdentityLight
+            } else {
+                ColorPlan::Fixed(product.fit_stage_colors(stage, 1.0, evaluator))
+            };
+        }
+        Some(product)
     }
     pub(super) fn current(&self, assets: &Assets) -> bool {
         let (Some(base), Some(light)) = (assets.image(self.base), assets.image(self.lightmap))
@@ -648,68 +723,122 @@ impl Product {
         SurfaceSource::load_rgba_texels(self.minima, self.extents, self.mip_count)
     }
     pub(super) fn coordinate(&self, position: qa_core::primitives::Vec3) -> [f32; 2] {
-        self.chart.map(|p| {
-            (p[3]
-                + p[0] * f64::from(position.0[0])
-                + p[1] * f64::from(position.0[1])
-                + p[2] * f64::from(position.0[2])) as f32
-        })
+        chart_coordinate(self.chart, position)
     }
+    pub(super) fn coordinate_corner(&self, corner: usize) -> Option<[f32; 2]> {
+        self.source_coordinates.get(corner).copied()
+    }
+    #[cfg(test)]
     pub(super) fn prepare(
         &self,
         refdef: &Refdef,
         evaluator: &StageEvaluator,
     ) -> Option<ProductPrepared> {
+        let colors = self.prepare_colors(refdef.identity_light, evaluator)?;
+        Some(self.with_state(refdef, colors))
+    }
+    pub(super) fn prepare_cached(
+        &self,
+        refdef: &Refdef,
+        evaluator: &StageEvaluator,
+        cache: &mut ProductColorCache,
+    ) -> Option<ProductPrepared> {
+        let colors = if self.identity_dependent() {
+            let input = ColorInput {
+                source: self.cache,
+                identity_light: refdef.identity_light,
+            };
+            if cache.input != Some(input) {
+                cache.input = Some(input);
+                cache.colors = self.prepare_colors(refdef.identity_light, evaluator);
+                cache.refreshes = cache.refreshes.saturating_add(1);
+            }
+            cache.colors?
+        } else {
+            self.prepare_colors(1.0, evaluator)?
+        };
+        Some(self.with_state(refdef, colors))
+    }
+    fn identity_dependent(&self) -> bool {
+        self.color_plans
+            .iter()
+            .any(|plan| matches!(plan, ColorPlan::IdentityLight))
+    }
+    fn prepare_colors(
+        &self,
+        identity_light: f32,
+        evaluator: &StageEvaluator,
+    ) -> Option<ProductColors> {
+        let mut colors = ProductColors {
+            uniform: [[255; 4]; 2],
+            fields: [[[0.0; 3]; 4]; 2],
+        };
+        for stage in 0..2 {
+            let color = match self.color_plans[stage] {
+                ColorPlan::Fixed(color) => color?,
+                ColorPlan::IdentityLight => {
+                    self.fit_stage_colors(stage, identity_light, evaluator)?
+                }
+            };
+            colors.uniform[stage] = color.uniform;
+            colors.fields[stage] = color.fields;
+        }
+        Some(colors)
+    }
+    fn fit_stage_colors(
+        &self,
+        stage: usize,
+        identity_light: f32,
+        evaluator: &StageEvaluator,
+    ) -> Option<StageColors> {
         let inputs = DrawInputs {
-            identity_light: refdef.identity_light,
+            identity_light,
             lightmap: self.lightmap,
             texture_scale: self.scale,
             ..DrawInputs::default()
         };
-        let mut uniform = [[255; 4]; 2];
-        let mut colors = [[[0.0; 3]; 4]; 2];
-        for stage in 0..2 {
-            let prepared = evaluator
-                .prepare(&self.stages[stage], self.settings, inputs)
-                .ok()?;
-            let values = self
-                .color_basis
-                .map(|vertex| evaluator.evaluate(&prepared, &vertex).color);
-            uniform[stage] = values[0];
-            let fields = std::array::from_fn::<_, 4, _>(|channel| {
-                fit(
-                    self.basis_coordinates,
-                    values.map(|value| f64::from(value[channel]) / 255.0),
-                )
-            });
-            // Native byte color generation can turn affine source colors
-            // into non-affine polygon attributes when identity light changes.
-            for &(vertex, coordinate) in &self.color_checks {
-                let value = evaluator.evaluate(&prepared, &vertex).color;
-                if fields.iter().zip(value).any(|(&field, channel)| {
-                    (at64(field, coordinate) - f64::from(channel) / 255.0).abs() > 1.0e-7
-                }) {
-                    return None;
-                }
+        let prepared = evaluator
+            .prepare(&self.stages[stage], self.settings, inputs)
+            .ok()?;
+        let values = self
+            .color_basis
+            .map(|vertex| evaluator.evaluate(&prepared, &vertex).color);
+        let fields = std::array::from_fn::<_, 4, _>(|channel| {
+            fit(
+                self.basis_coordinates,
+                values.map(|value| f64::from(value[channel]) / 255.0),
+            )
+        });
+        // Native CGEN_VERTEX truncation can break a polygon's affine field.
+        for &(vertex, coordinate) in &self.color_checks {
+            let value = evaluator.evaluate(&prepared, &vertex).color;
+            if fields.iter().zip(value).any(|(&field, channel)| {
+                (at64(field, coordinate) - f64::from(channel) / 255.0).abs() > 1.0e-7
+            }) {
+                return None;
             }
-            colors[stage] = fields;
         }
-        if colors
-            .as_flattened()
-            .as_flattened()
-            .iter()
-            .any(|value| !value.is_finite())
-        {
+        if fields.as_flattened().iter().any(|value| !value.is_finite()) {
             return None;
         }
-        Some(ProductPrepared {
-            colors,
+        Some(StageColors {
+            uniform: values[0],
+            fields,
+        })
+    }
+    fn with_state(&self, refdef: &Refdef, colors: ProductColors) -> ProductPrepared {
+        ProductPrepared {
+            colors: colors.fields,
             state: RgbaBuildState {
                 material_id: self.material.0,
                 base_image_id: self.base.0,
                 lightmap_image_id: Some(self.lightmap.0),
-                stage_colors: uniform,
-                identity_light: refdef.identity_light,
+                stage_colors: colors.uniform,
+                identity_light: if self.identity_dependent() {
+                    refdef.identity_light
+                } else {
+                    1.0
+                },
                 base_revision: self.revisions[0],
                 lightmap_revision: self.revisions[1],
                 style_scales: self.styles.map(|style| {
@@ -721,7 +850,7 @@ impl Product {
                 }),
                 ..RgbaBuildState::default()
             },
-        })
+        }
     }
     pub(super) fn fill(
         &self,
@@ -829,6 +958,15 @@ pub(super) fn multiply_pixel(first: u32, second: [f32; 4]) -> u32 {
 fn at(field: [f32; 3], coordinate: [f32; 2]) -> f32 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
 }
+fn chart_coordinate(chart: [[f64; 4]; 2], position: qa_core::primitives::Vec3) -> [f32; 2] {
+    chart.map(|p| {
+        (p[3]
+            + p[0] * f64::from(position.0[0])
+            + p[1] * f64::from(position.0[1])
+            + p[2] * f64::from(position.0[2])) as f32
+    })
+}
+
 fn at64(field: [f64; 3], coordinate: [f64; 2]) -> f64 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
 }
