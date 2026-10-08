@@ -344,3 +344,26 @@ CPU target; native world spans and surface caching remain THE-862. Retail maps,
 native indexed palettes, dynamic lights, original images, mixed movement and
 hardware renderer timing remain unqualified. This fixture cannot authorize an
 installation or serve as a gameplay regression baseline.
+
+## THE-862 retail visibility queries, 2026-10-08
+
+Portable release example, core 23, 60 warm-up and 600 measured batches.
+Each batch runs 32 preloaded queries per map on e1m1, base1 and q3dm1 (96 total),
+rotating fixed seeded points and primary/secondary PVS unions. The measured
+batch median is 11,302,168.5 ns and p99 is 12,077,568 ns. The calling-thread
+Rust counter recorded zero allocations and requested bytes. Builds, checkers
+and debuggers were absent during the timing pass.
+
+All normalized PVS rows matched raw retail bits: 1,322,496 bits on e1m1,
+2,093,808 on base1 and 889,248 on q3dm1. Ten thousand seeded points per map,
+plus 9/18/7 spawn origins, matched independent point-in-leaf and primary/union
+face-membership checks. All three maps exercised unions that expanded the
+visible set. Areas, frustum rejection and shared DAG parents have separate
+behavior fixtures. Evidence: `THE-862-visibility-b/verification.json` and
+`visibility.json`; release example build 11.47 s.
+
+This measures visibility queries over parsed retail records, with many seeded
+points in solids and their all-visible fallback. It is not a gameplay frame,
+renderer target, native-image comparison or installer baseline. The independent
+reference is Rust over the original records; an extracted C executable was not
+used. The app has not yet submitted a loaded retail world.

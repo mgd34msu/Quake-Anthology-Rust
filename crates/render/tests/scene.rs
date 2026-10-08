@@ -1,5 +1,41 @@
 use qa_render::{Command, FrontEnd, Limits, MaterialId, Refdef, SceneEntity, Vertex};
 
+#[test]
+fn world_submissions_copy_surface_ids_and_keep_prior_views_on_overflow() {
+    use qa_render::world::{VisibleSurface, WorldId};
+    let mut front = FrontEnd::load(Limits {
+        surfaces: 2,
+        ..Limits::default()
+    })
+    .unwrap();
+    let mut frame = front.begin_frame([0; 4]).unwrap();
+    let mut visible = [VisibleSurface {
+        surface: 12,
+        depth_key: 7,
+    }];
+    assert!(frame.add_world(WorldId(3), &visible));
+    visible[0].surface = 99;
+    assert!(frame.render_scene(Refdef::default(), &[]));
+    assert!(!frame.add_world(WorldId(8), &[visible[0]; 2]));
+    assert!(frame.add_world(WorldId(4), &visible));
+    assert!(frame.render_scene(Refdef::default(), &[]));
+    let packet = frame.finish();
+    let Command::View(first) = packet.commands()[1] else {
+        panic!()
+    };
+    let Command::View(second) = packet.commands()[2] else {
+        panic!()
+    };
+    let first = &packet.surfaces(first.scene.surfaces)[0];
+    assert_eq!(
+        (first.world, first.surface, first.depth_key),
+        (WorldId(3), 12, 7)
+    );
+    let second = &packet.surfaces(second.scene.surfaces)[0];
+    assert_eq!((second.world, second.surface), (WorldId(4), 99));
+    assert_eq!(packet.rejected, 1);
+}
+
 // qsrc Q3 tr_scene.c ClearScene/RenderScene preserve earlier scene payloads.
 #[test]
 fn scenes_copy_payloads_and_advance_ranges() {
@@ -69,6 +105,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
         vertices: 3,
         lights: 1,
         area_bytes: 2,
+        surfaces: 1,
     };
     let mut front = FrontEnd::load(limits).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();

@@ -57,3 +57,28 @@ Native contracts: Q3 `renderer/tr_public.h`, `tr_scene.c`, `tr_cmds.c`,
 `gl_rmain.c` and `gl_screen.c`. The C port's retained world topology and cache
 algorithms inform THE-862; its command reallocations and borrowed payload
 pointers are not used.
+
+THE-862 adds load-time primitives for the retail world path: one normalized
+BSP visibility service, retained polygon/triangle boundaries, adaptive Q3
+patch grids, one RGB lightmap atlas and typed Q3 material definitions loaded
+from the winning VFS scripts. Q1/Q2 signed edges, native texture extents and
+full light-style sample spans remain available to the CPU cache. Q3 lightmap
+pages are stored once; source surface ids stay unchanged across conversion.
+Cross-patch stitching and view-dependent patch LOD remain pending.
+
+The native CPU primitives use fixed GET/AET arrays, a depth-ordered surface
+stack and flushing span arena. A bounded rover cache owns original indexed
+mips and native palette/colormap resources. Cache stamps include resource,
+style and dynamic-light generations; batch pins protect pending spans from
+eviction. Every opaque texel uses the supplied colormap, including fullbright
+indices. Q2 RGB reduction follows the owner's brightest-channel rule; this
+differs from original strict comparisons when red and green tie above blue.
+
+`Frame::add_world` copies the frontend's visible surface ids and BSP depth keys
+into its owned packet. GL can consume the world's packed static triangle
+ranges. The native CPU span/cache primitives still require backend integration;
+CPU counts world submissions as rejected until that path is attached. The app
+still has no loaded map. Shader parsing retains animation, texture modifiers,
+waves and deformations, but parsing alone does not implement those effects.
+Native images, complete material conversion and the walk-through gate remain
+unqualified.

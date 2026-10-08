@@ -202,6 +202,9 @@ impl CpuBackend {
                     stats.views = stats.views.saturating_add(1);
                     stats.pending_lights =
                         stats.pending_lights.saturating_add(view.scene.lights.count);
+                    // World spans/cache resources are integrated separately;
+                    // never silently accept a world submission without drawing.
+                    stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     self.clear_depth(camera.refdef.viewport);
                     for entity in list.entities(view.scene.entities) {
                         self.entity(camera, entity, assets, &mut stats);

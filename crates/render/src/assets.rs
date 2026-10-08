@@ -1,5 +1,8 @@
 //! Registration is a load operation. Frames use numeric handles only.
+use crate::scene::Span;
+use crate::world::{SurfaceBinding, World, WorldId, geometry::WorldGeometry};
 use qa_core::primitives::Vec3;
+use qa_world::visibility::VisibilityWorld;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageId(pub u32);
@@ -96,6 +99,7 @@ pub struct Assets {
     images: Vec<Image>,
     materials: Vec<Material>,
     models: Vec<Model>,
+    worlds: Vec<World>,
 }
 impl Default for Assets {
     fn default() -> Self {
@@ -125,6 +129,7 @@ impl Assets {
                 indices: Box::new([]),
                 material: MaterialId(0),
             }],
+            worlds: Vec::new(),
         }
     }
     pub fn register_image(
@@ -156,8 +161,12 @@ impl Assets {
         two_sided: bool,
         sort: u16,
     ) -> Result<MaterialId, &'static str> {
-        if let Some(index) = self.materials.iter().position(|m|
-            m.name == name && m.stages.as_ref() == stages && m.two_sided == two_sided && m.sort == sort) {
+        if let Some(index) = self.materials.iter().position(|m| {
+            m.name == name
+                && m.stages.as_ref() == stages
+                && m.two_sided == two_sided
+                && m.sort == sort
+        }) {
             return Ok(MaterialId(index as u32));
         }
         if stages.is_empty()
@@ -218,5 +227,54 @@ impl Assets {
     }
     pub fn models(&self) -> &[Model] {
         &self.models
+    }
+    pub fn register_world(
+        &mut self,
+        geometry: WorldGeometry,
+        visibility: VisibilityWorld,
+        materials: &[MaterialId],
+    ) -> Result<WorldId, &'static str> {
+        if geometry.surfaces.len() != visibility.surface_count()
+            || materials.len() != geometry.surfaces.len()
+            || materials.iter().any(|&id| self.material(id).is_none())
+        {
+            return Err("invalid world surface bindings");
+        }
+        let id = WorldId(u32::try_from(self.worlds.len()).map_err(|_| "world table full")?);
+        let mut indices = Vec::new();
+        let mut bindings = Vec::with_capacity(materials.len());
+        for (source, surface) in geometry.surfaces.iter().enumerate() {
+            let range = surface.indices.indices();
+            if source != surface.source_id as usize
+                || range.end > geometry.indices.len()
+                || !range.len().is_multiple_of(3)
+            {
+                return Err("invalid world triangle range");
+            }
+            let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
+            indices.extend_from_slice(&geometry.indices[range]);
+            bindings.push(SurfaceBinding {
+                material: materials[source],
+                mesh_indices: Span {
+                    first,
+                    count: surface.indices.count,
+                },
+            });
+        }
+        let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
+        let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
+        self.worlds.push(World {
+            geometry,
+            visibility,
+            mesh,
+            bindings: bindings.into_boxed_slice(),
+        });
+        Ok(id)
+    }
+    pub fn world(&self, id: WorldId) -> Option<&World> {
+        self.worlds.get(id.0 as usize)
+    }
+    pub fn worlds(&self) -> &[World] {
+        &self.worlds
     }
 }

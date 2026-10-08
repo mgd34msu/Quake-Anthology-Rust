@@ -1,5 +1,6 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
 use crate::assets::{MaterialId, ModelId, Vertex};
+use crate::world::{VisibleSurface, WorldId};
 use qa_core::primitives::Vec3;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,6 +119,13 @@ pub struct SceneRanges {
     pub entities: Span,
     pub polys: Span,
     pub lights: Span,
+    pub surfaces: Span,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SurfaceRef {
+    pub world: WorldId,
+    pub surface: u32,
+    pub depth_key: u32,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct View {
@@ -141,6 +149,7 @@ pub struct Limits {
     pub vertices: usize,
     pub lights: usize,
     pub area_bytes: usize,
+    pub surfaces: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -151,6 +160,7 @@ impl Default for Limits {
             vertices: 65536,
             lights: 256,
             area_bytes: 8192,
+            surfaces: 65536,
         }
     }
 }
@@ -162,12 +172,14 @@ pub struct CommandList {
     vertices: Box<[Vertex]>,
     lights: Box<[Light]>,
     area_bytes: Box<[u8]>,
+    surfaces: Box<[SurfaceRef]>,
     command_count: usize,
     entity_count: usize,
     poly_count: usize,
     vertex_count: usize,
     light_count: usize,
     area_count: usize,
+    surface_count: usize,
     owner: u64,
     slot: usize,
     pub frame: u64,
@@ -182,12 +194,14 @@ impl CommandList {
             vertices: vec![Vertex::default(); l.vertices].into_boxed_slice(),
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
             area_bytes: vec![0; l.area_bytes].into_boxed_slice(),
+            surfaces: vec![SurfaceRef::default(); l.surfaces].into_boxed_slice(),
             command_count: 0,
             entity_count: 0,
             poly_count: 0,
             vertex_count: 0,
             light_count: 0,
             area_count: 0,
+            surface_count: 0,
             owner,
             slot,
             frame: 0,
@@ -212,6 +226,9 @@ impl CommandList {
     pub fn hidden_areas(&self, range: Span) -> &[u8] {
         &self.area_bytes[range.range()]
     }
+    pub fn surfaces(&self, range: Span) -> &[SurfaceRef] {
+        &self.surfaces[range.range()]
+    }
     fn reset(&mut self, frame: u64) {
         self.command_count = 0;
         self.entity_count = 0;
@@ -219,6 +236,7 @@ impl CommandList {
         self.vertex_count = 0;
         self.light_count = 0;
         self.area_count = 0;
+        self.surface_count = 0;
         self.rejected = 0;
         self.frame = frame;
     }
@@ -242,6 +260,7 @@ impl FrontEnd {
             limits.vertices,
             limits.lights,
             limits.area_bytes,
+            limits.surfaces,
         ]
         .iter()
         .any(|&n| n == 0 || n > u32::MAX as usize)
@@ -309,6 +328,10 @@ impl Frame {
                 first: self.list.light_count as u32,
                 count: 0,
             },
+            surfaces: Span {
+                first: self.list.surface_count as u32,
+                count: 0,
+            },
         }
     }
     pub fn clear_scene(&mut self) {
@@ -353,6 +376,27 @@ impl Frame {
         self.list.light_count += 1;
         true
     }
+    /// Copy the one frontend visibility result into this owned packet. Both
+    /// consumers receive these ids and the CPU's original BSP depth keys.
+    pub fn add_world(&mut self, world: WorldId, surfaces: &[VisibleSurface]) -> bool {
+        if surfaces.len() > self.list.surfaces.len() - self.list.surface_count {
+            self.list.rejected += 1;
+            return false;
+        }
+        let first = self.list.surface_count;
+        for (target, source) in self.list.surfaces[first..first + surfaces.len()]
+            .iter_mut()
+            .zip(surfaces)
+        {
+            *target = SurfaceRef {
+                world,
+                surface: source.surface,
+                depth_key: source.depth_key,
+            };
+        }
+        self.list.surface_count += surfaces.len();
+        true
+    }
     pub fn render_scene(&mut self, refdef: Refdef, hidden_areas: &[u8]) -> bool {
         if self.list.command_count == self.list.commands.len()
             || hidden_areas.len() > self.list.area_bytes.len() - self.list.area_count
@@ -373,6 +417,10 @@ impl Frame {
             lights: Span {
                 count: current.lights.first - self.first.lights.first,
                 ..self.first.lights
+            },
+            surfaces: Span {
+                count: current.surfaces.first - self.first.surfaces.first,
+                ..self.first.surfaces
             },
         };
         let hidden = Span {

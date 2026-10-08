@@ -432,6 +432,9 @@ impl GlBackend {
                     self.depth_state(true, true);
                     unsafe { (self.gl.clear)(DEPTH_BUFFER_BIT) };
                     let projection = view_projection(view.refdef);
+                    for surface in list.surfaces(view.scene.surfaces) {
+                        self.world_surface(surface, assets, &projection, &mut stats);
+                    }
                     for entity in list.entities(view.scene.entities) {
                         self.entity(entity, assets, &projection, &mut stats);
                     }
@@ -642,6 +645,63 @@ impl GlBackend {
         }
         stats.triangles = stats.triangles.saturating_add(mesh.count as u32 / 3);
         self.set_depth_hack(false);
+    }
+
+    fn world_surface(
+        &mut self,
+        surface: &crate::scene::SurfaceRef,
+        assets: &Assets,
+        projection: &[f32; 16],
+        stats: &mut BackendStats,
+    ) {
+        let Some(world) = assets.world(surface.world) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(binding) = world.bindings.get(surface.surface as usize) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let (Some(material), Some(&mesh)) = (
+            assets.material(binding.material),
+            self.meshes.get(world.mesh.0 as usize),
+        ) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if binding.mesh_indices.count == 0 {
+            return;
+        }
+        self.bind_vao(self.static_vao);
+        self.set_depth_hack(false);
+        for stage in &material.stages {
+            if !self.stage(
+                *stage,
+                projection,
+                [1.0; 4],
+                !material.two_sided,
+                true,
+                false,
+            ) {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            }
+            unsafe {
+                (self.gl.draw_elements)(
+                    TRIANGLES,
+                    binding.mesh_indices.count as i32,
+                    UNSIGNED_INT,
+                    ((mesh.first_index + binding.mesh_indices.first as usize) * size_of::<u32>())
+                        as *const c_void,
+                    mesh.base_vertex,
+                );
+            }
+            stats.stages = stats.stages.saturating_add(1);
+        }
+        stats.surfaces = stats.surfaces.saturating_add(1);
+        stats.triangles = stats
+            .triangles
+            .saturating_add(binding.mesh_indices.count / 3);
     }
 
     #[allow(clippy::too_many_arguments)]
