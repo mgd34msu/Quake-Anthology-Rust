@@ -76,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(event) = queue.pop() {
             event_total += 1;
             match event.kind {
-                EventKind::Time => frame_time = event.time,
+                EventKind::Time => {
+                    frame_time = event.time;
+                    input.seed(event.time);
+                }
                 EventKind::Packet {
                     socket,
                     from,
@@ -85,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => input.dispatch(event, &mut sink),
             }
         }
-        let commands = input.build_frame(frame_time, [200; 3], [0.022; 2], [None; 4]);
+        let commands = input.build_frame(frame_time, [200; 3], [0.022; 2]);
         black_box(commands);
         let elapsed = timer.elapsed().as_nanos();
         let counts = end_frame();

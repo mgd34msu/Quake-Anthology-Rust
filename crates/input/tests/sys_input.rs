@@ -2,7 +2,7 @@ use qa_core::{
     primitives::buttons,
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
 };
-use qa_input::{Action, Binding, CommandIntent, Input, Target, UserCmdBuilder};
+use qa_input::{Action, Binding, Input, Target};
 #[derive(Default)]
 struct Sink {
     presses: u32,
@@ -37,11 +37,12 @@ fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repea
     );
 }
 fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
-    input.build_frame(EventTime(ms * 1_000_000), [200; 3], [0.022; 2], [None; 4])
+    input.build_frame(EventTime(ms * 1_000_000), [200; 3], [0.022; 2])
 }
 #[test]
 fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
     let mut input = Input::load();
+    input.seed(EventTime(0));
     let mut sink = Sink::default();
     input.bind(
         82,
@@ -64,6 +65,7 @@ fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
 #[test]
 fn command_edges_and_focus_loss_do_not_stick() {
     let mut input = Input::load();
+    input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
         .bind_text(10, "+edge", EventTime(0), &mut sink)
@@ -110,8 +112,9 @@ fn command_edges_and_focus_loss_do_not_stick() {
     assert_eq!((sink.presses, sink.releases), (2, 2));
 }
 #[test]
-fn two_devices_route_independently_and_bots_use_the_same_builder() {
+fn two_devices_route_independently_and_disconnect_releases_actions() {
     let mut input = Input::load();
+    input.seed(EventTime(0));
     let mut sink = Sink::default();
     let second = SeatId::new(1).unwrap();
     input.assign(DeviceId::Controller(42), second);
@@ -151,22 +154,4 @@ fn two_devices_route_independently_and_bots_use_the_same_builder() {
         &mut sink,
     );
     assert_eq!(frame(&mut input, 40)[1].movement, [0; 3]);
-    let intent = CommandIntent {
-        movement: [75, -45, 17],
-        buttons: buttons::ATTACK,
-        ..CommandIntent::default()
-    };
-    let mut bots = [None; 4];
-    bots[2] = Some(intent);
-    let commands = input.build_frame(EventTime(60_000_000), [200; 3], [0.022; 2], bots);
-    let mut same = UserCmdBuilder::default();
-    same.build(
-        SeatId::new(2).unwrap(),
-        EventTime(40_000_000),
-        CommandIntent::default(),
-    );
-    let bot = same.build(SeatId::new(2).unwrap(), EventTime(60_000_000), intent);
-    assert_eq!(commands[2].movement, bot.movement);
-    assert_eq!(commands[2].buttons, bot.buttons);
-    assert_eq!(commands[2].duration_ms, bot.duration_ms);
 }

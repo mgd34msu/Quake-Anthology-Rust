@@ -7,3 +7,5 @@ license.workspace = true
 [dependencies]
 qa-core = { path = "../core" }
 qa-world = { path = "../world" }
+qa-input = { path = "../input" }
+qa-movement = { path = "../movement" }

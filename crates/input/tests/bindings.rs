@@ -39,6 +39,7 @@ fn config_names_hex_and_modifier_sides_share_one_control_table() {
 #[test]
 fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
     let mut input = Input::load();
+    input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
         .bind_text(10, "+edge; echo \"a;b\"; +jump", EventTime(0), &mut sink)
@@ -73,7 +74,7 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
         ]
     );
     assert_ne!(
-        input.build_frame(EventTime(30_000_000), [127; 3], [0.022; 2], [None; 4])[0].buttons
+        input.build_frame(EventTime(30_000_000), [127; 3], [0.022; 2])[0].buttons
             & qa_core::primitives::buttons::JUMP,
         0
     );
@@ -81,6 +82,7 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
 #[test]
 fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     let mut input = Input::load();
+    input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
         .bind_text(224, "+forward", EventTime(0), &mut sink)
@@ -104,7 +106,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
         );
     }
     assert_eq!(
-        input.build_frame(EventTime(40_000_000), [127; 3], [0.022; 2], [None; 4])[0].movement[0],
+        input.build_frame(EventTime(40_000_000), [127; 3], [0.022; 2])[0].movement[0],
         127
     );
     input.dispatch(
@@ -127,7 +129,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
         &mut sink,
     );
     assert_eq!(
-        input.build_frame(EventTime(60_000_000), [127; 3], [0.022; 2], [None; 4])[0].movement,
+        input.build_frame(EventTime(60_000_000), [127; 3], [0.022; 2])[0].movement,
         [0; 3]
     );
 }

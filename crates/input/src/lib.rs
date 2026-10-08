@@ -137,37 +137,20 @@ impl Default for Device {
     }
 }
 
-/// Movement policy supplies units; the event service selects no movement game.
-/// Bots submit the same intent to the same builder.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CommandIntent {
-    pub movement: [i16; 3],
-    pub view_angles: Vec3,
-    pub buttons: u32,
-    pub impulse: u8,
-}
-pub struct UserCmdBuilder {
-    previous: [EventTime; SeatId::COUNT],
-}
-impl Default for UserCmdBuilder {
-    fn default() -> Self {
-        Self {
-            previous: [EventTime::default(); SeatId::COUNT],
-        }
-    }
-}
+pub use qa_core::primitives::CommandIntent;
+/// One stateless intent conversion for local, remote-module and bot callers.
+pub struct UserCmdBuilder;
 impl UserCmdBuilder {
-    pub fn build(&mut self, seat: SeatId, time: EventTime, intent: CommandIntent) -> UserCmd {
-        let duration = time.since(self.previous[seat.index()]);
-        self.previous[seat.index()] = time;
+    pub fn build(duration: std::time::Duration, time: EventTime, intent: CommandIntent) -> UserCmd {
         UserCmd {
-            duration_ms: (duration / 1_000_000).min(u64::from(u16::MAX)) as u16,
+            duration_ms: duration.as_millis().min(u128::from(u16::MAX)) as u16,
             server_time_ms: time.milliseconds() as i32,
             view_angles: intent.view_angles,
             movement: intent.movement,
             buttons: intent.buttons,
             impulse: intent.impulse,
-            ..UserCmd::default()
+            weapon: intent.weapon,
+            light_level: intent.light_level,
         }
     }
 }
@@ -176,8 +159,7 @@ pub struct Input {
     bindings: Box<[Option<Binding>]>,
     devices: [Device; 16],
     seats: [Seat; SeatId::COUNT],
-    previous: EventTime,
-    builder: UserCmdBuilder,
+    previous: Option<EventTime>,
     freelook: [bool; SeatId::COUNT],
 }
 impl Default for Input {
@@ -191,8 +173,7 @@ impl Input {
             bindings: (0..CONTROLS).map(|_| None).collect(),
             devices: [Device::default(); 16],
             seats: [Seat::default(); SeatId::COUNT],
-            previous: EventTime::default(),
-            builder: UserCmdBuilder::default(),
+            previous: None,
             freelook: [true; SeatId::COUNT],
         };
         input.assign(DeviceId::Keyboard, SeatId::FIRST);
@@ -217,7 +198,7 @@ impl Input {
             if self.devices[index].held.iter().any(|held| *held) {
                 return false;
             }
-            self.remove(id, self.previous);
+            self.remove(id, self.previous.unwrap_or_default());
             self.devices[index] = Device {
                 id: Some(id),
                 seat: Some(seat),
@@ -234,6 +215,10 @@ impl Input {
             ..Device::default()
         };
         true
+    }
+    /// The first clock event seeds input timing after window/startup work.
+    pub fn seed(&mut self, time: EventTime) {
+        self.previous.get_or_insert(time);
     }
     pub fn binding(&self, control: u16) -> Option<&Binding> {
         self.bindings
@@ -429,6 +414,7 @@ impl Input {
                     target.character(seat, value);
                 }
             }
+            EventKind::Time => self.seed(event.time),
             EventKind::Focus(false) => {
                 for index in 0..self.devices.len() {
                     if let Some(id) = self.devices[index].id {
@@ -540,10 +526,9 @@ impl Input {
         time: EventTime,
         speed: [i16; 3],
         mouse_scale: [f32; 2],
-        bots: [Option<CommandIntent>; SeatId::COUNT],
     ) -> [UserCmd; SeatId::COUNT] {
-        let period = time.since(self.previous);
-        self.previous = time;
+        let period = time.since(self.previous.unwrap_or(time));
+        self.previous = Some(time);
         std::array::from_fn(|index| {
             let seat = &mut self.seats[index];
             let sampled = seat
@@ -612,15 +597,15 @@ impl Input {
             }) {
                 mask |= buttons::ANY;
             }
-            let intent = bots[index].unwrap_or(CommandIntent {
+            let intent = CommandIntent {
                 movement: std::array::from_fn(|axis| {
                     (movement[axis].clamp(-1.0, 1.0) * f32::from(speed[axis])) as i16
                 }),
                 view_angles: seat.angles,
                 buttons: mask,
-                impulse: 0,
-            });
-            self.builder.build(SeatId::ALL[index], time, intent)
+                ..CommandIntent::default()
+            };
+            UserCmdBuilder::build(std::time::Duration::from_nanos(period), time, intent)
         })
     }
 }

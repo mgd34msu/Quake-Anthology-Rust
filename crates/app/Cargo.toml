@@ -14,6 +14,7 @@ qa-platform = { path = "../platform" }
 qa-console = { path = "../console" }
 qa-content = { path = "../content" }
 qa-input = { path = "../input" }
+qa-movement = { path = "../movement" }
 qa-network = { path = "../network" }
 qa-session = { path = "../session" }
 qa-world = { path = "../world" }

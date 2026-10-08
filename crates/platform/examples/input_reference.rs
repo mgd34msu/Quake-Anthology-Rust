@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("key names path")?;
     let text = std::fs::read_to_string(path)?;
     let mut input = Input::load();
+    input.seed(EventTime(0));
     input
         .bind_text(82, "+forward", EventTime(0), &mut Sink)
         .map_err(|e| format!("{e:?}"))?;
@@ -48,8 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         time += u64::from(duration);
-        let command =
-            input.build_frame(EventTime(time * 1_000_000), [200; 3], [0.022; 2], [None; 4])[0];
+        let command = input.build_frame(EventTime(time * 1_000_000), [200; 3], [0.022; 2])[0];
         println!("F {}", command.movement[0]);
     }
     Ok(())

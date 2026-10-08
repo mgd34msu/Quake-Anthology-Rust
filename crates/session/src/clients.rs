@@ -1,5 +1,5 @@
 use qa_core::primitives::{
-    ClientId, EntityId, HudState, ModuleId, PlayerState, PlayerTail, UserCmd,
+    ClientId, CommandIntent, EntityId, HudState, ModuleId, PlayerState, PlayerTail, UserCmd,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::entities::EntityTable;
@@ -19,6 +19,7 @@ pub struct Client {
     pub player: PlayerState,
     pub hud: HudState,
     pub command: UserCmd,
+    pub intent: CommandIntent,
 }
 
 pub struct Server {
@@ -63,6 +64,7 @@ impl Server {
                 if slot < max_clients { powerups } else { 0 },
             ),
             command: UserCmd::default(),
+            intent: CommandIntent::default(),
             hud: HudState::with_capacity(
                 if slot < max_clients { items } else { 0 },
                 if slot < max_clients { powerups } else { 0 },
@@ -92,6 +94,7 @@ impl Server {
         client.hud.reset();
         client.player.tail = tail;
         client.command = UserCmd::default();
+        client.intent = CommandIntent::default();
         client.module = module;
         client.connection = Some(connection);
         self.entities.columns.owner[client.entity.slot as usize] = module;
@@ -110,10 +113,23 @@ impl Server {
         client.player.reset();
         client.hud.reset();
         client.command = UserCmd::default();
+        client.intent = CommandIntent::default();
         client.module = ModuleId::default();
         if let Some(entity) = self.entities.reset_client(client.entity) {
             client.entity = entity;
         }
         true
+    }
+    /// SERVER world ticks build all connected bot commands in client-id order.
+    /// Bot modules update the same primitive intent, without local-seat state.
+    pub fn build_bot_commands(&mut self, start: EventTime, end: EventTime) {
+        let duration = std::time::Duration::from_nanos(end.since(start));
+        for client in &mut self.clients[..self.limit] {
+            if client.connection == Some(Connection::Bot) {
+                let command = qa_input::UserCmdBuilder::build(duration, end, client.intent);
+                client.command =
+                    qa_movement::prepare_command(client.player.movement_rules, command);
+            }
+        }
     }
 }

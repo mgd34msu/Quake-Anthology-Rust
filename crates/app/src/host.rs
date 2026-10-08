@@ -137,6 +137,7 @@ impl FrameHost {
                 TickTarget::World => {
                     runtime.server.world_time = tick.end;
                     runtime.server.world_frame = tick.index;
+                    runtime.server.build_bot_commands(tick.start, tick.end);
                 }
                 TickTarget::Provider(_) => {
                     (providers[tick.source_slot - 1].frame)(runtime, tick);
@@ -162,7 +163,10 @@ impl FrameHost {
             self.runtime.input_time = event.time;
             result.events += 1;
             match event.kind {
-                EventKind::Time => self.time = event.time,
+                EventKind::Time => {
+                    self.time = event.time;
+                    self.runtime.input.seed(event.time);
+                }
                 EventKind::Quit => self.runtime.quit = true,
                 EventKind::ConsoleLine(text) => {
                     let context = qa_console::views::Context {
@@ -225,10 +229,21 @@ impl FrameHost {
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
         // THE-735 supplies cached per-seat movement/mouse policies; these are
         // normalized routing units until movement/prediction and scenes exist.
-        let commands =
-            self.runtime
-                .input
-                .build_frame(self.time, [127; 3], [0.022; 2], [None; SeatId::COUNT]);
+        let mut commands = self
+            .runtime
+            .input
+            .build_frame(self.time, [127; 3], [0.022; 2]);
+        for (seat, command) in commands.iter_mut().enumerate() {
+            let rules = self.local_clients[seat].map_or(
+                qa_core::primitives::MovementRules::default(),
+                |id| {
+                    self.runtime.server.clients[id.0 as usize]
+                        .player
+                        .movement_rules
+                },
+            );
+            *command = qa_movement::prepare_command(rules, *command);
+        }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
                 self.runtime.server.clients[id.0 as usize].command = commands[seat];

@@ -33,12 +33,33 @@ down for the same device/control does not change its press time. Partial-frame
 hold time supplies movement fractions. Focus loss and controller removal
 release acquired bindings. A UI-consumed press does not acquire a binding.
 Release a live control before rebinding or reassigning its device. Human
-intents and bot intents use the same UserCmdBuilder. Movement speed, mouse
-policy and seat settings enter through THE-735's cached handles; frame pacing
-remains part of the R2 host-loop work.
-the current shell's 127 units and 0.022 mouse scale are routing fixtures.
+intents and bot intents use the same stateless UserCmdBuilder, with duration
+and absolute server time supplied by the caller. THE-889 seeds human command
+time at the first Time event and builds all 64 connected bot slots in SERVER
+world ticks, in client-id order. Client frames do not override bot commands.
+The bot module supplies each client's primitive intent; navigation/AI and
+physics remain later work. Movement speed, mouse policy and seat settings
+enter through THE-735's cached handles. The current shell's 127 units and
+0.022 mouse scale are routing fixtures.
 The held-key reference is Q3 `cl_input.c` IN_KeyDown, IN_KeyUp and CL_KeyState.
 Native wire projections remain in the shared network command module.
+
+MovementRules is per player, independent of map, module and client protocol.
+At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values
+above 250 ms with 100 ms, and Q3 clamps to 1..200 ms. Q2 rerelease is bounded by
+its native byte msec field; its closed KEX client's timing policy is not claimed.
+Absolute server time is retained. These are duration limits, not the full QW
+step bisection, Q3 outer Pmove catch-up/subdivision or movement implementation;
+THE-891 supplies the common physics entry and its selected rule set.
+
+The duration references are Q1 `WinQuake/host.c:Host_FilterTime`, QW/Q2
+`client/cl_input.c:CL_FinishMove`, Q3 `game/bg_pmove.c:PmoveSingle` and the Q2
+rerelease `rerelease/game.h:usercmd_t` byte field. The private diagnostic check
+uses the shell's Q3 movement policy after a one-second startup hold:
+
+```sh
+python3 tools/check_sys_events.py --binary "$QA_CANDIDATE" --owner-profile "$QA_PROFILE" --evidence "$QA_EVIDENCE/command-time" --check-command-time --console-source q3
+```
 
 `--udp-listen 127.0.0.1:0` opens a host socket and reports its actual address.
 `--controller-seat INSTANCE:SEAT` supplies device ownership, with seats 0..3.

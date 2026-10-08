@@ -9,7 +9,7 @@ use qa_console::{
 };
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ModuleId, PlayerTail},
+    primitives::{CommandIntent, ModuleId, MovementRules, PlayerTail},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_session::{
@@ -204,4 +204,64 @@ fn cap_wait_drains_keys_and_aliases_use_one_cached_fps_handle() {
     host.frame(&mut source, false);
     assert_eq!(source.waits, 15);
     assert!(host.queue.is_empty());
+}
+
+#[test]
+fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
+    let mut host = FrameHost::load(
+        Console::new(Context::default()),
+        Runtime::load().unwrap(),
+        TickRate::fixed(20).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    let bot = host
+        .runtime
+        .server
+        .connect(Connection::Bot, ModuleId(2), PlayerTail::default())
+        .unwrap();
+    host.runtime.server.clients[bot.0 as usize]
+        .player
+        .movement_rules = MovementRules::Quake2;
+    host.runtime.server.clients[bot.0 as usize].intent = CommandIntent {
+        movement: [30, -20, 10],
+        ..CommandIntent::default()
+    };
+    let mut source = Source {
+        time: 5_000,
+        waits: 0,
+        presents: 0,
+        late_commands: false,
+        wait_key: false,
+    };
+    let first = host.frame(&mut source, true);
+    assert_eq!(first.server_ticks, 0);
+    assert_eq!(first.commands[0].duration_ms, 1);
+    assert_eq!(first.commands[0].server_time_ms, 5_000);
+    assert_eq!(
+        host.runtime.server.clients[bot.0 as usize]
+            .command
+            .duration_ms,
+        0
+    );
+    source.time += 25;
+    let next = host.frame(&mut source, true);
+    assert_eq!(next.commands[0].duration_ms, 25);
+    let command = host.runtime.server.clients[bot.0 as usize].command;
+    assert_eq!(command.duration_ms, 20); // 50 Hz world, independent of client frame
+    assert_eq!(command.server_time_ms, 5_020);
+    assert_eq!(command.movement, [30, -20, 10]);
+    source.time += 5;
+    let next = host.frame(&mut source, true);
+    assert_eq!(next.commands[0].duration_ms, 5);
+    assert_eq!(
+        host.runtime.server.clients[bot.0 as usize]
+            .command
+            .server_time_ms,
+        5_020
+    );
+    assert_eq!(
+        host.runtime.server.clients[bot.0 as usize].command.movement,
+        [30, -20, 10]
+    );
 }

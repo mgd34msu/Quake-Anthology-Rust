@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--commands", help="execute config commands before real X-server input")
     parser.add_argument("--console-source", choices=("q1", "qw", "q2", "q2rr", "q3"))
+    parser.add_argument("--check-command-time", action="store_true",
+                        help="require seeded command time and duration diagnostics")
     args = parser.parse_args()
     original = XClient.drive
     payloads = (b"first", b"second\0packet", bytes(range(256)))
@@ -64,11 +66,27 @@ def main():
         "profile_and_candidate_preserved": result["owner_profile_unchanged"] and result["candidate_unchanged"],
         "owned_processes_stopped": result["remaining_owned_pids"] == [],
     }
+    if args.check_command_time:
+        # The R0 shell selects Q3 movement explicitly by default. Its first
+        # command must exclude the one-second startup hold; absolute server
+        # time remains the platform clock, independently of the duration.
+        checks.update({
+            "first_command_excludes_startup": bool(rows) and
+                1 <= rows[0].get("seat0_duration_ms", 0) <= 50,
+            "q3_movement_duration_bounds": len(rows) == 180 and all(
+                1 <= row.get("seat0_duration_ms", 0) <= 200 and
+                1 <= row.get("seat1_duration_ms", 0) <= 200 for row in rows),
+            "absolute_server_time_preserved": bool(rows) and all(
+                row.get("command_server_time_ms") == row["time_ns"] // 1_000_000
+                for row in rows),
+        })
     report = {"result": "PASS" if all(checks.values()) else "FAIL",
               "scope": "normal window-shell input and packet boundary; no map or protocol decoding",
               "cores": cores, "checks": checks, "normal_exit": exit_event,
               "udp_packets": len(payloads), "udp_payload_bytes": sum(map(len, payloads)),
               "config_commands": args.commands, "console_source": args.console_source,
+              "first_command_duration_ms": rows[0].get("seat0_duration_ms") if rows else None,
+              "first_command_server_time_ms": rows[0].get("command_server_time_ms") if rows else None,
               "gameplay_reached": result["gameplay_reached"]}
     (args.evidence / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))

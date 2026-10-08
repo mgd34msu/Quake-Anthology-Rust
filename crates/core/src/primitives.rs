@@ -197,6 +197,7 @@ pub enum PlayerTail {
 
 #[derive(Debug, Default)]
 pub struct PlayerState {
+    pub movement_rules: MovementRules,
     pub body: Body,
     pub view_angles: Vec3,
     pub health: i32,
@@ -216,6 +217,28 @@ pub struct PlayerState {
     pub score: i32,
     pub frags: i32,
     pub tail: PlayerTail,
+}
+
+/// Per-player physics policy, independent of map, module and wire protocol.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MovementRules {
+    Quake,
+    QuakeWorld,
+    Quake2,
+    Quake2Rerelease,
+    #[default]
+    Quake3,
+}
+
+/// Input/AI intent before the caller supplies command time and duration.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandIntent {
+    pub movement: [i16; 3],
+    pub view_angles: Vec3,
+    pub buttons: u32,
+    pub impulse: u8,
+    pub light_level: u8,
+    pub weapon: Option<WeaponId>,
 }
 
 impl PlayerState {

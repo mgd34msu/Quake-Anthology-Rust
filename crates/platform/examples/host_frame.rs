@@ -9,11 +9,14 @@ use qa_console::{
 };
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, ModuleId},
+    primitives::{ClientId, CommandIntent, ModuleId, MovementRules, PlayerTail, WeaponId, buttons},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_platform::{EventPump, Stopwatch};
-use qa_session::timing::{Tick, TickRate};
+use qa_session::{
+    clients::Connection,
+    timing::{Tick, TickRate},
+};
 use std::{hint::black_box, net::UdpSocket, time::Duration};
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -120,13 +123,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let local = arguments.iter().any(|s| s == "--local");
     let binds = arguments.iter().any(|s| s == "--binds");
-    let console = binds || arguments.iter().any(|s| s == "--console");
+    let bots = arguments.iter().any(|s| s == "--bots");
+    let console = bots || binds || arguments.iter().any(|s| s == "--console");
     let content = arguments
         .windows(2)
         .find(|s| s[0] == "--content")
         .map(|s| &s[1]);
     if arguments.iter().any(|s| s == "--help") {
-        println!("host_frame [--local] [--console | --binds] [--content DIRECTORY]");
+        println!("host_frame [--local] [--console | --binds] [--bots] [--content DIRECTORY]");
         return Ok(());
     }
     begin_frame();
@@ -178,6 +182,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if console && content.is_none() {
         return Err("--console requires --content with inner.cfg".into());
     }
+    if bots {
+        let rules = [
+            MovementRules::Quake,
+            MovementRules::QuakeWorld,
+            MovementRules::Quake2,
+            MovementRules::Quake2Rerelease,
+            MovementRules::Quake3,
+        ];
+        for slot in 0..64 {
+            let id = host
+                .runtime
+                .server
+                .connect(
+                    Connection::Bot,
+                    ModuleId((slot % 3 + 1) as u16),
+                    PlayerTail::default(),
+                )
+                .ok_or("bot capacity")?;
+            if id.0 as usize != slot {
+                return Err("bot slot ordering".into());
+            }
+            let client = &mut host.runtime.server.clients[slot];
+            client.player.movement_rules = rules[slot % rules.len()];
+            client.intent = CommandIntent {
+                movement: [slot as i16, -(slot as i16), 17],
+                buttons: buttons::ATTACK,
+                impulse: slot as u8,
+                light_level: 127,
+                weapon: Some(WeaponId(3)),
+                ..CommandIntent::default()
+            };
+        }
+    }
     if binds {
         host.runtime
             .input
@@ -197,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut maximum = 0;
     let mut maximum_bytes = 0;
     let mut ticks = 0;
+    let mut bot_commands = 0;
     for frame in 0..660 {
         // Pacing is outside the timed/counted region, but supplies actual
         // platform event time to exercise all loaded native-rate clocks.
@@ -234,6 +272,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("host drain/lookup check failed".into());
         }
         ticks += result.server_ticks;
+        if bots && host.runtime.server.world_frame > 0 {
+            for (slot, client) in host.runtime.server.clients.iter().enumerate() {
+                let command = client.command;
+                if command.duration_ms != 50
+                    || command.server_time_ms
+                        != host.runtime.server.world_time.milliseconds() as i32
+                    || command.movement != [slot as i16, -(slot as i16), 17]
+                    || command.buttons != buttons::ATTACK
+                    || command.impulse != slot as u8
+                    || command.weapon != Some(WeaponId(3))
+                    || command.light_level != 127
+                {
+                    return Err("server bot command fidelity check failed".into());
+                }
+            }
+        }
+        if bots && frame >= 60 {
+            // One conversion per connected bot in each world tick.
+            let previous_world = ((frame - 1) as u64 * 16) / 50;
+            bot_commands += (host.runtime.server.world_frame - previous_world) * 64;
+        }
         if binds
             && frame > 0
             && (result.commands[0].movement[0] != 127
@@ -277,7 +336,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"binding_workload\":{binds},\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"binding_workload\":{binds},\"bot_clients\":{},\"measured_bot_commands\":{bot_commands},\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        if bots { 64 } else { 0 },
         host.runtime.network.packets,
         host.key_repeats,
         (samples[299] + samples[300]) as f64 * 0.5,

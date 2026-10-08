@@ -197,3 +197,30 @@ actual game modules, physics, scenes, renderers and other-thread/native heaps.
 cargo build --release -p qa-platform --example host_frame --features allocation-tracking
 timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local --binds --content "$SCRIPT_PRODUCT"
 ```
+
+## THE-889: server-side bot commands and startup duration
+
+Release baseline CPU, core 23, no debugger, 60 warm-up and 600 measured frames.
+The unchanged bind/console/local-ring workload measured 230,605 ns median and
+256,006 ns p99. Its console output and final values, 210/105/421/210 counter
+ticks, 1,396 packets and 659 repeats match THE-888's historical workload.
+The historical median/p99 were 228,400/247,705 ns; this is not a fresh paired
+before/after baseline.
+
+Adding 64 connected bots with fixed per-client intents and mixed movement
+policies measured 227,915 ns median and 271,966 ns p99. The 50 ms world ticks
+built 12,288 bot commands during the measured frames; client frames only built
+human commands. Both modes counted zero Rust-thread allocations/reallocations
+and requested bytes. The added-workload numbers are absolute measurements,
+not a speedup claim. Fidelity checks cover each bot's movement, buttons, impulse,
+weapon, light level and server tick time after every frame.
+
+Evidence: THE-889-probe-results.json, THE-889-binds-probe.log,
+THE-889-bots-probe.log and THE-889-probe-build.log in the R2 evidence directory.
+The workload still excludes navigation/AI, physics, modules, maps, scenes,
+renderers, SDL and other-thread/native heaps. This is not gameplay qualification.
+
+```sh
+cargo build --release -p qa-platform --example host_frame --features allocation-tracking
+timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local --binds --bots --content "$SCRIPT_PRODUCT"
+```

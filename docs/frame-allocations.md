@@ -59,3 +59,9 @@ load; changing a config bind, dispatching a known button, expanding a +/- alias
 or queuing a complete console input line does not grow heap storage. The pinned
 host probe's `--binds` mode checks those paths and both local seats over the same
 60 warm-up/600 measured-frame schedule. See `frame-times.md` for measured scope.
+
+THE-889 reserves each client's bot intent in the existing 64-slot session
+table. Its stateless command conversion and movement-duration selection use
+no scratch allocation. The host probe's `--bots` mode connects all slots at
+load and checks fixed intents, native duration policies and server-time output
+after every frame. This measures command construction, not bot navigation/AI.
