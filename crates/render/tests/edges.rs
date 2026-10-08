@@ -559,3 +559,10 @@ fn widest_depth_basis_preserves_slope_lost_in_rounded_nearly_collinear_vertices(
     assert_eq!(stats.pixels, 16);
     assert_eq!(stats.rejected, 0);
 }
+
+#[test]
+fn impossible_arena_byte_capacities_return_load_errors() {
+    assert!(Edges::load(1, 1, usize::MAX, 1, 1).is_err());
+    assert!(Edges::load(1, 1, 1, usize::MAX, 1).is_err());
+    assert!(Edges::load(1, 1, 1, 1, usize::MAX).is_err());
+}

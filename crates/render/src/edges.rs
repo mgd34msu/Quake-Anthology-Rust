@@ -119,6 +119,9 @@ impl Edges {
             || max_edges == 0
             || max_polygons == 0
             || max_spans == 0
+            || max_edges > isize::MAX as usize / size_of::<Edge>().max(size_of::<usize>())
+            || max_polygons > isize::MAX as usize / size_of::<Surface>().max(size_of::<usize>())
+            || max_spans > isize::MAX as usize / size_of::<Span>()
         {
             return Err("invalid world edge arena dimensions");
         }
