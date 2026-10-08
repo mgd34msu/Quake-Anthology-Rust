@@ -1,7 +1,9 @@
 //! Registration is a load operation. Frames use numeric handles only.
 use crate::scene::Span;
+pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
+use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
-use crate::world::{SurfaceBinding, World, WorldId, geometry::WorldGeometry};
+use crate::world::{SurfaceBinding, SurfaceMaterial, World, WorldId, geometry::WorldGeometry};
 use qa_core::primitives::Vec3;
 use qa_world::visibility::VisibilityWorld;
 
@@ -41,26 +43,72 @@ pub struct Image {
     /// the same image is resolved once using the selected load-time palette.
     pub indexed: Option<IndexedTexture>,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Blend {
-    #[default]
-    Opaque,
-    Alpha,
-    Add,
-    Multiply,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AlphaTest {
-    #[default]
-    None,
-    GreaterZero,
-    AtLeastHalf,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TcGen {
-    #[default]
-    Texture,
+/// All frame-time texture choices are numeric. Lightmap is resolved from the
+/// surface binding, so a script material is shared across atlas pages/worlds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StageTexture {
+    Image(ImageId),
+    Animation {
+        images: [ImageId; 8],
+        count: u8,
+        frequency: f32,
+    },
     Lightmap,
+}
+impl Default for StageTexture {
+    fn default() -> Self {
+        Self::Image(ImageId(0))
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Wrap {
+    #[default]
+    Repeat,
+    Clamp,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Filter {
+    Nearest,
+    #[default]
+    Linear,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sampler {
+    pub wrap: Wrap,
+    pub filter: Filter,
+    pub mipmaps: bool,
+}
+impl Default for Sampler {
+    fn default() -> Self {
+        Self {
+            wrap: Wrap::Repeat,
+            filter: Filter::Linear,
+            mipmaps: true,
+        }
+    }
+}
+/// Native cross-coordinate liquid displacement, expressed in normalized UVs.
+/// The load conversion supplies texture dimensions and original texel scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UvWarp {
+    pub texel_scale: [f32; 2],
+    pub amplitude: [f32; 2],
+    pub frequency: f32,
+    pub time_scale: f32,
+}
+/// Native flowing surfaces use a truncating cycle and an explicit cycle-start
+/// value. These parameters encode Q2 flow without a game branch in a backend.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flow {
+    pub speed: f32,
+    pub amplitude: [f32; 2],
+    pub cycle_start: [f32; 2],
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TcMod {
+    Script(TexMod),
+    Warp(UvWarp),
+    Flow(Flow),
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DepthFunc {
@@ -71,32 +119,127 @@ pub enum DepthFunc {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stage {
-    pub image: ImageId,
-    pub blend: Blend,
+    pub texture: StageTexture,
+    pub sampler: Sampler,
+    pub blend: Option<StageBlend>,
+    pub rgb_gen: RgbGen,
+    pub alpha_gen: AlphaGen,
     pub alpha_test: AlphaTest,
     pub texgen: TcGen,
-    pub vertex_color: bool,
+    pub tcmods: [Option<TcMod>; 4],
     pub depth_func: DepthFunc,
     pub depth_write: bool,
+    pub detail: bool,
 }
 impl Default for Stage {
     fn default() -> Self {
         Self {
-            image: ImageId(0),
-            blend: Blend::Opaque,
+            texture: StageTexture::default(),
+            sampler: Sampler::default(),
+            blend: None,
+            rgb_gen: RgbGen::Identity,
+            alpha_gen: AlphaGen::Identity,
             alpha_test: AlphaTest::None,
             texgen: TcGen::Texture,
-            vertex_color: false,
+            tcmods: [None; 4],
             depth_func: DepthFunc::Lequal,
             depth_write: true,
+            detail: false,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sky {
+    Layered {
+        images: [ImageId; 2],
+        sphere: crate::sky::LayeredSphere,
+    },
+    Cube {
+        outer_box: Option<[ImageId; 6]>,
+        inner_box: Option<[ImageId; 6]>,
+        clouds: crate::sky::CloudSphere,
+        rotation: Option<crate::sky::Rotation>,
+        params: CubeSkyParams,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SkyDistance {
+    Fixed(f32),
+    ViewFar(f32),
+}
+impl SkyDistance {
+    pub fn value(self, far: f32) -> f32 {
+        match self {
+            Self::Fixed(value) => value,
+            Self::ViewFar(scale) => far * scale,
+        }
+    }
+}
+/// The source adapters select these values at load. A cube renderer has no
+/// map/game-family branch: native Q2 and Q3 differ in distance, UV range and depth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CubeSkyParams {
+    pub distance: SkyDistance,
+    pub far_depth: bool,
+    pub texcoord_range: [f32; 2],
+    pub sampler: Sampler,
+    pub snap_bounds: bool,
+    /// Native software presentations may draw a cube over the complete clear
+    /// background and ignore rotation, independently of GL's clipped cube.
+    pub cpu_background: bool,
+    pub cpu_rotation: bool,
+}
+impl Default for CubeSkyParams {
+    fn default() -> Self {
+        Self {
+            distance: SkyDistance::ViewFar(1.0 / 1.75),
+            far_depth: true,
+            texcoord_range: [0.0, 1.0],
+            sampler: Sampler {
+                wrap: Wrap::Clamp,
+                ..Sampler::default()
+            },
+            snap_bounds: true,
+            cpu_background: false,
+            cpu_rotation: true,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialSettings {
+    pub cull: Cull,
+    pub sort: f32,
+    pub polygon_offset: bool,
+    pub deforms: [Option<Deform>; 3],
+    pub time_offset: f32,
+    pub clamp_time: Option<f32>,
+    pub sky: Option<Sky>,
+    pub fog: Option<FogParms>,
+    pub surface_flags: u32,
+    pub content_flags: u32,
+    pub portal: bool,
+}
+impl Default for MaterialSettings {
+    fn default() -> Self {
+        Self {
+            cull: Cull::Front,
+            sort: 3.0,
+            polygon_offset: false,
+            deforms: [None; 3],
+            time_offset: 0.0,
+            clamp_time: None,
+            sky: None,
+            fog: None,
+            surface_flags: 0,
+            content_flags: 0,
+            portal: false,
         }
     }
 }
 pub struct Material {
     pub name: String,
     pub stages: Box<[Stage]>,
-    pub two_sided: bool,
-    pub sort: u16,
+    pub settings: MaterialSettings,
 }
 pub struct Model {
     pub vertices: Box<[Vertex]>,
@@ -127,12 +270,16 @@ impl Assets {
             materials: vec![Material {
                 name: "*white".into(),
                 stages: vec![Stage {
-                    vertex_color: true,
+                    rgb_gen: RgbGen::ExactVertex,
+                    alpha_gen: AlphaGen::Vertex,
                     ..Stage::default()
                 }]
                 .into_boxed_slice(),
-                two_sided: true,
-                sort: 0,
+                settings: MaterialSettings {
+                    cull: Cull::None,
+                    sort: 0.0,
+                    ..MaterialSettings::default()
+                },
             }],
             models: vec![Model {
                 vertices: Box::new([]),
@@ -198,6 +345,14 @@ impl Assets {
         texture: IndexedTexture,
         palette: PaletteId,
     ) -> Result<ImageId, &'static str> {
+        self.register_indexed_image_with_mask_color(texture, palette, None)
+    }
+    pub fn register_indexed_image_with_mask_color(
+        &mut self,
+        texture: IndexedTexture,
+        palette: PaletteId,
+        mask_color: Option<[u8; 3]>,
+    ) -> Result<ImageId, &'static str> {
         let palette = self.palette(palette).ok_or("invalid image palette")?;
         let base = texture.mip(0).ok_or("missing image base mip")?;
         let mut rgba = Vec::with_capacity(base.indices().len() * 4);
@@ -205,6 +360,9 @@ impl Assets {
             let mut color = palette.color(index).to_le_bytes();
             if texture.transparent_index() == Some(index) {
                 color[3] = 0;
+                if let Some(rgb) = mask_color {
+                    color[..3].copy_from_slice(&rgb);
+                }
             }
             rgba.extend_from_slice(&color);
         }
@@ -221,20 +379,19 @@ impl Assets {
         &mut self,
         name: &str,
         stages: &[Stage],
-        two_sided: bool,
-        sort: u16,
+        settings: MaterialSettings,
     ) -> Result<MaterialId, &'static str> {
-        if let Some(index) = self.materials.iter().position(|m| {
-            m.name == name
-                && m.stages.as_ref() == stages
-                && m.two_sided == two_sided
-                && m.sort == sort
-        }) {
+        if let Some(index) = self
+            .materials
+            .iter()
+            .position(|m| m.name == name && m.stages.as_ref() == stages && m.settings == settings)
+        {
             return Ok(MaterialId(index as u32));
         }
-        if stages.is_empty()
+        if (stages.is_empty() && settings.sky.is_none() && settings.fog.is_none())
             || stages.len() > 8
-            || stages.iter().any(|s| self.image(s.image).is_none())
+            || !settings_valid(settings, self)
+            || stages.iter().any(|s| !stage_valid(*s, self))
         {
             return Err("invalid material stages");
         }
@@ -243,8 +400,7 @@ impl Assets {
         self.materials.push(Material {
             name: name.into(),
             stages: stages.into(),
-            two_sided,
-            sort,
+            settings,
         });
         Ok(id)
     }
@@ -261,6 +417,7 @@ impl Assets {
                 v.position
                     .0
                     .iter()
+                    .chain(v.normal.0.iter())
                     .chain(v.texcoord.iter())
                     .chain(v.lightmap_coord.iter())
                     .any(|f| !f.is_finite())
@@ -291,15 +448,40 @@ impl Assets {
     pub fn models(&self) -> &[Model] {
         &self.models
     }
+    pub fn materials(&self) -> &[Material] {
+        &self.materials
+    }
     pub fn register_world(
         &mut self,
         geometry: WorldGeometry,
         visibility: VisibilityWorld,
         materials: &[MaterialId],
     ) -> Result<WorldId, &'static str> {
+        let bindings: Vec<_> = materials
+            .iter()
+            .map(|&material| SurfaceMaterial {
+                material,
+                ..SurfaceMaterial::default()
+            })
+            .collect();
+        self.register_world_with_bindings(geometry, visibility, &bindings)
+    }
+    pub fn register_world_with_bindings(
+        &mut self,
+        geometry: WorldGeometry,
+        visibility: VisibilityWorld,
+        materials: &[SurfaceMaterial],
+    ) -> Result<WorldId, &'static str> {
         if geometry.surfaces.len() != visibility.surface_count()
             || materials.len() != geometry.surfaces.len()
-            || materials.iter().any(|&id| self.material(id).is_none())
+            || materials.iter().any(|binding| {
+                self.material(binding.material).is_none()
+                    || self.image(binding.lightmap).is_none()
+                    || binding
+                        .texture_scale
+                        .iter()
+                        .any(|value| !value.is_finite() || *value <= 0.0)
+            })
         {
             return Err("invalid world surface bindings");
         }
@@ -317,14 +499,23 @@ impl Assets {
             let first = u32::try_from(indices.len()).map_err(|_| "world mesh full")?;
             indices.extend_from_slice(&geometry.indices[range]);
             bindings.push(SurfaceBinding {
-                material: materials[source],
+                material: materials[source].material,
+                lightmap: materials[source].lightmap,
+                texture_scale: materials[source].texture_scale,
                 mesh_indices: Span {
                     first,
                     count: surface.indices.count,
                 },
             });
         }
-        let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
+        let vertices: Vec<_> = geometry
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                normal: v.normal,
+                ..v.vertex
+            })
+            .collect();
         let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
         self.worlds.push(World {
             geometry,
@@ -340,4 +531,150 @@ impl Assets {
     pub fn worlds(&self) -> &[World] {
         &self.worlds
     }
+}
+
+fn finite(values: &[f32]) -> bool {
+    values.iter().all(|value| value.is_finite())
+}
+fn finite_wave(wave: crate::shader::Waveform) -> bool {
+    finite(&[wave.base, wave.amplitude, wave.phase, wave.frequency])
+}
+fn stage_valid(stage: Stage, assets: &Assets) -> bool {
+    let texture = match stage.texture {
+        StageTexture::Image(id) => assets.image(id).is_some(),
+        StageTexture::Lightmap => true,
+        StageTexture::Animation {
+            images,
+            count,
+            frequency,
+        } => {
+            count > 0
+                && count <= 8
+                && frequency.is_finite()
+                && images[..count.min(8) as usize]
+                    .iter()
+                    .all(|&id| assets.image(id).is_some())
+        }
+    };
+    texture
+        && match stage.rgb_gen {
+            RgbGen::Const(v) => finite(&v),
+            RgbGen::Wave(wave) => finite_wave(wave),
+            _ => true,
+        }
+        && match stage.alpha_gen {
+            AlphaGen::Const(v) | AlphaGen::Portal(v) => v.is_finite(),
+            AlphaGen::Wave(wave) => finite_wave(wave),
+            _ => true,
+        }
+        && match stage.texgen {
+            TcGen::Vector(v) => v.iter().all(|v| finite(v)),
+            TcGen::LayeredSky {
+                flatten_z,
+                projected_scale,
+                texture_size,
+                scroll_speed,
+            } => {
+                finite(&[flatten_z, projected_scale, texture_size, scroll_speed])
+                    && texture_size > 0.0
+            }
+            TcGen::CloudSky { radius, height } => {
+                finite(&[radius, height]) && radius > 0.0 && height >= 0.0
+            }
+            _ => true,
+        }
+        && stage
+            .tcmods
+            .iter()
+            .flatten()
+            .all(|modifier| match modifier {
+                TcMod::Warp(warp) => {
+                    finite(&warp.texel_scale)
+                        && finite(&warp.amplitude)
+                        && finite(&[warp.frequency, warp.time_scale])
+                }
+                TcMod::Flow(flow) => {
+                    finite(&[flow.speed]) && finite(&flow.amplitude) && finite(&flow.cycle_start)
+                }
+                TcMod::Script(modifier) => match *modifier {
+                    TexMod::Transform { matrix, translate } => {
+                        matrix.iter().all(|v| finite(v)) && finite(&translate)
+                    }
+                    TexMod::Scale(v) | TexMod::Scroll(v) => finite(&v),
+                    TexMod::Rotate(v) => v.is_finite(),
+                    TexMod::Stretch(wave) => finite_wave(wave),
+                    TexMod::Turbulent {
+                        base,
+                        amplitude,
+                        phase,
+                        frequency,
+                    } => finite(&[base, amplitude, phase, frequency]),
+                    TexMod::EntityTranslate => true,
+                },
+            })
+}
+fn settings_valid(settings: MaterialSettings, assets: &Assets) -> bool {
+    finite(&[settings.sort, settings.time_offset])
+        && settings.clamp_time.is_none_or(f32::is_finite)
+        && settings.sky.is_none_or(|sky| match sky {
+            Sky::Layered { images, sphere } => {
+                images.iter().all(|&id| assets.image(id).is_some())
+                    && finite(&[
+                        sphere.flatten_z,
+                        sphere.projected_scale,
+                        sphere.texture_size,
+                    ])
+                    && sphere.texture_size > 0.0
+                    && finite(&sphere.scroll_speeds)
+            }
+            Sky::Cube {
+                outer_box,
+                inner_box,
+                clouds,
+                rotation,
+                params,
+            } => {
+                [outer_box, inner_box]
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|&id| assets.image(id).is_some())
+                    && finite(&[clouds.radius, clouds.height])
+                    && clouds.radius > 0.0
+                    && clouds.height >= 0.0
+                    && rotation.is_none_or(|rotation| {
+                        finite(&rotation.axis.0) && rotation.degrees_per_second.is_finite()
+                    })
+                    && match params.distance {
+                        SkyDistance::Fixed(value) | SkyDistance::ViewFar(value) => {
+                            value.is_finite() && value > 0.0
+                        }
+                    }
+                    && finite(&params.texcoord_range)
+                    && params.texcoord_range[0] >= 0.0
+                    && params.texcoord_range[1] <= 1.0
+                    && params.texcoord_range[0] <= params.texcoord_range[1]
+            }
+        })
+        && settings
+            .fog
+            .is_none_or(|fog| finite(&fog.color) && fog.depth_opaque.is_finite())
+        && settings
+            .deforms
+            .iter()
+            .flatten()
+            .all(|deform| match *deform {
+                Deform::Wave { spread, wave } => spread.is_finite() && finite_wave(wave),
+                Deform::Move { vector, wave } => finite(&vector) && finite_wave(wave),
+                Deform::Bulge {
+                    width,
+                    height,
+                    speed,
+                } => finite(&[width, height, speed]),
+                Deform::Normal {
+                    amplitude,
+                    frequency,
+                } => finite(&[amplitude, frequency]),
+                _ => true,
+            })
 }

@@ -177,6 +177,16 @@ pub enum TexCoordGen {
     Lightmap,
     Environment,
     Vector([[f32; 3]; 2]),
+    LayeredSky {
+        flatten_z: f32,
+        projected_scale: f32,
+        texture_size: f32,
+        scroll_speed: f32,
+    },
+    CloudSky {
+        radius: f32,
+        height: f32,
+    },
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlphaFunc {

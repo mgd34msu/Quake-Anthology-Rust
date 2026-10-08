@@ -1,6 +1,6 @@
 //! BSP boundary conversion. Drawing uses only the normalized world primitives.
 use crate::{
-    assets::{MaterialId, ModelId},
+    assets::{ImageId, MaterialId, ModelId},
     scene::{Refdef, Span},
 };
 use qa_core::primitives::{Plane, Vec3};
@@ -21,6 +21,25 @@ pub struct SurfaceBinding {
     /// Range in the world's packed static triangle mesh, independent of its
     /// retained polygon-boundary index storage.
     pub mesh_indices: Span,
+    pub lightmap: ImageId,
+    /// Legacy projections retain texel coordinates for the native cache.
+    /// Generic stages resolve them to normalized coordinates at draw setup.
+    pub texture_scale: [f32; 2],
+}
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceMaterial {
+    pub material: MaterialId,
+    pub lightmap: ImageId,
+    pub texture_scale: [f32; 2],
+}
+impl Default for SurfaceMaterial {
+    fn default() -> Self {
+        Self {
+            material: MaterialId(0),
+            lightmap: ImageId(0),
+            texture_scale: [1.0; 2],
+        }
+    }
 }
 
 pub struct World {

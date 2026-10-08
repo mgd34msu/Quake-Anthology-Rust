@@ -7,9 +7,10 @@ use qa_platform::{EventPump, Stopwatch, Window, pause};
 use qa_render::{
     Assets, BackendStats, BlendPhase, Command, CommandList, Draw2d, FrontEnd, Light, Limits,
     MaterialId, ModelId, Refdef, SceneEntity, Vertex, Viewport,
-    assets::{Blend, DepthFunc, Stage, TcGen},
+    assets::{Cull, DepthFunc, MaterialSettings, Stage, StageTexture, TcGen},
     cpu::CpuBackend,
     gl::GlBackend,
+    shader::{BlendFactor, StageBlend},
 };
 use std::{io::Write, path::PathBuf, time::Duration};
 
@@ -37,20 +38,26 @@ impl Fixture {
             "fixture/base-times-lightmap",
             &[
                 Stage {
-                    image: base,
+                    texture: StageTexture::Image(base),
                     ..Stage::default()
                 },
                 Stage {
-                    image: lightmap,
-                    blend: Blend::Multiply,
+                    texture: StageTexture::Image(lightmap),
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
                     texgen: TcGen::Lightmap,
                     depth_func: DepthFunc::Equal,
                     depth_write: false,
                     ..Stage::default()
                 },
             ],
-            true,
-            0,
+            MaterialSettings {
+                cull: Cull::None,
+                sort: 0.0,
+                ..MaterialSettings::default()
+            },
         )?;
         let positions = [
             [16.0, 12.0, 12.0],
@@ -70,11 +77,14 @@ impl Fixture {
         let poly_material = assets.register_material(
             "fixture/near-clipped-texture",
             &[Stage {
-                image,
+                texture: StageTexture::Image(image),
                 ..Stage::default()
             }],
-            true,
-            0,
+            MaterialSettings {
+                cull: Cull::None,
+                sort: 0.0,
+                ..MaterialSettings::default()
+            },
         )?;
         let positions = [[2.0, -0.5, 1.0], [8.0, -5.0, 5.0], [8.0, -5.0, 1.0]];
         let coords = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
@@ -90,7 +100,7 @@ impl Fixture {
         })
     }
 
-    fn packet(&self, front: &mut FrontEnd) -> Result<CommandList, &'static str> {
+    fn packet(&self, front: &mut FrontEnd, assets: &Assets) -> Result<CommandList, &'static str> {
         let mut frame = front.begin_frame(CLEAR).ok_or("scene packet unavailable")?;
         for seat in 0..2 {
             frame.clear_scene();
@@ -124,6 +134,7 @@ impl Fixture {
                         ..Refdef::default()
                     },
                     &[],
+                    assets,
                 )
             {
                 return Err("fixture scene capacity");
@@ -266,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let mut pump = EventPump::new();
     let mut events = SysEventQueue::load(256, 8192).map_err(|_| "event queue capacity")?;
-    let initial = fixture.packet(&mut front)?;
+    let initial = fixture.packet(&mut front, &assets)?;
     backend.render(&initial, &assets);
     if !backend.present(&mut window) {
         return Err("initial fixture presentation failed".into());
@@ -311,7 +322,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let timer = Stopwatch::start();
-            let packet = fixture.packet(&mut front)?;
+            let packet = fixture.packet(&mut front, &assets)?;
             let frontend_ns = timer.elapsed().as_nanos() as u64;
             let timer = Stopwatch::start();
             let stats = backend.render(&packet, &assets);
@@ -355,7 +366,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // Readback and reference comparison use a final packet outside measured frames.
-    let packet = fixture.packet(&mut front)?;
+    let packet = fixture.packet(&mut front, &assets)?;
     let command_count = packet.commands().len();
     let (mut entity_count, mut poly_count, mut vertex_count, mut light_count) = (0, 0, 0, 0);
     for command in packet.commands() {

@@ -60,6 +60,7 @@ struct Edge {
 struct Surface {
     id: u32,
     key: u32,
+    draw_rank: u32,
     winding: i32,
     depth: DepthPlane,
     activation: usize,
@@ -185,7 +186,15 @@ impl Edges {
     /// Copies edges, surface identity and its visibility depth plane. Texture
     /// sampling remains with the caller. Differing planes need distinct surface
     /// ids, including individual curve triangles. Capacity failure is atomic.
-    pub fn add_polygon(&mut self, surface: u32, key: u32, vertices: &[ProjectedVertex]) -> bool {
+    /// BSP keys belong to one partitioned world. Plane-depth ties use the one
+    /// scene's draw rank instead, matching a later GL LEQUAL draw's overwrite.
+    pub fn add_polygon(
+        &mut self,
+        surface: u32,
+        key: u32,
+        draw_rank: u32,
+        vertices: &[ProjectedVertex],
+    ) -> bool {
         if !self.collecting
             || vertices.len() < 3
             || vertices.iter().any(|vertex| {
@@ -248,6 +257,7 @@ impl Edges {
         self.surfaces[polygon] = Surface {
             id: surface,
             key,
+            draw_rank,
             winding: 0,
             depth,
             activation: 0,
@@ -510,7 +520,9 @@ impl Edges {
         let second_depth = second.depth.at(x, y);
         first_depth > second_depth
             || (first_depth == second_depth
-                && (first.key, first.activation) < (second.key, second.activation))
+                && (first.draw_rank > second.draw_rank
+                    || (first.draw_rank == second.draw_rank
+                        && first.activation < second.activation)))
     }
 
     fn first_overtake(

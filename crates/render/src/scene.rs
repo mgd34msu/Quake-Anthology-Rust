@@ -1,8 +1,9 @@
 //! Q3-style append-only scene ranges in alternating owned packets.
-use crate::assets::{MaterialId, ModelId, PaletteId, Vertex};
+use crate::assets::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId};
 use qa_core::primitives::Vec3;
+use std::cmp::Ordering as SortOrdering;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_FRONTEND: AtomicU64 = AtomicU64::new(1);
@@ -59,6 +60,35 @@ impl Default for LightStyle {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaletteShift {
+    pub destination: [i32; 3],
+    /// Native 0..256 fixed-point weight, before gamma-table application.
+    pub percent: i32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaletteTransform {
+    /// Native contents, damage, bonus and powerup order.
+    pub shifts: [PaletteShift; 4],
+    pub gamma: [u8; 256],
+    pub operation: PaletteOperation,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaletteOperation {
+    #[default]
+    SequentialShifts,
+    /// ref_soft uses refdef's combined blend before gamma lookup.
+    ScreenBlend,
+}
+impl Default for PaletteTransform {
+    fn default() -> Self {
+        Self {
+            shifts: [PaletteShift::default(); 4],
+            gamma: std::array::from_fn(|i| i as u8),
+            operation: PaletteOperation::SequentialShifts,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Refdef {
     pub viewport: Viewport,
@@ -69,6 +99,8 @@ pub struct Refdef {
     pub near: f32,
     pub far: f32,
     pub time_ms: u64,
+    /// Cached presentation identity light (Q3 native overbright response).
+    pub identity_light: f32,
     pub blend: [f32; 4],
     pub blend_phase: BlendPhase,
     /// Final palette shifts also cover a seat's statusbar/console outside the
@@ -77,6 +109,9 @@ pub struct Refdef {
     /// Presentation is independent of the map format, movement and modules.
     pub cpu_presentation: CpuPresentation,
     pub perspective_step: PerspectiveStep,
+    /// Native software color shifts preserve integer rounding and gamma;
+    /// GL continues to use the combined screen blend. None is unshifted.
+    pub palette_transform: Option<PaletteTransform>,
     pub lightstyles: [LightStyle; 256],
 }
 impl Default for Refdef {
@@ -93,11 +128,13 @@ impl Default for Refdef {
             near: 4.0,
             far: 65536.0,
             time_ms: 0,
+            identity_light: 1.0,
             blend: [0.0; 4],
             blend_phase: BlendPhase::AfterView,
             blend_viewport: None,
             cpu_presentation: CpuPresentation::Rgb,
             perspective_step: PerspectiveStep::Eight,
+            palette_transform: None,
             lightstyles: [LightStyle::default(); 256],
         }
     }
@@ -113,6 +150,9 @@ pub struct SceneEntity {
     pub old_frame: u32,
     pub back_lerp: f32,
     pub depth_hack: bool,
+    pub shader_time: f32,
+    pub shader_texcoord: [f32; 2],
+    pub lighting: Option<crate::stage::EntityLighting>,
 }
 impl Default for SceneEntity {
     fn default() -> Self {
@@ -130,6 +170,9 @@ impl Default for SceneEntity {
             old_frame: 0,
             back_lerp: 0.0,
             depth_hack: false,
+            shader_time: 0.0,
+            shader_texcoord: [0.0; 2],
+            lighting: None,
         }
     }
 }
@@ -168,12 +211,53 @@ pub struct SceneRanges {
     pub polys: Span,
     pub lights: Span,
     pub surfaces: Span,
+    pub draws: Span,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SurfaceRef {
     pub world: WorldId,
     pub surface: u32,
     pub depth_key: u32,
+    /// View-local position in the one sorted draw list. Exact-depth ties use
+    /// the later draw, matching the shared LEQUAL stage order.
+    pub draw_rank: u32,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrawKind {
+    #[default]
+    Surface,
+    Entity,
+    Poly,
+}
+/// Absolute payload index in this packet. Sorting moves this record alone,
+/// leaving visibility/depth order and every earlier view's payload intact.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrawItem {
+    pub kind: DrawKind,
+    pub index: u32,
+    key: DrawKey,
+}
+#[derive(Clone, Copy, Debug, Default)]
+struct DrawKey {
+    sort: f32,
+    material: u32,
+    instance: u32,
+    lightmap: u32,
+}
+impl DrawKey {
+    fn compare(self, other: Self) -> SortOrdering {
+        // Q3 SortNewShader preserves fractional shader sort and registration
+        // order. Its draw key then groups entity instance and lighting data.
+        // Signed zero sorts equally, as in the native float comparisons.
+        let sort = if self.sort == other.sort {
+            SortOrdering::Equal
+        } else {
+            self.sort.total_cmp(&other.sort)
+        };
+        sort.then_with(|| self.material.cmp(&other.material))
+            .then_with(|| self.instance.cmp(&other.instance))
+            .then_with(|| self.lightmap.cmp(&other.lightmap))
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub struct View {
@@ -198,6 +282,8 @@ pub struct Limits {
     pub lights: usize,
     pub area_bytes: usize,
     pub surfaces: usize,
+    /// Zero derives the sum of payload capacities at load time.
+    pub draws: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -209,6 +295,7 @@ impl Default for Limits {
             lights: 256,
             area_bytes: 8192,
             surfaces: 65536,
+            draws: 0,
         }
     }
 }
@@ -221,6 +308,7 @@ pub struct CommandList {
     lights: Box<[Light]>,
     area_bytes: Box<[u8]>,
     surfaces: Box<[SurfaceRef]>,
+    draws: Box<[DrawItem]>,
     command_count: usize,
     entity_count: usize,
     poly_count: usize,
@@ -228,6 +316,7 @@ pub struct CommandList {
     light_count: usize,
     area_count: usize,
     surface_count: usize,
+    draw_count: usize,
     owner: u64,
     slot: usize,
     pub frame: u64,
@@ -243,6 +332,7 @@ impl CommandList {
             lights: vec![Light::default(); l.lights].into_boxed_slice(),
             area_bytes: vec![0; l.area_bytes].into_boxed_slice(),
             surfaces: vec![SurfaceRef::default(); l.surfaces].into_boxed_slice(),
+            draws: vec![DrawItem::default(); l.draws].into_boxed_slice(),
             command_count: 0,
             entity_count: 0,
             poly_count: 0,
@@ -250,6 +340,7 @@ impl CommandList {
             light_count: 0,
             area_count: 0,
             surface_count: 0,
+            draw_count: 0,
             owner,
             slot,
             frame: 0,
@@ -277,6 +368,18 @@ impl CommandList {
     pub fn surfaces(&self, range: Span) -> &[SurfaceRef] {
         &self.surfaces[range.range()]
     }
+    pub fn draws(&self, range: Span) -> &[DrawItem] {
+        &self.draws[range.range()]
+    }
+    pub fn surface(&self, index: u32) -> &SurfaceRef {
+        &self.surfaces[index as usize]
+    }
+    pub fn entity(&self, index: u32) -> &SceneEntity {
+        &self.entities[index as usize]
+    }
+    pub fn poly(&self, index: u32) -> &Poly {
+        &self.polys[index as usize]
+    }
     fn reset(&mut self, frame: u64) {
         self.command_count = 0;
         self.entity_count = 0;
@@ -285,6 +388,7 @@ impl CommandList {
         self.light_count = 0;
         self.area_count = 0;
         self.surface_count = 0;
+        self.draw_count = 0;
         self.rejected = 0;
         self.frame = frame;
     }
@@ -300,7 +404,14 @@ pub struct Frame {
     first: SceneRanges,
 }
 impl FrontEnd {
-    pub fn load(limits: Limits) -> Result<Self, &'static str> {
+    pub fn load(mut limits: Limits) -> Result<Self, &'static str> {
+        if limits.draws == 0 {
+            limits.draws = limits
+                .surfaces
+                .checked_add(limits.entities)
+                .and_then(|count| count.checked_add(limits.polys))
+                .ok_or("scene draw capacity overflow")?;
+        }
         if [
             limits.commands,
             limits.entities,
@@ -309,6 +420,7 @@ impl FrontEnd {
             limits.lights,
             limits.area_bytes,
             limits.surfaces,
+            limits.draws,
         ]
         .iter()
         .any(|&n| n == 0 || n > u32::MAX as usize)
@@ -380,23 +492,31 @@ impl Frame {
                 first: self.list.surface_count as u32,
                 count: 0,
             },
+            draws: Span {
+                first: self.list.draw_count as u32,
+                count: 0,
+            },
         }
     }
     pub fn clear_scene(&mut self) {
         self.first = self.current();
     }
     pub fn add_entity(&mut self, entity: SceneEntity) -> bool {
-        if self.list.entity_count == self.list.entities.len() {
+        if self.list.entity_count == self.list.entities.len()
+            || self.list.draw_count == self.list.draws.len()
+        {
             self.list.rejected += 1;
             return false;
         }
         self.list.entities[self.list.entity_count] = entity;
+        self.draw(DrawKind::Entity, self.list.entity_count as u32);
         self.list.entity_count += 1;
         true
     }
     pub fn add_poly(&mut self, material: MaterialId, vertices: &[Vertex]) -> bool {
         if vertices.len() < 3
             || self.list.poly_count == self.list.polys.len()
+            || self.list.draw_count == self.list.draws.len()
             || vertices.len() > self.list.vertices.len() - self.list.vertex_count
         {
             self.list.rejected += 1;
@@ -412,6 +532,7 @@ impl Frame {
                 count: vertices.len() as u32,
             },
         };
+        self.draw(DrawKind::Poly, self.list.poly_count as u32);
         self.list.poly_count += 1;
         true
     }
@@ -427,7 +548,9 @@ impl Frame {
     /// Copy the one frontend visibility result into this owned packet. Both
     /// consumers receive these ids and the CPU's original BSP depth keys.
     pub fn add_world(&mut self, world: WorldId, surfaces: &[VisibleSurface]) -> bool {
-        if surfaces.len() > self.list.surfaces.len() - self.list.surface_count {
+        if surfaces.len() > self.list.surfaces.len() - self.list.surface_count
+            || surfaces.len() > self.list.draws.len() - self.list.draw_count
+        {
             self.list.rejected += 1;
             return false;
         }
@@ -440,17 +563,50 @@ impl Frame {
                 world,
                 surface: source.surface,
                 depth_key: source.depth_key,
+                draw_rank: 0,
             };
+        }
+        for index in first..first + surfaces.len() {
+            self.draw(DrawKind::Surface, index as u32);
         }
         self.list.surface_count += surfaces.len();
         true
     }
-    pub fn render_scene(&mut self, refdef: Refdef, hidden_areas: &[u8]) -> bool {
+    fn draw(&mut self, kind: DrawKind, index: u32) {
+        self.list.draws[self.list.draw_count] = DrawItem {
+            kind,
+            index,
+            key: DrawKey::default(),
+        };
+        self.list.draw_count += 1;
+    }
+    pub fn render_scene(&mut self, refdef: Refdef, hidden_areas: &[u8], assets: &Assets) -> bool {
         if self.list.command_count == self.list.commands.len()
             || hidden_areas.len() > self.list.area_bytes.len() - self.list.area_count
         {
             self.list.rejected += 1;
             return false;
+        }
+        // Frozen numeric handles are resolved at the scene boundary, once per
+        // item. Invalid client submissions are omitted without affecting peers.
+        let first_draw = self.first.draws.first as usize;
+        let mut valid = first_draw;
+        for index in first_draw..self.list.draw_count {
+            let mut draw = self.list.draws[index];
+            if let Some(key) = draw_key(&self.list, assets, draw) {
+                draw.key = key;
+                self.list.draws[valid] = draw;
+                valid += 1;
+            } else {
+                self.list.rejected += 1;
+            }
+        }
+        self.list.draw_count = valid;
+        native_draw_sort(&mut self.list.draws[first_draw..valid]);
+        for (rank, draw) in self.list.draws[first_draw..valid].iter().enumerate() {
+            if draw.kind == DrawKind::Surface {
+                self.list.surfaces[draw.index as usize].draw_rank = rank as u32;
+            }
         }
         let current = self.current();
         let scene = SceneRanges {
@@ -470,6 +626,10 @@ impl Frame {
                 count: current.surfaces.first - self.first.surfaces.first,
                 ..self.first.surfaces
             },
+            draws: Span {
+                count: current.draws.first - self.first.draws.first,
+                ..self.first.draws
+            },
         };
         let hidden = Span {
             first: self.list.area_count as u32,
@@ -487,6 +647,109 @@ impl Frame {
     }
     pub fn draw_2d(&mut self, draw: Draw2d) -> bool {
         self.command(Command::Draw2d(draw))
+    }
+}
+fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
+    let (material, instance, lightmap) = match draw.kind {
+        DrawKind::Surface => {
+            let surface = list.surface(draw.index);
+            let binding = assets
+                .world(surface.world)?
+                .bindings()
+                .get(surface.surface as usize)?;
+            (binding.material, u32::MAX, binding.lightmap.0)
+        }
+        DrawKind::Entity => {
+            let entity = list.entity(draw.index);
+            let model = assets.model(entity.model)?;
+            (entity.material.unwrap_or(model.material), draw.index, 0)
+        }
+        DrawKind::Poly => (list.poly(draw.index).material, u32::MAX, 0),
+    };
+    Some(DrawKey {
+        sort: assets.material(material)?.settings.sort,
+        material: material.0,
+        instance,
+        lightmap,
+    })
+}
+/// Q3 tr_main.c qsortFast/shortsort. Equal keys deliberately retain the native
+/// swap order: alpha draws observe it. SortNewShader supplies the float/material
+/// ordering; neither camera distance nor an insertion ordinal enters this key.
+fn native_draw_sort(draws: &mut [DrawItem]) {
+    if draws.len() < 2 {
+        return;
+    }
+    // The larger partition is stacked and the smaller is processed first.
+    // Packet capacity is at most u32::MAX; this fixed stack therefore suffices.
+    let mut pending = [(0_usize, 0_usize); u32::BITS as usize];
+    let mut pending_count = 0;
+    let mut lo = 0;
+    let mut hi = draws.len() - 1;
+    loop {
+        let size = hi - lo + 1;
+        if size <= 8 {
+            let mut last = hi;
+            while last > lo {
+                let mut maximum = lo;
+                for index in lo + 1..=last {
+                    if draws[index].key.compare(draws[maximum].key) == SortOrdering::Greater {
+                        maximum = index;
+                    }
+                }
+                draws.swap(maximum, last);
+                last -= 1;
+            }
+        } else {
+            draws.swap(lo + size / 2, lo);
+            let mut low = lo;
+            let mut high = hi + 1;
+            loop {
+                loop {
+                    low += 1;
+                    if low > hi || draws[low].key.compare(draws[lo].key) == SortOrdering::Greater {
+                        break;
+                    }
+                }
+                loop {
+                    high -= 1;
+                    if high <= lo || draws[high].key.compare(draws[lo].key) == SortOrdering::Less {
+                        break;
+                    }
+                }
+                if high < low {
+                    break;
+                }
+                draws.swap(low, high);
+            }
+            draws.swap(lo, high);
+            let left_count = high - lo;
+            let right_count = hi + 1 - low;
+            if left_count >= right_count {
+                if left_count > 1 {
+                    pending[pending_count] = (lo, high - 1);
+                    pending_count += 1;
+                }
+                if right_count > 1 {
+                    lo = low;
+                    continue;
+                }
+            } else {
+                if right_count > 1 {
+                    pending[pending_count] = (low, hi);
+                    pending_count += 1;
+                }
+                if left_count > 1 {
+                    hi = high - 1;
+                    continue;
+                }
+            }
+        }
+        if pending_count == 0 {
+            break;
+        }
+        pending_count -= 1;
+        (lo, hi) = pending[pending_count];
     }
 }
 impl Frame {

@@ -2,12 +2,20 @@
 //!
 //! Projection and stage order follow qsrc Q3 tr_main.c and tr_backend.c.
 use crate::BackendStats;
-use crate::assets::{AlphaTest, Assets, Blend, DepthFunc, MaterialId, Stage, TcGen, Vertex};
-use crate::scene::{BlendPhase, Command, CommandList, Draw2d, Refdef, SceneEntity, Viewport};
+use crate::assets::{
+    AlphaTest, Assets, CubeSkyParams, Cull, DepthFunc, Filter, MaterialId, MaterialSettings, Sky,
+    Stage, StageTexture, TcGen, Vertex, Wrap,
+};
+use crate::scene::{
+    BlendPhase, Command, CommandList, Draw2d, DrawKind, Refdef, SceneEntity, Span, Viewport,
+};
+use crate::shader::{AlphaGen, BlendFactor, RgbGen, StageBlend};
+use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyClip};
+use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
 use qa_core::primitives::Vec3;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
-use std::mem::{offset_of, size_of};
+use std::mem::{offset_of, size_of, size_of_val};
 use std::ptr::{self, NonNull};
 
 type Sync = *mut c_void;
@@ -54,6 +62,7 @@ procedures! {
     blend_func: "glBlendFunc"(u32, u32);
     cull_face: "glCullFace"(u32);
     front_face: "glFrontFace"(u32);
+    polygon_offset: "glPolygonOffset"(f32, f32);
     gen_vertex_arrays: "glGenVertexArrays"(i32, *mut u32);
     bind_vertex_array: "glBindVertexArray"(u32);
     delete_vertex_arrays: "glDeleteVertexArrays"(i32, *const u32);
@@ -73,6 +82,11 @@ procedures! {
     generate_mipmap: "glGenerateMipmap"(u32);
     active_texture: "glActiveTexture"(u32);
     delete_textures: "glDeleteTextures"(i32, *const u32);
+    texture_buffer: "glTexBuffer"(u32, u32, u32);
+    gen_samplers: "glGenSamplers"(i32, *mut u32);
+    sampler_parameter: "glSamplerParameteri"(u32, u32, i32);
+    bind_sampler: "glBindSampler"(u32, u32);
+    delete_samplers: "glDeleteSamplers"(i32, *const u32);
     create_shader: "glCreateShader"(u32) -> u32;
     shader_source: "glShaderSource"(u32, i32, *const *const c_char, *const i32);
     compile_shader: "glCompileShader"(u32);
@@ -90,6 +104,7 @@ procedures! {
     uniform_matrix: "glUniformMatrix4fv"(i32, i32, u8, *const f32);
     uniform_color: "glUniform4fv"(i32, i32, *const f32);
     uniform_integer: "glUniform1i"(i32, i32);
+    uniform_integers: "glUniform1iv"(i32, i32, *const i32);
     draw_elements: "glDrawElementsBaseVertex"(u32, i32, u32, *const c_void, i32);
     draw_arrays: "glDrawArrays"(u32, i32, i32);
     fence: "glFenceSync"(u32, u32) -> Sync;
@@ -123,28 +138,141 @@ layout(location=0) in vec3 a_position;
 layout(location=1) in vec2 a_texcoord;
 layout(location=2) in vec2 a_lightmap;
 layout(location=3) in vec4 a_color;
+layout(location=4) in vec3 a_normal;
 uniform mat4 u_mvp;
 uniform vec4 u_color;
+uniform vec4 u_alpha_value;
+uniform vec4 u_view_origin;
+uniform vec4 u_texture_scale;
+uniform vec4 u_light_ambient;
+uniform vec4 u_light_directed;
+uniform vec4 u_light_direction;
+uniform vec4 u_specular_origin;
+uniform vec4 u_tex_vectors[2];
+uniform vec4 u_mod_data[8];
+uniform vec4 u_deform_data[6];
+uniform int u_mod_kind[4];
+uniform int u_deform_kind[3];
+uniform samplerBuffer u_tables;
 uniform int u_texgen;
-uniform int u_vertex_color;
+uniform int u_rgb_gen;
+uniform int u_alpha_gen;
 out vec2 texcoord;
 out vec4 color;
+float lookup(int index) { return texelFetch(u_tables,index).r; }
+int wave_index(float phase) { return int(phase*1024.0)&1023; }
+vec3 normal_fast(vec3 v) {
+    float x=dot(v,v);
+    float y=uintBitsToFloat(0x5f3759dfu-(floatBitsToUint(x)>>1u));
+    return v*(y*(1.5-x*0.5*y*y));
+}
+int perm(int index) { return int(lookup(5632+(index&255))); }
+float noise_value(ivec4 cell) { return lookup(5376+perm(cell.x+perm(cell.y+perm(cell.z+perm(cell.w))))); }
+float native_lerp(float a,float b,float w) { return a*(1.0-w)+b*w; }
+float noise(vec4 point) {
+    ivec4 cell=ivec4(floor(point));
+    vec4 f=point-floor(point);
+    float time_values[2];
+    for(int t=0;t<2;t++) {
+        float depth[2];
+        for(int z=0;z<2;z++) {
+            float rows[2];
+            for(int y=0;y<2;y++) {
+                ivec4 p=cell+ivec4(0,y,z,t);
+                rows[y]=native_lerp(noise_value(p),noise_value(p+ivec4(1,0,0,0)),f.x);
+            }
+            depth[z]=native_lerp(rows[0],rows[1],f.y);
+        }
+        time_values[t]=native_lerp(depth[0],depth[1],f.z);
+    }
+    return native_lerp(time_values[0],time_values[1],f.w);
+}
 void main() {
-    gl_Position = u_mvp * vec4(a_position, 1.0);
-    texcoord = u_texgen == 0 ? a_texcoord : a_lightmap;
-    color = u_color * (u_vertex_color == 0 ? vec4(1.0) : a_color);
+    precise vec3 position=a_position;
+    vec3 normal=a_normal;
+    for(int i=0;i<3;i++) {
+        vec4 a=u_deform_data[i*2],b=u_deform_data[i*2+1];
+        if(u_deform_kind[i]==1) {
+            float phase=(a.w+(position.x+position.y+position.z)*b.y)+b.x;
+            position+=normal*(a.y+lookup(int(a.x)+wave_index(phase))*a.z);
+        } else if(u_deform_kind[i]==2) { position+=a.xyz;
+        } else if(u_deform_kind[i]==3) {
+            int index=int((1024.0/6.283185307179586)*(a_texcoord.x*a.x+a.z))&1023;
+            position+=normal*(lookup(index)*a.y);
+        } else if(u_deform_kind[i]==4) {
+            for(int j=0;j<3;j++) normal[j]+=a.x*noise(vec4(position*0.98+vec3(float(j)*100.0,0,0),a.y));
+            normal=normal_fast(normal);
+        }
+    }
+    gl_Position=u_mvp*vec4(position,1.0);
+    vec4 vertex_color=floor(a_color*255.0+0.5);
+    vec4 value=u_color;
+    if(u_rgb_gen==1) value=vertex_color;
+    if(u_rgb_gen==2) value=vec4(floor(vertex_color.rgb*u_texture_scale.z),vertex_color.a);
+    if(u_rgb_gen==3) value.rgb=floor((vec3(255.0)-vertex_color.rgb)*u_texture_scale.z);
+    if(u_rgb_gen==4) value=vec4(floor(min(u_light_ambient.xyz+max(dot(normal,u_light_direction.xyz),0.0)*u_light_directed.xyz,vec3(255.0))),255.0);
+    if(u_alpha_gen==0) value.a=u_alpha_value.x;
+    if(u_alpha_gen==2 && !(u_rgb_gen==2 && u_texture_scale.z==1.0)) value.a=255.0;
+    if(u_alpha_gen==3 && u_rgb_gen!=2) value.a=vertex_color.a;
+    if(u_alpha_gen==4) value.a=255.0-vertex_color.a;
+    if(u_alpha_gen==5) value.a=floor(clamp(length(position-u_view_origin.xyz)/u_alpha_value.y,0.0,1.0)*255.0);
+    if(u_alpha_gen==6) {
+        vec3 direction=normal_fast(u_specular_origin.xyz-position);
+        vec3 reflected=normal*(2.0*dot(normal,direction))-direction;
+        float incidence=max(dot(reflected,normal_fast(u_view_origin.xyz-position)),0.0);
+        value.a=floor(clamp((incidence*incidence)*(incidence*incidence),0.0,1.0)*255.0);
+    }
+    color=value/255.0;
+    if(u_texgen==0) texcoord=a_texcoord*u_texture_scale.xy;
+    if(u_texgen==1) texcoord=a_lightmap;
+    if(u_texgen==2) {
+        vec3 viewer=normal_fast(u_view_origin.xyz-position);
+        vec3 reflected=normal*(2.0*dot(normal,viewer))-viewer;
+        texcoord=vec2(0.5+reflected.y*0.5,0.5-reflected.z*0.5);
+    }
+    if(u_texgen==3) texcoord=vec2(dot(u_tex_vectors[0].xyz,position),dot(u_tex_vectors[1].xyz,position));
+    if(u_texgen==4) {
+        vec3 direction=position-u_view_origin.xyz;
+        direction.z*=u_tex_vectors[0].x;
+        float projected=u_tex_vectors[0].y/length(direction);
+        float scroll=u_tex_vectors[1].x*u_tex_vectors[0].w;
+        scroll-=floor(trunc(scroll)/u_tex_vectors[0].z)*u_tex_vectors[0].z;
+        texcoord=(direction.xy*projected+vec2(scroll))/u_tex_vectors[0].z;
+    }
+    if(u_texgen==5) {
+        vec3 direction=position-u_view_origin.xyz;
+        float radius=u_tex_vectors[0].x,height=u_tex_vectors[0].y;
+        float square=dot(direction,direction);
+        float p=(-direction.z*radius+sqrt(direction.z*direction.z*radius*radius+square*(2.0*radius*height+height*height)))/square;
+        vec3 intersection=normalize(direction*p+vec3(0,0,radius));
+        texcoord=acos(clamp(intersection.xy,vec2(-1),vec2(1)));
+    }
+    for(int i=0;i<4;i++) {
+        vec4 a=u_mod_data[i*2],b=u_mod_data[i*2+1];
+        if(u_mod_kind[i]==1) texcoord=vec2(dot(texcoord,a.xz),dot(texcoord,a.yw))+b.xy;
+        if(u_mod_kind[i]==2) texcoord+=vec2(lookup(wave_index((position.x+position.z)*(1.0/128.0)*0.125+a.y)),lookup(wave_index(position.y*(1.0/128.0)*0.125+a.y)))*a.x;
+        if(u_mod_kind[i]==3) {
+            ivec2 index=ivec2((texcoord.yx*a.yx*b.x+vec2(b.y))*(256.0/6.283185307179586))&ivec2(255);
+            texcoord+=vec2(lookup(5120+index.x),lookup(5120+index.y))*a.zw;
+        }
+    }
 }
 "#;
 const FRAGMENT_SHADER: &str = r#"#version 440 core
 uniform sampler2D u_image;
 uniform int u_alpha_test;
+uniform int u_clamp;
 in vec2 texcoord;
 in vec4 color;
 layout(location=0) out vec4 fragment;
 void main() {
-    vec4 value = texture(u_image, texcoord) * color;
+    vec2 uv=texcoord;
+    if(u_clamp==1) uv=clamp(uv,vec2(0),vec2(1));
+    if(u_clamp==2) { vec2 edge=0.5/vec2(textureSize(u_image,0)); uv=clamp(uv,edge,vec2(1)-edge); }
+    vec4 value = texture(u_image, uv) * color;
     if (u_alpha_test == 1 && value.a <= 0.0) discard;
     if (u_alpha_test == 2 && value.a < 0.5) discard;
+    if (u_alpha_test == 3 && value.a >= 0.5) discard;
     fragment = value;
 }
 "#;
@@ -155,22 +283,44 @@ struct Mesh {
     count: i32,
     base_vertex: i32,
 }
+struct SkyBatch {
+    clip: SkyClip,
+    cloud: Option<CloudGrid>,
+    stamp: u64,
+    drawn: u64,
+}
 struct Uniforms {
     mvp: i32,
     color: i32,
     texgen: i32,
-    vertex_color: i32,
+    alpha_value: i32,
+    view_origin: i32,
+    texture_scale: i32,
+    light_ambient: i32,
+    light_directed: i32,
+    light_direction: i32,
+    specular_origin: i32,
+    tex_vectors: i32,
+    mod_data: i32,
+    mod_kind: i32,
+    deform_data: i32,
+    deform_kind: i32,
+    rgb_gen: i32,
+    alpha_gen: i32,
     alpha_test: i32,
+    clamp: i32,
 }
 #[derive(Default)]
 struct State {
     vao: u32,
     texture: u32,
-    blend: Option<Blend>,
+    blend: Option<Option<StageBlend>>,
     depth: Option<bool>,
     depth_write: Option<bool>,
     depth_func: Option<DepthFunc>,
-    cull: Option<bool>,
+    cull: Option<Cull>,
+    sampler: u32,
+    polygon_offset: Option<bool>,
     depth_hack: bool,
 }
 struct Dynamic {
@@ -215,6 +365,12 @@ pub struct GlBackend {
     static_buffers: [u32; 2],
     meshes: Box<[Mesh]>,
     textures: Box<[u32]>,
+    samplers: [u32; 8],
+    table_buffer: u32,
+    table_texture: u32,
+    evaluator: StageEvaluator,
+    sky_batches: Box<[SkyBatch]>,
+    sky_stamp: u64,
     dynamic: Dynamic,
     state: State,
     _context_thread: PhantomData<*mut ()>,
@@ -262,8 +418,22 @@ impl GlBackend {
                 mvp: (gl.uniform_location)(program, c"u_mvp".as_ptr()),
                 color: (gl.uniform_location)(program, c"u_color".as_ptr()),
                 texgen: (gl.uniform_location)(program, c"u_texgen".as_ptr()),
-                vertex_color: (gl.uniform_location)(program, c"u_vertex_color".as_ptr()),
+                alpha_value: (gl.uniform_location)(program, c"u_alpha_value".as_ptr()),
+                view_origin: (gl.uniform_location)(program, c"u_view_origin".as_ptr()),
+                texture_scale: (gl.uniform_location)(program, c"u_texture_scale".as_ptr()),
+                light_ambient: (gl.uniform_location)(program, c"u_light_ambient".as_ptr()),
+                light_directed: (gl.uniform_location)(program, c"u_light_directed".as_ptr()),
+                light_direction: (gl.uniform_location)(program, c"u_light_direction".as_ptr()),
+                specular_origin: (gl.uniform_location)(program, c"u_specular_origin".as_ptr()),
+                tex_vectors: (gl.uniform_location)(program, c"u_tex_vectors[0]".as_ptr()),
+                mod_data: (gl.uniform_location)(program, c"u_mod_data[0]".as_ptr()),
+                mod_kind: (gl.uniform_location)(program, c"u_mod_kind[0]".as_ptr()),
+                deform_data: (gl.uniform_location)(program, c"u_deform_data[0]".as_ptr()),
+                deform_kind: (gl.uniform_location)(program, c"u_deform_kind[0]".as_ptr()),
+                rgb_gen: (gl.uniform_location)(program, c"u_rgb_gen".as_ptr()),
+                alpha_gen: (gl.uniform_location)(program, c"u_alpha_gen".as_ptr()),
                 alpha_test: (gl.uniform_location)(program, c"u_alpha_test".as_ptr()),
+                clamp: (gl.uniform_location)(program, c"u_clamp".as_ptr()),
             }
         };
         let mut backend = Self {
@@ -278,6 +448,12 @@ impl GlBackend {
             static_buffers: [0; 2],
             meshes: Box::new([]),
             textures: Box::new([]),
+            samplers: [0; 8],
+            table_buffer: 0,
+            table_texture: 0,
+            evaluator: StageEvaluator::load(),
+            sky_batches: Box::new([]),
+            sky_stamp: 0,
             dynamic: Dynamic::default(),
             state: State::default(),
             _context_thread: PhantomData,
@@ -299,9 +475,13 @@ impl GlBackend {
             vertex_layout(gl);
             (gl.use_program)(program);
             (gl.uniform_integer)((gl.uniform_location)(program, c"u_image".as_ptr()), 0);
+            (gl.uniform_integer)((gl.uniform_location)(program, c"u_tables".as_ptr()), 1);
+            (gl.active_texture)(0x84c1);
+            (gl.bind_texture)(0x8c2a, backend.table_texture);
             (gl.active_texture)(0x84c0);
             (gl.depth_func)(0x0203);
             (gl.front_face)(0x0901);
+            (gl.polygon_offset)(-1.0, -2.0);
             // Native Q3 CT_FRONT_SIDED retains clockwise projected triangles.
             (gl.cull_face)(0x0404);
             (gl.disable)(0x809d); // No multisample change to the native image.
@@ -329,6 +509,30 @@ impl GlBackend {
     }
 
     unsafe fn load_static(&mut self, assets: &Assets) -> Result<(), String> {
+        self.sky_batches = assets
+            .materials()
+            .iter()
+            .map(|material| {
+                let cloud = match material.settings.sky {
+                    Some(Sky::Cube { clouds, .. })
+                        if clouds.valid() && !material.stages.is_empty() =>
+                    {
+                        Some(
+                            CloudGrid::generate(clouds)
+                                .map_err(|error| format!("{}: {error}", material.name))?,
+                        )
+                    }
+                    _ => None,
+                };
+                Ok(SkyBatch {
+                    clip: SkyClip::new(),
+                    cloud,
+                    stamp: 0,
+                    drawn: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .into_boxed_slice();
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut meshes = Vec::with_capacity(assets.models().len());
@@ -401,6 +605,32 @@ impl GlBackend {
                 (gl.generate_mipmap)(TEXTURE_2D);
             }
             (gl.bind_texture)(TEXTURE_2D, 0);
+            (gl.gen_buffers)(1, &mut self.table_buffer);
+            (gl.bind_buffer)(0x8c2a, self.table_buffer);
+            let tables = self.evaluator.gpu_tables();
+            (gl.buffer_data)(
+                0x8c2a,
+                size_of_val(tables) as isize,
+                tables.as_ptr().cast(),
+                0x88e4,
+            );
+            (gl.gen_textures)(1, &mut self.table_texture);
+            (gl.bind_texture)(0x8c2a, self.table_texture);
+            (gl.texture_buffer)(0x8c2a, 0x822e, self.table_buffer);
+            (gl.gen_samplers)(8, self.samplers.as_mut_ptr());
+            for (index, &sampler) in self.samplers.iter().enumerate() {
+                let filter = if index & 2 != 0 { 0x2601 } else { 0x2600 };
+                let min_filter = if index & 4 != 0 {
+                    if index & 2 != 0 { 0x2701 } else { 0x2700 }
+                } else {
+                    filter
+                };
+                let wrap = if index & 1 != 0 { 0x812d } else { 0x2901 }; // clamp-to-border emulates legacy GL_CLAMP after UV clamp
+                (gl.sampler_parameter)(sampler, 0x2800, filter);
+                (gl.sampler_parameter)(sampler, 0x2801, min_filter);
+                (gl.sampler_parameter)(sampler, 0x2802, wrap);
+                (gl.sampler_parameter)(sampler, 0x2803, wrap);
+            }
         }
         Ok(())
     }
@@ -416,6 +646,7 @@ impl GlBackend {
         if !self.begin_dynamic() {
             stats.rejected = stats.rejected.saturating_add(1);
         }
+        let mut inputs = DrawInputs::default();
         for command in list.commands() {
             match *command {
                 Command::Empty => {}
@@ -432,34 +663,81 @@ impl GlBackend {
                     self.depth_state(true, true);
                     unsafe { (self.gl.clear)(DEPTH_BUFFER_BIT) };
                     let projection = view_projection(view.refdef);
-                    for surface in list.surfaces(view.scene.surfaces) {
-                        self.world_surface(surface, assets, &projection, &mut stats);
-                    }
-                    for entity in list.entities(view.scene.entities) {
-                        self.entity(entity, assets, &projection, &mut stats);
-                    }
-                    for poly in list.polys(view.scene.polys) {
-                        let vertices = list.vertices(poly.vertices);
-                        let Some(first) = self.upload(vertices) else {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                            continue;
-                        };
-                        if !self.draw_dynamic(
-                            assets,
-                            poly.material,
-                            first,
-                            vertices.len(),
-                            &projection,
-                            [1.0; 4],
-                            true,
-                            false,
-                        ) {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                            continue;
+                    inputs = DrawInputs {
+                        time_ms: view.refdef.time_ms,
+                        view_origin: view.refdef.origin,
+                        identity_light: view.refdef.identity_light,
+                        ..DrawInputs::default()
+                    };
+                    self.collect_skies(
+                        list,
+                        view.scene.draws,
+                        assets,
+                        inputs.view_origin,
+                        &mut stats,
+                    );
+                    for item in list.draws(view.scene.draws) {
+                        match item.kind {
+                            DrawKind::Surface => self.world_surface(
+                                list.surface(item.index),
+                                assets,
+                                &projection,
+                                inputs,
+                                view.refdef.far,
+                                &mut stats,
+                            ),
+                            DrawKind::Entity => self.entity(
+                                list.entity(item.index),
+                                assets,
+                                &projection,
+                                inputs,
+                                view.refdef.far,
+                                &mut stats,
+                            ),
+                            DrawKind::Poly => {
+                                let poly = list.poly(item.index);
+                                let Some(material) = assets.material(poly.material) else {
+                                    stats.rejected = stats.rejected.saturating_add(1);
+                                    continue;
+                                };
+                                if material.settings.fog.is_some() {
+                                    stats.rejected = stats.rejected.saturating_add(1);
+                                    continue;
+                                }
+                                if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
+                                    self.draw_sky(
+                                        poly.material,
+                                        assets,
+                                        &projection,
+                                        inputs,
+                                        view.refdef.far,
+                                        &mut stats,
+                                    );
+                                    continue;
+                                }
+                                let vertices = list.vertices(poly.vertices);
+                                let Some(first) = self.upload(vertices) else {
+                                    stats.rejected = stats.rejected.saturating_add(1);
+                                    continue;
+                                };
+                                if !self.draw_dynamic(
+                                    assets,
+                                    poly.material,
+                                    first,
+                                    vertices.len(),
+                                    &projection,
+                                    inputs,
+                                    true,
+                                    false,
+                                ) {
+                                    stats.rejected = stats.rejected.saturating_add(1);
+                                    continue;
+                                }
+                                stats.triangles = stats
+                                    .triangles
+                                    .saturating_add(vertices.len().saturating_sub(2) as u32);
+                            }
                         }
-                        stats.triangles = stats
-                            .triangles
-                            .saturating_add(vertices.len().saturating_sub(2) as u32);
                     }
                     if view.refdef.blend_phase == BlendPhase::AfterView {
                         self.tint(view.refdef.viewport, view.refdef.blend, &mut stats);
@@ -475,7 +753,7 @@ impl GlBackend {
                         },
                         false,
                     );
-                    if !self.draw_2d(draw, assets) {
+                    if !self.draw_2d(draw, assets, inputs) {
                         stats.rejected = stats.rejected.saturating_add(1);
                     } else {
                         stats.draws_2d = stats.draws_2d.saturating_add(1);
@@ -546,12 +824,8 @@ impl GlBackend {
     }
 
     fn upload(&mut self, vertices: &[Vertex]) -> Option<usize> {
-        let dynamic = &mut self.dynamic;
-        if !dynamic.acquired || vertices.len() > dynamic.capacity - dynamic.used {
-            return None;
-        }
-        let mapped = dynamic.mapped?;
-        let first = dynamic.slot * dynamic.capacity + dynamic.used;
+        let first = self.reserve(vertices.len())?;
+        let mapped = self.dynamic.mapped?;
         unsafe {
             ptr::copy_nonoverlapping(
                 vertices.as_ptr(),
@@ -559,7 +833,17 @@ impl GlBackend {
                 vertices.len(),
             )
         };
-        dynamic.used += vertices.len();
+        Some(first)
+    }
+
+    fn reserve(&mut self, count: usize) -> Option<usize> {
+        let dynamic = &mut self.dynamic;
+        if !dynamic.acquired || count > dynamic.capacity - dynamic.used {
+            return None;
+        }
+        dynamic.mapped?;
+        let first = dynamic.slot * dynamic.capacity + dynamic.used;
+        dynamic.used += count;
         Some(first)
     }
 
@@ -596,11 +880,405 @@ impl GlBackend {
         }
     }
 
+    fn collect_skies(
+        &mut self,
+        list: &CommandList,
+        draws: Span,
+        assets: &Assets,
+        origin: Vec3,
+        stats: &mut BackendStats,
+    ) {
+        self.sky_stamp = self.sky_stamp.wrapping_add(1);
+        if self.sky_stamp == 0 {
+            self.sky_stamp = 1;
+            for batch in &mut self.sky_batches {
+                batch.stamp = 0;
+                batch.drawn = 0;
+            }
+        }
+        // The frontend already selected visibility and owns these submissions.
+        // All geometry contributes to one clip per material; no second PVS walk.
+        for item in list.draws(draws) {
+            match item.kind {
+                DrawKind::Surface => {
+                    let reference = list.surface(item.index);
+                    let Some(world) = assets.world(reference.world) else {
+                        continue;
+                    };
+                    let Some(binding) = world.bindings.get(reference.surface as usize) else {
+                        continue;
+                    };
+                    let Some(clip) = self.sky_clip(binding.material, assets, stats) else {
+                        continue;
+                    };
+                    let Some(surface) = world.geometry.surfaces.get(reference.surface as usize)
+                    else {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    };
+                    for triangle in
+                        world.geometry.indices[surface.indices.indices()].chunks_exact(3)
+                    {
+                        let points = [triangle[0], triangle[1], triangle[2]]
+                            .map(|index| world.geometry.vertices[index as usize].vertex.position);
+                        if !clip.add_polygon(&points, origin) {
+                            stats.rejected = stats.rejected.saturating_add(1);
+                        }
+                    }
+                }
+                DrawKind::Entity => {
+                    let entity = list.entity(item.index);
+                    let Some(model) = assets.model(entity.model) else {
+                        continue;
+                    };
+                    let material_id = entity.material.unwrap_or(model.material);
+                    let Some(clip) = self.sky_clip(material_id, assets, stats) else {
+                        continue;
+                    };
+                    for triangle in model.indices.chunks_exact(3) {
+                        let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
+                            let position = model.vertices[index as usize].position;
+                            Vec3(std::array::from_fn(|axis| {
+                                entity.origin.0[axis]
+                                    + entity.axes[0].0[axis] * position.0[0]
+                                    + entity.axes[1].0[axis] * position.0[1]
+                                    + entity.axes[2].0[axis] * position.0[2]
+                            }))
+                        });
+                        if !clip.add_polygon(&points, origin) {
+                            stats.rejected = stats.rejected.saturating_add(1);
+                        }
+                    }
+                }
+                DrawKind::Poly => {
+                    let poly = list.poly(item.index);
+                    let Some(clip) = self.sky_clip(poly.material, assets, stats) else {
+                        continue;
+                    };
+                    let vertices = list.vertices(poly.vertices);
+                    for triangle in vertices[1..].windows(2) {
+                        let points = [
+                            vertices[0].position,
+                            triangle[0].position,
+                            triangle[1].position,
+                        ];
+                        if !clip.add_polygon(&points, origin) {
+                            stats.rejected = stats.rejected.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn sky_clip(
+        &mut self,
+        material_id: MaterialId,
+        assets: &Assets,
+        stats: &mut BackendStats,
+    ) -> Option<&mut SkyClip> {
+        let material = assets.material(material_id)?;
+        if material.settings.fog.is_some()
+            || !matches!(material.settings.sky, Some(Sky::Cube { .. }))
+        {
+            return None;
+        }
+        let Some(batch) = self.sky_batches.get_mut(material_id.0 as usize) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return None;
+        };
+        if batch.stamp != self.sky_stamp {
+            batch.clip.clear();
+            batch.stamp = self.sky_stamp;
+        }
+        Some(&mut batch.clip)
+    }
+
+    fn draw_sky(
+        &mut self,
+        material_id: MaterialId,
+        assets: &Assets,
+        projection: &[f32; 16],
+        inputs: DrawInputs,
+        far: f32,
+        stats: &mut BackendStats,
+    ) {
+        let Some(material) = assets.material(material_id) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(Sky::Cube {
+            outer_box,
+            inner_box: _,
+            clouds: _,
+            rotation,
+            params,
+        }) = material.settings.sky
+        else {
+            return;
+        };
+        let Some(batch) = self.sky_batches.get_mut(material_id.0 as usize) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if batch.stamp != self.sky_stamp || batch.drawn == self.sky_stamp {
+            return;
+        }
+        batch.drawn = self.sky_stamp;
+        let mut bounds = *batch.clip.bounds();
+        if !bounds.iter().any(|bound| bound.visible()) {
+            return;
+        }
+        if material.settings.fog.is_some() {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
+            // Native Q2 draws the complete cube when rotating; bounded old
+            // rectangles would leave gaps after the rotation.
+            bounds.fill(FaceBounds {
+                mins: [-1.0; 2],
+                maxs: [1.0; 2],
+            });
+        }
+        self.set_depth_hack(false);
+        if params.far_depth {
+            unsafe {
+                (self.gl.depth_range)(1.0, 1.0);
+            }
+        }
+        if let Some(images) = outer_box {
+            self.draw_sky_box(
+                images, bounds, params, rotation, projection, inputs, far, stats,
+            );
+        }
+        self.draw_clouds(
+            material_id,
+            material,
+            bounds,
+            params,
+            projection,
+            inputs,
+            far,
+            stats,
+        );
+        // Native Q3 parses innerbox images but leaves the inner draw TODO in
+        // tr_sky.c. Preserving that field does not add a new stock visual pass.
+        if params.far_depth {
+            unsafe {
+                (self.gl.depth_range)(0.0, 1.0);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sky_box(
+        &mut self,
+        images: [crate::assets::ImageId; 6],
+        bounds: [FaceBounds; 6],
+        params: CubeSkyParams,
+        rotation: Option<Rotation>,
+        projection: &[f32; 16],
+        inputs: DrawInputs,
+        far: f32,
+        stats: &mut BackendStats,
+    ) {
+        let settings = MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        };
+        for face in CubeFace::ALL {
+            let bound = bounds[face.index()];
+            if !bound.visible() {
+                continue;
+            }
+            let (mins, maxs) = if params.snap_bounds {
+                let Some([mins, maxs]) = bound.grid_bounds() else {
+                    continue;
+                };
+                (
+                    mins.map(|value| (value as f32 - 4.0) / 4.0),
+                    maxs.map(|value| (value as f32 - 4.0) / 4.0),
+                )
+            } else {
+                (bound.mins, bound.maxs)
+            };
+            let vertices = [
+                [mins[0], mins[1]],
+                [mins[0], maxs[1]],
+                [maxs[0], maxs[1]],
+                [maxs[0], mins[1]],
+            ]
+            .map(|st| {
+                let cube = crate::sky::cube_vertex(
+                    face,
+                    st,
+                    params.distance.value(far),
+                    params.texcoord_range,
+                );
+                let direction = if let Some(rotation) = rotation {
+                    crate::sky::unrotate(
+                        cube.direction,
+                        Rotation {
+                            degrees_per_second: -rotation.degrees_per_second,
+                            ..rotation
+                        },
+                        inputs.time_ms as f32 * 0.001,
+                    )
+                } else {
+                    cube.direction
+                };
+                Vertex {
+                    position: Vec3(std::array::from_fn(|i| {
+                        inputs.view_origin.0[i] + direction.0[i]
+                    })),
+                    texcoord: cube.uv,
+                    ..Vertex::default()
+                }
+            });
+            let Some(first) = self.upload(&vertices) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
+            let stage = Stage {
+                texture: StageTexture::Image(images[face.index()]),
+                sampler: params.sampler,
+                rgb_gen: RgbGen::IdentityLighting,
+                depth_write: !params.far_depth,
+                ..Stage::default()
+            };
+            self.bind_vao(self.dynamic.vao);
+            if !self.stage(stage, settings, inputs, projection, true, false) {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            }
+            unsafe {
+                (self.gl.draw_arrays)(TRIANGLE_FAN, first as i32, 4);
+            }
+            stats.stages = stats.stages.saturating_add(1);
+            stats.triangles = stats.triangles.saturating_add(2);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_clouds(
+        &mut self,
+        material_id: MaterialId,
+        material: &crate::assets::Material,
+        bounds: [FaceBounds; 6],
+        params: CubeSkyParams,
+        projection: &[f32; 16],
+        inputs: DrawInputs,
+        far: f32,
+        stats: &mut BackendStats,
+    ) {
+        if material.stages.is_empty() {
+            return;
+        }
+        let Some(batch) = self.sky_batches.get(material_id.0 as usize) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if batch.cloud.is_none() {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        let count = CubeFace::ALL
+            .into_iter()
+            .filter(|&face| face != CubeFace::NegativeZ)
+            .filter_map(|face| bounds[face.index()].grid_bounds())
+            .map(|[mins, maxs]| (maxs[0] - mins[0]) * (maxs[1] - mins[1]) * 6)
+            .sum::<usize>();
+        if count == 0 {
+            return;
+        }
+        let Some(first) = self.reserve(count) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(mapped) = self.dynamic.mapped else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(grid) = self.sky_batches[material_id.0 as usize].cloud.as_ref() else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let mut written = 0;
+        for face in CubeFace::ALL {
+            if face == CubeFace::NegativeZ {
+                continue;
+            }
+            let Some([mins, maxs]) = bounds[face.index()].grid_bounds() else {
+                continue;
+            };
+            for t in mins[1]..maxs[1] {
+                for s in mins[0]..maxs[0] {
+                    // Native FillCloudySkySide keeps this diagonal and index
+                    // order. All visible faces share one contiguous draw range.
+                    for [s, t] in [
+                        [s, t],
+                        [s, t + 1],
+                        [s + 1, t],
+                        [s, t + 1],
+                        [s + 1, t + 1],
+                        [s + 1, t],
+                    ] {
+                        let st = [(s as f32 - 4.0) / 4.0, (t as f32 - 4.0) / 4.0];
+                        let direction = crate::sky::cube_vertex(
+                            face,
+                            st,
+                            params.distance.value(far),
+                            [0.0, 1.0],
+                        )
+                        .direction;
+                        let vertex = Vertex {
+                            position: Vec3(std::array::from_fn(|i| {
+                                inputs.view_origin.0[i] + direction.0[i]
+                            })),
+                            normal: Vec3::default(),
+                            texcoord: grid.uv[face.index()][t][s],
+                            ..Vertex::default()
+                        };
+                        unsafe {
+                            mapped.as_ptr().add(first + written).write(vertex);
+                        }
+                        written += 1;
+                    }
+                }
+            }
+        }
+        self.bind_vao(self.dynamic.vao);
+        for &stage in &material.stages {
+            // The shared load-generated cloud grid already supplies this
+            // generator's coordinates, like native tess.texCoords[0].
+            let stage = if matches!(stage.texgen, TcGen::CloudSky { .. }) {
+                Stage {
+                    texgen: TcGen::Texture,
+                    ..stage
+                }
+            } else {
+                stage
+            };
+            if !self.stage(stage, material.settings, inputs, projection, true, false) {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            }
+            unsafe {
+                (self.gl.draw_arrays)(TRIANGLES, first as i32, written as i32);
+            }
+            stats.stages = stats.stages.saturating_add(1);
+        }
+        stats.triangles = stats.triangles.saturating_add(written as u32 / 3);
+    }
+
     fn entity(
         &mut self,
         entity: &SceneEntity,
         assets: &Assets,
         projection: &[f32; 16],
+        mut inputs: DrawInputs,
+        far: f32,
         stats: &mut BackendStats,
     ) {
         let (Some(model), Some(&mesh)) = (
@@ -615,21 +1293,30 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        if material.settings.fog.is_some() {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
         if mesh.count == 0 {
             return;
         }
+        if matches!(material.settings.sky, Some(Sky::Cube { .. })) {
+            self.draw_sky(material_id, assets, projection, inputs, far, stats);
+            return;
+        }
         let matrix = multiply(projection, &model_matrix(entity));
+        let delta = Vec3(std::array::from_fn(|i| {
+            inputs.view_origin.0[i] - entity.origin.0[i]
+        }));
+        inputs.view_origin = Vec3(entity.axes.map(|axis| delta.dot(axis) / axis.dot(axis)));
+        inputs.entity_color = entity.color;
+        inputs.entity_texcoord = entity.shader_texcoord;
+        inputs.entity_shader_time = entity.shader_time;
+        inputs.lighting = entity.lighting;
         self.bind_vao(self.static_vao);
         self.set_depth_hack(entity.depth_hack);
         for stage in material.stages.iter() {
-            if !self.stage(
-                *stage,
-                &matrix,
-                rgba(entity.color),
-                !material.two_sided,
-                true,
-                false,
-            ) {
+            if !self.stage(*stage, material.settings, inputs, &matrix, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             }
@@ -642,6 +1329,7 @@ impl GlBackend {
                     mesh.base_vertex,
                 );
             }
+            stats.stages = stats.stages.saturating_add(1);
         }
         stats.triangles = stats.triangles.saturating_add(mesh.count as u32 / 3);
         self.set_depth_hack(false);
@@ -652,6 +1340,8 @@ impl GlBackend {
         surface: &crate::scene::SurfaceRef,
         assets: &Assets,
         projection: &[f32; 16],
+        mut inputs: DrawInputs,
+        far: f32,
         stats: &mut BackendStats,
     ) {
         let Some(world) = assets.world(surface.world) else {
@@ -669,20 +1359,24 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        if material.settings.fog.is_some() {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
         if binding.mesh_indices.count == 0 {
             return;
         }
+        if let Some(Sky::Cube { .. }) = material.settings.sky {
+            self.draw_sky(binding.material, assets, projection, inputs, far, stats);
+            stats.surfaces = stats.surfaces.saturating_add(1);
+            return;
+        }
+        inputs.lightmap = binding.lightmap;
+        inputs.texture_scale = binding.texture_scale;
         self.bind_vao(self.static_vao);
         self.set_depth_hack(false);
         for stage in &material.stages {
-            if !self.stage(
-                *stage,
-                projection,
-                [1.0; 4],
-                !material.two_sided,
-                true,
-                false,
-            ) {
+            if !self.stage(*stage, material.settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             }
@@ -712,22 +1406,25 @@ impl GlBackend {
         first: usize,
         count: usize,
         matrix: &[f32; 16],
-        color: [f32; 4],
+        inputs: DrawInputs,
         depth: bool,
         force_alpha: bool,
     ) -> bool {
         let Some(material) = assets.material(material_id) else {
             return false;
         };
+        if material.settings.fog.is_some() {
+            return false;
+        }
         self.bind_vao(self.dynamic.vao);
         self.set_depth_hack(false);
         let mut complete = true;
         for stage in material.stages.iter() {
             if !self.stage(
                 *stage,
+                material.settings,
+                inputs,
                 matrix,
-                color,
-                depth && !material.two_sided,
                 depth,
                 force_alpha,
             ) {
@@ -739,19 +1436,20 @@ impl GlBackend {
         complete
     }
 
-    fn draw_2d(&mut self, draw: Draw2d, assets: &Assets) -> bool {
-        let vertices = quad(draw.rect, draw.texcoords, [255; 4]);
+    fn draw_2d(&mut self, draw: Draw2d, assets: &Assets, mut inputs: DrawInputs) -> bool {
+        let vertices = quad(draw.rect, draw.texcoords, draw.color);
         let Some(first) = self.upload(&vertices) else {
             return false;
         };
         let projection = orthographic(self.width, self.height);
+        inputs.entity_color = draw.color;
         self.draw_dynamic(
             assets,
             draw.material,
             first,
             vertices.len(),
             &projection,
-            rgba(draw.color),
+            inputs,
             false,
             true,
         )
@@ -787,13 +1485,38 @@ impl GlBackend {
         self.bind_vao(self.dynamic.vao);
         self.set_depth_hack(false);
         let stage = Stage {
-            blend: Blend::Alpha,
+            blend: Some(StageBlend {
+                source: BlendFactor::SourceAlpha,
+                destination: BlendFactor::OneMinusSourceAlpha,
+            }),
             ..Stage::default()
         };
         let projection = orthographic(self.width, self.height);
-        if !self.stage(stage, &projection, color, false, false, false) {
+        if !self.stage(
+            stage,
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
+            DrawInputs::default(),
+            &projection,
+            false,
+            false,
+        ) {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
+        }
+        // Native GL screen blends use floats, rather than a stage generator's
+        // byte colors. The phase remains shared with CPU palette presentation.
+        let uniform_color = color.map(|value| value * 255.0);
+        unsafe {
+            (self.gl.uniform_color)(self.uniforms.color, 1, uniform_color.as_ptr());
+            (self.gl.uniform_color)(
+                self.uniforms.alpha_value,
+                1,
+                [color[3] * 255.0, 0.0, 0.0, 0.0].as_ptr(),
+            );
+            (self.gl.uniform_integer)(self.uniforms.alpha_gen, 0);
         }
         unsafe { (self.gl.draw_arrays)(TRIANGLE_FAN, first as i32, 4) };
     }
@@ -802,17 +1525,26 @@ impl GlBackend {
     fn stage(
         &mut self,
         stage: Stage,
+        settings: MaterialSettings,
+        inputs: DrawInputs,
         matrix: &[f32; 16],
-        color: [f32; 4],
-        cull: bool,
         depth: bool,
         force_alpha: bool,
     ) -> bool {
-        let Some(&texture) = self.textures.get(stage.image.0 as usize) else {
+        let Ok(prepared) = self.evaluator.prepare(&stage, settings, inputs) else {
             return false;
         };
-        let blend = if force_alpha && stage.blend == Blend::Opaque {
-            Blend::Alpha
+        let Ok(deforms) = self.evaluator.prepare_deforms(&settings, &inputs) else {
+            return false;
+        };
+        let Some(&texture) = self.textures.get(prepared.image.0 as usize) else {
+            return false;
+        };
+        let blend = if force_alpha && stage.blend.is_none() {
+            Some(StageBlend {
+                source: BlendFactor::SourceAlpha,
+                destination: BlendFactor::OneMinusSourceAlpha,
+            })
         } else {
             stage.blend
         };
@@ -827,41 +1559,168 @@ impl GlBackend {
             self.state.depth_func = Some(stage.depth_func);
         }
         self.blend_state(blend);
+        let cull = if depth { settings.cull } else { Cull::None };
         if self.state.cull != Some(cull) {
             unsafe {
-                if cull {
-                    (self.gl.enable)(CULL_FACE)
+                if cull != Cull::None {
+                    (self.gl.enable)(CULL_FACE);
+                    (self.gl.cull_face)(if cull == Cull::Front { 0x0404 } else { 0x0405 });
                 } else {
                     (self.gl.disable)(CULL_FACE)
                 }
             }
             self.state.cull = Some(cull);
         }
+        if self.state.polygon_offset != Some(settings.polygon_offset) {
+            unsafe {
+                if settings.polygon_offset {
+                    (self.gl.enable)(0x8037);
+                } else {
+                    (self.gl.disable)(0x8037);
+                }
+            }
+            self.state.polygon_offset = Some(settings.polygon_offset);
+        }
         if self.state.texture != texture {
             unsafe { (self.gl.bind_texture)(TEXTURE_2D, texture) };
             self.state.texture = texture;
         }
+        let sampler_index = usize::from(stage.sampler.wrap == Wrap::Clamp)
+            | (usize::from(stage.sampler.filter == Filter::Linear) << 1)
+            | (usize::from(stage.sampler.mipmaps) << 2);
+        let sampler = self.samplers[sampler_index];
+        if self.state.sampler != sampler {
+            unsafe {
+                (self.gl.bind_sampler)(0, sampler);
+            }
+            self.state.sampler = sampler;
+        }
+        self.stage_uniforms(&prepared, deforms, matrix);
+        true
+    }
+
+    fn stage_uniforms(&self, prepared: &PreparedStage, deforms: [DeformOp; 3], matrix: &[f32; 16]) {
+        let (stage, inputs) = (prepared.stage, prepared.inputs);
+        let color = prepared.uniform_color.map(|v| v as f32);
+        let rgb = match stage.rgb_gen {
+            RgbGen::ExactVertex => 1,
+            RgbGen::Vertex => 2,
+            RgbGen::OneMinusVertex => 3,
+            RgbGen::LightingDiffuse => 4,
+            _ => 0,
+        };
+        let alpha = match stage.alpha_gen {
+            AlphaGen::Skip => 1,
+            AlphaGen::Identity => 2,
+            AlphaGen::Vertex => 3,
+            AlphaGen::OneMinusVertex => 4,
+            AlphaGen::Portal(_) => 5,
+            AlphaGen::LightingSpecular => 6,
+            _ => 0,
+        };
+        let portal = match stage.alpha_gen {
+            AlphaGen::Portal(range) => range,
+            _ => 1.0,
+        };
+        let vectors = match stage.texgen {
+            TcGen::Vector(vectors) => [vec4(Vec3(vectors[0])), vec4(Vec3(vectors[1]))],
+            TcGen::LayeredSky {
+                flatten_z,
+                projected_scale,
+                texture_size,
+                scroll_speed,
+            } => [
+                [flatten_z, projected_scale, texture_size, scroll_speed],
+                [prepared.shader_time, 0.0, 0.0, 0.0],
+            ],
+            TcGen::CloudSky { radius, height } => [[radius, height, 0.0, 0.0], [0.0; 4]],
+            _ => [[0.0; 4]; 2],
+        };
+        let light = inputs.lighting.unwrap_or_default();
+        let (mod_kinds, mod_data) = pack_texmods(prepared.tcmods);
+        let (deform_kinds, deform_data) = pack_deforms(deforms);
         unsafe {
             (self.gl.uniform_matrix)(self.uniforms.mvp, 1, 0, matrix.as_ptr());
             (self.gl.uniform_color)(self.uniforms.color, 1, color.as_ptr());
+            (self.gl.uniform_color)(
+                self.uniforms.alpha_value,
+                1,
+                [prepared.uniform_alpha as f32, portal, 0.0, 0.0].as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.view_origin,
+                1,
+                vec4(inputs.view_origin).as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.texture_scale,
+                1,
+                [
+                    inputs.texture_scale[0],
+                    inputs.texture_scale[1],
+                    inputs.identity_light,
+                    0.0,
+                ]
+                .as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.light_ambient,
+                1,
+                vec4(Vec3(light.ambient)).as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.light_directed,
+                1,
+                vec4(Vec3(light.directed)).as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.light_direction,
+                1,
+                vec4(light.direction).as_ptr(),
+            );
+            (self.gl.uniform_color)(
+                self.uniforms.specular_origin,
+                1,
+                vec4(inputs.specular_origin).as_ptr(),
+            );
+            (self.gl.uniform_color)(self.uniforms.tex_vectors, 2, vectors.as_ptr().cast());
+            (self.gl.uniform_integers)(self.uniforms.mod_kind, 4, mod_kinds.as_ptr());
+            (self.gl.uniform_color)(self.uniforms.mod_data, 8, mod_data.as_ptr().cast());
+            (self.gl.uniform_integers)(self.uniforms.deform_kind, 3, deform_kinds.as_ptr());
+            (self.gl.uniform_color)(self.uniforms.deform_data, 6, deform_data.as_ptr().cast());
+            (self.gl.uniform_integer)(self.uniforms.rgb_gen, rgb);
+            (self.gl.uniform_integer)(self.uniforms.alpha_gen, alpha);
             (self.gl.uniform_integer)(
                 self.uniforms.texgen,
                 match stage.texgen {
                     TcGen::Texture => 0,
                     TcGen::Lightmap => 1,
+                    TcGen::Environment => 2,
+                    TcGen::Vector(_) => 3,
+                    TcGen::LayeredSky { .. } => 4,
+                    TcGen::CloudSky { .. } => 5,
                 },
             );
-            (self.gl.uniform_integer)(self.uniforms.vertex_color, i32::from(stage.vertex_color));
             (self.gl.uniform_integer)(
                 self.uniforms.alpha_test,
                 match stage.alpha_test {
                     AlphaTest::None => 0,
                     AlphaTest::GreaterZero => 1,
                     AlphaTest::AtLeastHalf => 2,
+                    AlphaTest::LessThanHalf => 3,
+                },
+            );
+            (self.gl.uniform_integer)(
+                self.uniforms.clamp,
+                if stage.sampler.wrap == Wrap::Repeat {
+                    0
+                } else if stage.sampler.filter == Filter::Nearest {
+                    2
+                } else {
+                    1
                 },
             );
         }
-        true
     }
 
     fn bind_vao(&mut self, vao: u32) {
@@ -892,22 +1751,16 @@ impl GlBackend {
             self.state.depth_hack = enabled;
         }
     }
-    fn blend_state(&mut self, blend: Blend) {
+    fn blend_state(&mut self, blend: Option<StageBlend>) {
         if self.state.blend == Some(blend) {
             return;
         }
         unsafe {
-            if blend == Blend::Opaque {
-                (self.gl.disable)(BLEND);
-            } else {
+            if let Some(blend) = blend {
                 (self.gl.enable)(BLEND);
-                let factors = match blend {
-                    Blend::Opaque => (1, 0),
-                    Blend::Alpha => (0x0302, 0x0303),
-                    Blend::Add => (1, 1),
-                    Blend::Multiply => (0x0306, 0),
-                };
-                (self.gl.blend_func)(factors.0, factors.1);
+                (self.gl.blend_func)(blend.source as u32, blend.destination as u32);
+            } else {
+                (self.gl.disable)(BLEND);
             }
         }
         self.state.blend = Some(blend);
@@ -962,6 +1815,9 @@ impl Drop for GlBackend {
             (self.gl.delete_vertex_arrays)(1, &self.static_vao);
             (self.gl.delete_vertex_arrays)(1, &self.dynamic.vao);
             (self.gl.delete_textures)(self.textures.len() as i32, self.textures.as_ptr());
+            (self.gl.delete_buffers)(1, &self.table_buffer);
+            (self.gl.delete_textures)(1, &self.table_texture);
+            (self.gl.delete_samplers)(8, self.samplers.as_ptr());
             (self.gl.delete_program)(self.program);
         }
     }
@@ -970,7 +1826,7 @@ impl Drop for GlBackend {
 unsafe fn vertex_layout(gl: &Gl) {
     let stride = size_of::<Vertex>() as i32;
     unsafe {
-        for index in 0..4 {
+        for index in 0..5 {
             (gl.enable_vertex_attribute)(index)
         }
         (gl.vertex_attribute)(
@@ -1004,6 +1860,14 @@ unsafe fn vertex_layout(gl: &Gl) {
             1,
             stride,
             offset_of!(Vertex, color) as *const c_void,
+        );
+        (gl.vertex_attribute)(
+            4,
+            3,
+            FLOAT,
+            0,
+            stride,
+            offset_of!(Vertex, normal) as *const c_void,
         );
     }
 }
@@ -1122,6 +1986,8 @@ fn valid_refdef(view: Refdef, width: u32, height: u32) -> bool {
         && view.near > 0.0
         && view.far.is_finite()
         && view.far > view.near
+        && view.identity_light.is_finite()
+        && (0.0..=1.0).contains(&view.identity_light)
 }
 fn valid_viewport(viewport: Viewport, width: u32, height: u32) -> bool {
     viewport.width != 0
@@ -1228,4 +2094,71 @@ fn quad(rect: [f32; 4], uv: [f32; 4], color: [u8; 4]) -> [Vertex; 4] {
         lightmap_coord: texcoord,
         color,
     })
+}
+
+fn vec4(v: Vec3) -> [f32; 4] {
+    [v.0[0], v.0[1], v.0[2], 0.0]
+}
+fn pack_texmods(modifiers: [TexCoordOp; 4]) -> ([i32; 4], [[f32; 4]; 8]) {
+    let mut kinds = [0; 4];
+    let mut data = [[0.0; 4]; 8];
+    for (index, modifier) in modifiers.into_iter().enumerate() {
+        match modifier {
+            TexCoordOp::None => {}
+            TexCoordOp::Transform { matrix, translate } => {
+                kinds[index] = 1;
+                data[index * 2] = [matrix[0][0], matrix[0][1], matrix[1][0], matrix[1][1]];
+                data[index * 2 + 1] = [translate[0], translate[1], 0.0, 0.0];
+            }
+            TexCoordOp::Turbulent { amplitude, now } => {
+                kinds[index] = 2;
+                data[index * 2] = [amplitude, now, 0.0, 0.0];
+            }
+            TexCoordOp::Warp {
+                texel_scale,
+                amplitude,
+                frequency,
+                now,
+            } => {
+                kinds[index] = 3;
+                data[index * 2] = [texel_scale[0], texel_scale[1], amplitude[0], amplitude[1]];
+                data[index * 2 + 1] = [frequency, now, 0.0, 0.0];
+            }
+        }
+    }
+    (kinds, data)
+}
+fn pack_deforms(deforms: [DeformOp; 3]) -> ([i32; 3], [[f32; 4]; 6]) {
+    let mut kinds = [0; 3];
+    let mut data = [[0.0; 4]; 6];
+    for (index, deform) in deforms.into_iter().enumerate() {
+        match deform {
+            DeformOp::None => {}
+            DeformOp::Wave {
+                table,
+                base,
+                amplitude,
+                phase,
+                time_phase,
+                spread,
+            } => {
+                kinds[index] = 1;
+                data[index * 2] = [table as f32, base, amplitude, phase];
+                data[index * 2 + 1] = [time_phase, spread, 0.0, 0.0];
+            }
+            DeformOp::Move(vector) => {
+                kinds[index] = 2;
+                data[index * 2] = vec4(vector);
+            }
+            DeformOp::Bulge { width, height, now } => {
+                kinds[index] = 3;
+                data[index * 2] = [width, height, now, 0.0];
+            }
+            DeformOp::Normal { amplitude, time } => {
+                kinds[index] = 4;
+                data[index * 2] = [amplitude, time, 0.0, 0.0];
+            }
+        }
+    }
+    (kinds, data)
 }

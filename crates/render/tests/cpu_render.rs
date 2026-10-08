@@ -1,5 +1,10 @@
 use qa_core::primitives::Vec3;
-use qa_render::{assets::*, cpu::CpuBackend, scene::*};
+use qa_render::{
+    assets::*,
+    cpu::CpuBackend,
+    scene::*,
+    shader::{BlendFactor, StageBlend},
+};
 
 #[test]
 fn fence_holes_ignore_equal_depth_lightmap_pass() {
@@ -13,21 +18,31 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
             "fence",
             &[
                 Stage {
-                    image: fence,
+                    texture: StageTexture::Image(fence),
+                    sampler: Sampler {
+                        filter: Filter::Nearest,
+                        ..Sampler::default()
+                    },
                     alpha_test: AlphaTest::AtLeastHalf,
                     ..Stage::default()
                 },
                 Stage {
-                    image: lightmap,
-                    blend: Blend::Multiply,
+                    texture: StageTexture::Image(lightmap),
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
                     texgen: TcGen::Lightmap,
                     depth_func: DepthFunc::Equal,
                     depth_write: false,
                     ..Stage::default()
                 },
             ],
-            true,
-            0,
+            MaterialSettings {
+                cull: Cull::None,
+                sort: 0.0,
+                ..MaterialSettings::default()
+            },
         )
         .unwrap();
     let vertices = [
@@ -56,6 +71,7 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
             ..Refdef::default()
         },
         &[],
+        &assets,
     ));
     let mut cpu = CpuBackend::load(4, 4).unwrap();
     let packet = frame.finish();
@@ -91,6 +107,7 @@ fn final_palette_phase_covers_statusbar_after_2d() {
                 ..Refdef::default()
             },
             &[],
+            &assets,
         ));
         assert!(frame.draw_2d(Draw2d {
             rect: [0.0, 2.0, 4.0, 2.0],

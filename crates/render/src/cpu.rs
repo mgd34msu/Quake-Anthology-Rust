@@ -1,11 +1,18 @@
 //! Shared entity/poly raster and ordered 2D command consumer.
 //!
-//! THE-862 adds the native world edge/span cache and indexed palette path. The
-//! final-palette blend phase here is an RGBA approximation, not stock Q1 proof.
+//! Worlds use the shared edge/span scanner and native indexed surface cache.
+//! Entity/poly meshes use the shared stage evaluator and a 1/Z buffer.
 use crate::BackendStats;
-use crate::assets::{AlphaTest, Assets, Blend, DepthFunc, Image, Material, Stage, TcGen, Vertex};
-use crate::scene::{BlendPhase, Command, CommandList, Draw2d, Refdef, SceneEntity, Viewport};
+use crate::assets::{Assets, DepthFunc, Filter, Image, Material, Sampler, Vertex, Wrap};
+use crate::shader::{BlendFactor, Cull, StageBlend};
+use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
+mod world;
+use crate::scene::{
+    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawKind, PaletteOperation, Poly,
+    Refdef, SceneEntity, Viewport,
+};
 use qa_core::primitives::Vec3;
+pub use world::{CpuLimits, WorldStats};
 
 const CLIP_VERTICES: usize = 12;
 
@@ -14,6 +21,13 @@ pub struct CpuBackend {
     height: u32,
     pixels: Box<[u32]>,
     inverse_depth: Box<[f32]>,
+    depth_ranks: Box<[u32]>,
+    indices: Box<[u8]>,
+    palettes: Box<[u32]>,
+    world: Option<world::WorldRaster>,
+    evaluator: StageEvaluator,
+    presentation: CpuPresentation,
+    time_ms: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -52,13 +66,25 @@ impl ClipVertex {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct ScreenVertex {
     xy: [f32; 2],
     inverse_depth: f32,
     texcoord_over_depth: [f32; 2],
     lightmap_over_depth: [f32; 2],
     color_over_depth: [f32; 4],
+}
+
+impl ScreenVertex {
+    fn finite(self) -> bool {
+        self.xy
+            .iter()
+            .chain(self.texcoord_over_depth.iter())
+            .chain(self.lightmap_over_depth.iter())
+            .chain(self.color_over_depth.iter())
+            .all(|v| v.is_finite())
+            && self.inverse_depth.is_finite()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -70,11 +96,12 @@ struct Camera {
 #[derive(Clone, Copy)]
 struct RasterPass<'a> {
     material: &'a Material,
-    stage: &'a Stage,
+    stage: PreparedStage,
     image: &'a Image,
-    color: [f32; 4],
+    sampler: ShadeFn,
     depth_hack: bool,
     first_stage: bool,
+    draw_rank: u32,
 }
 
 impl Camera {
@@ -92,6 +119,16 @@ impl Camera {
                 .chain(refdef.fov.iter())
                 .chain(refdef.blend.iter())
                 .all(|f| f.is_finite())
+            || !refdef.identity_light.is_finite()
+            || refdef.palette_transform.is_some_and(|transform| {
+                transform.shifts.iter().any(|shift| {
+                    !(0..=256).contains(&shift.percent)
+                        || shift
+                            .destination
+                            .iter()
+                            .any(|value| !(0..=255).contains(value))
+                })
+            })
             || !refdef.near.is_finite()
             || !refdef.far.is_finite()
             || refdef.near <= 0.0
@@ -171,7 +208,38 @@ impl CpuBackend {
             height,
             pixels: vec![0; count].into_boxed_slice(),
             inverse_depth: vec![0.0; count].into_boxed_slice(),
+            depth_ranks: vec![0; count].into_boxed_slice(),
+            indices: vec![0; count].into_boxed_slice(),
+            palettes: vec![u32::MAX; count].into_boxed_slice(),
+            world: None,
+            evaluator: StageEvaluator::load(),
+            presentation: CpuPresentation::Rgb,
+            time_ms: 0,
         })
+    }
+
+    /// Assets are frozen before this load-sized world scratch is allocated.
+    pub fn load_with_assets(
+        width: u32,
+        height: u32,
+        assets: &Assets,
+    ) -> Result<Self, &'static str> {
+        Self::load_with_limits(width, height, assets, CpuLimits::default())
+    }
+    pub fn load_with_limits(
+        width: u32,
+        height: u32,
+        assets: &Assets,
+        limits: CpuLimits,
+    ) -> Result<Self, &'static str> {
+        let mut backend = Self::load(width, height)?;
+        backend.world = Some(world::WorldRaster::load(width, height, assets, limits)?);
+        Ok(backend)
+    }
+    pub fn world_stats(&self) -> WorldStats {
+        self.world
+            .as_ref()
+            .map_or(WorldStats::default(), |w| w.stats())
     }
 
     pub fn pixels(&self) -> &[u32] {
@@ -187,12 +255,18 @@ impl CpuBackend {
             rejected: list.rejected.min(u32::MAX as u64) as u32,
             ..BackendStats::default()
         };
+        if let Some(world) = &mut self.world {
+            world.reset_stats();
+        }
         for command in list.commands() {
             match *command {
                 Command::Empty => {}
                 Command::Clear(color) => {
                     self.pixels.fill(u32::from_le_bytes(color));
                     self.inverse_depth.fill(0.0);
+                    self.depth_ranks.fill(0);
+                    self.palettes.fill(u32::MAX);
+                    self.presentation = CpuPresentation::Rgb;
                 }
                 Command::View(view) => {
                     let Some(camera) = Camera::load(view.refdef, self.width, self.height) else {
@@ -202,45 +276,67 @@ impl CpuBackend {
                     stats.views = stats.views.saturating_add(1);
                     stats.pending_lights =
                         stats.pending_lights.saturating_add(view.scene.lights.count);
-                    // World spans/cache resources are integrated separately;
-                    // never silently accept a world submission without drawing.
-                    stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
+                    self.presentation = camera.refdef.cpu_presentation;
+                    self.time_ms = camera.refdef.time_ms;
                     self.clear_depth(camera.refdef.viewport);
-                    for entity in list.entities(view.scene.entities) {
-                        self.entity(camera, entity, assets, &mut stats);
+                    if let Some(world) = &mut self.world {
+                        world.render_opaque(
+                            camera,
+                            list.surfaces(view.scene.surfaces),
+                            view.scene.surfaces.first,
+                            assets,
+                            &self.evaluator,
+                            world::Buffers {
+                                pixels: &mut self.pixels,
+                                inverse_depth: &mut self.inverse_depth,
+                                depth_ranks: &mut self.depth_ranks,
+                                indices: &mut self.indices,
+                                palettes: &mut self.palettes,
+                            },
+                            &mut stats,
+                        );
+                    } else {
+                        stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     }
-                    for poly in list.polys(view.scene.polys) {
-                        let Some(material) = assets.material(poly.material) else {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                            continue;
-                        };
-                        let vertices = list.vertices(poly.vertices);
-                        for (stage_index, stage) in material.stages.iter().enumerate() {
-                            let Some(image) = assets.image(stage.image) else {
-                                stats.rejected = stats.rejected.saturating_add(1);
-                                continue;
-                            };
-                            let pass = RasterPass {
-                                material,
-                                stage,
-                                image,
-                                color: [1.0; 4],
-                                depth_hack: false,
-                                first_stage: stage_index == 0,
-                            };
-                            for i in 1..vertices.len().saturating_sub(1) {
-                                let triangle = [vertices[0], vertices[i], vertices[i + 1]];
-                                self.triangle(
-                                    camera,
-                                    triangle.map(|v| camera.vertex(v, v.position)),
-                                    pass,
-                                    &mut stats,
-                                );
+                    for (draw_rank, item) in list.draws(view.scene.draws).iter().enumerate() {
+                        match item.kind {
+                            DrawKind::Entity => self.entity(
+                                camera,
+                                list.entity(item.index),
+                                draw_rank as u32,
+                                assets,
+                                &mut stats,
+                            ),
+                            DrawKind::Poly => self.poly(
+                                camera,
+                                list.poly(item.index),
+                                draw_rank as u32,
+                                list,
+                                assets,
+                                &mut stats,
+                            ),
+                            DrawKind::Surface => {
+                                if let Some(world) = &mut self.world {
+                                    world.draw_surface(
+                                        camera,
+                                        item.index,
+                                        assets,
+                                        &self.evaluator,
+                                        world::Buffers {
+                                            pixels: &mut self.pixels,
+                                            inverse_depth: &mut self.inverse_depth,
+                                            depth_ranks: &mut self.depth_ranks,
+                                            indices: &mut self.indices,
+                                            palettes: &mut self.palettes,
+                                        },
+                                        &mut stats,
+                                    );
+                                }
                             }
                         }
                     }
                     if camera.refdef.blend_phase == BlendPhase::AfterView {
-                        self.tint(camera.refdef, false);
+                        self.view_blend(camera.refdef, false, assets);
                     }
                 }
                 Command::Draw2d(draw) => {
@@ -248,14 +344,13 @@ impl CpuBackend {
                 }
             }
         }
-        // Keep final-palette blends after HUD/console commands. The indexed
-        // presentation in THE-862 replaces this RGB approximation.
+        // Native indexed palette shifts run after the submitted HUD/console.
         for command in list.commands() {
             if let Command::View(view) = *command
                 && view.refdef.blend_phase == BlendPhase::FinalPalette
                 && let Some(camera) = Camera::load(view.refdef, self.width, self.height)
             {
-                self.tint(camera.refdef, true);
+                self.view_blend(camera.refdef, true, assets);
             }
         }
         stats
@@ -265,6 +360,72 @@ impl CpuBackend {
         for y in viewport.y..viewport.y + viewport.height {
             let start = y as usize * self.width as usize + viewport.x as usize;
             self.inverse_depth[start..start + viewport.width as usize].fill(0.0);
+            self.depth_ranks[start..start + viewport.width as usize].fill(0);
+        }
+    }
+
+    fn poly(
+        &mut self,
+        camera: Camera,
+        poly: &Poly,
+        draw_rank: u32,
+        list: &CommandList,
+        assets: &Assets,
+        stats: &mut BackendStats,
+    ) {
+        let Some(material) = assets.material(poly.material) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        if !self.mesh_supported(camera, material) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        let vertices = list.vertices(poly.vertices);
+        let inputs = DrawInputs {
+            time_ms: camera.refdef.time_ms,
+            view_origin: camera.refdef.origin,
+            identity_light: camera.refdef.identity_light,
+            ..DrawInputs::default()
+        };
+        let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        for (stage_index, stage) in material.stages.iter().enumerate() {
+            let Ok(stage) = self.evaluator.prepare(stage, material.settings, inputs) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
+            let Some(image) = assets.image(stage.image) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
+            let pass = RasterPass {
+                material,
+                stage,
+                image,
+                sampler: stage_sampler(stage.stage.sampler),
+                depth_hack: false,
+                first_stage: stage_index == 0,
+                draw_rank,
+            };
+            stats.stages = stats.stages.saturating_add(1);
+            for i in 1..vertices.len().saturating_sub(1) {
+                let triangle = [vertices[0], vertices[i], vertices[i + 1]].map(|v| {
+                    let v = self.evaluator.apply_deforms(deforms, v);
+                    let evaluated = self.evaluator.evaluate(&stage, &v);
+                    camera.vertex(
+                        Vertex {
+                            texcoord: evaluated.texcoord,
+                            color: evaluated.color,
+                            ..v
+                        },
+                        evaluated.position,
+                    )
+                });
+                self.triangle(camera, triangle, pass, stats);
+            }
         }
     }
 
@@ -272,6 +433,7 @@ impl CpuBackend {
         &mut self,
         camera: Camera,
         entity: &SceneEntity,
+        draw_rank: u32,
         assets: &Assets,
         stats: &mut BackendStats,
     ) {
@@ -293,8 +455,35 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let color = entity.color.map(|c| c as f32 / 255.0);
+        if !self.mesh_supported(camera, material) {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        let local_view = Vec3(std::array::from_fn(|i| {
+            let delta = Vec3(std::array::from_fn(|axis| {
+                camera.refdef.origin.0[axis] - entity.origin.0[axis]
+            }));
+            delta.dot(entity.axes[i])
+        }));
+        let inputs = DrawInputs {
+            time_ms: camera.refdef.time_ms,
+            entity_color: entity.color,
+            entity_texcoord: entity.shader_texcoord,
+            entity_shader_time: entity.shader_time,
+            lighting: entity.lighting,
+            view_origin: local_view,
+            identity_light: camera.refdef.identity_light,
+            ..DrawInputs::default()
+        };
+        let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         for (stage_index, stage) in material.stages.iter().enumerate() {
+            let Ok(stage) = self.evaluator.prepare(stage, material.settings, inputs) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
             let Some(image) = assets.image(stage.image) else {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
@@ -303,24 +492,46 @@ impl CpuBackend {
                 material,
                 stage,
                 image,
-                color,
+                sampler: stage_sampler(stage.stage.sampler),
                 depth_hack: entity.depth_hack,
                 first_stage: stage_index == 0,
+                draw_rank,
             };
+            stats.stages = stats.stages.saturating_add(1);
             for indices in model.indices.chunks_exact(3) {
                 let triangle = std::array::from_fn(|i| {
-                    let vertex = model.vertices[indices[i] as usize];
+                    let vertex = self
+                        .evaluator
+                        .apply_deforms(deforms, model.vertices[indices[i] as usize]);
+                    let evaluated = self.evaluator.evaluate(&stage, &vertex);
                     let position = Vec3(std::array::from_fn(|axis| {
                         entity.origin.0[axis]
-                            + vertex.position.0[0] * entity.axes[0].0[axis]
-                            + vertex.position.0[1] * entity.axes[1].0[axis]
-                            + vertex.position.0[2] * entity.axes[2].0[axis]
+                            + evaluated.position.0[0] * entity.axes[0].0[axis]
+                            + evaluated.position.0[1] * entity.axes[1].0[axis]
+                            + evaluated.position.0[2] * entity.axes[2].0[axis]
                     }));
-                    camera.vertex(vertex, position)
+                    camera.vertex(
+                        Vertex {
+                            texcoord: evaluated.texcoord,
+                            color: evaluated.color,
+                            ..vertex
+                        },
+                        position,
+                    )
                 });
                 self.triangle(camera, triangle, pass, stats);
             }
         }
+    }
+
+    fn mesh_supported(&self, camera: Camera, material: &Material) -> bool {
+        // Native indexed model/light shading is a separate native kernel; an
+        // RGB model must not masquerade as stock indexed presentation.
+        matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
+            && material.settings.sky.is_none()
+            && material.settings.fog.is_none()
+            && !material.settings.portal
+            && !material.settings.polygon_offset
     }
 
     fn triangle(
@@ -387,7 +598,13 @@ impl CpuBackend {
         let mut area = edge(vertices[0].xy, vertices[1].xy, vertices[2].xy);
         // Q3 CT_FRONT_SIDED culls GL_FRONT with GL_CCW. The retained winding
         // therefore has positive area in this top-left-origin framebuffer.
-        if area == 0.0 || (!pass.material.two_sided && area < 0.0) {
+        if area == 0.0
+            || (match pass.material.settings.cull {
+                Cull::Front => area < 0.0,
+                Cull::Back => area > 0.0,
+                Cull::None => false,
+            })
+        {
             return;
         }
         if area < 0.0 {
@@ -437,46 +654,36 @@ impl CpuBackend {
                 };
                 let index = y as usize * self.width as usize + x as usize;
                 if !depth_passes(
-                    pass.stage.depth_func,
+                    pass.stage.stage.depth_func,
                     depth_score,
                     self.inverse_depth[index],
+                    pass.draw_rank,
+                    self.depth_ranks[index],
                 ) {
                     continue;
                 }
                 let depth = 1.0 / inverse_depth;
-                let coordinates_over_depth = vertices.map(|v| match pass.stage.texgen {
-                    TcGen::Texture => v.texcoord_over_depth,
-                    TcGen::Lightmap => v.lightmap_over_depth,
-                });
                 let coordinates = std::array::from_fn(|i| {
-                    (weights[0] * coordinates_over_depth[0][i]
-                        + weights[1] * coordinates_over_depth[1][i]
-                        + weights[2] * coordinates_over_depth[2][i])
+                    (weights[0] * vertices[0].texcoord_over_depth[i]
+                        + weights[1] * vertices[1].texcoord_over_depth[i]
+                        + weights[2] * vertices[2].texcoord_over_depth[i])
                         * depth
                 });
-                let vertex_color = if pass.stage.vertex_color {
-                    std::array::from_fn(|i| {
-                        (weights[0] * vertices[0].color_over_depth[i]
-                            + weights[1] * vertices[1].color_over_depth[i]
-                            + weights[2] * vertices[2].color_over_depth[i])
-                            * depth
-                    })
-                } else {
-                    [1.0; 4]
-                };
-                let source = shade(
-                    pass.image,
-                    pass.stage,
-                    coordinates,
-                    pass.color,
-                    vertex_color,
-                );
-                if !alpha_passes(pass.stage.alpha_test, source[3]) {
+                let color = std::array::from_fn(|i| {
+                    (weights[0] * vertices[0].color_over_depth[i]
+                        + weights[1] * vertices[1].color_over_depth[i]
+                        + weights[2] * vertices[2].color_over_depth[i])
+                        * depth
+                });
+                let source = (pass.sampler)(pass.image, coordinates, color);
+                if !alpha_pass(pass.stage.stage.alpha_test, source[3]) {
                     continue;
                 }
-                self.pixels[index] = composite(self.pixels[index], source, pass.stage.blend);
-                if pass.stage.depth_write {
+                self.pixels[index] = composite(self.pixels[index], source, pass.stage.stage.blend);
+                self.palettes[index] = u32::MAX;
+                if pass.stage.stage.depth_write {
                     self.inverse_depth[index] = depth_score;
+                    self.depth_ranks[index] = pass.draw_rank;
                 }
             }
         }
@@ -511,29 +718,118 @@ impl CpuBackend {
             0,
             self.height,
         );
-        let color = draw.color.map(|c| c as f32 / 255.0);
+        if material.settings.sky.is_some()
+            || material.settings.fog.is_some()
+            || material.settings.portal
+            || material.settings.deforms.iter().any(Option::is_some)
+        {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        }
+        let inputs = DrawInputs {
+            time_ms: self.time_ms,
+            entity_color: draw.color,
+            ..DrawInputs::default()
+        };
         for stage in material.stages.iter() {
-            let Some(image) = assets.image(stage.image) else {
+            let Ok(prepared) = self.evaluator.prepare(stage, material.settings, inputs) else {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             };
+            let Some(image) = assets.image(prepared.image) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
+            let indexed = match self.presentation {
+                CpuPresentation::Rgb => None,
+                CpuPresentation::Indexed { palette, .. } => {
+                    let Some(texture) = image.indexed.as_ref() else {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    };
+                    if stage.blend.is_some() || draw.color != [255; 4] {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    }
+                    let Some(palette_resource) = assets.palette(palette) else {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    };
+                    let Some(mip) = texture.mip(0) else {
+                        stats.rejected = stats.rejected.saturating_add(1);
+                        continue;
+                    };
+                    Some((palette, palette_resource, texture, mip))
+                }
+            };
+            let sampler = stage_sampler(stage.sampler);
             for y in y_start..y_end {
                 let v = (y as f32 + 0.5 - draw.rect[1]) / draw.rect[3];
                 for x in x_start..x_end {
                     let u = (x as f32 + 0.5 - draw.rect[0]) / draw.rect[2];
-                    let coordinates = [
-                        draw.texcoords[0] + u * (draw.texcoords[2] - draw.texcoords[0]),
-                        draw.texcoords[1] + v * (draw.texcoords[3] - draw.texcoords[1]),
-                    ];
+                    let vertex = Vertex {
+                        position: Vec3([x as f32, y as f32, 0.0]),
+                        texcoord: [
+                            draw.texcoords[0] + u * (draw.texcoords[2] - draw.texcoords[0]),
+                            draw.texcoords[1] + v * (draw.texcoords[3] - draw.texcoords[1]),
+                        ],
+                        color: draw.color,
+                        ..Vertex::default()
+                    };
+                    let evaluated = self.evaluator.evaluate(&prepared, &vertex);
                     let index = y as usize * self.width as usize + x as usize;
-                    let source = shade(image, stage, coordinates, color, [1.0; 4]);
-                    if alpha_passes(stage.alpha_test, source[3]) {
-                        let blend = if stage.blend == Blend::Opaque {
-                            Blend::Alpha
-                        } else {
-                            stage.blend
-                        };
-                        self.pixels[index] = composite(self.pixels[index], source, blend);
+                    if let Some((palette_id, palette, texture, mip)) = indexed {
+                        if evaluated.color != [255; 4] {
+                            continue;
+                        }
+                        let tx = texel(evaluated.texcoord[0], mip.width, stage.sampler.wrap);
+                        let ty = texel(evaluated.texcoord[1], mip.height, stage.sampler.wrap);
+                        let color = mip.indices()[ty * mip.width as usize + tx];
+                        if texture.transparent_index() == Some(color) {
+                            continue;
+                        }
+                        self.pixels[index] = palette.color(color);
+                        self.indices[index] = color;
+                        self.palettes[index] = palette_id.0;
+                    } else {
+                        let source = sampler(
+                            image,
+                            evaluated.texcoord,
+                            evaluated.color.map(|c| c as f32 / 255.0),
+                        );
+                        if alpha_pass(stage.alpha_test, source[3]) {
+                            let blend = stage.blend.or(Some(ALPHA_BLEND));
+                            self.pixels[index] = composite(self.pixels[index], source, blend);
+                            self.palettes[index] = u32::MAX;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn view_blend(&mut self, refdef: Refdef, final_phase: bool, assets: &Assets) {
+        match refdef.cpu_presentation {
+            CpuPresentation::Rgb => self.tint(refdef, final_phase),
+            CpuPresentation::Indexed { palette, .. } => {
+                let Some(transform) = refdef.palette_transform else {
+                    return;
+                };
+                let Some(resource) = assets.palette(palette) else {
+                    return;
+                };
+                let transformed = transformed_palette(resource, &transform, refdef.blend);
+                let viewport = if final_phase {
+                    refdef.blend_viewport.unwrap_or(refdef.viewport)
+                } else {
+                    refdef.viewport
+                };
+                for y in viewport.y..viewport.y + viewport.height {
+                    let start = y as usize * self.width as usize + viewport.x as usize;
+                    for index in start..start + viewport.width as usize {
+                        if self.palettes[index] == palette.0 {
+                            self.pixels[index] = transformed[self.indices[index] as usize];
+                        }
                     }
                 }
             }
@@ -554,7 +850,7 @@ impl CpuBackend {
             let start = y as usize * self.width as usize + viewport.x as usize;
             for pixel in &mut self.pixels[start..start + viewport.width as usize] {
                 let alpha = *pixel & 0xff00_0000;
-                *pixel = composite(*pixel, source, Blend::Alpha);
+                *pixel = composite(*pixel, source, Some(ALPHA_BLEND));
                 if preserve_alpha {
                     *pixel = (*pixel & 0x00ff_ffff) | alpha;
                 }
@@ -632,56 +928,112 @@ fn pixel_bounds(coordinates: [f32; 3], low: u32, high: u32) -> (u32, u32) {
     )
 }
 
-fn shade(
+const ALPHA_BLEND: StageBlend = StageBlend {
+    source: BlendFactor::SourceAlpha,
+    destination: BlendFactor::OneMinusSourceAlpha,
+};
+fn texel(coordinate: f32, size: u32, wrap: Wrap) -> usize {
+    let coordinate = match wrap {
+        Wrap::Repeat => coordinate.rem_euclid(1.0),
+        Wrap::Clamp => coordinate.clamp(0.0, 1.0),
+    };
+    ((coordinate * size as f32) as usize).min(size as usize - 1)
+}
+type ShadeFn = fn(&Image, [f32; 2], [f32; 4]) -> [f32; 4];
+fn stage_sampler(sampler: Sampler) -> ShadeFn {
+    match (sampler.filter, sampler.wrap) {
+        (Filter::Nearest, Wrap::Repeat) => sample::<false, true>,
+        (Filter::Nearest, Wrap::Clamp) => sample::<false, false>,
+        (Filter::Linear, Wrap::Repeat) => sample::<true, true>,
+        (Filter::Linear, Wrap::Clamp) => sample::<true, false>,
+    }
+}
+fn sample<const LINEAR: bool, const REPEAT: bool>(
     image: &Image,
-    stage: &Stage,
     coordinates: [f32; 2],
     color: [f32; 4],
-    vertex_color: [f32; 4],
 ) -> [f32; 4] {
-    let x = ((coordinates[0].rem_euclid(1.0) * image.width as f32) as usize)
-        .min(image.width as usize - 1);
-    let y = ((coordinates[1].rem_euclid(1.0) * image.height as f32) as usize)
-        .min(image.height as usize - 1);
-    let offset = (y * image.width as usize + x) * 4;
-    std::array::from_fn(|i| {
-        image.rgba[offset + i] as f32 / 255.0
-            * color[i]
-            * if stage.vertex_color {
-                vertex_color[i]
-            } else {
-                1.0
-            }
+    let texture: [f32; 4] = if LINEAR {
+        let size = [image.width, image.height];
+        let p = std::array::from_fn::<_, 2, _>(|i| coordinates[i] * size[i] as f32 - 0.5);
+        let base = p.map(f32::floor);
+        let fraction = [p[0] - base[0], p[1] - base[1]];
+        let samples: [[f32; 4]; 4] = std::array::from_fn(|corner| {
+            let xy = std::array::from_fn::<_, 2, _>(|i| {
+                let value = base[i] + ((corner >> i) & 1) as f32;
+                if REPEAT {
+                    value.rem_euclid(size[i] as f32) as usize
+                } else {
+                    value.clamp(0.0, size[i] as f32 - 1.0) as usize
+                }
+            });
+            let offset = (xy[1] * image.width as usize + xy[0]) * 4;
+            std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
+        });
+        std::array::from_fn(|i| {
+            let a = samples[0][i] + fraction[0] * (samples[1][i] - samples[0][i]);
+            let b = samples[2][i] + fraction[0] * (samples[3][i] - samples[2][i]);
+            a + fraction[1] * (b - a)
+        })
+    } else {
+        let wrap = if REPEAT { Wrap::Repeat } else { Wrap::Clamp };
+        let x = texel(coordinates[0], image.width, wrap);
+        let y = texel(coordinates[1], image.height, wrap);
+        let offset = (y * image.width as usize + x) * 4;
+        std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
+    };
+    std::array::from_fn(|i| texture[i] * color[i])
+}
+
+fn transformed_palette(
+    resource: &crate::surface_cache::PaletteLighting,
+    transform: &crate::scene::PaletteTransform,
+    blend: [f32; 4],
+) -> [u32; 256] {
+    std::array::from_fn(|index| {
+        let base = resource.color(index as u8).to_le_bytes();
+        let rgb: [u8; 3] = std::array::from_fn(|axis| {
+            let value = match transform.operation {
+                PaletteOperation::SequentialShifts => {
+                    let mut value = base[axis] as i64;
+                    for shift in transform.shifts {
+                        value +=
+                            (shift.percent as i64 * (shift.destination[axis] as i64 - value)) >> 8;
+                    }
+                    value.clamp(0, 255) as usize
+                }
+                PaletteOperation::ScreenBlend => {
+                    let alpha = blend[3].clamp(0.0, 1.0);
+                    ((base[axis] as f32 * (1.0 - alpha)
+                        + blend[axis].clamp(0.0, 1.0) * alpha * 255.0)
+                        as usize)
+                        .min(255)
+                }
+            };
+            transform.gamma[value]
+        });
+        u32::from_le_bytes([rgb[0], rgb[1], rgb[2], base[3]])
     })
 }
 
-fn alpha_passes(test: AlphaTest, alpha: f32) -> bool {
+fn depth_passes(
+    test: DepthFunc,
+    incoming: f32,
+    existing: f32,
+    incoming_rank: u32,
+    existing_rank: u32,
+) -> bool {
     match test {
-        AlphaTest::None => true,
-        AlphaTest::GreaterZero => alpha > 0.0,
-        AlphaTest::AtLeastHalf => alpha >= 0.5,
-    }
-}
-
-fn depth_passes(test: DepthFunc, incoming: f32, existing: f32) -> bool {
-    match test {
-        DepthFunc::Lequal => incoming >= existing,
-        DepthFunc::Equal => incoming == existing,
+        DepthFunc::Lequal => {
+            incoming > existing || (incoming == existing && incoming_rank >= existing_rank)
+        }
+        DepthFunc::Equal => incoming == existing && incoming_rank >= existing_rank,
         DepthFunc::Always => true,
     }
 }
 
-fn composite(destination: u32, source: [f32; 4], blend: Blend) -> u32 {
-    let destination = destination.to_le_bytes();
-    let color = std::array::from_fn(|i| {
-        let d = destination[i] as f32 / 255.0;
-        let value = match blend {
-            Blend::Opaque => source[i],
-            Blend::Alpha => source[i] * source[3] + d * (1.0 - source[3]),
-            Blend::Add => source[i] + d,
-            Blend::Multiply => source[i] * d,
-        };
-        (value.clamp(0.0, 1.0) * 255.0).round() as u8
-    });
-    u32::from_le_bytes(color)
+fn composite(destination: u32, source: [f32; 4], blend: Option<StageBlend>) -> u32 {
+    let destination = destination.to_le_bytes().map(|c| c as f32 / 255.0);
+    let result = blend_pixel(blend, source, destination);
+    u32::from_le_bytes(result.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
 }

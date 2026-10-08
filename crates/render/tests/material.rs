@@ -5,7 +5,10 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn same_name_with_different_resolved_images_retains_distinct_numeric_materials() {
-    use qa_render::{Assets, assets::Stage};
+    use qa_render::{
+        Assets,
+        assets::{MaterialSettings, Stage, StageTexture},
+    };
     let mut assets = Assets::load();
     let a = assets.register_image(1, 1, &[0, 0, 0, 255]).unwrap();
     let b = assets.register_image(1, 1, &[255; 4]).unwrap();
@@ -13,22 +16,20 @@ fn same_name_with_different_resolved_images_retains_distinct_numeric_materials()
         .register_material(
             "wall",
             &[Stage {
-                image: a,
+                texture: StageTexture::Image(a),
                 ..Stage::default()
             }],
-            false,
-            3,
+            MaterialSettings::default(),
         )
         .unwrap();
     let second = assets
         .register_material(
             "wall",
             &[Stage {
-                image: b,
+                texture: StageTexture::Image(b),
                 ..Stage::default()
             }],
-            false,
-            3,
+            MaterialSettings::default(),
         )
         .unwrap();
     assert_ne!(first, second);
@@ -37,11 +38,10 @@ fn same_name_with_different_resolved_images_retains_distinct_numeric_materials()
             .register_material(
                 "wall",
                 &[Stage {
-                    image: a,
+                    texture: StageTexture::Image(a),
                     ..Stage::default()
                 }],
-                false,
-                3
+                MaterialSettings::default()
             )
             .unwrap(),
         first

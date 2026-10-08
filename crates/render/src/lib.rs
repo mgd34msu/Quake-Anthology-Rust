@@ -8,12 +8,14 @@ pub mod material;
 pub mod scene;
 pub mod shader;
 pub mod sky;
+pub mod stage;
 pub mod surface_cache;
 pub mod world;
 pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
 pub use scene::{
-    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, Frame, FrontEnd, Light, LightStyle,
-    Limits, PerspectiveStep, Refdef, SceneEntity, Viewport,
+    BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawItem, DrawKind, Frame, FrontEnd, Light, LightStyle,
+    Limits, PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep, Refdef, SceneEntity,
+    Viewport,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
