@@ -1223,6 +1223,7 @@ fn quad(rect: [f32; 4], uv: [f32; 4], color: [u8; 4]) -> [Vertex; 4] {
     ]
     .map(|(position, texcoord)| Vertex {
         position: Vec3(position),
+        normal: Vec3([0.0, 0.0, 1.0]),
         texcoord,
         lightmap_coord: texcoord,
         color,
