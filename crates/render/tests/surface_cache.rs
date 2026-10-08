@@ -162,6 +162,25 @@ fn owner_brightest_rgb_policy_preserves_red_green_ties() {
     // Literal native Q2 strict comparisons would choose B=20 and grade58.
     // The owner's explicit true maximum uses100 and grade38 instead.
     assert!(cache.pixels(span).unwrap().iter().all(|&pixel| pixel == 38));
+    let native = cache
+        .prepare(
+            0,
+            0,
+            &texture,
+            &palette,
+            BuildState {
+                lighting: IndexedLighting::NativeRgb,
+                ..BuildState::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        cache
+            .pixels(native)
+            .unwrap()
+            .iter()
+            .all(|&pixel| pixel == 58)
+    );
 }
 
 #[test]
@@ -386,4 +405,59 @@ fn malformed_load_inputs_are_scoped_errors() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn native_cloud_zero_mask_is_preserved_at_each_original_mip() {
+    let palette = palette(false, 224);
+    let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| {
+        let width = 16 >> mip;
+        (0..width * width)
+            .map(|pixel| if pixel % 2 == 0 { 0 } else { 17 })
+            .collect()
+    });
+    let texture =
+        IndexedTexture::load_masked(16, 16, std::array::from_fn(|i| mips[i].as_slice()), Some(0))
+            .unwrap();
+    assert_eq!(texture.transparent_index(), Some(0));
+    let mut cache = SurfaceCache::load(
+        vec![SurfaceSource::load([0; 2], [16; 2], None, false).unwrap()],
+        512,
+    )
+    .unwrap();
+    for mip in 0..4 {
+        let span = cache
+            .prepare(0, mip, &texture, &palette, BuildState::default())
+            .unwrap();
+        assert_eq!(span.transparent_index, Some(0));
+        for (index, &texel) in cache.pixels(span).unwrap().iter().enumerate() {
+            assert_eq!(texel, if index % 2 == 0 { 0 } else { 17 });
+        }
+    }
+}
+
+#[test]
+fn base_only_indexed_images_do_not_invent_native_mips() {
+    let texture = IndexedTexture::load_base(16, 16, &[17; 256], None).unwrap();
+    assert_eq!(texture.mip(0).unwrap().indices(), &[17; 256]);
+    for mip in 1..4 {
+        assert!(texture.mip(mip).is_none());
+    }
+    let palette = palette(false, 224);
+    let mut cache = SurfaceCache::load(
+        vec![SurfaceSource::load([0; 2], [16; 2], None, false).unwrap()],
+        512,
+    )
+    .unwrap();
+    assert!(
+        cache
+            .prepare(0, 0, &texture, &palette, BuildState::default())
+            .is_some()
+    );
+    assert!(
+        cache
+            .prepare(0, 1, &texture, &palette, BuildState::default())
+            .is_none()
+    );
+    assert_eq!(cache.stats().rejected, 1);
 }

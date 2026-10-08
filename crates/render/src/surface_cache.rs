@@ -2,8 +2,8 @@
 //!
 //! References: WinQuake/d_surf.c D_SCAlloc/D_CacheSurface; WinQuake/r_surf.c
 //! R_BuildLightMap and R_DrawSurfaceBlock8_mip0..3; Q2 ref_soft/r_light.c and
-//! r_surf.c. Q2 RGB conversion uses a true maximum as the owner requests; the
-//! original r_model.c strict comparisons instead choose blue on an R/G tie.
+//! r_surf.c. Native Q2 RGB conversion preserves r_model.c's strict comparisons,
+//! including its blue result on an R/G tie. True maximum is a separate policy.
 //! The C port's pin-aware rover fix prevents eviction before pending spans end.
 //! Fullbright colors are encoded by the supplied colormap rows; the cutoff
 //! metadata does not bypass that table. Only explicit fence cutouts skip it.
@@ -91,8 +91,8 @@ impl IndexedMip {
 
 pub struct IndexedTexture {
     id: u64,
-    mips: [IndexedMip; 4],
-    cutout: bool,
+    mips: [Option<IndexedMip>; 4],
+    transparent_index: Option<u8>,
 }
 
 impl IndexedTexture {
@@ -102,6 +102,16 @@ impl IndexedTexture {
         height: u32,
         mips: [&[u8]; 4],
         cutout: bool,
+    ) -> Result<Self, &'static str> {
+        Self::load_masked(width, height, mips, cutout.then_some(255))
+    }
+
+    /// Native fences use 255; a layered sky's front cloud mask uses zero.
+    pub fn load_masked(
+        width: u32,
+        height: u32,
+        mips: [&[u8]; 4],
+        transparent_index: Option<u8>,
     ) -> Result<Self, &'static str> {
         if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
             return Err("invalid indexed texture dimensions");
@@ -115,21 +125,56 @@ impl IndexedTexture {
         }
         Ok(Self {
             id: resource_id()?,
-            mips: std::array::from_fn(|mip| IndexedMip {
-                width: (width >> mip).max(1),
-                height: (height >> mip).max(1),
-                indices: mips[mip].into(),
+            mips: std::array::from_fn(|mip| {
+                Some(IndexedMip {
+                    width: (width >> mip).max(1),
+                    height: (height >> mip).max(1),
+                    indices: mips[mip].into(),
+                })
             }),
-            cutout,
+            transparent_index,
         })
     }
 
+    /// PCX skies provide one original base image, without disk mip levels.
+    pub fn load_base(
+        width: u32,
+        height: u32,
+        indices: &[u8],
+        transparent_index: Option<u8>,
+    ) -> Result<Self, &'static str> {
+        if width == 0
+            || height == 0
+            || width > MAX_DIMENSION
+            || height > MAX_DIMENSION
+            || indices.len() != width as usize * height as usize
+        {
+            return Err("invalid indexed base image dimensions");
+        }
+        Ok(Self {
+            id: resource_id()?,
+            mips: [
+                Some(IndexedMip {
+                    width,
+                    height,
+                    indices: indices.into(),
+                }),
+                None,
+                None,
+                None,
+            ],
+            transparent_index,
+        })
+    }
     pub fn mip(&self, mip: u8) -> Option<&IndexedMip> {
-        self.mips.get(mip as usize)
+        self.mips.get(mip as usize)?.as_ref()
     }
 
     pub fn cutout(&self) -> bool {
-        self.cutout
+        self.transparent_index.is_some()
+    }
+    pub fn transparent_index(&self) -> Option<u8> {
+        self.transparent_index
     }
 }
 
@@ -298,6 +343,8 @@ pub enum IndexedLighting {
     /// Original scalar Q1 grids are replicated into RGB; select that scalar.
     #[default]
     Gray,
+    /// Literal Q2 r_model.c conversion; ties without a strict R/G winner use B.
+    NativeRgb,
     /// Q2 software gray: max(R,G,B) per disk sample, before style scaling.
     BrightestRgb,
 }
@@ -349,6 +396,7 @@ pub struct CacheSpan {
     pub mip: u8,
     pub texture_mins: [i32; 2],
     pub cutout: bool,
+    pub transparent_index: Option<u8>,
     cache_id: u64,
     block: usize,
     generation: u64,
@@ -388,7 +436,7 @@ impl Stamp {
             fullbright: state.fullbright,
             ambient: state.ambient,
             lighting: state.lighting,
-            cutout: texture.cutout,
+            cutout: texture.cutout(),
         }
     }
 }
@@ -513,6 +561,10 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         }
+        let Some(texture_level) = texture.mip(mip) else {
+            self.stats.rejected = self.stats.rejected.saturating_add(1);
+            return None;
+        };
         let width = source.extents[0] >> mip;
         let height = source.extents[1] >> mip;
         let bytes = width as usize * height as usize;
@@ -522,7 +574,7 @@ impl SurfaceCache {
             if self.slots[key].stamp == stamp {
                 self.pin(block);
                 self.stats.hits = self.stats.hits.saturating_add(1);
-                return Some(self.span(surface as usize, mip, block, texture.cutout));
+                return Some(self.span(surface as usize, mip, block, texture.transparent_index));
             }
             if self.pinned(block) {
                 self.stats.rejected = self.stats.rejected.saturating_add(1);
@@ -547,15 +599,15 @@ impl SurfaceCache {
         fill_surface(
             source,
             mip,
-            &texture.mips[mip as usize],
-            texture.cutout,
+            texture_level,
+            texture.transparent_index,
             palette,
             &self.light_scratch,
             &mut self.arena[offset..offset + bytes],
         );
         self.pin(block);
         self.stats.fills = self.stats.fills.saturating_add(1);
-        Some(self.span(surface as usize, mip, block, texture.cutout))
+        Some(self.span(surface as usize, mip, block, texture.transparent_index))
     }
 
     /// A generation check rejects a span whose block has since been reused.
@@ -581,14 +633,21 @@ impl SurfaceCache {
         self.arena.get(block.offset..block.offset + bytes)
     }
 
-    fn span(&self, surface: usize, mip: u8, block: usize, cutout: bool) -> CacheSpan {
+    fn span(
+        &self,
+        surface: usize,
+        mip: u8,
+        block: usize,
+        transparent_index: Option<u8>,
+    ) -> CacheSpan {
         let source = &self.surfaces[surface];
         CacheSpan {
             width: source.extents[0] >> mip,
             height: source.extents[1] >> mip,
             mip,
             texture_mins: source.texture_mins,
-            cutout,
+            cutout: transparent_index.is_some(),
+            transparent_index,
             cache_id: self.id,
             block,
             generation: self.blocks[block].generation,
@@ -696,6 +755,15 @@ fn build_lightmap(source: &SurfaceSource, state: BuildState<'_>, scratch: &mut [
                 let rgb = grid.samples[style * cells + cell];
                 let value = match state.lighting {
                     IndexedLighting::Gray => rgb[0],
+                    IndexedLighting::NativeRgb => {
+                        if rgb[0] > rgb[1] && rgb[0] > rgb[2] {
+                            rgb[0]
+                        } else if rgb[1] > rgb[0] && rgb[1] > rgb[2] {
+                            rgb[1]
+                        } else {
+                            rgb[2]
+                        }
+                    }
                     IndexedLighting::BrightestRgb => rgb[0].max(rgb[1]).max(rgb[2]),
                 };
                 light += i64::from(value) * i64::from(state.style_scales[style]);
@@ -712,7 +780,7 @@ fn fill_surface(
     source: &SurfaceSource,
     mip: u8,
     texture: &IndexedMip,
-    cutout: bool,
+    transparent_index: Option<u8>,
     palette: &PaletteLighting,
     lights: &[i32],
     output: &mut [u8],
@@ -750,7 +818,7 @@ fn fill_surface(
                 let destination = &mut output[start..start + block_size];
                 for column in (0..block_size).rev() {
                     let index = texture_row[sample_x];
-                    destination[column] = if cutout && index == 255 {
+                    destination[column] = if Some(index) == transparent_index {
                         index
                     } else {
                         palette.colormap[(light as usize & 0xff00) + index as usize]
