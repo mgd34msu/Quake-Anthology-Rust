@@ -441,8 +441,70 @@ fn collapse_applies_shared_constant_color_once_and_rounds_only_final_product() {
 }
 
 #[test]
+fn static_lightmap_sources_ignore_synthetic_and_unused_lightstyles() {
+    for source in [
+        LightSource::Page(0),
+        LightSource::ExternalPage(7),
+        LightSource::White,
+        LightSource::Vertex,
+        LightSource::None,
+        LightSource::TwoDimensional,
+    ] {
+        let mut fixture = fixture(false, false, false);
+        fixture.geometry.surfaces[0].light_source = source;
+        fixture.geometry.surfaces[0].styles = [0, 7, 255, 255];
+        let recipe = product(&fixture, 65536).unwrap();
+        let mut cache = SurfaceCache::load(vec![recipe.source().unwrap()], 65536).unwrap();
+        let mut refdef = Refdef::default();
+        let first = build(&mut cache, &fixture, &recipe, 0, refdef);
+        let original_pixels = cache.rgba_pixels(first).unwrap().to_vec();
+        refdef.lightstyles[0].rgb = [0.5, 0.75, 1.0];
+        refdef.lightstyles[0].indexed_scale = 132;
+        let second = build(&mut cache, &fixture, &recipe, 0, refdef);
+        assert_eq!(cache.rgba_pixels(second).unwrap(), original_pixels);
+        refdef.lightstyles[7].rgb = [1.0, 0.5, 0.25];
+        refdef.lightstyles[19].rgb = [0.25; 3];
+        let third = build(&mut cache, &fixture, &recipe, 0, refdef);
+        assert_eq!(cache.rgba_pixels(third).unwrap(), original_pixels);
+        assert_eq!(cache.stats().fills, 1, "source={source:?}");
+        assert_eq!(cache.stats().hits, 2, "source={source:?}");
+        assert_eq!(cache.stats().evictions, 0);
+        assert_eq!(cache.stats().rejected, 0);
+    }
+}
+
+#[test]
+fn styled_grid_only_invalidates_its_referenced_lightstyles() {
+    let mut fixture = fixture(false, false, false);
+    fixture.geometry.surfaces[0].light_source = LightSource::Samples;
+    fixture.geometry.surfaces[0].styles = [7, 3, 255, 255];
+    let recipe = product(&fixture, 65536).unwrap();
+    let mut cache = SurfaceCache::load(vec![recipe.source().unwrap()], 65536).unwrap();
+    let mut refdef = Refdef::default();
+    let first = build(&mut cache, &fixture, &recipe, 0, refdef);
+    let original_pixels = cache.rgba_pixels(first).unwrap().to_vec();
+    refdef.lightstyles[0].rgb = [0.5; 3];
+    let second = build(&mut cache, &fixture, &recipe, 0, refdef);
+    assert_eq!(cache.rgba_pixels(second).unwrap(), original_pixels);
+    assert_eq!(cache.stats().fills, 1);
+    assert_eq!(cache.stats().hits, 1);
+    refdef.lightstyles[3].rgb = [0.5, 0.75, 1.0];
+    build(&mut cache, &fixture, &recipe, 0, refdef);
+    assert_eq!(cache.stats().fills, 2);
+    build(&mut cache, &fixture, &recipe, 0, refdef);
+    assert_eq!(cache.stats().fills, 2);
+    assert_eq!(cache.stats().hits, 2);
+    refdef.lightstyles[7].rgb = [0.75, 0.5, 0.25];
+    build(&mut cache, &fixture, &recipe, 0, refdef);
+    assert_eq!(cache.stats().fills, 3);
+    assert_eq!(cache.stats().evictions, 0);
+    assert_eq!(cache.stats().rejected, 0);
+}
+
+#[test]
 fn static_cache_reuses_payload_and_explicit_input_changes_invalidate() {
     let mut fixture = fixture(false, false, false);
+    fixture.geometry.surfaces[0].light_source = LightSource::Samples;
     let recipe = product(&fixture, 65536).unwrap();
     let mut cache = SurfaceCache::load(vec![recipe.source().unwrap()], 65536).unwrap();
     let refdef = Refdef::default();

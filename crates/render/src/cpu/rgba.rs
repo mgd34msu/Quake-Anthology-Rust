@@ -9,7 +9,10 @@ use crate::scene::Refdef;
 use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, RgbGen, TexCoordGen, TexMod};
 use crate::stage::{DrawInputs, StageEvaluator};
 use crate::surface_cache::{RgbaBuildState, SurfaceSource};
-use crate::world::{SurfaceBinding, geometry::WorldGeometry};
+use crate::world::{
+    SurfaceBinding,
+    geometry::{LightSource, WorldGeometry},
+};
 
 #[derive(Clone)]
 pub(super) enum Recipe {
@@ -569,6 +572,16 @@ impl Product {
             }
             *layout = source.mip_layout(mip as u8)?;
         }
+        let surface = geometry
+            .surfaces
+            .iter()
+            .find(|surface| surface.boundaries.indices().contains(&boundary))?;
+        // qsrc gl_rsurf.c styled grids retain styles; tr_bsp.c:199-205
+        // authored pages are static and have no lightstyle dependency.
+        let styles = match surface.light_source {
+            LightSource::Samples => surface.styles,
+            _ => [255; 4],
+        };
         Some(Self {
             cache,
             base,
@@ -596,11 +609,7 @@ impl Product {
                 Box::default()
             },
             basis_coordinates,
-            styles: geometry
-                .surfaces
-                .iter()
-                .find(|surface| surface.boundaries.indices().contains(&boundary))?
-                .styles,
+            styles,
             stages: [material.stages[0], material.stages[1]],
             settings: material.settings,
             material: binding.material,
