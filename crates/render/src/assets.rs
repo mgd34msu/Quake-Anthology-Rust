@@ -47,6 +47,9 @@ pub struct Image {
     /// Cold native upload levels. Both consumers may use these numeric mip
     /// resources; the original indexed mips and unprocessed RGBA stay intact.
     pub prepared: Option<upload::PreparedImage>,
+    /// Numeric ownership revision, advanced on every successful preparation
+    /// replacement. It does not depend on the image's bytes or identity.
+    pub preparation_revision: u64,
     /// Native first image registration owns wrap/mip flags. Other registrations
     /// leave this unset and use the material stage's explicit sampler.
     pub native_sampler: Option<Sampler>,
@@ -285,6 +288,7 @@ impl Assets {
                 rgba: vec![255; 4].into_boxed_slice(),
                 indexed: None,
                 prepared: None,
+                preparation_revision: 0,
                 native_sampler: None,
             }],
             materials: vec![Material {
@@ -331,6 +335,7 @@ impl Assets {
             rgba: rgba.into(),
             indexed: None,
             prepared: None,
+            preparation_revision: 0,
             native_sampler: None,
         });
         Ok(id)
@@ -395,6 +400,7 @@ impl Assets {
             rgba: rgba.into_boxed_slice(),
             indexed: Some(texture),
             prepared: None,
+            preparation_revision: 0,
             native_sampler: None,
         });
         Ok(id)
@@ -410,7 +416,12 @@ impl Assets {
             .ok_or("invalid image handle")?;
         let prepared = upload::prepare_rgba(image.width, image.height, &image.rgba, params)
             .map_err(|_| "invalid image preparation")?;
+        let revision = image
+            .preparation_revision
+            .checked_add(1)
+            .ok_or("image preparation revision exhausted")?;
         image.prepared = Some(prepared);
+        image.preparation_revision = revision;
         Ok(())
     }
     /// Prepare a separate native GL expansion (palette correction or alpha
@@ -428,7 +439,12 @@ impl Assets {
             .ok_or("invalid image handle")?;
         let prepared = upload::prepare_rgba(image.width, image.height, rgba, params)
             .map_err(|_| "invalid image preparation")?;
+        let revision = image
+            .preparation_revision
+            .checked_add(1)
+            .ok_or("image preparation revision exhausted")?;
         image.prepared = Some(prepared);
+        image.preparation_revision = revision;
         Ok(())
     }
     pub fn set_image_native_sampler(

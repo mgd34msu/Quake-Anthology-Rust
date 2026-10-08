@@ -106,6 +106,7 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
     let id = assets
         .register_rgba_with_indexed(4, 2, &raw, indexed)
         .unwrap();
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 0);
     let scale = light_scale(RgbLut::default(), 2.0).unwrap();
     assets
         .prepare_image(
@@ -119,6 +120,7 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
         )
         .unwrap();
     let image = assets.image(id).unwrap();
+    assert_eq!(image.preparation_revision, 1);
     assert_eq!((image.width, image.height), (4, 2));
     assert_eq!(image.rgba.as_ref(), raw);
     let indexed = image.indexed.as_ref().unwrap();
@@ -153,6 +155,7 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
             .is_err()
     );
     let image = assets.image(id).unwrap();
+    assert_eq!(image.preparation_revision, 1);
     let after: Vec<_> = image
         .prepared
         .as_ref()
@@ -179,11 +182,13 @@ fn alternate_gl_expansion_keeps_raw_sources_and_prior_preparation_on_failure() {
     let id = assets
         .register_rgba_with_indexed(2, 2, &raw, indexed)
         .unwrap();
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 0);
     let gl_expansion = gray(&[31, 43, 59, 71]);
     assets
         .prepare_image_with_rgba(id, &gl_expansion, UploadParams::default())
         .unwrap();
     let image = assets.image(id).unwrap();
+    assert_eq!(image.preparation_revision, 1);
     assert_eq!(image.rgba.as_ref(), raw);
     assert_eq!(
         image.prepared.as_ref().unwrap().levels[0].rgba.as_ref(),
@@ -200,11 +205,64 @@ fn alternate_gl_expansion_keeps_raw_sources_and_prior_preparation_on_failure() {
             .is_err()
     );
     let image = assets.image(id).unwrap();
+    assert_eq!(image.preparation_revision, 1);
     assert_eq!(
         image.prepared.as_ref().unwrap().levels[0].rgba.as_ref(),
         gl_expansion
     );
     assert_eq!(image.rgba.as_ref(), raw);
+}
+
+#[test]
+fn numeric_preparation_revision_tracks_replacements_even_with_identical_pixels() {
+    use qa_render::{
+        Assets,
+        assets::Sampler,
+        surface_cache::{IndexedTexture, PaletteLighting},
+    };
+    let mut assets = Assets::load();
+    assert_eq!(
+        assets
+            .image(qa_render::assets::ImageId(0))
+            .unwrap()
+            .preparation_revision,
+        0
+    );
+    let raw = gray(&[7, 11, 19, 23]);
+    let id = assets.register_image(2, 2, &raw).unwrap();
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 0);
+    for revision in 1..=2 {
+        assets.prepare_image(id, UploadParams::default()).unwrap();
+        assert_eq!(assets.image(id).unwrap().preparation_revision, revision);
+        assert_eq!(
+            assets.image(id).unwrap().prepared.as_ref().unwrap().levels[0]
+                .rgba
+                .as_ref(),
+            raw
+        );
+    }
+    assets
+        .prepare_image_with_rgba(id, &raw, UploadParams::default())
+        .unwrap();
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 3);
+    assets
+        .set_image_native_sampler(id, Sampler::default())
+        .unwrap();
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 3);
+    assert!(
+        assets
+            .prepare_image_with_rgba(id, &[0], UploadParams::default())
+            .is_err()
+    );
+    assert_eq!(assets.image(id).unwrap().preparation_revision, 3);
+    let colors = vec![17; 256 * 3];
+    let shades: Vec<u8> = (0..64).flat_map(|_| 0..=255).collect();
+    let palette = assets
+        .register_palette(PaletteLighting::load(&colors, &shades, None, 256).unwrap())
+        .unwrap();
+    let texture = IndexedTexture::load_base(2, 2, &[0, 1, 2, 3], None).unwrap();
+    let indexed = assets.register_indexed_image(texture, palette).unwrap();
+    assert_eq!(assets.image(indexed).unwrap().preparation_revision, 0);
 }
 
 #[test]
