@@ -88,6 +88,52 @@ pub struct EffectId(pub u32);
 pub struct NameId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModuleId(pub u16);
+
+/// Weak slot identity from a module's native entity namespace. Raw world/none
+/// sentinels stay signed and unchanged; this is not an engine lifetime handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeEntity {
+    pub module: ModuleId,
+    pub slot: i32,
+}
+
+/// Collision ownership is separate from the module which runs an entity.
+/// Native references name a slot across reuse; lifetime references name one
+/// generation of that slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CollisionOwner {
+    #[default]
+    None,
+    Lifetime(EntityId),
+    Native(NativeEntity),
+}
+
+/// Only shapes implemented by the shared entity narrow phase are admitted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CollisionShape {
+    #[default]
+    None,
+    Box,
+}
+
+/// Canonical collision classifications, converted from native flags at load.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct CollisionTags(pub u8);
+
+impl CollisionTags {
+    pub const MONSTER: Self = Self(1);
+    pub const DEAD_MONSTER: Self = Self(2);
+}
+
+impl std::ops::BitOr for CollisionTags {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CallbackId(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
