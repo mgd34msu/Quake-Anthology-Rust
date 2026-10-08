@@ -8,7 +8,10 @@
 //! Fullbright colors are encoded by the supplied colormap rows; the cutoff
 //! metadata does not bypass that table. Only explicit fence cutouts skip it.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 const COLORMAP_BYTES: usize = 64 * 256;
 const ALPHAMAP_BYTES: usize = 256 * 256;
@@ -479,6 +482,89 @@ impl SurfaceSource {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SlotSource {
+    surface: usize,
+    mip: u8,
+}
+
+/// Immutable surface layouts and native light samples, shared at load by
+/// independently owned rovers. No source or light grid is copied per cache.
+pub struct SurfaceCatalog {
+    surfaces: Box<[SurfaceSource]>,
+    slots: Box<[SlotSource]>,
+    block_count: usize,
+    scratch_cells: usize,
+    max_reservation: [usize; 2],
+}
+
+impl SurfaceCatalog {
+    pub fn load(mut surfaces: Vec<SurfaceSource>) -> Result<Arc<Self>, &'static str> {
+        if surfaces.len() > u32::MAX as usize {
+            return Err("invalid surface catalog capacity");
+        }
+        let mut slot_count = 0usize;
+        let mut max_reservation = [0usize; 2];
+        for source in &mut surfaces {
+            source.slot_start = slot_count;
+            slot_count = slot_count
+                .checked_add(source.mip_count as usize)
+                .ok_or("surface slot count overflow")?;
+            let layout = match source.layout {
+                CacheLayout::Indexed8 => 0,
+                CacheLayout::Rgba8 => 1,
+            };
+            for mip in 0..source.mip_count {
+                let bytes = source
+                    .reservation_bytes(mip)
+                    .ok_or("surface reservation size overflow")?;
+                max_reservation[layout] = max_reservation[layout].max(bytes);
+            }
+        }
+        let block_count = slot_count
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(1))
+            .ok_or("surface block count overflow")?;
+        let scratch_cells = surfaces
+            .iter()
+            .map(SurfaceSource::grid_cells)
+            .max()
+            .unwrap_or(0);
+        let slots = surfaces
+            .iter()
+            .enumerate()
+            .flat_map(|(surface, source)| {
+                (0..source.mip_count).map(move |mip| SlotSource { surface, mip })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Ok(Arc::new(Self {
+            surfaces: surfaces.into_boxed_slice(),
+            slots,
+            block_count,
+            scratch_cells,
+            max_reservation,
+        }))
+    }
+
+    pub fn surface(&self, surface: u32) -> Option<&SurfaceSource> {
+        self.surfaces.get(surface as usize)
+    }
+
+    pub fn surfaces(&self) -> &[SurfaceSource] {
+        &self.surfaces
+    }
+
+    /// Includes the rover's eight-byte payload alignment. RGBA sources may be
+    /// optional raw factors; the caller classifies required product blocks.
+    pub fn max_reservation_bytes(&self, layout: CacheLayout) -> usize {
+        self.max_reservation[match layout {
+            CacheLayout::Indexed8 => 0,
+            CacheLayout::Rgba8 => 1,
+        }]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IndexedLighting {
     /// Original scalar Q1 grids are replicated into RGB; select that scalar.
@@ -629,8 +715,6 @@ enum Stamp {
 
 #[derive(Clone, Copy, Default)]
 struct Slot {
-    surface: usize,
-    mip: u8,
     block: Option<usize>,
     stamp: Option<Stamp>,
 }
@@ -647,7 +731,7 @@ struct Block {
 
 pub struct SurfaceCache {
     id: u64,
-    surfaces: Box<[SurfaceSource]>,
+    catalog: Arc<SurfaceCatalog>,
     slots: Box<[Slot]>,
     arena: Box<[u8]>,
     blocks: Box<[Block]>,
@@ -661,55 +745,37 @@ pub struct SurfaceCache {
 }
 
 impl SurfaceCache {
-    pub fn load(
-        mut surfaces: Vec<SurfaceSource>,
-        arena_bytes: usize,
-    ) -> Result<Self, &'static str> {
-        let mut slot_count = 0usize;
-        for source in &mut surfaces {
-            source.slot_start = slot_count;
-            slot_count = slot_count
-                .checked_add(source.mip_count as usize)
-                .ok_or("surface slot count overflow")?;
-        }
-        let block_count = slot_count
-            .checked_mul(2)
-            .and_then(|count| count.checked_add(1))
-            .ok_or("surface block count overflow")?;
-        if surfaces.len() > u32::MAX as usize || arena_bytes == 0 {
+    pub fn load(surfaces: Vec<SurfaceSource>, arena_bytes: usize) -> Result<Self, &'static str> {
+        if arena_bytes == 0 {
             return Err("invalid surface cache capacity");
         }
-        let scratch_cells = surfaces
-            .iter()
-            .map(SurfaceSource::grid_cells)
-            .max()
-            .unwrap_or(0);
+        Self::load_shared(SurfaceCatalog::load(surfaces)?, arena_bytes)
+    }
+
+    pub fn load_shared(
+        catalog: Arc<SurfaceCatalog>,
+        arena_bytes: usize,
+    ) -> Result<Self, &'static str> {
+        if arena_bytes == 0 {
+            return Err("invalid surface cache capacity");
+        }
+        let block_count = catalog.block_count;
         let mut blocks = vec![Block::default(); block_count].into_boxed_slice();
         blocks[0].bytes = arena_bytes;
         for (index, block) in blocks.iter_mut().enumerate().skip(1) {
             block.next = (index + 1 < block_count).then_some(index + 1);
         }
-        let slots = surfaces
-            .iter()
-            .enumerate()
-            .flat_map(|(surface, source)| {
-                (0..source.mip_count).map(move |mip| Slot {
-                    surface,
-                    mip,
-                    ..Slot::default()
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        let slots = vec![Slot::default(); catalog.slots.len()].into_boxed_slice();
+        let light_scratch = vec![0; catalog.scratch_cells].into_boxed_slice();
         Ok(Self {
             id: resource_id()?,
-            surfaces: surfaces.into_boxed_slice(),
+            catalog,
             slots,
             arena: vec![0; arena_bytes].into_boxed_slice(),
             blocks,
             free_metadata: (block_count > 1).then_some(1),
             rover: 0,
-            light_scratch: vec![0; scratch_cells].into_boxed_slice(),
+            light_scratch,
             batch: 0,
             batch_active: false,
             generation: 0,
@@ -717,8 +783,13 @@ impl SurfaceCache {
         })
     }
 
+    /// Clone only the shared cold catalog handle, never frame payloads.
+    pub fn catalog(&self) -> Arc<SurfaceCatalog> {
+        Arc::clone(&self.catalog)
+    }
+
     pub fn surface(&self, surface: u32) -> Option<&SurfaceSource> {
-        self.surfaces.get(surface as usize)
+        self.catalog.surface(surface)
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -755,7 +826,7 @@ impl SurfaceCache {
         palette: &PaletteLighting,
         state: BuildState<'_>,
     ) -> Option<CacheSpan> {
-        let Some(source) = self.surfaces.get(surface as usize) else {
+        let Some(source) = self.catalog.surface(surface) else {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         };
@@ -779,7 +850,7 @@ impl SurfaceCache {
         if !needs_fill {
             return Some(self.span(surface as usize, mip, block, texture.transparent_index));
         }
-        let source = &self.surfaces[surface as usize];
+        let source = &self.catalog.surfaces[surface as usize];
         build_lightmap(source, state, &mut self.light_scratch);
         let offset = self.blocks[block].offset;
         fill_surface(
@@ -807,7 +878,7 @@ impl SurfaceCache {
         state: RgbaBuildState,
         fill: impl FnOnce(&mut [u8]),
     ) -> Option<CacheSpan> {
-        let Some(source) = self.surfaces.get(surface as usize) else {
+        let Some(source) = self.catalog.surface(surface) else {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         };
@@ -836,13 +907,14 @@ impl SurfaceCache {
         let block = self.blocks.get(span.block)?;
         let key = block.owner?;
         let slot = self.slots.get(key)?;
+        let slot_source = self.catalog.slots.get(key)?;
         if block.generation != span.generation
             || slot.block != Some(span.block)
-            || slot.mip != span.mip
+            || slot_source.mip != span.mip
         {
             return None;
         }
-        let source = self.surfaces.get(slot.surface)?;
+        let source = self.catalog.surfaces.get(slot_source.surface)?;
         if span.layout != source.layout
             || [span.width, span.height] != source.dimensions(span.mip)?
             || span.texture_mins != source.layout_for(span.mip).0
@@ -921,7 +993,7 @@ impl SurfaceCache {
         block: usize,
         transparent_index: Option<u8>,
     ) -> CacheSpan {
-        let source = &self.surfaces[surface];
+        let source = &self.catalog.surfaces[surface];
         let (texture_mins, [width, height]) = source.layout_for(mip);
         CacheSpan {
             layout: source.layout,
