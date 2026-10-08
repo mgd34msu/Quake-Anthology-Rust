@@ -81,6 +81,17 @@ fn world_with_extent(
     light: Option<u8>,
     partition: GeometryPartition,
 ) -> WorldId {
+    world_mutated(assets, depth, extent, material, light, partition, |_| {})
+}
+fn world_mutated(
+    assets: &mut Assets,
+    depth: f32,
+    extent: f32,
+    material: MaterialId,
+    light: Option<u8>,
+    partition: GeometryPartition,
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
     let size = depth * extent;
     let points = [
         [depth, size, size],
@@ -104,7 +115,7 @@ fn world_with_extent(
         mins: Vec3([depth, -size, -size]),
         maxs: Vec3([depth, size, size]),
     };
-    let geometry = WorldGeometry {
+    let mut geometry = WorldGeometry {
         partition,
         world_has_lightdata: light.is_some(),
         vertices,
@@ -156,6 +167,7 @@ fn world_with_extent(
         models: vec![],
         patch_stats: PatchStats::default(),
     };
+    mutate(&mut geometry);
     let visibility = VisibilityWorld::load(
         vec![],
         vec![],
@@ -183,6 +195,155 @@ fn world_with_extent(
             }],
         )
         .unwrap()
+}
+
+#[test]
+fn retail_collinear_face_is_skipped_but_nonempty_zero_extent_is_rejected() {
+    let mut assets = Assets::load();
+    let palette = palette(&mut assets, false);
+    let image = texture(&mut assets, palette, 11, false);
+    let material = material(&mut assets, image, false);
+    let retail = world_mutated(
+        &mut assets,
+        2.0,
+        1.0,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| {
+            let points = [
+                [-288.0, 1456.0, -112.0],
+                [-320.0, 1456.0, -112.0],
+                [-352.0, 1456.0, -112.0],
+                [-320.0, 1456.0, -112.0],
+            ];
+            for (vertex, point) in geometry.vertices.iter_mut().zip(points) {
+                vertex.vertex.position = Vec3(point);
+            }
+            let surface = &mut geometry.surfaces[0];
+            surface.plane = Some(Plane {
+                normal: Vec3([0.0, 0.0, 1.0]),
+                distance: -112.0,
+                axis: Some(qa_core::primitives::Axis::Z),
+            });
+            surface.bounds = Bounds {
+                mins: Vec3([-352.0, 1456.0, -112.0]),
+                maxs: Vec3([-288.0, 1456.0, -112.0]),
+            };
+            surface.texture_projection = [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0]];
+            surface.texture_minima = [-352, -1456];
+            surface.texture_extents = [64, 0];
+        },
+    );
+    let control = world_mutated(
+        &mut assets,
+        2.0,
+        1.0,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| {
+            // A genuinely visible quad with a constant T projection has no
+            // texture-space height, while its four world positions have area.
+            geometry.surfaces[0].texture_projection[1] = [1.0, 0.0, 0.0, 0.0];
+            geometry.surfaces[0].texture_extents[1] = 0;
+        },
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let empty = packet(&mut frontend, &[(retail, 0)], view(palette), &assets);
+    let stats = cpu.render(&empty, &assets);
+    assert_eq!(stats.rejected, 0);
+    assert_eq!(stats.surfaces, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([0, 0, 0, 255]))
+    );
+    assert!(frontend.recycle(empty).is_ok());
+    let visible = packet(&mut frontend, &[(control, 0)], view(palette), &assets);
+    assert_eq!(cpu.render(&visible, &assets).rejected, 1);
+}
+
+#[test]
+fn positional_bulge_keeps_raw_collinear_world_vertices_drawable() {
+    use qa_render::shader::Deform;
+    let mut assets = Assets::load();
+    let white = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = assets
+        .register_material(
+            "bulged collinear surface",
+            &[Stage {
+                texture: StageTexture::Image(white),
+                ..Stage::default()
+            }],
+            MaterialSettings {
+                cull: Cull::None,
+                deforms: [
+                    Some(Deform::Bulge {
+                        width: std::f32::consts::TAU,
+                        height: 16.0,
+                        speed: 0.0,
+                    }),
+                    None,
+                    None,
+                ],
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap();
+    let world = world_mutated(
+        &mut assets,
+        32.0,
+        0.5,
+        material,
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| {
+            geometry.vertices.truncate(3);
+            for (vertex, (position, s)) in geometry.vertices.iter_mut().zip([
+                ([32.0, -16.0, 0.0], 0.0),
+                ([32.0, 0.0, 0.0], 0.25),
+                ([32.0, 16.0, 0.0], 1.0),
+            ]) {
+                vertex.vertex.position = Vec3(position);
+                vertex.vertex.texcoord = [s, 0.0];
+                vertex.vertex.normal = Vec3([0.0, 0.0, 1.0]);
+                vertex.normal = vertex.vertex.normal;
+            }
+            geometry.indices = vec![0, 1, 2, 0, 1, 2];
+            geometry.boundaries[0] = IndexRange { first: 3, count: 3 };
+            let surface = &mut geometry.surfaces[0];
+            surface.vertices.count = 3;
+            surface.indices.count = 3;
+            surface.bounds = Bounds {
+                mins: Vec3([32.0, -16.0, 0.0]),
+                maxs: Vec3([32.0, 16.0, 0.0]),
+            };
+            surface.texture_coordinates = TextureCoordinates::Normalized;
+            surface.texture_extents = [16, 0];
+        },
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let packet = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            cpu_presentation: CpuPresentation::Rgb,
+            ..view(PaletteId(0))
+        },
+        &assets,
+    );
+    let stats = cpu.render(&packet, &assets);
+    assert_eq!(stats.rejected, 0);
+    assert_eq!(stats.surfaces, 1);
+    assert_eq!(stats.triangles, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|&pixel| pixel == u32::from_le_bytes([255; 4]))
+    );
 }
 fn view(palette: PaletteId) -> Refdef {
     Refdef {

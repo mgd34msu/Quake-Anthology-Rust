@@ -39,6 +39,7 @@ struct SurfaceInfo {
     cache_supported: bool,
     mip_adjust: f32,
     sky: Option<super::sky::Source>,
+    raster_empty: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -232,6 +233,7 @@ impl WorldRaster {
                     cache_supported,
                     mip_adjust: mip_adjust(surface.texture_projection),
                     sky: None,
+                    raster_empty: false,
                 });
                 let loops = geometry
                     .boundaries
@@ -258,6 +260,7 @@ impl WorldRaster {
                 boundaries = boundaries
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
+                let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
                 for boundary in loops {
                     let indices = geometry
                         .indices
@@ -270,6 +273,7 @@ impl WorldRaster {
                     {
                         return Err("invalid world polygon vertices");
                     }
+                    raster_empty &= boundary_is_collinear(&geometry.vertices, indices);
                     let clipped = indices
                         .len()
                         .checked_add(6)
@@ -278,6 +282,9 @@ impl WorldRaster {
                     max_edges = max_edges
                         .checked_add(clipped)
                         .ok_or("world edge count overflow")?;
+                }
+                if let Some(info) = surfaces.last_mut() {
+                    info.raster_empty = raster_empty;
                 }
             }
         }
@@ -364,6 +371,9 @@ impl WorldRaster {
                 self.reject(stats);
                 continue;
             };
+            if info.raster_empty {
+                continue;
+            }
             if material.settings.sky.is_some() {
                 let Some(source) = info.sky else {
                     self.reject(stats);
@@ -881,6 +891,61 @@ impl WorldRaster {
     }
 }
 
+/// Used only for materials without positional deforms. Retail PVS lists can
+/// retain repeated/collinear faces. A zero texture extent does not prove zero area.
+fn boundary_is_collinear(
+    vertices: &[crate::world::geometry::WorldVertex],
+    indices: &[u32],
+) -> bool {
+    let origin = vertices[indices[0] as usize].vertex.position.0;
+    let Some(end) = indices
+        .iter()
+        .map(|&index| vertices[index as usize].vertex.position.0)
+        .find(|&position| position != origin)
+    else {
+        return true;
+    };
+    let Some(direction) = exact_difference(end, origin) else {
+        return false;
+    };
+    for &index in indices {
+        let Some(delta) = exact_difference(vertices[index as usize].vertex.position.0, origin)
+        else {
+            return false;
+        };
+        for axis in 0..3 {
+            let next = (axis + 1) % 3;
+            let left = direction[axis] * delta[next];
+            let right = direction[next] * delta[axis];
+            if left != right
+                || direction[axis].mul_add(delta[next], -left)
+                    != direction[next].mul_add(delta[axis], -right)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// TwoDiff exposes any lost low bits. Uncertain extreme-range geometry stays
+/// drawable; f32 differences/products cannot underflow or overflow f64 here.
+fn exact_difference(point: [f32; 3], origin: [f32; 3]) -> Option<[f64; 3]> {
+    let mut delta = [0.0; 3];
+    for axis in 0..3 {
+        let a = f64::from(point[axis]);
+        let b = f64::from(origin[axis]);
+        let difference = a - b;
+        let b_virtual = a - difference;
+        let a_virtual = difference + b_virtual;
+        if (a - a_virtual) + (b_virtual - b) != 0.0 {
+            return None;
+        }
+        delta[axis] = difference;
+    }
+    Some(delta)
+}
+
 /// WinQuake D_CalcGradients and ref_soft D_CalcGradients keep camera-space
 /// texture gradients separate from their fixed-point texture-minimum offset.
 fn native_planes(
@@ -1303,6 +1368,31 @@ fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collinearity_proof_preserves_even_subnormal_world_area() {
+        use qa_core::primitives::Vec3;
+        let loaded = |points: [[f32; 3]; 3]| {
+            points.map(|point| crate::world::geometry::WorldVertex {
+                vertex: Vertex {
+                    position: Vec3(point),
+                    ..Vertex::default()
+                },
+                normal: Vec3::default(),
+            })
+        };
+        let line = loaded([[0.0; 3], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]]);
+        assert!(boundary_is_collinear(&line, &[0, 1, 2]));
+        let thin = loaded([[0.0; 3], [1.0, 1.0, 0.0], [2.0, 2.0, f32::from_bits(1)]]);
+        assert!(!boundary_is_collinear(&thin, &[0, 1, 2]));
+        let wide = loaded([
+            [1.0, 1.0, 0.0],
+            [f32::MAX, f32::MAX, 0.0],
+            [f32::MAX, f32::MAX, f32::from_bits(1)],
+        ]);
+        assert!(!boundary_is_collinear(&wide, &[0, 1, 2]));
+        let repeated = loaded([[4.0, 8.0, 12.0]; 3]);
+        assert!(boundary_is_collinear(&repeated, &[0, 1, 2]));
+    }
     #[test]
     fn widest_basis_preserves_depth_and_uv_after_nearly_collinear_vertices() {
         let points = [
