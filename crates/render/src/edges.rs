@@ -50,9 +50,10 @@ struct Edge {
     u: i64,
     step: i64,
     start: u32,
+    original_start: u32,
     end: u32,
-    polygon: usize,
     delta: i32,
+    polygon: usize,
     next: usize,
 }
 
@@ -87,6 +88,8 @@ pub struct Edges {
     width: u32,
     height: u32,
     viewport: Viewport,
+    row_start: u32,
+    row_end: u32,
     buckets: Box<[usize]>,
     edges: Box<[Edge]>,
     active: Box<[usize]>,
@@ -130,6 +133,8 @@ impl Edges {
             width,
             height,
             viewport: Viewport::default(),
+            row_start: 0,
+            row_end: 0,
             buckets: vec![NONE; height as usize].into_boxed_slice(),
             edges: vec![Edge::default(); max_edges].into_boxed_slice(),
             active: vec![0; max_edges].into_boxed_slice(),
@@ -157,6 +162,54 @@ impl Edges {
     /// Select by geometry partition metadata and view contents. Combining
     /// overlapping worlds requires PlaneDepth even if each is partitioned.
     pub fn begin_with_policy(&mut self, viewport: Viewport, policy: DepthPolicy) -> bool {
+        if let Some(bottom) = viewport.y.checked_add(viewport.height)
+            && self.begin_band(viewport, viewport.y..bottom, policy)
+        {
+            return true;
+        }
+        // Retain begin's established invalid-view behavior. begin_band itself
+        // leaves an existing collection intact when its row window is invalid.
+        self.reset();
+        self.collecting = false;
+        self.stats.rejected = 1;
+        false
+    }
+
+    /// Scan a nonempty global row window using the full projection viewport.
+    /// Each band receives the same polygons; edges retain the native trajectory
+    /// computed at the full view's top. Invalid bounds preserve queued work.
+    pub fn begin_band(
+        &mut self,
+        viewport: Viewport,
+        rows: std::ops::Range<u32>,
+        policy: DepthPolicy,
+    ) -> bool {
+        if viewport.width == 0
+            || viewport.height == 0
+            || viewport
+                .x
+                .checked_add(viewport.width)
+                .is_none_or(|right| right > self.width)
+            || viewport
+                .y
+                .checked_add(viewport.height)
+                .is_none_or(|bottom| bottom > self.height || rows.end > bottom)
+            || rows.start < viewport.y
+            || rows.start >= rows.end
+        {
+            self.stats.rejected = self.stats.rejected.saturating_add(1);
+            return false;
+        }
+        self.reset();
+        self.viewport = viewport;
+        self.row_start = rows.start;
+        self.row_end = rows.end;
+        self.policy = policy;
+        self.collecting = true;
+        true
+    }
+
+    fn reset(&mut self) {
         self.buckets.fill(NONE);
         self.edge_count = 0;
         self.surface_count = 0;
@@ -164,23 +217,6 @@ impl Edges {
         self.stack_count = 0;
         self.span_count = 0;
         self.stats = Stats::default();
-        self.policy = policy;
-        self.collecting = viewport.width != 0
-            && viewport.height != 0
-            && viewport
-                .x
-                .checked_add(viewport.width)
-                .is_some_and(|x| x <= self.width)
-            && viewport
-                .y
-                .checked_add(viewport.height)
-                .is_some_and(|y| y <= self.height);
-        if self.collecting {
-            self.viewport = viewport;
-        } else {
-            self.stats.rejected = 1;
-        }
-        self.collecting
     }
 
     /// Copies edges, surface identity and its visibility depth plane. Texture
@@ -225,7 +261,14 @@ impl Edges {
         let mut needed = 0usize;
         previous = vertices[vertices.len() - 1];
         for &vertex in vertices {
-            match make_edge(previous, vertex, clockwise, self.viewport) {
+            match make_band_edge(
+                previous,
+                vertex,
+                clockwise,
+                self.viewport,
+                self.row_start,
+                self.row_end,
+            ) {
                 Ok(Some(_)) => needed += 1,
                 Ok(None) => {}
                 Err(()) => {
@@ -266,11 +309,23 @@ impl Edges {
         previous = vertices[vertices.len() - 1];
         for &vertex in vertices {
             // The first pass validated exactly these immutable edges.
-            if let Ok(Some(mut edge)) = make_edge(previous, vertex, clockwise, self.viewport) {
+            if let Ok(Some(mut edge)) = make_band_edge(
+                previous,
+                vertex,
+                clockwise,
+                self.viewport,
+                self.row_start,
+                self.row_end,
+            ) {
                 let index = self.edge_count;
                 edge.polygon = polygon;
                 self.edges[index] = edge;
-                self.insert_new_edge(index);
+                if edge.original_start < self.row_start {
+                    self.active[self.active_count] = index;
+                    self.active_count += 1;
+                } else {
+                    self.insert_new_edge(index);
+                }
                 self.edge_count += 1;
             }
             previous = vertex;
@@ -288,8 +343,8 @@ impl Edges {
         }
         self.collecting = false;
         let right = self.viewport.x + self.viewport.width;
-        let bottom = self.viewport.y + self.viewport.height;
-        for y in self.viewport.y..bottom {
+        self.sort_carried();
+        for y in self.row_start..self.row_end {
             let mut kept = 0;
             for index in 0..self.active_count {
                 let edge = self.active[index];
@@ -390,6 +445,43 @@ impl Edges {
                 position -= 1;
             }
             self.active[position] = edge;
+        }
+    }
+
+    fn sort_carried(&mut self) {
+        // Reconstruct R_StepActiveU's stable incoming AET at the band top.
+        // At an exact-U crossing, the previous row orders larger steps first.
+        // Coincident trajectories retain their native insertion history.
+        for index in 1..self.active_count {
+            let edge = self.active[index];
+            let mut position = index;
+            while position != 0 && self.carried_before(edge, self.active[position - 1]) {
+                self.active[position] = self.active[position - 1];
+                position -= 1;
+            }
+            self.active[position] = edge;
+        }
+    }
+
+    fn carried_before(&self, first: usize, second: usize) -> bool {
+        let a = self.edges[first];
+        let b = self.edges[second];
+        if a.u != b.u {
+            return a.u < b.u;
+        }
+        if a.step != b.step {
+            return a.step > b.step;
+        }
+        if a.original_start != b.original_start {
+            return a.original_start > b.original_start;
+        }
+        if a.delta != b.delta {
+            return a.delta > b.delta;
+        }
+        if a.delta > 0 {
+            first > second
+        } else {
+            first < second
         }
     }
 
@@ -639,6 +731,7 @@ fn make_edge(
         u,
         step,
         start: start as u32,
+        original_start: start as u32,
         end: end as u32,
         delta: if (a.xy[1] > b.xy[1]) == clockwise {
             1
@@ -647,4 +740,29 @@ fn make_edge(
         },
         ..Edge::default()
     }))
+}
+
+fn make_band_edge(
+    a: ProjectedVertex,
+    b: ProjectedVertex,
+    clockwise: bool,
+    viewport: Viewport,
+    row_start: u32,
+    row_end: u32,
+) -> Result<Option<Edge>, ()> {
+    let Some(mut edge) = make_edge(a, b, clockwise, viewport)? else {
+        return Ok(None);
+    };
+    if edge.end <= row_start || edge.start >= row_end {
+        return Ok(None);
+    }
+    let start = edge.start.max(row_start);
+    let change = edge
+        .step
+        .checked_mul(i64::from(start - edge.start))
+        .ok_or(())?;
+    edge.u = edge.u.checked_add(change).ok_or(())?;
+    edge.start = start;
+    edge.end = edge.end.min(row_end);
+    Ok(Some(edge))
 }
