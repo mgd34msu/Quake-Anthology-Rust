@@ -27,6 +27,84 @@ fn state() -> RgbaBuildState {
 }
 
 #[test]
+fn reservation_budget_includes_rover_alignment() {
+    let source = SurfaceSource::load_rgba_texels([-1; 2], [3; 2], 1).unwrap();
+    assert_eq!(source.reservation_bytes(0), Some(40));
+    assert_eq!(source.reservation_bytes(1), None);
+    let mut cache = SurfaceCache::load(vec![source], 40).unwrap();
+    let block = cache
+        .prepare_rgba(0, 0, state(), |out| {
+            assert_eq!(out.len(), 36);
+            out.fill(19);
+        })
+        .unwrap();
+    assert_eq!(cache.rgba_pixels(block).unwrap(), &[[19; 4]; 9]);
+}
+
+#[test]
+fn texel_grid_mips_align_negative_origins_and_odd_rectangular_tails() {
+    let source = SurfaceSource::load_rgba_texels([-3, 1], [5, 3], 4).unwrap();
+    let expected = [
+        ([-3, 1], [5, 3]),
+        ([-4, 0], [3, 2]),
+        ([-4, 0], [2, 1]),
+        ([-8, 0], [2, 1]),
+    ];
+    for (mip, layout) in expected.into_iter().enumerate() {
+        assert_eq!(source.mip_layout(mip as u8), Some(layout));
+    }
+    assert_eq!(source.mip_layout(4), None);
+    let mut cache = SurfaceCache::load(vec![source], 1024).unwrap();
+    let block = cache
+        .prepare_rgba(0, 1, state(), |out| {
+            assert_eq!(out.len(), 3 * 2 * 4);
+            out.fill(73);
+        })
+        .unwrap();
+    assert_eq!(block.texture_mins, [-4, 0]);
+    assert_eq!([block.width, block.height], [3, 2]);
+    assert_eq!(cache.rgba_pixels(block).unwrap(), &[[73; 4]; 6]);
+    let mut tampered = block;
+    tampered.texture_mins[0] += 1;
+    assert!(cache.rgba_pixels(tampered).is_none());
+}
+
+#[test]
+fn explicit_stage_bytes_and_identity_light_invalidate_rgba_blocks() {
+    let mut cache = SurfaceCache::load(
+        vec![SurfaceSource::load_rgba([0; 2], [2; 2], 1).unwrap()],
+        128,
+    )
+    .unwrap();
+    let first = cache
+        .prepare_rgba(0, 0, state(), |out| out.fill(1))
+        .unwrap();
+    let changed = RgbaBuildState {
+        stage_colors: [[37; 4], [255; 4]],
+        ..state()
+    };
+    let second = cache
+        .prepare_rgba(0, 0, changed, |out| out.fill(2))
+        .unwrap();
+    assert!(cache.rgba_pixels(first).is_none());
+    assert_eq!(cache.rgba_pixels(second).unwrap(), &[[2; 4]; 4]);
+    let third = cache
+        .prepare_rgba(
+            0,
+            0,
+            RgbaBuildState {
+                identity_light: 0.5,
+                ..changed
+            },
+            |out| out.fill(3),
+        )
+        .unwrap();
+    assert!(cache.rgba_pixels(second).is_none());
+    assert_eq!(cache.rgba_pixels(third).unwrap(), &[[3; 4]; 4]);
+    assert_eq!(cache.stats().fills, 3);
+}
+
+#[test]
 fn mixed_layouts_and_variable_mip_prefixes_share_one_cache() {
     let sources = vec![
         indexed_source([16; 2]),

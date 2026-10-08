@@ -15,6 +15,10 @@ const ALPHAMAP_BYTES: usize = 256 * 256;
 const MAX_DIMENSION: u32 = 8192;
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
 
+fn allocation_bytes(bytes: usize) -> Option<usize> {
+    Some(bytes.checked_add(7)? & !7)
+}
+
 fn resource_id() -> Result<u64, &'static str> {
     NEXT_RESOURCE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -313,6 +317,7 @@ pub struct SurfaceSource {
     slot_start: usize,
     lightmap: Option<LightGrid>,
     world_has_lightdata: bool,
+    texel_grid: bool,
 }
 
 impl SurfaceSource {
@@ -339,6 +344,7 @@ impl SurfaceSource {
             slot_start: 0,
             lightmap,
             world_has_lightdata,
+            texel_grid: false,
         })
     }
 
@@ -367,7 +373,70 @@ impl SurfaceSource {
             slot_start: 0,
             lightmap: None,
             world_has_lightdata: false,
+            texel_grid: false,
         })
+    }
+
+    /// Keep each borrowed native image mip on its original integer texel grid.
+    /// The source interval is expanded outward independently at every mip.
+    pub fn load_rgba_texels(
+        texture_mins: [i32; 2],
+        extents: [u32; 2],
+        mip_count: u8,
+    ) -> Result<Self, &'static str> {
+        let mut source = Self::load_rgba(texture_mins, extents, mip_count)?;
+        for mip in 0..mip_count {
+            let step = 1i64 << mip;
+            for axis in 0..2 {
+                let start = i64::from(texture_mins[axis]).div_euclid(step);
+                let aligned = start.checked_mul(step).ok_or("RGBA mip origin overflow")?;
+                i32::try_from(aligned).map_err(|_| "RGBA mip origin range")?;
+                let upper = i64::from(texture_mins[axis])
+                    .checked_add(i64::from(extents[axis]))
+                    .and_then(|end| end.checked_add(step - 1))
+                    .ok_or("RGBA mip extent overflow")?;
+                let count = upper
+                    .div_euclid(step)
+                    .checked_sub(start)
+                    .ok_or("RGBA mip extent range")?;
+                if count <= 0 || count > i64::from(MAX_DIMENSION) {
+                    return Err("RGBA mip extent range");
+                }
+            }
+        }
+        source.texel_grid = true;
+        Ok(source)
+    }
+
+    pub fn mip_layout(&self, mip: u8) -> Option<([i32; 2], [u32; 2])> {
+        (mip < self.mip_count).then(|| self.layout_for(mip))
+    }
+
+    /// The rover's payload alignment is included in cold admission budgets.
+    pub fn reservation_bytes(&self, mip: u8) -> Option<usize> {
+        allocation_bytes(self.bytes(mip)?)
+    }
+
+    fn layout_for(&self, mip: u8) -> ([i32; 2], [u32; 2]) {
+        if self.texel_grid {
+            let step = 1i64 << mip;
+            let start = self
+                .texture_mins
+                .map(|minimum| i64::from(minimum).div_euclid(step));
+            let end: [i64; 2] = std::array::from_fn(|axis| {
+                (i64::from(self.texture_mins[axis]) + i64::from(self.extents[axis]) + step - 1)
+                    .div_euclid(step)
+            });
+            (
+                start.map(|value| (value * step) as i32),
+                std::array::from_fn(|axis| (end[axis] - start[axis]) as u32),
+            )
+        } else {
+            (
+                self.texture_mins,
+                self.extents.map(|extent| (extent >> mip).max(1)),
+            )
+        }
     }
 
     pub fn layout(&self) -> CacheLayout {
@@ -399,12 +468,7 @@ impl SurfaceSource {
     }
 
     fn dimensions(&self, mip: u8) -> Option<[u32; 2]> {
-        (mip < self.mip_count).then(|| {
-            [
-                (self.extents[0] >> mip).max(1),
-                (self.extents[1] >> mip).max(1),
-            ]
-        })
+        self.mip_layout(mip).map(|(_, dimensions)| dimensions)
     }
 
     fn bytes(&self, mip: u8) -> Option<usize> {
@@ -473,6 +537,8 @@ pub struct RgbaBuildState {
     pub dynamic_revision: u64,
     pub style_scales: [[f32; 3]; 4],
     pub fullbright: bool,
+    pub stage_colors: [[u8; 4]; 2],
+    pub identity_light: f32,
 }
 
 impl Default for RgbaBuildState {
@@ -488,6 +554,8 @@ impl Default for RgbaBuildState {
             dynamic_revision: 0,
             style_scales: [[1.0; 3]; 4],
             fullbright: false,
+            stage_colors: [[255; 4]; 2],
+            identity_light: 1.0,
         }
     }
 }
@@ -777,7 +845,7 @@ impl SurfaceCache {
         let source = self.surfaces.get(slot.surface)?;
         if span.layout != source.layout
             || [span.width, span.height] != source.dimensions(span.mip)?
-            || span.texture_mins != source.texture_mins
+            || span.texture_mins != source.layout_for(span.mip).0
             || span.cutout != span.transparent_index.is_some()
         {
             return None;
@@ -854,12 +922,13 @@ impl SurfaceCache {
         transparent_index: Option<u8>,
     ) -> CacheSpan {
         let source = &self.surfaces[surface];
+        let (texture_mins, [width, height]) = source.layout_for(mip);
         CacheSpan {
             layout: source.layout,
-            width: (source.extents[0] >> mip).max(1),
-            height: (source.extents[1] >> mip).max(1),
+            width,
+            height,
             mip,
-            texture_mins: source.texture_mins,
+            texture_mins,
             cutout: transparent_index.is_some(),
             transparent_index,
             cache_id: self.id,
@@ -889,7 +958,7 @@ impl SurfaceCache {
     }
 
     fn allocate(&mut self, bytes: usize) -> Option<usize> {
-        let bytes = bytes.checked_add(7)? & !7;
+        let bytes = allocation_bytes(bytes)?;
         if bytes > self.arena.len() {
             return None;
         }

@@ -3,9 +3,12 @@
 //! Worlds use the shared edge/span scanner and native indexed surface cache.
 //! Entity/poly meshes use the shared stage evaluator and a 1/Z buffer.
 use crate::BackendStats;
-use crate::assets::{Assets, DepthFunc, Filter, Image, Material, Sampler, Vertex, Wrap};
+use crate::assets::{
+    Assets, DepthFunc, Filter, Image, Material, Sampler, TextureIntensity, Vertex, Wrap,
+};
 use crate::shader::{BlendFactor, Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
+mod rgba;
 mod sky;
 mod world;
 use crate::scene::{
@@ -234,7 +237,13 @@ impl CpuBackend {
         limits: CpuLimits,
     ) -> Result<Self, &'static str> {
         let mut backend = Self::load(width, height)?;
-        backend.world = Some(world::WorldRaster::load(width, height, assets, limits)?);
+        backend.world = Some(world::WorldRaster::load(
+            width,
+            height,
+            assets,
+            limits,
+            &backend.evaluator,
+        )?);
         Ok(backend)
     }
     pub fn world_stats(&self) -> WorldStats {
@@ -652,6 +661,13 @@ impl CpuBackend {
         let include_edge = edges.map(|(a, b)| top_left(a, b));
         let area_inverse = 1.0 / area;
         for y in y_start..y_end {
+            let mip = triangle_mip(
+                pass.image,
+                pass.stage.stage.sampler,
+                vertices,
+                [(x_start as f32 + x_end as f32) * 0.5, y as f32 + 0.5],
+            );
+            let texels = TexelView::image(pass.image, mip, pass.stage.stage.texture_intensity);
             for x in x_start..x_end {
                 let sample = [x as f32 + 0.5, y as f32 + 0.5];
                 let weights = edges.map(|(a, b)| edge(a, b, sample));
@@ -694,7 +710,7 @@ impl CpuBackend {
                         + weights[2] * vertices[2].color_over_depth[i])
                         * depth
                 });
-                let source = (pass.sampler)(pass.image, coordinates, color);
+                let source = (pass.sampler)(texels, coordinates, color);
                 if !alpha_pass(pass.stage.stage.alpha_test, source[3]) {
                     continue;
                 }
@@ -782,19 +798,30 @@ impl CpuBackend {
                 }
             };
             let sampler = stage_sampler(image, stage.sampler);
+            let origin = [x_start as f32, y_start as f32];
+            let coordinates = [
+                origin,
+                [origin[0] + 1.0, origin[1]],
+                [origin[0], origin[1] + 1.0],
+            ]
+            .map(|at| {
+                self.evaluator
+                    .evaluate(&prepared, &draw_vertex(draw, at))
+                    .texcoord
+            });
+            let mip = image_mip(
+                image,
+                stage.sampler,
+                std::array::from_fn(|axis| {
+                    std::array::from_fn(|coordinate| {
+                        coordinates[axis + 1][coordinate] - coordinates[0][coordinate]
+                    })
+                }),
+            );
+            let texels = TexelView::image(image, mip, stage.texture_intensity);
             for y in y_start..y_end {
-                let v = (y as f32 + 0.5 - draw.rect[1]) / draw.rect[3];
                 for x in x_start..x_end {
-                    let u = (x as f32 + 0.5 - draw.rect[0]) / draw.rect[2];
-                    let vertex = Vertex {
-                        position: Vec3([x as f32, y as f32, 0.0]),
-                        texcoord: [
-                            draw.texcoords[0] + u * (draw.texcoords[2] - draw.texcoords[0]),
-                            draw.texcoords[1] + v * (draw.texcoords[3] - draw.texcoords[1]),
-                        ],
-                        color: draw.color,
-                        ..Vertex::default()
-                    };
+                    let vertex = draw_vertex(draw, [x as f32, y as f32]);
                     let evaluated = self.evaluator.evaluate(&prepared, &vertex);
                     let index = y as usize * self.width as usize + x as usize;
                     if let Some((palette_id, palette, texture, mip)) = indexed {
@@ -812,7 +839,7 @@ impl CpuBackend {
                         self.palettes[index] = palette_id.0;
                     } else {
                         let source = sampler(
-                            image,
+                            texels,
                             evaluated.texcoord,
                             evaluated.color.map(|c| c as f32 / 255.0),
                         );
@@ -875,6 +902,21 @@ impl CpuBackend {
                 }
             }
         }
+    }
+}
+
+fn draw_vertex(draw: Draw2d, at: [f32; 2]) -> Vertex {
+    let fraction = std::array::from_fn::<_, 2, _>(|axis| {
+        (at[axis] + 0.5 - draw.rect[axis]) / draw.rect[axis + 2]
+    });
+    Vertex {
+        position: Vec3([at[0], at[1], 0.0]),
+        texcoord: std::array::from_fn(|axis| {
+            draw.texcoords[axis]
+                + fraction[axis] * (draw.texcoords[axis + 2] - draw.texcoords[axis])
+        }),
+        color: draw.color,
+        ..Vertex::default()
     }
 }
 
@@ -958,9 +1000,148 @@ fn texel(coordinate: f32, size: u32, wrap: Wrap) -> usize {
     };
     ((coordinate * size as f32) as usize).min(size as usize - 1)
 }
-type ShadeFn = fn(&Image, [f32; 2], [f32; 4]) -> [f32; 4];
+/// Borrow one owned native upload level. Indexed resources remain separate.
+#[derive(Clone, Copy)]
+struct TexelView<'a> {
+    width: u32,
+    height: u32,
+    rgba: &'a [u8],
+    bounds: [u32; 4],
+    intensity: f32,
+}
+impl<'a> TexelView<'a> {
+    fn image(image: &'a Image, mip: u8, intensity: TextureIntensity) -> Self {
+        if let Some(prepared) = &image.prepared
+            && let Some(level) = prepared
+                .levels
+                .get(mip as usize)
+                .or(prepared.levels.first())
+        {
+            return Self {
+                width: level.width,
+                height: level.height,
+                rgba: &level.rgba,
+                bounds: [0, 0, level.width, level.height],
+                intensity: if intensity == TextureIntensity::NeutralizeUpload {
+                    prepared.inverse_intensity
+                } else {
+                    1.0
+                },
+            };
+        }
+        Self {
+            width: image.width,
+            height: image.height,
+            rgba: &image.rgba,
+            bounds: [0, 0, image.width, image.height],
+            intensity: 1.0,
+        }
+    }
+    fn cache(width: u32, height: u32, rgba: &'a [[u8; 4]]) -> Self {
+        Self {
+            width,
+            height,
+            rgba: rgba.as_flattened(),
+            bounds: [0, 0, width, height],
+            intensity: 1.0,
+        }
+    }
+    fn region(mut self, region: Option<crate::lightmap::AtlasRegion>) -> Option<Self> {
+        if let Some(region) = region {
+            if region.width == 0
+                || region.height == 0
+                || region
+                    .x
+                    .checked_add(region.width)
+                    .is_none_or(|end| end > self.width)
+                || region
+                    .y
+                    .checked_add(region.height)
+                    .is_none_or(|end| end > self.height)
+            {
+                return None;
+            }
+            self.bounds = [region.x, region.y, region.width, region.height];
+        }
+        Some(self)
+    }
+}
+
+fn effective_sampler(image: &Image, sampler: Sampler) -> Sampler {
+    image.native_sampler.unwrap_or(sampler)
+}
+fn image_mips(image: &Image, sampler: Sampler) -> u8 {
+    if effective_sampler(image, sampler).mipmaps {
+        image
+            .prepared
+            .as_ref()
+            .map_or(1, |prepared| prepared.levels.len().clamp(1, 32) as u8)
+    } else {
+        1
+    }
+}
+fn image_mip(image: &Image, sampler: Sampler, derivatives: [[f32; 2]; 2]) -> u8 {
+    let count = image_mips(image, sampler);
+    if count == 1 {
+        return 0;
+    }
+    let base = TexelView::image(image, 0, TextureIntensity::Preserve);
+    let rho = derivatives
+        .map(|d| ((d[0] * base.width as f32).powi(2) + (d[1] * base.height as f32).powi(2)).sqrt())
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    if rho > 1.0 && rho.is_finite() {
+        ((rho.log2() + 0.5).floor() as u8).min(count - 1)
+    } else {
+        0
+    }
+}
+fn triangle_mip(image: &Image, sampler: Sampler, vertices: [ScreenVertex; 3], at: [f32; 2]) -> u8 {
+    if image_mips(image, sampler) == 1 {
+        return 0;
+    }
+    let [a, b, c] = vertices;
+    let determinant = edge(a.xy, b.xy, c.xy);
+    let gradient = |values: [f32; 3]| {
+        let ab = values[1] - values[0];
+        let ac = values[2] - values[0];
+        [
+            (ab * (c.xy[1] - a.xy[1]) - ac * (b.xy[1] - a.xy[1])) / determinant,
+            ((b.xy[0] - a.xy[0]) * ac - (c.xy[0] - a.xy[0]) * ab) / determinant,
+        ]
+    };
+    let weights = [
+        edge(b.xy, c.xy, at),
+        edge(c.xy, a.xy, at),
+        edge(a.xy, b.xy, at),
+    ]
+    .map(|value| value / determinant);
+    let depths = vertices.map(|v| v.inverse_depth);
+    let zi = weights
+        .iter()
+        .zip(depths)
+        .map(|(w, value)| w * value)
+        .sum::<f32>();
+    let depth_gradient = gradient(depths);
+    let derivatives = std::array::from_fn(|axis| {
+        std::array::from_fn(|coordinate| {
+            let values = vertices.map(|v| v.texcoord_over_depth[coordinate]);
+            let value = weights
+                .iter()
+                .zip(values)
+                .map(|(w, value)| w * value)
+                .sum::<f32>();
+            (gradient(values)[axis] * zi - value * depth_gradient[axis]) / (zi * zi)
+        })
+    });
+    image_mip(image, sampler, derivatives)
+}
+
+type ShadeFn = fn(TexelView<'_>, [f32; 2], [f32; 4]) -> [f32; 4];
 fn stage_sampler(image: &Image, sampler: Sampler) -> ShadeFn {
-    let sampler = image.native_sampler.unwrap_or(sampler);
+    sampler_function(effective_sampler(image, sampler))
+}
+fn sampler_function(sampler: Sampler) -> ShadeFn {
     match (sampler.filter, sampler.wrap) {
         (Filter::Nearest, Wrap::Repeat) => sample::<false, true>,
         (Filter::Nearest, Wrap::Clamp) => sample::<false, false>,
@@ -969,7 +1150,7 @@ fn stage_sampler(image: &Image, sampler: Sampler) -> ShadeFn {
     }
 }
 fn sample<const LINEAR: bool, const REPEAT: bool>(
-    image: &Image,
+    image: TexelView<'_>,
     coordinates: [f32; 2],
     color: [f32; 4],
 ) -> [f32; 4] {
@@ -987,6 +1168,12 @@ fn sample<const LINEAR: bool, const REPEAT: bool>(
                     value.clamp(0.0, size[i] as f32 - 1.0) as usize
                 }
             });
+            let xy: [usize; 2] = std::array::from_fn(|axis| {
+                xy[axis].clamp(
+                    image.bounds[axis] as usize,
+                    (image.bounds[axis] + image.bounds[axis + 2] - 1) as usize,
+                )
+            });
             let offset = (xy[1] * image.width as usize + xy[0]) * 4;
             std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
         });
@@ -997,12 +1184,18 @@ fn sample<const LINEAR: bool, const REPEAT: bool>(
         })
     } else {
         let wrap = if REPEAT { Wrap::Repeat } else { Wrap::Clamp };
-        let x = texel(coordinates[0], image.width, wrap);
-        let y = texel(coordinates[1], image.height, wrap);
+        let x = texel(coordinates[0], image.width, wrap).clamp(
+            image.bounds[0] as usize,
+            (image.bounds[0] + image.bounds[2] - 1) as usize,
+        );
+        let y = texel(coordinates[1], image.height, wrap).clamp(
+            image.bounds[1] as usize,
+            (image.bounds[1] + image.bounds[3] - 1) as usize,
+        );
         let offset = (y * image.width as usize + x) * 4;
         std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
     };
-    std::array::from_fn(|i| texture[i] * color[i])
+    std::array::from_fn(|i| texture[i] * color[i] * if i < 3 { image.intensity } else { 1.0 })
 }
 
 fn transformed_palette(

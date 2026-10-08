@@ -522,7 +522,7 @@ fn run() -> Result<(), String> {
     }
     if timings && let Some(stats) = renderer.cpu_world_stats() {
         qa_console::logger::console(format_args!(
-            "{{\"event\":\"cpu_draw_profile\",\"scope\":\"{scope}\",\"gameplay\":false,\"width\":{width},\"height\":{height},\"recorded_rendered_frames\":{},\"includes_startup\":true,\"includes_warmup\":true,\"requested_warmup_frames\":{warmup},\"measured_host_frames\":{completed},\"final_rendered_frame\":{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"curve_spans\":{},\"curve_pixels\":{},\"multistage_spans\":{},\"multistage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rejected\":{}}},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}\n",
+            "{{\"event\":\"cpu_draw_profile\",\"scope\":\"{scope}\",\"gameplay\":false,\"width\":{width},\"height\":{height},\"recorded_rendered_frames\":{},\"includes_startup\":true,\"includes_warmup\":true,\"requested_warmup_frames\":{warmup},\"measured_host_frames\":{completed},\"final_rendered_frame\":{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"curve_spans\":{},\"curve_pixels\":{},\"multistage_spans\":{},\"multistage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rgba_spans\":{},\"rgba_pixels\":{},\"rgba_hits\":{},\"rgba_fills\":{},\"rgba_evictions\":{},\"rgba_rejected\":{},\"rgba_minified_spans\":{},\"rejected\":{}}},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}\n",
             renderer.recorded_rendered_frames(),
             stats.polygons,
             stats.patch_polygons,
@@ -538,6 +538,13 @@ fn run() -> Result<(), String> {
             stats.multistage_pixels,
             stats.indexed_spans,
             stats.indexed_pixels,
+            stats.rgba_spans,
+            stats.rgba_pixels,
+            stats.rgba_hits,
+            stats.rgba_fills,
+            stats.rgba_evictions,
+            stats.rgba_rejected,
+            stats.rgba_minified_spans,
             stats.rejected,
             stats.cache.hits,
             stats.cache.fills,

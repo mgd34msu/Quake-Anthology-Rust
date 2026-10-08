@@ -536,6 +536,29 @@ fn world_mutated(
     partition: GeometryPartition,
     mutate: impl FnOnce(&mut WorldGeometry),
 ) -> WorldId {
+    world_bound(
+        assets,
+        depth,
+        extent,
+        SurfaceMaterial {
+            material,
+            texture_scale: [1.0 / 16.0; 2],
+            ..SurfaceMaterial::default()
+        },
+        light,
+        partition,
+        mutate,
+    )
+}
+fn world_bound(
+    assets: &mut Assets,
+    depth: f32,
+    extent: f32,
+    binding: SurfaceMaterial,
+    light: Option<u8>,
+    partition: GeometryPartition,
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> WorldId {
     let size = depth * extent;
     let points = [
         [depth, size, size],
@@ -629,16 +652,793 @@ fn world_mutated(
     )
     .unwrap();
     assets
-        .register_world_with_bindings(
-            geometry,
-            visibility,
-            &[SurfaceMaterial {
-                material,
-                texture_scale: [1.0 / 16.0; 2],
-                ..SurfaceMaterial::default()
-            }],
+        .register_world_with_bindings(geometry, visibility, &[binding])
+        .unwrap()
+}
+
+fn rgba_pair(assets: &mut Assets, base: ImageId, light_first: bool, identity: bool) -> MaterialId {
+    use qa_render::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
+    let base_stage = Stage {
+        texture: StageTexture::Image(base),
+        sampler: Sampler {
+            filter: Filter::Nearest,
+            ..Sampler::default()
+        },
+        rgb_gen: if identity {
+            RgbGen::IdentityLighting
+        } else {
+            RgbGen::Identity
+        },
+        ..Stage::default()
+    };
+    let light_stage = Stage {
+        texture: StageTexture::Lightmap,
+        texgen: TexCoordGen::Lightmap,
+        sampler: Sampler {
+            wrap: qa_render::assets::Wrap::Clamp,
+            filter: Filter::Nearest,
+            mipmaps: false,
+        },
+        ..Stage::default()
+    };
+    let mut stages = if light_first {
+        [light_stage, base_stage]
+    } else {
+        [base_stage, light_stage]
+    };
+    stages[1].blend = Some(StageBlend {
+        source: BlendFactor::DestinationColor,
+        destination: BlendFactor::Zero,
+    });
+    stages[1].depth_write = false;
+    stages[1].depth_func = qa_render::assets::DepthFunc::Equal;
+    assets
+        .register_material(
+            "static RGB pair",
+            &stages,
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
         )
         .unwrap()
+}
+
+fn rgba_world(
+    assets: &mut Assets,
+    material: MaterialId,
+    lightmap: ImageId,
+    uv: [[f32; 2]; 4],
+    light_uv: [[f32; 2]; 4],
+    region: Option<qa_render::lightmap::AtlasRegion>,
+    depth: f32,
+) -> WorldId {
+    world_bound(
+        assets,
+        depth,
+        1.0,
+        SurfaceMaterial {
+            material,
+            lightmap,
+            lightmap_region: region,
+            texture_scale: [1.0; 2],
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| {
+            geometry.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+            geometry.surfaces[0].texture_extents = [0; 2];
+            for (index, vertex) in geometry.vertices.iter_mut().enumerate() {
+                vertex.vertex.texcoord = uv[index];
+                vertex.vertex.lightmap_coord = light_uv[index];
+            }
+        },
+    )
+}
+
+const UNIT_UV: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+fn rgba_view() -> Refdef {
+    Refdef {
+        cpu_presentation: CpuPresentation::Rgb,
+        ..view(PaletteId(0))
+    }
+}
+
+#[test]
+fn static_base_lightmap_pairs_cache_in_both_orders_and_reuse_blocks() {
+    for light_first in [false, true] {
+        let mut assets = Assets::load();
+        let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
+        let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
+        let material = rgba_pair(&mut assets, base, light_first, false);
+        let world = rgba_world(&mut assets, material, light, UNIT_UV, UNIT_UV, None, 2.0);
+        let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+        assert_eq!(cpu.render(&first, &assets).rejected, 0);
+        let expected = u32::from_le_bytes([46, 60, 79, 255]);
+        assert!(cpu.pixels().iter().all(|&pixel| pixel == expected));
+        assert_eq!(cpu.world_stats().stage_spans, 0);
+        assert_eq!(cpu.world_stats().rgba_pixels, 64);
+        assert!(cpu.world_stats().rgba_fills > 0);
+        let fills = cpu.world_stats().cache.fills;
+        assert!(frontend.recycle(first).is_ok());
+        let second = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+        assert_eq!(cpu.render(&second, &assets).rejected, 0);
+        assert_eq!(cpu.world_stats().cache.fills, fills);
+        assert_eq!(cpu.world_stats().rgba_fills, 0);
+        assert!(cpu.world_stats().rgba_hits > 0);
+        assert!(cpu.pixels().iter().all(|&pixel| pixel == expected));
+    }
+}
+
+#[test]
+fn static_cache_preserves_negative_constant_and_one_dimensional_uv_area() {
+    let mut assets = Assets::load();
+    let base = assets
+        .register_image(2, 1, &[200, 0, 0, 255, 0, 200, 0, 255])
+        .unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let uv_sets = [
+        UNIT_UV,
+        UNIT_UV.map(|uv| [uv[0] - 1.0, uv[1] - 1.0]),
+        [[-0.25, 0.0]; 4],
+        UNIT_UV.map(|uv| [uv[0], 0.0]),
+    ];
+    let worlds = uv_sets.map(|uv| rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0));
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut reference = Vec::new();
+    for (index, world) in worlds.into_iter().enumerate() {
+        let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+        assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+        assert_eq!(cpu.world_stats().rgba_pixels, 64);
+        assert_eq!(cpu.world_stats().stage_pixels, 0);
+        if index == 0 {
+            reference = cpu.pixels().to_vec();
+        } else if index == 2 {
+            assert!(
+                cpu.pixels()
+                    .iter()
+                    .all(|&pixel| pixel == u32::from_le_bytes([0, 200, 0, 255]))
+            );
+        } else {
+            assert_eq!(cpu.pixels(), reference);
+        }
+        assert!(frontend.recycle(frame).is_ok());
+    }
+}
+
+#[test]
+fn cached_face_lightmap_clamps_taps_to_its_atlas_rectangle() {
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let light = assets
+        .register_image(
+            4,
+            1,
+            &[
+                255, 0, 0, 255, 64, 64, 64, 255, 64, 64, 64, 255, 0, 255, 0, 255,
+            ],
+        )
+        .unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = rgba_world(
+        &mut assets,
+        material,
+        light,
+        UNIT_UV,
+        UNIT_UV,
+        Some(qa_render::lightmap::AtlasRegion {
+            page: 99,
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 1,
+        }),
+        2.0,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    for pixel in cpu.pixels() {
+        let color = pixel.to_le_bytes();
+        assert_eq!(color[0], color[1]);
+        assert_eq!(color[1], color[2]);
+        assert_eq!(color[0], 64);
+    }
+    assert_eq!(cpu.pixels()[0].to_le_bytes(), [64, 64, 64, 255]);
+    assert_eq!(cpu.pixels()[7].to_le_bytes(), [64, 64, 64, 255]);
+}
+
+#[test]
+fn cache_uses_native_mips_and_invalidates_explicit_identity_light() {
+    use qa_render::assets::upload::{MipmapBuild, UploadParams};
+    let mut assets = Assets::load();
+    let source: Vec<_> = (0..64)
+        .flat_map(|y| {
+            (0..64).flat_map(move |x| {
+                let value = if (x + y) % 2 == 0 { 0 } else { 200 };
+                [value, value, value, 255]
+            })
+        })
+        .collect();
+    let base = assets.register_image(64, 64, &source).unwrap();
+    assets
+        .prepare_image(
+            base,
+            UploadParams {
+                mipmaps: MipmapBuild::Box,
+                ..UploadParams::default()
+            },
+        )
+        .unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, true);
+    let world = rgba_world(&mut assets, material, light, UNIT_UV, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&first, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_minified_spans > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([100, 100, 100, 255]))
+    );
+    let fills = cpu.world_stats().cache.fills;
+    assert!(frontend.recycle(first).is_ok());
+    let dim = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            identity_light: 0.5,
+            ..rgba_view()
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&dim, &assets).rejected, 0);
+    assert!(cpu.world_stats().cache.fills > fills);
+    let dimmed = (100.0_f32 * (0.5 * 255.0) as u8 as f32 / 255.0).round() as u8;
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([dimmed, dimmed, dimmed, 255]))
+    );
+    assert!(frontend.recycle(dim).is_ok());
+    let near = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            fov: [10.0; 2],
+            ..rgba_view()
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&near, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_minified_spans, 0);
+    assert!(cpu.pixels().iter().any(|pixel| pixel.to_le_bytes()[0] == 0));
+    assert!(
+        cpu.pixels()
+            .iter()
+            .any(|pixel| pixel.to_le_bytes()[0] == 200)
+    );
+}
+
+#[test]
+fn cached_worlds_keep_independent_lightmaps_and_shared_depth_order() {
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let red = assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap();
+    let blue = assets.register_image(1, 1, &[0, 0, 200, 255]).unwrap();
+    let material = rgba_pair(&mut assets, base, true, false);
+    let front = rgba_world(&mut assets, material, red, UNIT_UV, UNIT_UV, None, 2.0);
+    let rear = rgba_world(&mut assets, material, blue, UNIT_UV, UNIT_UV, None, 4.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(
+        &mut frontend,
+        &[(rear, 0), (front, 9000)],
+        rgba_view(),
+        &assets,
+    );
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_pixels, 64);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([200, 0, 0, 255]))
+    );
+    assert!(frontend.recycle(frame).is_ok());
+    let clipped = packet(
+        &mut frontend,
+        &[(front, 0)],
+        Refdef {
+            near: 3.0,
+            ..rgba_view()
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&clipped, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_pixels, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|pixel| pixel.to_le_bytes()[..3] == [0; 3])
+    );
+    assert!(frontend.recycle(clipped).is_ok());
+    let second = packet(&mut frontend, &[(rear, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&second, &assets).rejected, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([0, 0, 200, 255]))
+    );
+}
+
+#[test]
+fn nearest_cache_mip_keeps_native_integer_texel_boundaries() {
+    use qa_render::assets::upload::{MipmapBuild, UploadParams};
+    let mut assets = Assets::load();
+    let base = assets
+        .register_image(
+            4,
+            1,
+            &[
+                200, 0, 0, 255, 200, 0, 0, 255, 0, 200, 0, 255, 0, 200, 0, 255,
+            ],
+        )
+        .unwrap();
+    assets
+        .prepare_image(
+            base,
+            UploadParams {
+                mipmaps: MipmapBuild::Box,
+                ..UploadParams::default()
+            },
+        )
+        .unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = rgba_world(
+        &mut assets,
+        material,
+        light,
+        UNIT_UV.map(|uv| [uv[0] * 4.0, 0.5]),
+        UNIT_UV,
+        None,
+        2.0,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_minified_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    for row in cpu.pixels().chunks_exact(8) {
+        for (x, pixel) in row.iter().enumerate() {
+            assert_eq!(
+                pixel.to_le_bytes(),
+                if x % 2 == 0 {
+                    [200, 0, 0, 255]
+                } else {
+                    [0, 200, 0, 255]
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn insufficient_aligned_cache_budget_keeps_generic_world_sampling() {
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
+    let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = rgba_world(&mut assets, material, light, UNIT_UV, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_limits(
+        8,
+        8,
+        &assets,
+        CpuLimits {
+            cache_bytes: 36,
+            max_spans: 4096,
+        },
+    )
+    .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert_eq!(cpu.world_stats().cache.fills, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel.to_le_bytes() == [46, 60, 79, 255])
+    );
+}
+
+#[test]
+fn transformed_2d_coordinates_select_the_native_prepared_mip() {
+    use qa_render::{
+        assets::{
+            TcMod,
+            upload::{MipmapBuild, UploadParams},
+        },
+        shader::TexMod,
+    };
+    let mut assets = Assets::load();
+    let pixels: Vec<_> = (0..256)
+        .flat_map(|y| {
+            (0..256).flat_map(move |x| {
+                let value = if ((x >> 3) + (y >> 3)) % 2 == 0 {
+                    0
+                } else {
+                    200
+                };
+                [value, value, value, 255]
+            })
+        })
+        .collect();
+    let image = assets.register_image(256, 256, &pixels).unwrap();
+    assets
+        .prepare_image(
+            image,
+            UploadParams {
+                mipmaps: MipmapBuild::Box,
+                ..UploadParams::default()
+            },
+        )
+        .unwrap();
+    let material = assets
+        .register_material(
+            "scaled prepared 2D image",
+            &[Stage {
+                texture: StageTexture::Image(image),
+                sampler: Sampler {
+                    filter: Filter::Nearest,
+                    ..Sampler::default()
+                },
+                tcmods: [
+                    Some(TcMod::Script(TexMod::Scale([16.0; 2]))),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Stage::default()
+            }],
+            MaterialSettings::default(),
+        )
+        .unwrap();
+    let mut cpu = CpuBackend::load(64, 64).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+    assert!(frame.draw_2d(Draw2d {
+        rect: [0.0, 0.0, 64.0, 64.0],
+        texcoords: [0.0, 0.0, 1.0, 1.0],
+        material,
+        color: [255; 4],
+    }));
+    let frame = frame.finish();
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    // The evaluated scale selects mip6. Raw gradients select mip2, whose
+    // samples land on black cells instead of the averaged gray native mip.
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel.to_le_bytes() == [100, 100, 100, 255])
+    );
+}
+
+#[test]
+fn linear_rank_one_texture_keeps_filtering_before_byte_rounding() {
+    use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
+    let mut assets = Assets::load();
+    let pixels: Vec<_> = [0, 0, 1, 3]
+        .into_iter()
+        .flat_map(|value| [value, value, value, 255])
+        .collect();
+    let base = assets.register_image(2, 2, &pixels).unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = assets
+        .register_material(
+            "rank-one filtered texture",
+            &[
+                Stage {
+                    texture: StageTexture::Image(base),
+                    sampler: Sampler {
+                        wrap: qa_render::assets::Wrap::Clamp,
+                        filter: Filter::Linear,
+                        mipmaps: false,
+                    },
+                    ..Stage::default()
+                },
+                Stage {
+                    texture: StageTexture::Lightmap,
+                    texgen: TexCoordGen::Lightmap,
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
+                    depth_write: false,
+                    depth_func: qa_render::assets::DepthFunc::Equal,
+                    ..Stage::default()
+                },
+            ],
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap();
+    let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, 0.5]);
+    let world = rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.pixels()[4].to_le_bytes(), [1, 1, 1, 255]);
+}
+
+#[test]
+fn variable_linear_lightmap_preserves_independent_stage_filtering() {
+    use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
+    let mut assets = Assets::load();
+    let base = assets
+        .register_image(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255])
+        .unwrap();
+    let light = assets
+        .register_image(2, 1, &[255, 255, 255, 255, 0, 0, 0, 255])
+        .unwrap();
+    let sampler = Sampler {
+        wrap: qa_render::assets::Wrap::Clamp,
+        filter: Filter::Linear,
+        mipmaps: false,
+    };
+    let material = assets
+        .register_material(
+            "independent filters",
+            &[
+                Stage {
+                    texture: StageTexture::Image(base),
+                    sampler,
+                    ..Stage::default()
+                },
+                Stage {
+                    texture: StageTexture::Lightmap,
+                    texgen: TexCoordGen::Lightmap,
+                    sampler,
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
+                    depth_write: false,
+                    depth_func: qa_render::assets::DepthFunc::Equal,
+                    ..Stage::default()
+                },
+            ],
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap();
+    let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, 0.5]);
+    let world = rgba_world(&mut assets, material, light, uv, uv, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    // Separate filters at UV .5: first stage rounds127.5 to128; .5 light
+    // multiplies that byte to64. A filtered baked product would be black.
+    assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
+}
+
+#[test]
+fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
+    use qa_render::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
+    let mut assets = Assets::load();
+    let base = assets
+        .register_image(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255])
+        .unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let sampler = Sampler {
+        wrap: qa_render::assets::Wrap::Clamp,
+        filter: Filter::Linear,
+        mipmaps: false,
+    };
+    let material = assets
+        .register_material(
+            "view identity gate",
+            &[
+                Stage {
+                    texture: StageTexture::Image(base),
+                    sampler,
+                    rgb_gen: RgbGen::IdentityLighting,
+                    ..Stage::default()
+                },
+                Stage {
+                    texture: StageTexture::Lightmap,
+                    texgen: TexCoordGen::Lightmap,
+                    blend: Some(StageBlend {
+                        source: BlendFactor::DestinationColor,
+                        destination: BlendFactor::Zero,
+                    }),
+                    depth_write: false,
+                    depth_func: qa_render::assets::DepthFunc::Equal,
+                    ..Stage::default()
+                },
+            ],
+            MaterialSettings {
+                cull: Cull::None,
+                ..MaterialSettings::default()
+            },
+        )
+        .unwrap();
+    let uv = UNIT_UV.map(|uv| [uv[0] - 0.0625, uv[1]]);
+    let world = rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&first, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.pixels()[4].to_le_bytes(), [128, 128, 128, 255]);
+    assert!(frontend.recycle(first).is_ok());
+    let dim = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            identity_light: 0.5,
+            ..rgba_view()
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&dim, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
+}
+
+#[test]
+fn changed_prepared_image_disables_stale_cold_recipe_until_reload() {
+    use qa_render::assets::upload::UploadParams;
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = rgba_world(&mut assets, material, light, UNIT_UV, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&first, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert!(frontend.recycle(first).is_ok());
+    assets
+        .prepare_image_with_rgba(base, &[0, 200, 0, 255], UploadParams::default())
+        .unwrap();
+    let second = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&second, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|pixel| pixel.to_le_bytes() == [0, 200, 0, 255])
+    );
+}
+
+#[test]
+fn prepared_lightmap_region_mismatch_is_scoped_before_sampling() {
+    use qa_render::assets::upload::{ExtentRound, UploadExtent, UploadParams};
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let light = assets.register_image(8, 8, &[255; 8 * 8 * 4]).unwrap();
+    assets
+        .prepare_image(
+            light,
+            UploadParams {
+                extent: UploadExtent::PowerOfTwo {
+                    round: ExtentRound::Up,
+                    drop: 1,
+                    max_dimension: 8,
+                },
+                ..UploadParams::default()
+            },
+        )
+        .unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = rgba_world(
+        &mut assets,
+        material,
+        light,
+        UNIT_UV,
+        UNIT_UV,
+        Some(qa_render::lightmap::AtlasRegion {
+            page: 0,
+            x: 4,
+            y: 0,
+            width: 4,
+            height: 4,
+        }),
+        2.0,
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert!(cpu.render(&frame, &assets).rejected > 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+}
+
+#[test]
+fn tiny_uv_basis_keeps_finite_generic_geometry_when_cache_fields_overflow() {
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let light = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let uv = UNIT_UV.map(|uv| [uv[0] * 1.0e-39, uv[1] * 1.0e-39]);
+    let world = rgba_world(&mut assets, material, light, uv, UNIT_UV, None, 2.0);
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().stage_spans > 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|pixel| pixel.to_le_bytes() == [255; 4])
+    );
+}
+
+#[test]
+fn cached_boundary_keeps_attributes_through_partial_near_clipping() {
+    let mut assets = Assets::load();
+    let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
+    let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
+    let material = rgba_pair(&mut assets, base, false, false);
+    let world = world_bound(
+        &mut assets,
+        2.0,
+        1.0,
+        SurfaceMaterial {
+            material,
+            lightmap: light,
+            texture_scale: [1.0; 2],
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| {
+            for (index, vertex) in geometry.vertices.iter_mut().enumerate() {
+                vertex.vertex.position.0[0] = if index == 0 || index == 3 { 0.05 } else { 2.0 };
+                vertex.vertex.texcoord = UNIT_UV[index];
+                vertex.vertex.lightmap_coord = UNIT_UV[index];
+            }
+            geometry.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+            geometry.surfaces[0].texture_extents = [0; 2];
+        },
+    );
+    let mut cpu = CpuBackend::load_with_assets(8, 8, &assets).unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_pixels > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .filter(|pixel| pixel.to_le_bytes()[..3] != [0; 3])
+            .all(|pixel| pixel.to_le_bytes() == [46, 60, 79, 255])
+    );
 }
 
 #[test]

@@ -48,6 +48,14 @@ pub struct WorldStats {
     /// Native indexed-cache kernel calls and successful pixel writes.
     pub indexed_spans: u64,
     pub indexed_pixels: u64,
+    /// Precombined RGB cache calls and successful writes.
+    pub rgba_spans: u64,
+    pub rgba_pixels: u64,
+    pub rgba_hits: u64,
+    pub rgba_fills: u64,
+    pub rgba_evictions: u64,
+    pub rgba_rejected: u64,
+    pub rgba_minified_spans: u64,
     pub rejected: u64,
     pub cache: CacheStats,
 }
@@ -95,6 +103,26 @@ struct Planes {
     color: [Affine; 4],
 }
 impl Planes {
+    fn derivatives(self, x: f32, y: f32) -> [[f32; 2]; 2] {
+        let zi = self.inverse_depth.at(x, y);
+        let depth = [self.inverse_depth.x, self.inverse_depth.y];
+        std::array::from_fn(|axis| {
+            std::array::from_fn(|coordinate| {
+                let p = self.texture[coordinate];
+                let gradient = [p.x, p.y];
+                (gradient[axis] * zi - p.at(x, y) * depth[axis]) / (zi * zi)
+            })
+        })
+    }
+    fn mip(
+        self,
+        image: &crate::assets::Image,
+        sampler: crate::assets::Sampler,
+        x: f32,
+        y: f32,
+    ) -> u8 {
+        super::image_mip(image, sampler, self.derivatives(x, y))
+    }
     fn load(vertices: &[ScreenVertex]) -> Option<Self> {
         let a = vertices[0];
         let mut largest = 0.0_f64;
@@ -168,6 +196,7 @@ struct Primitive {
     vertex_count: usize,
     depth_override: Option<f32>,
     patch: bool,
+    rgba: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -181,6 +210,9 @@ pub(super) struct WorldRaster {
     width: u32,
     offsets: Box<[usize]>,
     surfaces: Box<[SurfaceInfo]>,
+    boundary_offsets: Box<[usize]>,
+    rgba: Box<[Option<super::rgba::Recipe>]>,
+    rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
     primitives: Box<[Primitive]>,
     primitive_count: usize,
     stages: Box<[StagePlanes]>,
@@ -211,10 +243,13 @@ impl WorldRaster {
         height: u32,
         assets: &Assets,
         limits: CpuLimits,
+        evaluator: &StageEvaluator,
     ) -> Result<Self, &'static str> {
         let mut offsets = Vec::with_capacity(assets.worlds().len());
         let mut sources = Vec::new();
         let mut surfaces = Vec::new();
+        let mut boundary_offsets = Vec::with_capacity(assets.worlds().len());
+        let mut rgba = Vec::new();
         let mut boundaries = 0usize;
         let mut max_vertices = 3usize;
         let mut max_edges = 0usize;
@@ -234,8 +269,11 @@ impl WorldRaster {
             .unwrap_or(0);
         let has_sky = sky_batches.iter().any(|batch| batch.enabled);
         for world in assets.worlds() {
-            offsets.push(sources.len());
+            offsets.push(surfaces.len());
             let geometry = world.geometry();
+            let boundary_offset = rgba.len();
+            boundary_offsets.push(boundary_offset);
+            rgba.resize(boundary_offset + geometry.boundaries.len(), None);
             for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
                 let cache_supported = surface.texture_coordinates == TextureCoordinates::Texels
                     && surface
@@ -301,7 +339,23 @@ impl WorldRaster {
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
                 let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
-                for boundary in loops {
+                for (loop_index, boundary) in loops.iter().enumerate() {
+                    let boundary_index = surface.boundaries.first as usize + loop_index;
+                    let cache =
+                        u32::try_from(sources.len()).map_err(|_| "too many cached boundaries")?;
+                    if let Some(recipe) = super::rgba::Recipe::load(
+                        geometry,
+                        boundary_index,
+                        *binding,
+                        material,
+                        assets,
+                        evaluator,
+                        cache,
+                        limits.cache_bytes,
+                    ) {
+                        sources.push(recipe.source()?);
+                        rgba[boundary_offset + boundary_index] = Some(recipe);
+                    }
                     let indices = geometry
                         .indices
                         .get(boundary.indices())
@@ -358,6 +412,9 @@ impl WorldRaster {
             width,
             offsets: offsets.into_boxed_slice(),
             surfaces: surfaces.into_boxed_slice(),
+            boundary_offsets: boundary_offsets.into_boxed_slice(),
+            rgba_prepared: vec![None; rgba.len()].into_boxed_slice(),
+            rgba: rgba.into_boxed_slice(),
             primitives: vec![Primitive::default(); boundaries.max(1)].into_boxed_slice(),
             primitive_count: 0,
             stages: vec![StagePlanes::default(); stage_capacity.max(1)].into_boxed_slice(),
@@ -572,13 +629,39 @@ impl WorldRaster {
                     stages: 0,
                     deforms,
                     patch: surface.patch.is_some(),
+                    rgba: if native.is_none() {
+                        self.boundary_offsets
+                            .get(reference.world.0 as usize)
+                            .map(|offset| offset + boundary)
+                            .filter(|&index| {
+                                self.rgba[index]
+                                    .as_ref()
+                                    .is_some_and(|recipe| recipe.current(assets))
+                            })
+                    } else {
+                        None
+                    },
                     ..Primitive::default()
                 };
+                if let Some(index) = primitive.rgba {
+                    let prepared = self.rgba[index]
+                        .as_ref()
+                        .and_then(|recipe| recipe.prepare(camera.refdef, evaluator));
+                    if let Some(prepared) = prepared {
+                        self.rgba_prepared[index] = Some(prepared);
+                    } else {
+                        primitive.rgba = None;
+                    }
+                }
                 let Some(count) = self.clip(
                     camera,
                     assets,
                     primitive,
-                    if native.is_some() { None } else { Some(base) },
+                    if native.is_some() || primitive.rgba.is_some() {
+                        None
+                    } else {
+                        Some(base)
+                    },
                     evaluator,
                 ) else {
                     self.reject(stats);
@@ -631,6 +714,13 @@ impl WorldRaster {
                     };
                     primitive.planes = planes;
                     primitive.fixed_adjust = adjust;
+                } else if primitive.rgba.is_some() {
+                    let Some(planes) = Planes::load(&self.screen[..count]) else {
+                        self.reject(stats);
+                        continue;
+                    };
+                    primitive.planes = planes;
+                    stats.stages = stats.stages.saturating_add(2);
                 } else {
                     if self.stage_count + material.stages.len() > self.stages.len() {
                         self.reject(stats);
@@ -720,7 +810,10 @@ impl WorldRaster {
             if primitive.overlay {
                 continue;
             }
-            let prepared = if primitive.cache_image.is_some() || primitive.sky.is_some() {
+            let prepared = if primitive.cache_image.is_some()
+                || primitive.sky.is_some()
+                || primitive.rgba.is_some()
+            {
                 None
             } else {
                 self.stages[primitive.first_stage].prepared
@@ -746,6 +839,8 @@ impl WorldRaster {
         let primitives = &self.primitives;
         let stages = &self.stages;
         let cache = &mut self.cache;
+        let rgba = &self.rgba;
+        let rgba_prepared = &self.rgba_prepared;
         let counters = &mut self.stats;
         let edge_stats = self.edges.scan(|spans| {
             for &span in spans {
@@ -755,6 +850,8 @@ impl WorldRaster {
                     primitives[span.surface as usize],
                     stages,
                     cache,
+                    rgba,
+                    rgba_prepared,
                     assets,
                     camera,
                     &mut buffers,
@@ -789,7 +886,10 @@ impl WorldRaster {
                 continue;
             }
             let primitive = self.primitives[index];
-            let prepared = if primitive.cache_image.is_some() || primitive.sky.is_some() {
+            let prepared = if primitive.cache_image.is_some()
+                || primitive.sky.is_some()
+                || primitive.rgba.is_some()
+            {
                 None
             } else {
                 self.stages[primitive.first_stage].prepared
@@ -819,6 +919,8 @@ impl WorldRaster {
             }
             let stages = &self.stages;
             let cache = &mut self.cache;
+            let rgba = &self.rgba;
+            let rgba_prepared = &self.rgba_prepared;
             let counters = &mut self.stats;
             let edge_stats = self.edges.scan(|spans| {
                 for &span in spans {
@@ -828,6 +930,8 @@ impl WorldRaster {
                         primitive,
                         stages,
                         cache,
+                        rgba,
+                        rgba_prepared,
                         assets,
                         camera,
                         &mut buffers,
@@ -1327,6 +1431,8 @@ impl WorldRaster {
         let primitives = &self.primitives;
         let stages = &self.stages;
         let cache = &mut self.cache;
+        let rgba = &self.rgba;
+        let rgba_prepared = &self.rgba_prepared;
         let counters = &mut self.stats;
         let width = self.width;
         let edge_stats = self.edges.scan(|spans| {
@@ -1337,6 +1443,8 @@ impl WorldRaster {
                     primitives[span.surface as usize],
                     stages,
                     cache,
+                    rgba,
+                    rgba_prepared,
                     assets,
                     camera,
                     buffers,
@@ -1460,6 +1568,8 @@ impl WorldRaster {
                             - surface.texture_minima[axis] as f32)
                             / (1u32 << primitive.mip) as f32
                     });
+                } else if let Some(index) = primitive.rgba {
+                    vertex.texcoord = self.rgba[index].as_ref()?.coordinate(vertex.position);
                 }
                 vertex = evaluated_vertex(vertex, primitive.deforms, prepared, evaluator);
                 *output = camera.vertex(vertex, vertex.position);
@@ -1722,6 +1832,8 @@ fn consume_span(
     primitive: Primitive,
     stages: &[StagePlanes],
     cache: &mut SurfaceCache,
+    rgba: &[Option<super::rgba::Recipe>],
+    rgba_prepared: &[Option<super::rgba::Prepared>],
     assets: &Assets,
     camera: Camera,
     buffers: &mut Buffers<'_>,
@@ -1823,6 +1935,14 @@ fn consume_span(
             stats.rejected += 1;
         }
         cache.end_batch();
+    } else if let Some(index) = primitive.rgba {
+        let (Some(recipe), Some(prepared)) = (rgba[index].as_ref(), rgba_prepared[index]) else {
+            stats.rejected += 1;
+            return;
+        };
+        rgba_span(
+            width, span, primitive, recipe, prepared, cache, assets, buffers, stats,
+        );
     } else {
         for stage in &stages[primitive.first_stage..primitive.first_stage + primitive.stages] {
             let Some(prepared) = stage.prepared else {
@@ -1837,6 +1957,23 @@ fn consume_span(
                 stats.rejected += 1;
                 continue;
             };
+            let midpoint = span.x as f32 + span.count as f32 * 0.5;
+            let mip = stage
+                .planes
+                .mip(image, prepared.stage.sampler, midpoint, span.y as f32);
+            let mut texels = super::TexelView::image(image, mip, prepared.stage.texture_intensity);
+            if prepared.stage.texture == StageTexture::Lightmap && primitive.vertex_count == 0 {
+                let Some(bounded) = texels.region(
+                    assets
+                        .world(primitive.world)
+                        .and_then(|world| world.bindings().get(primitive.surface as usize))
+                        .and_then(|binding| binding.lightmap_region),
+                ) else {
+                    stats.rejected += 1;
+                    continue;
+                };
+                texels = bounded;
+            }
             let before = stats.pixels;
             for x in span.x..span.x + span.count {
                 let px = x as f32;
@@ -1859,7 +1996,7 @@ fn consume_span(
                 let z = 1.0 / zi;
                 let uv = stage.planes.texture.map(|plane| plane.at(px, py) * z);
                 let color = stage.planes.color.map(|plane| plane.at(px, py) * z);
-                let source = sampler(image, uv, color);
+                let source = sampler(texels, uv, color);
                 if !alpha_pass(prepared.stage.alpha_test, source[3]) {
                     continue;
                 }
@@ -1890,6 +2027,97 @@ fn consume_span(
             }
         }
     }
+}
+
+fn rgba_span(
+    width: u32,
+    span: Span,
+    primitive: Primitive,
+    recipe: &super::rgba::Recipe,
+    prepared: super::rgba::Prepared,
+    cache: &mut SurfaceCache,
+    assets: &Assets,
+    buffers: &mut Buffers<'_>,
+    stats: &mut WorldStats,
+) {
+    let Some(base) = assets.image(recipe.base) else {
+        stats.rejected += 1;
+        return;
+    };
+    let chart_derivatives = primitive
+        .planes
+        .derivatives(span.x as f32 + span.count as f32 * 0.5, span.y as f32);
+    let derivatives = chart_derivatives.map(|d| recipe.texture.map(|p| p[0] * d[0] + p[1] * d[1]));
+    let mip = super::image_mip(base, recipe.base_sampler(), derivatives);
+    if !cache.begin_batch() {
+        stats.rejected += 1;
+        stats.rgba_rejected = stats.rgba_rejected.saturating_add(1);
+        return;
+    }
+    let before_cache = cache.stats();
+    let block = cache.prepare_rgba(recipe.cache, mip, prepared.state, |destination| {
+        recipe.fill(prepared, mip, assets, destination);
+    });
+    let after_cache = cache.stats();
+    stats.rgba_hits = stats
+        .rgba_hits
+        .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
+    stats.rgba_fills = stats
+        .rgba_fills
+        .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
+    stats.rgba_evictions = stats
+        .rgba_evictions
+        .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
+    stats.rgba_rejected = stats
+        .rgba_rejected
+        .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
+    if let Some(block) = block {
+        if let Some(pixels) = cache.rgba_pixels(block) {
+            let before = stats.pixels;
+            let texels = super::TexelView::cache(block.width, block.height, pixels);
+            let sampler = recipe.sampler(base);
+            let step = (1u64 << mip) as f32;
+            for x in span.x..span.x + span.count {
+                let zi = primitive.planes.inverse_depth.at(x as f32, span.y as f32);
+                let index = span.y as usize * width as usize + x as usize;
+                if zi <= 0.0
+                    || !zi.is_finite()
+                    || !super::depth_passes(
+                        DepthFunc::Lequal,
+                        zi,
+                        buffers.inverse_depth[index],
+                        primitive.draw_rank,
+                        buffers.depth_ranks[index],
+                    )
+                {
+                    continue;
+                }
+                let coordinate = std::array::from_fn(|axis| {
+                    (primitive.planes.texture[axis].at(x as f32, span.y as f32) / zi
+                        - block.texture_mins[axis] as f32)
+                        / (step * [block.width, block.height][axis] as f32)
+                });
+                let source = sampler(texels, coordinate, [1.0; 4]);
+                buffers.pixels[index] = super::composite(0, source, None);
+                buffers.palettes[index] = u32::MAX;
+                buffers.inverse_depth[index] = zi;
+                buffers.depth_ranks[index] = primitive.draw_rank;
+                stats.pixels = stats.pixels.saturating_add(1);
+            }
+            stats.rgba_spans = stats.rgba_spans.saturating_add(1);
+            if mip != 0 {
+                stats.rgba_minified_spans = stats.rgba_minified_spans.saturating_add(1);
+            }
+            stats.rgba_pixels = stats
+                .rgba_pixels
+                .saturating_add(stats.pixels.saturating_sub(before));
+        } else {
+            stats.rejected += 1;
+        }
+    } else {
+        stats.rejected += 1;
+    }
+    cache.end_batch();
 }
 
 /// Original D_DrawSpans8/16 fixed texture stepping: perspective correction at
