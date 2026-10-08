@@ -88,7 +88,7 @@ such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
 * B. THE-884: Com_Frame drains events and commands, advances SERVER providers at their own native rates on one timeline, drains events and commands again, then runs CLIENT snapshot application, prediction and presentation. The client cap uses cached com_maxfps aliases; its wait continues draining input and packets. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
 * C. THE-691/890: all modules produce sound, effect and print primitives into the one core output ring and text arena; the client drains it once into audio, particles and per-seat HUD/notify consumers. Load-sized arenas, fixed rings and hot SoA state mean zero Rust heap allocation per frame; instrumented qualification fails on any measured-frame allocation.
 * D. THE-860: one netchan owns sequence, ack, reliable bit, qport, fragments and fixed packet buffers; protocol tables select reliability, Huffman/XOR and one field-table delta encoder. Each client has a 32-slot snapshot ring and zero baseline, with its own NQ/QW/Q2/Q2RR/Q3 protocol over the same world; packet limit is 1400 bytes.
-* E. THE-861/862: one scene API registers assets, clears a scene, adds entities/polys/lights, renders a refdef and submits 2D draws to one double-buffered command list. One Q3 stage material table converts Q1/Q2 surface flags at load into shared materials and one lightmap atlas. Shared iterative leaf/PVS/visframe/dlightframe/frustum traversal serves every map. GL uses static map VBOs, persistent dynamic buffers, material/lightmap batching and a state cache, never glFinish; RGB SIMD CPU rendering uses depth-ordered edge/spans, a rover surface cache per mip and a 1/Z buffer, with optional palette output.
+* E. THE-861/862: one scene API registers assets, clears a scene, adds entities/polys/lights, renders a refdef and submits 2D draws to one double-buffered command list. One Q3 stage material table converts Q1/Q2 surface flags at load into shared materials and one lightmap atlas. Shared iterative leaf/PVS/visframe/dlightframe/frustum traversal serves every map. GL uses static map VBOs, persistent dynamic buffers, material/lightmap batching and a state cache, never glFinish; CPU rendering uses depth-ordered edge/spans, a rover surface cache per mip and a 1/Z buffer with SIMD; standalone Q1/Q2 default to native palette/colormap lighting, including Q2 6-bit gray lightmaps. RGB and colored CPU lighting are opt-in or custom-game presentation.
 * F. THE-863: one EngineServices table provides trace, link entity, sound, print, cvar, configstring and file operations. Thin numbered QVM, native dllEntry/game_import_t and QuakeC builtin mappings call those services. Module memory is checked at load; several module formats coexist and retain their own tick rates.
 * G. THE-889/891: one usercmd builder serves every client, including bots in SERVER ticks rather than local-seat overrides. One Pmove-style entry chooses movement rules per player and runs identically for server, prediction and bots over shared trace services. AAS and NAV2 are data behind one bot/navigation interface.
 * H. THE-887/888: one console tokenises its fixed text buffer in place with borrowed argv spans, sorted command lookup and cached cvar handles; a bare cvar command uses argv 1 per qsrc. One bind table dispatches normal and +/- commands into the same console and per-client builder. Every alias works in every game; bare text is a command/cvar, chat only via say.
@@ -107,6 +107,26 @@ THE-892 checks platform ownership and duplicate event/output storage, including
 examples and imported aliases. Developer timers also use platform. Runtime
 allocation qualification covers the instrumented Rust thread; SDL/driver heap
 work needs separate measurement and is not proved by that counter.
+
+Standalone games must look original. CPU uses that game's software look;
+GL uses GLQuake, ref_gl or Q3 presentation and original cvar defaults. Native
+Q1 r_wateralpha is 1. Modern internals do not change the default image.
+See-through liquids, RGB/colored CPU light and new effects require explicit
+cvars or custom/combined games. Mods use their target engine's presentation;
+THE-896 Arcane Dimensions targets Quakespasm-Spiked.
+
+THE-895 keeps compiled gameplay PVS for module sight, snapshot culling and
+sound PHS. Enhanced render visibility is separate and enabled only by liquid
+alpha below 1, custom games or a mod that targets it; Q2/Q3 retain shipped
+translucency. That issue permits reusing the already-computed qsrc map CRC
+with the map name for its render-PVS cache, without a new content hash.
+
+Each shared capability supports the best id/source-port feature level.
+Compatibility adapters expose original limits, timing, gameplay PVS, builtins
+and syscall semantics to stock modules. Extensions and raised limits become
+visible only through native checkextension, protocol or API-version
+negotiation. For AD, FitzQuake 666/QSS 999 are data on the common channel;
+its requested effects, limits and builtins use the same services and renderers.
 
 THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
 input injector form an input player. Remove recording/replay before any public
