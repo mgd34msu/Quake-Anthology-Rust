@@ -29,7 +29,7 @@ fn floor() -> CollisionWorld {
 }
 #[test]
 fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
-    let mut server = Server::load(15, 64, 1, 0).unwrap();
+    let mut server = Server::load(15, 64, 1, 0, 0).unwrap();
     let mut world = floor();
     let rules = [
         MovementRules::Quake,

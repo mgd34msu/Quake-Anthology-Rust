@@ -119,7 +119,7 @@ fn host() -> FrameHost {
     console.register("after_server", after);
     FrameHost::load(
         console,
-        Runtime::load().unwrap(),
+        Runtime::load(std::iter::empty()).unwrap(),
         TickRate::fixed(50).unwrap(),
         vec![Provider {
             module: ModuleId(2),
@@ -210,7 +210,7 @@ fn cap_wait_drains_keys_and_aliases_use_one_cached_fps_handle() {
 fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let mut host = FrameHost::load(
         Console::new(Context::default()),
-        Runtime::load().unwrap(),
+        Runtime::load(std::iter::empty()).unwrap(),
         TickRate::fixed(20).unwrap(),
         vec![],
     )

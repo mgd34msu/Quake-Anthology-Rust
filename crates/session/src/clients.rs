@@ -39,16 +39,19 @@ pub enum ServerError {
 }
 
 impl Server {
+    /// Arena sizes are slot counts, including any unused zero handle. The app's
+    /// gameplay catalogue sizes acquisition and timer rows by common ItemId.
     pub fn load(
         max_clients: usize,
         entity_capacity: usize,
         items: usize,
         powerups: usize,
+        weapons: usize,
     ) -> Result<Self, ServerError> {
         if max_clients == 0 || max_clients > MAX_CLIENTS {
             return Err(ServerError::ClientCapacity);
         }
-        if items == 0 || items > 65536 || powerups > 65536 {
+        if items == 0 || items > 65536 || powerups > 65536 || weapons > 65536 {
             return Err(ServerError::InventoryCapacity);
         }
         let entities = EntityTable::new(entity_capacity, max_clients + 1)
@@ -70,7 +73,7 @@ impl Server {
             hud: HudState::with_capacity(
                 if slot < max_clients { items } else { 0 },
                 if slot < max_clients { powerups } else { 0 },
-                if slot < max_clients { items } else { 0 },
+                if slot < max_clients { weapons } else { 0 },
             ),
         });
         Ok(Self {

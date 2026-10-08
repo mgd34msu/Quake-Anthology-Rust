@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Stopwatch,
         allocations::{begin_frame, end_frame},
     };
-    let mut server = Server::load(64, 128, 1, 0).map_err(|e| format!("{e:?}"))?;
+    let mut server = Server::load(64, 128, 1, 0, 0).map_err(|e| format!("{e:?}"))?;
     let mut predictions: [Prediction; 64] = std::array::from_fn(|_| Prediction::default());
     let mut world = support::FixtureWorld {
         step: true,

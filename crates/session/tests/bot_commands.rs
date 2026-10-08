@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[test]
 fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
-    let mut server = Server::load(64, 128, 1, 0).unwrap();
+    let mut server = Server::load(64, 128, 1, 0, 0).unwrap();
     let rules = [
         MovementRules::Quake,
         MovementRules::QuakeWorld,
@@ -69,7 +69,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
 
 #[test]
 fn bot_duration_uses_movement_policy_instead_of_module_family() {
-    let mut server = Server::load(4, 16, 1, 0).unwrap();
+    let mut server = Server::load(4, 16, 1, 0, 0).unwrap();
     for (slot, (connection, rule)) in [
         (Connection::Bot, MovementRules::Quake),
         (Connection::Bot, MovementRules::Quake2),

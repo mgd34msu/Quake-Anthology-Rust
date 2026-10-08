@@ -375,6 +375,15 @@ impl FrameHost {
                 }
             }
         }
+        self.runtime.targets.refresh(&self.runtime.server.entities);
+        for client in &mut self.runtime.server.clients {
+            if client.connection.is_some() {
+                self.runtime
+                    .catalog
+                    .hud
+                    .update(&client.player, &mut client.hud);
+            }
+        }
         commands
     }
 }

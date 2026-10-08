@@ -27,7 +27,7 @@ mod allocation_gate;
 
 fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context::default());
-    let mut runtime = Runtime::load()?;
+    let mut runtime = Runtime::load(std::iter::empty())?;
     let mut frames = 120u32;
     let mut width = 640i32;
     let mut height = 400i32;

@@ -401,7 +401,7 @@ fn run() -> Result<(), String> {
     if depth_output.as_ref() == Some(&output) {
         return Err("pixel and inverse-depth evidence paths must differ".into());
     }
-    let mut runtime = Runtime::load()?;
+    let mut runtime = Runtime::load(std::iter::empty())?;
     runtime
         .vfs
         .mount_product(&content, 0)

@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod host;
 pub mod map;
 pub mod output;
@@ -14,10 +15,13 @@ use qa_network::ingress::PacketReceiver;
 use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
+    pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
     pub quit: bool,
     pub network: PacketReceiver,
     pub server: Server,
+    /// One preallocated index over the server's generation-checked entities.
+    pub targets: qa_world::targets::TargetIndex,
     /// Loaded geometry is independent of every player's movement rules.
     pub collision: Option<qa_world::collision::CollisionWorld>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
@@ -30,12 +34,23 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn load() -> Result<Self, String> {
+    pub fn load<'a>(extra_names: impl IntoIterator<Item = &'a [u8]>) -> Result<Self, String> {
+        let catalog = catalog::GameplayCatalog::load(extra_names)?;
+        let item_slots = catalog.registry.items.len() + 1;
+        let weapon_slots = catalog.registry.weapons.len() + 1;
+        // Inventory, acquisition times and powerup timers all use common ItemId.
+        // Zero is unused; instant and non-powerup items retain zero timer rows.
+        // Native powerup ordinals are converted at module/protocol boundaries.
+        let server = Server::load(64, 8192, item_slots, item_slots, weapon_slots)
+            .map_err(|e| format!("server: {e:?}"))?;
+        let targets = qa_world::targets::TargetIndex::new(&server.entities);
         Ok(Self {
+            catalog,
             vfs: Vfs::default(),
             quit: false,
             network: PacketReceiver::default(),
-            server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
+            server,
+            targets,
             collision: None,
             prediction: std::array::from_fn(|_| Default::default()),
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,

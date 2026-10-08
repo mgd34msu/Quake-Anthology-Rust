@@ -153,6 +153,7 @@ dependencies = [
  "qa-content",
  "qa-core",
  "qa-formats",
+ "qa-gameplay",
  "qa-input",
  "qa-movement",
  "qa-network",

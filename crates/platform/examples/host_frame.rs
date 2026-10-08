@@ -189,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, &str>>()?;
     let mut host = FrameHost::load(
         Console::new(Context::default()),
-        Runtime::load()?,
+        Runtime::load(std::iter::empty())?,
         TickRate::fixed(50).ok_or("world rate")?,
         providers,
     )?;

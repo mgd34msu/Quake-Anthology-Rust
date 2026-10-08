@@ -19,6 +19,7 @@ qa-network = { path = "../network" }
 qa-session = { path = "../session" }
 qa-world = { path = "../world" }
 qa-formats = { path = "../formats" }
+qa-gameplay = { path = "../gameplay" }
 qa-ui = { path = "../ui" }
 qa-render = { path = "../render" }
 serde_json = "1"

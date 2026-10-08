@@ -69,7 +69,7 @@ fn emit(runtime: &mut Runtime, tick: Tick) {
 }
 #[test]
 fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
-    let mut runtime = Runtime::load().unwrap();
+    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
     let first = runtime
         .server
         .connect(Connection::Local, ModuleId(1), PlayerTail::default())
@@ -178,7 +178,7 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
 fn quit_flushes_console_output_once() {
     let mut host = FrameHost::load(
         Console::new(Context::default()),
-        Runtime::load().unwrap(),
+        Runtime::load(std::iter::empty()).unwrap(),
         TickRate::FrameDriven,
         vec![],
     )
