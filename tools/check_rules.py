@@ -46,10 +46,18 @@ def check(root):
             return
         findings.append({"path": relative, "line": code[:position].count("\n") + 1, "rule": rule})
 
-    for path in sorted((root / "crates").glob("*/src/**/*.rs")):
+    # Clock/SDL ownership includes examples and integration tests.
+    for path in sorted((root / "crates").glob("*/**/*.rs")):
         raw = path.read_text()
         code = source_code(raw)
         relative = path.relative_to(root).as_posix()
+        if not relative.startswith("crates/platform/"):
+            for match in re.finditer(r"\b(?:Instant|SystemTime|SDL_\w+)\b", code):
+                add(path, code, match.start(), "platform-event-source")
+            for match in re.finditer(r"\b(?:UdpSocket|TcpListener|TcpStream|recvfrom|recvmsg)\b", code):
+                add(path, code, match.start(), "platform-network-source")
+        if "/src/" not in relative:
+            continue
         rules = {
             "shared-mutable-pool": r"\bRc\s*<\s*RefCell\b",
             "numeric-emulation": r"\b(?:NumericOps|fround|SaveJson|js_\w*)\b",

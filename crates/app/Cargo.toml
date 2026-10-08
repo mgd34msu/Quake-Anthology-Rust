@@ -13,6 +13,8 @@ qa-core = { path = "../core" }
 qa-platform = { path = "../platform" }
 qa-console = { path = "../console" }
 qa-content = { path = "../content" }
+qa-input = { path = "../input" }
+qa-network = { path = "../network" }
 
 [[bin]]
 name = "qa-rust"

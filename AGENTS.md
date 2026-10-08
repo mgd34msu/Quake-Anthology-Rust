@@ -57,7 +57,7 @@ acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
 spawning, mixed-play and installed-binary evidence they require.
 
 Current lane: R2, after the R1 structural implementation. In order:
-THE-613, THE-623, THE-630, THE-639, THE-651, THE-662, THE-669, THE-679,
+THE-613, THE-623, THE-630, THE-639, THE-859, THE-651, THE-662, THE-669, THE-679,
 THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
 R1 issues with live acceptance criteria remain In Progress for integration at
 the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
@@ -73,6 +73,17 @@ usercmd, player state, console/cvars, event ring and renderers. Per-game code
 contains movement rules and boundary conversions only. The shipped candidate's
 private-harness evidence must include world screenshots, real key-repeat walks
 with wall/step collision, Q1/Q3 cvar aliases in every map, and measured timings.
+
+THE-859 precedes further console/usercmd wiring. One fixed system event queue
+carries input, UDP packets and time. Only platform reads SDL, sockets or OS
+clocks; the host drains once per frame, through one bind table and a usercmd
+builder shared by human devices and bots. No receive thread. Do not add a
+journal or queue recording/replay in any form pending the owner's decision.
+The rule checker rejects direct Instant::now, SystemTime::now and SDL symbols
+outside crates/platform, including examples. Developer timers use platform.
+R3 THE-861 uses one double-buffered command list for both render back ends,
+initially single-threaded. R11 THE-860 uses one field-table delta encoder and
+reliable ring, with protocol-specific tables rather than per-game encoders.
 
 ## Salvage
 

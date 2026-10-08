@@ -70,3 +70,22 @@ C reference, segments, expected results, build/run logs and `c-port-source`.
 timeout 300 python3 tools/check_hull_trace.py --pak "$Q1_PAK" \
   --qsrc "$QSRC" --c-port "$C_ENGINE" --output "$EVIDENCE"
 ```
+
+## R2 system event drain
+
+THE-859's release example `system_events`, baseline CPU on core 23, measured
+600 frames after 60 warm-up frames on 2026-10-07, without a debugger. Each
+frame drained five events: a held/repeating key, controller axis, character,
+real loopback UDP datagram and a time marker. It dispatched devices to
+separate seats, passed packet bytes to the network boundary and built the
+four usercmds. The sender, SDL and rendering were outside this workload.
+
+| Scope | Median ns | p99 ns | Allocations/reallocations per measured frame |
+| --- | ---: | ---: | ---: |
+| Headless queue, input and UDP receive/dispatch | 1,500 | 1,540 | 0 |
+
+The allocator positive control detected one allocation, one reallocation and
+320 requested bytes. The workload delivered 660 datagrams and 660 characters,
+with zero rejected events or dropped packets. This is event-service timing,
+not map/gameplay or renderer qualification, and has no comparable regression
+baseline yet. Reproduce with the commands in [system events](system-events.md).

@@ -19,6 +19,8 @@ CASES = {
     "panic-or-unwrap": "fn bad() { value.unwrap(); }",
     "duplicate-primitive": "struct PlayerState {}",
     "duplicate-md4": "struct Md4 {}",
+    "platform-event-source": "fn bad() { std::time::Instant::now(); SystemTime::now(); SDL_PollEvent(&mut event); }",
+    "platform-network-source": "fn bad() { UdpSocket::bind(address); }",
     "diagnostics-path": 'fn bad() { eprintln!("event"); }',
     "temporary-diagnostics": "// TEMP-DIAG\nfn bad() {}",
     "test-share": "fn live() {}\n#[cfg(test)]\nmod tests { " + "fn scenario() {} " * 50 + "}",
@@ -33,7 +35,7 @@ def main():
     records = []
     with tempfile.TemporaryDirectory(prefix="qa-rust-rule-fixture-") as temp:
         root = Path(temp)
-        for source in [*ROOT.glob("crates/*/src/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json", ROOT / "tools/gen_cvars.py", ROOT / "tools/cvar_catalog.py", *ROOT.glob("data/unified-cvars.*"), ROOT / "data/unified-cvars-policy-issues.json"]:
+        for source in [*ROOT.glob("crates/*/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json", ROOT / "tools/gen_cvars.py", ROOT / "tools/cvar_catalog.py", *ROOT.glob("data/unified-cvars.*"), ROOT / "data/unified-cvars-policy-issues.json"]:
             target = root / source.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -52,6 +54,28 @@ def main():
             if not passed:
                 raise RuntimeError("rule was not enforced: " + rule)
         fixture.unlink()
+        # Reject every source independently, including developer examples and
+        # imports/foreign declarations, while permitting the platform boundary.
+        for name, text, directory in [
+            ("clock-instant", "fn bad() { Instant::now(); }", "world/src"),
+            ("clock-system-time", "fn bad() { SystemTime::now(); }", "world/src"),
+            ("clock-example", "fn bad() { std::time::Instant::now(); }", "world/examples"),
+            ("clock-import-alias", "use std::time::Instant as Clock; fn bad() { Clock::now(); }", "world/src"),
+            ("sdl-time", "fn bad() { SDL_GetTicks(); }", "world/src"),
+            ("sdl-input-import", "use external::SDL_PollEvent as poll;", "world/src"),
+            ("sdl-foreign", 'unsafe extern "C" { fn SDL_PollEvent(event: *mut u8) -> i32; }', "world/src"),
+        ]:
+            violation = root / "crates" / directory / "source_violation.rs"
+            violation.parent.mkdir(parents=True, exist_ok=True)
+            violation.write_text(text)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            output = json.loads(result.stdout)
+            passed = result.returncode != 0 and any(v["rule"] == "platform-event-source" for v in output["findings"])
+            records.append({"rule": name, "rejected_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("source boundary was not enforced: " + name)
+            violation.unlink()
         generated = root / "crates/console/src/cvars_generated.rs"
         generated.write_text(generated.read_text() + "\n// stale catalog fixture\n")
         result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)

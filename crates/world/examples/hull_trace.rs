@@ -1,11 +1,12 @@
 use qa_core::primitives::{Axis, Plane, Vec3};
+use qa_platform::Stopwatch;
 use qa_world::collision::{
     Contents,
     hulls::{ClipNode, HullModel, Q1Hulls},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{hint::black_box, time::Instant};
 
 struct Counter;
 static MEASURING: AtomicBool = AtomicBool::new(false);
@@ -152,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         MEASURING.store(true, Ordering::Relaxed);
         for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
-            let started = Instant::now();
+            let started = Stopwatch::start();
             black_box(hulls.trace(
                 black_box(start),
                 black_box(end),

@@ -10,3 +10,7 @@ allocation-tracking = []
 
 [dependencies]
 qa-core = { path = "../core" }
+
+[dev-dependencies]
+qa-input = { path = "../input" }
+qa-network = { path = "../network" }

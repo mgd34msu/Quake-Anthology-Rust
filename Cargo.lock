@@ -131,6 +131,8 @@ dependencies = [
  "qa-console",
  "qa-content",
  "qa-core",
+ "qa-input",
+ "qa-network",
  "qa-platform",
 ]
 
@@ -236,6 +238,8 @@ name = "qa-platform"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-input",
+ "qa-network",
 ]
 
 [[package]]
@@ -266,6 +270,7 @@ name = "qa-world"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-platform",
 ]
 
 [[package]]
