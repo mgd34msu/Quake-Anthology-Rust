@@ -120,7 +120,7 @@ def audio_summary(path, cues):
                 rms=(sum(v * v for v in data) / max(1, len(data))) ** 0.5)
 
 
-def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None):
+def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False):
     binary, profile, evidence = binary.resolve(strict=True), profile.resolve(strict=True), evidence.resolve()
     if evidence.exists():
         raise ValueError("use a fresh evidence directory")
@@ -142,16 +142,17 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         raise ValueError("candidate copy differs")
     candidate_identity = identity(binary)
     owned, handles, client = [], [], None
+    terminal_fds = []
     result = {"artifact": str(binary), "candidate_identity": candidate_identity,
               "owner_profile_source": str(profile), "copied_owner_settings": sorted(originals),
               "copied_profile": str(copied_profile), "argv": arguments, "gameplay_reached": False,
               "debugger": False, "timing_qualified": False, "cpu_affinity": cores}
 
-    def spawn(name, argv, env=None, pass_fds=()):
+    def spawn(name, argv, env=None, pass_fds=(), stdin=None):
         log = (evidence / (name + ".log")).open("w")
         handles.append(log)
         process = subprocess.Popen(argv, env=env, stdout=log, stderr=subprocess.STDOUT,
-                                   cwd=evidence, start_new_session=True, pass_fds=pass_fds)
+                                   cwd=evidence, start_new_session=True, pass_fds=pass_fds, stdin=stdin)
         owned.append((name, process))
         (evidence / "owned-pids.json").write_text(json.dumps({n: p.pid for n, p in owned}))
         return process
@@ -184,7 +185,16 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
         if cores:
             argv = ["taskset", "-c", cores, *argv]
-        game = spawn("runtime", argv, env)
+        if stdin_tty:
+            import termios
+            terminal_master, terminal_slave = os.openpty()
+            terminal_fds += [terminal_master, terminal_slave]
+            attributes = termios.tcgetattr(terminal_slave)
+            attributes[3] &= ~termios.ECHO
+            termios.tcsetattr(terminal_slave, termios.TCSANOW, attributes)
+            game = spawn("runtime", argv, env, stdin=terminal_slave)
+        else:
+            game = spawn("runtime", argv, env, stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL)
         deadline = time.monotonic() + min(10, timeout)
         window = None
         ready = False
@@ -212,6 +222,12 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         result["window_ready_before_selection"] = ready
         subprocess.run(["import", "-window", hex(window), str(evidence / "window.png")], env=env, check=True, timeout=10)
         client.drive(window, actions or [])
+        if stdin_bytes is not None:
+            if stdin_tty:
+                os.write(terminal_master, stdin_bytes)
+            else:
+                game.stdin.write(stdin_bytes)
+                game.stdin.close()
         result["exit_code"] = game.wait(timeout=timeout)
         result["normal_exit"] = result["exit_code"] == 0
         events = []
@@ -245,6 +261,8 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
                     process.wait()
         for handle in handles:
             handle.close()
+        for fd in terminal_fds:
+            os.close(fd)
         result["remaining_owned_pids"] = [p.pid for _, p in owned if p.poll() is None]
         result["owner_profile_unchanged"] = originals == {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
         result["candidate_unchanged"] = identity(binary) == candidate_identity and equal_files(binary, candidate)

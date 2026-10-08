@@ -251,6 +251,17 @@ fn run() -> Result<(), String> {
                 host.developer,
                 1,
                 format_args!(
+                    "{{\"event\":\"stdin_frame\",\"frame\":{frame},\"lines\":{},\"discarded\":{},\"errors\":{}}}",
+                    pump.console_lines(),
+                    pump.discarded_console_lines(),
+                    pump.console_errors()
+                ),
+            );
+            qa_console::logger::dev_print(
+                &host.console.cvars,
+                host.developer,
+                1,
+                format_args!(
                     "{{\"event\":\"output_frame\",\"frame\":{frame},\"drains\":{},\"remaining\":{},\"sounds\":{},\"effects\":{},\"prints\":{},\"unhandled_sounds\":{},\"unhandled_effects\":{},\"stale_texts\":{}}}",
                     result.output_drains,
                     host.runtime.events.len(),

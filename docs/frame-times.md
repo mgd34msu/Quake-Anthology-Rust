@@ -253,3 +253,18 @@ directory; its release artifacts were cleared afterward.
 This is headless dispatch and consumer fidelity, not live mixing, particles,
 map gameplay, renderer performance or installation qualification. Native and
 other-thread heaps are outside the allocation count.
+
+## THE-886: bounded stdin polling
+
+A release-mode ABBA comparison on core 23, 60 warm-up and 600 measured frames
+per run, held the local bind/console fixture and output destination constant.
+The median of the two baseline medians was 204,259.5 ns; with idle stdin polling
+it was 205,259.25 ns (+0.49%). The corresponding p99 medians were 294,521 and
+291,576 ns. Both variants retained the same packets, repeats and tick counts,
+with zero Rust allocations. An earlier single pair using captured pipe output
+showed +12.3%; it is retained as evidence and is not used to qualify performance.
+This is a headless shell fixture, not gameplay or renderer qualification.
+
+Evidence: THE-886-timing.json and THE-886-timing-repeat.json in the R2 evidence
+root. Private pipe and owned canonical PTY runs each completed 600 frames with
+zero measured Rust allocations, including line dispatch and idle polling.

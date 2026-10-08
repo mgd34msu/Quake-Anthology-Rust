@@ -108,6 +108,11 @@ examples and imported aliases. Developer timers also use platform. Runtime
 allocation qualification covers the instrumented Rust thread; SDL/driver heap
 work needs separate measurement and is not proved by that counter.
 
+THE-886 reads Linux stdin through an independent nonblocking file description,
+bounded per poll, into ConsoleLine events. Commands use the shared console;
+no terminal reader belongs in app or a game module. Private checks use an owned
+pipe or PTY, never the owner's terminal. Other OS stdin sources remain pending.
+
 Standalone games must look original. CPU uses that game's software look;
 GL uses GLQuake, ref_gl or Q3 presentation and original cvar defaults. Native
 Q1 r_wateralpha is 1. Modern internals do not change the default image.

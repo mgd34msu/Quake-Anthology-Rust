@@ -93,6 +93,7 @@ impl FrameSource for Source {
         self.poll_events(queue);
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        self.pump.poll_console(queue);
         self.pump.poll_network(queue);
         if self.console {
             let _ = queue.push(SysEvent {

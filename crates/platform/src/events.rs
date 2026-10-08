@@ -17,6 +17,7 @@ pub struct EventPump {
     datagram: Box<[u8]>,
     dropped_packets: u64,
     socket_errors: u64,
+    stdin: crate::stdin::ConsoleInput,
 }
 impl Default for EventPump {
     fn default() -> Self {
@@ -32,6 +33,7 @@ impl EventPump {
             datagram: vec![0; 65536].into_boxed_slice(),
             dropped_packets: 0,
             socket_errors: 0,
+            stdin: crate::stdin::ConsoleInput::open(),
         }
     }
     pub fn bind_udp(&mut self, address: SocketAddr) -> io::Result<(u16, SocketAddr)> {
@@ -51,9 +53,24 @@ impl EventPump {
     }
     pub fn poll_events(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         window.poll(queue, &self.clock);
+        self.poll_console(queue);
         self.poll_network(queue);
         self.finish_events(queue);
     }
+    /// Also used by headless socket qualification without opening SDL.
+    pub fn poll_console(&mut self, queue: &mut SysEventQueue) {
+        self.stdin.poll(&self.clock, queue);
+    }
+    pub fn console_lines(&self) -> u64 {
+        self.stdin.lines
+    }
+    pub fn discarded_console_lines(&self) -> u64 {
+        self.stdin.discarded
+    }
+    pub fn console_errors(&self) -> u64 {
+        self.stdin.errors
+    }
+
     /// Also used by headless socket qualification without opening SDL.
     pub fn poll_network(&mut self, queue: &mut SysEventQueue) {
         for (index, socket) in self.sockets.iter().enumerate() {

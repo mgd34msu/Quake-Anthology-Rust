@@ -1,6 +1,7 @@
 mod clock;
 mod events;
 mod sdl;
+mod stdin;
 mod wait;
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
