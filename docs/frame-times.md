@@ -767,3 +767,30 @@ Evidence under `r3-20261008`: `fixed-bands-platform-a-report.json`,
 `fixed-bands-platform-a-{1,2,4,8}-{e1m1,base1,q3dm1}-cpu` directories with raw
 pixels/depth, per-band records and private results, and
 `profile-platform-bands8-q3dm1-cpu`.
+
+## THE-862 diagnostic dispatch wall times, 2026-10-08
+
+Portable allocation-tracked commit `083ef9d0d220ccd4aad5c3a6d63362b332c55be1`
+built from a cleared release cache in 33.9510 s. Separate private q3dm1 runs
+at 640×400 enabled the developer example's optional nested platform clocks.
+These are diagnostic measurements, not performance qualification or CPU times.
+They use the same immutable packet, 60 warm-up/600 measured draws and the
+one-band core-23/eight-band cores-16-23 process affinity masks. Raw RGBA matches
+the noninstrumented-stage-timer checkpoint; caller/worker allocations remain
+zero, and normal private exit/profile preservation/owned cleanup passed.
+
+| Bands | First opaque dispatch wall median / p99 ns | Subsequent dispatch wall sum median / p99 ns | Approximate serial/other wall residual median / p99 ns |
+|---|---:|---:|---:|
+| 1 | 8,211,746 / 8,834,266 | 6,867,380 / 7,032,175 | 4,172,463 / 5,095,964 |
+| 8 | 3,203,502 / 6,378,764 | 2,823,747 / 5,097,254 | 5,105,149 / 5,874,784 |
+
+Both packets dispatch 14 batches per draw. Waits include the completion barrier
+and allocation-count collection. The residual subtracts each frame's sum of
+nested waits from its direct total; it includes instrumentation and other serial
+work. Summaries of separate distributions are not additive. Every frame's
+summed waits were within its direct total. These numbers identify preparation
+and worker consumption as separate remaining costs, not an exact attribution
+of that residual to one function.
+
+Evidence under `r3-20261008`: `diagnostic-bands-083ef9d0-report.json` and
+`diagnostic-bands-083ef9d0-{1,8}-q3dm1-cpu`.
