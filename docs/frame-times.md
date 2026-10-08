@@ -904,3 +904,65 @@ workload does not prove gameplay, native visual acceptance or installation.
 
 Evidence under `r3-20261008`: `fixed-bands-clip-after-a-report.json`,
 `fixed-bands-clip-after-a-comparison.json` and its twelve private-run directories.
+
+
+## THE-862 cold mip layouts and ordered dispatch checkpoint, 2026-10-08
+
+`6b6405bb` retains exact mip minima, dimensions and payload lengths in the
+load-owned catalog. `40fc370c` batches consecutive prepared world draws within
+each raster band, preserving draw rank, cache operations and barriers at
+external draws and command boundaries. Both snapshots passed the rule checker,
+workspace tests and tracked app compilation. Release draw builds used cleared
+caches and byte-identical benchmark sources; builds took 33.0748 and 33.4530 s.
+
+The following two sets of twelve private runs use the same fixed time-zero
+retail scenes at 640×400, fresh copied profiles, 60 warm-up and 600 measured
+draws, and the preceding 1/2/4/8 process affinity masks. No build, checker,
+debugger or profiler overlapped timing.
+
+| Map | Bands | Mip layouts median / p99 ms | Batched dispatch median / p99 ms | Median change |
+|---|---:|---:|---:|---:|
+| e1m1 | 1 | 1.9571 / 2.0127 | 1.9601 / 2.0007 | +0.15% |
+| base1 | 1 | 4.4820 / 4.5935 | 4.5187 / 4.6057 | +0.82% |
+| q3dm1 | 1 | 15.2329 / 17.4926 | 15.2469 / 16.7221 | +0.09% |
+| e1m1 | 2 | 1.3450 / 2.0808 | 1.9561 / 2.1156 | +45.43% |
+| base1 | 2 | 4.1379 / 4.6235 | 4.1272 / 4.6982 | -0.26% |
+| q3dm1 | 2 | 13.2422 / 15.7149 | 15.2008 / 16.0418 | +14.79% |
+| e1m1 | 4 | 0.8679 / 1.2245 | 0.8711 / 1.2276 | +0.36% |
+| base1 | 4 | 2.5289 / 2.7168 | 2.4894 / 2.7155 | -1.56% |
+| q3dm1 | 4 | 11.9990 / 13.0695 | 10.4994 / 12.5114 | -12.50% |
+| e1m1 | 8 | 0.8216 / 1.1370 | 0.9943 / 1.6378 | +21.01% |
+| base1 | 8 | 1.6455 / 2.6664 | 1.6344 / 2.1168 | -0.68% |
+| q3dm1 | 8 | 8.5708 / 12.8273 | 7.3555 / 9.2227 | -14.18% |
+
+Comparisons against the clip checkpoint and between these two sets passed:
+raw RGBA and inverse-depth bytes, immutable workload, and all aggregate and
+per-band raster/cache counters match. Every private exit, candidate/profile
+preservation and owned-PID cleanup check passed. Measured caller plus worker
+allocations, reallocations and requested bytes are zero. Native heap, scene
+submission, presentation, gameplay and installation are outside this draw gate.
+
+q3dm1 records 11,863,200 measured cache hits and zero fills, evictions or
+rejects at every band count. At eight bands its cumulative counters are
+13,067,484 hits, 1,808 fills and zero evictions/rejects. The total cache arena
+is still 33,554,432 bytes. Shared mip metadata occupies 2,248,440 bytes for
+e1m1, 3,394,960 for base1 and 4,573,400 for q3dm1, separate from that arena.
+
+The latest q3dm1 eight-band median is 7.3555 ms and p99 is 9.2227 ms. The
+4 ms target remains unmet. Mip metadata alone showed no consistent improvement;
+batching regressed q3dm1 at two bands and e1m1 at two/eight bands. These
+results are retained without qualification; repeated matched checks remain
+necessary before attributing gains or accepting regressions. The earlier
+`f9ff6bc0` sampling run included startup/loading and does not isolate the hot
+frame window.
+
+The owner's 14:15 priority update pauses CPU speed work here. Common R1
+primitives and the event system precede further caching and unification work.
+Live lighting, complete static-stage coverage and native visual acceptance
+remain open.
+
+Evidence under `r3-20261008`: `fixed-bands-mip-layout-after-a-report.json`,
+`fixed-bands-mip-layout-after-a-comparison.json`,
+`fixed-bands-ordered-dispatch-after-a-report.json`,
+`fixed-bands-ordered-dispatch-after-a-comparison.json` and their 24 private
+run directories.
