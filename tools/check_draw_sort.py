@@ -19,12 +19,12 @@ def function(source, name):
     masked = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"',
                     lambda m: ''.join('\n' if c == '\n' else ' ' for c in m[0]),
                     source, flags=re.S)
-    match = re.search(r'(?m)^(?:static\s+)?[A-Za-z_][A-Za-z0-9_ \t*]*\b'
-                      + re.escape(name) + r'\s*\(', masked)
+    match = re.search(r'(?m)^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_ \t*]*\b'
+                      + re.escape(name) + r'\s*\([^;{}]*\)\s*\{', masked)
     if not match:
         raise RuntimeError(f'original function missing: {name}')
     start = match.start()
-    opening = masked.index('{', match.end())
+    opening = match.end() - 1
     depth, end = 1, opening + 1
     while depth:
         if masked[end] == '{': depth += 1
@@ -128,7 +128,7 @@ def main():
     c_seconds = time.monotonic() - start
     (args.output / 'c-build.log').write_text(compiled.stdout + compiled.stderr)
     compiled.check_returncode()
-    env = dict(os.environ, CARGO_TARGET_DIR='target', QA_DRAW_SORT_QSRC=str(args.qsrc), QA_DRAW_SORT_EVIDENCE=str(args.output))
+    env = dict(os.environ, CARGO_TARGET_DIR=os.environ.get('CARGO_TARGET_DIR', 'target'), QA_DRAW_SORT_QSRC=str(args.qsrc), QA_DRAW_SORT_EVIDENCE=str(args.output))
     start = time.monotonic()
     tested = subprocess.run(['cargo', 'test', '--release', '-p', 'qa-render', '--test', 'draw_sort_original', 'original_draw_sort_fixture_export', '--', '--nocapture'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     rust_seconds = time.monotonic() - start
@@ -155,10 +155,14 @@ def main():
     required += [f'cutoff_equal_{n}' for n in range(9)]
     if any(name not in actual for name in required) or not any(name.startswith('seed_') for name in actual):
         raise RuntimeError('required comparison fixtures missing')
+    revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True,
+                              capture_output=True, check=False)
+    status = subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT, text=True,
+                            capture_output=True, check=False)
     report = {
         'scope': 'actual FrontEnd poly DrawItems; exact unsigned-key comparison relation; no full packed-key or renderer image proof',
-        'commit': subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip(),
-        'source_tree_dirty': bool(subprocess.check_output(['git','status','--porcelain'], cwd=ROOT, text=True)),
+        'commit': revision.stdout.strip() if revision.returncode == 0 else None,
+        'source_tree_dirty': bool(status.stdout) if status.returncode == 0 else None,
         'references': references, 'original_body_modifications': 0,
         'standalone_adapter': 'two unsigned 32-bit words preserve original SWAP_DRAW_SURF layout; ri.Error exits on layout failure',
         'key_mapping': 'equal material sort/instance/lightmap, monotonic material handles provide native unsigned-key ordering',
