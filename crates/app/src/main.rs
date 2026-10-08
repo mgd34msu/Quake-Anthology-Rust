@@ -118,6 +118,8 @@ fn run() -> Result<(), String> {
     };
     for frame in 0..u64::from(frames) + u64::from(warmup) {
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+        cvars.reset_lookup_count();
+        #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         qa_platform::allocations::begin_frame();
         let start = Instant::now();
         #[cfg(feature = "proof")]
@@ -152,6 +154,15 @@ fn run() -> Result<(), String> {
         }
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         {
+            qa_console::logger::dev_print(
+                &cvars,
+                developer,
+                1,
+                format_args!(
+                    "{{\"event\":\"frame_cvar_lookups\",\"scope\":\"window_shell\",\"frame\":{frame},\"lookups\":{}}}",
+                    cvars.lookup_count()
+                ),
+            );
             let counts = qa_platform::allocations::end_frame();
             qa_console::logger::dev_print(
                 &cvars,

@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 proof = ["qa-platform/proof"]
-allocation-tracking = ["qa-platform/allocation-tracking"]
+allocation-tracking = ["qa-platform/allocation-tracking", "qa-console/lookup-tracking"]
 
 [dependencies]
 qa-core = { path = "../core" }

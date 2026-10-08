@@ -16,7 +16,7 @@ pub enum Role {
     Game,
     Cgame,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Context {
     pub source: Source,
     pub side: Scope,
