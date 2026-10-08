@@ -7,6 +7,7 @@ pub mod lightmap;
 pub mod material;
 pub mod scene;
 pub mod shader;
+pub mod sky;
 pub mod surface_cache;
 pub mod world;
 pub use assets::{Assets, ImageId, MaterialId, ModelId, PaletteId, Vertex};
