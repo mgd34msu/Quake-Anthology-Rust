@@ -45,18 +45,21 @@ static unsigned next(unsigned *seed){*seed=*seed*1664525u+1013904223u;return *se
 int main(int argc,char **argv) {
  if(argc!=2)return 2;FILE *in=fopen(argv[1],"r");if(!in)return 2;
  char line[256];while(fgets(line,sizeof(line),in)) {line[strcspn(line,"\n")]=0;printf("K %d\n",Key_StringToKeynum(line));}fclose(in);
- kbutton_t b={0};unsigned seed=0x42494e44u;int previous=0;
+ kbutton_t b={0};unsigned seed=0x42494e44u,events[4]={0},both=0;int previous=0;
  for(int frame=0;frame<10000;++frame) {
   unsigned duration=8+next(&seed)%43;
   for(unsigned offset=1;offset<duration;++offset) {
-   if((next(&seed)&3)!=0)continue;
-   int down=next(&seed)%3!=0,key=(next(&seed)&1)==0?26:82;
+   if(((next(&seed)>>16)&3)!=0)continue;
+   int down=next(&seed)%3!=0,key=((next(&seed)>>16)&1)==0?26:82;
+   ++events[(key==26?0:2)+(down?0:1)];
    snprintf(argv1,sizeof(argv1),"%d",key);snprintf(argv2,sizeof(argv2),"%u",previous+offset);
    if(down)IN_KeyDown(&b);else IN_KeyUp(&b);
+   if(b.down[0] && b.down[1])++both;
   }
   frame_msec=duration;com_frameTime=previous+duration;previous=com_frameTime;
   printf("F %d\n",(int)(CL_KeyState(&b)*200));
  }
+ fprintf(stderr,"{\"source_events\":[%u,%u,%u,%u],\"two_key_holds\":%u}\n",events[0],events[1],events[2],events[3],both);
  return 0;
 }
 '''
@@ -72,6 +75,9 @@ int main(int argc,char **argv) {
     fixture = args.evidence/'key-names.txt';fixture.write_text('\n'.join(key_cases)+'\n')
     c = subprocess.run([str(binary),str(fixture)],capture_output=True,check=True)
     rust = subprocess.run(['cargo','run','--release','-p','qa-platform','--example','input_reference','--',str(fixture)],cwd=ROOT,capture_output=True,check=True)
+    coverage = json.loads(c.stderr)
+    assert min(coverage['source_events']) > 0 and coverage['two_key_holds'] > 0, coverage
+    (args.evidence/'coverage.json').write_text(json.dumps(coverage,indent=2)+'\n')
     (args.evidence/'c.txt').write_bytes(c.stdout)
     (args.evidence/'rust.txt').write_bytes(rust.stdout)
     (args.evidence/'build.log').write_bytes(rust.stderr)
@@ -80,7 +86,7 @@ int main(int argc,char **argv) {
             if a != b:
                 raise RuntimeError(f'record {index} differs: C={a!r}, Rust={b!r}; retained fixtures')
         raise RuntimeError('different output length; retained fixtures')
-    report = dict(result='PASS', seed='0x42494e44', native_key_cases=len(key_cases), frames=10000, identical=True, workload='LCG 1664525/1013904223 generated directly in both helpers; no event-script input',
+    report = dict(result='PASS', seed='0x42494e44', native_key_cases=len(key_cases), frames=10000, identical=True, coverage=coverage, workload='LCG 1664525/1013904223 generated directly in both helpers; no event-script input',
                   sources=['quake-iii-arena/code/client/cl_keys.c:Key_StringToKeynum', 'quake-iii-arena/code/client/cl_input.c:IN_KeyDown/IN_KeyUp/CL_KeyState'],
                   scope='headless named/canonical hex keys and physical two-source hold fractions; not menu, maps or movement policies')
     (args.evidence/'comparison.json').write_text(json.dumps(report,indent=2)+'\n')

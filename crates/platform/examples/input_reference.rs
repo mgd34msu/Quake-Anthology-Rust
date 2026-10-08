@@ -24,11 +24,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10000 {
         let duration = 8 + next(&mut seed) % 43;
         for offset in 1..duration {
-            if next(&mut seed) & 3 != 0 {
+            if (next(&mut seed) >> 16) & 3 != 0 {
                 continue;
             }
             let down = !next(&mut seed).is_multiple_of(3);
-            let code = if next(&mut seed) & 1 == 0 { 26 } else { 82 };
+            let code = if (next(&mut seed) >> 16) & 1 == 0 {
+                26
+            } else {
+                82
+            };
             input.dispatch(
                 SysEvent {
                     time: EventTime((time + u64::from(offset)) * 1_000_000),
