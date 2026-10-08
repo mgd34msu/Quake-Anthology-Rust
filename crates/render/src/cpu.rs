@@ -1007,6 +1007,8 @@ struct TexelView<'a> {
     height: u32,
     rgba: &'a [u8],
     bounds: [u32; 4],
+    row_stride: u32,
+    storage_origin: [u32; 2],
     intensity: f32,
 }
 impl<'a> TexelView<'a> {
@@ -1022,6 +1024,8 @@ impl<'a> TexelView<'a> {
                 height: level.height,
                 rgba: &level.rgba,
                 bounds: [0, 0, level.width, level.height],
+                row_stride: level.width,
+                storage_origin: [0, 0],
                 intensity: if intensity == TextureIntensity::NeutralizeUpload {
                     prepared.inverse_intensity
                 } else {
@@ -1034,6 +1038,8 @@ impl<'a> TexelView<'a> {
             height: image.height,
             rgba: &image.rgba,
             bounds: [0, 0, image.width, image.height],
+            row_stride: image.width,
+            storage_origin: [0, 0],
             intensity: 1.0,
         }
     }
@@ -1043,27 +1049,67 @@ impl<'a> TexelView<'a> {
             height,
             rgba: rgba.as_flattened(),
             bounds: [0, 0, width, height],
+            row_stride: width,
+            storage_origin: [0, 0],
             intensity: 1.0,
         }
     }
+    /// Borrow a tightly packed copy of the current bounds, retaining native UVs.
+    fn copied<'b>(self, rgba: &'b [[u8; 4]]) -> Option<TexelView<'b>> {
+        if !self.owns(self.bounds)
+            || (self.bounds[2] as usize).checked_mul(self.bounds[3] as usize)? != rgba.len()
+        {
+            return None;
+        }
+        Some(TexelView {
+            width: self.width,
+            height: self.height,
+            rgba: rgba.as_flattened(),
+            bounds: self.bounds,
+            row_stride: self.bounds[2],
+            storage_origin: [self.bounds[0], self.bounds[1]],
+            intensity: self.intensity,
+        })
+    }
+    fn owns(self, bounds: [u32; 4]) -> bool {
+        let [x, y, width, height] = bounds;
+        if width == 0
+            || height == 0
+            || x.checked_add(width).is_none_or(|end| end > self.width)
+            || y.checked_add(height).is_none_or(|end| end > self.height)
+        {
+            return false;
+        }
+        let Some(row_bytes) = (self.row_stride as usize).checked_mul(4) else {
+            return false;
+        };
+        if row_bytes == 0 || self.rgba.len() % row_bytes != 0 {
+            return false;
+        }
+        let rows = self.rgba.len() / row_bytes;
+        let Some(local_x) = x.checked_sub(self.storage_origin[0]) else {
+            return false;
+        };
+        let Some(local_y) = y.checked_sub(self.storage_origin[1]) else {
+            return false;
+        };
+        local_x
+            .checked_add(width)
+            .is_some_and(|end| end <= self.row_stride)
+            && (local_y as usize)
+                .checked_add(height as usize)
+                .is_some_and(|end| end <= rows)
+    }
     fn region(mut self, region: Option<crate::lightmap::AtlasRegion>) -> Option<Self> {
         if let Some(region) = region {
-            if region.width == 0
-                || region.height == 0
-                || region
-                    .x
-                    .checked_add(region.width)
-                    .is_none_or(|end| end > self.width)
-                || region
-                    .y
-                    .checked_add(region.height)
-                    .is_none_or(|end| end > self.height)
-            {
-                return None;
-            }
             self.bounds = [region.x, region.y, region.width, region.height];
         }
-        Some(self)
+        self.owns(self.bounds).then_some(self)
+    }
+    fn offset(self, x: usize, y: usize) -> usize {
+        ((y - self.storage_origin[1] as usize) * self.row_stride as usize + x
+            - self.storage_origin[0] as usize)
+            * 4
     }
 }
 
@@ -1149,6 +1195,30 @@ fn sampler_function(sampler: Sampler) -> ShadeFn {
         (Filter::Linear, Wrap::Clamp) => sample::<true, false>,
     }
 }
+fn linear_taps<const REPEAT: bool>(base: f32, size: u32, low: u32, count: u32) -> [usize; 2] {
+    let taps = if REPEAT && (-16_777_216.0..=16_777_215.0).contains(&base) {
+        // Both consecutive integer taps are exactly representable in this range.
+        let first = (base as i32).rem_euclid(size as i32) as usize;
+        [
+            first,
+            if first + 1 == size as usize {
+                0
+            } else {
+                first + 1
+            },
+        ]
+    } else {
+        // Large floats can round base+1 back to base; keep the original operations.
+        [base + 0.0, base + 1.0].map(|value| {
+            if REPEAT {
+                value.rem_euclid(size as f32) as usize
+            } else {
+                value.clamp(0.0, size as f32 - 1.0) as usize
+            }
+        })
+    };
+    taps.map(|tap| tap.clamp(low as usize, (low + count - 1) as usize))
+}
 fn sample<const LINEAR: bool, const REPEAT: bool>(
     image: TexelView<'_>,
     coordinates: [f32; 2],
@@ -1159,24 +1229,20 @@ fn sample<const LINEAR: bool, const REPEAT: bool>(
         let p = std::array::from_fn::<_, 2, _>(|i| coordinates[i] * size[i] as f32 - 0.5);
         let base = p.map(f32::floor);
         let fraction = [p[0] - base[0], p[1] - base[1]];
-        let samples: [[f32; 4]; 4] = std::array::from_fn(|corner| {
-            let xy = std::array::from_fn::<_, 2, _>(|i| {
-                let value = base[i] + ((corner >> i) & 1) as f32;
-                if REPEAT {
-                    value.rem_euclid(size[i] as f32) as usize
-                } else {
-                    value.clamp(0.0, size[i] as f32 - 1.0) as usize
-                }
-            });
-            let xy: [usize; 2] = std::array::from_fn(|axis| {
-                xy[axis].clamp(
-                    image.bounds[axis] as usize,
-                    (image.bounds[axis] + image.bounds[axis + 2] - 1) as usize,
-                )
-            });
-            let offset = (xy[1] * image.width as usize + xy[0]) * 4;
-            std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
-        });
+        let [x0, x1] = linear_taps::<REPEAT>(base[0], size[0], image.bounds[0], image.bounds[2]);
+        let [y0, y1] = linear_taps::<REPEAT>(base[1], size[1], image.bounds[1], image.bounds[3]);
+        let x0 = x0 - image.storage_origin[0] as usize;
+        let x1 = x1 - image.storage_origin[0] as usize;
+        let row0 = (y0 - image.storage_origin[1] as usize) * image.row_stride as usize;
+        let row1 = (y1 - image.storage_origin[1] as usize) * image.row_stride as usize;
+        let offsets = [
+            (row0 + x0) * 4,
+            (row0 + x1) * 4,
+            (row1 + x0) * 4,
+            (row1 + x1) * 4,
+        ];
+        let samples: [[f32; 4]; 4] =
+            offsets.map(|offset| std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0));
         std::array::from_fn(|i| {
             let a = samples[0][i] + fraction[0] * (samples[1][i] - samples[0][i]);
             let b = samples[2][i] + fraction[0] * (samples[3][i] - samples[2][i]);
@@ -1192,7 +1258,7 @@ fn sample<const LINEAR: bool, const REPEAT: bool>(
             image.bounds[1] as usize,
             (image.bounds[1] + image.bounds[3] - 1) as usize,
         );
-        let offset = (y * image.width as usize + x) * 4;
+        let offset = image.offset(x, y);
         std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
     };
     std::array::from_fn(|i| texture[i] * color[i] * if i < 3 { image.intensity } else { 1.0 })
@@ -1250,3 +1316,7 @@ fn composite(destination: u32, source: [f32; 4], blend: Option<StageBlend>) -> u
     let result = blend_pixel(blend, source, destination);
     u32::from_le_bytes(result.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
 }
+
+#[cfg(test)]
+#[path = "../tests/cpu_sampling/oracle.rs"]
+mod sampling_tests;
