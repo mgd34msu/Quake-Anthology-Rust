@@ -460,4 +460,4 @@ Evidence under `r3-20261008`: `native-tracking-report.json`, the six
 `native-tracking-{e1m1,base1,q3dm1}-{cpu,gl}-b` directories,
 `native-image-retail-report.json` and the six normal
 `native-image-{e1m1,base1,q3dm1}-{cpu,gl}-b` directories. Their runtime logs,
-result files, timing CSVs and window captures record these bounded results.
+result files, embedded stage samples and window captures record these results.

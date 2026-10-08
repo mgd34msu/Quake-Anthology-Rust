@@ -1,4 +1,4 @@
-//! Indexed texture × lightmap surfaces, using the native Q1/Q2 block math.
+//! One rover cache for indexed and precombined RGBA texture × lightmap surfaces.
 //!
 //! References: WinQuake/d_surf.c D_SCAlloc/D_CacheSurface; WinQuake/r_surf.c
 //! R_BuildLightMap and R_DrawSurfaceBlock8_mip0..3; Q2 ref_soft/r_light.c and
@@ -18,7 +18,7 @@ static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
 fn resource_id() -> Result<u64, &'static str> {
     NEXT_RESOURCE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-        .map_err(|_| "indexed resource ids exhausted")
+        .map_err(|_| "surface resource ids exhausted")
 }
 
 /// Palette presentation is selected independently of map and movement rules.
@@ -290,9 +290,27 @@ fn grid_shape(width: u32, height: u32, styles: [u8; 4]) -> Result<(usize, usize)
     Ok((width as usize * height as usize, count))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheLayout {
+    Indexed8,
+    Rgba8,
+}
+
+impl CacheLayout {
+    fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Indexed8 => 1,
+            Self::Rgba8 => 4,
+        }
+    }
+}
+
 pub struct SurfaceSource {
     texture_mins: [i32; 2],
     extents: [u32; 2],
+    layout: CacheLayout,
+    mip_count: u8,
+    slot_start: usize,
     lightmap: Option<LightGrid>,
     world_has_lightdata: bool,
 }
@@ -316,9 +334,48 @@ impl SurfaceSource {
         Ok(Self {
             texture_mins,
             extents,
+            layout: CacheLayout::Indexed8,
+            mip_count: 4,
+            slot_start: 0,
             lightmap,
             world_has_lightdata,
         })
+    }
+
+    /// The caller compiles the RGB material's UV/lightmap recipe at load.
+    /// Unlike native indexed blocks, these extents need not be multiples of 16.
+    pub fn load_rgba(
+        texture_mins: [i32; 2],
+        extents: [u32; 2],
+        mip_count: u8,
+    ) -> Result<Self, &'static str> {
+        if mip_count == 0
+            || mip_count > 32
+            || extents.iter().any(|&e| e == 0 || e > MAX_DIMENSION)
+            || (extents[0] as usize)
+                .checked_mul(extents[1] as usize)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .is_none()
+        {
+            return Err("invalid RGBA surface layout");
+        }
+        Ok(Self {
+            texture_mins,
+            extents,
+            layout: CacheLayout::Rgba8,
+            mip_count,
+            slot_start: 0,
+            lightmap: None,
+            world_has_lightdata: false,
+        })
+    }
+
+    pub fn layout(&self) -> CacheLayout {
+        self.layout
+    }
+
+    pub fn mip_count(&self) -> u8 {
+        self.mip_count
     }
 
     pub fn texture_mins(&self) -> [i32; 2] {
@@ -334,7 +391,27 @@ impl SurfaceSource {
     }
 
     fn grid_cells(&self) -> usize {
-        (self.extents[0] as usize / 16 + 1) * (self.extents[1] as usize / 16 + 1)
+        if self.layout == CacheLayout::Indexed8 {
+            (self.extents[0] as usize / 16 + 1) * (self.extents[1] as usize / 16 + 1)
+        } else {
+            0
+        }
+    }
+
+    fn dimensions(&self, mip: u8) -> Option<[u32; 2]> {
+        (mip < self.mip_count).then(|| {
+            [
+                (self.extents[0] >> mip).max(1),
+                (self.extents[1] >> mip).max(1),
+            ]
+        })
+    }
+
+    fn bytes(&self, mip: u8) -> Option<usize> {
+        let [width, height] = self.dimensions(mip)?;
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(self.layout.bytes_per_pixel())
     }
 }
 
@@ -381,6 +458,40 @@ impl Default for BuildState<'_> {
     }
 }
 
+/// Numeric load identities and explicit changes to the precombined recipe.
+/// The caller preserves RGB style values and revises inputs when they change;
+/// these values are compared directly, never derived from a content digest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RgbaBuildState {
+    pub material_id: u32,
+    pub material_revision: u64,
+    pub base_image_id: u32,
+    pub base_revision: u64,
+    pub lightmap_image_id: Option<u32>,
+    pub lightmap_revision: u64,
+    pub lighting_revision: u64,
+    pub dynamic_revision: u64,
+    pub style_scales: [[f32; 3]; 4],
+    pub fullbright: bool,
+}
+
+impl Default for RgbaBuildState {
+    fn default() -> Self {
+        Self {
+            material_id: 0,
+            material_revision: 0,
+            base_image_id: 0,
+            base_revision: 0,
+            lightmap_image_id: None,
+            lightmap_revision: 0,
+            lighting_revision: 0,
+            dynamic_revision: 0,
+            style_scales: [[1.0; 3]; 4],
+            fullbright: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub hits: u64,
@@ -391,6 +502,7 @@ pub struct CacheStats {
 
 #[derive(Clone, Copy, Debug)]
 pub struct CacheSpan {
+    pub layout: CacheLayout,
     pub width: u32,
     pub height: u32,
     pub mip: u8,
@@ -403,7 +515,7 @@ pub struct CacheSpan {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct Stamp {
+struct IndexedStamp {
     texture_resource: u64,
     palette_resource: u64,
     texture_id: u32,
@@ -415,10 +527,10 @@ struct Stamp {
     fullbright: bool,
     ambient: u8,
     lighting: IndexedLighting,
-    cutout: bool,
+    transparent_index: Option<u8>,
 }
 
-impl Stamp {
+impl IndexedStamp {
     fn from_state(
         state: BuildState<'_>,
         texture: &IndexedTexture,
@@ -436,15 +548,23 @@ impl Stamp {
             fullbright: state.fullbright,
             ambient: state.ambient,
             lighting: state.lighting,
-            cutout: texture.cutout(),
+            transparent_index: texture.transparent_index,
         }
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Stamp {
+    Indexed(IndexedStamp),
+    Rgba(RgbaBuildState),
+}
+
 #[derive(Clone, Copy, Default)]
 struct Slot {
+    surface: usize,
+    mip: u8,
     block: Option<usize>,
-    stamp: Stamp,
+    stamp: Option<Stamp>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -473,11 +593,17 @@ pub struct SurfaceCache {
 }
 
 impl SurfaceCache {
-    pub fn load(surfaces: Vec<SurfaceSource>, arena_bytes: usize) -> Result<Self, &'static str> {
-        let slot_count = surfaces
-            .len()
-            .checked_mul(4)
-            .ok_or("surface slot count overflow")?;
+    pub fn load(
+        mut surfaces: Vec<SurfaceSource>,
+        arena_bytes: usize,
+    ) -> Result<Self, &'static str> {
+        let mut slot_count = 0usize;
+        for source in &mut surfaces {
+            source.slot_start = slot_count;
+            slot_count = slot_count
+                .checked_add(source.mip_count as usize)
+                .ok_or("surface slot count overflow")?;
+        }
         let block_count = slot_count
             .checked_mul(2)
             .and_then(|count| count.checked_add(1))
@@ -495,10 +621,22 @@ impl SurfaceCache {
         for (index, block) in blocks.iter_mut().enumerate().skip(1) {
             block.next = (index + 1 < block_count).then_some(index + 1);
         }
+        let slots = surfaces
+            .iter()
+            .enumerate()
+            .flat_map(|(surface, source)| {
+                (0..source.mip_count).map(move |mip| Slot {
+                    surface,
+                    mip,
+                    ..Slot::default()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Ok(Self {
             id: resource_id()?,
             surfaces: surfaces.into_boxed_slice(),
-            slots: vec![Slot::default(); slot_count].into_boxed_slice(),
+            slots,
             arena: vec![0; arena_bytes].into_boxed_slice(),
             blocks,
             free_metadata: (block_count > 1).then_some(1),
@@ -553,7 +691,8 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         };
-        if mip >= 4
+        if source.layout != CacheLayout::Indexed8
+            || mip >= source.mip_count
             || state
                 .dynamic
                 .is_some_and(|grid| grid.len() != source.grid_cells())
@@ -565,34 +704,13 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return None;
         };
-        let width = source.extents[0] >> mip;
-        let height = source.extents[1] >> mip;
-        let bytes = width as usize * height as usize;
-        let key = surface as usize * 4 + mip as usize;
-        let stamp = Stamp::from_state(state, texture, palette);
-        let block = if let Some(block) = self.slots[key].block {
-            if self.slots[key].stamp == stamp {
-                self.pin(block);
-                self.stats.hits = self.stats.hits.saturating_add(1);
-                return Some(self.span(surface as usize, mip, block, texture.transparent_index));
-            }
-            if self.pinned(block) {
-                self.stats.rejected = self.stats.rejected.saturating_add(1);
-                return None;
-            }
-            block
-        } else {
-            let Some(block) = self.allocate(bytes) else {
-                self.stats.rejected = self.stats.rejected.saturating_add(1);
-                return None;
-            };
-            self.blocks[block].owner = Some(key);
-            self.slots[key].block = Some(block);
-            block
-        };
-        self.generation = self.generation.wrapping_add(1);
-        self.blocks[block].generation = self.generation;
-        self.slots[key].stamp = stamp;
+        let bytes = source.bytes(mip)?;
+        let key = source.slot_start + mip as usize;
+        let stamp = Stamp::Indexed(IndexedStamp::from_state(state, texture, palette));
+        let (block, needs_fill) = self.prepare_slot(key, bytes, stamp)?;
+        if !needs_fill {
+            return Some(self.span(surface as usize, mip, block, texture.transparent_index));
+        }
         let source = &self.surfaces[surface as usize];
         build_lightmap(source, state, &mut self.light_scratch);
         let offset = self.blocks[block].offset;
@@ -610,27 +728,122 @@ impl SurfaceCache {
         Some(self.span(surface as usize, mip, block, texture.transparent_index))
     }
 
-    /// A generation check rejects a span whose block has since been reused.
+    /// Fill an exact row-major RGBA payload with the caller's precombined
+    /// texture × lightmap recipe. A cache hit never invokes the fill closure.
+    /// The closure is trusted to initialize every byte; input validation and
+    /// any fallible recipe preparation happen before submitting this request.
+    pub fn prepare_rgba(
+        &mut self,
+        surface: u32,
+        mip: u8,
+        state: RgbaBuildState,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> Option<CacheSpan> {
+        let Some(source) = self.surfaces.get(surface as usize) else {
+            self.stats.rejected = self.stats.rejected.saturating_add(1);
+            return None;
+        };
+        if source.layout != CacheLayout::Rgba8 || mip >= source.mip_count {
+            self.stats.rejected = self.stats.rejected.saturating_add(1);
+            return None;
+        }
+        let bytes = source.bytes(mip)?;
+        let key = source.slot_start + mip as usize;
+        let (block, needs_fill) = self.prepare_slot(key, bytes, Stamp::Rgba(state))?;
+        if needs_fill {
+            let offset = self.blocks[block].offset;
+            fill(&mut self.arena[offset..offset + bytes]);
+            self.pin(block);
+            self.stats.fills = self.stats.fills.saturating_add(1);
+        }
+        Some(self.span(surface as usize, mip, block, None))
+    }
+
+    /// Validate the originating cache, layout, dimensions, mip and generation
+    /// before borrowing raw payload bytes. Evicted or altered spans are rejected.
     pub fn pixels(&self, span: CacheSpan) -> Option<&[u8]> {
         if span.cache_id != self.id {
             return None;
         }
         let block = self.blocks.get(span.block)?;
         let key = block.owner?;
+        let slot = self.slots.get(key)?;
         if block.generation != span.generation
-            || self.slots[key].block != Some(span.block)
-            || key % 4 != span.mip as usize
+            || slot.block != Some(span.block)
+            || slot.mip != span.mip
         {
             return None;
         }
-        let source = &self.surfaces[key / 4];
-        if span.width != source.extents[0] >> span.mip
-            || span.height != source.extents[1] >> span.mip
+        let source = self.surfaces.get(slot.surface)?;
+        if span.layout != source.layout
+            || [span.width, span.height] != source.dimensions(span.mip)?
+            || span.texture_mins != source.texture_mins
+            || span.cutout != span.transparent_index.is_some()
         {
             return None;
         }
-        let bytes = span.width as usize * span.height as usize;
-        self.arena.get(block.offset..block.offset + bytes)
+        match (span.layout, slot.stamp) {
+            (CacheLayout::Indexed8, Some(Stamp::Indexed(stamp)))
+                if span.transparent_index == stamp.transparent_index => {}
+            (CacheLayout::Rgba8, Some(Stamp::Rgba(_))) if !span.cutout => {}
+            _ => return None,
+        }
+        let bytes = source.bytes(span.mip)?;
+        if bytes > block.bytes {
+            return None;
+        }
+        self.arena
+            .get(block.offset..block.offset.checked_add(bytes)?)
+    }
+
+    pub fn indexed_pixels(&self, span: CacheSpan) -> Option<&[u8]> {
+        if span.layout != CacheLayout::Indexed8 {
+            return None;
+        }
+        self.pixels(span)
+    }
+
+    pub fn rgba_pixels(&self, span: CacheSpan) -> Option<&[[u8; 4]]> {
+        if span.layout != CacheLayout::Rgba8 {
+            return None;
+        }
+        Some(self.pixels(span)?.as_chunks::<4>().0)
+    }
+
+    fn prepare_slot(&mut self, key: usize, bytes: usize, stamp: Stamp) -> Option<(usize, bool)> {
+        let block = if let Some(block) = self.slots[key].block {
+            if self.slots[key].stamp == Some(stamp) {
+                self.pin(block);
+                self.stats.hits = self.stats.hits.saturating_add(1);
+                return Some((block, false));
+            }
+            if self.pinned(block) {
+                self.stats.rejected = self.stats.rejected.saturating_add(1);
+                return None;
+            }
+            Some(block)
+        } else {
+            None
+        };
+        let Some(generation) = self.generation.checked_add(1) else {
+            self.stats.rejected = self.stats.rejected.saturating_add(1);
+            return None;
+        };
+        let block = if let Some(block) = block {
+            block
+        } else {
+            let Some(block) = self.allocate(bytes) else {
+                self.stats.rejected = self.stats.rejected.saturating_add(1);
+                return None;
+            };
+            self.blocks[block].owner = Some(key);
+            self.slots[key].block = Some(block);
+            block
+        };
+        self.generation = generation;
+        self.blocks[block].generation = generation;
+        self.slots[key].stamp = Some(stamp);
+        Some((block, true))
     }
 
     fn span(
@@ -642,8 +855,9 @@ impl SurfaceCache {
     ) -> CacheSpan {
         let source = &self.surfaces[surface];
         CacheSpan {
-            width: source.extents[0] >> mip,
-            height: source.extents[1] >> mip,
+            layout: source.layout,
+            width: (source.extents[0] >> mip).max(1),
+            height: (source.extents[1] >> mip).max(1),
             mip,
             texture_mins: source.texture_mins,
             cutout: transparent_index.is_some(),
@@ -682,17 +896,19 @@ impl SurfaceCache {
         let start = self.rover;
         let mut cursor = Some(start);
         while let Some(block) = cursor {
-            if self.take_block(block, bytes, None) {
+            if self.take_block(block, bytes) {
                 return Some(block);
             }
             cursor = self.blocks[block].next;
         }
         cursor = Some(0);
+        // Stop duplicate probes at the original rover; contiguous coalescing
+        // may cross it, since a successful allocation returns immediately.
         while let Some(block) = cursor {
             if block == start {
                 break;
             }
-            if self.take_block(block, bytes, Some(start)) {
+            if self.take_block(block, bytes) {
                 return Some(block);
             }
             cursor = self.blocks[block].next;
@@ -700,17 +916,31 @@ impl SurfaceCache {
         None
     }
 
-    fn take_block(&mut self, block: usize, bytes: usize, limit: Option<usize>) -> bool {
+    fn take_block(&mut self, block: usize, bytes: usize) -> bool {
         if self.pinned(block) {
             return false;
+        }
+        // A failed probe leaves existing owners intact, including unpinned
+        // spans preceding a pinned barrier. Merge only a complete allocation.
+        let mut available = self.blocks[block].bytes;
+        let mut probe = block;
+        while available < bytes {
+            let Some(next) = self.blocks[probe].next else {
+                return false;
+            };
+            if self.pinned(next) {
+                return false;
+            }
+            let Some(total) = available.checked_add(self.blocks[next].bytes) else {
+                return false;
+            };
+            available = total;
+            probe = next;
         }
         while self.blocks[block].bytes < bytes {
             let Some(next) = self.blocks[block].next else {
                 return false;
             };
-            if Some(next) == limit || self.pinned(next) {
-                return false;
-            }
             self.clear_owner(next);
             self.blocks[block].bytes += self.blocks[next].bytes;
             self.blocks[block].next = self.blocks[next].next;
