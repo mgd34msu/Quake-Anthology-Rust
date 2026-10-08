@@ -27,7 +27,8 @@ mod allocation_gate;
 
 fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context::default());
-    let mut runtime = Runtime::load(std::iter::empty())?;
+    let mut vfs = qa_content::vfs::Vfs::default();
+    let mut device_assignments = Vec::new();
     let mut frames = 120u32;
     let mut width = 640i32;
     let mut height = 400i32;
@@ -90,9 +91,7 @@ fn run() -> Result<(), String> {
             }
             "--content" => {
                 let path = args.next().ok_or("--content needs a product directory")?;
-                runtime
-                    .vfs
-                    .mount_product(std::path::Path::new(&path), content_priority)
+                vfs.mount_product(std::path::Path::new(&path), content_priority)
                     .map_err(|e| format!("content: {e:?}"))?;
                 content_priority = content_priority
                     .checked_add(100_000)
@@ -129,9 +128,7 @@ fn run() -> Result<(), String> {
                 let id = device.parse().map_err(|_| "invalid controller instance")?;
                 let seat = SeatId::new(seat.parse().map_err(|_| "invalid seat")?)
                     .ok_or("seat outside 0..4")?;
-                if !runtime.input.assign(DeviceId::Controller(id), seat) {
-                    return Err("device table full".into());
-                }
+                device_assignments.push((DeviceId::Controller(id), seat));
             }
             "--frame-timings" => timings = true,
             "--renderer" => {
@@ -207,12 +204,25 @@ fn run() -> Result<(), String> {
         return Err("--movement needs a loaded --map".into());
     }
     let staged_map = if let Some(name) = map_name {
-        let input = map::read(&runtime.vfs, &name)?;
+        let input = map::read(&vfs, &name)?;
         let rules = movement_rules.unwrap_or_else(|| map::native_movement(input.native_source));
         Some((input, rules))
     } else {
         None
     };
+    let names = staged_map
+        .as_ref()
+        .map(|(input, _)| input.catalog_names())
+        .transpose()?
+        .unwrap_or_default();
+    let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
+    drop(names);
+    runtime.vfs = vfs;
+    for (device, seat) in device_assignments {
+        if !runtime.input.assign(device, seat) {
+            return Err("device table full".into());
+        }
+    }
     let mut loaded_world = None;
     let mut local_client = None;
     let mut world_rate = TickRate::FrameDriven;
@@ -276,6 +286,7 @@ fn run() -> Result<(), String> {
                     .ok_or("invalid Q3 world period")?
             }
         };
+        runtime.entity_sources.push(loaded.entity_source);
         runtime.collision = Some(loaded.collision);
         let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
         let player = &runtime.server.clients[client.0 as usize].player;

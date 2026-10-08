@@ -17,6 +17,8 @@ use qa_session::clients::{Connection, Server};
 pub struct Runtime {
     pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
+    /// Exact map entity sources in load order, retained for native module import.
+    pub entity_sources: Vec<map::NativeEntityText>,
     pub quit: bool,
     pub network: PacketReceiver,
     pub server: Server,
@@ -47,6 +49,7 @@ impl Runtime {
         Ok(Self {
             catalog,
             vfs: Vfs::default(),
+            entity_sources: Vec::new(),
             quit: false,
             network: PacketReceiver::default(),
             server,

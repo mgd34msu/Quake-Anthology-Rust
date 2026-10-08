@@ -5,7 +5,7 @@ use qa_content::vfs::{MountKind, Vfs, normalize};
 use qa_core::primitives::{ClipNode, MovementRules, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
-    bsp::{Bsp, BspFormat, Map},
+    bsp::{Bsp, BspFormat, Lump, Map},
     entities::{EntityLump, EntitySyntax},
 };
 use qa_render::{
@@ -17,6 +17,7 @@ use qa_world::collision::{
     brushes::{Brush, BrushMap},
     hulls::{HullModel, Q1Hulls},
 };
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnAnchor {
@@ -36,6 +37,162 @@ pub struct LoadedMap {
     pub profile_product: String,
     pub entity_count: usize,
     pub collision_brushes: usize,
+    pub entity_source: NativeEntityText,
+}
+
+/// Exact source bytes stay separate from folded runtime identities. Guest
+/// fields, native spelling and protocol strings must not be rebuilt from IDs.
+pub struct NativeEntityText {
+    pub syntax: EntitySyntax,
+    pub bytes: Box<[u8]>,
+}
+
+#[derive(Clone, Copy)]
+enum NameString {
+    LevelString,
+    RawToken,
+}
+
+struct NameField {
+    key: &'static [u8],
+    string: NameString,
+}
+impl NameField {
+    const fn level(key: &'static [u8]) -> Self {
+        Self {
+            key,
+            string: NameString::LevelString,
+        }
+    }
+    const fn raw(key: &'static [u8]) -> Self {
+        Self {
+            key,
+            string: NameString::RawToken,
+        }
+    }
+}
+
+// Q1 progs106/defs.qc string fields; Q2 g_save.c fields[]; Q3 g_spawn.c
+// fields[] and g_target.c SP_target_speaker. Numeric `sounds` is not a name.
+const Q1_NAME_FIELDS: &[NameField] = &[
+    NameField::level(b"classname"),
+    NameField::level(b"model"),
+    NameField::level(b"targetname"),
+    NameField::level(b"target"),
+    NameField::level(b"killtarget"),
+    NameField::level(b"noise"),
+    NameField::level(b"noise1"),
+    NameField::level(b"noise2"),
+    NameField::level(b"noise3"),
+    NameField::level(b"noise4"),
+    NameField::level(b"map"),
+];
+const Q2_NAME_FIELDS: &[NameField] = &[
+    NameField::level(b"classname"),
+    NameField::level(b"model"),
+    NameField::level(b"map"),
+    NameField::level(b"targetname"),
+    NameField::level(b"target"),
+    NameField::level(b"pathtarget"),
+    NameField::level(b"deathtarget"),
+    NameField::level(b"killtarget"),
+    NameField::level(b"combattarget"),
+    NameField::level(b"team"),
+    NameField::level(b"noise"),
+    NameField::level(b"item"),
+    NameField::level(b"sky"),
+    NameField::level(b"nextmap"),
+];
+const Q3_NAME_FIELDS: &[NameField] = &[
+    NameField::level(b"classname"),
+    NameField::level(b"model"),
+    NameField::level(b"model2"),
+    NameField::level(b"targetname"),
+    NameField::level(b"target"),
+    NameField::level(b"team"),
+    NameField::level(b"targetShaderName"),
+    NameField::level(b"targetShaderNewName"),
+    NameField::raw(b"noise"),
+];
+
+fn entity_syntax(source: Source) -> EntitySyntax {
+    match source {
+        Source::Quake | Source::QuakeWorld => EntitySyntax::Quake,
+        Source::Quake2 | Source::Quake2Rerelease => EntitySyntax::Quake2,
+        Source::Quake3 => EntitySyntax::Quake3,
+    }
+}
+
+fn level_string(bytes: &[u8]) -> Cow<'_, [u8]> {
+    if !bytes.contains(&b'\\') {
+        return Cow::Borrowed(bytes);
+    }
+    // ED_NewString/G_NewString: \n becomes LF; every other escaped byte is
+    // consumed and leaves one backslash. A final backslash remains a backslash.
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'\\' {
+            at += 1;
+            decoded.push(if bytes.get(at) == Some(&b'n') {
+                b'\n'
+            } else {
+                b'\\'
+            });
+        } else {
+            decoded.push(bytes[at]);
+        }
+        at += 1;
+    }
+    Cow::Owned(decoded)
+}
+
+impl NativeEntityText {
+    /// Collect native identity values before the common catalog binds IDs.
+    /// This is not a module spawn or a complete module precache inventory.
+    pub fn catalog_names(&self) -> Result<Vec<Cow<'_, [u8]>>, String> {
+        let entities = EntityLump::parse(&self.bytes, self.syntax)
+            .map_err(|e| format!("entity names: {e:?}"))?;
+        let descriptors = match self.syntax {
+            EntitySyntax::Quake => Q1_NAME_FIELDS,
+            EntitySyntax::Quake2 => Q2_NAME_FIELDS,
+            EntitySyntax::Quake3 => Q3_NAME_FIELDS,
+        };
+        let rules = (0..entities.names.len())
+            .map(|index| {
+                let mut key = entities
+                    .names
+                    .get(qa_core::primitives::NameId(index as u32))
+                    .ok_or_else(|| "invalid native entity key id".to_owned())?;
+                if self.syntax == EntitySyntax::Quake {
+                    // ED_ParseEdict trims trailing spaces before exact field lookup.
+                    while let Some(trimmed) = key.strip_suffix(b" ") {
+                        key = trimmed;
+                    }
+                }
+                Ok(descriptors
+                    .iter()
+                    .find(|field| {
+                        if self.syntax == EntitySyntax::Quake {
+                            key == field.key
+                        } else {
+                            key.eq_ignore_ascii_case(field.key)
+                        }
+                    })
+                    .map(|field| field.string))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(entities
+            .fields
+            .iter()
+            .filter_map(|field| {
+                rules[field.key.0 as usize].map(|rule| match rule {
+                    NameString::LevelString => level_string(field.value),
+                    NameString::RawToken => Cow::Borrowed(field.value),
+                })
+            })
+            .collect())
+    }
 }
 
 /// Owned cold input retains one VFS read while settings are imported. The
@@ -45,6 +202,7 @@ pub struct MapInput {
     pub native_source: Source,
     pub virtual_path: String,
     pub profile_product: String,
+    entity_source: NativeEntityText,
 }
 
 pub fn movement(name: &str) -> Result<MovementRules, &'static str> {
@@ -97,13 +255,15 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     if read != length {
         return Err("incomplete map read".into());
     }
-    let format = Bsp::parse(&bytes)
-        .map_err(|e| format!("BSP directory: {e:?}"))?
-        .format;
-    let source = match format.family() {
+    let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
+    let source = match bsp.format.family() {
         1 => Source::Quake,
         2 => Source::Quake2,
         _ => Source::Quake3,
+    };
+    let entity_source = NativeEntityText {
+        syntax: entity_syntax(source),
+        bytes: bsp.bytes(Lump::Entities).into(),
     };
     let origin = vfs.origin(file).ok_or("missing map origin")?;
     let directory = if origin.kind == MountKind::Directory {
@@ -131,10 +291,15 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         native_source: source,
         virtual_path: path,
         profile_product,
+        entity_source,
     })
 }
 
 impl MapInput {
+    pub fn catalog_names(&self) -> Result<Vec<Cow<'_, [u8]>>, String> {
+        self.entity_source.catalog_names()
+    }
+
     /// Decode map/entities/collision once, then register resources using the
     /// caller's already-selected saved settings and command-line overrides.
     pub fn load(
@@ -158,6 +323,7 @@ impl MapInput {
             profile_product: self.profile_product,
             entity_count,
             collision_brushes,
+            entity_source: self.entity_source,
         })
     }
 }

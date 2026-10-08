@@ -401,12 +401,14 @@ fn run() -> Result<(), String> {
     if depth_output.as_ref() == Some(&output) {
         return Err("pixel and inverse-depth evidence paths must differ".into());
     }
-    let mut runtime = Runtime::load(std::iter::empty())?;
-    runtime
-        .vfs
-        .mount_product(&content, 0)
+    let mut vfs = qa_content::vfs::Vfs::default();
+    vfs.mount_product(&content, 0)
         .map_err(|e| format!("content mount: {e:?}"))?;
-    let input = map::read(&runtime.vfs, &options.map)?;
+    let input = map::read(&vfs, &options.map)?;
+    let names = input.catalog_names()?;
+    let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
+    drop(names);
+    runtime.vfs = vfs;
     let source = input.native_source;
     let rules = map::native_movement(source);
     let mut console = Console::<Runtime>::new(Context {
@@ -433,6 +435,7 @@ fn run() -> Result<(), String> {
             loaded.render.world.0
         ));
     }
+    runtime.entity_sources.push(loaded.entity_source);
     let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
     let player = &runtime.server.clients[client.0 as usize].player;
     let basis = angle_vectors(player.view_angles);
