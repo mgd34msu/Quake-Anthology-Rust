@@ -80,14 +80,7 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
     .enumerate()
     {
         server
-            .connect(
-                connection,
-                ModuleId(2),
-                PlayerTail::Q2 {
-                    weapon_frame: 0,
-                    movement_time: 0,
-                },
-            )
+            .connect(connection, ModuleId(2), PlayerTail::Q2 { weapon_frame: 0 })
             .unwrap();
         server.clients[slot].player.movement_rules = rule;
         server.clients[slot].command.duration_ms = 7;

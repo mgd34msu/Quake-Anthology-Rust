@@ -20,6 +20,7 @@ pub struct Client {
     pub hud: HudState,
     pub command: UserCmd,
     pub intent: CommandIntent,
+    command_pending: bool,
 }
 
 pub struct Server {
@@ -65,6 +66,7 @@ impl Server {
             ),
             command: UserCmd::default(),
             intent: CommandIntent::default(),
+            command_pending: false,
             hud: HudState::with_capacity(
                 if slot < max_clients { items } else { 0 },
                 if slot < max_clients { powerups } else { 0 },
@@ -94,6 +96,7 @@ impl Server {
         client.hud.reset();
         client.player.tail = tail;
         client.command = UserCmd::default();
+        client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = module;
         client.connection = Some(connection);
@@ -113,6 +116,7 @@ impl Server {
         client.player.reset();
         client.hud.reset();
         client.command = UserCmd::default();
+        client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = ModuleId::default();
         if let Some(entity) = self.entities.reset_client(client.entity) {
@@ -129,7 +133,33 @@ impl Server {
                 let command = qa_input::UserCmdBuilder::build(duration, end, client.intent);
                 client.command =
                     qa_movement::prepare_command(client.player.movement_rules, command);
+                client.command_pending = true;
             }
         }
+    }
+
+    /// Ingress submits a command once. There is no recorded input history.
+    pub fn submit_command(&mut self, id: ClientId, command: UserCmd) {
+        let client = &mut self.clients[id.0 as usize];
+        client.command = command;
+        client.command_pending = true;
+    }
+
+    /// Local, network and bot clients share the same authoritative entry.
+    /// Caller drains ingress before this SERVER phase; commands are consumed
+    /// once even when several world/provider ticks occur in a host frame.
+    pub fn move_pending_clients(&mut self, trace: &mut dyn qa_movement::TraceServices) -> u32 {
+        let mut steps = 0;
+        for client in &mut self.clients[..self.limit] {
+            if client.connection.is_some() && client.command_pending {
+                client.command_pending = false;
+                let result = qa_movement::pmove(client.command, &mut client.player, trace);
+                steps += result.steps;
+                self.entities
+                    .columns
+                    .set_body(client.entity.slot as usize, client.player.body);
+            }
+        }
+        steps
     }
 }

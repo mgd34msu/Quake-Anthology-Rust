@@ -160,11 +160,17 @@ impl FrameHost {
                     runtime.server.world_time = tick.end;
                     runtime.server.world_frame = tick.index;
                     runtime.server.build_bot_commands(tick.start, tick.end);
+                    if let Some(world) = &mut runtime.collision {
+                        runtime.server.move_pending_clients(world);
+                    }
                 }
                 TickTarget::Provider(_) => {
                     (providers[tick.source_slot - 1].frame)(runtime, tick);
                 }
             });
+        if let Some(world) = &mut runtime.collision {
+            runtime.server.move_pending_clients(world);
+        }
         // Immediate server->client packets take this path in the same frame.
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
@@ -282,7 +288,12 @@ impl FrameHost {
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
-                self.runtime.server.clients[id.0 as usize].command = commands[seat];
+                self.runtime.server.submit_command(*id, commands[seat]);
+                if let Some(world) = &mut self.runtime.collision {
+                    let prediction = &mut self.runtime.prediction[seat];
+                    prediction.apply_snapshot(&self.runtime.server.clients[id.0 as usize].player);
+                    prediction.advance(commands[seat], world);
+                }
             }
         }
         commands

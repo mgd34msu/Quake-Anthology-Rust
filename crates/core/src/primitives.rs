@@ -181,23 +181,19 @@ pub enum PlayerTail {
     None,
     Q1 {
         attack_finished: f64,
-        water_jump_until: f64,
-        teleport_hold_until: f64,
     },
     Q2 {
         weapon_frame: i32,
-        movement_time: u8,
     },
     Q3 {
         weapon_time: i32,
-        movement_time: i32,
-        command_time: i32,
     },
 }
 
 #[derive(Debug, Default)]
 pub struct PlayerState {
     pub movement_rules: MovementRules,
+    pub movement: MovementState,
     pub body: Body,
     pub view_angles: Vec3,
     pub health: i32,
@@ -228,6 +224,118 @@ pub enum MovementRules {
     Quake2Rerelease,
     #[default]
     Quake3,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MovementMode {
+    #[default]
+    Walk,
+    Fly,
+    Noclip,
+    Spectator,
+    Dead,
+    Gib,
+    Frozen,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementTimer(pub u8);
+impl MovementTimer {
+    pub const NONE: Self = Self(0);
+    pub const WATER_JUMP: Self = Self(1);
+    pub const LAND: Self = Self(2);
+    pub const TELEPORT: Self = Self(4);
+    pub const KNOCKBACK: Self = Self(8);
+    pub fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+    pub fn insert(&mut self, flag: Self) {
+        self.0 |= flag.0;
+    }
+}
+
+/// Hot physics state belongs to the player, independently of module format.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MovementState {
+    pub mode: MovementMode,
+    pub grounded: bool,
+    pub ground: Option<EntityId>,
+    pub ground_normal: Vec3,
+    pub ground_surface: SurfaceFlags,
+    pub water_level: u8,
+    pub water_contents: u64,
+    pub ladder: bool,
+    pub ducked: bool,
+    pub jump_held: bool,
+    pub timer: MovementTimer,
+    pub remaining_ms: u32,
+    pub command_time_ms: i32,
+    pub delta_angles: Vec3,
+    pub previous_position: Vec3,
+    pub water_jump_until: f64,
+    pub water_jump_seconds: f32,
+    pub teleport_hold_until: f64,
+    pub tuning: MovementTuning,
+}
+
+/// Cached cvar/module overrides; absence retains the selected native default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovementTuning {
+    pub max_speed: Option<f32>,
+    pub gravity: Option<f32>,
+    pub friction: Option<f32>,
+    pub accelerate: Option<f32>,
+    pub air_accelerate: Option<f32>,
+    pub water_accelerate: Option<f32>,
+    pub water_friction: Option<f32>,
+    pub stop_speed: Option<f32>,
+    pub gravity_multiplier: f32,
+    pub speed_multiplier: f32,
+    pub fixed_step_ms: u16,
+    pub no_step: bool,
+}
+impl Default for MovementTuning {
+    fn default() -> Self {
+        Self {
+            max_speed: None,
+            gravity: None,
+            friction: None,
+            accelerate: None,
+            air_accelerate: None,
+            water_accelerate: None,
+            water_friction: None,
+            stop_speed: None,
+            gravity_multiplier: 1.0,
+            speed_multiplier: 1.0,
+            fixed_step_ms: 0,
+            no_step: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceFlags(pub u32);
+impl SurfaceFlags {
+    pub const SLICK: Self = Self(1);
+    pub const LADDER: Self = Self(2);
+    pub const NO_DAMAGE: Self = Self(4);
+    pub const NO_FOOTSTEPS: Self = Self(8);
+    pub const METAL_STEPS: Self = Self(16);
+    pub fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+    pub fn from_q2(raw: u32) -> Self {
+        Self(u32::from(raw & 2 != 0))
+    }
+    pub fn from_q3(raw: u32) -> Self {
+        Self(
+            u32::from(raw & 2 != 0)
+                | (u32::from(raw & 8 != 0) << 1)
+                | (u32::from(raw & 1 != 0) << 2)
+                | (u32::from(raw & 0x2000 != 0) << 3)
+                | (u32::from(raw & 0x1000 != 0) << 4),
+        )
+    }
 }
 
 /// Input/AI intent before the caller supplies command time and duration.
@@ -270,6 +378,8 @@ impl PlayerState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UserCmd {
     pub duration_ms: u16,
+    /// Precise engine duration for NQ; integer-ms ABIs retain duration_ms.
+    pub duration_ns: u64,
     pub server_time_ms: i32,
     pub view_angles: Vec3,
     pub movement: [i16; 3],

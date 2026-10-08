@@ -1,5 +1,5 @@
 use super::{Contents, Trace};
-use qa_core::primitives::{Plane, Vec3};
+use qa_core::primitives::{Plane, SurfaceFlags, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
@@ -22,10 +22,23 @@ pub(crate) enum BrushRules {
 pub struct BrushMap {
     planes: Box<[Plane]>,
     brushes: Box<[Brush]>,
+    surfaces: Box<[SurfaceFlags]>,
 }
 
 impl BrushMap {
     pub fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Self, GeometryError> {
+        let surfaces = vec![SurfaceFlags::default(); planes.len()];
+        Self::load_surfaces(planes, brushes, surfaces)
+    }
+    /// BSP side metadata converts once at load, independent of movement rules.
+    pub fn load_surfaces(
+        planes: Vec<Plane>,
+        brushes: Vec<Brush>,
+        surfaces: Vec<SurfaceFlags>,
+    ) -> Result<Self, GeometryError> {
+        if surfaces.len() != planes.len() {
+            return Err(GeometryError::Plane);
+        }
         if planes.iter().any(|plane| {
             !plane.distance.is_finite()
                 || plane.normal.0.iter().any(|value| !value.is_finite())
@@ -43,6 +56,7 @@ impl BrushMap {
         Ok(Self {
             planes: planes.into_boxed_slice(),
             brushes: brushes.into_boxed_slice(),
+            surfaces: surfaces.into_boxed_slice(),
         })
     }
 
@@ -85,10 +99,11 @@ impl BrushMap {
             let mut enter = -1.0f32;
             let mut leave = 1.0f32;
             let mut contact = Plane::default();
+            let mut surface = SurfaceFlags::default();
             let mut start_out = false;
             let mut end_out = false;
             let mut missed = false;
-            for &plane in planes {
+            for (index, &plane) in planes.iter().enumerate() {
                 let offset = Vec3(std::array::from_fn(|axis| {
                     if plane.normal.0[axis] < 0.0 {
                         maxs.0[axis]
@@ -113,6 +128,7 @@ impl BrushMap {
                     if fraction > enter {
                         enter = fraction;
                         contact = plane;
+                        surface = self.surfaces[brush.first_plane as usize + index];
                     }
                 } else {
                     leave = leave.min((d1 + epsilon) / (d1 - d2));
@@ -135,6 +151,7 @@ impl BrushMap {
             if enter < leave && enter > -1.0 && enter < trace.fraction {
                 trace.fraction = enter.max(0.0);
                 trace.plane = contact;
+                trace.surface = surface;
                 trace.contents = brush.contents;
             }
         }

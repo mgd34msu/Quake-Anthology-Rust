@@ -144,6 +144,7 @@ impl UserCmdBuilder {
     pub fn build(duration: std::time::Duration, time: EventTime, intent: CommandIntent) -> UserCmd {
         UserCmd {
             duration_ms: duration.as_millis().min(u128::from(u16::MAX)) as u16,
+            duration_ns: duration.as_nanos().min(u128::from(u64::MAX)) as u64,
             server_time_ms: time.milliseconds() as i32,
             view_angles: intent.view_angles,
             movement: intent.movement,

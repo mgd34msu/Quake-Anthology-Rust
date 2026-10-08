@@ -286,3 +286,28 @@ not renderer timings or an installer baseline. Each backend separately checks
 
 Evidence: THE-901-audio.log, THE-901-audio-summary.json and the THE-901-three
 verification directories in the R2 evidence root.
+
+## THE-891: shared movement primitive
+
+Core 23, release mode, 60 warm-up and 600 measured frames: 64 mixed-rule clients
+with usercmd/bot construction, authoritative movement and current-command
+prediction on analytic stairs/walls. Median 24,760 ns, p99 36,550 ns; 38,400
+server movement steps, matching authoritative/predicted states and zero measured
+Rust allocations or requested bytes. No prior movement workload supplies a
+comparable baseline. This does not measure retail gameplay, renderer work,
+network latency correction or native/other-thread allocations.
+
+The original Q2/Q3 movement fixture comparison covers 1,152 states per game.
+Q2 coordinates/velocities, flags and timers matched exactly. Q3 flags/timers
+matched exactly; maximum float-component error was 0.0000112 units, with 544
+components differing in float bits. That result is not a Q3 bit-match claim.
+Evidence: THE-891-native-final/result.json and THE-891-movement-final.log in the R2
+evidence root. Retail-map and combined-mode qualification remain pending.
+
+A final-source ABBA host comparison against 55dc2e89, on core 23 with the same
+local bind/console fixture and regular-file output, measured 205,043.25 ns for
+the median of baseline medians and 204,170.25 ns for the candidate (-0.43%).
+Both sides retained identical fixture results and zero Rust allocations. This
+host workload has no loaded geometry; it verifies the existing host path, not
+movement throughput. Evidence: THE-891-host-final-timing.json. The earlier
+mid-step comparison (+0.37%) is retained separately.

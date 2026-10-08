@@ -5,7 +5,7 @@ pub mod hulls;
 
 use brushes::{BrushMap, BrushRules};
 pub use contents::Contents;
-use qa_core::primitives::{EntityId, Plane, Vec3};
+use qa_core::primitives::{EntityId, Plane, SurfaceFlags, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trace {
@@ -18,6 +18,9 @@ pub struct Trace {
     pub in_water: bool,
     pub contents: Contents,
     pub entity: Option<EntityId>,
+    pub surface: SurfaceFlags,
+    /// Brush-solid contacts preserve NetQuake's SOLID_BSP grounding rule.
+    pub brush_solid: bool,
 }
 
 impl Trace {
@@ -32,6 +35,8 @@ impl Trace {
             in_water: false,
             contents: Contents::EMPTY,
             entity: None,
+            surface: SurfaceFlags::default(),
+            brush_solid: true,
         }
     }
 }

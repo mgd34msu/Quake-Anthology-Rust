@@ -113,6 +113,20 @@ bounded per poll, into ConsoleLine events. Commands use the shared console;
 no terminal reader belongs in app or a game module. Private checks use an owned
 pipe or PTY, never the owner's terminal. Other OS stdin sources remain pending.
 
+THE-891 owns `qa_movement::pmove(UserCmd, &mut PlayerState, trace)` and a
+function entry per MovementRules value. SERVER consumes local, remote and bot
+commands through that entry; current-command prediction calls it on separately
+owned hot state. Modules, wire protocols and map geometry never choose physics.
+MovementState owns grounding, stance, timers and cached tuning independently
+of the module tail. Contact/surface metadata comes from the shared trace API.
+The app enables these callers when geometry is loaded; the R0 shell has none.
+No command history, input recording or replay is introduced. THE-821 supplies
+later network acknowledgement/correction. Native movement completion remains
+THE-635/766/606/609 and the THE-839 retail-map and combined-mode gate.
+Use `tools/check_movement.py` for original Q2/Q3 function comparisons and the
+platform `movement` example for pinned allocation/timing checks. Analytic
+fixtures do not qualify gameplay, installation or complete native physics.
+
 Standalone games must look original. CPU uses that game's software look;
 GL uses GLQuake, ref_gl or Q3 presentation and original cvar defaults. Native
 Q1 r_wateralpha is 1. Modern internals do not change the default image.

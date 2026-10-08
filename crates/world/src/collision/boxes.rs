@@ -64,5 +64,6 @@ pub fn trace_box(
     if trace.fraction < 1.0 || trace.start_solid {
         trace.entity = Some(entity);
     }
+    trace.brush_solid = false;
     trace
 }

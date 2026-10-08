@@ -216,6 +216,7 @@ name = "qa-movement"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-world",
 ]
 
 [[package]]
@@ -247,8 +248,10 @@ dependencies = [
  "qa-console",
  "qa-core",
  "qa-input",
+ "qa-movement",
  "qa-network",
  "qa-session",
+ "qa-world",
 ]
 
 [[package]]

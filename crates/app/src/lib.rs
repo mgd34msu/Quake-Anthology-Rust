@@ -14,6 +14,9 @@ pub struct Runtime {
     pub quit: bool,
     pub network: PacketReceiver,
     pub server: Server,
+    /// Loaded geometry is independent of every player's movement rules.
+    pub collision: Option<qa_world::collision::CollisionWorld>,
+    pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub events: EventRing,
     pub texts: TextStore,
     pub loopback: Loopback,
@@ -29,6 +32,8 @@ impl Runtime {
             quit: false,
             network: PacketReceiver::default(),
             server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
+            collision: None,
+            prediction: std::array::from_fn(|_| Default::default()),
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
             texts: TextStore::load(4096, 8192).map_err(|e| format!("output text: {e:?}"))?,
             loopback: Loopback::load(),

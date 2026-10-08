@@ -1,4 +1,7 @@
-//! Shared movement boundary. Physics enters through THE-891.
+//! One movement entry per player rule set, over shared geometry and player state.
+mod physics;
+mod slide;
+pub use physics::{MovementResult, TraceServices, entry, pmove, set_bounds};
 use qa_core::primitives::{MovementRules, UserCmd};
 
 /// Apply the selected movement policy, never the map or client protocol.
@@ -19,6 +22,15 @@ pub fn prepare_command(rules: MovementRules, mut command: UserCmd) -> UserCmd {
         MovementRules::Quake2Rerelease => command.duration_ms.min(255),
         // qsrc bg_pmove.c PmoveSingle. Outer Pmove has its own 66/fixed steps.
         MovementRules::Quake3 => command.duration_ms.clamp(1, 200),
+    };
+    command.duration_ns = if rules == MovementRules::Quake {
+        if command.duration_ns == 0 {
+            u64::from(command.duration_ms) * 1_000_000
+        } else {
+            command.duration_ns.clamp(1_000_000, 100_000_000)
+        }
+    } else {
+        u64::from(command.duration_ms) * 1_000_000
     };
     command
 }

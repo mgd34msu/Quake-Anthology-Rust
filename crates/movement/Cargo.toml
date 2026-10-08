@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-world = { path = "../world" }
