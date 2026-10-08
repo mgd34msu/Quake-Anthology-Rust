@@ -1,5 +1,6 @@
 use qa_core::primitives::*;
 use qa_session::dispatch::*;
+use qa_world::entities::AllocationPolicy;
 use qa_world::entities::EntityTable;
 
 struct World {
@@ -37,7 +38,13 @@ fn slot_order_clear_before_callback_clamped_time_and_removed_lifetimes() {
         remove: None,
     };
     let ids: Vec<_> = (1..=3)
-        .map(|module| world.entities.allocate(1.0, ModuleId(module)).unwrap())
+        .map(|module| {
+            world
+                .entities
+                .allocate(1.0, ModuleId(module), AllocationPolicy::EDICT)
+                .unwrap()
+                .id
+        })
         .collect();
     for &id in &ids {
         world.entities.columns.next_think[id.slot as usize] = Some(Think {
@@ -73,9 +80,21 @@ fn bad_module_or_callback_only_rejects_that_entity_and_due_boundary_is_inclusive
         calls: Vec::new(),
         remove: None,
     };
-    let first = world.entities.allocate(1.0, ModuleId(7)).unwrap();
-    let second = world.entities.allocate(1.0, ModuleId(1)).unwrap();
-    let third = world.entities.allocate(1.0, ModuleId(1)).unwrap();
+    let first = world
+        .entities
+        .allocate(1.0, ModuleId(7), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    let second = world
+        .entities
+        .allocate(1.0, ModuleId(1), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    let third = world
+        .entities
+        .allocate(1.0, ModuleId(1), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
     for (id, callback, at) in [
         (first, CallbackId(0), 1.0),
         (second, CallbackId(4), 1.0),
@@ -118,7 +137,11 @@ fn all_entity_reactions_share_one_numeric_function_table() {
         calls: Vec::new(),
         remove: None,
     };
-    let id = world.entities.allocate(1.0, ModuleId(2)).unwrap();
+    let id = world
+        .entities
+        .allocate(1.0, ModuleId(2), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
     fn reaction(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
         world.calls.push((call.entity().slot, module.0, entry, 0.0));
         true
@@ -180,7 +203,11 @@ fn mixed_entities_preserve_q1_lookahead_q2_tolerance_and_q3_current_time() {
         remove: None,
     };
     for module in 1..=3 {
-        let id = world.entities.allocate(1.0, ModuleId(module)).unwrap();
+        let id = world
+            .entities
+            .allocate(1.0, ModuleId(module), AllocationPolicy::EDICT)
+            .unwrap()
+            .id;
         world.entities.columns.next_think[id.slot as usize] = Some(Think {
             at: 1.0009,
             callback: CallbackId(0),

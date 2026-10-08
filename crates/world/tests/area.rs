@@ -1,4 +1,5 @@
 use qa_core::primitives::{Bounds, ModuleId, Vec3};
+use qa_world::entities::AllocationPolicy;
 use qa_world::{
     area::{AreaGrid, LinkFlags},
     entities::EntityTable,
@@ -12,8 +13,14 @@ fn only_changed_rows_relink_and_queries_borrow_live_columns() {
     };
     let mut grid = AreaGrid::load(64, bounds).unwrap();
     let mut table = EntityTable::new(64, 1).unwrap();
-    let solid = table.allocate(3.0, ModuleId(1)).unwrap();
-    let trigger = table.allocate(3.0, ModuleId(1)).unwrap();
+    let solid = table
+        .allocate(3.0, ModuleId(1), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    let trigger = table
+        .allocate(3.0, ModuleId(1), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
     table.columns.mins[solid.slot as usize] = Vec3([-16.0; 3]);
     table.columns.maxs[solid.slot as usize] = Vec3([16.0; 3]);
     assert!(grid.link(&table, solid, LinkFlags::SOLID));
@@ -37,7 +44,10 @@ fn only_changed_rows_relink_and_queries_borrow_live_columns() {
     );
     assert!(grid.unlink(solid));
     table.release(solid, 3.0);
-    let replacement = table.allocate(4.0, ModuleId(1)).unwrap();
+    let replacement = table
+        .allocate(4.0, ModuleId(1), AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
     assert!(grid.link(&table, replacement, LinkFlags::SOLID));
     assert!(!grid.unlink(solid));
     assert_eq!(

@@ -1,6 +1,7 @@
 use qa_core::names::NameTable;
 use qa_core::primitives::{Bounds, ModuleId, Vec3};
 use qa_world::area::{AreaGrid, LinkFlags};
+use qa_world::entities::AllocationPolicy;
 use qa_world::entities::EntityTable;
 use qa_world::targets::TargetIndex;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -48,7 +49,10 @@ fn main() -> Result<(), &'static str> {
     for step in 0..10_000 {
         let now = 10.0 + f64::from(step);
         for (index, entry) in ids.iter_mut().enumerate() {
-            let id = table.allocate(now, ModuleId(1)).ok_or("full table")?;
+            let id = table
+                .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
+                .ok_or("full table")?
+                .id;
             table.set_targetname(id, if index % 2 == 0 { door } else { exit });
             table.columns.position[id.slot as usize] = Vec3([index as f32 * 4.0 - 512.0, 0.0, 0.0]);
             if !grid.link(&table, id, LinkFlags::SOLID) || grid.link(&table, id, LinkFlags::SOLID) {

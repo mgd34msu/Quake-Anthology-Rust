@@ -1,3 +1,4 @@
+use qa_world::entities::AllocationPolicy;
 #[path = "../../../tools/probes/allocation_counter.rs"]
 mod allocation_counter;
 use qa_core::primitives::*;
@@ -45,8 +46,9 @@ fn main() -> Result<(), &'static str> {
     for index in 0..400 {
         let id = world
             .entities
-            .allocate(1.0, ModuleId(index % 3 + 1))
-            .ok_or("entity capacity")?;
+            .allocate(1.0, ModuleId(index % 3 + 1), AllocationPolicy::EDICT)
+            .ok_or("entity capacity")?
+            .id;
         world.entities.columns.next_think[id.slot as usize] = Some(Think {
             at: 1.0,
             callback: CallbackId(0),
