@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 proof = []
-allocation-tracking = []
+allocation-tracking = ["qa-console/lookup-tracking"]
 
 [dependencies]
 qa-core = { path = "../core" }
@@ -14,3 +14,6 @@ qa-core = { path = "../core" }
 [dev-dependencies]
 qa-input = { path = "../input" }
 qa-network = { path = "../network" }
+qa-app = { path = "../app" }
+qa-console = { path = "../console" }
+qa-session = { path = "../session" }

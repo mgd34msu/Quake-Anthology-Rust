@@ -12,15 +12,16 @@ the next mutable queue operation. FIFO release reuses storage, including wrap
 padding. Failed admission changes no existing event or payload. Ordinary
 events reserve the last slot for the frame's time marker.
 
-Platform owns the monotonic clock, SDL and nonblocking UDP sockets. It pumps
-once at the top of each frame, stamps each input event, then appends Time.
+Platform owns the monotonic clock, SDL and nonblocking UDP sockets. It polls
+before server work, afterwards, and during the cap wait, stamping each input
+event and appending Time after each poll.
 SDL polling retains input in SDL when the ring cannot fit a complete text
-event plus Time. UDP polling reads at most 64 datagrams per socket per frame;
+event plus Time. UDP polling reads at most 64 datagrams per socket per poll;
 full event/payload storage drops datagrams and increments a counter. There is
 no receive thread. Device hotplug handles remain in platform; seat ownership
 belongs to input. Developer timing uses platform's Stopwatch too.
 
-The host drains once in FIFO order. Input goes through one bind table, chars
+The host drains each pass in FIFO order. Input goes through one bind table, chars
 go to the console/menu target, console lines enter the single command buffer,
 and packets go to the network boundary. The Time event supplies frame time.
 The current R2 shell's character target awaits R2 focus/editing, and its
@@ -55,11 +56,24 @@ name resolution. There is no queue journal. The development SDL input player
 is a replay release blocker under THE-893; do not add recording or replay
 pending the owner's decision.
 
-THE-884 replaces the current single shell drain with the Com_Frame order in
-[AGENTS.md](../AGENTS.md): drain/commands, provider-rate server ticks, a second
-drain/commands, then client prediction/presentation. Its frame-cap wait must
-continue draining events. THE-885 adds fixed local loopback buffers feeding
-the same packet path. These are pending integration contracts.
+THE-884 implements the Com_Frame order in [AGENTS.md](../AGENTS.md):
+drain/commands, provider-rate server ticks, a second drain/commands, then the
+client frame. The shell client builds commands and presents its window;
+snapshot application, movement/prediction and scenes still await integration.
+The cached com_maxfps handle uses the original integer-millisecond client cap,
+including its aliases. Linux poll waits on readable sockets for at most 2 ms,
+then polls SDL too; other platforms currently use the same bounded interval
+with a timer wait. This removes the fixed 16 ms sleep and drains while waiting.
+THE-885 adds fixed local loopback buffers feeding the same packet path.
+
+`qa_session::timing::Timeline` schedules the world and loaded provider frame
+functions on one event timeline. Rates are data selected at load, independent
+of map format and console grammar: Q1 can be frame-driven, Q2 uses 100 ms,
+Q2 rerelease 25 ms, Q3 1000/sv_fps ms. Startup/world-load time seeds the clocks;
+residual time is retained. Due ticks merge by timestamp, then world/provider
+id. Provider callbacks retain observable entity/think ordering. The app's
+current empty server has a frame-driven world and no game providers. Native
+rate counter probes exercise scheduling, not loaded game-module behaviour.
 
 ```sh
 timeout 300 python3 tools/build.py --check-only

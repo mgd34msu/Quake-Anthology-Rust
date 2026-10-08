@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-/// One nonblocking poll at the top of the host frame; no receive thread.
+/// Polls at both host drains and during the cap wait; no receive thread.
 pub struct EventPump {
     clock: Clock,
     timer: Stopwatch,
@@ -47,6 +47,9 @@ impl EventPump {
     }
     pub fn begin_frame(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         self.timer = Stopwatch::start();
+        self.poll_events(window, queue);
+    }
+    pub fn poll_events(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         window.poll(queue, &self.clock);
         self.poll_network(queue);
         self.finish_events(queue);
@@ -91,8 +94,16 @@ impl EventPump {
     pub fn elapsed(&self) -> Duration {
         self.timer.elapsed()
     }
-    pub fn pace(&self, period: Duration) {
-        crate::clock::pause(period.saturating_sub(self.elapsed()));
+    pub fn wait_events(
+        &mut self,
+        window: &mut Window,
+        queue: &mut SysEventQueue,
+        remaining: Duration,
+    ) {
+        // SDL has no portable poll fd. A bounded wait also admits SDL input
+        // promptly; readable UDP sockets wake this wait immediately.
+        crate::wait::readable(&self.sockets, remaining.min(Duration::from_millis(2)));
+        self.poll_events(window, queue);
     }
     pub fn dropped_packets(&self) -> u64 {
         self.dropped_packets

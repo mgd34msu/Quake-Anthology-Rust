@@ -1,6 +1,7 @@
 use qa_core::primitives::{
     ClientId, EntityId, HudState, ModuleId, PlayerState, PlayerTail, UserCmd,
 };
+use qa_core::sys_events::EventTime;
 use qa_world::entities::EntityTable;
 
 pub const MAX_CLIENTS: usize = 64;
@@ -24,6 +25,8 @@ pub struct Server {
     pub entities: EntityTable,
     pub clients: [Client; MAX_CLIENTS],
     limit: usize,
+    pub world_time: EventTime,
+    pub world_frame: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,6 +73,8 @@ impl Server {
             entities,
             clients,
             limit: max_clients,
+            world_time: EventTime::default(),
+            world_frame: 0,
         })
     }
 

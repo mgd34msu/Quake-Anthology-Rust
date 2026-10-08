@@ -89,3 +89,30 @@ The allocator positive control detected one allocation, one reallocation and
 with zero rejected events or dropped packets. This is event-service timing,
 not map/gameplay or renderer qualification, and has no comparable regression
 baseline yet. Reproduce with the commands in [system events](system-events.md).
+
+## R2 host frame
+
+THE-884's `host_frame` release example runs the actual app host function on
+baseline CPU, pinned core 23, without a debugger. It warms 60 frames and
+measures 600. Each frame receives one real UDP datagram and a held/repeating
+key, drains before/after server work, runs the empty console and builds four
+seat commands. The scheduler drives world/Q2/rerelease/Q3 counter callbacks at
+50/100/25/50 ms on actual platform event time. A 16 ms pause and packet send
+are outside timing/counting; SDL, presentation, game modules and map work are
+absent. This is a new workload, not a regression comparison with THE-859.
+
+| Scope | Median ns | p99 ns | Allocations/reallocations per measured frame |
+| --- | ---: | ---: | ---: |
+| Headless Com_Frame, two drains and mixed-rate counters | 3,850 | 8,191 | 0 |
+
+The run delivered 660 packets, 659 repeats and 212/106/424/212 native-rate
+ticks, with no hot cvar lookups. Its allocator positive control detected an
+allocation and reallocation. Evidence is `THE-884-probe.json` and
+`THE-884-probe-build.log` in the R2 evidence directory. This does not qualify
+gameplay, combined-mode modules or either renderer.
+
+```sh
+timeout 300 cargo build --release -p qa-platform --example host_frame \
+  --features allocation-tracking
+timeout 300 taskset -c "$CORE" target/release/examples/host_frame
+```
