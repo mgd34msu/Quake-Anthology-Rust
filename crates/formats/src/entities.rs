@@ -53,17 +53,17 @@ impl<'a> EntityLump<'a> {
             records.push(first..pairs.len());
         }
         let keys = pairs.iter().map(|&(key, _)| key);
-        let names = if syntax == EntitySyntax::Quake {
-            NameTable::load_exact(keys)
-        } else {
-            NameTable::load(keys)
-        }
-        .map_err(|_| FormatError::InvalidRange)?;
+        let names = NameTable::load(keys).map_err(|_| FormatError::InvalidRange)?;
         let fields = pairs
             .into_iter()
             .map(|(key, value)| {
                 Ok(SpawnField {
-                    key: names.find(key).ok_or(FormatError::InvalidValue)?,
+                    key: (if syntax == EntitySyntax::Quake {
+                        names.find(key)
+                    } else {
+                        names.find_folded(key)
+                    })
+                    .ok_or(FormatError::InvalidValue)?,
                     value,
                 })
             })

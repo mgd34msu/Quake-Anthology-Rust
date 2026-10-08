@@ -1,4 +1,4 @@
-use qa_core::names::NameTable;
+use qa_core::names::{NameMatch, NameTable};
 use qa_core::primitives::{Bounds, ModuleId, Vec3};
 use qa_world::area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder};
 use qa_world::entities::AllocationPolicy;
@@ -35,7 +35,7 @@ static ALLOCATOR: Counter = Counter;
 fn main() -> Result<(), &'static str> {
     let mut table = EntityTable::new(512, 2).map_err(|_| "capacity")?;
     let names = NameTable::load([b"door".as_slice(), b"exit"]).map_err(|_| "name capacity")?;
-    let door = names.find(b"DOOR").ok_or("missing door")?;
+    let door = names.find_folded(b"DOOR").ok_or("missing door")?;
     let exit = names.find(b"exit").ok_or("missing exit")?;
     let mut targets = TargetIndex::new(&table);
     let bounds = Bounds {
@@ -46,6 +46,14 @@ fn main() -> Result<(), &'static str> {
     let mut ids = [None; 256];
     let mut operations = 0;
     MEASURING.store(true, Ordering::Relaxed);
+    let positive = std::hint::black_box(Vec::<u8>::with_capacity(std::hint::black_box(128)));
+    MEASURING.store(false, Ordering::Relaxed);
+    let positive_control = ALLOCATIONS.swap(0, Ordering::Relaxed);
+    drop(positive);
+    if positive_control != 1 {
+        return Err("allocation positive control");
+    }
+    MEASURING.store(true, Ordering::Relaxed);
     for step in 0..10_000 {
         let now = 10.0 + f64::from(step);
         for (index, entry) in ids.iter_mut().enumerate() {
@@ -53,7 +61,7 @@ fn main() -> Result<(), &'static str> {
                 .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
                 .ok_or("full table")?
                 .id;
-            table.set_targetname(id, if index % 2 == 0 { door } else { exit });
+            table.set_targetname(id, Some(if index % 2 == 0 { door } else { exit }));
             table.columns.position[id.slot as usize] = Vec3([index as f32 * 4.0 - 512.0, 0.0, 0.0]);
             if !grid.link(
                 &table,
@@ -73,8 +81,10 @@ fn main() -> Result<(), &'static str> {
             *entry = Some(id);
             operations += 1;
         }
-        targets.refresh(&table);
-        if targets.find(door).count() != 128 || targets.refresh(&table) {
+        targets.refresh(&table, &names);
+        if targets.find(door, NameMatch::Exact, &names).count() != 128
+            || targets.refresh(&table, &names)
+        {
             return Err("target index mismatch");
         }
         if grid.query(&table, bounds, LinkFlags::SOLID).count() != 256 {
@@ -107,15 +117,19 @@ fn main() -> Result<(), &'static str> {
                 return Err("stale handle");
             }
         }
-        targets.refresh(&table);
-        if targets.find(door).next().is_some() {
+        targets.refresh(&table, &names);
+        if targets
+            .find(door, NameMatch::Exact, &names)
+            .next()
+            .is_some()
+        {
             return Err("freed target remains");
         }
     }
     MEASURING.store(false, Ordering::Relaxed);
     let count = ALLOCATIONS.load(Ordering::Relaxed);
     println!(
-        "{{\"scope\":\"headless entity, target-index and area workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"remaining_entities\":{},\"area_relinks\":{},\"explicit_unchanged_relinks\":10000,\"unchanged_commits\":0}}",
+        "{{\"scope\":\"headless entity, target-index and area workload; no gameplay\",\"cycles\":10000,\"allocation_operations\":{operations},\"allocations_after_load\":{count},\"allocation_positive_control\":{positive_control},\"remaining_entities\":{},\"area_relinks\":{},\"explicit_unchanged_relinks\":10000,\"unchanged_commits\":0}}",
         table.len(),
         grid.relinks
     );

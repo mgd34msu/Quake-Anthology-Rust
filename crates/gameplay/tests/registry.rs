@@ -4,8 +4,10 @@ use qa_gameplay::registry::{ItemKind, Registry, SOURCE_COUNTS};
 
 #[test]
 fn source_tables_share_ids_without_losing_original_numbers_or_ammo_links() {
-    let names =
-        NameTable::load(Registry::names_needed().chain([b"info_player_start".as_slice()])).unwrap();
+    let names = NameTable::load(
+        Registry::names_needed().chain([b"info_player_start".as_slice(), b"ITEM_SHELLS"]),
+    )
+    .unwrap();
     let registry = Registry::load(&names).unwrap();
     let counts: [usize; 3] = std::array::from_fn(|index| {
         registry
@@ -17,8 +19,12 @@ fn source_tables_share_ids_without_losing_original_numbers_or_ammo_links() {
     assert_eq!(counts, SOURCE_COUNTS);
     assert_eq!(registry.items.len(), 116);
     let q1_shells = registry
-        .classname(ModuleId(1), names.find(b"ITEM_SHELLS").unwrap())
+        .classname(ModuleId(1), names.find(b"item_shells").unwrap())
         .unwrap();
+    assert_eq!(
+        registry.classname(ModuleId(1), names.find(b"ITEM_SHELLS").unwrap()),
+        None
+    );
     let q3_shells = registry
         .classname(ModuleId(3), names.find(b"ammo_shells").unwrap())
         .unwrap();

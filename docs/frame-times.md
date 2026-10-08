@@ -1136,3 +1136,33 @@ duplicate local-seat binding.
 This is state/allocation evidence, without elapsed-time performance or worker
 measurements. Native protocol encoding, guest module binding, installed
 independent-seat gameplay and the three-map gate remain open. No install.
+
+## THE-617 exact-name checkpoint (2026-10-08)
+
+One name arena now preserves exact case and raw bytes. A load-built numeric
+equivalence table serves folded callers. The shared target index selects the
+caller's matching policy, preserves source slot order and distinguishes absent
+fields from explicit empty names. The item registry's classname lookup uses
+exact IDs.
+
+Release target/lifecycle example build: 7.94 s. Unchanged Q1/QW PF_Find and
+Q2/Q3 G_Find fixtures matched all 12,712 rows (Q1 3056, QW 3056, Q2 3280,
+Q3 3320), including ordered slots, empty/NULL fields, raw non-UTF8 names,
+inactive entities and starting positions. Each rule counted zero Rust
+allocation/reallocation calls after cold load; positive allocation controls
+counted one, identical comparator controls passed and one-bit slot-result
+mutations were rejected. Evidence: `native-target-names-20261008`
+`comparison/report.json`. This is behavior/allocation evidence, not a timing.
+
+The fixture uses equal native/common slot numbers and minimal field adapters,
+without VM string/entity ABI execution. It compiles Q1's unchanged default
+branch; Q2 uses the unchanged POSIX comparator in C locale, without Windows
+coverage. Q1/QW NULL-query fatal behavior is caught and compared with scoped
+boundary rejection; Q2 NULL queries and embedded NUL strings are excluded.
+Dynamic index refresh/lifecycle allocation proof is recorded separately.
+The lifecycle probe's final rebuild took 5.81 s. It performed 2,560,000 entity
+allocations over 10,000 cycles, with changed target indexes and area links,
+counting zero Rust allocation/reallocation calls after cold load and one in
+its positive control (`entity-allocations.json`). No worker was created.
+Native module namespace mapping, retail trigger/door execution and installed
+combined gameplay remain open. No install.

@@ -187,8 +187,15 @@ fn spawn_origins(map: &Map<'_>) -> Result<Vec<Vec3>, &'static str> {
         _ => EntitySyntax::Quake3,
     };
     let entities = EntityLump::parse(map.entity_text(), syntax).map_err(|_| "entity lump parse")?;
-    let origin = entities.names.find(b"origin");
-    let classname = entities.names.find(b"classname");
+    let find = |name: &[u8]| {
+        if syntax == EntitySyntax::Quake {
+            entities.names.find(name)
+        } else {
+            entities.names.find_folded(name)
+        }
+    };
+    let origin = find(b"origin");
+    let classname = find(b"classname");
     let mut points = Vec::new();
     for range in &entities.records {
         let fields = &entities.fields[range.clone()];

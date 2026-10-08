@@ -383,7 +383,11 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
     for (index, range) in entities.records.iter().enumerate() {
         let fields = &entities.fields[range.clone()];
         let field = |name: &[u8]| {
-            let id = entities.names.find(name)?;
+            let id = if syntax == EntitySyntax::Quake {
+                entities.names.find(name)
+            } else {
+                entities.names.find_folded(name)
+            }?;
             fields.iter().find(|entry| entry.key == id).map(|e| e.value)
         };
         let Some(classname) = field(b"classname") else {

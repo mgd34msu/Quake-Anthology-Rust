@@ -37,7 +37,7 @@ impl FrameSource for Source {
 fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     let mut name = b"mixed_door".to_vec();
     let mut runtime = Runtime::load([name.as_slice(), b"models/custom.mdl".as_slice()]).unwrap();
-    let target = runtime.catalog.names.find(b"MIXED_DOOR").unwrap();
+    let target = runtime.catalog.names.find_folded(b"MIXED_DOOR").unwrap();
     name.fill(b'x');
     assert_eq!(
         runtime.catalog.names.get(target),
@@ -61,17 +61,50 @@ fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
         .unwrap();
     let entities = [first, second].map(|id| runtime.server.clients[id.0 as usize].entity);
     for entity in entities {
-        assert!(runtime.server.entities.set_targetname(entity, target));
+        assert!(runtime.server.entities.set_targetname(entity, Some(target)));
     }
-    assert!(runtime.targets.refresh(&runtime.server.entities));
-    assert_eq!(runtime.targets.find(target).collect::<Vec<_>>(), entities);
-    assert!(!runtime.targets.refresh(&runtime.server.entities));
-    runtime.server.clients[first.0 as usize].player.health = 42;
-    assert!(!runtime.targets.refresh(&runtime.server.entities));
-    assert!(runtime.server.disconnect(first));
-    assert!(runtime.targets.refresh(&runtime.server.entities));
+    assert!(
+        runtime
+            .targets
+            .refresh(&runtime.server.entities, &runtime.catalog.names)
+    );
     assert_eq!(
-        runtime.targets.find(target).collect::<Vec<_>>(),
+        runtime
+            .targets
+            .find(
+                target,
+                qa_core::names::NameMatch::Exact,
+                &runtime.catalog.names
+            )
+            .collect::<Vec<_>>(),
+        entities
+    );
+    assert!(
+        !runtime
+            .targets
+            .refresh(&runtime.server.entities, &runtime.catalog.names)
+    );
+    runtime.server.clients[first.0 as usize].player.health = 42;
+    assert!(
+        !runtime
+            .targets
+            .refresh(&runtime.server.entities, &runtime.catalog.names)
+    );
+    assert!(runtime.server.disconnect(first));
+    assert!(
+        runtime
+            .targets
+            .refresh(&runtime.server.entities, &runtime.catalog.names)
+    );
+    assert_eq!(
+        runtime
+            .targets
+            .find(
+                target,
+                qa_core::names::NameMatch::Exact,
+                &runtime.catalog.names
+            )
+            .collect::<Vec<_>>(),
         [entities[1]]
     );
 }

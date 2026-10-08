@@ -394,7 +394,9 @@ impl FrameHost {
                 }
             }
         }
-        self.runtime.targets.refresh(&self.runtime.server.entities);
+        self.runtime
+            .targets
+            .refresh(&self.runtime.server.entities, &self.runtime.catalog.names);
         for client in &mut self.runtime.server.clients {
             if client.connection.is_some() {
                 self.runtime

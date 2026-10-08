@@ -146,7 +146,7 @@ pub struct EntityColumns {
     pub collision_contents: Box<[u64]>,
     pub collision_tags: Box<[CollisionTags]>,
     pub classname: Box<[NameId]>,
-    targetname: Box<[NameId]>,
+    targetname: Box<[Option<NameId>]>,
     pub flags: Box<[u32]>,
     pub model: Box<[u32]>,
     pub frame: Box<[u32]>,
@@ -176,7 +176,7 @@ impl EntityColumns {
             collision_contents: vec![0; capacity].into_boxed_slice(),
             collision_tags: vec![CollisionTags::default(); capacity].into_boxed_slice(),
             classname: vec![NameId::default(); capacity].into_boxed_slice(),
-            targetname: vec![NameId::default(); capacity].into_boxed_slice(),
+            targetname: vec![None; capacity].into_boxed_slice(),
             flags: vec![0; capacity].into_boxed_slice(),
             model: vec![0; capacity].into_boxed_slice(),
             frame: vec![0; capacity].into_boxed_slice(),
@@ -205,7 +205,7 @@ impl EntityColumns {
         self.collision_contents[slot] = 0;
         self.collision_tags[slot] = CollisionTags::default();
         self.classname[slot] = NameId::default();
-        self.targetname[slot] = NameId::default();
+        self.targetname[slot] = None;
         self.flags[slot] = 0;
         self.model[slot] = 0;
         self.frame[slot] = 0;
@@ -229,7 +229,7 @@ impl EntityColumns {
         self.maxs[slot] = body.maxs;
     }
 
-    pub fn targetname(&self, slot: usize) -> NameId {
+    pub fn targetname(&self, slot: usize) -> Option<NameId> {
         self.targetname[slot]
     }
 }
@@ -294,7 +294,7 @@ impl EntityTable {
         self.revision
     }
 
-    pub fn set_targetname(&mut self, id: EntityId, name: NameId) -> bool {
+    pub fn set_targetname(&mut self, id: EntityId, name: Option<NameId>) -> bool {
         let Some(slot) = self.resolve(id) else {
             return false;
         };

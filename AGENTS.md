@@ -33,6 +33,14 @@ explicitly, or None before binding a native module. Never derive native entity
 numbers from common entity reservations or the module executing gameplay:
 Q3 client zero is native entity zero; Q2 client zero is native edict one.
 
+THE-617 keeps byte-exact name identities in one load-built arena. ASCII-folded
+equivalence is a cached numeric lookup, never a reason to merge exact names.
+Target queries select exact matching for Q1/QW or folded matching for Q2/Q3
+at the caller boundary; map geometry does not select string semantics. Native
+item/function classname dispatch uses exact names per qsrc strcmp. Optional target fields retain
+the difference between an absent string and an explicit empty NameId(0).
+Q1 native import maps its zero string offset to that explicit empty value.
+
 Capability crates are core, world, movement, formats, content for the VFS,
 render, audio, network, session, gameplay, compat for module hosts, navigation,
 bots, persistence, console, input, ui, platform and app. Games convert into

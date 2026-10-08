@@ -177,7 +177,7 @@ fn runtime_retains_exact_guest_source_after_cold_names_are_released() {
     runtime.entity_sources.push(source);
     assert_eq!(runtime.entity_sources[0].bytes.as_ref(), original);
     assert_eq!(runtime.entity_sources[0].syntax, EntitySyntax::Quake);
-    assert_eq!(
+    assert_ne!(
         runtime.catalog.names.find(b"Door"),
         runtime.catalog.names.find(b"door")
     );
