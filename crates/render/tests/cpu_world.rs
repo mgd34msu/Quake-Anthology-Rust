@@ -1046,6 +1046,7 @@ fn insufficient_product_budget_uses_independent_factor_sampling() {
         CpuLimits {
             cache_bytes: 36,
             max_spans: 4096,
+            ..CpuLimits::default()
         },
     )
     .unwrap();
@@ -1792,6 +1793,7 @@ fn cached_fence_holes_keep_the_opaque_world_behind_them() {
         CpuLimits {
             cache_bytes: 512,
             max_spans: 1,
+            ..CpuLimits::default()
         },
     )
     .unwrap();

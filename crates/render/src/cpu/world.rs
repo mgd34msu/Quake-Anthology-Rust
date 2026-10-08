@@ -12,27 +12,34 @@ use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, alpha_pa
 use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
 use crate::world::WorldId;
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
+use std::sync::Arc;
+
+mod band;
+mod clip;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CpuLimits {
     pub cache_bytes: usize,
     pub max_spans: usize,
+    pub scene: crate::scene::Limits,
 }
 impl Default for CpuLimits {
     fn default() -> Self {
         Self {
             cache_bytes: 32 * 1024 * 1024,
             max_spans: 4096,
+            scene: crate::scene::Limits::default(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldStats {
+    /// Accepted clipped boundary descriptors, counted once during preparation.
     pub polygons: u64,
     pub spans: u64,
     pub pixels: u64,
-    /// Clipped patch boundary primitives accepted by the edge scanner.
+    /// Overlapping patch subset of accepted prepared boundaries.
     pub patch_polygons: u64,
     /// Kernel span calls and successful pixel writes, including sky stages.
     pub sky_spans: u64,
@@ -187,8 +194,16 @@ impl Planes {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum PrimitiveDomain {
+    #[default]
+    WorldSurface,
+    GeneratedSky,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Primitive {
+    domain: PrimitiveDomain,
     world: WorldId,
     reference: u32,
     surface: u32,
@@ -205,8 +220,8 @@ struct Primitive {
     first_stage: usize,
     stages: usize,
     deforms: [DeformOp; 3],
-    first_vertex: usize,
-    vertex_count: usize,
+    first_coverage: usize,
+    coverage_count: usize,
     depth_override: Option<f32>,
     patch: bool,
     rgba: Option<usize>,
@@ -219,36 +234,90 @@ struct StagePlanes {
     sampler: Option<super::ShadeFn>,
 }
 
-pub(super) struct WorldRaster {
-    width: u32,
+struct WorldCatalog {
+    edge_capacity: usize,
+    primitive_capacity: usize,
+    mandatory_cache_bytes: usize,
     offsets: Box<[usize]>,
     surfaces: Box<[SurfaceInfo]>,
     boundary_offsets: Box<[usize]>,
     rgba: Box<[Option<super::rgba::Recipe>]>,
-    rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
     factors: Box<[super::rgba::Factor]>,
+    skies: Box<[super::sky::SkyDefinition]>,
+    surfaces_cache: Arc<crate::surface_cache::SurfaceCatalog>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum PreparedDraw {
+    #[default]
+    External,
+    Surface(u32),
+    Sky {
+        boxes: [usize; 2],
+        clouds: [usize; 2],
+    },
+    Skip,
+}
+
+struct WorldPrepare {
+    catalog: Arc<WorldCatalog>,
+    rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
     primitives: Box<[Primitive]>,
     primitive_count: usize,
     stages: Box<[StagePlanes]>,
     stage_count: usize,
-    clip_a: Box<[ClipVertex]>,
-    clip_b: Box<[ClipVertex]>,
+    clip: clip::ClipGraph,
     screen: Box<[ScreenVertex]>,
     projected: Box<[ProjectedVertex]>,
-    sky_batches: Box<[super::sky::SkyBatch]>,
-    sky_vertices: Box<[Vertex]>,
+    coverage: Box<[ProjectedVertex]>,
+    coverage_count: usize,
+    sky_states: Box<[super::sky::SkyState]>,
     sky_stages: Box<[Option<PreparedStage>]>,
+    draws: Box<[PreparedDraw]>,
+    draw_count: usize,
+    opaque_count: usize,
+    policy: DepthPolicy,
+    background: Option<super::sky::BackgroundDraw>,
+    stats: WorldStats,
+}
+
+struct WorldBand {
+    width: u32,
+    catalog: Arc<WorldCatalog>,
     edges: Edges,
     cache: SurfaceCache,
     stats: WorldStats,
 }
 
+pub(super) struct WorldRaster {
+    prepare: WorldPrepare,
+    band: WorldBand,
+}
+
 pub(super) struct Buffers<'a> {
+    pub first_row: u32,
+    pub frame_height: u32,
     pub pixels: &'a mut [u32],
     pub inverse_depth: &'a mut [f32],
     pub depth_ranks: &'a mut [u32],
     pub indices: &'a mut [u8],
     pub palettes: &'a mut [u32],
+}
+
+impl Buffers<'_> {
+    pub(super) fn rows(
+        &self,
+        width: u32,
+        viewport: crate::scene::Viewport,
+    ) -> Option<std::ops::Range<u32>> {
+        let start = self.first_row.max(viewport.y);
+        let end =
+            (self.first_row + self.pixels.len() as u32 / width).min(viewport.y + viewport.height);
+        (start < end).then_some(start..end)
+    }
+    pub(super) fn offset(&self, width: u32, x: u32, y: u32) -> usize {
+        ((y - self.first_row) * width + x) as usize
+    }
 }
 
 impl WorldRaster {
@@ -269,20 +338,28 @@ impl WorldRaster {
         let mut max_vertices = 3usize;
         let mut max_edges = 0usize;
         let mut stage_capacity = 0usize;
-        let sky_batches: Vec<_> = assets
+        let skies: Vec<_> = assets
             .materials()
             .iter()
-            .map(super::sky::SkyBatch::load)
+            .map(super::sky::SkyDefinition::load)
             .collect::<Result<_, _>>()?;
         let max_sky_stages = assets
             .materials()
             .iter()
-            .zip(&sky_batches)
+            .zip(&skies)
             .filter(|(_, batch)| batch.enabled)
             .map(|(material, _)| material.stages.len())
             .max()
             .unwrap_or(0);
-        let has_sky = sky_batches.iter().any(|batch| batch.enabled);
+        let sky_count = skies.iter().filter(|sky| sky.enabled).count();
+        let has_sky = sky_count != 0;
+        let draw_capacity = limits
+            .scene
+            .draw_capacity()
+            .ok_or("CPU scene draw count overflow")?;
+        if draw_capacity == 0 || draw_capacity > u32::MAX as usize {
+            return Err("invalid CPU scene draw capacity");
+        }
         for world in assets.worlds() {
             offsets.push(surfaces.len());
             let geometry = world.geometry();
@@ -395,78 +472,120 @@ impl WorldRaster {
                 }
             }
         }
-        let sky_boundaries = if has_sky {
-            super::sky::CLOUD_BOUNDARIES + super::sky::BOX_BOUNDARIES
-        } else {
-            0
-        };
+        let sky_boundaries = sky_count
+            .checked_mul(super::sky::CLOUD_BOUNDARIES + super::sky::BOX_BOUNDARIES)
+            .ok_or("sky polygon count overflow")?;
         boundaries = boundaries
             .checked_add(sky_boundaries)
             .ok_or("sky polygon count overflow")?;
-        stage_capacity = stage_capacity
+        for (material, sky) in assets.materials().iter().zip(&skies) {
+            if sky.enabled {
+                stage_capacity = stage_capacity
+                    .checked_add(
+                        super::sky::CLOUD_BOUNDARIES
+                            .checked_mul(material.stages.len())
+                            .and_then(|count| count.checked_add(super::sky::BOX_BOUNDARIES))
+                            .ok_or("sky stage count overflow")?,
+                    )
+                    .ok_or("sky stage count overflow")?;
+            }
+        }
+        let coverage_capacity = max_edges
             .checked_add(
-                super::sky::CLOUD_BOUNDARIES
-                    .checked_mul(max_sky_stages)
-                    .and_then(|count| {
-                        count.checked_add(if has_sky {
-                            super::sky::BOX_BOUNDARIES
-                        } else {
-                            0
-                        })
-                    })
-                    .ok_or("sky stage count overflow")?,
+                sky_count
+                    .checked_mul(super::sky::SKY_EDGES)
+                    .ok_or("sky coverage count overflow")?,
             )
-            .ok_or("sky stage count overflow")?;
+            .ok_or("world coverage count overflow")?;
         if has_sky {
             max_vertices = max_vertices.max(10);
             max_edges = max_edges.max(super::sky::SKY_EDGES);
         }
-        Ok(Self {
-            width,
+        let surfaces_cache = crate::surface_cache::SurfaceCatalog::load(sources)?;
+        let mut mandatory_cache_bytes = 0usize;
+        for id in surfaces
+            .iter()
+            .filter(|surface| surface.cache_supported && surface.sky.is_none())
+            .map(|surface| surface.cache)
+            .chain(rgba.iter().flatten().filter_map(|recipe| match recipe {
+                super::rgba::Recipe::Product(product) => Some(product.cache),
+                super::rgba::Recipe::Pair(_) => None,
+            }))
+        {
+            let source = surfaces_cache
+                .surface(id)
+                .ok_or("missing mandatory cache surface")?;
+            for mip in 0..source.mip_count() {
+                mandatory_cache_bytes = mandatory_cache_bytes.max(
+                    source
+                        .reservation_bytes(mip)
+                        .ok_or("mandatory cache reservation overflow")?,
+                );
+            }
+        }
+        if mandatory_cache_bytes > limits.cache_bytes {
+            return Err("CPU cache cannot hold a mandatory surface");
+        }
+        let rgba_count = rgba.len();
+        let sky_state_count = skies.len();
+        let catalog = Arc::new(WorldCatalog {
+            edge_capacity: max_edges.max(3),
+            primitive_capacity: boundaries.max(1),
+            mandatory_cache_bytes,
             offsets: offsets.into_boxed_slice(),
             surfaces: surfaces.into_boxed_slice(),
             boundary_offsets: boundary_offsets.into_boxed_slice(),
-            rgba_prepared: vec![None; rgba.len()].into_boxed_slice(),
             rgba: rgba.into_boxed_slice(),
             factors: factors.into_boxed_slice(),
-            primitives: vec![Primitive::default(); boundaries.max(1)].into_boxed_slice(),
-            primitive_count: 0,
-            stages: vec![StagePlanes::default(); stage_capacity.max(1)].into_boxed_slice(),
-            stage_count: 0,
-            clip_a: vec![ClipVertex::default(); max_vertices].into_boxed_slice(),
-            clip_b: vec![ClipVertex::default(); max_vertices].into_boxed_slice(),
-            screen: vec![ScreenVertex::default(); max_vertices].into_boxed_slice(),
-            projected: vec![ProjectedVertex::default(); max_vertices].into_boxed_slice(),
-            sky_batches: sky_batches.into_boxed_slice(),
-            sky_vertices: vec![
-                Vertex::default();
-                if has_sky { super::sky::SKY_VERTICES } else { 0 }
-            ]
-            .into_boxed_slice(),
-            sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
-            edges: Edges::load(
+            skies: skies.into_boxed_slice(),
+            surfaces_cache,
+        });
+        Ok(Self {
+            prepare: WorldPrepare {
+                catalog: Arc::clone(&catalog),
+                rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
+                primitives: vec![Primitive::default(); boundaries.max(1)].into_boxed_slice(),
+                primitive_count: 0,
+                stages: vec![StagePlanes::default(); stage_capacity.max(1)].into_boxed_slice(),
+                stage_count: 0,
+                clip: clip::ClipGraph::load(max_vertices)?,
+                screen: vec![ScreenVertex::default(); max_vertices].into_boxed_slice(),
+                projected: vec![ProjectedVertex::default(); max_vertices].into_boxed_slice(),
+                coverage: vec![ProjectedVertex::default(); coverage_capacity.max(3)]
+                    .into_boxed_slice(),
+                coverage_count: 0,
+                sky_states: (0..sky_state_count)
+                    .map(|_| super::sky::SkyState::default())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
+                draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
+                draw_count: 0,
+                opaque_count: 0,
+                policy: DepthPolicy::PlaneDepth,
+                background: None,
+                stats: WorldStats::default(),
+            },
+            band: WorldBand::load(
                 width,
                 height,
-                max_edges.max(3),
-                boundaries.max(1),
+                Arc::clone(&catalog),
+                limits.cache_bytes,
                 limits.max_spans,
             )?,
-            cache: SurfaceCache::load(sources, limits.cache_bytes)?,
-            stats: WorldStats::default(),
         })
     }
 
     pub(super) fn stats(&self) -> WorldStats {
         WorldStats {
-            cache: self.cache.stats(),
-            ..self.stats
+            cache: self.band.cache.stats(),
+            ..merge_stats(self.prepare.stats, self.band.stats)
         }
     }
-
     pub(super) fn reset_stats(&mut self) {
-        self.stats = WorldStats::default();
+        self.prepare.stats = WorldStats::default();
+        self.band.stats = WorldStats::default();
     }
-
     pub(super) fn render_opaque(
         &mut self,
         camera: Camera,
@@ -474,13 +593,50 @@ impl WorldRaster {
         scene: SceneRanges,
         assets: &Assets,
         evaluator: &StageEvaluator,
-        mut buffers: Buffers<'_>,
+        buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
     ) {
-        let old_rejected = self.stats.rejected;
-        let backend_rejected = stats.rejected;
+        if self
+            .prepare
+            .prepare_view(camera, list, scene, assets, evaluator, stats)
+        {
+            self.band
+                .render_opaque(&self.prepare, camera, assets, buffers, stats);
+        }
+    }
+    pub(super) fn draw_item(
+        &mut self,
+        camera: Camera,
+        rank: usize,
+        assets: &Assets,
+        buffers: Buffers<'_>,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        self.band
+            .draw_item(&self.prepare, camera, rank, assets, buffers, stats)
+    }
+}
+
+impl WorldPrepare {
+    fn prepare_view(
+        &mut self,
+        camera: Camera,
+        list: &CommandList,
+        scene: SceneRanges,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
         self.primitive_count = 0;
         self.stage_count = 0;
+        self.coverage_count = 0;
+        self.opaque_count = 0;
+        self.draw_count = 0;
+        self.background = None;
+        if list.draws(scene.draws).len() > self.draws.len() {
+            self.reject(stats);
+            return false;
+        }
         self.collect_skies(camera, list, scene, assets, stats);
         let references = list.surfaces(scene.surfaces);
         let reference_base = scene.surfaces.first;
@@ -510,9 +666,14 @@ impl WorldRaster {
                 continue;
             };
             let Some(info) = self
+                .catalog
                 .offsets
                 .get(reference.world.0 as usize)
-                .and_then(|offset| self.surfaces.get(offset + reference.surface as usize))
+                .and_then(|offset| {
+                    self.catalog
+                        .surfaces
+                        .get(offset + reference.surface as usize)
+                })
                 .copied()
             else {
                 self.reject(stats);
@@ -523,7 +684,8 @@ impl WorldRaster {
             }
             if material.settings.sky.is_some() {
                 if self
-                    .sky_batches
+                    .catalog
+                    .skies
                     .get(binding.material.0 as usize)
                     .is_some_and(|batch| batch.enabled)
                     && matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
@@ -644,11 +806,12 @@ impl WorldRaster {
                     deforms,
                     patch: surface.patch.is_some(),
                     rgba: if native.is_none() {
-                        self.boundary_offsets
+                        self.catalog
+                            .boundary_offsets
                             .get(reference.world.0 as usize)
                             .map(|offset| offset + boundary)
                             .filter(|&index| {
-                                self.rgba[index]
+                                self.catalog.rgba[index]
                                     .as_ref()
                                     .is_some_and(|recipe| recipe.current(assets))
                             })
@@ -658,7 +821,7 @@ impl WorldRaster {
                     ..Primitive::default()
                 };
                 if let Some(index) = primitive.rgba {
-                    let prepared = self.rgba[index]
+                    let prepared = self.catalog.rgba[index]
                         .as_ref()
                         .and_then(|recipe| recipe.prepare(camera.refdef, evaluator));
                     if let Some(prepared) = prepared {
@@ -668,11 +831,11 @@ impl WorldRaster {
                     }
                 }
                 let product = primitive.rgba.is_some_and(|index| {
-                    self.rgba[index]
+                    self.catalog.rgba[index]
                         .as_ref()
                         .is_some_and(|recipe| recipe.product())
                 });
-                let Some(count) = self.clip(
+                let Some(count) = self.prepare_clip(
                     camera,
                     assets,
                     primitive,
@@ -716,16 +879,6 @@ impl WorldRaster {
                     } else {
                         3
                     };
-                    if primitive.mip != 0 {
-                        let Some(next) = self.clip(camera, assets, primitive, None, evaluator)
-                        else {
-                            self.reject(stats);
-                            continue;
-                        };
-                        if next < 3 {
-                            continue;
-                        }
-                    }
                     let Some((planes, adjust)) = native_planes(camera, surface, primitive.mip)
                     else {
                         self.reject(stats);
@@ -746,7 +899,7 @@ impl WorldRaster {
                         continue;
                     }
                     let mut valid = true;
-                    for stage in material.stages.iter() {
+                    for (stage_index, stage) in material.stages.iter().enumerate() {
                         let Ok(prepared) = evaluator.prepare(stage, material.settings, inputs)
                         else {
                             valid = false;
@@ -756,16 +909,16 @@ impl WorldRaster {
                             valid = false;
                             break;
                         };
-                        let Some(stage_count) =
-                            self.clip(camera, assets, primitive, Some(prepared), evaluator)
-                        else {
+                        let stage_count = if stage_index == 0 {
+                            Some(count)
+                        } else {
+                            self.clip
+                                .project_stage(prepared, evaluator, &mut self.screen)
+                        };
+                        let Some(stage_count) = stage_count else {
                             valid = false;
                             break;
                         };
-                        if stage_count < 3 {
-                            valid = false;
-                            break;
-                        }
                         let Some(planes) = Planes::load(&self.screen[..stage_count]) else {
                             valid = false;
                             break;
@@ -783,20 +936,12 @@ impl WorldRaster {
                         self.reject(stats);
                         continue;
                     }
-                    // Return coverage coordinates to the first stage. Its
-                    // deformation is identical for every stage of this draw.
-                    let Some(first_count) =
-                        self.clip(camera, assets, primitive, Some(base), evaluator)
-                    else {
-                        self.stage_count = primitive.first_stage;
-                        self.reject(stats);
-                        continue;
-                    };
-                    if first_count < 3 {
-                        self.stage_count = primitive.first_stage;
-                        continue;
-                    }
                     primitive.planes = self.stages[primitive.first_stage].planes;
+                }
+                if !self.keep_coverage(&mut primitive, count) {
+                    self.stage_count = primitive.first_stage;
+                    self.reject(stats);
+                    continue;
                 }
                 self.primitives[self.primitive_count] = primitive;
                 self.primitive_count += 1;
@@ -805,167 +950,33 @@ impl WorldRaster {
                 stats.surfaces = stats.surfaces.saturating_add(1);
             }
         }
-        let policy = if certified {
+        self.policy = if certified {
             DepthPolicy::BspKeys
         } else {
             DepthPolicy::PlaneDepth
         };
-        if !self.edges.begin_with_policy(camera.refdef.viewport, policy) {
-            self.reject(stats);
-            return;
+        self.background = background
+            .and_then(|source| super::sky::BackgroundDraw::prepare(source, camera, assets));
+        self.opaque_count = self.primitive_count;
+        for (rank, &item) in list.draws(scene.draws).iter().enumerate() {
+            self.draws[rank] =
+                self.prepare_draw(camera, item, rank as u32, list, assets, evaluator, stats);
         }
-        if let Some(source) = background {
-            super::sky::background(
-                self.width,
-                source,
-                camera,
-                assets,
-                &mut buffers,
-                &mut self.stats,
-            );
-        }
-        for index in 0..self.primitive_count {
-            let primitive = self.primitives[index];
-            if primitive.overlay {
-                continue;
-            }
-            let prepared = if primitive.cache_image.is_some()
-                || primitive.sky.is_some()
-                || primitive.rgba.is_some()
-            {
-                None
-            } else {
-                self.stages[primitive.first_stage].prepared
-            };
-            if let Some(count) = self.clip(camera, assets, primitive, prepared, evaluator) {
-                if count >= 3 {
-                    if !self.edges.add_polygon(
-                        index as u32,
-                        primitive.depth_key,
-                        primitive.draw_rank,
-                        &self.projected[..count],
-                    ) {
-                        self.reject(stats);
-                    } else if primitive.patch {
-                        self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(1);
-                    }
-                }
-            } else {
-                self.reject(stats);
-            }
-        }
-        let width = self.width;
-        let primitives = &self.primitives;
-        let stages = &self.stages;
-        let cache = &mut self.cache;
-        let rgba = &self.rgba;
-        let rgba_prepared = &self.rgba_prepared;
-        let factors = &self.factors;
-        let counters = &mut self.stats;
-        let edge_stats = self.edges.scan(|spans| {
-            for &span in spans {
-                consume_span(
-                    width,
-                    span,
-                    primitives[span.surface as usize],
-                    stages,
-                    cache,
-                    rgba,
-                    rgba_prepared,
-                    factors,
-                    assets,
-                    camera,
-                    &mut buffers,
-                    counters,
-                );
-            }
-        });
-        add_edge_stats(&mut self.stats, edge_stats);
+        self.draw_count = list.draws(scene.draws).len();
+        self.stats.polygons = self
+            .stats
+            .polygons
+            .saturating_add(self.primitive_count as u64);
+        self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(
+            self.primitives[..self.primitive_count]
+                .iter()
+                .filter(|p| p.patch)
+                .count() as u64,
+        );
         stats.stages = stats
             .stages
             .saturating_add(self.stage_count.min(u32::MAX as usize) as u32);
-        stats.rejected = backend_rejected
-            .saturating_add((self.stats.rejected - old_rejected).min(u32::MAX as u64) as u32);
-    }
-
-    /// Only the frontend chooses material/entity ordering. Deferred boundary
-    /// spans consume that order while the opaque GET retains its BSP ordering.
-    pub(super) fn draw_surface(
-        &mut self,
-        camera: Camera,
-        reference: u32,
-        assets: &Assets,
-        evaluator: &StageEvaluator,
-        mut buffers: Buffers<'_>,
-        stats: &mut crate::BackendStats,
-    ) {
-        let old_rejected = self.stats.rejected;
-        let backend_rejected = stats.rejected;
-        let width = self.width;
-        for index in 0..self.primitive_count {
-            if self.primitives[index].reference != reference || !self.primitives[index].overlay {
-                continue;
-            }
-            let primitive = self.primitives[index];
-            let prepared = if primitive.cache_image.is_some()
-                || primitive.sky.is_some()
-                || primitive.rgba.is_some()
-            {
-                None
-            } else {
-                self.stages[primitive.first_stage].prepared
-            };
-            let Some(count) = self.clip(camera, assets, primitive, prepared, evaluator) else {
-                self.reject(stats);
-                continue;
-            };
-            if count < 3 {
-                continue;
-            }
-            if !self
-                .edges
-                .begin_with_policy(camera.refdef.viewport, DepthPolicy::PlaneDepth)
-                || !self.edges.add_polygon(
-                    index as u32,
-                    primitive.depth_key,
-                    primitive.draw_rank,
-                    &self.projected[..count],
-                )
-            {
-                self.reject(stats);
-                continue;
-            }
-            if primitive.patch {
-                self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(1);
-            }
-            let stages = &self.stages;
-            let cache = &mut self.cache;
-            let rgba = &self.rgba;
-            let rgba_prepared = &self.rgba_prepared;
-            let factors = &self.factors;
-            let counters = &mut self.stats;
-            let edge_stats = self.edges.scan(|spans| {
-                for &span in spans {
-                    consume_span(
-                        width,
-                        span,
-                        primitive,
-                        stages,
-                        cache,
-                        rgba,
-                        rgba_prepared,
-                        factors,
-                        assets,
-                        camera,
-                        &mut buffers,
-                        counters,
-                    );
-                }
-            });
-            add_edge_stats(&mut self.stats, edge_stats);
-        }
-        stats.rejected = backend_rejected
-            .saturating_add((self.stats.rejected - old_rejected).min(u32::MAX as u64) as u32);
+        true
     }
 
     fn reject(&mut self, stats: &mut crate::BackendStats) {
@@ -981,7 +992,7 @@ impl WorldRaster {
         assets: &Assets,
         stats: &mut crate::BackendStats,
     ) {
-        for batch in &mut self.sky_batches {
+        for batch in &mut self.sky_states {
             batch.clear();
         }
         if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
@@ -992,7 +1003,8 @@ impl WorldRaster {
                 continue;
             };
             if !self
-                .sky_batches
+                .catalog
+                .skies
                 .get(material.0 as usize)
                 .is_some_and(|batch| batch.enabled)
             {
@@ -1009,9 +1021,14 @@ impl WorldRaster {
                         continue;
                     };
                     if self
+                        .catalog
                         .offsets
                         .get(reference.world.0 as usize)
-                        .and_then(|offset| self.surfaces.get(offset + reference.surface as usize))
+                        .and_then(|offset| {
+                            self.catalog
+                                .surfaces
+                                .get(offset + reference.surface as usize)
+                        })
                         .is_some_and(|info| info.raster_empty)
                     {
                         continue;
@@ -1068,7 +1085,7 @@ impl WorldRaster {
         camera: Camera,
         stats: &mut crate::BackendStats,
     ) {
-        if !self.sky_batches[material.0 as usize]
+        if !self.sky_states[material.0 as usize]
             .clip
             .add_polygon(&points, camera.refdef.origin)
         {
@@ -1079,7 +1096,7 @@ impl WorldRaster {
     /// The shared draw list determines when the material's single sky draw
     /// occurs. Source polygons from all worlds/entities/polys have already
     /// contributed to its clip, matching native RB_StageIteratorSky.
-    pub(super) fn draw_sky_item(
+    fn prepare_draw(
         &mut self,
         camera: Camera,
         item: DrawItem,
@@ -1087,29 +1104,38 @@ impl WorldRaster {
         list: &CommandList,
         assets: &Assets,
         evaluator: &StageEvaluator,
-        mut buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
-    ) -> bool {
+    ) -> PreparedDraw {
+        let external = match item.kind {
+            DrawKind::Surface => PreparedDraw::Surface(item.index),
+            _ => PreparedDraw::External,
+        };
         let Some(id) = sky_item_material(item, list, assets) else {
-            return false;
+            return external;
         };
-        let Some(batch) = self.sky_batches.get_mut(id.0 as usize) else {
-            return false;
+        if !self
+            .catalog
+            .skies
+            .get(id.0 as usize)
+            .is_some_and(|sky| sky.enabled)
+            || !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
+        {
+            return external;
+        }
+        let Some(batch) = self.sky_states.get_mut(id.0 as usize) else {
+            return external;
         };
-        if !batch.enabled || !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
-            return false;
+        if batch.prepared {
+            return PreparedDraw::Skip;
         }
-        if batch.drawn {
-            return true;
-        }
-        batch.drawn = true;
+        batch.prepared = true;
         let mut bounds = *batch.clip.bounds();
         if !bounds.iter().any(|bound| bound.visible()) {
-            return true;
+            return PreparedDraw::Skip;
         }
         let Some(material) = assets.material(id) else {
             self.reject(stats);
-            return true;
+            return PreparedDraw::Skip;
         };
         let Some(Sky::Cube {
             outer_box,
@@ -1118,7 +1144,7 @@ impl WorldRaster {
             ..
         }) = material.settings.sky
         else {
-            return false;
+            return external;
         };
         if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
             bounds.fill(crate::sky::FaceBounds {
@@ -1133,11 +1159,7 @@ impl WorldRaster {
             ..DrawInputs::default()
         };
         let old_primitive_count = self.primitive_count;
-        let old_stage_count = self.stage_count;
-        let old_rejected = self.stats.rejected;
-        let backend_rejected = stats.rejected;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
-        let mut vertex_count = 0;
         if let Some(images) = outer_box {
             let settings = MaterialSettings {
                 cull: Cull::None,
@@ -1207,7 +1229,6 @@ impl WorldRaster {
                 self.add_generated_sky(
                     camera,
                     &vertices,
-                    &mut vertex_count,
                     1,
                     [DeformOp::None; 3],
                     Cull::None,
@@ -1218,22 +1239,16 @@ impl WorldRaster {
                     stats,
                 );
             }
-            self.flush_sky(
-                camera,
-                old_primitive_count,
-                assets,
-                evaluator,
-                &mut buffers,
-                stats,
-            );
-            self.primitive_count = old_primitive_count;
-            self.stage_count = old_stage_count;
-            vertex_count = 0;
         }
+        let boxes = [old_primitive_count, self.primitive_count];
+        let first_cloud = self.primitive_count;
         if !material.stages.is_empty() {
             let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
                 self.reject(stats);
-                return true;
+                return PreparedDraw::Sky {
+                    boxes,
+                    clouds: [first_cloud, first_cloud],
+                };
             };
             let mut valid = true;
             for (index, &stage) in material.stages.iter().enumerate() {
@@ -1270,7 +1285,7 @@ impl WorldRaster {
                                 [[s, t], [s, t + 1], [s + 1, t]],
                                 [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
                             ] {
-                                let Some(grid) = self.sky_batches[id.0 as usize].cloud.as_ref()
+                                let Some(grid) = self.catalog.skies[id.0 as usize].cloud.as_ref()
                                 else {
                                     self.reject(stats);
                                     continue;
@@ -1293,7 +1308,6 @@ impl WorldRaster {
                                 self.add_generated_sky(
                                     camera,
                                     &vertices,
-                                    &mut vertex_count,
                                     material.stages.len(),
                                     deforms,
                                     material.settings.cull,
@@ -1307,30 +1321,20 @@ impl WorldRaster {
                         }
                     }
                 }
-                self.flush_sky(
-                    camera,
-                    old_primitive_count,
-                    assets,
-                    evaluator,
-                    &mut buffers,
-                    stats,
-                );
             } else {
                 self.reject(stats);
             }
         }
-        self.primitive_count = old_primitive_count;
-        self.stage_count = old_stage_count;
-        stats.rejected = backend_rejected
-            .saturating_add((self.stats.rejected - old_rejected).min(u32::MAX as u64) as u32);
-        true
+        PreparedDraw::Sky {
+            boxes,
+            clouds: [first_cloud, self.primitive_count],
+        }
     }
 
     fn add_generated_sky(
         &mut self,
         camera: Camera,
         vertices: &[Vertex],
-        vertex_count: &mut usize,
         stages: usize,
         deforms: [DeformOp; 3],
         cull: Cull,
@@ -1340,55 +1344,72 @@ impl WorldRaster {
         evaluator: &StageEvaluator,
         stats: &mut crate::BackendStats,
     ) {
-        if *vertex_count + vertices.len() > self.sky_vertices.len()
-            || self.primitive_count == self.primitives.len()
+        if self.primitive_count == self.primitives.len()
             || self.stage_count + stages > self.stages.len()
         {
             self.reject(stats);
             return;
         }
-        self.sky_vertices[*vertex_count..*vertex_count + vertices.len()].copy_from_slice(vertices);
         let mut primitive = Primitive {
-            first_vertex: *vertex_count,
-            vertex_count: vertices.len(),
+            domain: PrimitiveDomain::GeneratedSky,
             first_stage: self.stage_count,
             draw_rank: rank,
             deforms,
             depth_override,
             ..Primitive::default()
         };
-        *vertex_count += vertices.len();
+        let Some(base) = self.sky_stages.first().copied().flatten() else {
+            self.reject(stats);
+            return;
+        };
+        let Some(source) = self.clip.sources(vertices.len()) else {
+            self.reject(stats);
+            return;
+        };
+        source.copy_from_slice(vertices);
+        let Some(count) = self
+            .clip
+            .build(camera, vertices.len(), deforms, Some(base), evaluator)
+            .and_then(|_| {
+                self.clip
+                    .project_base(camera, &mut self.screen, &mut self.projected)
+            })
+        else {
+            self.reject(stats);
+            return;
+        };
+        if count < 3 {
+            return;
+        }
+        let area = polygon_area(&self.screen[..count]);
+        if area == 0.0
+            || match cull {
+                Cull::Front => area < 0.0,
+                Cull::Back => area > 0.0,
+                Cull::None => false,
+            }
+        {
+            return;
+        }
         for stage in 0..stages {
             let Some(prepared) = self.sky_stages[stage] else {
+                self.stage_count = primitive.first_stage;
                 self.reject(stats);
                 return;
             };
             let Some(image) = assets.image(prepared.image) else {
-                self.reject(stats);
-                self.stage_count = primitive.first_stage;
-                return;
-            };
-            let Some(count) = self.clip(camera, assets, primitive, Some(prepared), evaluator)
-            else {
                 self.stage_count = primitive.first_stage;
                 self.reject(stats);
                 return;
             };
-            if count < 3 {
-                self.stage_count = primitive.first_stage;
-                return;
-            }
-            let area = polygon_area(&self.screen[..count]);
-            if area == 0.0
-                || match cull {
-                    Cull::Front => area < 0.0,
-                    Cull::Back => area > 0.0,
-                    Cull::None => false,
-                }
+            if stage != 0
+                && self
+                    .clip
+                    .project_stage(prepared, evaluator, &mut self.screen)
+                    .is_none()
             {
-                // A cube face on the exact frustum boundary can clip to a
-                // line. Native draw calls produce no fragments for that face.
                 self.stage_count = primitive.first_stage;
+                self.reject(stats);
                 return;
             }
             let Some(planes) = Planes::load(&self.screen[..count]) else {
@@ -1405,82 +1426,13 @@ impl WorldRaster {
             primitive.stages += 1;
         }
         primitive.planes = self.stages[primitive.first_stage].planes;
-        self.primitives[self.primitive_count] = primitive;
-        self.primitive_count += 1;
-    }
-
-    fn flush_sky(
-        &mut self,
-        camera: Camera,
-        first: usize,
-        assets: &Assets,
-        evaluator: &StageEvaluator,
-        buffers: &mut Buffers<'_>,
-        stats: &mut crate::BackendStats,
-    ) {
-        if self.primitive_count == first {
-            return;
-        }
-        if !self
-            .edges
-            .begin_with_policy(camera.refdef.viewport, DepthPolicy::PlaneDepth)
-        {
+        if !self.keep_coverage(&mut primitive, count) {
+            self.stage_count = primitive.first_stage;
             self.reject(stats);
             return;
         }
-        for index in first..self.primitive_count {
-            let primitive = self.primitives[index];
-            let prepared = self.stages[primitive.first_stage].prepared;
-            let Some(count) = self.clip(camera, assets, primitive, prepared, evaluator) else {
-                self.reject(stats);
-                continue;
-            };
-            if let Some(depth) = primitive.depth_override {
-                for vertex in &mut self.projected[..count] {
-                    vertex.inverse_depth = depth;
-                }
-            }
-            if count >= 3
-                && !self.edges.add_polygon(
-                    index as u32,
-                    0,
-                    primitive.draw_rank,
-                    &self.projected[..count],
-                )
-            {
-                self.reject(stats);
-            }
-        }
-        let primitives = &self.primitives;
-        let stages = &self.stages;
-        let cache = &mut self.cache;
-        let rgba = &self.rgba;
-        let rgba_prepared = &self.rgba_prepared;
-        let factors = &self.factors;
-        let counters = &mut self.stats;
-        let width = self.width;
-        let edge_stats = self.edges.scan(|spans| {
-            for &span in spans {
-                consume_span(
-                    width,
-                    span,
-                    primitives[span.surface as usize],
-                    stages,
-                    cache,
-                    rgba,
-                    rgba_prepared,
-                    factors,
-                    assets,
-                    camera,
-                    buffers,
-                    counters,
-                );
-            }
-        });
-        add_edge_stats(&mut self.stats, edge_stats);
-        stats.stages = stats.stages.saturating_add(
-            (self.stage_count - self.primitives[first].first_stage).min(u32::MAX as usize) as u32,
-        );
+        self.primitives[self.primitive_count] = primitive;
+        self.primitive_count += 1;
     }
 
     fn add_sky(
@@ -1511,7 +1463,7 @@ impl WorldRaster {
                 sky: Some(source),
                 ..Primitive::default()
             };
-            let Some(count) = self.clip(camera, assets, primitive, None, evaluator) else {
+            let Some(count) = self.prepare_clip(camera, assets, primitive, None, evaluator) else {
                 self.reject(stats);
                 continue;
             };
@@ -1541,6 +1493,10 @@ impl WorldRaster {
                 break;
             }
             primitive.planes = planes;
+            if !self.keep_coverage(&mut primitive, count) {
+                self.reject(stats);
+                continue;
+            }
             self.primitives[self.primitive_count] = primitive;
             self.primitive_count += 1;
             visible = true;
@@ -1548,7 +1504,7 @@ impl WorldRaster {
         visible
     }
 
-    fn clip(
+    fn prepare_clip(
         &mut self,
         camera: Camera,
         assets: &Assets,
@@ -1556,75 +1512,65 @@ impl WorldRaster {
         prepared: Option<PreparedStage>,
         evaluator: &StageEvaluator,
     ) -> Option<usize> {
-        let mut count = primitive.vertex_count;
-        if count != 0 {
-            let vertices =
-                &self.sky_vertices[primitive.first_vertex..primitive.first_vertex + count];
-            for (output, &vertex) in self.clip_a.iter_mut().zip(vertices) {
-                let vertex = evaluated_vertex(vertex, primitive.deforms, prepared, evaluator);
-                *output = camera.vertex(vertex, vertex.position);
-                if !output.finite() {
-                    return None;
-                }
-            }
-        } else {
-            let world = assets.world(primitive.world)?;
-            let geometry = world.geometry();
-            let surface = &geometry.surfaces[primitive.surface as usize];
-            let boundary = geometry.boundaries[primitive.boundary as usize];
-            let indices = &geometry.indices[boundary.indices()];
-            count = indices.len();
-            if count > self.clip_a.len() {
-                return None;
-            }
-            for (output, &index) in self.clip_a.iter_mut().zip(indices) {
-                let loaded = geometry.vertices[index as usize];
-                let mut vertex = Vertex {
-                    normal: loaded.normal,
-                    ..loaded.vertex
-                };
-                if primitive.cache_image.is_some() {
-                    vertex.texcoord = std::array::from_fn(|axis| {
-                        let projection = surface.texture_projection[axis];
-                        (vertex.position.0[0] * projection[0]
-                            + vertex.position.0[1] * projection[1]
-                            + vertex.position.0[2] * projection[2]
-                            + projection[3]
-                            - surface.texture_minima[axis] as f32)
-                            / (1u32 << primitive.mip) as f32
-                    });
-                } else if let Some(index) = primitive.rgba
-                    && let Some(coordinate) = self.rgba[index].as_ref()?.coordinate(vertex.position)
-                {
-                    vertex.texcoord = coordinate;
-                }
-                vertex = evaluated_vertex(vertex, primitive.deforms, prepared, evaluator);
-                *output = camera.vertex(vertex, vertex.position);
-                if !output.finite() {
-                    return None;
-                }
-            }
-        }
-        for plane in 0..6 {
-            count = clip_world_plane(camera, &self.clip_a[..count], &mut self.clip_b, plane)?;
-            if count < 3 {
-                return Some(0);
-            }
-            std::mem::swap(&mut self.clip_a, &mut self.clip_b);
-        }
-        for i in 0..count {
-            let screen = camera.project(self.clip_a[i]);
-            if !screen.finite() {
-                return None;
-            }
-            self.screen[i] = screen;
-            self.projected[i] = ProjectedVertex {
-                xy: screen.xy.map(|v| v - 0.5),
-                inverse_depth: screen.inverse_depth,
-                texcoord_over_depth: screen.texcoord_over_depth,
+        let world = assets.world(primitive.world)?;
+        let geometry = world.geometry();
+        let surface = &geometry.surfaces[primitive.surface as usize];
+        let boundary = geometry.boundaries[primitive.boundary as usize];
+        let indices = &geometry.indices[boundary.indices()];
+        let vertices = self.clip.sources(indices.len())?;
+        for (output, &index) in vertices.iter_mut().zip(indices) {
+            let loaded = geometry.vertices[index as usize];
+            let mut vertex = Vertex {
+                normal: loaded.normal,
+                ..loaded.vertex
             };
+            if primitive.cache_image.is_some() {
+                vertex.texcoord = std::array::from_fn(|axis| {
+                    let projection = surface.texture_projection[axis];
+                    (vertex.position.0[0] * projection[0]
+                        + vertex.position.0[1] * projection[1]
+                        + vertex.position.0[2] * projection[2]
+                        + projection[3]
+                        - surface.texture_minima[axis] as f32)
+                        / (1u32 << primitive.mip) as f32
+                });
+            } else if let Some(index) = primitive.rgba
+                && let Some(coordinate) = self.catalog.rgba[index]
+                    .as_ref()?
+                    .coordinate(vertex.position)
+            {
+                vertex.texcoord = coordinate;
+            }
+            *output = vertex;
         }
-        Some(count)
+        self.clip.build(
+            camera,
+            indices.len(),
+            primitive.deforms,
+            prepared,
+            evaluator,
+        )?;
+        self.clip
+            .project_base(camera, &mut self.screen, &mut self.projected)
+    }
+
+    fn keep_coverage(&mut self, primitive: &mut Primitive, count: usize) -> bool {
+        let Some(end) = self.coverage_count.checked_add(count) else {
+            return false;
+        };
+        let Some(target) = self.coverage.get_mut(self.coverage_count..end) else {
+            return false;
+        };
+        target.copy_from_slice(&self.projected[..count]);
+        if let Some(depth) = primitive.depth_override {
+            for vertex in target {
+                vertex.inverse_depth = depth;
+            }
+        }
+        primitive.first_coverage = self.coverage_count;
+        primitive.coverage_count = count;
+        self.coverage_count = end;
+        true
     }
 }
 
@@ -1847,8 +1793,49 @@ fn cached_material(material: &Material) -> bool {
     }
 }
 
+fn merge_stats(a: WorldStats, b: WorldStats) -> WorldStats {
+    WorldStats {
+        polygons: a.polygons.saturating_add(b.polygons),
+        spans: a.spans.saturating_add(b.spans),
+        pixels: a.pixels.saturating_add(b.pixels),
+        patch_polygons: a.patch_polygons.saturating_add(b.patch_polygons),
+        sky_spans: a.sky_spans.saturating_add(b.sky_spans),
+        sky_pixels: a.sky_pixels.saturating_add(b.sky_pixels),
+        stage_spans: a.stage_spans.saturating_add(b.stage_spans),
+        stage_pixels: a.stage_pixels.saturating_add(b.stage_pixels),
+        curve_spans: a.curve_spans.saturating_add(b.curve_spans),
+        curve_pixels: a.curve_pixels.saturating_add(b.curve_pixels),
+        multistage_spans: a.multistage_spans.saturating_add(b.multistage_spans),
+        multistage_pixels: a.multistage_pixels.saturating_add(b.multistage_pixels),
+        indexed_spans: a.indexed_spans.saturating_add(b.indexed_spans),
+        indexed_pixels: a.indexed_pixels.saturating_add(b.indexed_pixels),
+        rgba_spans: a.rgba_spans.saturating_add(b.rgba_spans),
+        rgba_pixels: a.rgba_pixels.saturating_add(b.rgba_pixels),
+        rgba_hits: a.rgba_hits.saturating_add(b.rgba_hits),
+        rgba_fills: a.rgba_fills.saturating_add(b.rgba_fills),
+        rgba_evictions: a.rgba_evictions.saturating_add(b.rgba_evictions),
+        rgba_rejected: a.rgba_rejected.saturating_add(b.rgba_rejected),
+        rgba_minified_spans: a.rgba_minified_spans.saturating_add(b.rgba_minified_spans),
+        factor_spans: a.factor_spans.saturating_add(b.factor_spans),
+        factor_pixels: a.factor_pixels.saturating_add(b.factor_pixels),
+        factor_hits: a.factor_hits.saturating_add(b.factor_hits),
+        factor_fills: a.factor_fills.saturating_add(b.factor_fills),
+        factor_evictions: a.factor_evictions.saturating_add(b.factor_evictions),
+        factor_rejected: a.factor_rejected.saturating_add(b.factor_rejected),
+        factor_fallback_spans: a
+            .factor_fallback_spans
+            .saturating_add(b.factor_fallback_spans),
+        factor_minified_spans: a
+            .factor_minified_spans
+            .saturating_add(b.factor_minified_spans),
+        factor_curve_spans: a.factor_curve_spans.saturating_add(b.factor_curve_spans),
+        factor_curve_pixels: a.factor_curve_pixels.saturating_add(b.factor_curve_pixels),
+        rejected: a.rejected.saturating_add(b.rejected),
+        cache: CacheStats::default(),
+    }
+}
+
 fn add_edge_stats(stats: &mut WorldStats, edges: crate::edges::Stats) {
-    stats.polygons = stats.polygons.saturating_add(edges.polygons);
     stats.spans = stats.spans.saturating_add(edges.spans);
     stats.rejected = stats.rejected.saturating_add(edges.rejected);
 }
@@ -1872,7 +1859,7 @@ fn consume_span(
         let depth = primitive.planes.inverse_depth;
         super::sky::layered_span(
             width,
-            (buffers.pixels.len() / width as usize) as u32,
+            buffers.frame_height,
             span,
             source,
             camera,
@@ -2000,7 +1987,9 @@ fn consume_span(
                 .planes
                 .mip(image, prepared.stage.sampler, midpoint, span.y as f32);
             let mut texels = super::TexelView::image(image, mip, prepared.stage.texture_intensity);
-            if prepared.stage.texture == StageTexture::Lightmap && primitive.vertex_count == 0 {
+            if prepared.stage.texture == StageTexture::Lightmap
+                && primitive.domain == PrimitiveDomain::WorldSurface
+            {
                 let Some(bounded) = texels.region(
                     assets
                         .world(primitive.world)
@@ -2020,7 +2009,7 @@ fn consume_span(
                 if zi <= 0.0 || !zi.is_finite() {
                     continue;
                 }
-                let index = span.y as usize * width as usize + x as usize;
+                let index = buffers.offset(width, x, span.y);
                 let depth = primitive.depth_override.unwrap_or(zi);
                 if !super::depth_passes(
                     prepared.stage.depth_func,
@@ -2048,7 +2037,7 @@ fn consume_span(
                 stats.pixels = stats.pixels.saturating_add(1);
             }
             let written = stats.pixels.saturating_sub(before);
-            if primitive.vertex_count != 0 {
+            if primitive.domain == PrimitiveDomain::GeneratedSky {
                 stats.sky_spans = stats.sky_spans.saturating_add(1);
                 stats.sky_pixels = stats.sky_pixels.saturating_add(written);
             } else {
@@ -2159,7 +2148,7 @@ fn factor_span(
         if zi_a <= 0.0 || !zi_a.is_finite() {
             continue;
         }
-        let index = span.y as usize * width as usize + x as usize;
+        let index = buffers.offset(width, x, span.y);
         if !super::depth_passes(
             first.stage.depth_func,
             zi_a,
@@ -2265,7 +2254,7 @@ fn rgba_span(
             let before = stats.pixels;
             for x in span.x..span.x + span.count {
                 let zi = primitive.planes.inverse_depth.at(x as f32, span.y as f32);
-                let index = span.y as usize * width as usize + x as usize;
+                let index = buffers.offset(width, x, span.y);
                 if zi <= 0.0
                     || !zi.is_finite()
                     || !super::depth_passes(
@@ -2358,7 +2347,7 @@ fn native_span(
         for offset in 0..count {
             let px = x + offset;
             let zi = planes.inverse_depth.at(px as f32, span.y as f32);
-            let index = span.y as usize * width as usize + px as usize;
+            let index = buffers.offset(width, px, span.y);
             let sx = (current[0] >> 16).clamp(0, texture_width as i64 - 1) as usize;
             let sy = (current[1] >> 16).clamp(0, texture_height as i64 - 1) as usize;
             let color = texels[sy * texture_width as usize + sx];
@@ -2388,47 +2377,6 @@ fn native_span(
     }
 }
 
-fn clip_world_plane(
-    camera: Camera,
-    input: &[ClipVertex],
-    output: &mut [ClipVertex],
-    plane: usize,
-) -> Option<usize> {
-    let mut count = 0;
-    let mut previous = input[input.len() - 1];
-    let mut previous_distance = camera.distance(previous, plane);
-    for &current in input {
-        let distance = camera.distance(current, plane);
-        if !distance.is_finite() || !previous_distance.is_finite() {
-            return None;
-        }
-        let inside = distance >= 0.0;
-        let previous_inside = previous_distance >= 0.0;
-        if inside != previous_inside {
-            let denominator = previous_distance - distance;
-            if !denominator.is_finite() || count == output.len() {
-                return None;
-            }
-            let vertex = previous.lerp(current, previous_distance / denominator);
-            if !vertex.finite() {
-                return None;
-            }
-            output[count] = vertex;
-            count += 1;
-        }
-        if inside {
-            if count == output.len() {
-                return None;
-            }
-            output[count] = current;
-            count += 1;
-        }
-        previous = current;
-        previous_distance = distance;
-    }
-    Some(count)
-}
-
 fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
     let lengths = projection.map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt());
     let average = (lengths[0] + lengths[1]) * 0.5;
@@ -2442,6 +2390,14 @@ fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
         1.0
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/cpu_prepared/world.rs"]
+mod prepared_tests;
+
+#[cfg(test)]
+#[path = "../../tests/cpu_prepared/clip.rs"]
+mod clipping_tests;
 
 #[cfg(test)]
 mod tests {

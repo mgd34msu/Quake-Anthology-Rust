@@ -297,6 +297,8 @@ impl CpuBackend {
                             assets,
                             &self.evaluator,
                             world::Buffers {
+                                first_row: 0,
+                                frame_height: self.height,
                                 pixels: &mut self.pixels,
                                 inverse_depth: &mut self.inverse_depth,
                                 depth_ranks: &mut self.depth_ranks,
@@ -310,14 +312,13 @@ impl CpuBackend {
                     }
                     for (draw_rank, item) in list.draws(view.scene.draws).iter().enumerate() {
                         if let Some(world) = &mut self.world
-                            && world.draw_sky_item(
+                            && world.draw_item(
                                 camera,
-                                *item,
-                                draw_rank as u32,
-                                list,
+                                draw_rank,
                                 assets,
-                                &self.evaluator,
                                 world::Buffers {
+                                    first_row: 0,
+                                    frame_height: self.height,
                                     pixels: &mut self.pixels,
                                     inverse_depth: &mut self.inverse_depth,
                                     depth_ranks: &mut self.depth_ranks,
@@ -345,24 +346,7 @@ impl CpuBackend {
                                 assets,
                                 &mut stats,
                             ),
-                            DrawKind::Surface => {
-                                if let Some(world) = &mut self.world {
-                                    world.draw_surface(
-                                        camera,
-                                        item.index,
-                                        assets,
-                                        &self.evaluator,
-                                        world::Buffers {
-                                            pixels: &mut self.pixels,
-                                            inverse_depth: &mut self.inverse_depth,
-                                            depth_ranks: &mut self.depth_ranks,
-                                            indices: &mut self.indices,
-                                            palettes: &mut self.palettes,
-                                        },
-                                        &mut stats,
-                                    );
-                                }
-                            }
+                            DrawKind::Surface => {}
                         }
                     }
                     if camera.refdef.blend_phase == BlendPhase::AfterView {

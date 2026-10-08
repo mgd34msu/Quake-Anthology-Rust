@@ -14,13 +14,11 @@ use qa_core::primitives::Vec3;
 /// tr_sky.c clips source geometry once per material, then consumes a fixed
 /// eight-division cloud grid. Its triangles are boundary inputs to the same
 /// world edge scanner, rather than a second world rasterizer.
-pub(super) struct SkyBatch {
-    pub clip: crate::sky::SkyClip,
+pub(super) struct SkyDefinition {
     pub cloud: Option<Box<crate::sky::CloudGrid>>,
     pub enabled: bool,
-    pub drawn: bool,
 }
-impl SkyBatch {
+impl SkyDefinition {
     pub fn load(material: &Material) -> Result<Self, &'static str> {
         let enabled = matches!(material.settings.sky, Some(Sky::Cube { params, .. }) if !params.cpu_background)
             && material.settings.fog.is_none()
@@ -34,16 +32,26 @@ impl SkyBatch {
         } else {
             None
         };
-        Ok(Self {
-            clip: crate::sky::SkyClip::new(),
-            cloud,
-            enabled,
-            drawn: false,
-        })
+        Ok(Self { cloud, enabled })
     }
+}
+
+pub(super) struct SkyState {
+    pub clip: crate::sky::SkyClip,
+    pub prepared: bool,
+}
+impl Default for SkyState {
+    fn default() -> Self {
+        Self {
+            clip: crate::sky::SkyClip::new(),
+            prepared: false,
+        }
+    }
+}
+impl SkyState {
     pub fn clear(&mut self) {
         self.clip.clear();
-        self.drawn = false;
+        self.prepared = false;
     }
 }
 
@@ -265,7 +273,7 @@ pub(super) fn layered_span(
             };
             let px = x + offset;
             let zi = depth[2] + depth[1] * span.y as f32 + depth[0] * px as f32;
-            let index = span.y as usize * width as usize + px as usize;
+            let index = buffers.offset(width, px, span.y);
             if zi.is_finite()
                 && zi > 0.0
                 && super::depth_passes(
@@ -360,47 +368,60 @@ fn cube_planes(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct BackgroundDraw {
+    images: [ImageId; 6],
+    planes: [CubePlanes; 6],
+}
+impl BackgroundDraw {
+    pub(super) fn prepare(source: Source, camera: Camera, assets: &Assets) -> Option<Self> {
+        let Source::BackgroundCube {
+            images,
+            rotation,
+            params,
+        } = source
+        else {
+            return None;
+        };
+        let mips = images.map(|image| base(assets, image));
+        if mips.iter().any(Option::is_none) {
+            return None;
+        }
+        let axes = if params.cpu_rotation {
+            rotation.map_or(camera.refdef.axes, |rotation| {
+                camera.refdef.axes.map(|axis| {
+                    crate::sky::unrotate(axis, rotation, camera.refdef.time_ms as f32 * 0.001)
+                })
+            })
+        } else {
+            camera.refdef.axes
+        };
+        let planes = std::array::from_fn(|face| {
+            let (w, h) = mips[face].map_or((1, 1), |mip| (mip.width, mip.height));
+            cube_planes(camera, axes, face, w, h)
+        });
+        Some(Self { images, planes })
+    }
+}
+
 pub(super) fn background(
     width: u32,
-    source: Source,
+    draw: BackgroundDraw,
     camera: Camera,
     assets: &Assets,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    let Source::BackgroundCube {
-        images,
-        rotation,
-        params,
-    } = source
-    else {
-        stats.rejected += 1;
-        return;
-    };
     let Some((palette, palette_id)) = presentation(assets, camera) else {
         stats.rejected += 1;
         return;
     };
-    let mips = images.map(|image| base(assets, image));
+    let mips = draw.images.map(|image| base(assets, image));
     if mips.iter().any(Option::is_none) {
         stats.rejected += 1;
         return;
     }
-    let axes = if params.cpu_rotation {
-        if let Some(rotation) = rotation {
-            camera.refdef.axes.map(|axis| {
-                crate::sky::unrotate(axis, rotation, camera.refdef.time_ms as f32 * 0.001)
-            })
-        } else {
-            camera.refdef.axes
-        }
-    } else {
-        camera.refdef.axes
-    };
-    let planes = std::array::from_fn::<_, 6, _>(|face| {
-        let (w, h) = mips[face].map_or((1, 1), |mip| (mip.width, mip.height));
-        cube_planes(camera, axes, face, w, h)
-    });
+    let planes = draw.planes;
     let viewport = camera.refdef.viewport;
     let face_at = |x, y| {
         let mut face = 0;
@@ -412,7 +433,10 @@ pub(super) fn background(
         face
     };
     let chunk = camera.refdef.perspective_step.pixels();
-    for y in viewport.y..viewport.y + viewport.height {
+    let Some(rows) = buffers.rows(width, viewport) else {
+        return;
+    };
+    for y in rows {
         let mut x = viewport.x;
         while x < viewport.x + viewport.width {
             let face = face_at(x, y);
@@ -461,7 +485,7 @@ pub(super) fn background(
                     let sx = (current[0] >> 16).clamp(0, i64::from(mip.width) - 1) as usize;
                     let sy = (current[1] >> 16).clamp(0, i64::from(mip.height) - 1) as usize;
                     let color = mip.indices()[sy * mip.width as usize + sx];
-                    let index = y as usize * width as usize + (cursor + offset) as usize;
+                    let index = buffers.offset(width, cursor + offset, y);
                     write(index, color, palette, palette_id, -0.9, 0, buffers);
                     stats.pixels += 1;
                     current[0] += step[0];

@@ -306,6 +306,7 @@ fn compare(
         CpuLimits {
             cache_bytes: budget,
             max_spans: 16,
+            ..CpuLimits::default()
         },
     )
     .unwrap();
