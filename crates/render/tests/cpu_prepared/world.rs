@@ -94,6 +94,7 @@ fn fixture_world(
         patch_stats: PatchStats::default(),
     };
     mutate(&mut geometry);
+    let bounds = geometry.surfaces[0].bounds;
     let visibility = VisibilityWorld::load(
         vec![],
         vec![],
@@ -280,7 +281,72 @@ fn windowed(
     counters
 }
 
-fn exact_rows(assets: &Assets, list: &CommandList) {
+fn assert_band_counters(aggregate: WorldStats, bands: &[WorldStats]) {
+    assert!(
+        bands
+            .iter()
+            .all(|s| s.polygons == 0 && s.patch_polygons == 0)
+    );
+    macro_rules! raster_totals {
+        ($($field:ident),+ $(,)?) => {
+            $(assert_eq!(
+                bands.iter().map(|s| s.$field).sum::<u64>(),
+                aggregate.$field,
+                stringify!($field)
+            );)+
+        };
+    }
+    raster_totals!(
+        spans,
+        pixels,
+        sky_spans,
+        sky_pixels,
+        stage_spans,
+        stage_pixels,
+        curve_spans,
+        curve_pixels,
+        multistage_spans,
+        multistage_pixels,
+        indexed_spans,
+        indexed_pixels,
+        rgba_spans,
+        rgba_pixels,
+        rgba_hits,
+        rgba_fills,
+        rgba_evictions,
+        rgba_rejected,
+        rgba_minified_spans,
+        factor_spans,
+        factor_pixels,
+        factor_hits,
+        factor_fills,
+        factor_evictions,
+        factor_rejected,
+        factor_fallback_spans,
+        factor_minified_spans,
+        factor_curve_spans,
+        factor_curve_pixels,
+        rejected,
+    );
+    assert_eq!(
+        bands.iter().map(|s| s.cache.hits).sum::<u64>(),
+        aggregate.cache.hits
+    );
+    assert_eq!(
+        bands.iter().map(|s| s.cache.fills).sum::<u64>(),
+        aggregate.cache.fills
+    );
+    assert_eq!(
+        bands.iter().map(|s| s.cache.evictions).sum::<u64>(),
+        aggregate.cache.evictions
+    );
+    assert_eq!(
+        bands.iter().map(|s| s.cache.rejected).sum::<u64>(),
+        aggregate.cache.rejected
+    );
+}
+
+fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
     let mut serial = CpuBackend::load_with_assets(29, 19, assets).unwrap();
     assert_eq!(serial.render(list, assets).rejected, 0);
     let reference = serial.world_stats();
@@ -356,13 +422,7 @@ fn exact_rows(assets: &Assets, list: &CommandList) {
         assert_eq!(aggregate.pixels, reference.pixels);
         let mut per_band = [WorldStats::default(); MAX_BANDS];
         assert_eq!(cpu.band_stats(&mut per_band), bands.count());
-        assert_eq!(
-            per_band[..bands.count()]
-                .iter()
-                .map(|s| s.pixels)
-                .sum::<u64>(),
-            aggregate.pixels
-        );
+        assert_band_counters(aggregate, &per_band[..bands.count()]);
         assert!(
             per_band[bands.count()..]
                 .iter()
@@ -377,6 +437,7 @@ fn exact_rows(assets: &Assets, list: &CommandList) {
         );
         assert!(config.per_band_cache_bytes >= config.mandatory_cache_bytes);
     }
+    reference
 }
 
 fn stages(assets: &mut Assets, stages: &[Stage], settings: MaterialSettings) -> MaterialId {
@@ -471,6 +532,162 @@ fn offset_row_windows_keep_three_stage_depth_blend_and_rank_bits() {
         ..test_view()
     };
     exact_rows(&assets, &packet(&assets, &[world], view));
+}
+
+#[test]
+fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
+    let mut assets = Assets::load();
+    let image = assets
+        .register_image(
+            2,
+            2,
+            &[
+                37, 53, 71, 255, 83, 101, 127, 255, 149, 167, 181, 255, 199, 223, 239, 255,
+            ],
+        )
+        .unwrap();
+    let material = stages(
+        &mut assets,
+        &[
+            Stage {
+                texture: StageTexture::Image(image),
+                tcmods: [
+                    Some(crate::assets::TcMod::Script(TexMod::Turbulent {
+                        base: 0.0,
+                        amplitude: 0.125,
+                        phase: 0.25,
+                        frequency: 0.5,
+                    })),
+                    None,
+                    None,
+                    None,
+                ],
+                ..Stage::default()
+            },
+            Stage {
+                texture: StageTexture::Image(image),
+                alpha_gen: AlphaGen::Const(0.5),
+                blend: Some(StageBlend {
+                    source: BlendFactor::SourceAlpha,
+                    destination: BlendFactor::OneMinusSourceAlpha,
+                }),
+                depth_write: false,
+                depth_func: DepthFunc::Equal,
+                ..Stage::default()
+            },
+        ],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        2.0,
+        1.5,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |g| {
+            // A quadratic 3x3 control patch with the center 0.5 units deeper.
+            // Native PutPointsOnCurve at this no-subdivision tolerance leaves
+            // a 3x3 grid, whose center is 0.125 units deeper (tr_curve.c).
+            g.vertices.clear();
+            for row in 0..3 {
+                for column in 0..3 {
+                    let u = column as f32 * 0.5;
+                    let v = row as f32 * 0.5;
+                    g.vertices.push(WorldVertex {
+                        vertex: Vertex {
+                            position: Vec3([
+                                2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
+                                3.0 - 6.0 * u,
+                                3.0 - 6.0 * v,
+                            ]),
+                            texcoord: [u, v],
+                            lightmap_coord: [u, v],
+                            ..Vertex::default()
+                        },
+                        normal: Vec3([-1.0, 0.0, 0.0]),
+                    });
+                }
+            }
+            for row in 0..3 {
+                for column in 0..3 {
+                    let u = column as f32 * 0.5;
+                    let v = row as f32 * 0.5;
+                    let bu = 2.0 * u * (1.0 - u);
+                    let bv = 2.0 * v * (1.0 - v);
+                    let mut vertex = g.vertices[row * 3 + column];
+                    vertex.vertex.position.0[0] = 2.0 + 0.5 * bu * bv;
+                    g.vertices.push(vertex);
+                }
+            }
+            g.indices.clear();
+            g.boundaries.clear();
+            for row in 0..2u32 {
+                for column in 0..2u32 {
+                    let a = 9 + row * 3 + column;
+                    let b = a + 3;
+                    for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
+                        g.boundaries.push(IndexRange {
+                            first: g.indices.len() as u32,
+                            count: 3,
+                        });
+                        g.indices.extend_from_slice(&triangle);
+                    }
+                }
+            }
+            let surface = &mut g.surfaces[0];
+            surface.kind = GeometryKind::Patch;
+            surface.vertices = IndexRange { first: 9, count: 9 };
+            surface.indices = IndexRange {
+                first: 0,
+                count: 24,
+            };
+            surface.boundaries = IndexRange { first: 0, count: 8 };
+            surface.plane = None;
+            surface.bounds.maxs.0[0] = 2.125;
+            surface.texture_coordinates = TextureCoordinates::Normalized;
+            surface.patch = Some(PatchGrid {
+                control_vertices: IndexRange { first: 0, count: 9 },
+                control_dimensions: [3, 3],
+                dimensions: [3, 3],
+                width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                height_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
+                lod_origin: Vec3([2.0, 0.0, 0.0]),
+                lod_radius: 18.0f32.sqrt(),
+            });
+        },
+    );
+    let geometry = assets.world(world).unwrap().geometry();
+    let surface = &geometry.surfaces[0];
+    let grid = surface.patch.as_ref().unwrap();
+    assert_eq!(grid.control_dimensions, [3, 3]);
+    assert_eq!(grid.dimensions, [3, 3]);
+    assert_eq!(surface.boundaries.count, 8);
+    assert_eq!(geometry.vertices[4].vertex.position.0[0], 2.5);
+    assert_eq!(geometry.vertices[13].vertex.position.0[0], 2.125);
+    let counters = exact_rows(
+        &assets,
+        &packet(
+            &assets,
+            &[world],
+            Refdef {
+                time_ms: 731,
+                ..test_view()
+            },
+        ),
+    );
+    assert_eq!(counters.patch_polygons, 8);
+    assert_eq!(counters.patch_polygons, counters.polygons);
+    assert!(counters.curve_spans > 0);
+    assert!(counters.curve_pixels > 0);
+    assert_eq!(counters.curve_spans, counters.stage_spans);
+    assert_eq!(counters.curve_pixels, counters.stage_pixels);
 }
 
 #[test]
@@ -573,7 +790,11 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
         assert_eq!(accepted.raster_config().per_band_cache_bytes, required);
     }
 
-    exact_rows(&assets, &frame);
+    let counters = exact_rows(&assets, &frame);
+    assert!(counters.rgba_spans > 0);
+    assert!(counters.rgba_pixels > 0);
+    assert!(counters.rgba_hits > 0);
+    assert!(counters.rgba_fills > 0);
     let mut old = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let mut old_rows = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assets
@@ -592,12 +813,86 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
 }
 
 #[test]
+fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
+    let mut assets = Assets::load();
+    let image = assets
+        .register_image(
+            2,
+            2,
+            &[
+                31, 47, 61, 255, 79, 97, 113, 255, 131, 151, 173, 255, 191, 211, 233, 255,
+            ],
+        )
+        .unwrap();
+    let light = assets.register_image(1, 1, &[173, 191, 211, 255]).unwrap();
+    let material = stages(
+        &mut assets,
+        &[
+            Stage {
+                texture: StageTexture::Image(image),
+                rgb_gen: RgbGen::ExactVertex,
+                ..Stage::default()
+            },
+            Stage {
+                texture: StageTexture::Lightmap,
+                texgen: TexCoordGen::Lightmap,
+                depth_write: false,
+                depth_func: DepthFunc::Equal,
+                blend: Some(StageBlend {
+                    source: BlendFactor::DestinationColor,
+                    destination: BlendFactor::Zero,
+                }),
+                ..Stage::default()
+            },
+        ],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        2.0,
+        1.0,
+        SurfaceMaterial {
+            material,
+            lightmap: light,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |g| {
+            g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+            for (index, vertex) in g.vertices.iter_mut().enumerate() {
+                vertex.vertex.texcoord = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
+                vertex.vertex.lightmap_coord = [0.5; 2];
+                vertex.vertex.color = [
+                    [32, 64, 96, 255],
+                    [192, 160, 128, 255],
+                    [64, 96, 128, 255],
+                    [160, 128, 96, 255],
+                ][index];
+            }
+        },
+    );
+    let counters = exact_rows(&assets, &packet(&assets, &[world], test_view()));
+    assert!(counters.factor_spans > 0);
+    assert!(counters.factor_pixels > 0);
+    assert!(counters.factor_hits > 0);
+    assert!(counters.factor_fills > 0);
+    assert_eq!(counters.rgba_spans, 0);
+    assert_eq!(counters.factor_hits, counters.cache.hits);
+    assert_eq!(counters.factor_fills, counters.cache.fills);
+}
+
+#[test]
 fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
     let mut assets = Assets::load();
     let red = assets.register_image(1, 1, &[30, 2, 1, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[1, 3, 40, 255]).unwrap();
     let mut worlds = Vec::new();
-    for image in [red, blue] {
+    let mut materials = Vec::new();
+    for (index, image) in [red, blue].into_iter().enumerate() {
         let material = stages(
             &mut assets,
             &[
@@ -624,7 +919,7 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
                 },
             ],
             MaterialSettings {
-                sort: 2.0,
+                sort: 2.0 + index as f32 * 2.0,
                 cull: Cull::None,
                 sky: Some(Sky::Cube {
                     outer_box: Some([image; 6]),
@@ -636,21 +931,83 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
                 ..MaterialSettings::default()
             },
         );
+        materials.push(material);
         worlds.push(fixture_world(
             &mut assets,
             2.0,
-            1.5,
+            if index == 0 { 0.3 } else { 1.5 },
             SurfaceMaterial {
                 material,
                 ..SurfaceMaterial::default()
             },
             None,
             GeometryPartition::Unpartitioned,
-            |_| {},
+            |g| {
+                if index == 0 {
+                    for vertex in &mut g.vertices {
+                        vertex.vertex.position.0[1] += 1.25;
+                    }
+                    g.surfaces[0].bounds.mins.0[1] += 1.25;
+                    g.surfaces[0].bounds.maxs.0[1] += 1.25;
+                }
+            },
         ));
     }
+    let overlay = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(blue),
+            alpha_gen: AlphaGen::Const(0.5),
+            blend: Some(StageBlend {
+                source: BlendFactor::SourceAlpha,
+                destination: BlendFactor::OneMinusSourceAlpha,
+            }),
+            depth_write: false,
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            sort: 3.0,
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    worlds.push(fixture_world(
+        &mut assets,
+        1.0,
+        0.3,
+        SurfaceMaterial {
+            material: overlay,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    ));
+    // Another world contributes a disjoint region to the first sky material.
+    // The shared material sort must union both sources, draw sky A once, then
+    // the regular deferred surface, and finally sky B.
+    worlds.push(fixture_world(
+        &mut assets,
+        2.0,
+        0.3,
+        SurfaceMaterial {
+            material: materials[0],
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |g| {
+            for vertex in &mut g.vertices {
+                vertex.vertex.position.0[1] -= 1.25;
+            }
+            g.surfaces[0].bounds.mins.0[1] -= 1.25;
+            g.surfaces[0].bounds.maxs.0[1] -= 1.25;
+        },
+    ));
     let frame = packet(&assets, &worlds, test_view());
-    exact_rows(&assets, &frame);
+    let counters = exact_rows(&assets, &frame);
+    assert!(counters.sky_pixels > 0);
+    assert!(counters.stage_pixels > 0);
     let mut raster = WorldRaster::load(
         29,
         19,
@@ -692,6 +1049,25 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
         assert!(boxes[0] < boxes[1]);
         assert!(clouds[0] < clouds[1]);
     }
+    let draws = &raster.prepare.draws[..raster.prepare.draw_count];
+    assert_eq!(draws.len(), 4);
+    let sky_positions = draws
+        .iter()
+        .enumerate()
+        .filter_map(|(rank, draw)| matches!(draw, PreparedDraw::Sky { .. }).then_some(rank))
+        .collect::<Vec<_>>();
+    let regular = draws
+        .iter()
+        .position(|draw| matches!(draw, PreparedDraw::Surface(_)))
+        .unwrap();
+    assert!(sky_positions[0] < regular && regular < sky_positions[1]);
+    assert_eq!(
+        draws
+            .iter()
+            .filter(|draw| matches!(draw, PreparedDraw::Skip))
+            .count(),
+        1
+    );
 }
 
 fn indexed_palette(assets: &mut Assets) -> crate::assets::PaletteId {
