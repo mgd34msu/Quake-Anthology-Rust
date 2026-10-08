@@ -7,4 +7,8 @@ license.workspace = true
 [dependencies]
 crc32fast = "1.5.2"
 flate2 = { version = "1.1.10", default-features = false, features = ["miniz_oxide"] }
+png = "0.18.1"
+zune-jpeg = "0.5.15"
+zune-core = "0.5.3"
+gif = "0.14.2"
 qa-core = { path = "../core" }

@@ -1,5 +1,6 @@
 //! Borrowed lump directory and flat records shared by collision and rendering.
 //! Layouts: original qfiles.h/bspfile.h; v44 directly follows the C port reader.
+pub use crate::image::MipTexture;
 use crate::{FormatError, span, word};
 use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3};
 
@@ -381,15 +382,6 @@ pub struct Surface<'a> {
 pub struct AreaPortal {
     pub portal: u32,
     pub other_area: u32,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct MipTexture<'a> {
-    pub name: &'a [u8],
-    pub width: u32,
-    pub height: u32,
-    pub shift: u32,
-    /// Empty levels denote an external WAD texture.
-    pub levels: [&'a [u8]; 4],
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Extension<'a> {

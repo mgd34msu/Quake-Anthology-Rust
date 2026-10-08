@@ -1,50 +1,8 @@
 use super::*;
 use qa_core::primitives::Axis;
 
-struct Row<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-impl<'a> Row<'a> {
-    fn take(&mut self, length: usize) -> Result<&'a [u8], FormatError> {
-        let end = self
-            .at
-            .checked_add(length)
-            .ok_or(FormatError::InvalidRange)?;
-        let data = self.bytes.get(self.at..end).ok_or(FormatError::Truncated)?;
-        self.at = end;
-        Ok(data)
-    }
-    fn u16(&mut self) -> Result<u16, FormatError> {
-        Ok(u16::from_le_bytes(
-            self.take(2)?
-                .try_into()
-                .map_err(|_| FormatError::Truncated)?,
-        ))
-    }
-    fn u32(&mut self) -> Result<u32, FormatError> {
-        Ok(u32::from_le_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| FormatError::Truncated)?,
-        ))
-    }
-    fn i32(&mut self) -> Result<i32, FormatError> {
-        Ok(self.u32()? as i32)
-    }
-    fn raw_float(&mut self) -> Result<f32, FormatError> {
-        Ok(f32::from_bits(self.u32()?))
-    }
-    fn float(&mut self) -> Result<f32, FormatError> {
-        let value = self.raw_float()?;
-        if !value.is_finite() {
-            return Err(FormatError::InvalidValue);
-        }
-        Ok(value)
-    }
-    fn vector(&mut self) -> Result<Vec3, FormatError> {
-        Ok(Vec3([self.float()?, self.float()?, self.float()?]))
-    }
+type Row<'a> = crate::read::Reader<'a>;
+impl Row<'_> {
     fn index(&mut self, wide: bool) -> Result<u32, FormatError> {
         if wide {
             self.u32()
@@ -79,9 +37,6 @@ impl<'a> Row<'a> {
                     .map_err(|_| FormatError::Truncated)?,
             ),
         })
-    }
-    fn string(&mut self, width: usize) -> Result<&'a [u8], FormatError> {
-        Ok(cstring(self.take(width)?))
     }
     fn four_bytes(&mut self) -> Result<[u8; 4], FormatError> {
         self.take(4)?.try_into().map_err(|_| FormatError::Truncated)
@@ -278,7 +233,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         let (texture, flags, value, name, next) = if family == 1 {
             (r.i32()?, r.i32()?, 0, &[][..], -1)
         } else {
-            (-1, r.i32()?, r.i32()?, r.string(32)?, r.i32()?)
+            (-1, r.i32()?, r.i32()?, r.name(32)?, r.i32()?)
         };
         Ok(TextureInfo {
             projection,
@@ -348,14 +303,14 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     })?;
     let shaders = records(&bsp, Shaders, |r| {
         Ok(Shader {
-            name: r.string(64)?,
+            name: r.name(64)?,
             surface_flags: r.i32()?,
             content_flags: r.i32()?,
         })
     })?;
     let fogs = records(&bsp, Fogs, |r| {
         Ok(Fog {
-            name: r.string(64)?,
+            name: r.name(64)?,
             brush: r.i32()?,
             visible_side: if format == BspFormat::Quake3Test {
                 -1
@@ -411,7 +366,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
 fn surface<'a>(r: &mut Row<'a>, format: BspFormat) -> Result<Surface<'a>, FormatError> {
     let test = format == BspFormat::Quake3Test;
     let (shader, shader_name, fog, brush_side, kind) = if test {
-        (None, r.string(64)?, r.i32()?, r.i32()?, SurfaceKind::Planar)
+        (None, r.name(64)?, r.i32()?, r.i32()?, SurfaceKind::Planar)
     } else {
         let shader = r.u32()?;
         let fog = r.i32()?;
@@ -484,44 +439,12 @@ fn textures<'a>(bsp: &Bsp<'a>) -> Result<Vec<Option<MipTexture<'a>>>, FormatErro
         let row = bytes
             .get(offset as usize..)
             .ok_or(FormatError::InvalidRange)?;
-        let mut r = Row { bytes: row, at: 0 };
-        let name = r.string(16)?;
-        let width = r.u32()?;
-        let height = r.u32()?;
-        let shift = if bsp.format == BspFormat::Quake64 {
-            r.u32()?
+        let format = if bsp.format == BspFormat::Quake64 {
+            crate::image::MipFormat::Quake64
         } else {
-            0
+            crate::image::MipFormat::Quake
         };
-        let offsets = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
-        if width == 0 || height == 0 {
-            return Err(FormatError::InvalidValue);
-        }
-        let mut levels = [&[][..]; 4];
-        for (mip, &start) in offsets.iter().enumerate() {
-            if start == 0 {
-                continue;
-            }
-            let length = (width as usize >> mip)
-                .checked_mul(height as usize >> mip)
-                .ok_or(FormatError::InvalidRange)?;
-            let end = (start as usize)
-                .checked_add(length)
-                .ok_or(FormatError::InvalidRange)?;
-            if (start as usize) < r.at {
-                return Err(FormatError::InvalidRange);
-            }
-            levels[mip] = row
-                .get(start as usize..end)
-                .ok_or(FormatError::InvalidRange)?;
-        }
-        result.push(Some(MipTexture {
-            name,
-            width,
-            height,
-            shift,
-            levels,
-        }));
+        result.push(Some(MipTexture::parse(row, format)?));
     }
     Ok(result)
 }

@@ -91,10 +91,10 @@ pub(super) fn mdl<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
     if r.i32()? != 6 {
         return Err(FormatError::Unsupported);
     }
-    let scale = r.vec3()?;
-    let translation = r.vec3()?;
+    let scale = r.vector()?;
+    let translation = r.vector()?;
     m.radius = r.float()?;
-    m.eye_position = r.vec3()?;
+    m.eye_position = r.vector()?;
     let skins = r.count(1, i32::MAX as usize)?;
     let width = r.count(1, i32::MAX as usize)?;
     let height = r.count(1, i32::MAX as usize)?;
@@ -283,8 +283,8 @@ pub(super) fn md2<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
     }
     for data in frame_data.chunks_exact(stride) {
         let mut s = Reader::new(data);
-        let scale = s.vec3()?;
-        let translation = s.vec3()?;
+        let scale = s.vector()?;
+        let translation = s.vector()?;
         let name = s.name(16)?;
         let packed_vertices = s.take(vertex_count * 4)?;
         let mut bounds = empty_bounds();

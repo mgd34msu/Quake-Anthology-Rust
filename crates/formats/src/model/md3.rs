@@ -50,8 +50,8 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
     for data in frame_data.as_chunks::<56>().0 {
         let mut s = Reader::new(data);
         let mut bounds = Bounds {
-            mins: s.vec3()?,
-            maxs: s.vec3()?,
+            mins: s.vector()?,
+            maxs: s.vector()?,
         };
         if (0..3).any(|a| bounds.mins.0[a] > bounds.maxs.0[a]) {
             // Retail *_hand files contain tags and the exporter's empty-box
@@ -61,7 +61,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             }
             bounds = Bounds::default();
         }
-        let origin = s.vec3()?;
+        let origin = s.vector()?;
         let radius = s.float()?;
         if radius < 0.0 {
             return Err(FormatError::InvalidValue);
@@ -97,7 +97,11 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             let basis = angle_vectors_radians(radians_from_degrees_f32(angles));
             (name, origin, [basis.forward, -basis.right, basis.up])
         } else {
-            (s.name(64)?, s.vec3()?, [s.vec3()?, s.vec3()?, s.vec3()?])
+            (
+                s.name(64)?,
+                s.vector()?,
+                [s.vector()?, s.vector()?, s.vector()?],
+            )
         };
         m.tags.push(Tag { name, origin, axes });
     }

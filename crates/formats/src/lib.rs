@@ -1,6 +1,8 @@
 pub mod archive;
 pub mod bsp;
+pub mod image;
 pub mod model;
+mod read;
 mod text;
 
 pub use bsp::{Bsp, BspFormat};
