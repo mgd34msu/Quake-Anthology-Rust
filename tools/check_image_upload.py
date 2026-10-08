@@ -3,13 +3,14 @@
 
 No game, display, audio or shipping C is involved. The Rust fixture test exports
 owned source pixels and every prepared mip. This helper alone compiles original
-Q1/Q2 resamplers, gamma/light-scale routines and Q1/Q2/Q3 simple mip kernels.
+Q1/Q2 resamplers, gamma/light-scale routines and Q1/Q2/Q3 mip kernels.
 """
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import time
 
 from check_draw_sort import function
@@ -127,8 +128,10 @@ int main(int argc,char **argv) {
     if(!input || !output) return 2;
     Fixture f;
     while(fread(&f,sizeof(f),1,input)==1) {
-        if(f.w<2 || f.h<2 || f.w>64 || f.h>64 || f.out_w>128 ||
-           f.out_h>128 || !f.out_w || !f.out_h || f.kernel>2 || f.lookup>2) return 2;
+        if(!f.w || !f.h || f.w>64 || f.h>64 || f.out_w>128 ||
+           f.out_h>128 || !f.out_w || !f.out_h || f.kernel>3 || f.lookup>2 ||
+           (f.kernel==1 && (f.w<2 || f.h<2))) return 2;
+        simple_value.integer=f.kernel==3?0:1;
         byte *source=malloc(f.w*f.h*4);
         if(!source || fread(source,4,f.w*f.h,input)!=f.w*f.h) return 2;
         requested_palette_gamma=f.gamma;
@@ -172,6 +175,20 @@ int main(int argc,char **argv) {
     return fclose(output);
 }
 '''
+
+
+def fixture_count(path):
+    data = path.read_bytes()
+    offset = count = 0
+    while offset < len(data):
+        if len(data) - offset < 40:
+            raise RuntimeError('short image fixture header')
+        width, height = struct.unpack_from('<II', data, offset + 16)
+        offset += 40 + width * height * 4
+        if offset > len(data):
+            raise RuntimeError('short image fixture pixels')
+        count += 1
+    return count
 
 
 def main():
@@ -226,6 +243,14 @@ def main():
     indexed = subprocess.run([str(executable), 'indexed', str(args.output / 'indexed-input.bin'), str(args.output / 'indexed-original.bin')], capture_output=True, text=True, timeout=300)
     (args.output / 'indexed-original.log').write_text(indexed.stdout + indexed.stderr)
     indexed.check_returncode()
+    weighted = subprocess.run([str(executable), str(args.output / 'weighted-input.bin'), str(args.output / 'weighted-original.bin')], capture_output=True, text=True, timeout=300)
+    (args.output / 'weighted-original.log').write_text(weighted.stdout + weighted.stderr)
+    weighted.check_returncode()
+    weighted_original = (args.output / 'weighted-original.bin').read_bytes()
+    weighted_rust = (args.output / 'weighted-rust.bin').read_bytes()
+    if weighted_original != weighted_rust:
+        offset = next((i for i, (a, b) in enumerate(zip(weighted_original, weighted_rust)) if a != b), min(len(weighted_original), len(weighted_rust)))
+        raise RuntimeError(f'native weighted mip mismatch at byte {offset}: original length {len(weighted_original)}, Rust length {len(weighted_rust)}')
     original = (args.output / 'original.bin').read_bytes()
     rust = (args.output / 'rust.bin').read_bytes()
     if original != rust:
@@ -237,16 +262,19 @@ def main():
         offset = next((i for i, (a, b) in enumerate(zip(indexed_original, indexed_rust)) if a != b), min(len(indexed_original), len(indexed_rust)))
         raise RuntimeError(f'native indexed alpha-fringe mismatch at byte {offset}')
     report = {
-        'scope': '96 seeded native byte resampling/color/simple-mip fixtures and 144 indexed fringe fixtures, including rectangular in-place tails; no GL context or renderer qualification',
+        'scope': 'seeded native byte resampling/color/simple and weighted mip fixtures plus indexed fringe fixtures, including rectangular and 1D tails; no GL context or renderer qualification',
         'references': references,
         'original_body_modifications': 0,
-        'adapters': 'macro aliases separate Q1/Q2 names; injected cvar values and palette argument; disabled optional paletted extension; Q3 simpleMipMaps=1',
-        'limits': 'weighted mip selection rejected by Rust; undefined legacy initial 1D reads rejected; texture extent and Q3 picmip ordering have Rust fixtures only',
+        'adapters': 'macro aliases separate Q1/Q2 names; injected cvar values and palette argument; disabled optional paletted extension; Q3 simpleMipMaps selected per fixture',
+        'limits': 'undefined legacy initial 1D reads rejected; weighted 1D no-write/prefix behavior preserved; texture extent and Q3 picmip ordering have Rust fixtures only',
         'reference_flags': flags,
         'c_build_seconds': c_seconds,
         'rust_build_and_test_seconds': rust_seconds,
         'compared_bytes': len(rust),
         'indexed_compared_bytes': len(indexed_rust),
+        'weighted_compared_bytes': len(weighted_rust),
+        'upload_fixtures': fixture_count(args.output / 'input.bin'),
+        'weighted_fixtures': fixture_count(args.output / 'weighted-input.bin'),
         'result': 'PASS',
     }
     (args.output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')

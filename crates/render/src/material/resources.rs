@@ -224,9 +224,6 @@ impl ImageRecipes {
                 } else {
                     MipmapBuild::Weighted
                 };
-                if kernel == MipmapBuild::Weighted {
-                    return Err(upload::UploadError::WeightedMipUnsupported.into());
-                }
                 (
                     UploadExtent::PowerOfTwoMip {
                         round,

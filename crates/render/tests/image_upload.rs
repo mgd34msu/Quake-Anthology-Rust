@@ -141,6 +141,12 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
                 id,
                 UploadParams {
                     mipmaps: MipmapBuild::Weighted,
+                    extent: UploadExtent::PowerOfTwoMip {
+                        round: ExtentRound::Up,
+                        drop: 32,
+                        max_dimension: 256,
+                        kernel: MipmapBuild::Weighted,
+                    },
                     ..UploadParams::default()
                 }
             )
@@ -397,35 +403,32 @@ fn unknown_and_undefined_native_inputs_return_scoped_errors() {
         prepare_rgba(1, 1, &[0; 3], UploadParams::default()),
         Err(UploadError::PixelCount)
     );
-    for (mipmaps, error) in [
-        (MipmapBuild::Weighted, UploadError::WeightedMipUnsupported),
-        (MipmapBuild::LegacyBox, UploadError::LegacyMipBounds),
-    ] {
+    assert_eq!(
+        prepare_rgba(
+            1,
+            2,
+            &[0; 8],
+            UploadParams {
+                mipmaps: MipmapBuild::LegacyBox,
+                ..UploadParams::default()
+            }
+        ),
+        Err(UploadError::LegacyMipBounds)
+    );
+    for mipmaps in [MipmapBuild::Box, MipmapBuild::Weighted] {
         assert_eq!(
             prepare_rgba(
+                3,
                 1,
-                2,
-                &[0; 8],
+                &[0; 12],
                 UploadParams {
                     mipmaps,
                     ..UploadParams::default()
                 }
             ),
-            Err(error)
+            Err(UploadError::NonPowerOfTwoMip)
         );
     }
-    assert_eq!(
-        prepare_rgba(
-            3,
-            1,
-            &[0; 12],
-            UploadParams {
-                mipmaps: MipmapBuild::Box,
-                ..UploadParams::default()
-            }
-        ),
-        Err(UploadError::NonPowerOfTwoMip)
-    );
     assert_eq!(
         gamma_lut(f32::NAN, GammaCurve::PalettePower),
         Err(UploadError::InvalidColor)
@@ -450,6 +453,99 @@ fn unknown_and_undefined_native_inputs_return_scoped_errors() {
         ),
         Err(UploadError::Extent)
     );
+}
+
+#[test]
+fn weighted_mips_wrap_all_channels_and_read_original_pixels_until_copyback() {
+    let mut pixels = vec![0; 4 * 4 * 4];
+    pixels[15 * 4..16 * 4].copy_from_slice(&[255, 128, 64, 32]);
+    let original = pixels.clone();
+    let prepared = prepare_rgba(
+        4,
+        4,
+        &pixels,
+        UploadParams {
+            mipmaps: MipmapBuild::Weighted,
+            ..UploadParams::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.levels[1].rgba.as_ref(),
+        [7, 3, 1, 0, 14, 7, 3, 1, 14, 7, 3, 1, 28, 14, 7, 3]
+    );
+    assert_eq!(prepared.levels[2].rgba.as_ref(), [15, 7, 3, 1]);
+    assert_eq!(pixels, original);
+}
+
+#[test]
+fn weighted_one_dimensional_tails_keep_native_prefix_without_pair_averaging() {
+    for (width, height) in [(4, 1), (1, 4)] {
+        let pixels = gray(&[0, 30, 200, 255]);
+        let prepared = prepare_rgba(
+            width,
+            height,
+            &pixels,
+            UploadParams {
+                mipmaps: MipmapBuild::Weighted,
+                ..UploadParams::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared.levels.len(), 3);
+        assert_eq!(channels(&prepared.levels[1].rgba), [0, 30]);
+        assert_eq!(channels(&prepared.levels[2].rgba), [0]);
+        assert_eq!(
+            (prepared.levels[1].width, prepared.levels[1].height),
+            if width == 4 { (2, 1) } else { (1, 2) }
+        );
+    }
+    let pixels = gray(&[
+        0, 30, 90, 150, 210, 240, 255, 255, 20, 40, 80, 140, 200, 230, 250, 255,
+    ]);
+    let prepared = prepare_rgba(
+        8,
+        2,
+        &pixels,
+        UploadParams {
+            mipmaps: MipmapBuild::Weighted,
+            ..UploadParams::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(channels(&prepared.levels[1].rgba), [71, 116, 212, 210]);
+    assert_eq!(channels(&prepared.levels[2].rgba), [71, 116]);
+    assert_eq!(channels(&prepared.levels[3].rgba), [71]);
+}
+
+#[test]
+fn weighted_picmip_reduces_before_lookup_and_keeps_initialized_rectangular_tail() {
+    let pixels = gray(&[
+        0, 30, 90, 150, 210, 240, 255, 255, 20, 40, 80, 140, 200, 230, 250, 255,
+    ]);
+    let prepared = prepare_rgba(
+        8,
+        2,
+        &pixels,
+        UploadParams {
+            extent: UploadExtent::PowerOfTwoMip {
+                round: ExtentRound::Up,
+                drop: 2,
+                max_dimension: 256,
+                kernel: MipmapBuild::Weighted,
+            },
+            mipmaps: MipmapBuild::Weighted,
+            rgb_lut: RgbLut(std::array::from_fn(|value| (value as u8).saturating_add(5))),
+            ..UploadParams::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (prepared.levels[0].width, prepared.levels[0].height),
+        (2, 1)
+    );
+    assert_eq!(channels(&prepared.levels[0].rgba), [76, 121]);
+    assert_eq!(channels(&prepared.levels[1].rgba), [76]);
 }
 
 /// Optional export for tools/check_image_upload.py; ordinary tests execute no C.
@@ -613,4 +709,47 @@ fn original_image_upload_fixture_export() {
     }
     std::fs::write(directory.join("indexed-input.bin"), input).unwrap();
     std::fs::write(directory.join("indexed-rust.bin"), output).unwrap();
+    let mut input = Vec::new();
+    let mut output = Vec::new();
+    let mut state = 0x4d495032_u32;
+    // 49 shapes include every rectangular/1D pair of powers from 1 to 64.
+    for height_power in 0..=6 {
+        for width_power in 0..=6 {
+            let width = 1u32 << width_power;
+            let height = 1u32 << height_power;
+            let pixels: Vec<_> = (0..width * height * 4)
+                .map(|_| {
+                    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (state >> 24) as u8
+                })
+                .collect();
+            let prepared = prepare_rgba(
+                width,
+                height,
+                &pixels,
+                UploadParams {
+                    mipmaps: MipmapBuild::Weighted,
+                    ..UploadParams::default()
+                },
+            )
+            .unwrap();
+            // Existing native-driver Fixture header: filter, kernel, order,
+            // lookup, source width/height, final base width/height, gamma/intensity.
+            for value in [1u32, 3, 1, 2, width, height, width, height] {
+                input.extend_from_slice(&value.to_le_bytes());
+            }
+            input.extend_from_slice(&1.0f32.to_le_bytes());
+            input.extend_from_slice(&1.0f32.to_le_bytes());
+            input.extend_from_slice(&pixels);
+            output.extend_from_slice(&(prepared.levels.len() as u32).to_le_bytes());
+            output.extend_from_slice(&prepared.inverse_intensity.to_le_bytes());
+            for level in &prepared.levels {
+                output.extend_from_slice(&level.width.to_le_bytes());
+                output.extend_from_slice(&level.height.to_le_bytes());
+                output.extend_from_slice(&level.rgba);
+            }
+        }
+    }
+    std::fs::write(directory.join("weighted-input.bin"), input).unwrap();
+    std::fs::write(directory.join("weighted-rust.bin"), output).unwrap();
 }

@@ -47,7 +47,7 @@ pub enum MipmapBuild {
     LegacyBox,
     /// R_MipMap simple mode, including native one-dimensional pair averaging.
     Box,
-    /// R_MipMap2 is retained as an explicit unsupported selection.
+    /// R_MipMap2's wrapped 4x4 weights and unchanged one-dimensional tails.
     Weighted,
 }
 
@@ -175,7 +175,6 @@ pub enum UploadError {
     Extent,
     NonPowerOfTwoMip,
     LegacyMipBounds,
-    WeightedMipUnsupported,
     InvalidColor,
 }
 
@@ -349,7 +348,6 @@ fn validate_extent(drop: u8, max_dimension: u32) -> Result<(), UploadError> {
 
 fn validate_kernel(kernel: MipmapBuild, allow_none: bool) -> Result<(), UploadError> {
     match kernel {
-        MipmapBuild::Weighted => Err(UploadError::WeightedMipUnsupported),
         MipmapBuild::None if !allow_none => Err(UploadError::Extent),
         _ => Ok(()),
     }
@@ -431,6 +429,10 @@ fn reduce(
     if width == 1 && height == 1 {
         return Ok(());
     }
+    if kernel == MipmapBuild::Weighted {
+        reduce_weighted(pixels, width, height);
+        return Ok(());
+    }
     let row = width as usize * 4;
     if kernel == MipmapBuild::Box && (width == 1 || height == 1) {
         for pixel in 0..(width.max(height) as usize >> 1) {
@@ -468,4 +470,38 @@ fn reduce(
         }
     }
     Ok(())
+}
+
+/// tr_image.c R_MipMap2: source samples stay untouched until the complete
+/// temporary output is ready. Wrap uses the native power-of-two bit masks.
+fn reduce_weighted(pixels: &mut [u8], width: u32, height: u32) {
+    let out_width = width >> 1;
+    let out_height = height >> 1;
+    // Native output is zero-sized once either axis is one. Upload32 clamps
+    // its next dimensions to one, retaining the old initialized prefix.
+    if out_width == 0 || out_height == 0 {
+        return;
+    }
+    let mut temporary = vec![0; out_width as usize * out_height as usize * 4];
+    let weights = [1u16, 2, 2, 1];
+    for y in 0..out_height {
+        for x in 0..out_width {
+            let mut total = [0u16; 4];
+            for (dy, &wy) in weights.iter().enumerate() {
+                let row = ((y * 2 + dy as u32).wrapping_sub(1) & (height - 1)) as usize;
+                for (dx, &wx) in weights.iter().enumerate() {
+                    let column = ((x * 2 + dx as u32).wrapping_sub(1) & (width - 1)) as usize;
+                    let source = (row * width as usize + column) * 4;
+                    for channel in 0..4 {
+                        total[channel] += wy * wx * u16::from(pixels[source + channel]);
+                    }
+                }
+            }
+            let target = (y as usize * out_width as usize + x as usize) * 4;
+            for channel in 0..4 {
+                temporary[target + channel] = (total[channel] / 36) as u8;
+            }
+        }
+    }
+    pixels[..temporary.len()].copy_from_slice(&temporary);
 }

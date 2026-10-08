@@ -3,7 +3,7 @@ use qa_formats::image::RasterPolicy;
 use qa_render::{
     Assets,
     assets::{Sampler, Wrap},
-    material::resources::{ImageRole, ImageSettings, ImageUse, Images, ResourceError},
+    material::resources::{ImageRole, ImageSettings, ImageUse, Images},
     surface_cache::PaletteLighting,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -245,7 +245,7 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
 }
 
 #[test]
-fn native_q3_picmip_nomip_fast_path_and_weighted_limit_are_explicit() {
+fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     let root = Fixture::new();
     root.tga("env/mipped.tga", 3, 3, [17, 23, 31]);
     root.tga("env/unmipped.tga", 3, 3, [17, 23, 31]);
@@ -316,10 +316,19 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_limit_are_explicit() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        images.raster("env/mipped.tga", ImageUse::default()),
-        Err(ResourceError::Upload(
-            qa_render::assets::upload::UploadError::WeightedMipUnsupported
-        ))
-    ));
+    let weighted = images
+        .raster("env/mipped.tga", ImageUse::default())
+        .unwrap();
+    let prepared = images
+        .assets
+        .image(weighted.id)
+        .unwrap()
+        .prepared
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (prepared.levels[0].width, prepared.levels[0].height),
+        (1, 1)
+    );
+    assert_eq!(prepared.levels[0].rgba.as_ref(), [5, 8, 15, 255]);
 }
