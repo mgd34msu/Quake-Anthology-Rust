@@ -1033,7 +1033,7 @@ fn nearest_cache_mip_keeps_native_integer_texel_boundaries() {
 }
 
 #[test]
-fn insufficient_aligned_cache_budget_keeps_generic_world_sampling() {
+fn insufficient_product_budget_uses_independent_factor_sampling() {
     let mut assets = Assets::load();
     let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
     let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
@@ -1053,8 +1053,9 @@ fn insufficient_aligned_cache_budget_keeps_generic_world_sampling() {
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert_eq!(cpu.world_stats().cache.fills, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().factor_fills, 2);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
     assert!(
         cpu.pixels()
             .iter()
@@ -1182,7 +1183,8 @@ fn linear_rank_one_texture_keeps_filtering_before_byte_rounding() {
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
     assert_eq!(cpu.pixels()[4].to_le_bytes(), [1, 1, 1, 255]);
 }
 
@@ -1236,7 +1238,8 @@ fn variable_linear_lightmap_preserves_independent_stage_filtering() {
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
     // Separate filters at UV .5: first stage rounds127.5 to128; .5 light
     // multiplies that byte to64. A filtered baked product would be black.
     assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
@@ -1290,7 +1293,8 @@ fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
     let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&first, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
     assert_eq!(cpu.pixels()[4].to_le_bytes(), [128, 128, 128, 255]);
     assert!(frontend.recycle(first).is_ok());
     let dim = packet(
@@ -1304,7 +1308,9 @@ fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
     );
     assert_eq!(cpu.render(&dim, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
+    assert_eq!(cpu.world_stats().factor_fills, 0);
     assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
 }
 
@@ -1376,10 +1382,16 @@ fn prepared_lightmap_region_mismatch_is_scoped_before_sampling() {
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert!(cpu.render(&frame, &assets).rejected > 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|pixel| pixel.to_le_bytes() == [255; 4])
+    );
 }
 
 #[test]
-fn tiny_uv_basis_keeps_finite_generic_geometry_when_cache_fields_overflow() {
+fn tiny_uv_basis_keeps_original_stage_planes_when_product_fields_overflow() {
     let mut assets = Assets::load();
     let base = assets.register_image(1, 1, &[255; 4]).unwrap();
     let light = assets.register_image(1, 1, &[255; 4]).unwrap();
@@ -1391,7 +1403,8 @@ fn tiny_uv_basis_keeps_finite_generic_geometry_when_cache_fields_overflow() {
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
     assert_eq!(cpu.world_stats().rgba_spans, 0);
-    assert!(cpu.world_stats().stage_spans > 0);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert!(cpu.world_stats().factor_spans > 0);
     assert!(
         cpu.pixels()
             .iter()

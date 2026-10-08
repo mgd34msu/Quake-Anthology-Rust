@@ -1,5 +1,6 @@
-//! Nearest static stage products in the existing rover. Linear base sampling,
-//! variable lightmaps and color fields retain the generic span path.
+//! Static two-factor spans share the indexed/RGBA rover. Nearest products with
+//! constant lightmaps may be precombined; other static pairs retain independent
+//! native grids, filtering and the existing ordered CPU byte quantization.
 use super::{TexelView, sampler_function};
 use crate::assets::{
     Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Stage, StageTexture, Vertex,
@@ -11,7 +12,19 @@ use crate::surface_cache::{RgbaBuildState, SurfaceSource};
 use crate::world::{SurfaceBinding, geometry::WorldGeometry};
 
 #[derive(Clone)]
-pub(super) struct Recipe {
+pub(super) enum Recipe {
+    Product(Product),
+    Pair(Pair),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Prepared {
+    Product(ProductPrepared),
+    Pair,
+}
+
+#[derive(Clone)]
+pub(super) struct Product {
     pub cache: u32,
     pub base: ImageId,
     pub base_stage: usize,
@@ -34,8 +47,216 @@ pub(super) struct Recipe {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Prepared {
+pub(super) struct ProductPrepared {
     pub state: RgbaBuildState,
+}
+
+#[derive(Clone)]
+pub(super) struct Pair {
+    /// Factor ids in material stage order, not base/lightmap order.
+    pub factors: [usize; 2],
+    images: [ImageId; 2],
+    revisions: [u64; 2],
+    samplers: [crate::assets::Sampler; 2],
+    stages: [Stage; 2],
+}
+
+/// One image/region owns fixed cache sources for its native levels. Several
+/// surfaces and stage tables may borrow those raw bytes without duplicating it.
+pub(super) struct Factor {
+    image: ImageId,
+    region: Option<crate::lightmap::AtlasRegion>,
+    revision: u64,
+    levels: [Option<u32>; 32],
+}
+
+impl Factor {
+    fn register(
+        image: ImageId,
+        region: Option<crate::lightmap::AtlasRegion>,
+        assets: &Assets,
+        factors: &mut Vec<Self>,
+        sources: &mut Vec<SurfaceSource>,
+    ) -> Result<usize, &'static str> {
+        let resource = assets.image(image).ok_or("invalid static factor image")?;
+        if let Some(index) = factors.iter().position(|factor| {
+            factor.image == image
+                && factor.region == region
+                && factor.revision == resource.preparation_revision
+        }) {
+            return Ok(index);
+        }
+        let count = resource
+            .prepared
+            .as_ref()
+            .map_or(1, |p| p.levels.len().min(32));
+        let mut levels = [None; 32];
+        for (mip, source) in levels.iter_mut().enumerate().take(count) {
+            let Some(view) = TexelView::image(
+                resource,
+                mip as u8,
+                crate::assets::TextureIntensity::Preserve,
+            )
+            .region(region) else {
+                // The generic sampler also rejects a region outside this
+                // prepared level. No invalid ROI cache source is registered.
+                continue;
+            };
+            let id = u32::try_from(sources.len()).map_err(|_| "too many static factor levels")?;
+            sources.push(SurfaceSource::load_rgba(
+                [view.bounds[0] as i32, view.bounds[1] as i32],
+                [view.bounds[2], view.bounds[3]],
+                1,
+            )?);
+            *source = Some(id);
+        }
+        let index = factors.len();
+        factors.push(Self {
+            image,
+            region,
+            revision: resource.preparation_revision,
+            levels,
+        });
+        Ok(index)
+    }
+
+    pub(super) fn prepare(
+        &self,
+        mip: u8,
+        assets: &Assets,
+        cache: &mut crate::surface_cache::SurfaceCache,
+    ) -> Option<crate::surface_cache::CacheSpan> {
+        let image = assets.image(self.image)?;
+        let view = TexelView::image(image, mip, crate::assets::TextureIntensity::Preserve)
+            .region(self.region)?;
+        let source = self.levels.get(mip as usize).copied().flatten()?;
+        cache.prepare_rgba(
+            source,
+            0,
+            RgbaBuildState {
+                base_image_id: self.image.0,
+                base_revision: self.revision,
+                ..RgbaBuildState::default()
+            },
+            |out| {
+                let row_bytes = view.bounds[2] as usize * 4;
+                for (row, destination) in out.chunks_exact_mut(row_bytes).enumerate() {
+                    let start = ((view.bounds[1] as usize + row) * view.width as usize
+                        + view.bounds[0] as usize)
+                        * 4;
+                    destination.copy_from_slice(&view.rgba[start..start + row_bytes]);
+                }
+            },
+        )
+    }
+}
+
+impl Recipe {
+    pub(super) fn load(
+        geometry: &WorldGeometry,
+        boundary: usize,
+        binding: SurfaceBinding,
+        material: &Material,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        sources: &mut Vec<SurfaceSource>,
+        factors: &mut Vec<Factor>,
+        cache_bytes: usize,
+    ) -> Result<Option<Self>, &'static str> {
+        let cache = u32::try_from(sources.len()).map_err(|_| "too many cached boundaries")?;
+        if let Some(product) = Product::load(
+            geometry,
+            boundary,
+            binding,
+            material,
+            assets,
+            evaluator,
+            cache,
+            cache_bytes,
+        ) {
+            sources.push(product.source()?);
+            return Ok(Some(Self::Product(product)));
+        }
+        let Some(base_stage) = eligible(material) else {
+            return Ok(None);
+        };
+        let StageTexture::Image(base) = material.stages[base_stage].texture else {
+            return Ok(None);
+        };
+        let images = if base_stage == 0 {
+            [base, binding.lightmap]
+        } else {
+            [binding.lightmap, base]
+        };
+        let regions = if base_stage == 0 {
+            [None, binding.lightmap_region]
+        } else {
+            [binding.lightmap_region, None]
+        };
+        let (Some(a), Some(b)) = (assets.image(images[0]), assets.image(images[1])) else {
+            return Ok(None);
+        };
+        for (index, image) in [a, b].into_iter().enumerate() {
+            let stage = material.stages[index];
+            for mip in 0..super::image_mips(image, stage.sampler) {
+                if TexelView::image(image, mip, stage.texture_intensity)
+                    .region(regions[index])
+                    .is_none()
+                {
+                    // Generic stages reject independently. Keep that path if
+                    // any reachable ROI is invalid rather than suppressing a
+                    // valid opaque stage in the fixed combined span kernel.
+                    return Ok(None);
+                }
+            }
+        }
+        let factors = [
+            Factor::register(images[0], regions[0], assets, factors, sources)?,
+            Factor::register(images[1], regions[1], assets, factors, sources)?,
+        ];
+        Ok(Some(Self::Pair(Pair {
+            factors,
+            images,
+            revisions: [a.preparation_revision, b.preparation_revision],
+            samplers: [
+                super::effective_sampler(a, material.stages[0].sampler),
+                super::effective_sampler(b, material.stages[1].sampler),
+            ],
+            stages: [material.stages[0], material.stages[1]],
+        })))
+    }
+    pub(super) fn product(&self) -> bool {
+        matches!(self, Self::Product(_))
+    }
+    pub(super) fn current(&self, assets: &Assets) -> bool {
+        match self {
+            Self::Product(product) => product.current(assets),
+            Self::Pair(pair) => {
+                let (Some(a), Some(b)) =
+                    (assets.image(pair.images[0]), assets.image(pair.images[1]))
+                else {
+                    return false;
+                };
+                [a.preparation_revision, b.preparation_revision] == pair.revisions
+                    && [
+                        super::effective_sampler(a, pair.stages[0].sampler),
+                        super::effective_sampler(b, pair.stages[1].sampler),
+                    ] == pair.samplers
+            }
+        }
+    }
+    pub(super) fn coordinate(&self, position: qa_core::primitives::Vec3) -> Option<[f32; 2]> {
+        match self {
+            Self::Product(product) => Some(product.coordinate(position)),
+            Self::Pair(_) => None,
+        }
+    }
+    pub(super) fn prepare(&self, refdef: Refdef, evaluator: &StageEvaluator) -> Option<Prepared> {
+        match self {
+            Self::Product(product) => product.prepare(refdef, evaluator).map(Prepared::Product),
+            Self::Pair(_) => Some(Prepared::Pair),
+        }
+    }
 }
 
 fn eligible(material: &Material) -> Option<usize> {
@@ -104,7 +325,7 @@ fn eligible(material: &Material) -> Option<usize> {
     }
 }
 
-impl Recipe {
+impl Product {
     pub(super) fn load(
         geometry: &WorldGeometry,
         boundary: usize,
@@ -397,7 +618,11 @@ impl Recipe {
                 + p[2] * f64::from(position.0[2])) as f32
         })
     }
-    pub(super) fn prepare(&self, refdef: Refdef, evaluator: &StageEvaluator) -> Option<Prepared> {
+    pub(super) fn prepare(
+        &self,
+        refdef: Refdef,
+        evaluator: &StageEvaluator,
+    ) -> Option<ProductPrepared> {
         let inputs = DrawInputs {
             identity_light: refdef.identity_light,
             lightmap: self.lightmap,
@@ -411,7 +636,7 @@ impl Recipe {
                 .ok()?;
             uniform[stage] = evaluator.evaluate(&prepared, &self.vertex).color;
         }
-        Some(Prepared {
+        Some(ProductPrepared {
             state: RgbaBuildState {
                 material_id: self.material.0,
                 base_image_id: self.base.0,
@@ -426,7 +651,7 @@ impl Recipe {
     }
     pub(super) fn fill(
         &self,
-        prepared: Prepared,
+        prepared: ProductPrepared,
         mip: u8,
         assets: &Assets,
         destination: &mut [u8],
@@ -486,6 +711,16 @@ impl Recipe {
     }
 }
 
+/// The existing CPU separate-pass contract rounds the first opaque framebuffer
+/// before multiplying the independently filtered second factor. Native Q3's
+/// collapsed multitexture rounding is a separate presentation requirement.
+pub(super) fn multiply_pixel(first: u32, second: [f32; 4]) -> u32 {
+    u32::from_le_bytes(std::array::from_fn(|channel| {
+        let byte = first.to_le_bytes()[channel] as f32 / 255.0;
+        ((second[channel] * byte).clamp(0.0, 1.0) * 255.0).round() as u8
+    }))
+}
+
 fn at(field: [f32; 3], coordinate: [f32; 2]) -> f32 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
 }
@@ -540,3 +775,7 @@ fn geometric_basis(vertices: &[Vertex]) -> Option<([usize; 2], [usize; 3])> {
     }
     result
 }
+
+#[cfg(test)]
+#[path = "../../tests/cpu_factors/oracle.rs"]
+mod factor_tests;

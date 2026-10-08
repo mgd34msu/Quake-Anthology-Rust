@@ -522,7 +522,7 @@ impl Default for BuildState<'_> {
     }
 }
 
-/// Numeric load identities and explicit changes to the precombined recipe.
+/// Numeric load identities and explicit changes to the RGBA payload recipe.
 /// The caller preserves RGB style values and revises inputs when they change;
 /// these values are compared directly, never derived from a content digest.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -796,8 +796,8 @@ impl SurfaceCache {
         Some(self.span(surface as usize, mip, block, texture.transparent_index))
     }
 
-    /// Fill an exact row-major RGBA payload with the caller's precombined
-    /// texture × lightmap recipe. A cache hit never invokes the fill closure.
+    /// Fill an exact row-major RGBA payload: a precombined surface or retained
+    /// native factor level. A cache hit never invokes the fill closure.
     /// The closure is trusted to initialize every byte; input validation and
     /// any fallible recipe preparation happen before submitting this request.
     pub fn prepare_rgba(
