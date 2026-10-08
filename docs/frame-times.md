@@ -696,3 +696,74 @@ zero, with normal exits and recorded owned-PID cleanup. This remains a serial
 draw benchmark, and base1/q3dm1 remain over the target. Evidence:
 `fixed-retail-borrow-serial-a-report.json`,
 `fixed-retail-borrow-serial-comparison.json` and corresponding private-run folders.
+
+## THE-862 platform raster band checkpoint, 2026-10-08
+
+Commit `dc9cd60c643245f51e98e79b0704c27a77329dc6` built the portable release
+allocation-tracked retail example in 33.2382 s from a cleared release cache.
+Both platform and app tracking features were enabled. One immutable time-zero
+scene packet is rendered with 1, 2, 4 or 8 row bands through the shared app
+platform dispatcher. The one-band path executes inline; the others use a
+persistent platform worker pool with one worker per band.
+
+The AMD Ryzen 9 5900X private runs used 640×400, 60 warm-up and 600 measured
+draws, owned Xvfb/forced X11/private audio, and fresh copied owner profiles.
+The process affinity masks were `23`, `22,23`, `20-23` and `16-23`, respectively.
+Those logical CPUs select distinct physical cores; workers inherit the process
+mask and are not individually pinned. No build, checker, debugger or profiler
+ran alongside these measurements. All twelve runs exited normally, preserved
+candidate/profile and cleaned their recorded owned PIDs.
+
+| Map | Bands | Draw median / p99 ns |
+|---|---:|---:|
+| e1m1 | 1 | 2,114,262 / 2,262,122 |
+| e1m1 | 2 | 2,129,601 / 2,345,562 |
+| e1m1 | 4 | 916,310.5 / 1,456,641 |
+| e1m1 | 8 | 858,430 / 1,178,940 |
+| base1 | 1 | 4,607,858.5 / 4,677,813 |
+| base1 | 2 | 4,219,168 / 4,894,114 |
+| base1 | 4 | 2,645,092 / 2,846,872 |
+| base1 | 8 | 1,708,531.5 / 2,236,182 |
+| q3dm1 | 1 | 18,940,294 / 21,370,516 |
+| q3dm1 | 2 | 16,785,257.5 / 21,695,906 |
+| q3dm1 | 4 | 13,495,139.5 / 15,960,462 |
+| q3dm1 | 8 | 10,475,298 / 14,566,900 |
+
+All four band counts produce byte-identical RGBA and depth buffers for each map,
+with identical immutable workload fields. RGBA also matches the borrowed-view
+serial checkpoint. Each run records zero measured allocations, reallocations
+and requested bytes across the calling Rust thread and every dispatched worker.
+Counts are collected after every batch, including rejected batches, and consumed
+once per frame. Positive-control fixtures cover multiple batches, caller counts,
+startup/reset, the terminal batch and an error batch. Native SDL/driver heap,
+scene submission and presentation are outside the direct-draw allocation gate.
+
+The total cache arena remains 33,554,432 bytes at every count; band shares are
+32, 16, 8 and 4 MiB. Other load-owned scanners, metadata and preparation scratch
+are additional memory, not included in that arena figure. q3dm1's largest
+mandatory surface reservation is 2,454,928 bytes. Its cache measurements are:
+
+| Bands | Measured hits / fills / evictions / rejects | Startup + warm-up + measured lifetime hits / fills / evictions / rejects |
+|---|---:|---:|
+| 1 | 11,863,200 / 0 / 0 / 0 | 13,067,848 / 1,444 / 0 / 0 |
+| 2 | 11,863,200 / 0 / 0 / 0 | 13,067,770 / 1,522 / 0 / 0 |
+| 4 | 11,863,200 / 0 / 0 / 0 | 13,067,684 / 1,608 / 0 / 0 |
+| 8 | 11,863,200 / 0 / 0 / 0 | 13,067,484 / 1,808 / 0 / 0 |
+
+Per-band records sum to the reported cache totals. q3dm1 remains over 4 ms at
+every count. Live lightstyle/dlight rebuilding, complete static cutout/overlay
+coverage, native visual acceptance, moving-camera gameplay and installation
+also remain open. No installation or Slack notice.
+
+A separate eight-band process profile records 16,734 samples, zero lost samples,
+and normal private cleanup. Its timings are discarded. The largest self-sample
+categories are the span callback 25.53%, bilinear sampler 12.78%, edge insertion
+8.81%, row-range raster setup 8.20%, shared view preparation 4.30% and clipping
+3.36%. These are aggregate process CPU samples, not nested wall-clock timings
+or an attribution of all cost to one material category.
+
+Evidence under `r3-20261008`: `fixed-bands-platform-a-report.json`,
+`fixed-bands-platform-a-comparison.json`, the twelve
+`fixed-bands-platform-a-{1,2,4,8}-{e1m1,base1,q3dm1}-cpu` directories with raw
+pixels/depth, per-band records and private results, and
+`profile-platform-bands8-q3dm1-cpu`.

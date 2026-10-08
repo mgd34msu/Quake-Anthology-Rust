@@ -105,9 +105,13 @@ Report pinned median and p99 over 600 measured frames after 60 warm-up frames,
 with matched workload and fidelity, without a debugger.
 
 THE-892 checks platform ownership and duplicate event/output storage, including
-examples and imported aliases. Developer timers also use platform. Runtime
-allocation qualification covers the instrumented Rust thread; SDL/driver heap
-work needs separate measurement and is not proved by that counter.
+examples and imported aliases. Developer timers also use platform. CPU raster
+selects 1/2/4/8 bands at load, dividing one total 32 MiB cache budget across them.
+Platform owns the persistent worker pool. Runtime allocation qualification sums
+the instrumented calling thread and every worker after every completed or
+rejected dispatch, then consumes those counts once in ordinary and quit frames.
+Discard startup counts; do not report only the final batch. SDL/driver heap work
+needs separate measurement and is not proved by the Rust counter.
 
 THE-861 scene contract: asset registration happens at load and returns numeric
 material/model handles. The shared front end clears a scene, adds entities,
