@@ -18,6 +18,7 @@ CASES = {
     "family-gate": "fn bad() { match kind { GameFamily::Quake => () } }",
     "panic-or-unwrap": "fn bad() { value.unwrap(); }",
     "duplicate-primitive": "struct PlayerState {}",
+    "duplicate-md4": "struct Md4 {}",
     "diagnostics-path": 'fn bad() { eprintln!("event"); }',
     "temporary-diagnostics": "// TEMP-DIAG\nfn bad() {}",
     "test-share": "fn live() {}\n#[cfg(test)]\nmod tests { " + "fn scenario() {} " * 50 + "}",

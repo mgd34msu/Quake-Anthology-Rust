@@ -67,6 +67,8 @@ def check(root):
             rules["family-gate"] = r"\b(?:match|if|while)\b[^;]{0,300}\b(?:BspKind|GameFamily)\s*::"
         if not relative.startswith("crates/console/src/logger"):
             rules["diagnostics-path"] = r"\beprintln\s*!"
+        if relative != "crates/core/src/checksum.rs":
+            rules["duplicate-md4"] = r"(?i)\b(?:struct|enum|type)\s+Md4(?:Context|State|Hasher)?\b|\bfn\s+md4(?:_transform|_update|_finish|_final)?\b"
         for rule, pattern in rules.items():
             for match in re.finditer(pattern, code):
                 add(path, code, match.start(), rule)
@@ -81,6 +83,11 @@ def check(root):
         test = re.search(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]", code)
         if test and (len(code) - test.start()) > len(code) * 0.4:
             add(path, code, test.start(), "test-share")
+    checksum = root / "crates/core/src/checksum.rs"
+    if checksum.exists():
+        code = source_code(checksum.read_text())
+        if len(re.findall(r"\bstruct\s+Md4\b", code)) != 1:
+            add(checksum, code, 0, "duplicate-md4")
     return findings
 
 
