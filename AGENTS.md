@@ -48,13 +48,22 @@ R5 Q1 complete, R6 Q2, R7 Q3/TA and bots,
 R8 mods together, R9 combined mode, R10 audio/menus/UI, R11 network,
 R12 measured performance, R13 release.
 
-Current lane: R1, authorised after the supervisor's R0 review. In order:
+R1 primitive implementation order, authorised after the supervisor's R0 review:
 THE-611, THE-617, THE-625, THE-636, THE-642, THE-650, THE-656, THE-673,
 THE-680, THE-691, THE-697, THE-702, THE-709, THE-711, THE-718, THE-726,
 THE-790, THE-770, THE-776, THE-777, THE-780, THE-792, THE-784, THE-786.
 R0 THE-599/600/601/603/640/678 remain In Progress until gameplay proves their
 acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
 spawning, mixed-play and installed-binary evidence they require.
+
+Current lane: R2, after the R1 structural implementation. In order:
+THE-613, THE-623, THE-630, THE-639, THE-651, THE-662, THE-669, THE-679,
+THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
+R1 issues with live acceptance criteria remain In Progress for integration at
+the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
+`data/` into one Rust catalog. `tools/build.py` rejects stale generated output
+before compiling. Preserve the CSV's per-source defaults, flags, aliases and
+conversions; inferred type/range hints are metadata, not runtime validators.
 
 Design every R1-R3 primitive and shared service against Q1, Q2 and Q3 now.
 Before R4 monsters, weapons or saves, THE-839 must prove e1m1, base1 and q3dm1

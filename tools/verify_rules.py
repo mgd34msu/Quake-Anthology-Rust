@@ -33,7 +33,7 @@ def main():
     records = []
     with tempfile.TemporaryDirectory(prefix="qa-rust-rule-fixture-") as temp:
         root = Path(temp)
-        for source in [*ROOT.glob("crates/*/src/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json"]:
+        for source in [*ROOT.glob("crates/*/src/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json", ROOT / "tools/gen_cvars.py", ROOT / "tools/cvar_catalog.py", *ROOT.glob("data/unified-cvars.*"), ROOT / "data/unified-cvars-policy-issues.json"]:
             target = root / source.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -52,6 +52,14 @@ def main():
             if not passed:
                 raise RuntimeError("rule was not enforced: " + rule)
         fixture.unlink()
+        generated = root / "crates/console/src/cvars_generated.rs"
+        generated.write_text(generated.read_text() + "\n// stale catalog fixture\n")
+        result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+        passed = result.returncode != 0 and "stale generated file:" in result.stderr
+        records.append({"rule": "stale-cvar-catalog", "rejected_before_cargo": passed})
+        (args.evidence / "stale-cvar-catalog.log").write_text(result.stdout + result.stderr)
+        if not passed:
+            raise RuntimeError("stale generated cvars were admitted")
         result = subprocess.run(["python3", str(ROOT / "tools/build.py"), "--check-only"], capture_output=True, text=True)
         if result.returncode:
             raise RuntimeError("main does not pass: " + result.stdout)

@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--proof", action="store_true", help="separate development candidate with scripted SDL input")
     args = parser.parse_args()
     subprocess.run(["python3", str(ROOT / "tools/check_rules.py"), "--root", str(ROOT)], check=True)
+    subprocess.run(["python3", str(ROOT / "tools/gen_cvars.py"), "--root", str(ROOT), "--check"], check=True)
     if args.check_only:
         return
     env = os.environ.copy()

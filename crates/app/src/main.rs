@@ -11,7 +11,7 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 mod proof;
 
 fn run() -> Result<(), String> {
-    let mut cvars = Cvars::new(qa_console::cvars_generated::DEFINITIONS);
+    let mut cvars = Cvars::new();
     let developer = cvars.find("developer").ok_or("developer cvar missing")?;
     let mut frames = 120u32;
     let mut width = 640i32;
