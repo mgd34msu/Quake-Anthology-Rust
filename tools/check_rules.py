@@ -42,7 +42,7 @@ def annotated_item_end(code, start):
             continue
         if token == "=" and not body_item:
             expression = True
-        if token == "<" and not expression:
+        if token == "<" and (not expression or angles or code[:position].rstrip().endswith("::")):
             angles += 1
         elif token == ">" and angles:
             angles -= 1

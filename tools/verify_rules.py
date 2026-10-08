@@ -27,6 +27,40 @@ CASES = {
     "test-share": "fn live() {}\n#[cfg(test)]\nmod tests { " + "fn scenario() {} " * 50 + "}",
 }
 
+PRODUCTION = "\n".join(f"fn live_{index}(value: u32) -> u32 {{ value + {index} }}" for index in range(20))
+BOUNDARY_TEST = "#[cfg(test)]\nfn test_only() {}"
+
+
+def production_chars(length):
+    base = "const P:u8=0;"
+    return "const P" + "_" * (length - len(base)) + ":u8=0;"
+
+
+NESTED_TEST = "#[cfg(test)] mod oracle { #[cfg(test)] fn nested() {} }"
+TEST_SHARE_ALLOWED = {
+    "test-share-enum-variant": "enum Choice { Live, #[cfg(test)] Oracle(u32, [u8; 2]), Last }\n" + PRODUCTION,
+    "test-share-struct-variant": "enum Choice { Live, #[cfg(test)] Oracle { value: u32, bytes: [u8; 2] }, Last }\n" + PRODUCTION,
+    "test-share-struct-field": "struct Fields { live: u32, #[cfg(test)] oracle: Result<Vec<[u8; 2]>, (u8, u16)>, last: u32 }\n" + PRODUCTION,
+    "test-share-tuple-field": "struct Fields(u32, #[cfg(test)] Vec<u32>, u16);\n" + PRODUCTION,
+    "test-share-initializer-field": "struct Fields { live: u32, #[cfg(test)] oracle: Vec<[u32; 2]> } fn make() -> Fields { Fields { live: 0, #[cfg(test)] oracle: vec![[0, 1], [2, 3]], } }\n" + PRODUCTION,
+    "test-share-match-arms": "fn select(value: u8) -> u8 { match value { #[cfg(test)] 7 => helper::<u32, Vec<u8>>(), #[cfg(test)] 8 => return 1, #[cfg(test)] 9 => { if value == 9 { 2 } else { 3 } } _ => 0 } }\n" + PRODUCTION,
+    "test-share-optional-attributes": "#[allow(dead_code)] #[cfg(test)] #[derive(Clone)] struct Oracle { value: u32 }\n" + PRODUCTION,
+    "test-share-early-function": '#[cfg(test)] fn oracle() { let brackets = "{[,,;]}"; let _ = brackets; }\n' + PRODUCTION,
+    "test-share-early-module": "#[cfg(test)] mod oracle { fn nested() {} }\n" + PRODUCTION,
+    "test-share-external-path": '#[cfg(test)] #[path = "outside.rs"] mod oracle; fn live() {}',
+    "test-share-external-module": "#[cfg(test)] mod oracle; fn live() {}",
+    "test-share-nested-once": production_chars(len(NESTED_TEST) * 2) + NESTED_TEST,
+    "test-share-exact-40-percent": production_chars(len(BOUNDARY_TEST) * 3 // 2) + BOUNDARY_TEST,
+    "test-share-below-40-percent": production_chars(len(BOUNDARY_TEST) * 3 // 2 + 1) + BOUNDARY_TEST,
+}
+TEST_SHARE_REJECTED = {
+    "test-share-above-40-percent": production_chars(len(BOUNDARY_TEST) * 3 // 2 - 1) + BOUNDARY_TEST,
+    "test-share-large-function": "#[cfg(test)] fn oracle() { " + "let value = 1; " * 50 + "}\nfn live() {}",
+    "test-share-multiple-items": "fn live() {}\n" + "\n".join(f"#[cfg(test)] fn oracle_{index}() {{}}" for index in range(20)),
+    "test-share-small-first-marker": "enum Choice { Live, #[cfg(test)] Oracle }\nfn live() {}\n#[cfg(test)] mod oracle { " + "fn nested() {} " * 50 + "}",
+    "test-share-generic-arm": "fn choose(value: u8) -> u8 { match value { #[cfg(test)] 0 => helper::<" + ",".join(f"{{{index}}}" for index in range(30)) + ">(), _ => 0 } }",
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -45,6 +79,23 @@ def main():
         baseline = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
         if baseline.returncode:
             raise RuntimeError("non-code words caused a false positive: " + baseline.stdout)
+        for name, content in TEST_SHARE_ALLOWED.items():
+            fixture.write_text(content)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            passed = result.returncode == 0
+            records.append({"rule": name, "allowed_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("bounded test item caused a false positive: " + name)
+        for name, content in TEST_SHARE_REJECTED.items():
+            fixture.write_text(content)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            output = json.loads(result.stdout)
+            passed = result.returncode != 0 and any(v["rule"] == "test-share" for v in output["findings"])
+            records.append({"rule": name, "rejected_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("embedded test share was not enforced: " + name)
         for rule, content in CASES.items():
             fixture.write_text(content)
             result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
