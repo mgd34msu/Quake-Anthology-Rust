@@ -1,6 +1,6 @@
-//! Static two-factor spans share the indexed/RGBA rover. Nearest products with
-//! constant lightmaps may be precombined; other static pairs retain independent
-//! native grids, filtering and the existing ordered CPU byte quantization.
+//! Static surfaces precombine native texture mip texels and bilinear lightmaps
+//! in the shared rover. Spans copy packed cache pixels on that texture lattice.
+//! Non-affine attributes and oversized charts retain the scoped pair fallback.
 use super::{TexelView, sampler_function};
 use crate::assets::{
     Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Stage, StageTexture, Vertex,
@@ -37,18 +37,29 @@ pub(super) struct Product {
     lightmap: ImageId,
     lightmap_region: Option<crate::lightmap::AtlasRegion>,
     lightcoord: [[f32; 3]; 2],
-    vertex: Vertex,
+    color_basis: [Vertex; 3],
+    color_checks: Box<[(Vertex, [f64; 2])]>,
+    basis_coordinates: [[f64; 2]; 3],
+    styles: [u8; 4],
     stages: [Stage; 2],
     settings: MaterialSettings,
     material: MaterialId,
     scale: [f32; 2],
     revisions: [u64; 2],
     samplers: [crate::assets::Sampler; 2],
+    combination: Combination,
+}
+
+#[derive(Clone, Copy)]
+enum Combination {
+    Modulate,
+    SeparatePasses,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ProductPrepared {
     pub state: RgbaBuildState,
+    colors: [[[f32; 3]; 4]; 2],
 }
 
 #[derive(Clone)]
@@ -341,11 +352,6 @@ impl Product {
             return None;
         };
         let image = assets.image(base)?;
-        if super::effective_sampler(image, material.stages[base_stage].sampler).filter
-            != crate::assets::Filter::Nearest
-        {
-            return None;
-        }
         let lightmap = assets.image(binding.lightmap)?;
         let base_view = TexelView::image(image, 0, material.stages[base_stage].texture_intensity);
         let light_view = TexelView::image(
@@ -354,10 +360,6 @@ impl Product {
             material.stages[1 - base_stage].texture_intensity,
         )
         .region(binding.lightmap_region)?;
-        constant_texels(light_view)?;
-        if super::image_mips(lightmap, material.stages[1 - base_stage].sampler) != 1 {
-            return None;
-        }
         let indices = geometry
             .indices
             .get(geometry.boundaries.get(boundary)?.indices())?;
@@ -385,15 +387,6 @@ impl Product {
                 .prepare(&material.stages[1], material.settings, inputs)
                 .ok()?,
         ];
-        let uniform = prepared.map(|stage| evaluator.evaluate(&stage, &vertices[0]).color);
-        if vertices.iter().any(|vertex| {
-            prepared
-                .iter()
-                .enumerate()
-                .any(|(index, stage)| evaluator.evaluate(stage, vertex).color != uniform[index])
-        }) {
-            return None;
-        }
         let texture: Vec<_> = vertices
             .iter()
             .map(|v| {
@@ -450,12 +443,7 @@ impl Product {
                     .iter()
                     .any(|v| v[axis] != texel_coordinates[0][axis])
             });
-            if varies == [true, true] {
-                // Two unrelated one-dimensional texture grids cannot both be
-                // preserved by one nearest surface grid. Keep the generic path.
-                return None;
-            }
-            if varies == [false, false] {
+            if varies == [false, false] || varies == [true, true] {
                 geometric
                     .iter()
                     .map(|v| [v[0] * scale[0], v[1] * scale[1]])
@@ -528,7 +516,13 @@ impl Product {
             projection[3] = affine[2];
             projection
         });
-        // Non-affine polygon attributes remain on the existing generic path.
+        let vertex_colors = material.stages.iter().any(|stage| {
+            matches!(
+                stage.rgb_gen,
+                RgbGen::ExactVertex | RgbGen::Vertex | RgbGen::OneMinusVertex
+            ) || matches!(stage.alpha_gen, AlphaGen::Vertex | AlphaGen::OneMinusVertex)
+        });
+        // Non-affine polygon attributes retain the explicit pair fallback.
         // Triangles, including tessellated patches, always have one affine map.
         for (index, vertex) in vertices.iter().enumerate() {
             for values in [&texture, &lights] {
@@ -539,15 +533,19 @@ impl Product {
                     }
                 }
             }
-            for channel in 0..4 {
-                let affine = fit(
-                    basis_coordinates,
-                    basis.map(|i| f64::from(vertices[i].color[channel])),
-                );
-                if (at64(affine, coordinates[index]) - f64::from(vertex.color[channel])).abs()
-                    > 1.0e-5
-                {
-                    return None;
+            if vertex_colors {
+                for channel in 0..4 {
+                    let affine = fit(
+                        basis_coordinates,
+                        basis.map(|i| f64::from(vertices[i].color[channel])),
+                    );
+                    if affine.iter().any(|&value| !(value as f32).is_finite())
+                        || (at64(affine, coordinates[index]) - f64::from(vertex.color[channel]))
+                            .abs()
+                            > 1.0e-5
+                    {
+                        return None;
+                    }
                 }
             }
         }
@@ -584,7 +582,25 @@ impl Product {
             chart,
             lightmap: binding.lightmap,
             lightmap_region: binding.lightmap_region,
-            vertex: vertices[0],
+            color_basis: basis.map(|i| vertices[i]),
+            color_checks: if vertex_colors {
+                vertices
+                    .iter()
+                    .copied()
+                    .zip(coordinates)
+                    .enumerate()
+                    .filter(|(index, _)| !basis.contains(index))
+                    .map(|(_, entry)| entry)
+                    .collect()
+            } else {
+                Box::default()
+            },
+            basis_coordinates,
+            styles: geometry
+                .surfaces
+                .iter()
+                .find(|surface| surface.boundaries.indices().contains(&boundary))?
+                .styles,
             stages: [material.stages[0], material.stages[1]],
             settings: material.settings,
             material: binding.material,
@@ -594,6 +610,18 @@ impl Product {
                 super::effective_sampler(image, material.stages[base_stage].sampler),
                 super::effective_sampler(lightmap, material.stages[1 - base_stage].sampler),
             ],
+            // qsrc tr_shader.c CollapseMultitexture ignores depth-write bits,
+            // but requires matching other state and color-generator kinds.
+            combination: if material.stages[0].depth_func == material.stages[1].depth_func
+                && std::mem::discriminant(&material.stages[0].rgb_gen)
+                    == std::mem::discriminant(&material.stages[1].rgb_gen)
+                && std::mem::discriminant(&material.stages[0].alpha_gen)
+                    == std::mem::discriminant(&material.stages[1].alpha_gen)
+            {
+                Combination::Modulate
+            } else {
+                Combination::SeparatePasses
+            },
         })
     }
     pub(super) fn current(&self, assets: &Assets) -> bool {
@@ -630,13 +658,43 @@ impl Product {
             ..DrawInputs::default()
         };
         let mut uniform = [[255; 4]; 2];
+        let mut colors = [[[0.0; 3]; 4]; 2];
         for stage in 0..2 {
             let prepared = evaluator
                 .prepare(&self.stages[stage], self.settings, inputs)
                 .ok()?;
-            uniform[stage] = evaluator.evaluate(&prepared, &self.vertex).color;
+            let values = self
+                .color_basis
+                .map(|vertex| evaluator.evaluate(&prepared, &vertex).color);
+            uniform[stage] = values[0];
+            let fields = std::array::from_fn::<_, 4, _>(|channel| {
+                fit(
+                    self.basis_coordinates,
+                    values.map(|value| f64::from(value[channel]) / 255.0),
+                )
+            });
+            // Native byte color generation can turn affine source colors
+            // into non-affine polygon attributes when identity light changes.
+            for &(vertex, coordinate) in &self.color_checks {
+                let value = evaluator.evaluate(&prepared, &vertex).color;
+                if fields.iter().zip(value).any(|(&field, channel)| {
+                    (at64(field, coordinate) - f64::from(channel) / 255.0).abs() > 1.0e-7
+                }) {
+                    return None;
+                }
+            }
+            colors[stage] = fields.map(|field| field.map(|value| value as f32));
+        }
+        if colors
+            .as_flattened()
+            .as_flattened()
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return None;
         }
         Some(ProductPrepared {
+            colors,
             state: RgbaBuildState {
                 material_id: self.material.0,
                 base_image_id: self.base.0,
@@ -645,6 +703,13 @@ impl Product {
                 identity_light: refdef.identity_light,
                 base_revision: self.revisions[0],
                 lightmap_revision: self.revisions[1],
+                style_scales: self.styles.map(|style| {
+                    if style == 255 {
+                        [1.0; 3]
+                    } else {
+                        refdef.lightstyles[style as usize].rgb
+                    }
+                }),
                 ..RgbaBuildState::default()
             },
         })
@@ -668,8 +733,17 @@ impl Product {
         else {
             return;
         };
-        let base_sample = super::stage_sampler(base, base_stage.sampler);
-        let light_sample = super::stage_sampler(light, light_stage.sampler);
+        // Native software cache fills fetch texture mip texels once. Linear
+        // material admission does not add another filter to the filled lattice.
+        let base_sample = sampler_function(crate::assets::Sampler {
+            filter: crate::assets::Filter::Nearest,
+            ..super::effective_sampler(base, base_stage.sampler)
+        });
+        let light_sample = sampler_function(crate::assets::Sampler {
+            wrap: crate::assets::Wrap::Clamp,
+            filter: crate::assets::Filter::Linear,
+            mipmaps: false,
+        });
         let (minimum, [width, _]) = self.layouts[mip as usize];
         let step = (1u64 << mip) as f32;
         for (index, out) in destination.chunks_exact_mut(4).enumerate() {
@@ -678,36 +752,53 @@ impl Product {
                 minimum[1] as f32 + (index as u32 / width) as f32 * step + 0.5 * step,
             ];
             let colors = prepared
-                .state
-                .stage_colors
-                .map(|stage| stage.map(|value| value as f32 / 255.0));
+                .colors
+                .map(|stage| stage.map(|field| at(field, coordinate).clamp(0.0, 1.0)));
             let mut samples = [[0.0; 4]; 2];
+            let sample_colors = match self.combination {
+                Combination::Modulate => [[1.0; 4]; 2],
+                Combination::SeparatePasses => colors,
+            };
             samples[self.base_stage] = base_sample(
                 base_pixels,
                 self.texture.map(|p| at(p, coordinate)),
-                colors[self.base_stage],
+                sample_colors[self.base_stage],
             );
             samples[1 - self.base_stage] = light_sample(
                 light_pixels,
                 self.lightcoord.map(|p| at(p, coordinate)),
-                colors[1 - self.base_stage],
+                sample_colors[1 - self.base_stage],
             );
-            // Preserve the ordered CPU stage contract, including the first
-            // framebuffer's byte rounding before the multiply stage.
-            let first = super::composite(0, samples[0], None);
-            out.copy_from_slice(
-                &super::composite(first, samples[1], self.stages[1].blend).to_le_bytes(),
-            );
+            let pixel = match self.combination {
+                Combination::Modulate => super::composite(
+                    0,
+                    std::array::from_fn(|channel| {
+                        samples[0][channel] * samples[1][channel] * colors[0][channel]
+                    }),
+                    None,
+                ),
+                Combination::SeparatePasses => {
+                    let first = super::composite(0, samples[0], None);
+                    super::composite(first, samples[1], self.stages[1].blend)
+                }
+            };
+            out.copy_from_slice(&pixel.to_le_bytes());
         }
     }
     pub(super) fn base_sampler(&self) -> crate::assets::Sampler {
         self.stages[self.base_stage].sampler
     }
-    pub(super) fn sampler(&self, image: &crate::assets::Image) -> super::ShadeFn {
-        sampler_function(crate::assets::Sampler {
-            wrap: crate::assets::Wrap::Clamp,
-            ..super::effective_sampler(image, self.base_sampler())
-        })
+    pub(super) fn cached_pixel(
+        block: crate::surface_cache::CacheSpan,
+        pixels: &[[u8; 4]],
+        chart: [f32; 2],
+    ) -> u32 {
+        let step = (1u64 << block.mip) as f32;
+        let coordinate: [usize; 2] = std::array::from_fn(|axis| {
+            (((chart[axis] - block.texture_mins[axis] as f32) / step).floor() as usize)
+                .min([block.width, block.height][axis] as usize - 1)
+        });
+        u32::from_le_bytes(pixels[coordinate[1] * block.width as usize + coordinate[0]])
     }
 }
 
@@ -723,21 +814,6 @@ pub(super) fn multiply_pixel(first: u32, second: [f32; 4]) -> u32 {
 
 fn at(field: [f32; 3], coordinate: [f32; 2]) -> f32 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
-}
-fn constant_texels(view: TexelView<'_>) -> Option<[f32; 4]> {
-    let first = ((view.bounds[1] * view.width + view.bounds[0]) * 4) as usize;
-    let color = view.rgba.get(first..first + 4)?;
-    for y in view.bounds[1]..view.bounds[1] + view.bounds[3] {
-        for x in view.bounds[0]..view.bounds[0] + view.bounds[2] {
-            let index = ((y * view.width + x) * 4) as usize;
-            if &view.rgba[index..index + 4] != color {
-                return None;
-            }
-        }
-    }
-    Some(std::array::from_fn(|axis| {
-        color[axis] as f32 / 255.0 * if axis < 3 { view.intensity } else { 1.0 }
-    }))
 }
 fn at64(field: [f64; 3], coordinate: [f64; 2]) -> f64 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
@@ -779,3 +855,7 @@ fn geometric_basis(vertices: &[Vertex]) -> Option<([usize; 2], [usize; 3])> {
 #[cfg(test)]
 #[path = "../../tests/cpu_factors/oracle.rs"]
 mod factor_tests;
+
+#[cfg(test)]
+#[path = "../../tests/cpu_static/oracle.rs"]
+mod static_tests;

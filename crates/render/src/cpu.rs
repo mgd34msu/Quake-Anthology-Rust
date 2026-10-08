@@ -1043,6 +1043,7 @@ impl<'a> TexelView<'a> {
             intensity: 1.0,
         }
     }
+    #[cfg(test)]
     fn cache(width: u32, height: u32, rgba: &'a [[u8; 4]]) -> Self {
         Self {
             width,

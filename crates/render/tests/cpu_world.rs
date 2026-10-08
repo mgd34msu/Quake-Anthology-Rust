@@ -1136,7 +1136,7 @@ fn transformed_2d_coordinates_select_the_native_prepared_mip() {
 }
 
 #[test]
-fn linear_rank_one_texture_keeps_filtering_before_byte_rounding() {
+fn linear_rank_one_texture_uses_native_texel_lattice_and_reuses_cache() {
     use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
     let mut assets = Assets::load();
     let pixels: Vec<_> = [0, 0, 1, 3]
@@ -1182,14 +1182,36 @@ fn linear_rank_one_texture_keeps_filtering_before_byte_rounding() {
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
-    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert_eq!(cpu.world_stats().rgba_pixels, 64);
     assert_eq!(cpu.world_stats().stage_spans, 0);
-    assert!(cpu.world_stats().factor_spans > 0);
-    assert_eq!(cpu.pixels()[4].to_le_bytes(), [1, 1, 1, 255]);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    // Pixel centers and the -1/16 UV shift put u=x/8 on mip0's native
+    // two-texel lattice. v=.5 selects the original bottom row [1,3].
+    // The white bilinear lightmap leaves those texels unchanged.
+    let expected: Vec<_> = (0..64)
+        .map(|index| {
+            let value = if index % 8 < 4 { 1 } else { 3 };
+            u32::from_le_bytes([value, value, value, 255])
+        })
+        .collect();
+    assert_eq!(cpu.pixels(), expected);
+    assert!(cpu.world_stats().rgba_fills > 0);
+    let fills = cpu.world_stats().cache.fills;
+    assert!(frontend.recycle(frame).is_ok());
+    let repeated = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&repeated, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert!(cpu.world_stats().rgba_hits > 0);
+    assert_eq!(cpu.world_stats().rgba_fills, 0);
+    assert_eq!(cpu.world_stats().cache.fills, fills);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    assert_eq!(cpu.pixels(), expected);
 }
 
 #[test]
-fn variable_linear_lightmap_preserves_independent_stage_filtering() {
+fn variable_linear_lightmap_is_baked_on_native_texture_lattice() {
     use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
     let mut assets = Assets::load();
     let base = assets
@@ -1205,7 +1227,7 @@ fn variable_linear_lightmap_preserves_independent_stage_filtering() {
     };
     let material = assets
         .register_material(
-            "independent filters",
+            "variable lightmap lattice",
             &[
                 Stage {
                     texture: StageTexture::Image(base),
@@ -1237,16 +1259,38 @@ fn variable_linear_lightmap_preserves_independent_stage_filtering() {
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let frame = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
-    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert_eq!(cpu.world_stats().rgba_pixels, 64);
     assert_eq!(cpu.world_stats().stage_spans, 0);
-    assert!(cpu.world_stats().factor_spans > 0);
-    // Separate filters at UV .5: first stage rounds127.5 to128; .5 light
-    // multiplies that byte to64. A filtered baked product would be black.
-    assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    // The two mip0 texture-cell centers are u=.25 and .75. Their base
+    // values [0,255] meet bilinear lightmap values [255,0], producing two
+    // black cache texels. Clamp padding is black as well; spans copy them.
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel.to_le_bytes() == [0, 0, 0, 255])
+    );
+    assert!(cpu.world_stats().rgba_fills > 0);
+    let fills = cpu.world_stats().cache.fills;
+    assert!(frontend.recycle(frame).is_ok());
+    let repeated = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
+    assert_eq!(cpu.render(&repeated, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert!(cpu.world_stats().rgba_hits > 0);
+    assert_eq!(cpu.world_stats().rgba_fills, 0);
+    assert_eq!(cpu.world_stats().cache.fills, fills);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    assert!(
+        cpu.pixels()
+            .iter()
+            .all(|&pixel| pixel.to_le_bytes() == [0, 0, 0, 255])
+    );
 }
 
 #[test]
-fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
+fn linear_identity_lattice_invalidates_on_lighting_change_and_then_reuses() {
     use qa_render::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
     let mut assets = Assets::load();
     let base = assets
@@ -1292,10 +1336,21 @@ fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let first = packet(&mut frontend, &[(world, 0)], rgba_view(), &assets);
     assert_eq!(cpu.render(&first, &assets).rejected, 0);
-    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert_eq!(cpu.world_stats().rgba_pixels, 64);
     assert_eq!(cpu.world_stats().stage_spans, 0);
-    assert!(cpu.world_stats().factor_spans > 0);
-    assert_eq!(cpu.pixels()[4].to_le_bytes(), [128, 128, 128, 255]);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    // Mip0's original [0,255] base texels split at u=.5 (column4).
+    // The constant white bilinear lightmap preserves their native values.
+    let bright: Vec<_> = (0..64)
+        .map(|index| {
+            let value = if index % 8 < 4 { 0 } else { 255 };
+            u32::from_le_bytes([value, value, value, 255])
+        })
+        .collect();
+    assert_eq!(cpu.pixels(), bright);
+    assert!(cpu.world_stats().rgba_fills > 0);
+    let fills = cpu.world_stats().cache.fills;
     assert!(frontend.recycle(first).is_ok());
     let dim = packet(
         &mut frontend,
@@ -1307,11 +1362,39 @@ fn linear_identity_pair_keeps_independent_sampling_across_view_lighting() {
         &assets,
     );
     assert_eq!(cpu.render(&dim, &assets).rejected, 0);
-    assert_eq!(cpu.world_stats().rgba_spans, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
     assert_eq!(cpu.world_stats().stage_spans, 0);
-    assert!(cpu.world_stats().factor_spans > 0);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
     assert_eq!(cpu.world_stats().factor_fills, 0);
-    assert_eq!(cpu.pixels()[4].to_le_bytes(), [64, 64, 64, 255]);
+    assert_eq!(cpu.world_stats().rgba_fills, 1);
+    assert_eq!(cpu.world_stats().cache.fills, fills + 1);
+    // Native identity-light byte generation truncates255*.5 to127 before
+    // lighting the white cache texels. It leaves black texels at zero.
+    let shaded: Vec<_> = (0..64)
+        .map(|index| {
+            let value = if index % 8 < 4 { 0 } else { 127 };
+            u32::from_le_bytes([value, value, value, 255])
+        })
+        .collect();
+    assert_eq!(cpu.pixels(), shaded);
+    assert!(frontend.recycle(dim).is_ok());
+    let repeated = packet(
+        &mut frontend,
+        &[(world, 0)],
+        Refdef {
+            identity_light: 0.5,
+            ..rgba_view()
+        },
+        &assets,
+    );
+    assert_eq!(cpu.render(&repeated, &assets).rejected, 0);
+    assert!(cpu.world_stats().rgba_spans > 0);
+    assert!(cpu.world_stats().rgba_hits > 0);
+    assert_eq!(cpu.world_stats().rgba_fills, 0);
+    assert_eq!(cpu.world_stats().cache.fills, fills + 1);
+    assert_eq!(cpu.world_stats().stage_spans, 0);
+    assert_eq!(cpu.world_stats().factor_spans, 0);
+    assert_eq!(cpu.pixels(), shaded);
 }
 
 #[test]

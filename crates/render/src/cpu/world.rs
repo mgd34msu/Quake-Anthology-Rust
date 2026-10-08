@@ -2263,9 +2263,6 @@ fn rgba_span(
     if let Some(block) = block {
         if let Some(pixels) = cache.rgba_pixels(block) {
             let before = stats.pixels;
-            let texels = super::TexelView::cache(block.width, block.height, pixels);
-            let sampler = recipe.sampler(base);
-            let step = (1u64 << mip) as f32;
             for x in span.x..span.x + span.count {
                 let zi = primitive.planes.inverse_depth.at(x as f32, span.y as f32);
                 let index = span.y as usize * width as usize + x as usize;
@@ -2282,12 +2279,10 @@ fn rgba_span(
                     continue;
                 }
                 let coordinate = std::array::from_fn(|axis| {
-                    (primitive.planes.texture[axis].at(x as f32, span.y as f32) / zi
-                        - block.texture_mins[axis] as f32)
-                        / (step * [block.width, block.height][axis] as f32)
+                    primitive.planes.texture[axis].at(x as f32, span.y as f32) / zi
                 });
-                let source = sampler(texels, coordinate, [1.0; 4]);
-                buffers.pixels[index] = super::composite(0, source, None);
+                buffers.pixels[index] =
+                    super::rgba::Product::cached_pixel(block, pixels, coordinate);
                 buffers.palettes[index] = u32::MAX;
                 buffers.inverse_depth[index] = zi;
                 buffers.depth_ranks[index] = primitive.draw_rank;

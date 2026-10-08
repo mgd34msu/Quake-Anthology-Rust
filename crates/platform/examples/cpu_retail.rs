@@ -172,7 +172,7 @@ fn world_stats(stats: WorldStats) {
     // Fields shared with e9e6211d. Stage/cache categories may change between
     // kernels; the immutable packet and raw pixels define comparison fidelity.
     logger::console(format_args!(
-        "{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rejected\":{},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}",
+        "{{\"polygons\":{},\"patch_polygons\":{},\"spans\":{},\"pixels\":{},\"sky_spans\":{},\"sky_pixels\":{},\"stage_spans\":{},\"stage_pixels\":{},\"indexed_spans\":{},\"indexed_pixels\":{},\"rgba_spans\":{},\"rgba_pixels\":{},\"rgba_hits\":{},\"rgba_fills\":{},\"rgba_evictions\":{},\"rgba_rejected\":{},\"rgba_minified_spans\":{},\"rejected\":{},\"cache_cumulative\":{{\"hits\":{},\"fills\":{},\"evictions\":{},\"rejected\":{}}}}}",
         stats.polygons,
         stats.patch_polygons,
         stats.spans,
@@ -183,6 +183,13 @@ fn world_stats(stats: WorldStats) {
         stats.stage_pixels,
         stats.indexed_spans,
         stats.indexed_pixels,
+        stats.rgba_spans,
+        stats.rgba_pixels,
+        stats.rgba_hits,
+        stats.rgba_fills,
+        stats.rgba_evictions,
+        stats.rgba_rejected,
+        stats.rgba_minified_spans,
         stats.rejected,
         stats.cache.hits,
         stats.cache.fills,
