@@ -794,3 +794,70 @@ of that residual to one function.
 
 Evidence under `r3-20261008`: `diagnostic-bands-083ef9d0-report.json` and
 `diagnostic-bands-083ef9d0-{1,8}-q3dm1-cpu`.
+
+## THE-862 cached span and band-index checkpoint, 2026-10-08
+
+Commits `314fdd2`, `205693d` and `f9ff6bc0` add ordered native row indices,
+cold Product color/source-coordinate preparation and baseline SSE2 cached RGBA
+span consumption. The common edge scanner, sampling lattice and depth/rank
+semantics remain the comparison contract.
+
+The paired portable release developer examples use engine `dc9cd60c` before
+and `f9ff6bc0` after, with the same explicit `f9ff6bc0` benchmark source.
+Their release dependency caches were cleared separately; builds took 34.5131 s
+and 34.6078 s. Both app and platform allocation tracking are enabled; proof
+input is disabled. These are developer draw candidates, not installed binaries.
+
+The workload is the same fixed time-zero 640×400 retail scene. Each of the
+24 private runs used a fresh owner-profile copy, owned Xvfb/forced X11/private
+audio, 60 warm-up and 600 measured draws. Affinity masks are `23`, `22,23`,
+`20-23` and `16-23` for 1/2/4/8 bands; workers inherit those masks. No build,
+checker, debugger or profiler ran during the paired measurements. Private exit,
+candidate/profile preservation and recorded-PID cleanup passed for every run.
+
+| Map | Bands | Before median / p99 ms | After median / p99 ms | Median change |
+|---|---:|---:|---:|---:|
+| e1m1 | 1 | 2.1026 / 2.1321 | 2.0312 / 2.0547 | -3.40% |
+| base1 | 1 | 4.6417 / 4.8098 | 4.5602 / 4.5923 | -1.76% |
+| q3dm1 | 1 | 19.3386 / 20.9672 | 15.7264 / 16.4951 | -18.68% |
+| e1m1 | 2 | 2.1359 / 2.2358 | 2.0479 / 2.1350 | -4.12% |
+| base1 | 2 | 4.2346 / 4.8362 | 4.2325 / 4.7453 | -0.05% |
+| q3dm1 | 2 | 15.8899 / 19.9986 | 13.7973 / 16.3213 | -13.17% |
+| e1m1 | 4 | 0.9164 / 1.4509 | 1.2446 / 1.7895 | +35.81% |
+| base1 | 4 | 2.6223 / 2.8716 | 2.5479 / 2.7882 | -2.84% |
+| q3dm1 | 4 | 13.5284 / 15.5483 | 12.2644 / 13.6680 | -9.34% |
+| e1m1 | 8 | 1.0788 / 1.3306 | 1.0103 / 1.7342 | -6.35% |
+| base1 | 8 | 1.7426 / 2.8983 | 1.6407 / 2.1675 | -5.85% |
+| q3dm1 | 8 | 10.6704 / 14.7839 | 8.9466 / 12.4617 | -16.15% |
+
+Raw RGBA and inverse-depth bits are identical before/after and across all band
+counts within each map. Immutable workload fields and all reported backend and
+raster/cache counters match. Every measured calling-thread and worker allocation,
+reallocation and requested-byte count is zero. SDL/native heap, scene submission
+and presentation remain outside the direct-draw allocation gate.
+
+q3dm1 records 11,863,200 measured cache hits, zero fills, zero evictions and
+zero rejects at every count. Lifetime hits/fills are unchanged from the preceding
+band checkpoint, including 13,067,484 hits and 1,808 fills at eight bands.
+The one cache arena remains 33,554,432 bytes, divided among bands. Load-owned
+index payloads range from 22,064 to 176,512 bytes for e1m1, 31,620 to 252,960
+for base1 and 73,860 to 590,880 for q3dm1; these are separate from the rover
+budget. Cold material fields, source coordinates and other scratch are also
+additional memory.
+
+q3dm1 improves from 10.6704 to 8.9466 ms at eight bands and remains above 4 ms.
+The four-band e1m1 row regresses by 35.81%; it is retained and requires a matched
+recheck rather than qualification. Live lighting, complete static stage coverage,
+native-image acceptance, movement/gameplay and qualified installation remain open.
+
+A separate process profile of `f9ff6bc0` captured 13,009 samples with zero lost
+samples and normal private cleanup. Its timings are discarded. Self samples
+include span consumption 22.15%, bilinear sampling 15.82%, raster setup 10.85%,
+edge insertion 4.58%, shared view preparation 3.95%, clipping 3.91%, surface-layout
+calculation 3.61% and mip selection 2.84%. These aggregate CPU categories do not
+identify a material or provide wall-time attribution.
+
+Evidence under `r3-20261008`: `fixed-bands-paired-before-a-report.json`,
+`fixed-bands-paired-after-a-report.json`, `fixed-bands-paired-after-a-comparison.json`,
+the 24 corresponding private-run directories with raw pixels/depth and all-thread
+counts, and `profile-bands8-f9ff6bc0-q3dm1-cpu`.
