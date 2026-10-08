@@ -525,3 +525,50 @@ writes, including material passes, rather than unique screen pixels.
 
 Evidence: `q3dm1-cpu-workload-before-a/{workload.json,runtime.log,result.json}`
 under `r3-20261008`.
+
+
+## THE-862 serial prepared RGB checkpoint, 2026-10-08
+
+Clean portable commit `e9e6211d249cc38954e98d5fac94fa96a4a517dd`
+built the normal candidate in 32.7986 s and a separate allocation-tracked
+developer candidate in 27.9215 s. Both disabled proof input. Each CPU run used
+owned Xvfb, core 23, 640×400, a fresh copied owner profile, 60 warm-up frames
+and 600 measured uncapped frames. No build, checker, profiler or debugger ran
+concurrently. All six runs exited normally, preserved candidate/profile and
+cleaned their recorded owned PIDs.
+
+| Map / candidate | Simulation median / p99 ns | Client median / p99 ns | Scene median / p99 ns | Draw median / p99 ns | Present median / p99 ns |
+|---|---:|---:|---:|---:|---:|
+| e1m1 / normal | 1,520 / 2,060 | 1,910 / 2,650 | 27,845 / 35,610 | 2,420,417 / 2,467,182 | 1,802,231 / 1,925,761 |
+| base1 / normal | 100,035 / 109,750 | 88,315 / 99,310 | 85,540 / 105,210 | 5,239,064 / 5,399,344 | 1,811,486.5 / 2,165,002 |
+| q3dm1 / normal | 32,840 / 45,050 | 22,950 / 35,160 | 215,990 / 278,340 | 52,107,273 / 57,219,412 | 2,070,131.5 / 2,773,122 |
+| e1m1 / tracking | 1,510 / 2,280 | 1,880 / 2,540 | 28,470 / 37,420 | 2,425,332 / 2,501,312 | 1,802,676 / 1,873,562 |
+| base1 / tracking | 101,020.5 / 115,360 | 88,320 / 96,940 | 86,125.5 / 147,010 | 5,231,689 / 5,859,534 | 1,814,011.5 / 2,219,572 |
+| q3dm1 / tracking | 33,435 / 41,230 | 22,185 / 28,590 | 208,925 / 233,650 | 52,196,412.5 / 53,734,119 | 2,074,537 / 2,498,792 |
+
+All three tracked runs recorded 600 measured frames, zero failing frames,
+zero allocations, zero reallocations and zero requested bytes on the calling
+Rust thread. Rendering workers are not wired in this checkpoint. SDL and
+native heap work are outside that counter; the normal candidate has no
+allocation instrumentation.
+
+The conservative RGB cache applies only to exact nearest-base, constant-light
+pairs. q3dm1 used none of these recipes: hits, fills, evictions and rejects
+were zero over 661 rendered frames including startup and warm-up. Its final
+normal frame contained 3,764 polygons, including 1,487 patch polygons, and
+509,811 pixel writes. Sky wrote 81,730 pixels; generic stages wrote 428,081.
+Curves contributed 55,424 writes and multiple stages 425,343, overlapping
+subsets of the generic count. Final-frame rejects were zero; diagnostics
+were disabled, so this does not prove zero rejects throughout the run.
+
+The normal draw medians are 2.4204 ms on e1m1, 5.2391 ms on base1 and
+52.1073 ms on q3dm1. Base1 and q3dm1 exceed the 4 ms target. Prepared RGB
+mip sampling changes the prior image workload, and live shader time can
+change animated pixel/span counts between runs. These measurements establish
+a new serial checkpoint; they do not establish a fidelity-matched regression
+percentage or speedup. Broad filtered static caching, prepare-once parallel
+raster and native image/gameplay qualification remain open. No installation.
+
+Evidence under `r3-20261008`: `serial-rgb-report.json` and
+`serial-rgb-{normal,tracking}-{e1m1,base1,q3dm1}-cpu-a` directories, each
+with runtime log, private-run result, workload counters and window capture.
