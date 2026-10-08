@@ -135,7 +135,7 @@ impl std::ops::BitOr for CollisionTags {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CallbackId(pub u16);
+pub struct CallbackId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientId(pub u8);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,17 +146,25 @@ pub struct TextId {
     pub generation: u32,
 }
 
+/// Module clocks retain their native units. Numeric width conversion belongs
+/// to the module timing rule or the protocol/ABI boundary, not entity identity.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ThinkTime {
+    Seconds(f64),
+    Milliseconds(i64),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Think {
-    pub at: f64,
-    pub callback: CallbackId,
+    pub at: Option<ThinkTime>,
+    pub callback: Option<CallbackId>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallbackCall {
     Think {
         entity: EntityId,
-        time: f64,
+        time: ThinkTime,
     },
     Touch {
         entity: EntityId,

@@ -1076,3 +1076,43 @@ Evidence folder `two-physical-intakes-20261008`: `host.json` and
 `private/verification.json`, with per-backend logs and reports. These are
 window-shell and host checks, not installed three-map or gameplay acceptance.
 No installation was performed.
+
+### THE-709: native think scheduling checkpoint
+
+The common dispatcher now has independent deadline/function columns and one
+per-entity entry. Each owning module supplies its own native clock and loaded
+scheduling rule. Q1 calls once with its float clamp; QW repeats due reschedules;
+Q2 retains float times promoted for the double 0.001 tolerance; rerelease keeps
+exact signed int64 milliseconds; Q3 compares integer times through float while
+retaining its integer callback context. Function handles are u32, matching the
+native function-index domain instead of imposing a 16-bit engine limit.
+
+The original-source comparison runs complete unchanged SV_RunThink/G_RunThink
+functions, with minimal type/callback fixtures. It also extracts the rerelease
+gtime_t definition and both millisecond literals unchanged. Each row compares
+100 raw u64 values for three entities, independent module clocks and explicit
+caller order. This includes callback timestamps, deadline clearing, callback
+persistence, finite reschedules, function changes and removal without slot reuse.
+
+| Scheduling rule | Native/Rust rows matched | Dispatch allocation/reallocation count |
+| --- | ---: | ---: |
+| Q1 | 2,965 / 2,965 | 0 |
+| QuakeWorld | 2,965 / 2,965 | 0 |
+| Q2 classic | 2,690 / 2,690 | 0 |
+| Q2 rerelease | 2,290 / 2,290 | 0 |
+| Q3 / Team Arena | 2,480 / 2,480 | 0 |
+
+Every rule passed the allocator positive control and an identical-record
+comparison; a one-bit timestamp mutation was rejected by the same comparator.
+The separate 400-entity mixed-rule loop made 4,000,000 callbacks over 10,000
+iterations with zero counted Rust allocations after loading. No wall-time or
+performance improvement is claimed for these checks.
+
+Evidence folder `native-thinks-20261008`: `comparison/report.json`, original
+source spans, fixture/raw-output files and compiler logs; separate
+`dispatch-allocations.json`. The allocation scope is the calling thread after
+cold setup. Native null-callback fatal errors are caught by the reference
+fixture and compared with the required scoped Rust rejection. Free teardown
+is normalized. Caller-order fixtures are not full native frame traversal.
+Module VM execution, touch/use ABI completion, physics-phase integration,
+live monsters and installed acceptance remain open; no install was performed.

@@ -207,6 +207,18 @@ See-through liquids, RGB/colored CPU light and new effects require explicit
 cvars or custom/combined games. Mods use their target engine's presentation;
 THE-896 Arcane Dimensions targets Quakespasm-Spiked.
 
+THE-709 stores think deadlines and function handles in independent entity SoA
+columns. Clearing a due deadline preserves its function. The shared per-entity
+entry selects the owning module's scheduling rule and supplied native clock,
+independently of map and movement. Seconds and signed integer milliseconds stay
+tagged; Q1/QW/Q2 float narrowing, Q3 float comparison of native integer times
+and rerelease exact int64 milliseconds remain native. Callback handles are u32,
+without an invented 16-bit function limit. QW repeats due reschedules after
+re-resolving the same lifetime and rereading its function/owner. Module adapter
+rejection stops that entity; VM execution budgets belong to the module host.
+Native physics providers call this entry at their original phase positions;
+the slot-scan helper does not establish a universal pre-physics think phase.
+
 THE-895 keeps compiled gameplay PVS for module sight, snapshot culling and
 sound PHS. Enhanced render visibility is separate and enabled only by liquid
 alpha below 1, custom games or a mod that targets it; Q2/Q3 retain shipped

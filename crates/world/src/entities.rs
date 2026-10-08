@@ -1,6 +1,6 @@
 use qa_core::primitives::{
     Body, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModuleId, NameId,
-    NativeEntity, Think, Vec3,
+    NativeEntity, ThinkTime, Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
@@ -130,7 +130,8 @@ pub struct EntityColumns {
     pub mins: Box<[Vec3]>,
     pub maxs: Box<[Vec3]>,
     pub angles: Box<[Vec3]>,
-    pub next_think: Box<[Option<Think>]>,
+    pub next_think: Box<[Option<ThinkTime>]>,
+    pub think_fn: Box<[Option<CallbackId>]>,
     pub touch: Box<[Option<CallbackId>]>,
     pub use_fn: Box<[Option<CallbackId>]>,
     pub blocked: Box<[Option<CallbackId>]>,
@@ -162,6 +163,7 @@ impl EntityColumns {
             maxs: vec![Vec3::default(); capacity].into_boxed_slice(),
             angles: vec![Vec3::default(); capacity].into_boxed_slice(),
             next_think: vec![None; capacity].into_boxed_slice(),
+            think_fn: vec![None; capacity].into_boxed_slice(),
             touch: vec![None; capacity].into_boxed_slice(),
             use_fn: vec![None; capacity].into_boxed_slice(),
             blocked: vec![None; capacity].into_boxed_slice(),
@@ -190,6 +192,7 @@ impl EntityColumns {
         self.maxs[slot] = Vec3::default();
         self.angles[slot] = Vec3::default();
         self.next_think[slot] = None;
+        self.think_fn[slot] = None;
         self.touch[slot] = None;
         self.use_fn[slot] = None;
         self.blocked[slot] = None;

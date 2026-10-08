@@ -20,9 +20,9 @@ fn think(world: &mut World, _: ModuleId, _: u32, call: CallbackCall) -> bool {
     };
     std::hint::black_box(entity);
     world.calls += 1;
-    world.entities.columns.next_think[entity.slot as usize] = Some(Think {
-        at: time + 1.0,
-        callback: CallbackId(0),
+    world.entities.columns.next_think[entity.slot as usize] = Some(match time {
+        ThinkTime::Seconds(time) => ThinkTime::Seconds(time + 1.0),
+        ThinkTime::Milliseconds(time) => ThinkTime::Milliseconds(time + 1000),
     });
     true
 }
@@ -32,10 +32,16 @@ fn main() -> Result<(), &'static str> {
         entities: EntityTable::new(512, 1).map_err(|_| "entities")?,
         calls: 0,
     };
-    let table = FunctionTable::load((1..=3).map(|module| {
+    let table = FunctionTable::load((1..=5).map(|module| {
         (
             ModuleId(module),
-            ThinkTiming::Current { tolerance: 0.0 },
+            match module {
+                1 => ThinkTiming::Quake,
+                2 => ThinkTiming::QuakeWorld,
+                3 => ThinkTiming::Quake2,
+                4 => ThinkTiming::Quake2Rerelease,
+                _ => ThinkTiming::Quake3,
+            },
             vec![FunctionBinding {
                 entry: 0,
                 call: think,
@@ -44,19 +50,33 @@ fn main() -> Result<(), &'static str> {
     }))
     .map_err(|_| "functions")?;
     for index in 0..400 {
+        let module = ModuleId(index % 5 + 1);
         let id = world
             .entities
-            .allocate(1.0, ModuleId(index % 3 + 1), AllocationPolicy::EDICT)
+            .allocate(1.0, module, AllocationPolicy::EDICT)
             .ok_or("entity capacity")?
             .id;
-        world.entities.columns.next_think[id.slot as usize] = Some(Think {
-            at: 1.0,
-            callback: CallbackId(0),
+        world.entities.columns.next_think[id.slot as usize] = Some(if module.0 <= 3 {
+            ThinkTime::Seconds(1.0)
+        } else {
+            ThinkTime::Milliseconds(1000)
         });
+        world.entities.columns.think_fn[id.slot as usize] = Some(CallbackId(0));
     }
     allocation_counter::start();
     for frame in 1..=10_000 {
-        let stats = run_thinks(&mut world, &table, f64::from(frame), f64::from(frame));
+        let stats = run_thinks(&mut world, &table, |module| {
+            Some(if module.0 <= 3 {
+                ThinkFrame::Seconds {
+                    now: f64::from(frame),
+                    step: 0.01,
+                }
+            } else {
+                ThinkFrame::Milliseconds {
+                    now: i64::from(frame) * 1000,
+                }
+            })
+        });
         if stats.called != 400 || stats.rejected != 0 {
             return Err("think dispatch count");
         }
