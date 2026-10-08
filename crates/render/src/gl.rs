@@ -3,8 +3,8 @@
 //! Projection and stage order follow qsrc Q3 tr_main.c and tr_backend.c.
 use crate::BackendStats;
 use crate::assets::{
-    AlphaTest, Assets, CubeSkyParams, Cull, DepthFunc, Filter, MaterialId, MaterialSettings, Sky,
-    Stage, StageTexture, TcGen, Vertex, Wrap,
+    AlphaTest, Assets, CubeSkyParams, Cull, DepthFunc, Filter, MaterialId, MaterialSettings,
+    Sampler, Sky, Stage, StageTexture, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
     BlendPhase, Command, CommandList, Draw2d, DrawKind, Refdef, SceneEntity, Span, Viewport,
@@ -262,6 +262,7 @@ const FRAGMENT_SHADER: &str = r#"#version 440 core
 uniform sampler2D u_image;
 uniform int u_alpha_test;
 uniform int u_clamp;
+uniform vec4 u_image_scale;
 in vec2 texcoord;
 in vec4 color;
 layout(location=0) out vec4 fragment;
@@ -270,6 +271,7 @@ void main() {
     if(u_clamp==1) uv=clamp(uv,vec2(0),vec2(1));
     if(u_clamp==2) { vec2 edge=0.5/vec2(textureSize(u_image,0)); uv=clamp(uv,edge,vec2(1)-edge); }
     vec4 value = texture(u_image, uv) * color;
+    value.rgb *= u_image_scale.rgb;
     if (u_alpha_test == 1 && value.a <= 0.0) discard;
     if (u_alpha_test == 2 && value.a < 0.5) discard;
     if (u_alpha_test == 3 && value.a >= 0.5) discard;
@@ -309,6 +311,12 @@ struct Uniforms {
     alpha_gen: i32,
     alpha_test: i32,
     clamp: i32,
+    image_scale: i32,
+}
+#[derive(Clone, Copy)]
+struct TextureParams {
+    inverse_intensity: f32,
+    sampler: Option<Sampler>,
 }
 #[derive(Default)]
 struct State {
@@ -365,6 +373,7 @@ pub struct GlBackend {
     static_buffers: [u32; 2],
     meshes: Box<[Mesh]>,
     textures: Box<[u32]>,
+    texture_params: Box<[TextureParams]>,
     samplers: [u32; 8],
     table_buffer: u32,
     table_texture: u32,
@@ -434,6 +443,7 @@ impl GlBackend {
                 alpha_gen: (gl.uniform_location)(program, c"u_alpha_gen".as_ptr()),
                 alpha_test: (gl.uniform_location)(program, c"u_alpha_test".as_ptr()),
                 clamp: (gl.uniform_location)(program, c"u_clamp".as_ptr()),
+                image_scale: (gl.uniform_location)(program, c"u_image_scale".as_ptr()),
             }
         };
         let mut backend = Self {
@@ -448,6 +458,7 @@ impl GlBackend {
             static_buffers: [0; 2],
             meshes: Box::new([]),
             textures: Box::new([]),
+            texture_params: Box::new([]),
             samplers: [0; 8],
             table_buffer: 0,
             table_texture: 0,
@@ -486,7 +497,7 @@ impl GlBackend {
             (gl.cull_face)(0x0404);
             (gl.disable)(0x809d); // No multisample change to the native image.
             (gl.disable)(0x0bd0); // Explicit byte-color output; no default dithering.
-            (gl.disable)(0x8db9); // Native gamma is a presentation operation.
+            (gl.disable)(0x8db9); // Native byte upload lookups; no implicit sRGB transform.
             (gl.color_mask)(1, 1, 1, 1);
             (gl.bind_vertex_array)(0);
             let error = (gl.get_error)();
@@ -561,6 +572,14 @@ impl GlBackend {
             .ok_or("GL static index size overflow")?;
         self.meshes = meshes.into_boxed_slice();
         self.textures = vec![0; assets.images().len()].into_boxed_slice();
+        self.texture_params = assets
+            .images()
+            .iter()
+            .map(|image| TextureParams {
+                inverse_intensity: image.prepared.as_ref().map_or(1.0, |p| p.inverse_intensity),
+                sampler: image.native_sampler,
+            })
+            .collect();
         let texture_count =
             i32::try_from(self.textures.len()).map_err(|_| "GL texture table full")?;
         let gl = &self.gl;
@@ -1603,9 +1622,11 @@ impl GlBackend {
             unsafe { (self.gl.bind_texture)(TEXTURE_2D, texture) };
             self.state.texture = texture;
         }
-        let sampler_index = usize::from(stage.sampler.wrap == Wrap::Clamp)
-            | (usize::from(stage.sampler.filter == Filter::Linear) << 1)
-            | (usize::from(stage.sampler.mipmaps) << 2);
+        let texture_params = self.texture_params[prepared.image.0 as usize];
+        let image_sampler = texture_params.sampler.unwrap_or(stage.sampler);
+        let sampler_index = usize::from(image_sampler.wrap == Wrap::Clamp)
+            | (usize::from(image_sampler.filter == Filter::Linear) << 1)
+            | (usize::from(image_sampler.mipmaps) << 2);
         let sampler = self.samplers[sampler_index];
         if self.state.sampler != sampler {
             unsafe {
@@ -1613,11 +1634,22 @@ impl GlBackend {
             }
             self.state.sampler = sampler;
         }
-        self.stage_uniforms(&prepared, deforms, matrix);
+        let rgb_scale = match stage.texture_intensity {
+            TextureIntensity::Preserve => 1.0,
+            TextureIntensity::NeutralizeUpload => texture_params.inverse_intensity,
+        };
+        self.stage_uniforms(&prepared, deforms, matrix, image_sampler, rgb_scale);
         true
     }
 
-    fn stage_uniforms(&self, prepared: &PreparedStage, deforms: [DeformOp; 3], matrix: &[f32; 16]) {
+    fn stage_uniforms(
+        &self,
+        prepared: &PreparedStage,
+        deforms: [DeformOp; 3],
+        matrix: &[f32; 16],
+        sampler: Sampler,
+        rgb_scale: f32,
+    ) {
         let (stage, inputs) = (prepared.stage, prepared.inputs);
         let color = prepared.uniform_color.map(|v| v as f32);
         let rgb = match stage.rgb_gen {
@@ -1660,6 +1692,11 @@ impl GlBackend {
         unsafe {
             (self.gl.uniform_matrix)(self.uniforms.mvp, 1, 0, matrix.as_ptr());
             (self.gl.uniform_color)(self.uniforms.color, 1, color.as_ptr());
+            (self.gl.uniform_color)(
+                self.uniforms.image_scale,
+                1,
+                [rgb_scale, rgb_scale, rgb_scale, 1.0].as_ptr(),
+            );
             (self.gl.uniform_color)(
                 self.uniforms.alpha_value,
                 1,
@@ -1730,9 +1767,9 @@ impl GlBackend {
             );
             (self.gl.uniform_integer)(
                 self.uniforms.clamp,
-                if stage.sampler.wrap == Wrap::Repeat {
+                if sampler.wrap == Wrap::Repeat {
                     0
-                } else if stage.sampler.filter == Filter::Nearest {
+                } else if sampler.filter == Filter::Nearest {
                     2
                 } else {
                     1

@@ -625,10 +625,10 @@ impl WorldRaster {
                             valid = false;
                             break;
                         };
-                        if assets.image(prepared.image).is_none() {
+                        let Some(image) = assets.image(prepared.image) else {
                             valid = false;
                             break;
-                        }
+                        };
                         let Some(stage_count) =
                             self.clip(camera, assets, primitive, Some(prepared), evaluator)
                         else {
@@ -646,7 +646,7 @@ impl WorldRaster {
                         self.stages[self.stage_count] = StagePlanes {
                             prepared: Some(prepared),
                             planes,
-                            sampler: Some(super::stage_sampler(prepared.stage.sampler)),
+                            sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
                         };
                         self.stage_count += 1;
                         primitive.stages += 1;
@@ -1213,6 +1213,11 @@ impl WorldRaster {
                 self.reject(stats);
                 return;
             };
+            let Some(image) = assets.image(prepared.image) else {
+                self.reject(stats);
+                self.stage_count = primitive.first_stage;
+                return;
+            };
             let Some(count) = self.clip(camera, assets, primitive, Some(prepared), evaluator)
             else {
                 self.stage_count = primitive.first_stage;
@@ -1244,7 +1249,7 @@ impl WorldRaster {
             self.stages[self.stage_count] = StagePlanes {
                 prepared: Some(prepared),
                 planes,
-                sampler: Some(super::stage_sampler(prepared.stage.sampler)),
+                sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
             };
             self.stage_count += 1;
             primitive.stages += 1;

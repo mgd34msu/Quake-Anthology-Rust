@@ -47,6 +47,9 @@ pub struct Image {
     /// Cold native upload levels. Both consumers may use these numeric mip
     /// resources; the original indexed mips and unprocessed RGBA stay intact.
     pub prepared: Option<upload::PreparedImage>,
+    /// Native first image registration owns wrap/mip flags. Other registrations
+    /// leave this unset and use the material stage's explicit sampler.
+    pub native_sampler: Option<Sampler>,
 }
 /// All frame-time texture choices are numeric. Lightmap is resolved from the
 /// surface binding, so a script material is shared across atlas pages/worlds.
@@ -82,6 +85,14 @@ pub struct Sampler {
     pub wrap: Wrap,
     pub filter: Filter,
     pub mipmaps: bool,
+}
+/// Native unlit/translucent stages can compensate for an image's cold upload
+/// intensity. Keep this float operation after the shared byte-color generator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextureIntensity {
+    #[default]
+    Preserve,
+    NeutralizeUpload,
 }
 impl Default for Sampler {
     fn default() -> Self {
@@ -126,6 +137,7 @@ pub enum DepthFunc {
 pub struct Stage {
     pub texture: StageTexture,
     pub sampler: Sampler,
+    pub texture_intensity: TextureIntensity,
     pub blend: Option<StageBlend>,
     pub rgb_gen: RgbGen,
     pub alpha_gen: AlphaGen,
@@ -141,6 +153,7 @@ impl Default for Stage {
         Self {
             texture: StageTexture::default(),
             sampler: Sampler::default(),
+            texture_intensity: TextureIntensity::Preserve,
             blend: None,
             rgb_gen: RgbGen::Identity,
             alpha_gen: AlphaGen::Identity,
@@ -272,6 +285,7 @@ impl Assets {
                 rgba: vec![255; 4].into_boxed_slice(),
                 indexed: None,
                 prepared: None,
+                native_sampler: None,
             }],
             materials: vec![Material {
                 name: "*white".into(),
@@ -317,6 +331,7 @@ impl Assets {
             rgba: rgba.into(),
             indexed: None,
             prepared: None,
+            native_sampler: None,
         });
         Ok(id)
     }
@@ -380,6 +395,7 @@ impl Assets {
             rgba: rgba.into_boxed_slice(),
             indexed: Some(texture),
             prepared: None,
+            native_sampler: None,
         });
         Ok(id)
     }
@@ -395,6 +411,36 @@ impl Assets {
         let prepared = upload::prepare_rgba(image.width, image.height, &image.rgba, params)
             .map_err(|_| "invalid image preparation")?;
         image.prepared = Some(prepared);
+        Ok(())
+    }
+    /// Prepare a separate native GL expansion (palette correction or alpha
+    /// fringe repair), retaining the raw RGBA and original software indices.
+    /// A failed preparation leaves the previous prepared levels intact.
+    pub fn prepare_image_with_rgba(
+        &mut self,
+        id: ImageId,
+        rgba: &[u8],
+        params: upload::UploadParams,
+    ) -> Result<(), &'static str> {
+        let image = self
+            .images
+            .get_mut(id.0 as usize)
+            .ok_or("invalid image handle")?;
+        let prepared = upload::prepare_rgba(image.width, image.height, rgba, params)
+            .map_err(|_| "invalid image preparation")?;
+        image.prepared = Some(prepared);
+        Ok(())
+    }
+    pub fn set_image_native_sampler(
+        &mut self,
+        id: ImageId,
+        sampler: Sampler,
+    ) -> Result<(), &'static str> {
+        let image = self
+            .images
+            .get_mut(id.0 as usize)
+            .ok_or("invalid image handle")?;
+        image.native_sampler = Some(sampler);
         Ok(())
     }
     pub fn register_material(

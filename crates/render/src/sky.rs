@@ -201,7 +201,12 @@ pub struct CubeVertex {
     pub uv: [f32; 2],
 }
 
-pub fn cube_vertex(face: CubeFace, st: [f32; 2], distance: f32, texcoord_range: [f32; 2]) -> CubeVertex {
+pub fn cube_vertex(
+    face: CubeFace,
+    st: [f32; 2],
+    distance: f32,
+    texcoord_range: [f32; 2],
+) -> CubeVertex {
     let base = [st[0] * distance, st[1] * distance, distance];
     let direction = Vec3(ST_TO_VEC[face.index()].map(|axis| component(base, axis)));
     CubeVertex {
@@ -264,7 +269,11 @@ fn project_face(direction: Vec3, face: CubeFace) -> Option<[f32; 2]> {
     st.iter().all(|value| value.is_finite()).then_some(st)
 }
 fn box_uv(st: [f32; 2], texcoord_range: [f32; 2]) -> [f32; 2] {
-    let uv = st.map(|value| ((value + 1.0) * 0.5).max(texcoord_range[0]).min(texcoord_range[1]));
+    let uv = st.map(|value| {
+        ((value + 1.0) * 0.5)
+            .max(texcoord_range[0])
+            .min(texcoord_range[1])
+    });
     [uv[0], 1.0 - uv[1]]
 }
 
@@ -380,8 +389,7 @@ pub fn split_layered_sky(
             let color = if index == 0 {
                 [average_rgb[0], average_rgb[1], average_rgb[2], 0]
             } else {
-                let color = palette[index as usize];
-                [color[0], color[1], color[2], 255]
+                palette[index as usize]
             };
             masked_rgba[out * 4..out * 4 + 4].copy_from_slice(&color);
         }

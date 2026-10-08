@@ -1,5 +1,5 @@
 //! Cold VFS image/palette resolution. Frames retain numeric asset handles.
-use crate::assets::{Assets, ImageId, PaletteId};
+use crate::assets::{Assets, ImageId, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use qa_content::vfs::{Vfs, VfsError};
 use qa_formats::FormatError;
@@ -16,6 +16,7 @@ pub enum ResourceError {
     Size,
     ShortRead,
     Asset(&'static str),
+    Upload(upload::UploadError),
 }
 impl From<VfsError> for ResourceError {
     fn from(error: VfsError) -> Self {
@@ -25,6 +26,246 @@ impl From<VfsError> for ResourceError {
 impl From<FormatError> for ResourceError {
     fn from(error: FormatError) -> Self {
         Self::Format(error)
+    }
+}
+impl From<upload::UploadError> for ResourceError {
+    fn from(error: upload::UploadError) -> Self {
+        Self::Upload(error)
+    }
+}
+
+/// Raw load settings selected from the world's cvar source, independently of
+/// the client's movement/modules. Gamma is already an exponent: legacy
+/// vid_gamma, or the reciprocal of canonical r_gamma.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageSettings {
+    pub gamma_exponent: f32,
+    /// GLQuake's startup palette correction; its gamma cvar is separate.
+    pub palette_exponent: f32,
+    pub intensity: f32,
+    pub picmip: u8,
+    pub round_images_down: bool,
+    pub simple_mipmaps: bool,
+    /// Bounded cold maximum, not a claim about the current driver's limit.
+    pub max_dimension: u32,
+    /// Native Q2 gl_skymip affects sky UV bounds, not its upload mip chain.
+    pub sky_mip: bool,
+}
+impl ImageSettings {
+    pub fn native(family: u8) -> Self {
+        Self {
+            gamma_exponent: 1.0,
+            palette_exponent: if family == 1 { 0.7 } else { 1.0 },
+            intensity: if family == 2 { 2.0 } else { 1.0 },
+            picmip: u8::from(family == 3),
+            round_images_down: family != 1,
+            simple_mipmaps: true,
+            max_dimension: match family {
+                1 => 1024,
+                2 => 256,
+                _ => upload::MAX_DIMENSION,
+            },
+            sky_mip: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageRole {
+    Surface,
+    Pic,
+    LayeredSky,
+    CubeSky,
+    Lightmap,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageUse {
+    pub role: ImageRole,
+    pub sampler: Sampler,
+    pub allow_picmip: bool,
+}
+impl Default for ImageUse {
+    fn default() -> Self {
+        Self {
+            role: ImageRole::Surface,
+            sampler: Sampler::default(),
+            allow_picmip: true,
+        }
+    }
+}
+impl ImageUse {
+    pub fn pic() -> Self {
+        Self {
+            role: ImageRole::Pic,
+            sampler: Sampler {
+                mipmaps: false,
+                ..Sampler::default()
+            },
+            allow_picmip: false,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedImage {
+    pub id: ImageId,
+    /// Native first-registration flags own the effective image sampler.
+    pub sampler: Sampler,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageConflict {
+    pub name: String,
+    pub first: ImageUse,
+    pub requested: ImageUse,
+}
+
+struct ImageRecipes {
+    policy: RasterPolicy,
+    settings: ImageSettings,
+    gamma: upload::RgbLut,
+    light: upload::LightScale,
+}
+impl ImageRecipes {
+    fn new(policy: RasterPolicy, settings: ImageSettings) -> Result<Self, ResourceError> {
+        if settings.picmip >= 32
+            || settings.max_dimension == 0
+            || settings.max_dimension > upload::MAX_DIMENSION
+        {
+            return Err(upload::UploadError::Extent.into());
+        }
+        let gamma = upload::gamma_lut(
+            if policy == RasterPolicy::Standard {
+                settings.palette_exponent
+            } else {
+                settings.gamma_exponent
+            },
+            match policy {
+                RasterPolicy::Standard => upload::GammaCurve::PalettePower,
+                RasterPolicy::Quake2 => upload::GammaCurve::HalfPixelPower,
+                RasterPolicy::Quake3 => upload::GammaCurve::BytePower,
+            },
+        )?;
+        let light = upload::light_scale(gamma, settings.intensity)?;
+        Ok(Self {
+            policy,
+            settings,
+            gamma,
+            light,
+        })
+    }
+    fn effective_use(&self, mut usage: ImageUse) -> ImageUse {
+        if matches!(
+            usage.role,
+            ImageRole::Pic | ImageRole::LayeredSky | ImageRole::Lightmap
+        ) || (self.policy == RasterPolicy::Quake2 && usage.role == ImageRole::CubeSky)
+        {
+            usage.sampler.mipmaps = false;
+            usage.allow_picmip = false;
+        }
+        usage
+    }
+    fn params(&self, usage: ImageUse) -> Result<upload::UploadParams, ResourceError> {
+        use upload::{ColorOrder, ExtentRound, MipmapBuild, ResizeFilter, UploadExtent};
+        let usage = self.effective_use(usage);
+        if matches!(usage.role, ImageRole::Lightmap | ImageRole::LayeredSky) {
+            return Ok(upload::UploadParams::default());
+        }
+        let mipmaps = usage.sampler.mipmaps;
+        let settings = self.settings;
+        let round = if settings.round_images_down {
+            ExtentRound::Down
+        } else {
+            ExtentRound::Up
+        };
+        let (extent, resize, kernel, order, rgb_lut, inverse_intensity) = match self.policy {
+            RasterPolicy::Standard => (
+                UploadExtent::PowerOfTwo {
+                    round: ExtentRound::Up,
+                    // GLQuake applies gl_picmip even to non-mipmapped pics.
+                    drop: settings.picmip,
+                    max_dimension: settings.max_dimension,
+                },
+                ResizeFilter::Nearest,
+                MipmapBuild::LegacyBox,
+                ColorOrder::BeforeResize,
+                self.light.rgb_lut,
+                self.light.inverse_intensity,
+            ),
+            RasterPolicy::Quake2 => (
+                UploadExtent::PowerOfTwo {
+                    round: if mipmaps { round } else { ExtentRound::Up },
+                    drop: if mipmaps && usage.allow_picmip {
+                        settings.picmip
+                    } else {
+                        0
+                    },
+                    max_dimension: settings.max_dimension,
+                },
+                ResizeFilter::FourTap,
+                MipmapBuild::LegacyBox,
+                if mipmaps {
+                    ColorOrder::AfterResize
+                } else {
+                    ColorOrder::AfterResizeIfChanged
+                },
+                if mipmaps {
+                    self.light.rgb_lut
+                } else {
+                    self.gamma
+                },
+                if mipmaps {
+                    self.light.inverse_intensity
+                } else {
+                    1.0
+                },
+            ),
+            RasterPolicy::Quake3 => {
+                let kernel = if settings.simple_mipmaps {
+                    MipmapBuild::Box
+                } else {
+                    MipmapBuild::Weighted
+                };
+                if kernel == MipmapBuild::Weighted {
+                    return Err(upload::UploadError::WeightedMipUnsupported.into());
+                }
+                (
+                    UploadExtent::PowerOfTwoMip {
+                        round,
+                        drop: if usage.allow_picmip {
+                            settings.picmip
+                        } else {
+                            0
+                        },
+                        max_dimension: settings.max_dimension,
+                        kernel,
+                    },
+                    ResizeFilter::FourTap,
+                    kernel,
+                    if mipmaps {
+                        ColorOrder::AfterResize
+                    } else {
+                        ColorOrder::AfterResizeIfChanged
+                    },
+                    if mipmaps {
+                        self.light.rgb_lut
+                    } else {
+                        self.gamma
+                    },
+                    if mipmaps {
+                        self.light.inverse_intensity
+                    } else {
+                        1.0
+                    },
+                )
+            }
+        };
+        Ok(upload::UploadParams {
+            extent,
+            resize,
+            mipmaps: if mipmaps { kernel } else { MipmapBuild::None },
+            color_order: order,
+            rgb_lut,
+            inverse_intensity,
+        })
     }
 }
 
@@ -112,16 +353,47 @@ pub struct Images<'a> {
     pub assets: &'a mut Assets,
     vfs: &'a Vfs,
     reader: ArchiveReader,
-    resolved: Vec<(String, ImageId)>,
+    recipes: ImageRecipes,
+    resolved: Vec<(String, ResolvedImage, ImageUse)>,
+    pub conflicts: Vec<ImageConflict>,
 }
 impl<'a> Images<'a> {
-    pub fn new(vfs: &'a Vfs, assets: &'a mut Assets) -> Self {
-        Self {
+    pub fn new(
+        vfs: &'a Vfs,
+        assets: &'a mut Assets,
+        policy: RasterPolicy,
+        settings: ImageSettings,
+    ) -> Result<Self, ResourceError> {
+        Ok(Self {
             assets,
             vfs,
             reader: ArchiveReader::default(),
+            recipes: ImageRecipes::new(policy, settings)?,
             resolved: Vec::new(),
-        }
+            conflicts: Vec::new(),
+        })
+    }
+    pub fn upload_params(&self, usage: ImageUse) -> Result<upload::UploadParams, ResourceError> {
+        self.recipes.params(usage)
+    }
+    /// Correct palette RGB before sky splitting/averaging, as R_InitSky reads
+    /// the already-corrected d_8to24table rather than correcting its average.
+    pub fn corrected_palette(&self, palette: PaletteId) -> Result<[[u8; 4]; 256], ResourceError> {
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing image palette"))?;
+        Ok(std::array::from_fn(|index| {
+            let mut color = colors.color(index as u8).to_le_bytes();
+            for channel in &mut color[..3] {
+                *channel = self.recipes.light.rgb_lut.0[*channel as usize];
+            }
+            // GLQuake's d_8to24table clears alpha for palette index 255.
+            if index == 255 {
+                color[3] = 0;
+            }
+            color
+        }))
     }
     pub fn embedded(
         &mut self,
@@ -131,9 +403,29 @@ impl<'a> Images<'a> {
     ) -> Result<ImageId, ResourceError> {
         let texture = IndexedTexture::load(mip.width, mip.height, mip.levels, cutout)
             .map_err(ResourceError::Asset)?;
-        self.assets
+        let gl_pixels = if self.recipes.policy == RasterPolicy::Quake2 {
+            let colors = self
+                .assets
+                .palette(palette)
+                .ok_or(ResourceError::Asset("missing image palette"))?;
+            let rgba = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
+            Some(upload::expand_indexed(
+                mip.levels[0],
+                mip.width,
+                mip.height,
+                &rgba,
+                Some(255),
+                upload::AlphaFringe::NativeNeighbors,
+            )?)
+        } else {
+            None
+        };
+        let id = self
+            .assets
             .register_indexed_image(texture, palette)
-            .map_err(ResourceError::Asset)
+            .map_err(ResourceError::Asset)?;
+        self.prepare(id, ImageUse::default(), gl_pixels.as_deref())?;
+        Ok(id)
     }
     pub fn wal(
         &mut self,
@@ -143,12 +435,12 @@ impl<'a> Images<'a> {
     ) -> Result<ImageId, ResourceError> {
         let key = format!("wal:{name}:{}:{cutout}", palette.0);
         if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
-            return Ok(self.resolved[index].1);
+            return Ok(self.resolved[index].1.id);
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
         let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
         let id = self.embedded(&mip, palette, cutout)?;
-        self.remember(key, id);
+        self.remember(key, id, ImageUse::default());
         Ok(id)
     }
     /// Retain original PCX indices and select the presentation's global palette.
@@ -160,13 +452,14 @@ impl<'a> Images<'a> {
         palette: PaletteId,
         transparent_index: Option<u8>,
         rgba_override: Option<&str>,
+        usage: ImageUse,
     ) -> Result<ImageId, ResourceError> {
         let key = format!(
-            "pcx:{name}:{}:{transparent_index:?}:{rgba_override:?}",
+            "pcx:{name}:{}:{transparent_index:?}:{rgba_override:?}:{usage:?}",
             palette.0
         );
         if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
-            return Ok(self.resolved[index].1);
+            return Ok(self.resolved[index].1.id);
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
         let DecodedImage::Indexed(decoded) =
@@ -181,6 +474,7 @@ impl<'a> Images<'a> {
             transparent_index,
         )
         .map_err(ResourceError::Asset)?;
+        let mut gl_pixels = None;
         let id = if let Some(path) = rgba_override {
             let format = ImageFormat::from_path(path.as_bytes())
                 .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
@@ -193,18 +487,49 @@ impl<'a> Images<'a> {
             self.assets
                 .register_rgba_with_indexed(rgba.width, rgba.height, &rgba.pixels, texture)
         } else {
+            let colors = self
+                .assets
+                .palette(palette)
+                .ok_or(ResourceError::Asset("missing image palette"))?;
+            let rgba = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
+            gl_pixels = Some(upload::expand_indexed(
+                &decoded.indices,
+                decoded.width,
+                decoded.height,
+                &rgba,
+                Some(255),
+                upload::AlphaFringe::NativeNeighbors,
+            )?);
             self.assets.register_indexed_image(texture, palette)
         }
         .map_err(ResourceError::Asset)?;
-        self.remember(key, id);
+        self.prepare(id, usage, gl_pixels.as_deref())?;
+        self.remember(key, id, usage);
         Ok(id)
     }
     /// Original Q3 lookup tries TGA, then JPEG for a missing TGA. Explicit
     /// supported extensions are retained; newer formats use the same decoder.
-    pub fn raster(&mut self, name: &str, policy: RasterPolicy) -> Result<ImageId, ResourceError> {
+    pub fn raster(&mut self, name: &str, usage: ImageUse) -> Result<ResolvedImage, ResourceError> {
+        let policy = self.recipes.policy;
         let canonical = name.replace('\\', "/").to_ascii_lowercase();
         let key = format!("raster:{policy:?}:{canonical}");
         if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
+            let first = self.resolved[index].2;
+            let requested = self.recipes.effective_use(usage);
+            if policy == RasterPolicy::Quake3
+                && (first.sampler != requested.sampler
+                    || first.allow_picmip != requested.allow_picmip)
+                && !self
+                    .conflicts
+                    .iter()
+                    .any(|entry| entry.name == canonical && entry.requested == requested)
+            {
+                self.conflicts.push(ImageConflict {
+                    name: canonical,
+                    first,
+                    requested,
+                });
+            }
             return Ok(self.resolved[index].1);
         }
         let known = ImageFormat::from_path(canonical.as_bytes());
@@ -252,14 +577,40 @@ impl<'a> Images<'a> {
             .assets
             .register_image(rgba.width, rgba.height, &rgba.pixels)
             .map_err(ResourceError::Asset)?;
-        self.remember(key, id);
-        Ok(id)
+        self.prepare(id, usage, None)?;
+        let resolved = self.remember(key, id, usage);
+        Ok(resolved)
     }
-    fn remember(&mut self, key: String, id: ImageId) {
+    fn prepare(
+        &mut self,
+        id: ImageId,
+        usage: ImageUse,
+        rgba: Option<&[u8]>,
+    ) -> Result<(), ResourceError> {
+        let params = self.recipes.params(usage)?;
+        match rgba {
+            Some(rgba) => self.assets.prepare_image_with_rgba(id, rgba, params),
+            None => self.assets.prepare_image(id, params),
+        }
+        .map_err(ResourceError::Asset)?;
+        if self.recipes.policy == RasterPolicy::Quake3 {
+            self.assets
+                .set_image_native_sampler(id, self.recipes.effective_use(usage).sampler)
+                .map_err(ResourceError::Asset)?;
+        }
+        Ok(())
+    }
+    fn remember(&mut self, key: String, id: ImageId, usage: ImageUse) -> ResolvedImage {
+        let usage = self.recipes.effective_use(usage);
+        let resolved = ResolvedImage {
+            id,
+            sampler: usage.sampler,
+        };
         let at = self
             .resolved
             .binary_search_by(|entry| entry.0.cmp(&key))
             .unwrap_or_else(|at| at);
-        self.resolved.insert(at, (key, id));
+        self.resolved.insert(at, (key, resolved, usage));
+        resolved
     }
 }

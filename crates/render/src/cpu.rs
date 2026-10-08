@@ -429,7 +429,7 @@ impl CpuBackend {
                 material,
                 stage,
                 image,
-                sampler: stage_sampler(stage.stage.sampler),
+                sampler: stage_sampler(image, stage.stage.sampler),
                 depth_hack: false,
                 first_stage: stage_index == 0,
                 draw_rank,
@@ -511,7 +511,7 @@ impl CpuBackend {
                 material,
                 stage,
                 image,
-                sampler: stage_sampler(stage.stage.sampler),
+                sampler: stage_sampler(image, stage.stage.sampler),
                 depth_hack: entity.depth_hack,
                 first_stage: stage_index == 0,
                 draw_rank,
@@ -781,7 +781,7 @@ impl CpuBackend {
                     Some((palette, palette_resource, texture, mip))
                 }
             };
-            let sampler = stage_sampler(stage.sampler);
+            let sampler = stage_sampler(image, stage.sampler);
             for y in y_start..y_end {
                 let v = (y as f32 + 0.5 - draw.rect[1]) / draw.rect[3];
                 for x in x_start..x_end {
@@ -959,7 +959,8 @@ fn texel(coordinate: f32, size: u32, wrap: Wrap) -> usize {
     ((coordinate * size as f32) as usize).min(size as usize - 1)
 }
 type ShadeFn = fn(&Image, [f32; 2], [f32; 4]) -> [f32; 4];
-fn stage_sampler(sampler: Sampler) -> ShadeFn {
+fn stage_sampler(image: &Image, sampler: Sampler) -> ShadeFn {
+    let sampler = image.native_sampler.unwrap_or(sampler);
     match (sampler.filter, sampler.wrap) {
         (Filter::Nearest, Wrap::Repeat) => sample::<false, true>,
         (Filter::Nearest, Wrap::Clamp) => sample::<false, false>,

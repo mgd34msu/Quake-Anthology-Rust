@@ -1,14 +1,17 @@
 //! File-boundary conversion into the one runtime world/material table.
 use super::{
     load_catalog,
-    resources::{Images, PaletteSource, ResourceError, load_palette},
+    resources::{
+        ImageRole, ImageSettings, ImageUse, Images, PaletteSource, ResolvedImage, ResourceError,
+        load_palette,
+    },
 };
 use crate::{
     Assets, BlendPhase, CpuPresentation, LightStyle, PaletteOperation, PaletteTransform,
     PerspectiveStep, Refdef,
     assets::{
         CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings, Sampler,
-        Sky, SkyDistance, Stage, StageTexture, TcMod, UvWarp, Wrap,
+        Sky, SkyDistance, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
     },
     lightmap::{
         AtlasBuilder, AtlasRegion, LightmapError, Q1GlScale, build_quake_rgb, build_quake2_rgb,
@@ -95,6 +98,8 @@ pub struct WorldLoadOptions {
     pub map_overbright: u8,
     pub renderer_overbright: u8,
     pub sky_environment: SkyEnvironment,
+    /// None resolves original native defaults at this map-format boundary.
+    pub image_settings: Option<ImageSettings>,
 }
 impl Default for WorldLoadOptions {
     fn default() -> Self {
@@ -106,6 +111,7 @@ impl Default for WorldLoadOptions {
             map_overbright: 2,
             renderer_overbright: 0,
             sky_environment: SkyEnvironment::default(),
+            image_settings: None,
         }
     }
 }
@@ -165,6 +171,9 @@ pub fn load_world(
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let family = map.bsp.format.family();
+    let image_settings = options
+        .image_settings
+        .unwrap_or_else(|| ImageSettings::native(family));
     if options.renderer_overbright > 2
         || options.map_overbright > 8
         || options.map_overbright < options.renderer_overbright
@@ -255,13 +264,25 @@ pub fn load_world(
         }
     }
     let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
-    let mut images = Images::new(vfs, assets);
+    let mut images = Images::new(
+        vfs,
+        assets,
+        match family {
+            1 => RasterPolicy::Standard,
+            2 => RasterPolicy::Quake2,
+            _ => RasterPolicy::Quake3,
+        },
+        image_settings,
+    )?;
     let mut diagnostics = Vec::new();
     let mut textures = Vec::with_capacity(map.textures.len());
     let mut layered_skies = Vec::with_capacity(map.textures.len());
     if family == 1 {
         for texture in &map.textures {
             textures.push(match texture {
+                // R_InitSky uploads the two split layers directly, rather
+                // than uploading the original 256x128 texture as a surface.
+                Some(mip) if mip.name.starts_with(b"sky") => ImageId(0),
                 Some(mip) => images.embedded(
                     mip,
                     palette.ok_or(WorldMaterialError::Boundary("missing legacy palette"))?,
@@ -402,7 +423,9 @@ pub fn load_world(
                 params: CubeSkyParams {
                     distance: SkyDistance::Fixed(2300.0),
                     far_depth: false,
-                    texcoord_range: if options.sky_environment.degrees_per_second != 0.0 {
+                    texcoord_range: if options.sky_environment.degrees_per_second != 0.0
+                        || image_settings.sky_mip
+                    {
                         [1.0 / 256.0, 255.0 / 256.0]
                     } else {
                         [1.0 / 512.0, 511.0 / 512.0]
@@ -430,7 +453,7 @@ pub fn load_world(
                 if catalog.find_canonical(&name).is_some() {
                     diagnostics.push(format!("native shader fallback: {name}"));
                 }
-                let image = images.raster(&name, RasterPolicy::Quake3)?;
+                let image = images.raster(&name, ImageUse::default())?;
                 default_material(&name, image, surface.light_source, &mut images)?
             }
         } else {
@@ -454,6 +477,12 @@ pub fn load_world(
         .assets
         .register_world_with_bindings(geometry, visibility, &bindings)
         .map_err(WorldMaterialError::Boundary)?;
+    for conflict in &images.conflicts {
+        diagnostics.push(format!(
+            "native first-image flags retained: {} ({:?} requested {:?})",
+            conflict.name, conflict.first, conflict.requested
+        ));
+    }
     Ok(LoadedWorld {
         world,
         presentation,
@@ -545,11 +574,15 @@ fn prepare_lightmaps(
             .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect();
-        ids.push(
-            assets
-                .register_image(128, 128, &rgba)
-                .map_err(WorldMaterialError::Boundary)?,
-        );
+        let id = assets
+            .register_image(128, 128, &rgba)
+            .map_err(WorldMaterialError::Boundary)?;
+        // Atlas bytes already include native lightstyle/modulate/overbright.
+        // Image intensity/gamma and ordinary mip generation do not apply.
+        assets
+            .prepare_image(id, upload::UploadParams::default())
+            .map_err(WorldMaterialError::Boundary)?;
+        ids.push(id);
     }
     Ok((
         regions
@@ -562,12 +595,13 @@ fn prepare_lightmaps(
 
 fn default_material(
     name: &str,
-    image: ImageId,
+    image: ResolvedImage,
     light: LightSource,
     images: &mut Images<'_>,
 ) -> Result<MaterialId, WorldMaterialError> {
     let base = Stage {
-        texture: StageTexture::Image(image),
+        texture: StageTexture::Image(image.id),
+        sampler: image.sampler,
         ..Stage::default()
     };
     let stages = match light {
@@ -658,8 +692,8 @@ fn compile_definition(
     }
     if let Some(sky) = &definition.sky {
         settings.sky = Some(Sky::Cube {
-            outer_box: load_box(sky.outer_box.as_deref(), images)?,
-            inner_box: load_box(sky.inner_box.as_deref(), images)?,
+            outer_box: load_box(sky.outer_box.as_deref(), Wrap::Clamp, images)?,
+            inner_box: load_box(sky.inner_box.as_deref(), Wrap::Repeat, images)?,
             clouds: CloudSphere::native(sky.cloud_height),
             rotation: None,
             params: CubeSkyParams::default(),
@@ -679,9 +713,21 @@ fn compile_definition(
         {
             TextureMap::Image { name, clamp } => {
                 sampler.wrap = if *clamp { Wrap::Clamp } else { Wrap::Repeat };
-                StageTexture::Image(images.raster(name, RasterPolicy::Quake3)?)
+                let image = images.raster(
+                    name,
+                    ImageUse {
+                        sampler,
+                        allow_picmip: !definition.no_picmip,
+                        ..ImageUse::default()
+                    },
+                )?;
+                sampler = image.sampler;
+                StageTexture::Image(image.id)
             }
-            TextureMap::White => StageTexture::Image(ImageId(0)),
+            TextureMap::White => {
+                sampler.mipmaps = false;
+                StageTexture::Image(ImageId(0))
+            }
             TextureMap::Lightmap => {
                 sampler.wrap = Wrap::Clamp;
                 sampler.mipmaps = false;
@@ -693,7 +739,15 @@ fn compile_definition(
             } => {
                 let mut frames = [ImageId(0); 8];
                 for (slot, name) in frames.iter_mut().zip(names.iter()) {
-                    *slot = images.raster(name, RasterPolicy::Quake3)?;
+                    let image = images.raster(
+                        name,
+                        ImageUse {
+                            sampler,
+                            allow_picmip: !definition.no_picmip,
+                            ..ImageUse::default()
+                        },
+                    )?;
+                    *slot = image.id;
                 }
                 StageTexture::Animation {
                     images: frames,
@@ -721,6 +775,7 @@ fn compile_definition(
         stages.push(Stage {
             texture,
             sampler,
+            texture_intensity: TextureIntensity::Preserve,
             blend: parsed.blend,
             rgb_gen: parsed.rgb_gen,
             alpha_gen: parsed.alpha_gen,
@@ -739,9 +794,10 @@ fn compile_definition(
 }
 fn load_box(
     name: Option<&str>,
+    wrap: Wrap,
     images: &mut Images<'_>,
 ) -> Result<Option<[ImageId; 6]>, WorldMaterialError> {
-    load_box_with_suffix(name, "_", images)
+    load_box_with_suffix(name, "_", wrap, images)
 }
 fn load_indexed_box(
     environment: SkyEnvironment,
@@ -761,6 +817,15 @@ fn load_indexed_box(
             palette,
             None,
             Some(&format!("{base}.tga")),
+            ImageUse {
+                role: ImageRole::CubeSky,
+                sampler: Sampler {
+                    wrap: Wrap::Clamp,
+                    mipmaps: false,
+                    ..Sampler::default()
+                },
+                allow_picmip: false,
+            },
         )?;
     }
     Ok(result)
@@ -768,15 +833,27 @@ fn load_indexed_box(
 fn load_box_with_suffix(
     name: Option<&str>,
     separator: &str,
+    wrap: Wrap,
     images: &mut Images<'_>,
 ) -> Result<Option<[ImageId; 6]>, WorldMaterialError> {
     let Some(name) = name else { return Ok(None) };
     let mut result = [ImageId(0); 6];
     for (slot, suffix) in result.iter_mut().zip(["rt", "lf", "bk", "ft", "up", "dn"]) {
-        *slot = images.raster(
-            &format!("{name}{separator}{suffix}.tga"),
-            RasterPolicy::Quake3,
-        )?;
+        *slot = images
+            .raster(
+                &format!("{name}{separator}{suffix}.tga"),
+                // Native ParseSkyParms forces mips/picmip for box faces even if
+                // the cloud material has nomipmaps/nopicmip.
+                ImageUse {
+                    role: ImageRole::CubeSky,
+                    sampler: Sampler {
+                        wrap,
+                        ..Sampler::default()
+                    },
+                    allow_picmip: true,
+                },
+            )?
+            .id;
     }
     Ok(Some(result))
 }
@@ -870,6 +947,9 @@ fn legacy_material(
     } else {
         None
     };
+    if family == 2 && (warp || alpha.is_some()) {
+        base.texture_intensity = TextureIntensity::NeutralizeUpload;
+    }
     let mut settings = MaterialSettings::default();
     if let Some(alpha) = alpha {
         base.alpha_gen = AlphaGen::Const(alpha);
@@ -922,6 +1002,8 @@ fn load_layered_sky(
     let palette_colors = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
     let layers =
         split_layered_sky(mip.levels[0], &palette_colors).map_err(WorldMaterialError::Boundary)?;
+    let corrected = split_layered_sky(mip.levels[0], &images.corrected_palette(palette)?)
+        .map_err(WorldMaterialError::Boundary)?;
     let opaque = IndexedTexture::load_base(128, 128, &layers.opaque_indices, None)
         .map_err(WorldMaterialError::Boundary)?;
     let masked = IndexedTexture::load_base(128, 128, &layers.masked_indices, Some(0))
@@ -936,6 +1018,22 @@ fn load_layered_sky(
             .register_rgba_with_indexed(128, 128, &layers.masked_rgba, masked)
             .map_err(WorldMaterialError::Boundary)?,
     ];
+    let params = images.upload_params(ImageUse {
+        role: ImageRole::LayeredSky,
+        sampler: Sampler {
+            mipmaps: false,
+            ..Sampler::default()
+        },
+        allow_picmip: false,
+    })?;
+    images
+        .assets
+        .prepare_image_with_rgba(ids[0], &corrected.opaque_rgba, params)
+        .map_err(WorldMaterialError::Boundary)?;
+    images
+        .assets
+        .prepare_image_with_rgba(ids[1], &corrected.masked_rgba, params)
+        .map_err(WorldMaterialError::Boundary)?;
     Ok(Sky::Layered {
         images: ids,
         sphere: LayeredSphere::NATIVE,

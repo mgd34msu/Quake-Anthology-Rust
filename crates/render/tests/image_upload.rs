@@ -164,6 +164,44 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
 }
 
 #[test]
+fn alternate_gl_expansion_keeps_raw_sources_and_prior_preparation_on_failure() {
+    use qa_render::{Assets, surface_cache::IndexedTexture};
+    let mut assets = Assets::load();
+    let indices = [0, 17, 255, 23];
+    let indexed = IndexedTexture::load_base(2, 2, &indices, Some(0)).unwrap();
+    let raw = gray(&[7, 11, 19, 23]);
+    let id = assets
+        .register_rgba_with_indexed(2, 2, &raw, indexed)
+        .unwrap();
+    let gl_expansion = gray(&[31, 43, 59, 71]);
+    assets
+        .prepare_image_with_rgba(id, &gl_expansion, UploadParams::default())
+        .unwrap();
+    let image = assets.image(id).unwrap();
+    assert_eq!(image.rgba.as_ref(), raw);
+    assert_eq!(
+        image.prepared.as_ref().unwrap().levels[0].rgba.as_ref(),
+        gl_expansion
+    );
+    assert_eq!(
+        image.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
+        indices
+    );
+    assert_eq!(image.indexed.as_ref().unwrap().transparent_index(), Some(0));
+    assert!(
+        assets
+            .prepare_image_with_rgba(id, &[1, 2, 3], UploadParams::default())
+            .is_err()
+    );
+    let image = assets.image(id).unwrap();
+    assert_eq!(
+        image.prepared.as_ref().unwrap().levels[0].rgba.as_ref(),
+        gl_expansion
+    );
+    assert_eq!(image.rgba.as_ref(), raw);
+}
+
+#[test]
 fn original_nearest_and_four_tap_sample_positions() {
     let source = gray(&[0, 10, 20, 40, 50, 60, 80, 90, 100]);
     for (filter, expected) in [

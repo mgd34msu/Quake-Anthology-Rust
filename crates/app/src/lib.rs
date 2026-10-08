@@ -2,6 +2,7 @@ pub mod host;
 pub mod map;
 pub mod output;
 pub mod profile;
+pub mod render_settings;
 pub mod renderer;
 
 use qa_console::commands::{Host, ScriptError};

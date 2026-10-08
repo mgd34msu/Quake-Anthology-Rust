@@ -154,3 +154,56 @@ fn two_dimensional_color_alpha_blends_and_submission_failures_are_reported() {
         assert_eq!(pixel.to_le_bytes(), [128, 0, 127, 191]);
     }
 }
+
+#[test]
+fn native_first_image_sampler_overrides_later_material_requests() {
+    for (registered, requested, expected) in [
+        (Wrap::Clamp, Wrap::Repeat, [0, 0, 255, 255]),
+        (Wrap::Repeat, Wrap::Clamp, [255, 0, 0, 255]),
+    ] {
+        let mut assets = Assets::load();
+        let image = assets
+            .register_image(2, 1, &[255, 0, 0, 255, 0, 0, 255, 255])
+            .unwrap();
+        assets
+            .set_image_native_sampler(
+                image,
+                Sampler {
+                    wrap: registered,
+                    filter: Filter::Nearest,
+                    mipmaps: false,
+                },
+            )
+            .unwrap();
+        let material = assets
+            .register_material(
+                "reused",
+                &[Stage {
+                    texture: StageTexture::Image(image),
+                    sampler: Sampler {
+                        wrap: requested,
+                        ..Sampler::default()
+                    },
+                    ..Stage::default()
+                }],
+                MaterialSettings::default(),
+            )
+            .unwrap();
+        let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+        let mut frame = frontend.begin_frame([0, 0, 0, 255]).unwrap();
+        assert!(frame.draw_2d(Draw2d {
+            material,
+            rect: [0.0, 0.0, 2.0, 2.0],
+            texcoords: [1.25, 0.0, 1.25, 0.0],
+            ..Draw2d::default()
+        }));
+        let mut cpu = CpuBackend::load(2, 2).unwrap();
+        let packet = frame.finish();
+        assert_eq!(cpu.render(&packet, &assets).rejected, 0);
+        assert!(
+            cpu.pixels()
+                .iter()
+                .all(|pixel| pixel.to_le_bytes() == expected)
+        );
+    }
+}

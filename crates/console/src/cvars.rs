@@ -396,6 +396,24 @@ impl Cvars {
     pub fn default_available(&self, handle: CvarHandle, source: Source) -> bool {
         self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
     }
+    /// Load-time consumers may retain native behavior for settings that the
+    /// unified catalog accepts but the selected engine never registered.
+    pub fn native_default_available(&self, handle: CvarHandle, source: Source) -> bool {
+        let row = self.values[handle.0 as usize].row;
+        let context = Context {
+            source,
+            role: stock_role(row, source),
+            ..self.context
+        };
+        self.default_available(handle, source)
+            && DEFAULTS[DEFINITIONS[row].defaults[source as usize].defaults.clone()]
+                .iter()
+                .any(|clause| {
+                    clause.issues == 0
+                        && clause.kind == DefaultKind::Native
+                        && condition(clause.condition, context)
+                })
+    }
     pub fn read(&self, view: View) -> Result<Text<'_>, conversion::Error> {
         let b = &BINDINGS[view.binding as usize];
         let definition = &DEFINITIONS[b.row as usize];

@@ -240,7 +240,16 @@ fn run() -> Result<(), String> {
     }
     let mut assets = Assets::load();
     if let Some((input, rules)) = staged_map {
-        let loaded = input.load(&runtime.vfs, &mut assets, WorldLoadOptions::default())?;
+        let image_settings =
+            qa_app::render_settings::image_settings(&console.cvars, input.native_source)?;
+        let loaded = input.load(
+            &runtime.vfs,
+            &mut assets,
+            WorldLoadOptions {
+                image_settings: Some(image_settings),
+                ..WorldLoadOptions::default()
+            },
+        )?;
         // This world clock is the native gate-world default, independent of
         // --movement. Loaded SERVER providers retain their own clocks later.
         world_rate = match loaded.native_source {

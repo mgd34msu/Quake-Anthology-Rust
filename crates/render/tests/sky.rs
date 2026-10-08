@@ -1,8 +1,7 @@
 use qa_core::primitives::Vec3;
 use qa_render::sky::{
-    cloud_uv, cube_sample, cube_vertex, layered_uv, split_layered_sky, unrotate, CloudGrid,
-    CloudSphere, CubeFace, FaceBounds, LayeredSphere, Rotation, SkyClip, CLOUD_GRID_SIZE,
-    LAYER_SIZE,
+    CLOUD_GRID_SIZE, CloudGrid, CloudSphere, CubeFace, FaceBounds, LAYER_SIZE, LayeredSphere,
+    Rotation, SkyClip, cloud_uv, cube_sample, cube_vertex, layered_uv, split_layered_sky, unrotate,
 };
 
 fn close(actual: f32, expected: f32) {
@@ -77,11 +76,13 @@ fn layered_scroll_preserves_native_negative_fractional_time() {
     assert!(layered_uv(Vec3([0.0; 3]), 0.0, LayeredSphere::NATIVE, 0).is_none());
     assert!(layered_uv(up, f32::NAN, LayeredSphere::NATIVE, 0).is_none());
     assert!(layered_uv(up, 0.0, LayeredSphere::NATIVE, 2).is_none());
-    assert!(!LayeredSphere {
-        texture_size: 0.0,
-        ..LayeredSphere::NATIVE
-    }
-    .valid());
+    assert!(
+        !LayeredSphere {
+            texture_size: 0.0,
+            ..LayeredSphere::NATIVE
+        }
+        .valid()
+    );
 }
 
 // Q2 gl_warp.c and Q3 tr_sky.c st_to_vec/vec_to_st and sky_texorder.
@@ -217,8 +218,14 @@ fn sky_rotation_uses_inverse_normalized_axis_for_ray_sampling() {
 // WinQuake R_InitSky splits the 256x128 image: right solid, left index-zero mask.
 #[test]
 fn layered_image_split_keeps_indices_and_native_mask_fringe_rgb() {
-    let palette =
-        std::array::from_fn(|index| [index as u8, (index / 2) as u8, (255 - index) as u8, 0]);
+    let palette = std::array::from_fn(|index| {
+        [
+            index as u8,
+            (index / 2) as u8,
+            (255 - index) as u8,
+            if index == 255 { 0 } else { 255 },
+        ]
+    });
     let mut indices = vec![0_u8; LAYER_SIZE * LAYER_SIZE * 2];
     for y in 0..LAYER_SIZE {
         for x in 0..LAYER_SIZE {
@@ -345,4 +352,21 @@ fn face_grid_bounds_round_outward_and_clamp_to_native_subdivisions() {
         .grid_bounds(),
         None
     );
+}
+
+#[test]
+fn layered_foreground_preserves_gl_palette_alpha_without_changing_cpu_indices() {
+    let mut indices = vec![1; 256 * 128];
+    indices[0] = 255;
+    indices[1] = 0;
+    let raw = [[10, 20, 30, 255]; 256];
+    let cpu = split_layered_sky(&indices, &raw).unwrap();
+    let mut gl_palette = raw;
+    gl_palette[255][3] = 0;
+    let gl = split_layered_sky(&indices, &gl_palette).unwrap();
+    assert_eq!(&cpu.masked_rgba[..8], &[10, 20, 30, 255, 10, 20, 30, 0]);
+    assert_eq!(&gl.masked_rgba[..8], &[10, 20, 30, 0, 10, 20, 30, 0]);
+    assert_eq!(cpu.masked_indices, gl.masked_indices);
+    assert_eq!(cpu.opaque_indices, gl.opaque_indices);
+    assert_eq!(cpu.opaque_rgba, gl.opaque_rgba);
 }
