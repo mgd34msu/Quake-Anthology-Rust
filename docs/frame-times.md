@@ -498,3 +498,30 @@ claimed from this profile.
 
 Evidence: `q3dm1-cpu-profile-before-a/{profile.json,perf-self.json,perf-flat.txt,
 perf.data,runtime.log,result.json}` under `r3-20261008`.
+
+The clean portable normal `2368a9b0` candidate built in 30.5749 s with proof
+input disabled. Its separate uncapped CPU run used owned Xvfb, core 23,
+640×400, 60 warm-up frames and 600 measured host frames. Draw median/p99 were
+45.530763 / 48.765556 ms. No build, checker or debugger ran alongside it.
+It exited normally, preserved candidate/profile and cleaned owned PIDs.
+This partial-renderer baseline has no allocation instrumentation and does
+not qualify gameplay or the 4 ms target.
+
+| Final rendered frame category | Pixel writes |
+|---|---:|
+| All categories | 509,805 |
+| Sky | 81,730 |
+| Generic material stages | 428,075 |
+| Indexed cache | 0 |
+| Curves, subset of generic stages | 55,424 |
+| Multiple stages, subset of generic stages | 425,337 |
+
+The final frame contained 3,764 polygons, including 1,487 patch polygons,
+and reported zero rejects. This final-frame counter does not prove zero
+rejects in every frame. Cumulative cache hits, fills, evictions and rejects
+were all zero over 661 rendered frames, including startup and warm-up.
+Curve and multiple-stage categories overlap. The counters count actual
+writes, including material passes, rather than unique screen pixels.
+
+Evidence: `q3dm1-cpu-workload-before-a/{workload.json,runtime.log,result.json}`
+under `r3-20261008`.
