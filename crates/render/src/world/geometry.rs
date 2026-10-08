@@ -5,6 +5,7 @@ use crate::assets::Vertex;
 use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
 use qa_formats::bsp::{BspFormat, IndexRange, LightmapSource, Lump, Map, SurfaceKind};
 
+pub mod grid;
 mod patch;
 
 #[derive(Clone, Copy, Debug)]
@@ -71,12 +72,14 @@ pub enum LightSource {
     White,
     TwoDimensional,
     Samples,
+    /// Authored page shared by every surface referring to its numeric index.
+    Page(u32),
     ExternalPage(u32),
 }
 
 /// The full pre-tessellated grid is stored in the shared vertex/index arrays.
-/// These native error/group values retain the information needed for later
-/// cross-surface stitching and view-dependent LOD. Those passes are not here.
+/// Load-time stitching and shared LOD-error propagation update the full grid.
+/// View-dependent grid simplification remains a frontend operation.
 #[derive(Clone, Debug)]
 pub struct PatchGrid {
     pub control_vertices: IndexRange,
@@ -133,6 +136,10 @@ pub struct WorldModel {
     pub surfaces: IndexRange,
 }
 pub struct WorldGeometry {
+    /// Only split, node-owned surfaces provide a BSP depth certificate. Other
+    /// primitives use the same edge scanner's plane-depth ordering.
+    pub partition: GeometryPartition,
+    pub world_has_lightdata: bool,
     pub vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
     /// Each range indexes an ordered loop in `indices`.
@@ -140,6 +147,20 @@ pub struct WorldGeometry {
     pub surfaces: Vec<WorldSurface>,
     pub light_samples: Vec<[u8; 3]>,
     pub models: Vec<WorldModel>,
+    pub patch_stats: PatchStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PatchStats {
+    pub insertions: usize,
+    pub lod_copies: usize,
+    pub changed_grids: usize,
+    pub reverse_endpoint_fixes: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeometryPartition {
+    SplitBsp,
+    Unpartitioned,
 }
 
 pub fn load_geometry(
@@ -155,6 +176,12 @@ pub fn load_geometry(
         return Err(GeometryError::InvalidOptions);
     }
     let mut geometry = WorldGeometry {
+        partition: if map.bsp.format.family() == 3 {
+            GeometryPartition::Unpartitioned
+        } else {
+            GeometryPartition::SplitBsp
+        },
+        world_has_lightdata: !map.bsp.bytes(Lump::Lighting).is_empty(),
         vertices: Vec::new(),
         indices: Vec::new(),
         boundaries: Vec::new(),
@@ -169,13 +196,40 @@ pub fn load_geometry(
                 surfaces: model.faces,
             })
             .collect(),
+        patch_stats: PatchStats::default(),
     };
     if map.bsp.format.family() == 3 {
         load_modern(map, options, &mut geometry)?;
     } else {
         load_legacy(map, options, &mut geometry)?;
     }
+    geometry.patch_stats = prepare_patches(&mut geometry, options)?;
     Ok(geometry)
+}
+
+/// Load-only preparation, also usable by callers constructing owned geometry.
+/// Inline-model ownership separates coincident groups that move independently.
+pub fn prepare_patches(
+    geometry: &mut WorldGeometry,
+    options: GeometryOptions,
+) -> Result<PatchStats, GeometryError> {
+    let mut partitions = vec![0u32; geometry.surfaces.len()];
+    for (index, model) in geometry.models.iter().enumerate().skip(1) {
+        let owner = u32::try_from(index).map_err(|_| GeometryError::SizeLimit)?;
+        for at in model.surfaces.indices() {
+            let partition = partitions
+                .get_mut(at)
+                .ok_or(GeometryError::Reference("model surfaces", owner))?;
+            if *partition != 0 {
+                return Err(GeometryError::Reference(
+                    "overlapping model surfaces",
+                    at as u32,
+                ));
+            }
+            *partition = owner;
+        }
+    }
+    patch::finish_world_patches(geometry, options, &partitions)
 }
 
 fn load_legacy(
@@ -239,6 +293,7 @@ fn load_legacy(
             out.vertices.push(WorldVertex {
                 vertex: Vertex {
                     position: point,
+                    normal: plane.normal,
                     texcoord: uv,
                     lightmap_coord: [0.0; 2],
                     color: [255; 4],
@@ -415,6 +470,7 @@ fn load_modern(
         out.vertices.push(WorldVertex {
             vertex: Vertex {
                 position: source.position,
+                normal: source.normal,
                 texcoord: source.texcoord,
                 // Retail unlit vertices can contain unused NaN page coordinates.
                 lightmap_coord: source
@@ -562,7 +618,7 @@ fn load_modern(
         };
         let (light_source, samples) = match map.surface_lightmap(source) {
             LightmapSource::Embedded(_) => (
-                LightSource::Samples,
+                LightSource::Page(source.lightmap as u32),
                 span(source.lightmap as usize * 128 * 128, 128 * 128)?,
             ),
             LightmapSource::External(page) => {

@@ -3,8 +3,8 @@ use qa_formats::bsp::{
     Bsp, Face, IndexRange, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
 };
 use qa_render::world::geometry::{
-    GeometryError, GeometryKind, GeometryOptions, LightEncoding, LightSource, TextureCoordinates,
-    load_geometry,
+    GeometryError, GeometryKind, GeometryOptions, LightEncoding, LightSource, PatchGrid,
+    TextureCoordinates, WorldGeometry, WorldVertex, load_geometry, prepare_patches,
 };
 
 fn bsp_bytes(family: u8, lighting: &[u8]) -> Vec<u8> {
@@ -219,7 +219,7 @@ fn q3_preserves_source_surface_ids_page_coordinates_colors_and_flare_metadata() 
         vec![0, 1]
     );
     let face = &geometry.surfaces[0];
-    assert_eq!(face.light_source, LightSource::Samples);
+    assert_eq!(face.light_source, LightSource::Page(0));
     assert_eq!(face.light_samples.count, 128 * 128);
     assert_eq!(face.lightmap_rect, [10, 20, 30, 40]);
     assert_eq!(geometry.light_samples[0], [5, 7, 9]);
@@ -360,4 +360,352 @@ fn geometry_rejects_invalid_load_dimensions_and_nonfinite_projection() {
         load_geometry(&map, GeometryOptions::default()),
         Err(GeometryError::InvalidPatch(0))
     ));
+}
+
+#[derive(Clone)]
+struct FixtureGrid {
+    width: usize,
+    height: usize,
+    vertices: Vec<WorldVertex>,
+    width_errors: Vec<f32>,
+    height_errors: Vec<f32>,
+    origin: Vec3,
+    radius: f32,
+}
+fn fixture_grid(
+    width: usize,
+    height: usize,
+    point: impl Fn(usize, usize) -> [f32; 3],
+) -> FixtureGrid {
+    FixtureGrid {
+        width,
+        height,
+        vertices: (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| WorldVertex {
+                vertex: qa_render::assets::Vertex {
+                    position: Vec3(point(x, y)),
+                    normal: Vec3([0.0, 0.0, 1.0]),
+                    texcoord: [x as f32 * 0.25, y as f32 * 0.125],
+                    lightmap_coord: [x as f32 * 0.0625, y as f32 * 0.03125],
+                    color: [(x * 31 + y * 17) as u8, (x * 19 + y * 7) as u8, 123, 255],
+                },
+                normal: Vec3([0.0, 0.0, 1.0]),
+            })
+            .collect(),
+        width_errors: (0..width).map(|x| x as f32 * 0.125).collect(),
+        height_errors: (0..height).map(|y| y as f32 * 0.25).collect(),
+        origin: Vec3::default(),
+        radius: 100.0,
+    }
+}
+fn fixture_geometry(grids: &[FixtureGrid], curved: bool, tolerance: f32) -> WorldGeometry {
+    let bytes = bsp_bytes(3, &[]);
+    let mut map = q3_map(&bytes);
+    for grid in grids {
+        let first = map.vertices.len() as u32;
+        map.vertices.extend(grid.vertices.iter().map(|v| Vertex {
+            position: v.vertex.position,
+            texcoord: v.vertex.texcoord,
+            lightmap_coord: v.vertex.lightmap_coord,
+            normal: v.normal,
+            color: v.vertex.color,
+        }));
+        let mut surface = q3_surface(
+            if curved {
+                SurfaceKind::Patch
+            } else {
+                SurfaceKind::Planar
+            },
+            first,
+            grid.vertices.len() as u32,
+        );
+        surface.patch = [grid.width as i32, grid.height as i32];
+        surface.lightmap_vectors[0] = Vec3([-100.0, 0.0, 0.0]);
+        surface.lightmap_vectors[1] = Vec3([100.0, 0.0, 0.0]);
+        map.surfaces.push(surface);
+    }
+    let mut geometry = load_geometry(
+        &map,
+        GeometryOptions {
+            patch_subdivisions: tolerance,
+            ..GeometryOptions::default()
+        },
+    )
+    .unwrap();
+    if !curved {
+        for (surface, grid) in geometry.surfaces.iter_mut().zip(grids) {
+            surface.kind = GeometryKind::Patch;
+            surface.patch = Some(PatchGrid {
+                control_vertices: surface.vertices,
+                control_dimensions: [grid.width as u16, grid.height as u16],
+                dimensions: [grid.width as u16, grid.height as u16],
+                width_lod_error: grid.width_errors.clone().into_boxed_slice(),
+                height_lod_error: grid.height_errors.clone().into_boxed_slice(),
+                lod_origin: grid.origin,
+                lod_radius: grid.radius,
+            });
+        }
+        geometry.patch_stats = prepare_patches(&mut geometry, GeometryOptions::default()).unwrap();
+    }
+    geometry
+}
+fn seam_grids(reverse: bool, rotated: bool) -> Vec<FixtureGrid> {
+    let fine = fixture_grid(3, 2, |x, y| {
+        [
+            (if reverse { 2 - x } else { x }) as f32 * 32.0,
+            y as f32 * 16.0,
+            if x == 1 && y == 0 { 8.0 } else { 0.0 },
+        ]
+    });
+    let coarse = if rotated {
+        fixture_grid(2, 2, |x, y| [y as f32 * 64.0, -(x as f32) * 16.0, 0.0])
+    } else {
+        fixture_grid(2, 2, |x, y| [x as f32 * 64.0, -(y as f32) * 16.0, 0.0])
+    };
+    vec![fine, coarse]
+}
+
+#[test]
+fn native_seam_insertion_retains_controls_ids_and_triangle_boundaries() {
+    for (reverse, rotated) in [(false, false), (true, false), (false, true), (true, true)] {
+        let geometry = fixture_geometry(&seam_grids(reverse, rotated), false, 4.0);
+        assert_eq!(geometry.patch_stats.insertions, 1);
+        assert_eq!(
+            geometry.patch_stats.reverse_endpoint_fixes,
+            usize::from(reverse)
+        );
+        let surface = &geometry.surfaces[1];
+        assert_eq!(surface.source_id, 1);
+        let patch = surface.patch.as_ref().unwrap();
+        assert_eq!(patch.control_dimensions, [2, 2]);
+        assert_eq!(patch.control_vertices, IndexRange { first: 6, count: 4 });
+        assert_eq!(patch.dimensions, if rotated { [2, 3] } else { [3, 2] });
+        assert_eq!(surface.indices.count, 12);
+        assert_eq!(surface.boundaries.count, 4);
+        let midpoint =
+            &geometry.vertices[(surface.vertices.first + if rotated { 2 } else { 1 }) as usize];
+        assert_eq!(midpoint.vertex.position, Vec3([32.0, 0.0, 8.0]));
+        assert_eq!(
+            midpoint.vertex.texcoord,
+            if rotated { [0.0, 0.0625] } else { [0.125, 0.0] }
+        );
+    }
+}
+
+#[test]
+fn patch_lod_groups_exclude_different_bounds_merged_edges_and_inline_owners() {
+    let grids = seam_grids(false, false);
+    let mut separate = grids.clone();
+    separate[1].radius += 1.0;
+    assert_eq!(
+        fixture_geometry(&separate, false, 4.0)
+            .patch_stats
+            .insertions,
+        0
+    );
+    let mut geometry = fixture_geometry(&separate, false, 4.0);
+    geometry.surfaces[1].patch.as_mut().unwrap().lod_radius = 100.0;
+    geometry.models = vec![
+        qa_render::world::geometry::WorldModel {
+            bounds: geometry.surfaces[0].bounds,
+            origin: Vec3::default(),
+            surfaces: IndexRange { first: 0, count: 1 },
+        },
+        qa_render::world::geometry::WorldModel {
+            bounds: geometry.surfaces[1].bounds,
+            origin: Vec3::default(),
+            surfaces: IndexRange { first: 1, count: 1 },
+        },
+    ];
+    assert_eq!(
+        prepare_patches(&mut geometry, GeometryOptions::default())
+            .unwrap()
+            .insertions,
+        0
+    );
+    let mut merged = fixture_grid(5, 2, |x, y| {
+        [[0.0, 32.0, 32.0, 48.0, 64.0][x], y as f32 * 16.0, 0.0]
+    });
+    merged.width_errors.fill(0.5);
+    let mut shared = merged.clone();
+    shared.width_errors.fill(0.75);
+    let geometry = fixture_geometry(&[merged, shared], false, 4.0);
+    assert_eq!(geometry.patch_stats.lod_copies, 0);
+    assert_eq!(
+        &*geometry.surfaces[1].patch.as_ref().unwrap().width_lod_error,
+        &[0.75; 5]
+    );
+}
+
+// tools/check_patch.py asks this test to export exactly the same control/raw
+// grids and resulting meshes for extracted original Q3 functions to consume.
+#[test]
+fn original_patch_comparison_fixtures() {
+    use std::fmt::Write;
+    let mut cases = vec![];
+    for (name, reverse, rotated) in [
+        ("forward_width", false, false),
+        ("reverse_width", true, false),
+        ("forward_height", false, true),
+        ("reverse_height", true, true),
+    ] {
+        cases.push((name.to_owned(), false, 4.0, seam_grids(reverse, rotated)));
+    }
+    let mut separated = seam_grids(false, false);
+    separated[1].radius = 101.0;
+    cases.push(("different_group".to_owned(), false, 4.0, separated));
+    let chain: Vec<_> = (0..4)
+        .map(|i| {
+            let mut grid = fixture_grid(3, 3, |x, y| {
+                [x as f32 * 32.0, (y + i * 2) as f32 * 32.0, 0.0]
+            });
+            grid.width_errors.fill((i + 1) as f32 * 0.125);
+            grid
+        })
+        .collect();
+    cases.push(("recursive_group".to_owned(), false, 4.0, chain));
+    let merged = fixture_grid(5, 2, |x, y| {
+        [[0.0, 32.0, 32.0, 48.0, 64.0][x], y as f32 * 16.0, 0.0]
+    });
+    cases.push((
+        "merged_edge".to_owned(),
+        false,
+        4.0,
+        vec![merged.clone(), merged],
+    ));
+    for (name, amount, tolerance) in [
+        ("flat", 0.0, 4.0),
+        ("arch", 64.0, 4.0),
+        ("coarse_arch", 64.0, 100.0),
+    ] {
+        cases.push((
+            name.to_owned(),
+            true,
+            tolerance,
+            vec![fixture_grid(3, 3, |x, y| {
+                [
+                    x as f32 * 64.0,
+                    y as f32 * 64.0,
+                    if x == 1 { amount } else { 0.0 },
+                ]
+            })],
+        ));
+    }
+    for seed in 0..48u32 {
+        let width = 3 + (seed % 3) as usize * 2;
+        let height = 3 + ((seed / 3) % 3) as usize * 2;
+        let mut state = seed + 1;
+        let offsets: Vec<_> = (0..width * height)
+            .map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((state >> 24) as i32 - 128) as f32 * 0.5
+            })
+            .collect();
+        cases.push((
+            format!("seed_{seed}"),
+            true,
+            4.0,
+            vec![fixture_grid(width, height, |x, y| {
+                [x as f32 * 32.0, y as f32 * 32.0, offsets[y * width + x]]
+            })],
+        ));
+    }
+    let mut input = String::new();
+    let mut output = String::new();
+    for (name, curved, tolerance, grids) in cases {
+        writeln!(
+            input,
+            "CASE {name} {} {tolerance} {}",
+            u8::from(curved),
+            grids.len()
+        )
+        .unwrap();
+        for grid in &grids {
+            writeln!(
+                input,
+                "GRID {} {} {} {} {} {}",
+                grid.width,
+                grid.height,
+                grid.origin.0[0],
+                grid.origin.0[1],
+                grid.origin.0[2],
+                grid.radius
+            )
+            .unwrap();
+            for errors in [&grid.width_errors, &grid.height_errors] {
+                write!(input, "E").unwrap();
+                for error in errors {
+                    write!(input, " {error}").unwrap();
+                }
+                input.push('\n');
+            }
+            for v in &grid.vertices {
+                write!(input, "V").unwrap();
+                for value in v
+                    .vertex
+                    .position
+                    .0
+                    .into_iter()
+                    .chain(v.normal.0)
+                    .chain(v.vertex.texcoord)
+                    .chain(v.vertex.lightmap_coord)
+                {
+                    write!(input, " {value}").unwrap();
+                }
+                for value in v.vertex.color {
+                    write!(input, " {value}").unwrap();
+                }
+                input.push('\n');
+            }
+        }
+        let geometry = fixture_geometry(&grids, curved, tolerance);
+        writeln!(output, "CASE {name} {}", geometry.surfaces.len()).unwrap();
+        writeln!(
+            output,
+            "FIX {}",
+            geometry.patch_stats.reverse_endpoint_fixes
+        )
+        .unwrap();
+        for surface in &geometry.surfaces {
+            let patch = surface.patch.as_ref().unwrap();
+            writeln!(
+                output,
+                "GRID {} {} {}",
+                surface.source_id, patch.dimensions[0], patch.dimensions[1]
+            )
+            .unwrap();
+            for errors in [&patch.width_lod_error, &patch.height_lod_error] {
+                write!(output, "E").unwrap();
+                for error in errors.iter() {
+                    write!(output, " {:08x}", error.to_bits()).unwrap();
+                }
+                output.push('\n');
+            }
+            for v in &geometry.vertices[surface.vertices.indices()] {
+                write!(output, "V").unwrap();
+                for value in v
+                    .vertex
+                    .position
+                    .0
+                    .into_iter()
+                    .chain(v.normal.0)
+                    .chain(v.vertex.texcoord)
+                    .chain(v.vertex.lightmap_coord)
+                {
+                    write!(output, " {:08x}", value.to_bits()).unwrap();
+                }
+                for value in v.vertex.color {
+                    write!(output, " {value}").unwrap();
+                }
+                output.push('\n');
+            }
+        }
+    }
+    if let Ok(path) = std::env::var("QA_PATCH_INPUT") {
+        std::fs::write(path, input).unwrap();
+    }
+    if let Ok(path) = std::env::var("QA_PATCH_OUTPUT") {
+        std::fs::write(path, output).unwrap();
+    }
 }

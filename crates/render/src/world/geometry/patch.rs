@@ -1,6 +1,9 @@
 //! Native Q3 adaptive subdivision and mesh normals, tr_curve.c:46-61,112-214,
-//! 262-283,360-515. Cross-patch stitching and distance LOD remain separate.
-use super::{GeometryError, WorldVertex, add, length, scale, sub};
+//! 262-283,360-624; stitching/group propagation follows tr_bsp.c:534-1186.
+use super::{
+    GeometryError, GeometryOptions, PatchStats, WorldGeometry, WorldVertex, add, length,
+    push_triangle, scale, span, sub, vertex_bounds,
+};
 use qa_core::primitives::Vec3;
 
 const MAX_CONTROL_SIZE: usize = 32;
@@ -250,6 +253,366 @@ fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
                 }
             }
             rows[row][column].normal = normalize(sum);
+            rows[row][column].vertex.normal = rows[row][column].normal;
         }
     }
+}
+
+struct Grid {
+    surface: usize,
+    partition: u32,
+    width: usize,
+    height: usize,
+    vertices: Vec<WorldVertex>,
+    width_errors: Vec<f32>,
+    height_errors: Vec<f32>,
+    origin: Vec3,
+    radius: f32,
+    stitched: bool,
+    fixed: bool,
+    changed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Edge {
+    count: usize,
+    offset: usize,
+    stride: usize,
+    boundary: usize,
+    vertical: bool,
+}
+impl Grid {
+    fn edge(&self, index: usize) -> Edge {
+        if index < 2 {
+            Edge {
+                count: self.width,
+                offset: if index == 0 {
+                    0
+                } else {
+                    (self.height - 1) * self.width
+                },
+                stride: 1,
+                boundary: if index == 0 { 0 } else { self.height - 1 },
+                vertical: false,
+            }
+        } else {
+            Edge {
+                count: self.height,
+                offset: if index == 2 { 0 } else { self.width - 1 },
+                stride: self.width,
+                boundary: if index == 2 { 0 } else { self.width - 1 },
+                vertical: true,
+            }
+        }
+    }
+    fn point(&self, edge: Edge, at: usize) -> Vec3 {
+        self.vertices[edge.offset + at * edge.stride]
+            .vertex
+            .position
+    }
+    fn error(&self, edge: Edge, at: usize) -> f32 {
+        if edge.vertical {
+            self.height_errors[at]
+        } else {
+            self.width_errors[at]
+        }
+    }
+    fn set_error(&mut self, edge: Edge, at: usize, error: f32) {
+        if edge.vertical {
+            self.height_errors[at] = error;
+        } else {
+            self.width_errors[at] = error;
+        }
+    }
+    fn merged(&self, edge: Edge) -> bool {
+        for i in 1..edge.count - 1 {
+            for j in i + 1..edge.count - 1 {
+                if matches(self.point(edge, i), self.point(edge, j)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn same_group(&self, other: &Self) -> bool {
+        self.partition == other.partition
+            && self.radius == other.radius
+            && self.origin == other.origin
+    }
+}
+
+pub(super) fn finish_world_patches(
+    geometry: &mut WorldGeometry,
+    options: GeometryOptions,
+    partitions: &[u32],
+) -> Result<PatchStats, GeometryError> {
+    let mut grids = Vec::new();
+    for (index, surface) in geometry.surfaces.iter().enumerate() {
+        let Some(patch) = &surface.patch else {
+            continue;
+        };
+        // Native ParseMesh returns SF_SKIP before building a no-draw patch.
+        if surface.no_draw {
+            continue;
+        }
+        let width = patch.dimensions[0] as usize;
+        let height = patch.dimensions[1] as usize;
+        if !(2..=MAX_GRID_SIZE).contains(&width)
+            || !(2..=MAX_GRID_SIZE).contains(&height)
+            || width * height != surface.vertices.count as usize
+            || patch.width_lod_error.len() != width
+            || patch.height_lod_error.len() != height
+        {
+            return Err(GeometryError::InvalidPatch(surface.source_id));
+        }
+        let vertices = super::section(
+            &geometry.vertices,
+            surface.vertices,
+            "patch vertices",
+            surface.source_id,
+        )?
+        .to_vec();
+        let partition = *partitions.get(index).ok_or(GeometryError::SizeLimit)?;
+        grids.push(Grid {
+            surface: index,
+            partition,
+            width,
+            height,
+            vertices,
+            width_errors: patch.width_lod_error.to_vec(),
+            height_errors: patch.height_lod_error.to_vec(),
+            origin: patch.lod_origin,
+            radius: patch.lod_radius,
+            stitched: false,
+            fixed: false,
+            changed: false,
+        });
+    }
+    let mut stats = PatchStats::default();
+    loop {
+        let mut visited = false;
+        for source in 0..grids.len() {
+            if grids[source].stitched {
+                continue;
+            }
+            grids[source].stitched = true;
+            visited = true;
+            for target in 0..grids.len() {
+                if !grids[source].same_group(&grids[target]) {
+                    continue;
+                }
+                while let Some(insertion) = find_stitch(&grids[source], &grids[target]) {
+                    if insertion.reverse_endpoint_fix {
+                        stats.reverse_endpoint_fixes += 1;
+                    }
+                    insert(&mut grids[target], insertion, options.max_surface_vertices)?;
+                    stats.insertions += 1;
+                }
+            }
+        }
+        if !visited {
+            break;
+        }
+    }
+    // Explicit DFS retains native recursion/first-surface ordering without
+    // risking the process stack on a large connected patch group.
+    let mut stack = Vec::with_capacity(grids.len());
+    for root in 0..grids.len() {
+        if grids[root].fixed {
+            continue;
+        }
+        grids[root].fixed = true;
+        stack.push((root, root + 1));
+        while let Some((source, next)) = stack.last_mut() {
+            if *next == grids.len() {
+                stack.pop();
+                continue;
+            }
+            let target = *next;
+            *next += 1;
+            let source = *source;
+            if grids[target].fixed || !grids[source].same_group(&grids[target]) {
+                continue;
+            }
+            let copies = synchronize(&mut grids, source, target);
+            stats.lod_copies += copies;
+            if copies > 0 {
+                grids[target].fixed = true;
+                stack.push((target, root + 1));
+            }
+        }
+    }
+    for grid in grids {
+        let mut vertices = geometry.surfaces[grid.surface].vertices;
+        let mut indices = geometry.surfaces[grid.surface].indices;
+        let mut boundaries = geometry.surfaces[grid.surface].boundaries;
+        let mut bounds = geometry.surfaces[grid.surface].bounds;
+        if grid.changed {
+            stats.changed_grids += 1;
+            vertices = span(geometry.vertices.len(), grid.vertices.len())?;
+            bounds = vertex_bounds(&grid.vertices)?;
+            geometry.vertices.extend_from_slice(&grid.vertices);
+            let first_index = geometry.indices.len();
+            let first_boundary = geometry.boundaries.len();
+            for row in 0..grid.height - 1 {
+                for column in 0..grid.width - 1 {
+                    let a = vertices.first + (row * grid.width + column) as u32;
+                    let b = a + grid.width as u32;
+                    push_triangle(geometry, [a, b, a + 1])?;
+                    push_triangle(geometry, [a + 1, b, b + 1])?;
+                }
+            }
+            indices = span(first_index, geometry.indices.len() - first_index)?;
+            boundaries = span(first_boundary, geometry.boundaries.len() - first_boundary)?;
+        }
+        let surface = &mut geometry.surfaces[grid.surface];
+        surface.vertices = vertices;
+        surface.indices = indices;
+        surface.boundaries = boundaries;
+        surface.bounds = bounds;
+        let Some(patch) = &mut surface.patch else {
+            return Err(GeometryError::SizeLimit);
+        };
+        patch.dimensions = [grid.width as u16, grid.height as u16];
+        patch.width_lod_error = grid.width_errors.into_boxed_slice();
+        patch.height_lod_error = grid.height_errors.into_boxed_slice();
+    }
+    Ok(stats)
+}
+
+#[derive(Clone, Copy)]
+struct Insertion {
+    edge: Edge,
+    index: usize,
+    anchor: Vec3,
+    error: f32,
+    reverse_endpoint_fix: bool,
+}
+fn find_stitch(source: &Grid, target: &Grid) -> Option<Insertion> {
+    // Native order is forward width/height edges, then reverse width/height.
+    for reversed in [false, true] {
+        for source_edge in 0..4 {
+            let a = source.edge(source_edge);
+            if source.merged(a) {
+                continue;
+            }
+            let mut k = if reversed { a.count as i32 - 1 } else { 0 };
+            while if reversed {
+                k > 1
+            } else {
+                k + 2 < a.count as i32
+            } {
+                let next = (k + if reversed { -2 } else { 2 }) as usize;
+                let middle = (k + if reversed { -1 } else { 1 }) as usize;
+                for target_edge in 0..4 {
+                    let b = target.edge(target_edge);
+                    if b.count >= MAX_GRID_SIZE {
+                        continue;
+                    }
+                    for l in 0..b.count - 1 {
+                        let first = target.point(b, l);
+                        let last = target.point(b, l + 1);
+                        if !matches(source.point(a, k as usize), first)
+                            || !matches(source.point(a, next), last)
+                            || (0..3).all(|i| ((first.0[i] - last.0[i]).abs() as f64) < 0.01)
+                        {
+                            continue;
+                        }
+                        // Preserve native in-range k+1. The C port fixes only
+                        // the endpoint OOB by selecting its real midpoint.
+                        let endpoint_fix = reversed && k as usize + 1 == a.count;
+                        let error_index = if endpoint_fix { middle } else { k as usize + 1 };
+                        return Some(Insertion {
+                            edge: b,
+                            index: l + 1,
+                            anchor: source.point(a, middle),
+                            error: source.error(a, error_index),
+                            reverse_endpoint_fix: endpoint_fix,
+                        });
+                    }
+                }
+                k += if reversed { -2 } else { 2 };
+            }
+        }
+    }
+    None
+}
+fn insert(grid: &mut Grid, insertion: Insertion, limit: usize) -> Result<(), GeometryError> {
+    let new_width = grid.width + usize::from(!insertion.edge.vertical);
+    let new_height = grid.height + usize::from(insertion.edge.vertical);
+    if new_width * new_height > limit {
+        return Err(GeometryError::TooManySurfaceVertices(grid.surface as u32));
+    }
+    let mut rows: Vec<Vec<WorldVertex>> = grid
+        .vertices
+        .chunks_exact(grid.width)
+        .map(|row| row.to_vec())
+        .collect();
+    if insertion.edge.vertical {
+        let mut row: Vec<_> = (0..grid.width)
+            .map(|column| {
+                lerp(
+                    rows[insertion.index - 1][column],
+                    rows[insertion.index][column],
+                )
+            })
+            .collect();
+        row[insertion.edge.boundary].vertex.position = insertion.anchor;
+        rows.insert(insertion.index, row);
+        grid.height_errors.insert(insertion.index, insertion.error);
+    } else {
+        for (index, row) in rows.iter_mut().enumerate() {
+            let mut point = lerp(row[insertion.index - 1], row[insertion.index]);
+            if index == insertion.edge.boundary {
+                point.vertex.position = insertion.anchor;
+            }
+            row.insert(insertion.index, point);
+        }
+        grid.width_errors.insert(insertion.index, insertion.error);
+    }
+    mesh_normals(&mut rows, new_width, new_height);
+    grid.vertices = rows.into_iter().flatten().collect();
+    grid.width = new_width;
+    grid.height = new_height;
+    grid.stitched = false;
+    grid.fixed = false;
+    grid.changed = true;
+    Ok(())
+}
+
+fn synchronize(grids: &mut [Grid], source: usize, target: usize) -> usize {
+    let (a, b) = if source < target {
+        let (left, right) = grids.split_at_mut(target);
+        (&left[source], &mut right[0])
+    } else {
+        let (left, right) = grids.split_at_mut(source);
+        (&right[0], &mut left[target])
+    };
+    let mut copies = 0;
+    for source_edge in 0..4 {
+        let edge_a = a.edge(source_edge);
+        if a.merged(edge_a) {
+            continue;
+        }
+        for k in 1..edge_a.count - 1 {
+            for target_edge in 0..4 {
+                let edge_b = b.edge(target_edge);
+                if b.merged(edge_b) {
+                    continue;
+                }
+                for l in 1..edge_b.count - 1 {
+                    if matches(a.point(edge_a, k), b.point(edge_b, l)) {
+                        b.set_error(edge_b, l, a.error(edge_a, k));
+                        copies += 1;
+                    }
+                }
+            }
+        }
+    }
+    copies
+}
+fn matches(a: Vec3, b: Vec3) -> bool {
+    // Original .1/.01 literals are double; promote the f32 difference so the
+    // exact f32(0.1) boundary retains the native comparison behavior.
+    (0..3).all(|axis| ((a.0[axis] - b.0[axis]).abs() as f64) <= 0.1)
 }

@@ -17,6 +17,7 @@ pub struct PaletteId(pub u32);
 #[repr(C)]
 pub struct Vertex {
     pub position: Vec3,
+    pub normal: Vec3,
     pub texcoord: [f32; 2],
     pub lightmap_coord: [f32; 2],
     pub color: [u8; 4],
@@ -25,6 +26,7 @@ impl Default for Vertex {
     fn default() -> Self {
         Self {
             position: Vec3::default(),
+            normal: Vec3([0.0, 0.0, 1.0]),
             texcoord: [0.0; 2],
             lightmap_coord: [0.0; 2],
             color: [255; 4],
