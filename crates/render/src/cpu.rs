@@ -91,7 +91,6 @@ impl ScreenVertex {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Camera {
     refdef: Refdef,
     tangent: [f32; 2],
@@ -149,7 +148,7 @@ impl Camera {
         Some(Self { refdef, tangent })
     }
 
-    fn vertex(self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
+    fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
         let delta = Vec3(std::array::from_fn(|i| {
             world_position.0[i] - self.refdef.origin.0[i]
         }));
@@ -165,7 +164,7 @@ impl Camera {
         }
     }
 
-    fn project(self, vertex: ClipVertex) -> ScreenVertex {
+    fn project(&self, vertex: ClipVertex) -> ScreenVertex {
         let inverse_depth = 1.0 / vertex.camera[2];
         let viewport = self.refdef.viewport;
         ScreenVertex {
@@ -186,7 +185,7 @@ impl Camera {
         }
     }
 
-    fn distance(self, vertex: ClipVertex, plane: usize) -> f32 {
+    fn distance(&self, vertex: ClipVertex, plane: usize) -> f32 {
         let [x, y, z] = vertex.camera;
         match plane {
             0 => z - self.refdef.near,
@@ -291,7 +290,7 @@ impl CpuBackend {
                     self.clear_depth(camera.refdef.viewport, camera.refdef.far);
                     if let Some(world) = &mut self.world {
                         world.render_opaque(
-                            camera,
+                            &camera,
                             list,
                             view.scene,
                             assets,
@@ -313,7 +312,7 @@ impl CpuBackend {
                     for (draw_rank, item) in list.draws(view.scene.draws).iter().enumerate() {
                         if let Some(world) = &mut self.world
                             && world.draw_item(
-                                camera,
+                                &camera,
                                 draw_rank,
                                 assets,
                                 world::Buffers {
@@ -332,14 +331,14 @@ impl CpuBackend {
                         }
                         match item.kind {
                             DrawKind::Entity => self.entity(
-                                camera,
+                                &camera,
                                 list.entity(item.index),
                                 draw_rank as u32,
                                 assets,
                                 &mut stats,
                             ),
                             DrawKind::Poly => self.poly(
-                                camera,
+                                &camera,
                                 list.poly(item.index),
                                 draw_rank as u32,
                                 list,
@@ -350,7 +349,7 @@ impl CpuBackend {
                         }
                     }
                     if camera.refdef.blend_phase == BlendPhase::AfterView {
-                        self.view_blend(camera.refdef, false, assets);
+                        self.view_blend(&camera.refdef, false, assets);
                     }
                 }
                 Command::Draw2d(draw) => {
@@ -364,7 +363,7 @@ impl CpuBackend {
                 && view.refdef.blend_phase == BlendPhase::FinalPalette
                 && let Some(camera) = Camera::load(view.refdef, self.width, self.height)
             {
-                self.view_blend(camera.refdef, true, assets);
+                self.view_blend(&camera.refdef, true, assets);
             }
         }
         stats
@@ -383,7 +382,7 @@ impl CpuBackend {
 
     fn poly(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         poly: &Poly,
         draw_rank: u32,
         list: &CommandList,
@@ -448,7 +447,7 @@ impl CpuBackend {
 
     fn entity(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         entity: &SceneEntity,
         draw_rank: u32,
         assets: &Assets,
@@ -536,7 +535,7 @@ impl CpuBackend {
         }
     }
 
-    fn mesh_supported(&self, camera: Camera, material: &Material) -> bool {
+    fn mesh_supported(&self, camera: &Camera, material: &Material) -> bool {
         // Native indexed model/light shading is a separate native kernel; an
         // RGB model must not masquerade as stock indexed presentation.
         matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
@@ -548,7 +547,7 @@ impl CpuBackend {
 
     fn triangle(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         triangle: [ClipVertex; 3],
         pass: RasterPass<'_>,
         stats: &mut BackendStats,
@@ -590,7 +589,7 @@ impl CpuBackend {
 
     fn raster_triangle(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         mut vertices: [ScreenVertex; 3],
         pass: RasterPass<'_>,
         stats: &mut BackendStats,
@@ -838,7 +837,7 @@ impl CpuBackend {
         }
     }
 
-    fn view_blend(&mut self, refdef: Refdef, final_phase: bool, assets: &Assets) {
+    fn view_blend(&mut self, refdef: &Refdef, final_phase: bool, assets: &Assets) {
         match refdef.cpu_presentation {
             CpuPresentation::Rgb => self.tint(refdef, final_phase),
             CpuPresentation::Indexed { palette, .. } => {
@@ -866,7 +865,7 @@ impl CpuBackend {
         }
     }
 
-    fn tint(&mut self, refdef: Refdef, preserve_alpha: bool) {
+    fn tint(&mut self, refdef: &Refdef, preserve_alpha: bool) {
         let source = refdef.blend.map(|c| c.clamp(0.0, 1.0));
         if source[3] == 0.0 {
             return;
@@ -912,7 +911,7 @@ fn valid_viewport(viewport: Viewport, width: u32, height: u32) -> bool {
 }
 
 fn clip_plane(
-    camera: Camera,
+    camera: &Camera,
     input: &[ClipVertex],
     output: &mut [ClipVertex; CLIP_VERTICES],
     plane: usize,

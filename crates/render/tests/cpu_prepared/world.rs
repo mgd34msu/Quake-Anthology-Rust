@@ -204,7 +204,7 @@ fn windowed(
                 cpu.time_ms = camera.refdef.time_ms;
                 cpu.clear_depth(camera.refdef.viewport, camera.refdef.far);
                 assert!(world.prepare.prepare_view(
-                    camera,
+                    &camera,
                     list,
                     view.scene,
                     assets,
@@ -214,7 +214,7 @@ fn windowed(
                 for (band, rows) in bands.iter_mut().zip(&windows) {
                     band.render_opaque(
                         &world.prepare,
-                        camera,
+                        &camera,
                         assets,
                         row_buffers(cpu, rows.clone()),
                         &mut stats,
@@ -225,7 +225,7 @@ fn windowed(
                     for (band, rows) in bands.iter_mut().zip(&windows) {
                         let result = band.draw_item(
                             &world.prepare,
-                            camera,
+                            &camera,
                             rank,
                             assets,
                             row_buffers(cpu, rows.clone()),
@@ -241,14 +241,14 @@ fn windowed(
                     }
                     match item.kind {
                         DrawKind::Entity => cpu.entity(
-                            camera,
+                            &camera,
                             list.entity(item.index),
                             rank as u32,
                             assets,
                             &mut stats,
                         ),
                         DrawKind::Poly => cpu.poly(
-                            camera,
+                            &camera,
                             list.poly(item.index),
                             rank as u32,
                             list,
@@ -259,7 +259,7 @@ fn windowed(
                     }
                 }
                 if camera.refdef.blend_phase == crate::scene::BlendPhase::AfterView {
-                    cpu.view_blend(camera.refdef, false, assets);
+                    cpu.view_blend(&camera.refdef, false, assets);
                 }
             }
         }
@@ -268,7 +268,7 @@ fn windowed(
         if let Command::View(view) = *command
             && view.refdef.blend_phase == crate::scene::BlendPhase::FinalPalette
         {
-            cpu.view_blend(view.refdef, true, assets);
+            cpu.view_blend(&view.refdef, true, assets);
         }
     }
     assert_eq!(stats.rejected, 0);
@@ -566,7 +566,7 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
     };
     let camera = Camera::load(view.refdef, 29, 19).unwrap();
     assert!(raster.prepare.prepare_view(
-        camera,
+        &camera,
         &frame,
         view.scene,
         &assets,

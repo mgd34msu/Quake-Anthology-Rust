@@ -588,7 +588,7 @@ impl WorldRaster {
     }
     pub(super) fn render_opaque(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         list: &CommandList,
         scene: SceneRanges,
         assets: &Assets,
@@ -606,7 +606,7 @@ impl WorldRaster {
     }
     pub(super) fn draw_item(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         rank: usize,
         assets: &Assets,
         buffers: Buffers<'_>,
@@ -620,7 +620,7 @@ impl WorldRaster {
 impl WorldPrepare {
     fn prepare_view(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         list: &CommandList,
         scene: SceneRanges,
         assets: &Assets,
@@ -823,7 +823,7 @@ impl WorldPrepare {
                 if let Some(index) = primitive.rgba {
                     let prepared = self.catalog.rgba[index]
                         .as_ref()
-                        .and_then(|recipe| recipe.prepare(camera.refdef, evaluator));
+                        .and_then(|recipe| recipe.prepare(&camera.refdef, evaluator));
                     if let Some(prepared) = prepared {
                         self.rgba_prepared[index] = Some(prepared);
                     } else {
@@ -986,7 +986,7 @@ impl WorldPrepare {
 
     fn collect_skies(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         list: &CommandList,
         scene: SceneRanges,
         assets: &Assets,
@@ -1082,7 +1082,7 @@ impl WorldPrepare {
         &mut self,
         material: MaterialId,
         points: [qa_core::primitives::Vec3; 3],
-        camera: Camera,
+        camera: &Camera,
         stats: &mut crate::BackendStats,
     ) {
         if !self.sky_states[material.0 as usize]
@@ -1098,7 +1098,7 @@ impl WorldPrepare {
     /// contributed to its clip, matching native RB_StageIteratorSky.
     fn prepare_draw(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         item: DrawItem,
         rank: u32,
         list: &CommandList,
@@ -1333,7 +1333,7 @@ impl WorldPrepare {
 
     fn add_generated_sky(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         vertices: &[Vertex],
         stages: usize,
         deforms: [DeformOp; 3],
@@ -1437,7 +1437,7 @@ impl WorldPrepare {
 
     fn add_sky(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         reference: SurfaceRef,
         reference_index: u32,
         source: super::sky::Source,
@@ -1506,7 +1506,7 @@ impl WorldPrepare {
 
     fn prepare_clip(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         assets: &Assets,
         primitive: Primitive,
         prepared: Option<PreparedStage>,
@@ -1675,7 +1675,7 @@ fn exact_difference(point: [f32; 3], origin: [f32; 3]) -> Option<[f64; 3]> {
 /// WinQuake D_CalcGradients and ref_soft D_CalcGradients keep camera-space
 /// texture gradients separate from their fixed-point texture-minimum offset.
 fn native_planes(
-    camera: Camera,
+    camera: &Camera,
     surface: &crate::world::geometry::WorldSurface,
     mip: u8,
 ) -> Option<(Planes, [i64; 2])> {
@@ -1850,11 +1850,11 @@ fn consume_span(
     rgba_prepared: &[Option<super::rgba::Prepared>],
     factors: &[super::rgba::Factor],
     assets: &Assets,
-    camera: Camera,
+    camera: &Camera,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    let refdef = camera.refdef;
+    let refdef = &camera.refdef;
     if let Some(source) = primitive.sky {
         let depth = primitive.planes.inverse_depth;
         super::sky::layered_span(
@@ -1951,7 +1951,8 @@ fn consume_span(
         }
         cache.end_batch();
     } else if let Some(index) = primitive.rgba {
-        let (Some(recipe), Some(prepared)) = (rgba[index].as_ref(), rgba_prepared[index]) else {
+        let (Some(recipe), Some(prepared)) = (rgba[index].as_ref(), rgba_prepared[index].as_ref())
+        else {
             stats.rejected += 1;
             return;
         };
@@ -2212,7 +2213,7 @@ fn rgba_span(
     span: Span,
     primitive: Primitive,
     recipe: &super::rgba::Product,
-    prepared: super::rgba::ProductPrepared,
+    prepared: &super::rgba::ProductPrepared,
     cache: &mut SurfaceCache,
     assets: &Assets,
     buffers: &mut Buffers<'_>,
@@ -2234,7 +2235,7 @@ fn rgba_span(
     }
     let before_cache = cache.stats();
     let block = cache.prepare_rgba(recipe.cache, mip, prepared.state, |destination| {
-        recipe.fill(prepared, mip, assets, destination);
+        recipe.fill(*prepared, mip, assets, destination);
     });
     let after_cache = cache.stats();
     stats.rgba_hits = stats

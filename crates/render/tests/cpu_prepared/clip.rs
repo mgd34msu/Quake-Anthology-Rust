@@ -10,7 +10,7 @@ use crate::stage::StageEvaluator;
 use qa_core::primitives::Vec3;
 
 fn clip_reference(
-    camera: Camera,
+    camera: &Camera,
     input: &[ClipVertex],
     output: &mut [ClipVertex],
     plane: usize,
@@ -150,13 +150,13 @@ fn shared_intersections_preserve_shader_before_clip_attribute_bits() {
             .unwrap()
             .copy_from_slice(&sources);
         let count = graph
-            .build(camera, sources.len(), deforms, Some(stages[0]), &evaluator)
+            .build(&camera, sources.len(), deforms, Some(stages[0]), &evaluator)
             .unwrap();
         assert!(count >= 3);
         let mut screen = [ScreenVertex::default(); 10];
         let mut coverage = [ProjectedVertex::default(); 10];
         graph
-            .project_base(camera, &mut screen, &mut coverage)
+            .project_base(&camera, &mut screen, &mut coverage)
             .unwrap();
         for (stage_index, stage) in stages.into_iter().enumerate() {
             if stage_index != 0 {
@@ -171,7 +171,7 @@ fn shared_intersections_preserve_shader_before_clip_attribute_bits() {
                 .collect();
             let mut output = [ClipVertex::default(); 10];
             for plane in 0..6 {
-                let clipped = clip_reference(camera, &input, &mut output, plane).unwrap();
+                let clipped = clip_reference(&camera, &input, &mut output, plane).unwrap();
                 input.clear();
                 input.extend_from_slice(&output[..clipped]);
                 if clipped < 3 {

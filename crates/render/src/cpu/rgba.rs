@@ -262,7 +262,7 @@ impl Recipe {
             Self::Pair(_) => None,
         }
     }
-    pub(super) fn prepare(&self, refdef: Refdef, evaluator: &StageEvaluator) -> Option<Prepared> {
+    pub(super) fn prepare(&self, refdef: &Refdef, evaluator: &StageEvaluator) -> Option<Prepared> {
         match self {
             Self::Product(product) => product.prepare(refdef, evaluator).map(Prepared::Product),
             Self::Pair(_) => Some(Prepared::Pair),
@@ -648,7 +648,7 @@ impl Product {
     }
     pub(super) fn prepare(
         &self,
-        refdef: Refdef,
+        refdef: &Refdef,
         evaluator: &StageEvaluator,
     ) -> Option<ProductPrepared> {
         let inputs = DrawInputs {

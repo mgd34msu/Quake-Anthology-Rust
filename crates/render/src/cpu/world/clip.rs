@@ -65,7 +65,7 @@ impl ClipGraph {
     /// Source vertices are supplied through sources() before this call.
     pub fn build(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         count: usize,
         deforms: [DeformOp; 3],
         base: Option<PreparedStage>,
@@ -160,7 +160,7 @@ impl ClipGraph {
 
     pub fn project_base(
         &mut self,
-        camera: Camera,
+        camera: &Camera,
         screen: &mut [ScreenVertex],
         coverage: &mut [ProjectedVertex],
     ) -> Option<usize> {

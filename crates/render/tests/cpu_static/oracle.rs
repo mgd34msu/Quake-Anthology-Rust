@@ -334,7 +334,7 @@ fn build(
     refdef: Refdef,
 ) -> CacheSpan {
     assert!(cache.begin_batch());
-    let prepared = recipe.prepare(refdef, &fixture.evaluator).unwrap();
+    let prepared = recipe.prepare(&refdef, &fixture.evaluator).unwrap();
     let block = cache
         .prepare_rgba(recipe.cache, mip, prepared.state, |out| {
             recipe.fill(prepared, mip, &fixture.assets, out);
@@ -430,7 +430,7 @@ fn collapse_applies_shared_constant_color_once_and_rounds_only_final_product() {
             block.texture_mins[1] as f32 + (index as u32 / block.width) as f32 + 0.5,
         ];
         let original = recipe
-            .prepare(Refdef::default(), &fixture.evaluator)
+            .prepare(&Refdef::default(), &fixture.evaluator)
             .unwrap();
         assert_eq!(original.state.stage_colors[0], [127, 127, 127, 255]);
         assert_eq!(
@@ -460,7 +460,7 @@ fn static_cache_reuses_payload_and_explicit_input_changes_invalidate() {
     // Atlas style animation is not supplied by this cache recipe. Its baked
     // bytes remain unchanged until the shared atlas resource is updated.
     assert_eq!(cache.rgba_pixels(third).unwrap(), original_pixels);
-    let prepared = recipe.prepare(changed, &fixture.evaluator).unwrap();
+    let prepared = recipe.prepare(&changed, &fixture.evaluator).unwrap();
     for state in [
         crate::surface_cache::RgbaBuildState {
             lighting_revision: 1,
@@ -509,7 +509,7 @@ fn static_color_fields_retain_precision_at_large_texture_origins() {
     }
     let recipe = product(&fixture, 65536).unwrap();
     let prepared = recipe
-        .prepare(Refdef::default(), &fixture.evaluator)
+        .prepare(&Refdef::default(), &fixture.evaluator)
         .unwrap();
     for local in [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.5, 3.5]] {
         let chart = [8388608.0 + local[0], local[1]];
@@ -528,7 +528,7 @@ fn native_vertex_byte_rounding_checks_all_polygon_vertices() {
     let recipe = product(&fixture, 65536).unwrap();
     assert!(
         recipe
-            .prepare(Refdef::default(), &fixture.evaluator)
+            .prepare(&Refdef::default(), &fixture.evaluator)
             .is_some()
     );
     // Source colors form an affine field. Native CGEN_VERTEX truncation at
@@ -536,7 +536,7 @@ fn native_vertex_byte_rounding_checks_all_polygon_vertices() {
     assert!(
         recipe
             .prepare(
-                Refdef {
+                &Refdef {
                     identity_light: 0.5,
                     ..Refdef::default()
                 },

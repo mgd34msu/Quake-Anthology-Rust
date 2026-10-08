@@ -57,7 +57,6 @@ impl SkyState {
 
 pub(super) const CLOUD_BOUNDARIES: usize = 5 * 8 * 8 * 2;
 pub(super) const BOX_BOUNDARIES: usize = 6;
-pub(super) const SKY_VERTICES: usize = CLOUD_BOUNDARIES * 3 + BOX_BOUNDARIES * 4;
 pub(super) const SKY_EDGES: usize = CLOUD_BOUNDARIES * 9 + BOX_BOUNDARIES * 10;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -155,7 +154,7 @@ impl Source {
     }
 }
 
-fn presentation(assets: &Assets, camera: Camera) -> Option<(&PaletteLighting, u32)> {
+fn presentation<'a>(assets: &'a Assets, camera: &Camera) -> Option<(&'a PaletteLighting, u32)> {
     let CpuPresentation::Indexed { palette, .. } = camera.refdef.cpu_presentation else {
         return None;
     };
@@ -169,7 +168,7 @@ fn base(assets: &Assets, image: ImageId) -> Option<&IndexedMip> {
 /// Native screen rays use the full video/seat integer center and viewport
 /// extent, independently of FOV. The extra cloud shift truncates separately.
 struct LayeredDraw {
-    camera: Camera,
+    axes: [Vec3; 3],
     center: [i64; 2],
     extent: f32,
     sphere: LayeredSphere,
@@ -177,7 +176,7 @@ struct LayeredDraw {
     shift: i64,
 }
 impl LayeredDraw {
-    fn load(camera: Camera, width: u32, height: u32, sphere: LayeredSphere) -> Self {
+    fn load(camera: &Camera, width: u32, height: u32, sphere: LayeredSphere) -> Self {
         let seat = camera.refdef.blend_viewport.unwrap_or(Viewport {
             x: 0,
             y: 0,
@@ -188,7 +187,7 @@ impl LayeredDraw {
         let time = camera.refdef.time_ms as f32 * 0.001;
         let time = time - (time / 512.0).trunc() * 512.0;
         Self {
-            camera,
+            axes: camera.refdef.axes,
             center: [
                 i64::from(seat.x) + i64::from(seat.width >> 1),
                 i64::from(seat.y) + i64::from(seat.height >> 1),
@@ -207,8 +206,7 @@ impl LayeredDraw {
         let wu = 8192.0 * (i64::from(x) - self.center[0]) as f32 / self.extent;
         let wv = 8192.0 * (self.center[1] - i64::from(y)) as f32 / self.extent;
         let mut ray = std::array::from_fn::<_, 3, _>(|i| {
-            4096.0 * self.camera.refdef.axes[0].0[i] - wu * self.camera.refdef.axes[1].0[i]
-                + wv * self.camera.refdef.axes[2].0[i]
+            4096.0 * self.axes[0].0[i] - wu * self.axes[1].0[i] + wv * self.axes[2].0[i]
         });
         ray[2] *= self.sphere.flatten_z;
         let inverse_length = 1.0 / (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();
@@ -224,7 +222,7 @@ pub(super) fn layered_span(
     height: u32,
     span: Span,
     source: Source,
-    camera: Camera,
+    camera: &Camera,
     assets: &Assets,
     depth: [f32; 3],
     rank: u32,
@@ -319,7 +317,7 @@ struct CubePlanes {
 /// Cube planes match ref_soft's 128-unit box and texture vectors. Retained
 /// image dimensions scale the native 256-texel extent, independently of TGA.
 fn cube_planes(
-    camera: Camera,
+    camera: &Camera,
     axes: [Vec3; 3],
     face: usize,
     width: u32,
@@ -374,7 +372,7 @@ pub(super) struct BackgroundDraw {
     planes: [CubePlanes; 6],
 }
 impl BackgroundDraw {
-    pub(super) fn prepare(source: Source, camera: Camera, assets: &Assets) -> Option<Self> {
+    pub(super) fn prepare(source: Source, camera: &Camera, assets: &Assets) -> Option<Self> {
         let Source::BackgroundCube {
             images,
             rotation,
@@ -407,7 +405,7 @@ impl BackgroundDraw {
 pub(super) fn background(
     width: u32,
     draw: BackgroundDraw,
-    camera: Camera,
+    camera: &Camera,
     assets: &Assets,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,

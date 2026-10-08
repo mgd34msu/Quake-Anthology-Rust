@@ -37,7 +37,7 @@ impl WorldBand {
     pub(super) fn render_opaque(
         &mut self,
         prepared: &WorldPrepare,
-        camera: Camera,
+        camera: &Camera,
         assets: &Assets,
         mut buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
@@ -74,7 +74,7 @@ impl WorldBand {
     pub(super) fn draw_item(
         &mut self,
         prepared: &WorldPrepare,
-        camera: Camera,
+        camera: &Camera,
         rank: usize,
         assets: &Assets,
         mut buffers: Buffers<'_>,
@@ -137,7 +137,7 @@ impl WorldBand {
     fn raster_range(
         &mut self,
         prepared: &WorldPrepare,
-        camera: Camera,
+        camera: &Camera,
         range: [usize; 2],
         opaque_only: bool,
         policy: DepthPolicy,
