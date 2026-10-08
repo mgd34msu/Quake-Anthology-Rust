@@ -1,5 +1,6 @@
 pub mod host;
 pub mod output;
+pub mod renderer;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;

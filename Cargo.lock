@@ -136,6 +136,7 @@ dependencies = [
  "qa-movement",
  "qa-network",
  "qa-platform",
+ "qa-render",
  "qa-session",
  "qa-ui",
  "qa-world",
@@ -250,6 +251,7 @@ dependencies = [
  "qa-input",
  "qa-movement",
  "qa-network",
+ "qa-render",
  "qa-session",
  "qa-world",
 ]

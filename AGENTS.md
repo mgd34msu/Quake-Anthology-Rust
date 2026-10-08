@@ -56,11 +56,12 @@ R0 THE-599/600/601/603/640/678 remain In Progress until gameplay proves their
 acceptance criteria. Build the R1 capabilities in order; R4 supplies the map
 spawning, mixed-play and installed-binary evidence they require.
 
-Current lane: R2, after the R1 structural implementation. In order:
+Completed R2 structural order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
-THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891, then
-THE-651, THE-662, THE-669, THE-679,
-THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
+THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891.
+Current order, authorised in the 2026-10-08 03:50 project update:
+THE-861, THE-862, THE-839, THE-860, THE-863, THE-895, THE-896.
+Rendering and the three-game walk-through precede networking and module services.
 R1 issues with live acceptance criteria remain In Progress for integration at
 the three-game gate. `tools/gen_cvars.py` compiles the vendored owner CSV in
 `data/` into one Rust catalog. `tools/build.py` rejects stale generated output
@@ -107,6 +108,32 @@ THE-892 checks platform ownership and duplicate event/output storage, including
 examples and imported aliases. Developer timers also use platform. Runtime
 allocation qualification covers the instrumented Rust thread; SDL/driver heap
 work needs separate measurement and is not proved by that counter.
+
+THE-861 scene contract: asset registration happens at load and returns numeric
+material/model handles. The shared front end clears a scene, adds entities,
+polygon vertices and lights, renders a copied refdef, and appends 2D draws.
+Two command lists own their entity, polygon, light and vertex arenas; commands
+contain ranges into that same list, never pointers into a client module. Lists
+alternate after submission, and a list is reused only after its consumer has
+finished. Capacity failure drops the affected submission and is counted; it
+does not grow buffers or terminate play. Refdefs carry viewport, camera axes,
+FOV, time, area mask and screen blend. Blend phase preserves native presentation:
+GLQuake blends before 2D drawing; Q1 CPU shifts its final palette after the HUD.
+The one view input is applied once in its specified phase. Area masks use
+1=hidden; Q2's visible area bits are inverted at its boundary. Start with one
+render thread; ownership
+must permit a later measured handoff without changing the scene API.
+
+THE-862 load conversion uses one material stage table and one world surface
+record. Q1/Q2 flags and Q3 shaders become material ids, while surfaces retain
+their plane, polygon boundary, texture projection and lightmap coordinates for
+the native CPU span path as well as static GL triangles. World owns the common
+iterative point-in-leaf/PVS traversal; render owns per-view leaf/node/surface
+visframe stamps, frustum tests and dynamic-light stamps. Different views/worlds
+must not share mutable visibility scratch. CPU palette and colormap resources
+belong to the selected presentation, independently of movement and modules.
+SDL3 owns GL context creation/currentness/swap and streaming CPU presentation;
+render resolves GL functions once through platform and owns GPU resources.
 
 THE-886 reads Linux stdin through an independent nonblocking file description,
 bounded per poll, into ConsoleLine events. Commands use the shared console;

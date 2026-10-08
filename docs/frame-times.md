@@ -311,3 +311,36 @@ Both sides retained identical fixture results and zero Rust allocations. This
 host workload has no loaded geometry; it verifies the existing host path, not
 movement throughput. Evidence: THE-891-host-final-timing.json. The earlier
 mid-step comparison (+0.37%) is retained separately.
+
+## THE-861 shared scene command fixture, 2026-10-08
+
+Release build, core 23, 640×400, 60 warm-up and 600 measured uncapped frames
+per backend. Two views share a static mesh with texture/lightmap passes and
+a near-clipped dynamic polygon; four ordered HUD draws exercise before-HUD
+and final color-blend phases. Frontend, backend and present were measured
+separately through platform counters. No build, checker or debugger ran during
+the timing pass. GL was Mesa 26.2.2 llvmpipe, GL 4.6 core, rather than a spare-GPU
+measurement. Its backend times include reused-buffer fence waits; they do not
+measure complete GPU execution separately from presentation.
+
+| Private display / consumer | Frontend median / p99 ns | Backend median / p99 ns | Present median / p99 ns | Total median / p99 ns |
+|---|---:|---:|---:|---:|
+| Xvfb CPU | 120 / 150 | 13,353,280 / 13,395,930 | 1,816,612 / 2,164,182 | 15,192,961 / 15,528,131 |
+| Xvfb GL | 130 / 160 | 97,820.5 / 3,321,762 | 3,743,288 / 3,833,603 | 3,863,327.5 / 4,049,193 |
+| sway CPU | 140 / 160 | 13,369,699.5 / 13,416,790 | 1,758,966.5 / 1,777,912 | 15,133,756 / 15,181,831 |
+| sway GL | 120 / 150 | 68,555 / 1,693,591 | 3,764,597 / 3,787,603 | 3,837,898 / 3,862,343 |
+| Weston CPU | 150 / 180 | 13,387,750 / 13,422,869 | 1,764,631.5 / 1,850,121 | 15,163,476 / 15,261,301 |
+| Weston GL | 130 / 160 | 68,495 / 1,697,841 | 3,776,643 / 3,832,212 | 3,853,157 / 3,911,883 |
+
+All six runs passed fixed packet counts, interior pixel probes, owned-display
+containment, profile/candidate preservation and normal exit. All 256,000 final
+RGB pixels matched the CPU reference exactly, including both blend phases.
+Each run measured zero calling-thread Rust allocations or requested bytes;
+SDL, compositor and driver allocations are outside that counter. Evidence:
+`THE-861-scene-b/verification.json`, per-run logs, captures and `scene.ppm`.
+
+These are entity/polygon/2D fixture results. The CPU triangle path is above the
+CPU target; native world spans and surface caching remain THE-862. Retail maps,
+native indexed palettes, dynamic lights, original images, mixed movement and
+hardware renderer timing remain unqualified. This fixture cannot authorize an
+installation or serve as a gameplay regression baseline.

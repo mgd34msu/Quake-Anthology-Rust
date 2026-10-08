@@ -1,3 +1,4 @@
+use qa_app::renderer::{Kind, Renderer};
 use qa_app::{
     Runtime,
     host::{FrameHost, LiveFrame},
@@ -7,7 +8,7 @@ use qa_console::{
     views::{Context, Source},
 };
 use qa_core::sys_events::{DeviceId, SeatId};
-use qa_platform::{EventPump, Window};
+use qa_platform::EventPump;
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ fn run() -> Result<(), String> {
     let mut timings = false;
     let mut uncapped = false;
     let mut startup_hold = 0u64;
+    let mut renderer_kind = Kind::Cpu;
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
@@ -112,6 +114,9 @@ fn run() -> Result<(), String> {
                 }
             }
             "--frame-timings" => timings = true,
+            "--renderer" => {
+                renderer_kind = Kind::parse(&args.next().ok_or("--renderer needs cpu or gl")?)?
+            }
             "--uncapped" => uncapped = true,
             "--warmup" => {
                 warmup = args
@@ -168,8 +173,13 @@ fn run() -> Result<(), String> {
     if frames == 0 || width <= 0 || height <= 0 {
         return Err("frames and dimensions must be positive".into());
     }
-    let mut window = Window::open(width, height)?;
-    window.present();
+    let mut window = renderer_kind.open(width, height)?;
+    let mut renderer = Renderer::load(renderer_kind, &window, width as u32, height as u32)?;
+    renderer.frame();
+    renderer.present(&mut window);
+    if !renderer.sample.presented {
+        return Err("initial frame presentation failed".into());
+    }
     println!(
         "{{\"event\":\"window_ready\",\"gameplay\":false,\"video_driver\":\"{}\",\"wayland_display_present\":{}}}",
         window.video_driver(),
@@ -207,6 +217,7 @@ fn run() -> Result<(), String> {
             &mut LiveFrame {
                 pump: &mut pump,
                 window: &mut window,
+                renderer: &mut renderer,
             },
             uncapped,
         );
@@ -246,6 +257,22 @@ fn run() -> Result<(), String> {
             ),
         );
         if frame >= u64::from(warmup) {
+            if timings {
+                qa_console::logger::dev_print(
+                    &host.console.cvars,
+                    host.developer,
+                    1,
+                    format_args!(
+                        "{{\"event\":\"render_frame\",\"scope\":\"window_shell\",\"renderer\":\"{}\",\"frame\":{frame},\"frontend_ns\":{},\"backend_ns\":{},\"present_ns\":{},\"presented\":{},\"rejected\":{}}}",
+                        renderer_kind.name(),
+                        renderer.sample.frontend_ns,
+                        renderer.sample.backend_ns,
+                        renderer.sample.present_ns,
+                        renderer.sample.presented,
+                        renderer.sample.stats.rejected
+                    ),
+                );
+            }
             qa_console::logger::dev_print(
                 &host.console.cvars,
                 host.developer,
@@ -307,6 +334,7 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    drop(renderer);
     drop(window);
     #[cfg(feature = "allocation-tracking")]
     allocation_gate.finish()?;

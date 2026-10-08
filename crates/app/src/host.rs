@@ -18,6 +18,7 @@ pub trait FrameSource {
     fn poll_events(&mut self, queue: &mut SysEventQueue);
     fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration);
     fn elapsed(&self) -> Duration;
+    fn render(&mut self) {}
     fn present(&mut self);
     /// False reports an unloaded backend, not successful audio/particle proof.
     fn sound(&mut self, _event: SoundEvent) -> bool {
@@ -30,6 +31,7 @@ pub trait FrameSource {
 pub struct LiveFrame<'a> {
     pub pump: &'a mut EventPump,
     pub window: &'a mut Window,
+    pub renderer: &'a mut crate::renderer::Renderer,
 }
 impl FrameSource for LiveFrame<'_> {
     fn begin_frame(&mut self, queue: &mut SysEventQueue) {
@@ -45,7 +47,10 @@ impl FrameSource for LiveFrame<'_> {
         self.pump.elapsed()
     }
     fn present(&mut self) {
-        self.window.present();
+        self.renderer.present(self.window);
+    }
+    fn render(&mut self) {
+        self.renderer.frame();
     }
 }
 
@@ -182,6 +187,7 @@ impl FrameHost {
         result.commands = self.client_frame();
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
+        source.render();
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result

@@ -1,6 +1,7 @@
 //! Engine-owned values. Game formats and module ABIs convert at their boundaries.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(transparent)]
 pub struct Vec3(pub [f32; 3]);
 
 impl Vec3 {

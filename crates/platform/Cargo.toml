@@ -19,3 +19,4 @@ qa-console = { path = "../console" }
 qa-session = { path = "../session" }
 qa-movement = { path = "../movement" }
 qa-world = { path = "../world" }
+qa-render = { path = "../render" }

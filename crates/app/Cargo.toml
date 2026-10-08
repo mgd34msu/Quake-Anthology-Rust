@@ -20,6 +20,7 @@ qa-session = { path = "../session" }
 qa-world = { path = "../world" }
 qa-formats = { path = "../formats" }
 qa-ui = { path = "../ui" }
+qa-render = { path = "../render" }
 
 [[bin]]
 name = "qa-rust"
