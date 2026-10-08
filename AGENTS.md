@@ -98,7 +98,7 @@ player and client. Each playable feature needs per-game and combined-mode proof,
 such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
 
 * A. THE-859/885/886: platform alone owns SDL, sockets, files, OS clocks and worker creation; one fixed core system-event ring carries timed input, console lines and packets, including fixed local loopback rings. No receive thread, journal, input recording or replay may be added pending the owner.
-* B. THE-884: Com_Frame drains events and commands, advances SERVER providers at their own native rates on one timeline, drains events and commands again, then runs CLIENT snapshot application, prediction and presentation. The client cap uses cached com_maxfps aliases; its wait continues draining input and packets. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
+* B. THE-884: Com_Frame performs two nonblocking physical intake drains: before SERVER and before CLIENT, each followed by commands, matching qsrc Com_Frame/Com_EventLoop. SERVER providers advance at their own native rates on one timeline; CLIENT applies snapshots, predicts and presents. No other physical intake point is allowed, including frame-cap waits or final-ACK retirement. The 2026-10-08 16:12 owner ruling supersedes the earlier draining-wait requirement; queued events may still be consumed without polling OS sources. Q1 nextthink seconds, Q2 10 Hz, Q2 rerelease 40 Hz and Q3 sv_fps are independent of movement rules and usercmd duration.
 * C. THE-691/890: all modules produce sound, effect and print primitives into the one core output ring and text arena; the client drains it once into audio, particles and per-seat HUD/notify consumers. Load-sized arenas, fixed rings and hot SoA state mean zero Rust heap allocation per frame; instrumented qualification fails on any measured-frame allocation.
 * D. THE-860: one netchan owns sequence, ack, reliable bit, qport, fragments and fixed packet buffers; protocol tables select reliability, Huffman/XOR and one field-table delta encoder. Each client has a 32-slot snapshot ring and zero baseline, with its own NQ/QW/Q2/Q2RR/Q3 protocol over the same world; packet limit is 1400 bytes.
 * E. THE-861/862: one scene API registers assets, clears a scene, adds entities/polys/lights, renders a refdef and submits 2D draws to one double-buffered command list. One Q3 stage material table converts Q1/Q2 surface flags at load into shared materials and one lightmap atlas. Shared iterative leaf/PVS/visframe/dlightframe/frustum traversal serves every map. GL uses static map VBOs, persistent dynamic buffers, material/lightmap batching and a state cache, never glFinish; CPU rendering uses depth-ordered edge/spans, a rover surface cache per mip and a 1/Z buffer with SIMD; standalone Q1/Q2 default to native palette/colormap lighting, including Q2 6-bit gray lightmaps. RGB and colored CPU lighting are opt-in or custom-game presentation.
@@ -121,7 +121,11 @@ THE-650 distinguishes explicit module LinkEntity from an internal body commit.
 An explicit relink always unlinks and reinserts; head/tail insertion is rule data
 of the entity's game. Unchanged internal body commits stay no-ops. THE-625/1862
 trace calls carry the caller's clipping, epsilon and filtering rules independently
-of the map geometry; stock results remain bit-exact. THE-697/890 output payload
+of the map geometry; stock results remain bit-exact. Linked-body hits use the
+caller's merge rule: Q1/Q2 replace on allsolid, startsolid or nearer fraction,
+preserving any earlier startsolid; Q3 keeps its native solid-flag and nearer-only
+replacement semantics (qsrc Q2 sv_world.c:566-578; Q3 sv_world.c:570-586).
+THE-697/890 output payload
 pages belong to ring slots and retire after every applicable module/client
 consumer has completed its native delivery rule. Reliable records wait for a
 real native ACK; best-effort records retire after successful native submission;
