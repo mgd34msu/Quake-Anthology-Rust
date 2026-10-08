@@ -366,4 +366,46 @@ This measures visibility queries over parsed retail records, with many seeded
 points in solids and their all-visible fallback. It is not a gameplay frame,
 renderer target, native-image comparison or installer baseline. The independent
 reference is Rust over the original records; an extracted C executable was not
-used. The app has not yet submitted a loaded retail world.
+used. At that checkpoint, the app had not yet submitted a loaded retail world.
+
+## THE-861/862 partial retail renderer, 2026-10-08
+
+Commit `7ec5706bfef9ffdf1b3dcf0d2339131c087750ec`, portable release build,
+core 23, owned Xvfb, 640×400, uncapped static spawn camera. Each map/backend
+ran 60 warm-up and 600 measured frames. No build, checker or debugger ran
+concurrently. A separate allocation-tracking executable measured the calling
+Rust thread; it is not the normal shipping candidate. The normal candidate
+built in 27.7702 s and the instrumented developer executable in 24.5061 s.
+Both were built from the same clean commit with proof input disabled.
+
+| Map / consumer | Scene median / p99 ns | Draw median / p99 ns | Present median / p99 ns |
+|---|---:|---:|---:|
+| e1m1 CPU | 27,915 / 32,970 | 2,345,397 / 2,388,382 | 1,781,511 / 1,853,791 |
+| e1m1 GL | 39,720 / 45,810 | 5,603,409 / 7,154,446 | 5,612,589 / 5,761,094 |
+| base1 CPU | 81,610 / 89,500 | 5,019,713.5 / 5,066,674 | 1,825,886.5 / 1,923,911 |
+| base1 GL | 101,545 / 115,190 | 8,692,366.5 / 12,330,019 | 4,349,168.5 / 4,479,253 |
+| q3dm1 CPU | 169,330.5 / 195,650 | 36,566,606 / 38,111,987 | 1,828,856.5 / 2,110,172 |
+| q3dm1 GL | 190,475 / 213,240 | 18,288,543 / 22,053,186 | 5,325,653.5 / 8,090,686 |
+
+All six measured passes recorded zero Rust allocations, reallocations and
+requested bytes across 600 frames each. Each copied candidate/profile was
+preserved, the process exited normally and the owned display was cleaned up.
+SDL, compositor and driver allocations are outside this counter. Draw/present
+times do not isolate GPU completion, and these runs did not record GL driver
+identity. The base1 and q3dm1 CPU draw times exceed the 4 ms target.
+
+The renderer is incomplete: q3dm1 CPU initially rejected 11 sky submissions;
+its cloud sky and Q2 indexed warp/translucency still need coverage. A separate
+120-frame repeated-key walk with the normal candidate recorded CPU rejection
+in 19 base1 frames and all 120 q3dm1 frames, while GL rejected none. Captures
+show retail world geometry but no module entities or HUD. Q2 GL brightness
+also needs original image preparation. Static-pass rejection was logged only
+on its initial frame, so that pass does not prove complete coverage.
+
+Evidence: `static-tracking-report.json`, the six
+`tracking-static-{e1m1,base1,q3dm1}-{cpu,gl}-a` directories and the normal
+`retail-*` directories under `r3-20261008`. Their logs, display captures and
+result files describe the bounded workload. These timings are not a matched
+native-fidelity comparison, gameplay regression baseline or installation
+qualification. Foreign movement, wall/step routes, native image parity and
+combined views remain unqualified; the app still reports gameplay=false.
